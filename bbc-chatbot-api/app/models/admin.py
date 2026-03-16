@@ -100,6 +100,12 @@ class LeadStatusUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+# ── Users ────────────────────────────────────────────────────
+class UserUpdate(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 # ── KB ────────────────────────────────────────────────────────
 class KBCategoryItem(BaseModel):
     id: str

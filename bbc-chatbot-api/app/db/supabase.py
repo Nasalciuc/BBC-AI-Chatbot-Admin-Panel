@@ -376,6 +376,45 @@ async def delete_kb_entry(entry_id: str) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════
+# ADMIN — USERS
+# ════════════════════════════════════════════════════════════════
+
+async def get_users(
+    role: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list, int]:
+    """List users with filters. Returns (rows, total_count)."""
+    try:
+        db = get_client()
+        def _query():
+            q = db.table("users").select("*", count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
+            if role:    q = q.eq("role", role)
+            if search:
+                q = q.or_(
+                    f"full_name.ilike.%{search}%,"
+                    f"email.ilike.%{search}%"
+                )
+            return q.range(offset, offset + limit - 1).execute()
+        res = await _run_sync(_query)
+        return res.data or [], res.count or 0
+    except Exception as e:
+        logger.error(f"get_users error: {e}")
+        return [], 0
+
+
+async def update_user(user_id: str, payload: dict) -> Optional[dict]:
+    try:
+        db = get_client()
+        res = await _run_sync(lambda: db.table("users").update(payload).eq("id", user_id).execute())
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"update_user error: {e}")
+        return None
+
+
+# ════════════════════════════════════════════════════════════════
 # PIPELINE RUNS — recording
 # ════════════════════════════════════════════════════════════════
 
