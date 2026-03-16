@@ -1,2 +1,2 @@
 ﻿# specs/
-api-contract.md is source of truth for admin endpoints.
+api-contract.md = source of truth for admin endpoints.

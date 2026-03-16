@@ -1,6 +1,4 @@
-﻿# API Contract — Admin Endpoints
-
-ALL return: { "success": bool, "data": T, "count": int, "error"?: str }
+﻿# API Contract — ALL return { success, data, count, error? }
 
 | Method | Endpoint | Status |
 |--------|----------|--------|

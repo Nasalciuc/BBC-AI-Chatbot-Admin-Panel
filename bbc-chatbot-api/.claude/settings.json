@@ -8,6 +8,6 @@
     "deny": ["Write(.env*)", "Edit(.env*)"]
   },
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
 }

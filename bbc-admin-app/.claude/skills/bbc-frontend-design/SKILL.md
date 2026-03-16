@@ -1,26 +1,16 @@
 ﻿---
 name: bbc-frontend-design
-description: Apply BBC brand to UI. Use when creating pages, components, or styling. Enforces shadcn/ui, Tailwind, light minimalist theme, Navy/Gold tokens for marketing specialists.
+description: BBC brand for UI. Use when creating pages, components, styling. Light minimalist for marketing specialists.
 ---
 
-# BBC Frontend Design Skill
-
-## Philosophy
-Clean, minimal, comfortable for marketing specialists. 8+ hours daily use.
-Notion + Linear + Stripe Dashboard. NOT Bloomberg terminal.
+# Philosophy: Clean, minimal, 8h comfort. Notion + Linear + Stripe.
 
 ## Colors
-Navy #0B1829 → sidebar, headings | Gold #C9A54E → active nav, CTA, badge (MAX 2/screen)
-bg-background (white) | text-foreground (near-black) | text-muted-foreground (gray)
+Navy #0B1829 → sidebar, headings | Gold #C9A54E → active, CTA, badge (MAX 2/screen)
+bg-background (white) | text-foreground | text-muted-foreground
 
-## Page Template
-Header → Main → title (text-2xl font-semibold) + desc (text-sm muted) + content. space-y-8.
-
-## KPI Card
-Card p-6: label (text-sm muted) + number (text-3xl bold) + trend (text-sm emerald/red). Grid: cols-1 sm:cols-2 lg:cols-4 gap-6.
-
-## Chart
-Card p-6 wrapping ResponsiveContainer h-280. Gold stroke + 8% fill. Max 2 charts per page.
-
-## Rules
-Light PRIMARY. space-y-8. p-6 cards. NO shadows. NO animations. Gold MAX 2. No jargon. Full word labels.
+## Page: Header → Main → title text-2xl font-semibold + desc text-sm muted + content. space-y-8.
+## KPI: Card p-6. Label muted + text-3xl bold + trend emerald/red. Grid cols-1 sm:2 lg:4 gap-6.
+## Chart: Card p-6. ResponsiveContainer h-280. Gold stroke + fillOpacity 0.08. Max 2/page.
+## Table: 48px+ rows. Zebra even:bg-muted/30. One action/row. Search top-right.
+## Rules: Light PRIMARY. NO shadows. NO animations. NO jargon. Gold MAX 2. Full word labels.
