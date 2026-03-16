@@ -45,6 +45,7 @@
     "input-otp": "^1.4.2",
     "lucide-react": "^0.561.0",
     "react": "^19.2.3",
+    "react-chatbotify": "^2.0.0-beta.32",
     "react-day-picker": "9.12.0",
     "react-dom": "^19.2.3",
     "react-hook-form": "^7.68.0",

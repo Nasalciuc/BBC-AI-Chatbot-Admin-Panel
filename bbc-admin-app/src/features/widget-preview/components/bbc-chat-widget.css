@@ -1,0 +1,65 @@
+/* BBC Chat Widget — brand overrides for react-chatbotify */
+
+/* Header */
+.rcb-chat-header {
+  background: #0B1829 !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+
+/* Bot bubble */
+.rcb-bot-message {
+  background: #F8F9FA !important;
+  color: #343A40 !important;
+  border-radius: 12px !important;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* User bubble */
+.rcb-user-message {
+  background: #0B1829 !important;
+  color: #fff !important;
+  border-radius: 12px !important;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Send button */
+.rcb-send-button {
+  background: #C9A54E !important;
+  border: none !important;
+  border-radius: 8px !important;
+}
+
+.rcb-send-button:hover {
+  background: #b8943d !important;
+}
+
+/* Chat window */
+.rcb-chat-window {
+  background: #fff !important;
+  font-family: inherit !important;
+}
+
+/* Input area */
+.rcb-chat-input-textarea {
+  font-family: inherit !important;
+  font-size: 14px !important;
+}
+
+/* Toggle button (floating bubble) */
+.rcb-toggle-button {
+  background: #0B1829 !important;
+  border: 2px solid #C9A54E !important;
+}
+
+/* Tooltip */
+.rcb-chat-tooltip {
+  display: none !important;
+}
+
+/* Notification badge */
+.rcb-notification-badge {
+  background: #C9A54E !important;
+}
