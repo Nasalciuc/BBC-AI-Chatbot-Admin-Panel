@@ -12,8 +12,8 @@
 
 - Deploy: Railway (`admin-panel-error-production.up.railway.app`), BEHIND HEAD
 - Chat pipeline WORKS: intent → entity → KB → template/Haiku/Sonnet
-- GET /api/admin/stats WORKS
-- Admin CRUD endpoints DO NOT EXIST
+- GET /api/dashboard/stats WORKS
+- Admin CRUD endpoints: conversations, leads, kb — shape aligned, auth dual (Basic+Bearer)
 - Supabase: service_role REQUIRED. supabase-py is SYNC.
 
 ## Stack

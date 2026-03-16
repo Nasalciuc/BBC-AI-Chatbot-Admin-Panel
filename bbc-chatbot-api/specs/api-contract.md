@@ -2,23 +2,23 @@
 
 | Method | Endpoint | Status |
 |--------|----------|--------|
-| GET | /api/admin/stats | ✅ DONE |
-| GET | /api/admin/conversations | ✅ DONE |
-| GET | /api/admin/conversations/{id} | ✅ DONE |
-| PATCH | /api/admin/conversations/{id} | ✅ DONE |
-| GET | /api/admin/leads | ✅ DONE |
-| GET | /api/admin/leads/{id} | ❌ TODO |
-| PATCH | /api/admin/leads/{id} | ❌ TODO |
+| GET | /api/dashboard/stats | ✅ DONE |
+| GET | /api/conversations | ✅ DONE |
+| GET | /api/conversations/{id} | ✅ DONE |
+| PATCH | /api/conversations/{id} | ✅ DONE |
+| GET | /api/leads | ✅ DONE |
+| GET | /api/leads/{id} | ❌ TODO |
+| PATCH | /api/leads/{id} | ❌ TODO |
 | GET | /api/admin/users | ✅ DONE |
 | PATCH | /api/admin/users/{id} | ✅ DONE |
-| GET | /api/admin/kb/categories | ✅ DONE |
-| GET | /api/admin/kb/entries | ✅ DONE |
-| POST | /api/admin/kb/entries | ✅ DONE |
-| PUT | /api/admin/kb/entries/{id} | ✅ DONE |
+| GET | /api/kb/categories | ✅ DONE |
+| GET | /api/kb/entries | ✅ DONE |
+| POST | /api/kb/entries | ✅ DONE |
+| PUT | /api/kb/entries/{id} | ✅ DONE |
 
 ---
 
-## GET /api/admin/leads
+## GET /api/leads
 
 List leads with pagination and filters.
 
@@ -49,7 +49,7 @@ List leads with pagination and filters.
 
 ---
 
-## GET /api/admin/conversations
+## GET /api/conversations
 
 List conversations with pagination and filters.
 
@@ -77,7 +77,7 @@ List conversations with pagination and filters.
 
 ---
 
-## GET /api/admin/conversations/{id}
+## GET /api/conversations/{id}
 
 Get single conversation with messages.
 
@@ -106,7 +106,7 @@ Get single conversation with messages.
 
 ---
 
-## GET /api/admin/kb/categories
+## GET /api/kb/categories
 
 List KB categories with entry counts.
 
@@ -130,7 +130,7 @@ List KB categories with entry counts.
 
 ---
 
-## GET /api/admin/kb/entries
+## GET /api/kb/entries
 
 List KB entries with filters.
 
@@ -157,7 +157,7 @@ List KB entries with filters.
 
 ---
 
-## POST /api/admin/kb/entries
+## POST /api/kb/entries
 
 Create a new KB entry.
 
@@ -176,7 +176,7 @@ Create a new KB entry.
 
 ---
 
-## PUT /api/admin/kb/entries/{id}
+## PUT /api/kb/entries/{id}
 
 Update an existing KB entry.
 

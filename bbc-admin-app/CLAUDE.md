@@ -14,7 +14,7 @@
 - Frontend: `admin-panel-error.vercel.app` (Vercel)
 - Backend: `admin-panel-error-production.up.railway.app` (Railway, BEHIND HEAD)
 - **All pages MOCK except Dashboard** (getDashboardStats from API)
-- Clerk in package.json but NOT used — must remove
+- Clerk REMOVED (was in package.json, never used)
 - Auth: custom JWT, cookie `bbc_admin_token`
 - Supabase: `service_role` key required, RLS active
 
