@@ -1,23 +1,11 @@
-{
+﻿{
   "permissions": {
     "allow": [
-      "Write(app/**)",
-      "Write(tests/**)",
-      "Write(specs/**)",
-      "Write(.claude/**)",
-      "Edit(app/**)",
-      "Edit(tests/**)",
-      "Edit(specs/**)",
-      "Bash(python *)",
-      "Bash(pip *)",
-      "Bash(pytest *)",
-      "Bash(git *)"
+      "Write(app/**)", "Write(tests/**)", "Write(specs/**)", "Write(.claude/**)",
+      "Edit(app/**)", "Edit(tests/**)", "Edit(specs/**)",
+      "Bash(python *)", "Bash(pip *)", "Bash(pytest *)", "Bash(git *)"
     ],
-    "deny": [
-      "Write(.env*)",
-      "Edit(.env*)",
-      "Bash(rm -rf /)"
-    ]
+    "deny": ["Write(.env*)", "Edit(.env*)"]
   },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"

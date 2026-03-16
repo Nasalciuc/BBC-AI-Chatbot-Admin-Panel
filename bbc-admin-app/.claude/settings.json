@@ -1,22 +1,12 @@
-{
+﻿{
   "permissions": {
     "allow": [
-      "Write(src/**)",
-      "Write(specs/**)",
-      "Write(.claude/**)",
-      "Edit(src/**)",
-      "Edit(specs/**)",
-      "Edit(.claude/**)",
-      "Bash(npm *)",
-      "Bash(npx *)",
-      "Bash(git *)",
-      "Bash(tsc *)"
+      "Write(src/**)", "Write(specs/**)", "Write(.claude/**)",
+      "Edit(src/**)", "Edit(specs/**)", "Edit(.claude/**)",
+      "Bash(npm *)", "Bash(npx *)", "Bash(git *)", "Bash(tsc *)"
     ],
     "deny": [
-      "Write(.env*)",
-      "Edit(.env*)",
-      "Write(node_modules/**)",
-      "Bash(rm -rf /)"
+      "Write(.env*)", "Edit(.env*)", "Write(node_modules/**)"
     ]
   },
   "env": {

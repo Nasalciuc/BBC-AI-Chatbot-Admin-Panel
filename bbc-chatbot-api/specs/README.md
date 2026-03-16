@@ -1,3 +1,2 @@
-# specs/
-
-Specification files for complex features (WhatsApp integration, widget, etc.).
+﻿# specs/
+api-contract.md is source of truth for admin endpoints.

@@ -1,124 +1,107 @@
-# BBC Admin Panel — CLAUDE.md
+﻿# BBC Admin Panel — CLAUDE.md
 
-> Governance file for Claude Code. Read automatically on session start.
-> Last updated: 2026-03-16
+> Every line in this file changes the behavior of an AI agent.
+> If a line can be deleted without changing generated code, it does not belong here.
 
-## Project Identity
+## Identity
 
-| Field | Value |
-|-------|-------|
-| Name | BBC Admin Panel (BuyBusinessClass) |
-| Type | Internal admin dashboard |
-| Repo | `bbc-admin-app` |
-| Companion API | `bbc-chatbot-api` (FastAPI) |
-| Deploy | Netlify |
+- **Project:** BBC AI Chatbot Admin Panel (`bbc-admin-app`)
+- **Purpose:** Internal dashboard for managing chatbot conversations, leads, knowledge base, users, and AI pipeline health for BuyBusinessClass.com
+- **NOT:** Customer-facing widget, backend API (see `bbc-chatbot-api`), QM evaluation system
+- **Users:** Dan (owner/marketing), Maria (sales agent), Scaler (dev), Nasalciuc (dev)
 
-## Tech Stack
+## Current State (updated 2026-03-16)
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | React 19 + TypeScript 5.9 (strict) |
-| Routing | TanStack Router (file-based, auto code-split) |
-| Data fetching | TanStack React Query |
-| State | Zustand (auth store) |
-| UI primitives | Radix UI (30+ components in `src/components/ui/`) |
-| Styling | Tailwind CSS 4 + CVA + tailwind-merge |
-| Forms | React Hook Form + Zod |
-| Charts | Recharts |
-| Auth | Clerk (`@clerk/clerk-react`) |
-| Build | Vite + SWC |
-| Package manager | pnpm |
-| Toasts | Sonner |
+- Frontend deployed: `admin-panel-error.vercel.app` (Vercel)
+- Backend deployed: `admin-panel-error-production.up.railway.app` (Railway)
+- **All pages run on mock data** except Dashboard (calls getDashboardStats from API)
+- Cleanup branch `cleanup/remove-invented-data` in progress
+- Railway deployment behind GitHub HEAD due to platform incident
+- Auth: custom JWT via `auth-store.ts` + cookie `bbc_admin_token`. Clerk in package.json but NOT used — must be removed.
+- Supabase: `service_role` key required (not anon key). RLS active.
 
-## Architecture Rules
+## Stack
 
-### Directory Layout
+Do NOT install alternatives. `package.json` is source of truth for versions.
+
+| Layer | Tool | Import |
+|-------|------|--------|
+| Framework | React 19 | `react` |
+| Routing | TanStack Router | `@tanstack/react-router` |
+| Server state | TanStack Query | `@tanstack/react-query` |
+| Client state | Zustand | `zustand` |
+| UI primitives | shadcn/ui (Radix) | `@/components/ui/*` |
+| Styling | Tailwind CSS 4 | utility classes only |
+| Forms | react-hook-form + zod | `react-hook-form`, `zod` |
+| Charts | Recharts | `recharts` |
+| Icons | lucide-react | `lucide-react` |
+| Dates | date-fns | `date-fns` |
+| Toast | sonner | `sonner` |
+| Build | Vite | `vite` |
+
+## File Structure
 
 ```
 src/
-├── assets/          # SVG logos, custom icons
-├── components/      # Shared components (ui/, data-table/, layout/)
-├── config/          # App-wide config (fonts)
-├── context/         # React context providers (theme, layout, search, direction, font)
-├── features/        # Feature modules (dashboard, chats, leads, knowledge-base, users, settings)
-├── hooks/           # Shared hooks (use-dialog-state, use-mobile, use-table-url-state)
-├── lib/             # Utilities (api.ts, types.ts, utils.ts, cookies.ts)
-├── routes/          # TanStack Router file-based routes
-├── stores/          # Zustand stores
-└── styles/          # Global CSS
+  features/{name}/index.tsx          page (default export)
+    components/                      sub-components for this feature only
+    data/                            mock data or static config
+  components/ui/                     shadcn primitives ONLY (untouched)
+  components/*.tsx                   BBC custom components
+  lib/api.ts                         ALL API calls (single gateway)
+  lib/types.ts                       ALL shared TypeScript types
+  stores/                            Zustand stores (one per domain)
 ```
 
-### Key Conventions
+Max 2 levels under features/. Path alias `@/` for all imports.
 
-1. **Feature-first organisation** — each domain lives in `src/features/<domain>/`.
-2. **Single API client** — all backend calls go through `src/lib/api.ts` via `apiFetch<T>()`.
-3. **Types mirror backend** — `src/lib/types.ts` must match the API contract in `specs/api-contract.md`.
-4. **Radix + Tailwind** — never import a third-party component library when a Radix primitive already exists in `src/components/ui/`.
-5. **Zod schemas** — every form must have a Zod schema; no manual validation.
-6. **Path alias** — use `@/*` (maps to `src/*`).
-7. **No default exports** — use named exports everywhere except route files.
-8. **Strict TypeScript** — `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch` are on.
+## Data Flow
 
-### API Integration
+1. ALL API calls in `src/lib/api.ts` — features NEVER import axios/fetch
+2. ALL types in `src/lib/types.ts` BEFORE implementation
+3. `VITE_API_URL` env var — NEVER hardcode URLs
+4. Axios interceptor in api.ts adds auth header — components NEVER send tokens
+5. TanStack Query (`useQuery`/`useMutation`) for server state — NEVER useState for API data
+6. Zustand ONLY for auth, sidebar, UI preferences
 
-- Base URL: `VITE_API_URL` env var
-- Auth: HTTP Basic via `VITE_API_USER` / `VITE_API_PASS` injected on every request
-- Timeout: 8 seconds
-- Error fallback: mock data for dashboard stats on network failure
-- Response envelope: `{ success, data, count, error }`
+## RBAC
 
-### Environment Variables
+Four roles: `owner` | `admin` | `sales` | `support`.
+Restricted items: disabled + lock icon + tooltip "Access restricted". Never hide nav items.
+V1 RBAC is frontend-only. Backend enforcement in V2.
 
-| Variable | Purpose |
-|----------|---------|
-| `VITE_API_URL` | Backend API base URL |
-| `VITE_API_USER` | HTTP Basic username |
-| `VITE_API_PASS` | HTTP Basic password |
-| `VITE_CLERK_PUBLISHABLE_KEY` | Clerk auth key |
+## Brand & Theme
 
-> **Never commit `.env` files.**
+- **Primary:** Navy `#0B1829` → sidebar background, page titles, strong emphasis
+- **Accent:** Gold `#C9A54E` → active nav, primary CTA, important badge (MAX 2 per screen)
+- **Background:** Clean white/off-white `bg-background` — light mode is PRIMARY
+- **Dark mode:** supported but NOT default. Light is the everyday experience.
+- **Palette:** Muted, professional. No saturated colors. Gray scale + gold accent.
+- Use semantic tokens: `bg-background`, `text-foreground`, `text-muted-foreground`
+- NEVER bright/neon colors. NEVER heavy shadows. NEVER dark-first design.
+- Logo: `@/assets/logo`
 
-## Commands
+## Never List
 
-| Task | Command |
-|------|---------|
-| Dev server | `pnpm dev` |
-| Build | `pnpm build` (runs `tsc -b && vite build`) |
-| Lint | `pnpm lint` |
-| Format check | `pnpm format:check` |
-| Format fix | `pnpm format` |
-| Dead code | `pnpm knip` |
+1. NEVER install `@faker-js/faker`
+2. NEVER import from `@clerk/*`
+3. NEVER use `React.FC` or class components
+4. NEVER create `.css`/`.scss` files
+5. NEVER hardcode API URLs
+6. NEVER `console.log` in production
+7. NEVER import axios/fetch in `features/`
+8. NEVER use `bg-white`/`text-black` hardcoded — use semantic tokens
+9. NEVER use Redux, useReducer for server state, or Context for global state
+10. NEVER install moment.js, dayjs, react-icons, heroicons
+11. NEVER nest features/ deeper than 2 levels
+12. NEVER put business logic in `components/ui/`
+13. NEVER skip TypeScript types for API responses
 
-## Quality Gates
+## Gates
 
-Before any PR:
+Before presenting code: `tsc --noEmit` passes, no console.log, all imports resolve, light mode looks correct, API through lib/api.ts, types in lib/types.ts, `npm run build` passes.
 
-1. `pnpm build` — must pass with zero errors
-2. `pnpm lint` — must pass
-3. `pnpm format:check` — must pass
-4. No `any` types unless explicitly justified with `// eslint-disable-next-line`
-5. Every new feature must live in `src/features/<domain>/`
+## Agent Teams Readiness
 
-## Spec-Driven Development
-
-- Specs live in `specs/` — one Markdown file per complex feature.
-- A feature needs a spec if it requires > 1 day of work.
-- Spec format: Status → Problem → Acceptance Criteria (Given/When/Then) → Technical Design → Tasks → Decision Log.
-- Claude must read the relevant spec before implementing a feature.
-
-## Skills
-
-| Skill | Purpose |
-|-------|---------|
-| `bbc-frontend-design` | Radix + Tailwind component patterns |
-| `bbc-copilot-prompt` | GitHub Copilot prompt engineering for this codebase |
-| `bbc-api-integration` | `apiFetch` patterns + React Query hooks |
-
-## Do NOT
-
-- Add dependencies without explicit approval.
-- Modify `src/components/ui/` base primitives — extend via wrapper components.
-- Use `document.querySelector` or direct DOM manipulation.
-- Store secrets in code or committed files.
-- Use `// @ts-ignore` — fix the type instead.
-- Skip Zod validation on forms.
+Status: PRE-CONFIGURED, flag disabled.
+Activate: set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`.
