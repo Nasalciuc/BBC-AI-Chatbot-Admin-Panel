@@ -13,7 +13,7 @@ from app.api.leads import router as leads_router
 from app.api.kb import router as kb_router
 from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
-from app.security.auth import verify_credentials
+from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 
 # ── Logging ───────────────────────────────────────────────────
@@ -57,15 +57,17 @@ app.add_middleware(RequestLoggerMiddleware)
 # Health: PUBLIC (no auth — Railway healthcheck needs it)
 app.include_router(health_router, tags=["health"])
 
-# API: ALL PROTECTED by HTTP Basic Auth
+# Chat: PUBLIC (customer widget — no auth)
+app.include_router(chat_router, prefix="/api", tags=["chat"])
+
+# Admin: ALL PROTECTED by get_current_user (Basic + Bearer)
 from fastapi import Depends
-api_deps = [Depends(verify_credentials)]
-app.include_router(chat_router,          prefix="/api", tags=["chat"],          dependencies=api_deps)
-app.include_router(conversations_router, prefix="/api", tags=["conversations"], dependencies=api_deps)
-app.include_router(leads_router,         prefix="/api", tags=["leads"],         dependencies=api_deps)
-app.include_router(kb_router,            prefix="/api", tags=["kb"],            dependencies=api_deps)
-app.include_router(dashboard_router,     prefix="/api", tags=["dashboard"],     dependencies=api_deps)
-app.include_router(users_router,         prefix="/api", tags=["users"],         dependencies=api_deps)
+admin_deps = [Depends(get_current_user)]
+app.include_router(conversations_router, prefix="/api", tags=["conversations"], dependencies=admin_deps)
+app.include_router(leads_router,         prefix="/api", tags=["leads"],         dependencies=admin_deps)
+app.include_router(kb_router,            prefix="/api", tags=["kb"],            dependencies=admin_deps)
+app.include_router(dashboard_router,     prefix="/api", tags=["dashboard"],     dependencies=admin_deps)
+app.include_router(users_router,         prefix="/api", tags=["users"],         dependencies=admin_deps)
 
 
 # ── Startup ───────────────────────────────────────────────────

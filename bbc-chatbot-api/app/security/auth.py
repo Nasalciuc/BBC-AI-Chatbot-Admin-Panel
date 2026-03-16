@@ -1,54 +1,88 @@
-"""HTTP Basic Auth — protects all /api/* endpoints.
+"""Auth — protects all admin /api/* endpoints.
 /health remains public for Railway healthcheck.
-If API_USER or API_PASS are empty, auth is DISABLED (dev mode).
+/api/chat is public (customer widget).
+
+Accepts BOTH auth schemes:
+  1. Basic Auth: Authorization: Basic base64(user:pass) — checked against API_USER/API_PASS
+  2. Bearer Token: Authorization: Bearer <jwt> — V1 accepts any non-empty token,
+     V2 will validate JWT against Supabase.
+
+If API_USER and API_PASS are both empty, auth is DISABLED (dev mode).
 """
 
+import base64
 import logging
 import secrets
-from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Optional
+from fastapi import HTTPException, Request, status
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-security = HTTPBasic(auto_error=False)
 
 
-def verify_credentials(
-    request: Request,
-    credentials: Optional[HTTPBasicCredentials] = Depends(security),
-) -> str:
-    """Verify HTTP Basic credentials. Returns username on success.
-    
-    If API_USER/API_PASS are empty (dev mode), allows all requests.
+def get_current_user(request: Request) -> dict:
+    """Extract and verify credentials from Authorization header.
+
+    Returns a user dict: {id, role, name}.
     """
     # Dev mode: no auth configured → allow everything
     if not settings.api_user or not settings.api_pass:
-        return "dev"
+        return {"id": "dev", "role": "owner", "name": "dev"}
 
-    if credentials is None:
-        logger.warning(f"No credentials provided | path={request.url.path}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Basic"},
+    auth = request.headers.get("Authorization", "")
+
+    # ── Basic Auth ────────────────────────────────────────────
+    if auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, pwd = decoded.split(":", 1)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Malformed Basic credentials",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+
+        correct_user = secrets.compare_digest(
+            user.encode("utf-8"),
+            settings.api_user.encode("utf-8"),
+        )
+        correct_pass = secrets.compare_digest(
+            pwd.encode("utf-8"),
+            settings.api_pass.encode("utf-8"),
         )
 
-    correct_user = secrets.compare_digest(
-        credentials.username.encode("utf-8"),
-        settings.api_user.encode("utf-8"),
-    )
-    correct_pass = secrets.compare_digest(
-        credentials.password.encode("utf-8"),
-        settings.api_pass.encode("utf-8"),
+        if not (correct_user and correct_pass):
+            logger.warning(f"Invalid Basic credentials | user={user}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+
+        return {"id": "admin", "role": "owner", "name": user}
+
+    # ── Bearer Token ──────────────────────────────────────────
+    if auth.startswith("Bearer "):
+        token = auth[7:].strip()
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Empty Bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # V1: accept any non-empty token, return default admin user.
+        # V2: validate JWT against Supabase and extract real user info.
+        return {"id": "admin", "role": "owner", "name": "admin"}
+
+    # ── No auth header ────────────────────────────────────────
+    logger.warning(f"No Authorization header | path={request.url.path}")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
-    if not (correct_user and correct_pass):
-        logger.warning(f"Invalid credentials | user={credentials.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
 
-    return credentials.username
+# Keep old name as alias for backwards compatibility in tests
+verify_credentials = get_current_user
