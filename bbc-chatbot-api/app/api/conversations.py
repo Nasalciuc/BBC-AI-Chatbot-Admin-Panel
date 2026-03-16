@@ -1,8 +1,8 @@
 """Admin API — conversations CRUD."""
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from app.db import supabase as db
-from app.models.admin import ConversationDetail, ConversationUpdate
+from app.models.admin import ConversationUpdate
 
 router = APIRouter()
 
@@ -15,24 +15,33 @@ async def list_conversations(
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    rows, total = await db.get_conversations(tunnel=tunnel, status=status, search=search, limit=limit, offset=offset)
-    return {"data": rows, "total": total, "limit": limit, "offset": offset}
+    try:
+        rows, total = await db.get_conversations(tunnel=tunnel, status=status, search=search, limit=limit, offset=offset)
+        return {"success": True, "data": rows, "count": total}
+    except Exception as e:
+        return {"success": False, "data": [], "count": 0, "error": str(e)}
 
 
-@router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
+@router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str):
-    conv = await db.get_conversation(conversation_id)
-    if not conv:
-        raise HTTPException(404, "Conversation not found")
-    return conv
+    try:
+        conv = await db.get_conversation(conversation_id)
+        if not conv:
+            return {"success": False, "data": None, "count": 0, "error": "Not found"}
+        return {"success": True, "data": conv, "count": 1}
+    except Exception as e:
+        return {"success": False, "data": None, "count": 0, "error": str(e)}
 
 
 @router.patch("/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, body: ConversationUpdate):
-    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    payload = body.model_dump(exclude_none=True)
     if not payload:
-        raise HTTPException(400, "No fields to update")
-    result = await db.update_conversation(conversation_id, payload)
-    if not result:
-        raise HTTPException(404, "Conversation not found")
-    return result
+        return {"success": False, "data": None, "count": 0, "error": "No fields to update"}
+    try:
+        result = await db.update_conversation(conversation_id, payload)
+        if not result:
+            return {"success": False, "data": None, "count": 0, "error": "Conversation not found"}
+        return {"success": True, "data": result, "count": 1}
+    except Exception as e:
+        return {"success": False, "data": None, "count": 0, "error": str(e)}

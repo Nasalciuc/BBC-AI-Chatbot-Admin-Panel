@@ -5,7 +5,7 @@
 | GET | /api/admin/stats | ✅ DONE |
 | GET | /api/admin/conversations | ✅ DONE |
 | GET | /api/admin/conversations/{id} | ✅ DONE |
-| PATCH | /api/admin/conversations/{id} | ❌ TODO |
+| PATCH | /api/admin/conversations/{id} | ✅ DONE |
 | GET | /api/admin/leads | ✅ DONE |
 | GET | /api/admin/leads/{id} | ❌ TODO |
 | PATCH | /api/admin/leads/{id} | ❌ TODO |
@@ -103,3 +103,102 @@ Get single conversation with messages.
 **ConversationDetail fields:** all ConversationListItem fields + messages (array of MessageItem), metadata
 
 **Error responses:** 401 (no auth)
+
+---
+
+## GET /api/admin/kb/categories
+
+List KB categories with entry counts.
+
+**Query Parameters:**
+| Param | Type | Default | Validation |
+|-------|------|---------|------------|
+| tunnel | string? | null | `sales\|support` |
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": [KBCategoryItem],
+  "count": 5
+}
+```
+
+**KBCategoryItem fields:** id, name, tunnel, icon, sort_order, entry_count
+
+**Error responses:** 401 (no auth), 422 (invalid params)
+
+---
+
+## GET /api/admin/kb/entries
+
+List KB entries with filters.
+
+**Query Parameters:**
+| Param | Type | Default | Validation |
+|-------|------|---------|------------|
+| tunnel | string? | null | |
+| category_id | string? | null | |
+| is_active | bool? | null | |
+| limit | int | 100 | 1–500 |
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": [KBEntryItem],
+  "count": 12
+}
+```
+
+**KBEntryItem fields:** id, category_id, title, content, tunnel, is_active, view_count, created_at, updated_at
+
+**Error responses:** 401 (no auth)
+
+---
+
+## POST /api/admin/kb/entries
+
+Create a new KB entry.
+
+**Request body:** `{ category_id, title, content, tunnel, is_active? }`
+
+**Response 201:**
+```json
+{
+  "success": true,
+  "data": KBEntryItem,
+  "count": 1
+}
+```
+
+**Error responses:** 401 (no auth), 422 (invalid body)
+
+---
+
+## PUT /api/admin/kb/entries/{id}
+
+Update an existing KB entry.
+
+**Request body:** `{ title?, content?, is_active?, category_id? }` (partial)
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": KBEntryItem,
+  "count": 1
+}
+```
+
+**Not found:**
+```json
+{
+  "success": false,
+  "data": null,
+  "count": 0,
+  "error": "KB entry not found"
+}
+```
+
+**Error responses:** 401 (no auth), 400 (no fields), 422 (invalid body)
