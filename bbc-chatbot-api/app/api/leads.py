@@ -10,15 +10,18 @@ router = APIRouter()
 
 @router.get("/leads")
 async def list_leads(
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, pattern="^(new|contacted|qualified|converted|lost)$"),
     tier:   Optional[str] = Query(None, pattern="^(gold|silver|bronze)$"),
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
     search: Optional[str] = Query(None, max_length=100),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    rows, total = await db.get_leads(status=status, tier=tier, tunnel=tunnel, search=search, limit=limit, offset=offset)
-    return {"data": rows, "total": total, "limit": limit, "offset": offset}
+    try:
+        rows, total = await db.get_leads(status=status, tier=tier, tunnel=tunnel, search=search, limit=limit, offset=offset)
+        return {"success": True, "data": rows, "count": total}
+    except Exception as e:
+        return {"success": False, "data": [], "count": 0, "error": str(e)}
 
 
 @router.get("/leads/{lead_id}", response_model=LeadFull)
