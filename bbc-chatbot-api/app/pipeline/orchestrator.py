@@ -121,20 +121,45 @@ async def _pipeline(
     skip_kb = intent in (Intent.GREETING, Intent.CLOSING, Intent.TALK_TO_AGENT)
 
     if not skip_kb:
-        keywords = extract_kb_keywords(message)
-        if keywords:
-            raw_results = await db.keyword_search_kb(keywords, tunnel=tunnel, limit=3)
-            kb_results = [
-                KBResult(
-                    entry_id=r["id"],
-                    title=r["title"],
-                    content=r["content"],
-                    score=1.0,
-                    source="keyword",
-                )
-                for r in raw_results
-            ]
-        logger.info(f"[{cid}] KB results: {len(kb_results)}")
+        # 5a. Qdrant vector search (server-side embedding)
+        if settings.qdrant_enabled and settings.qdrant_url:
+            try:
+                from app.db.qdrant import search_kb as qdrant_search_kb
+                raw_vector = await qdrant_search_kb(message, tunnel=tunnel, limit=3)
+                if raw_vector:
+                    kb_results = [
+                        KBResult(
+                            entry_id=r["id"],
+                            title=r["title"],
+                            content=r["content"],
+                            score=r.get("score", 0.8),
+                            source="vector",
+                        )
+                        for r in raw_vector
+                    ]
+                    logger.info(f"[{cid}] Qdrant results: {len(kb_results)}")
+            except Exception as e:
+                logger.warning(f"[{cid}] Qdrant failed, keyword fallback: {e}")
+                kb_results = []
+
+        # 5b. Keyword fallback
+        if not kb_results:
+            keywords = extract_kb_keywords(message)
+            if keywords:
+                raw_results = await db.keyword_search_kb(keywords, tunnel=tunnel, limit=3)
+                kb_results = [
+                    KBResult(
+                        entry_id=r["id"],
+                        title=r["title"],
+                        content=r["content"],
+                        score=1.0,
+                        source="keyword",
+                    )
+                    for r in raw_results
+                ]
+
+        kb_source = kb_results[0].source if kb_results else "none"
+        logger.info(f"[{cid}] KB: {len(kb_results)} results (source: {kb_source})")
 
     # ── STEP 6: GENERATE RESPONSE ────────────────────────────
     history = await db.get_recent_messages(cid, limit=5)

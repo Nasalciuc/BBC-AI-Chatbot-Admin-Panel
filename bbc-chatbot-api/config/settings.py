@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     qdrant_url: str = ""
     qdrant_api_key: str = ""
     qdrant_collection: str = "bbc_kb"
+    qdrant_enabled: bool = False
 
     # Redis (optional — empty = skip rate limiting)
     redis_url: str = ""
