@@ -104,6 +104,13 @@ TEMPLATES: dict[str, list[str]] = {
         "I'll connect you with a travel specialist right away. "
         "One moment please.",
     ],
+    "handoff_confirmed": [
+        "Absolutely — I'm connecting you with a specialist right now. "
+        "They'll have all the details from our conversation and will "
+        "reach out within 30 minutes.",
+        "I've flagged this for our team. A specialist will review "
+        "everything we've discussed and get back to you shortly.",
+    ],
     "after_hours": [
         "Our specialists are available 9 AM – 6 PM EST. "
         "Leave your number and we'll reach out first thing tomorrow.",

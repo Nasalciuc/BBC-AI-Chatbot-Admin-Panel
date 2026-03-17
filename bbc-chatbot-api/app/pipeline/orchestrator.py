@@ -95,6 +95,23 @@ async def _pipeline(
     intent = detect_intent(message, metadata)
     logger.info(f"[{cid}] Intent: {intent.value}")
 
+    # ── STEP 3.5: AGENT HANDOFF CHECK ────────────────────────
+    if intent == Intent.TALK_TO_AGENT and history:
+        agent_keywords = ["agent", "human", "person", "someone", "speak", "talk to", "representative", "real person"]
+        agent_request_count = sum(
+            1 for m in history
+            if m.get("role") == "user" and any(
+                kw in m.get("content", "").lower() for kw in agent_keywords
+            )
+        )
+        # Current message is the (agent_request_count + 1)th request
+        if agent_request_count >= 2:
+            try:
+                await db.update_conversation(cid, {"status": "needs_agent"})
+                logger.info(f"[{cid}] HANDOFF: {agent_request_count + 1} agent requests → status=needs_agent")
+            except Exception as e:
+                logger.warning(f"[{cid}] Failed to set needs_agent status: {e}")
+
     # ── STEP 4: ENTITY EXTRACTION ────────────────────────────
     extracted = extract_entities(message)
     entities: dict = {
