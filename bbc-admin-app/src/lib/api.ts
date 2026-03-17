@@ -14,7 +14,6 @@ import type {
   Lead,
   LeadsResponse,
 } from './types'
-import { MOCK_STATS } from './mock-data'
 
 // ── Config ────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -54,12 +53,8 @@ export async function apiFetch<T>(
 
 // ── Dashboard ─────────────────────────────────────────────────
 export async function getDashboardStats(): Promise<DashboardStats> {
-  try {
-    return await apiFetch<DashboardStats>('/api/dashboard/stats')
-  } catch {
-    console.warn('[api] dashboard/stats failed — using mock')
-    return MOCK_STATS
-  }
+  const res = await apiFetch<{ success: boolean; data: DashboardStats }>('/api/dashboard/stats')
+  return res.data
 }
 
 // ── Conversations ─────────────────────────────────────────────
@@ -70,19 +65,21 @@ export function getConversations(
   return apiFetch<ConversationsResponse>(`/api/conversations?${qs}`)
 }
 
-export function getConversation(id: string): Promise<Conversation> {
-  return apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`)
+export async function getConversation(id: string): Promise<Conversation> {
+  const res = await apiFetch<{ success: boolean; data: Conversation }>(`/api/conversations/${encodeURIComponent(id)}`)
+  return res.data
 }
 
-export function updateConversation(
+export async function updateConversation(
   id: string,
   data: Partial<Conversation>,
 ): Promise<Conversation> {
-  return apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {
+  const res = await apiFetch<{ success: boolean; data: Conversation }>(`/api/conversations/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+  return res.data
 }
 
 // ── Leads ─────────────────────────────────────────────────────
@@ -93,30 +90,33 @@ export function getLeads(
   return apiFetch<LeadsResponse>(`/api/leads?${qs}`)
 }
 
-export function getLeadFull(id: string): Promise<Lead> {
-  return apiFetch<Lead>(`/api/leads/${encodeURIComponent(id)}`)
+export async function getLeadFull(id: string): Promise<Lead> {
+  const res = await apiFetch<{ success: boolean; data: Lead }>(`/api/leads/${encodeURIComponent(id)}`)
+  return res.data
 }
 
-export function updateLeadStatus(
+export async function updateLeadStatus(
   id: string,
   status: string,
 ): Promise<Lead> {
-  return apiFetch<Lead>(`/api/leads/${encodeURIComponent(id)}/status`, {
+  const res = await apiFetch<{ success: boolean; data: Lead }>(`/api/leads/${encodeURIComponent(id)}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   })
+  return res.data
 }
 
-export function updateLead(
+export async function updateLead(
   id: string,
   data: Partial<Lead>,
 ): Promise<Lead> {
-  return apiFetch<Lead>(`/api/leads/${encodeURIComponent(id)}`, {
+  const res = await apiFetch<{ success: boolean; data: Lead }>(`/api/leads/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+  return res.data
 }
 
 // ── Knowledge Base ────────────────────────────────────────────
@@ -131,23 +131,25 @@ export function getKBEntries(
   return apiFetch<{ data: KBEntry[] }>(`/api/kb/entries?${qs}`)
 }
 
-export function createKBEntry(data: KBEntryCreate): Promise<KBEntry> {
-  return apiFetch<KBEntry>('/api/kb/entries', {
+export async function createKBEntry(data: KBEntryCreate): Promise<KBEntry> {
+  const res = await apiFetch<{ success: boolean; data: KBEntry }>('/api/kb/entries', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+  return res.data
 }
 
-export function updateKBEntry(
+export async function updateKBEntry(
   id: string,
   data: Partial<KBEntry>,
 ): Promise<KBEntry> {
-  return apiFetch<KBEntry>(`/api/kb/entries/${encodeURIComponent(id)}`, {
+  const res = await apiFetch<{ success: boolean; data: KBEntry }>(`/api/kb/entries/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+  return res.data
 }
 
 export function deleteKBEntry(id: string): Promise<void> {
