@@ -162,7 +162,7 @@ async def _pipeline(
         logger.info(f"[{cid}] KB: {len(kb_results)} results (source: {kb_source})")
 
     # ── STEP 6: GENERATE RESPONSE ────────────────────────────
-    history = await db.get_recent_messages(cid, limit=5)
+    history = await db.get_recent_messages(cid, limit=10)
     lead = await lead_service.get_or_create_lead(cid)
 
     today_cost = await db.get_today_cost()
