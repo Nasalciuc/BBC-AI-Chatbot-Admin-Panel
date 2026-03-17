@@ -16,6 +16,7 @@ const TUNNEL_STYLES: Record<string, string> = {
 }
 const STATUS_DOT: Record<string, string> = {
   active: 'bg-green-400', pending: 'bg-yellow-400', closed: 'bg-gray-300',
+  needs_agent: 'bg-red-400',
 }
 
 function timeAgo(iso: string): string {
@@ -87,7 +88,7 @@ export function Chats() {
               <div className="flex gap-2">
                 {[
                   { key: 'tunnel', val: tunnelFilter, setter: setTunnel, opts: ['', 'sales', 'support'] },
-                  { key: 'status', val: statusFilter, setter: setStatus, opts: ['', 'active', 'pending', 'closed'] },
+                  { key: 'status', val: statusFilter, setter: setStatus, opts: ['', 'active', 'needs_agent', 'pending', 'closed'] },
                 ].map(({ key, val, setter, opts }) => (
                   <div key={key} className="relative flex-1">
                     <select value={val} onChange={e => setter(e.target.value)}
@@ -100,6 +101,23 @@ export function Chats() {
               </div>
             </div>
 
+            {(() => {
+              const needsAgentCount = conversations.filter(c => c.status === 'needs_agent').length
+              return !statusFilter && needsAgentCount > 0 ? (
+                <div className="flex items-center gap-2 border-b border-red-100 bg-red-50 px-4 py-2.5">
+                  <span className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ${needsAgentCount > 0 ? 'animate-pulse' : ''}`}>
+                    {needsAgentCount}
+                  </span>
+                  <span className="text-sm font-medium text-red-800">
+                    conversation{needsAgentCount > 1 ? 's' : ''} need agent attention
+                  </span>
+                  <button onClick={() => setStatus('needs_agent')}
+                    className="ml-auto text-xs font-medium text-red-700 hover:underline">
+                    Show →
+                  </button>
+                </div>
+              ) : null
+            })()}
             <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
               {loading ? (
                 <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading...</div>

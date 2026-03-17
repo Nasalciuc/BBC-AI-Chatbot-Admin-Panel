@@ -13,7 +13,7 @@ export interface Conversation {
   id: string
   tunnel: 'sales' | 'support'
   mode: 'ai' | 'human' | 'waiting_for_agent'
-  status: 'active' | 'pending' | 'closed'
+  status: 'active' | 'pending' | 'closed' | 'needs_agent'
   visitor_name: string | null
   visitor_email: string | null
   visitor_phone: string | null
