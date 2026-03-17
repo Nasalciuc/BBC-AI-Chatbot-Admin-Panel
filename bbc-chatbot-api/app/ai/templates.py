@@ -154,6 +154,49 @@ TEMPLATES: dict[str, list[str]] = {
     "other:support": [
         "I'm here to help with your booking! What do you need assistance with?",
     ],
+
+    # ── SUPPORT V2 TEMPLATES ──────────────────────────────────
+
+    "seat_selection:support": [
+        "Seat selection depends on your airline and fare class. "
+        "Could you share your booking reference? "
+        "I'll check what options are available for your flight.",
+    ],
+    "meal_preference:support": [
+        "Most business class flights offer pre-order meal selection "
+        "24-72 hours before departure. Share your booking reference "
+        "and I'll check if meal selection is open for your flight.",
+    ],
+    "lounge_access:support": [
+        "Business class tickets include complimentary lounge access "
+        "at most major airports. Your boarding pass is all you need. "
+        "Would you like to know about a specific airport's lounge?",
+    ],
+    "check_in:support": [
+        "Business class passengers can check in online 24 hours before "
+        "departure, or use priority check-in counters at the airport. "
+        "Most airlines recommend arriving 3 hours before international flights.",
+    ],
+    "visa_info:support": [
+        "Visa requirements depend on your nationality and destination. "
+        "We recommend checking iatatravelcentre.com for the latest requirements. "
+        "Would you like help with anything else about your trip?",
+    ],
+    "travel_insurance:support": [
+        "We strongly recommend travel insurance for international business class trips. "
+        "Many premium credit cards include coverage. "
+        "Would you like a specialist to discuss your options?",
+    ],
+    "payment_methods:support": [
+        "We accept all major credit cards, wire transfers, and FlexPay installments. "
+        "Corporate accounts have monthly invoicing available. "
+        "Which payment method works best for you?",
+    ],
+    "receipt_request:support": [
+        "I can have our team send a receipt or invoice to your email. "
+        "Could you share your booking reference and the email address "
+        "for the receipt?",
+    ],
 }
 
 
