@@ -158,16 +158,23 @@ export function KpiCards(props: KpiCardsProps) {
                 New Leads Today
               </p>
               <p className="mt-1 text-3xl font-bold">{todayLeads}</p>
-              <div className="mt-1.5 flex items-center gap-1.5">
-                <Badge className="border border-amber-300 bg-amber-100 px-1.5 text-[10px] text-amber-800 hover:bg-amber-100">
-                  {leads_gold}G
-                </Badge>
-                <Badge className="border border-slate-300 bg-slate-100 px-1.5 text-[10px] text-slate-700 hover:bg-slate-100">
-                  {leads_silver}S
-                </Badge>
-                <Badge className="border border-orange-300 bg-orange-100 px-1.5 text-[10px] text-orange-800 hover:bg-orange-100">
-                  {leads_bronze}B
-                </Badge>
+              <div className="mt-1.5">
+                {leads_gold > 0 && (
+                  <a href="/leads" className="flex items-center gap-1.5 group">
+                    <span className="text-lg font-bold text-amber-700">{leads_gold}</span>
+                    <span className="text-xs font-medium text-amber-600 group-hover:underline">
+                      Gold leads — ready to call
+                    </span>
+                  </a>
+                )}
+                <div className="mt-1 flex items-center gap-1.5">
+                  <Badge className="border border-slate-300 bg-slate-100 px-1.5 text-[10px] text-slate-700 hover:bg-slate-100">
+                    {leads_silver}S
+                  </Badge>
+                  <Badge className="border border-orange-300 bg-orange-100 px-1.5 text-[10px] text-orange-800 hover:bg-orange-100">
+                    {leads_bronze}B
+                  </Badge>
+                </div>
               </div>
               {sparkData.length > 0 && (
                 <div className="mt-2">
