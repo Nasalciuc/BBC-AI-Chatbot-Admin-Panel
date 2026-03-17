@@ -9,6 +9,7 @@ import { ConnectionBanner } from '@/components/connection-banner'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { LeadDetailDrawer } from './components/lead-detail-drawer'
+import { ExportLeadsButton } from './components/export-leads-button'
 
 const TIER_STYLES: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
@@ -93,6 +94,8 @@ export function Leads() {
     }
   }
 
+  const sortedLeads = [...(leads || [])].sort((a, b) => (b.score || 0) - (a.score || 0))
+
   return (
     <>
       <Header>
@@ -110,10 +113,13 @@ export function Leads() {
               <h1 className="text-2xl font-bold text-[#0B1829]">Leads</h1>
               <p className="text-sm text-gray-500 mt-0.5">{total} total{usingMock && ' · mock data'}</p>
             </div>
-            <button onClick={fetchLeads}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-[#0B1829] bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition">
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Refresh
-            </button>
+            <div className="flex items-center gap-2">
+              <ExportLeadsButton leads={sortedLeads} />
+              <button onClick={fetchLeads}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-[#0B1829] bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Refresh
+              </button>
+            </div>
           </div>
 
           {/* Filters */}
@@ -163,7 +169,7 @@ export function Leads() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {leads.map(lead => (
+                  {sortedLeads.map(lead => (
                     <tr key={lead.id} className="hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setSelectedLeadId(lead.id)}>
                       <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
                       <td className="px-4 py-3">
