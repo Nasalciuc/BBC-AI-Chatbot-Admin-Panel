@@ -71,6 +71,24 @@ owner | admin | sales | support. Restricted = disabled + lock icon + tooltip. V1
 - Semantic tokens: `bg-background`, `text-foreground`, `text-muted-foreground`
 - NEVER bright/neon. NEVER heavy shadows. NEVER dark-first.
 
+## Current Sprint (updated daily)
+1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills)
+2. ✅ Auth dual-mode (Basic + Bearer)
+3. ✅ Leads/Conversations/KB response shape fixes
+4. ✅ Railway LIVE on correct repo (BBC-AI-Chatbot-Admin-Panel)
+5. ✅ Widget Preview page created
+6. 🔄 Vercel switching to correct repo
+7. ⬜ Verify ALL pages show real data on production
+8. ⬜ Dan demo (Dashboard + Leads + Conversations + KB + Widget)
+9. ⬜ Qdrant semantic search connection
+10. ⬜ System Prompt V2
+
+## Git Rules
+- One scope per commit: feat(api), fix(ui), fix(infra), docs
+- NEVER mix frontend + backend in one commit
+- ONLY remote: github.com/Nasalciuc/BBC-AI-Chatbot-Admin-Panel
+- Push after EVERY completed task, verify on production
+
 ## Never List
 
 1. NEVER `@faker-js/faker` | 2. NEVER `@clerk/*` | 3. NEVER React.FC / class components
