@@ -20,6 +20,15 @@ class Intent(str, Enum):
     GREETING = "greeting"
     CLOSING = "closing"
     TALK_TO_AGENT = "talk_to_agent"
+    # Support V2
+    SEAT_SELECTION = "seat_selection"
+    MEAL_PREFERENCE = "meal_preference"
+    LOUNGE_ACCESS = "lounge_access"
+    CHECK_IN = "check_in"
+    VISA_INFO = "visa_info"
+    TRAVEL_INSURANCE = "travel_insurance"
+    PAYMENT_METHODS = "payment_methods"
+    RECEIPT_REQUEST = "receipt_request"
     OTHER = "other"
 
 
@@ -31,6 +40,14 @@ INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.BOOKING_CHANGE, re.compile(r"(change|cancel|modify|reschedule|refund)", re.I)),
     (Intent.BAGGAGE_INFO, re.compile(r"(baggage|luggage|bag|carry.on|checked|weight)", re.I)),
     (Intent.PRICE_INQUIRY, re.compile(r"(price|cost|how much|rate|fare|cheap|expensive|afford)", re.I)),
+    (Intent.SEAT_SELECTION, re.compile(r"(seat|seating|window|aisle|seat\s*map|seat\s*select)", re.I)),
+    (Intent.MEAL_PREFERENCE, re.compile(r"(meal|food|diet|vegetarian|vegan|kosher|halal|gluten|pre.?order)", re.I)),
+    (Intent.LOUNGE_ACCESS, re.compile(r"(lounge|priority\s*pass|airport\s*club|vip\s*area)", re.I)),
+    (Intent.CHECK_IN, re.compile(r"(check.?in|checking\s+in|check\s+in|boarding\s+pass)", re.I)),
+    (Intent.VISA_INFO, re.compile(r"(visa|passport|travel\s*document|entry\s*require)", re.I)),
+    (Intent.TRAVEL_INSURANCE, re.compile(r"(insurance|coverage|protect|insured)", re.I)),
+    (Intent.PAYMENT_METHODS, re.compile(r"(payment|pay|credit\s*card|wire|transfer|install|invoice)", re.I)),
+    (Intent.RECEIPT_REQUEST, re.compile(r"(receipt|invoice|confirmation|proof\s*of)", re.I)),
     (Intent.NEW_BOOKING, re.compile(r"(book|booking|fly(?!\s+direct)|flying|flight|tickets?|travel|trips?|help|want|need)\b", re.I)),
     (Intent.ROUTE_INFO, re.compile(r"(route|airline|nonstop|direct|duration|how\s+long)", re.I)),
 ]
