@@ -9,9 +9,11 @@ class Settings(BaseSettings):
     debug: bool = False
     cors_origins: list[str] = [
         "https://buybusinessclass.com",
+        "https://www.buybusinessclass.com",
         "http://localhost:5173",
         "http://localhost:5174",
         "https://bbc-admin.vercel.app",
+        "https://admin-panel-error.vercel.app",
     ]
 
     # Claude

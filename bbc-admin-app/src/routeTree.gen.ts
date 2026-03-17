@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WidgetPreviewRouteImport } from './routes/widget-preview'
+import { Route as WidgetEmbedRouteImport } from './routes/widget-embed'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
@@ -39,6 +40,11 @@ import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenti
 const WidgetPreviewRoute = WidgetPreviewRouteImport.update({
   id: '/widget-preview',
   path: '/widget-preview',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WidgetEmbedRoute = WidgetEmbedRouteImport.update({
+  id: '/widget-embed',
+  path: '/widget-embed',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
@@ -176,6 +182,7 @@ const AuthenticatedErrorsErrorRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
+  '/widget-embed': typeof WidgetEmbedRoute
   '/widget-preview': typeof WidgetPreviewRoute
   '/settings': typeof AuthenticatedSettingsRouteRouteWithChildren
   '/forgot-password': typeof authForgotPasswordRoute
@@ -202,6 +209,7 @@ export interface FileRoutesByFullPath {
   '/users/': typeof AuthenticatedUsersIndexRoute
 }
 export interface FileRoutesByTo {
+  '/widget-embed': typeof WidgetEmbedRoute
   '/widget-preview': typeof WidgetPreviewRoute
   '/forgot-password': typeof authForgotPasswordRoute
   '/otp': typeof authOtpRoute
@@ -230,6 +238,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
+  '/widget-embed': typeof WidgetEmbedRoute
   '/widget-preview': typeof WidgetPreviewRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRouteRouteWithChildren
   '/(auth)/forgot-password': typeof authForgotPasswordRoute
@@ -260,6 +269,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/widget-embed'
     | '/widget-preview'
     | '/settings'
     | '/forgot-password'
@@ -286,6 +296,7 @@ export interface FileRouteTypes {
     | '/users/'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/widget-embed'
     | '/widget-preview'
     | '/forgot-password'
     | '/otp'
@@ -313,6 +324,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_authenticated'
+    | '/widget-embed'
     | '/widget-preview'
     | '/_authenticated/settings'
     | '/(auth)/forgot-password'
@@ -342,6 +354,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
+  WidgetEmbedRoute: typeof WidgetEmbedRoute
   WidgetPreviewRoute: typeof WidgetPreviewRoute
   authForgotPasswordRoute: typeof authForgotPasswordRoute
   authOtpRoute: typeof authOtpRoute
@@ -362,6 +375,13 @@ declare module '@tanstack/react-router' {
       path: '/widget-preview'
       fullPath: '/widget-preview'
       preLoaderRoute: typeof WidgetPreviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/widget-embed': {
+      id: '/widget-embed'
+      path: '/widget-embed'
+      fullPath: '/widget-embed'
+      preLoaderRoute: typeof WidgetEmbedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated': {
@@ -594,6 +614,7 @@ const AuthenticatedRouteRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
+  WidgetEmbedRoute: WidgetEmbedRoute,
   WidgetPreviewRoute: WidgetPreviewRoute,
   authForgotPasswordRoute: authForgotPasswordRoute,
   authOtpRoute: authOtpRoute,
