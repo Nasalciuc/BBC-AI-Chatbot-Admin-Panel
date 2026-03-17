@@ -121,6 +121,57 @@ TEMPLATES: dict[str, list[str]] = {
         "I'm sorry, something went wrong on our end. "
         "Please try again in a moment or call us directly.",
     ],
+
+    # ── NEW TEMPLATES (V2) ─────────────────────────────────────
+
+    "route_info_generic:sales": [
+        "I'd love to help with route information! "
+        "Which cities are you flying between?",
+        "Great question about routes! Tell me your departure city "
+        "and destination, and I'll find the best options.",
+    ],
+    "route_info_generic:support": [
+        "I can look up route details for you! "
+        "Could you share your booking reference?",
+    ],
+    "general_question:sales": [
+        "That's a great question! For the most accurate answer, "
+        "could you share a bit more about what you're looking for?",
+        "Happy to help! Are you looking for information about "
+        "routes, pricing, or the booking process?",
+    ],
+    "general_question:support": [
+        "I'd be happy to help! Could you give me a few more "
+        "details so I can point you in the right direction?",
+    ],
+    "other:sales": [
+        "I specialize in premium business class travel! "
+        "Are you looking for flights, routes, or pricing information?",
+    ],
+    "other:support": [
+        "I'm here to help with your booking! "
+        "Could you describe what you need assistance with?",
+    ],
+    "new_booking_no_route:sales": [
+        "Exciting — let's find you the perfect flight! "
+        "Where are you departing from, and where would you like to go?",
+        "I'd love to help you book! What's your departure city "
+        "and destination?",
+    ],
+    "returning_visitor:sales": [
+        "Welcome back, {name}! Ready to continue planning your trip?",
+        "Good to see you again, {name}! Shall we pick up where we left off?",
+    ],
+    "first_class_inquiry:sales": [
+        "We absolutely handle first class as well! First class typically "
+        "runs 60-120% more than business class. Would you like me to "
+        "check availability for your route?",
+    ],
+    "corporate_inquiry:sales": [
+        "We'd love to help with corporate travel! Groups of 4+ get "
+        "additional 10-20% discounts, a dedicated specialist, and "
+        "priority callback within 1 hour. What route is your team looking at?",
+    ],
 }
 
 
