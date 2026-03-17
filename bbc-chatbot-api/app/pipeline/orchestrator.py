@@ -195,7 +195,7 @@ async def _pipeline(
 
     # ── Auto-summarize every 5 messages ──────────────────────
     try:
-        total_msgs = len(history) + 2  # +2 for user msg + ai msg just saved
+        total_msgs = len(history) + 2
         if total_msgs >= 5 and total_msgs % 5 == 0:
             recent = await db.get_recent_messages(cid, limit=10)
             if recent:
@@ -209,12 +209,12 @@ async def _pipeline(
                     "budget, and current status (browsing/interested/ready to book)."
                 )
                 from app.ai.claude import call_haiku as _summarize
-                summary_text, sum_cost = await asyncio.to_thread(_summarize, summary_prompt, msg_text)
+                summary_text, sum_cost = _summarize(summary_prompt, msg_text)
                 if summary_text:
                     await db.update_conversation(cid, {"summary": summary_text})
                     logger.info(f"[{cid}] Summary updated ({total_msgs} msgs, cost=${sum_cost:.4f})")
     except Exception as e:
-        logger.warning(f"[{cid}] Summary generation failed (non-fatal): {e}")
+        logger.warning(f"[{cid}] Summary failed (non-fatal): {e}")
 
     # Record pipeline run (non-blocking, non-fatal)
     latency_ms = int((time.perf_counter() - pipeline_start) * 1000)
