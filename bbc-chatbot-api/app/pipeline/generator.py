@@ -150,6 +150,22 @@ def generate_response(
         if text:
             return GeneratedResponse(text=text, model_used="template")
 
+    # ── 4.5a-v2 Support-specific templates (V2) ──────────────
+    _support_template_intents = {
+        Intent.SEAT_SELECTION: "seat_selection",
+        Intent.MEAL_PREFERENCE: "meal_preference",
+        Intent.LOUNGE_ACCESS: "lounge_access",
+        Intent.CHECK_IN: "check_in",
+        Intent.VISA_INFO: "visa_info",
+        Intent.TRAVEL_INSURANCE: "travel_insurance",
+        Intent.PAYMENT_METHODS: "payment_methods",
+        Intent.RECEIPT_REQUEST: "receipt_request",
+    }
+    if intent in _support_template_intents:
+        text = get_template(_support_template_intents[intent], tunnel, visitor)
+        if text:
+            return GeneratedResponse(text=text, model_used="template")
+
     # ── 4.5b Smart routing — lead-aware template selection ────
     # SALES tunnel only. Guides conversation to collect missing lead data.
     # Uses CONVERSATION priority order (not scoring priority):
