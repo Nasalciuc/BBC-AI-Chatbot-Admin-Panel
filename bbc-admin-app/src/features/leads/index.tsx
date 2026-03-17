@@ -8,6 +8,7 @@ import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
+import { LeadDetailDrawer } from './components/lead-detail-drawer'
 
 const TIER_STYLES: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
@@ -52,6 +53,7 @@ export function Leads() {
   const [tierFilter, setTier]       = useState('')
   const [offset, setOffset]         = useState(0)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const LIMIT = 50
 
   const fetchLeads = useCallback(async () => {
@@ -162,7 +164,7 @@ export function Leads() {
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {leads.map(lead => (
-                    <tr key={lead.id} className="hover:bg-gray-50 transition-colors">
+                    <tr key={lead.id} className="hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setSelectedLeadId(lead.id)}>
                       <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-gray-900">
@@ -217,6 +219,11 @@ export function Leads() {
             </div>
           )}
         </div>
+
+        <LeadDetailDrawer
+          leadId={selectedLeadId}
+          onClose={() => setSelectedLeadId(null)}
+        />
       </Main>
     </>
   )
