@@ -8,12 +8,14 @@
 - **Purpose:** FastAPI — chat pipeline, admin CRUD, KB search, leads
 - **NOT:** Frontend (`bbc-admin-app`), QM system, customer widget
 
-## Current State (2026-03-16)
+## Current State (2026-03-17)
 
-- Deploy: Railway (`admin-panel-error-production.up.railway.app`), BEHIND HEAD
+- Deploy: Railway LIVE at HEAD, auto-deploy ON
 - Chat pipeline WORKS: intent → entity → KB → template/Haiku/Sonnet
-- GET /api/dashboard/stats WORKS
-- Admin CRUD endpoints: conversations, leads, kb — shape aligned, auth dual (Basic+Bearer)
+- Qdrant: CONNECTED, 384d MiniLM, 15 entries, feature flag ON
+- Templates: 33 keys
+- Summarization: every 5 messages
+- Admin CRUD endpoints: conversations, leads, kb, users — shape aligned, auth dual (Basic+Bearer)
 - Supabase: service_role REQUIRED. supabase-py is SYNC.
 
 ## Stack
@@ -32,17 +34,26 @@ Python 3.11 | FastAPI async | supabase-py (sync — wrap) | Claude Haiku+Sonnet 
 
 app/main.py | app/db/supabase.py | app/pipeline/(orchestrator,intent,entity,generator,lead_service) | app/ai/(claude,prompts,templates) | app/models/ | app/routes/
 
-## Current Sprint (updated daily)
-1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills)
-2. ✅ Auth dual-mode (Basic + Bearer)
-3. ✅ Leads/Conversations/KB response shape fixes
-4. ✅ Railway LIVE on correct repo (BBC-AI-Chatbot-Admin-Panel)
-5. ✅ Widget Preview page created
-6. 🔄 Vercel switching to correct repo
-7. ⬜ Verify ALL pages show real data on production
-8. ⬜ Dan demo (Dashboard + Leads + Conversations + KB + Widget)
-9. ⬜ Qdrant semantic search connection
-10. ⬜ System Prompt V2
+## Current Sprint (completed 2026-03-17 to 2026-03-21)
+1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills, Agent Teams)
+2. ✅ Auth dual-mode (Basic + Bearer), 97/97 tests
+3. ✅ Response shape fixes (leads, conversations, KB)
+4. ✅ Railway LIVE — correct repo, auto-deploy, Hobby plan pending
+5. ✅ Vercel LIVE — SPA routing, npm build, iframe headers
+6. ✅ Widget Preview + Widget Embed (/widget-embed for iframe)
+7. ✅ CORS updated for buybusinessclass.com
+8. ✅ Qdrant semantic search — MiniLM 384d FREE, 15 entries
+9. ✅ Lead detail drawer — click row → Sheet with conversation
+10. ✅ Templates 23→33 keys, auto-summarization every 5 msgs
+11. ✅ System Prompt V2 — few-shot, handoff, premium tone
+12. ✅ KB gap analysis script + README rewrite + user guide
+
+## Next Sprint (Week 2)
+1. ⬜ Widget pe buybusinessclass.com (Dan decision)
+2. ⬜ Railway Hobby upgrade (Dan — $5/mo)
+3. ⬜ Users page frontend (mock → real)
+4. ⬜ Dashboard polish (real data styling)
+5. ⬜ WhatsApp integration (Meta verification)
 
 ## Git Rules
 - One scope per commit: feat(api), fix(ui), fix(infra), docs

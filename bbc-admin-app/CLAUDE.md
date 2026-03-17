@@ -71,17 +71,26 @@ owner | admin | sales | support. Restricted = disabled + lock icon + tooltip. V1
 - Semantic tokens: `bg-background`, `text-foreground`, `text-muted-foreground`
 - NEVER bright/neon. NEVER heavy shadows. NEVER dark-first.
 
-## Current Sprint (updated daily)
-1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills)
-2. ✅ Auth dual-mode (Basic + Bearer)
-3. ✅ Leads/Conversations/KB response shape fixes
-4. ✅ Railway LIVE on correct repo (BBC-AI-Chatbot-Admin-Panel)
-5. ✅ Widget Preview page created
-6. 🔄 Vercel switching to correct repo
-7. ⬜ Verify ALL pages show real data on production
-8. ⬜ Dan demo (Dashboard + Leads + Conversations + KB + Widget)
-9. ⬜ Qdrant semantic search connection
-10. ⬜ System Prompt V2
+## Current Sprint (completed 2026-03-17 to 2026-03-21)
+1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills, Agent Teams)
+2. ✅ Auth dual-mode (Basic + Bearer), 97/97 tests
+3. ✅ Response shape fixes (leads, conversations, KB)
+4. ✅ Railway LIVE — correct repo, auto-deploy, Hobby plan pending
+5. ✅ Vercel LIVE — SPA routing, npm build, iframe headers
+6. ✅ Widget Preview + Widget Embed (/widget-embed for iframe)
+7. ✅ CORS updated for buybusinessclass.com
+8. ✅ Qdrant semantic search — MiniLM 384d FREE, 15 entries
+9. ✅ Lead detail drawer — click row → Sheet with conversation
+10. ✅ Templates 23→33 keys, auto-summarization every 5 msgs
+11. ✅ System Prompt V2 — few-shot, handoff, premium tone
+12. ✅ KB gap analysis script + README rewrite + user guide
+
+## Next Sprint (Week 2)
+1. ⬜ Widget pe buybusinessclass.com (Dan decision)
+2. ⬜ Railway Hobby upgrade (Dan — $5/mo)
+3. ⬜ Users page frontend (mock → real)
+4. ⬜ Dashboard polish (real data styling)
+5. ⬜ WhatsApp integration (Meta verification)
 
 ## Git Rules
 - One scope per commit: feat(api), fix(ui), fix(infra), docs
