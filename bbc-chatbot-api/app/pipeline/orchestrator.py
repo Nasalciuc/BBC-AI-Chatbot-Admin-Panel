@@ -49,9 +49,11 @@ async def process_message(
         fallback = get_template("ai_fallback", tunnel, visitor) or (
             "Let me connect you with a specialist right away."
         )
+        # DEBUG: include error type for remote diagnosis (remove before production)
+        debug_suffix = f" [DEBUG: {type(e).__name__}: {str(e)[:200]}]"
         return ChatResponse(
             conversation_id=cid,
-            message=fallback,
+            message=fallback + debug_suffix,
             type="template_fallback",
             model_used="template",
         )
