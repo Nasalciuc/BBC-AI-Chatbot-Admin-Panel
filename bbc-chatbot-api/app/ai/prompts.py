@@ -8,19 +8,23 @@ from app.models.lead import get_missing_fields, get_lead_tier
 from app.models.kb import KBResult
 
 # ── KB content sanitization (prevent indirect injection via poisoned entries) ──
-_KB_INJECTION_PATTERNS = [
+_KB_POISON_PATTERNS = [
     _re.compile(r"ignore\s+(all\s+)?previous", _re.I),
     _re.compile(r"(new|override|change)\s+instructions?", _re.I),
     _re.compile(r"you\s+(are|must|should)\s+now", _re.I),
     _re.compile(r"(system|original)\s+prompt", _re.I),
     _re.compile(r"respond\s+(only|always)\s+with", _re.I),
     _re.compile(r"<\|?(system|user|assistant)\|?>", _re.I),
+    _re.compile(r"from\s+now\s+on", _re.I),
+    _re.compile(r"\[INST\]|\[/INST\]|<<SYS>>|<</SYS>>", _re.I),
 ]
 
 
 def _sanitize_kb_content(text: str) -> str:
-    for p in _KB_INJECTION_PATTERNS:
-        text = p.sub("[filtered]", text)
+    """Remove potential injection patterns from KB content before prompt injection.
+    Prevents indirect prompt injection via poisoned KB entries (OWASP LLM04/LLM08)."""
+    for p in _KB_POISON_PATTERNS:
+        text = p.sub("[removed]", text)
     return text
 
 # ── Classifier prompt (used by claude.classify_intent) ────────
