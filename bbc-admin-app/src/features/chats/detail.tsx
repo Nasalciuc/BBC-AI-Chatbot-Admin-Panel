@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check } from 'lucide-react'
 import type { Conversation, Message } from '@/lib/types'
-import { MOCK_MESSAGES, MOCK_CONVERSATIONS } from '@/lib/mock-data'
 import { getConversation } from '@/lib/api'
 
 interface Props { conversationId: string; onClose: () => void; usingMock?: boolean }
@@ -28,10 +27,9 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
         if (usingMock) throw new Error('mock mode')
         const data = await getConversation(conversationId)
         if (!cancelled) setConv(data)
-      } catch {
-        const mockConv = MOCK_CONVERSATIONS.find(c => c.id === conversationId)
-        const mockMsgs = MOCK_MESSAGES[conversationId] ?? []
-        if (!cancelled) setConv(mockConv ? { ...mockConv, messages: mockMsgs } : null)
+      } catch (err) {
+        console.error('[chat-detail] API error:', err)
+        if (!cancelled) setConv(null)
       } finally { if (!cancelled) setLoading(false) }
     }
     load()

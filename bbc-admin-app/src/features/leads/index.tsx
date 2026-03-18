@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, Filter, Phone, Mail, Plane, ChevronDown, RefreshCw } from 'lucide-react'
 import type { Lead } from '@/lib/types'
-import { MOCK_LEADS } from '@/lib/mock-data'
 import { getLeads, updateLeadStatus } from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -66,16 +65,9 @@ export function Leads() {
       if (tierFilter)   params.tier = tierFilter
       const json = await getLeads(params)
       setLeads(json.data); setTotal(json.total); setUsingMock(false)
-    } catch {
-      // Fallback to mock data when API is unreachable
-      let mock = MOCK_LEADS
-      if (statusFilter) mock = mock.filter(l => l.status === statusFilter)
-      if (tierFilter)   mock = mock.filter(l => l.tier === tierFilter)
-      if (search)       mock = mock.filter(l =>
-        [l.visitor_name, l.visitor_email, l.visitor_phone, l.origin_code, l.destination_code]
-          .some(v => v?.toLowerCase().includes(search.toLowerCase()))
-      )
-      setLeads(mock); setTotal(mock.length); setUsingMock(true)
+    } catch (err) {
+      console.error('[leads] API error:', err)
+      setLeads([]); setTotal(0); setUsingMock(false)
     } finally { setLoading(false) }
   }, [search, statusFilter, tierFilter, offset])
 

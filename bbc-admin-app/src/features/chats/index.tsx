@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
-import { MOCK_CONVERSATIONS } from '@/lib/mock-data'
 import { getConversations } from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -48,15 +47,9 @@ export function Chats() {
       if (statusFilter) params.status = statusFilter
       const json = await getConversations(params)
       setConversations(json.data); setTotal(json.total); setUsingMock(false)
-    } catch {
-      let mock = MOCK_CONVERSATIONS
-      if (tunnelFilter) mock = mock.filter(c => c.tunnel === tunnelFilter)
-      if (statusFilter) mock = mock.filter(c => c.status === statusFilter)
-      if (search)       mock = mock.filter(c =>
-        [c.visitor_name, c.visitor_email, c.visitor_phone]
-          .some(v => v?.toLowerCase().includes(search.toLowerCase()))
-      )
-      setConversations(mock); setTotal(mock.length); setUsingMock(true)
+    } catch (err) {
+      console.error('[chats] API error:', err)
+      setConversations([]); setTotal(0); setUsingMock(false)
     } finally { setLoading(false) }
   }, [search, tunnelFilter, statusFilter])
 

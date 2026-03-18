@@ -4,7 +4,7 @@ import {
   Plus, Edit2, Trash2, Eye, EyeOff, X, Save, AlertCircle,
 } from 'lucide-react'
 import type { KBCategory, KBEntry, KBEntryCreate } from '@/lib/types'
-import { MOCK_KB_CATEGORIES, MOCK_KB_ENTRIES } from '@/lib/mock-data'
+
 import {
   getKBCategories,
   getKBEntries,
@@ -187,10 +187,9 @@ export function KnowledgeBase() {
       setCategories(catsJson.data)
       setEntries(entriesJson.data)
       setUsingMock(false)
-    } catch {
-      setCategories(MOCK_KB_CATEGORIES)
-      setEntries(MOCK_KB_ENTRIES)
-      setUsingMock(true)
+    } catch (err) {
+      console.error('[kb] API error:', err)
+      setCategories([]); setEntries([]); setUsingMock(false)
     } finally { setLoading(false) }
   }, [])
 
