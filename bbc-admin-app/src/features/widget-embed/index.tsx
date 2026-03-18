@@ -1,6 +1,9 @@
 import { BBCChatWidget } from '../widget-preview/components/bbc-chat-widget'
 
 export default function WidgetEmbed() {
+  const params = new URLSearchParams(window.location.search)
+  const tunnel = params.get('tunnel') === 'support' ? 'support' as const : 'sales' as const
+
   return (
     <div style={{
       width: '100vw',
@@ -10,7 +13,7 @@ export default function WidgetEmbed() {
       padding: 0,
       background: '#fff',
     }}>
-      <BBCChatWidget />
+      <BBCChatWidget tunnel={tunnel} />
     </div>
   )
 }

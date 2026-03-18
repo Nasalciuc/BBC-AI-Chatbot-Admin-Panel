@@ -4,7 +4,11 @@ import './bbc-chat-widget.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-export function BBCChatWidget() {
+interface BBCChatWidgetProps {
+  tunnel?: 'sales' | 'support'
+}
+
+export function BBCChatWidget({ tunnel = 'sales' }: BBCChatWidgetProps) {
   const conversationIdRef = useRef<string | null>(null)
 
   const handleUserMessage = useCallback(async (params: Params) => {
@@ -23,7 +27,7 @@ export function BBCChatWidget() {
             phone: null,
             source: 'widget-preview',
           },
-          tunnel: 'sales',
+          tunnel,
         }),
       })
 
@@ -45,7 +49,9 @@ export function BBCChatWidget() {
 
   const flow: Flow = {
     start: {
-      message: 'Welcome! Where are you looking to fly in business class?',
+      message: tunnel === 'support'
+        ? 'Hi! How can we help you today?'
+        : 'Welcome! Where are you looking to fly in business class?',
       path: 'userMessage',
     },
     userMessage: {
