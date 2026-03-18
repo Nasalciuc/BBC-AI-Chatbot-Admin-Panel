@@ -23,11 +23,23 @@ class GeneratedResponse:
     route_card: Optional[RouteCard] = None
 
 
-def _has_route_data(kb_results: list[KBResult]) -> Optional[KBResult]:
-    """Check if any KB result is a route entry (by content heuristic)."""
+def _has_route_data(kb_results: list[KBResult], entities: dict | None = None) -> Optional[KBResult]:
+    """Check if any KB result is a relevant route entry for the user's query."""
     route_keywords = ["nonstop", "duration", "airlines", "round trip", "fares typically"]
     for result in kb_results:
         if any(w in result.content.lower() for w in route_keywords):
+            # Relevance check: if user specified origin/destination,
+            # the KB entry must mention at least one of them.
+            if entities:
+                origin = (entities.get("origin") or "").lower()
+                destination = (entities.get("destination") or "").lower()
+                content_lower = result.content.lower()
+                title_lower = result.title.lower()
+                if origin or destination:
+                    origin_match = origin and (origin in content_lower or origin in title_lower)
+                    dest_match = destination and (destination in content_lower or destination in title_lower)
+                    if not origin_match and not dest_match:
+                        continue  # KB entry doesn't match user's route
             return result
     return None
 
@@ -113,7 +125,7 @@ def generate_response(
 
     # 4. Route card (NEW_BOOKING or ROUTE_INFO with KB data)
     if intent in (Intent.NEW_BOOKING, Intent.ROUTE_INFO) and kb_results:
-        route_kb = _has_route_data(kb_results)
+        route_kb = _has_route_data(kb_results, entities)
         if route_kb:
             route_card = _build_route_card_from_kb(route_kb)
             if route_card:

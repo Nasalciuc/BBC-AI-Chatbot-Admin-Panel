@@ -215,7 +215,12 @@ async def _pipeline(
     logger.info(f"[{cid}] Generated via {gen.model_used} | cost=${gen.cost:.4f}")
 
     # ── STEP 7: VALIDATE OUTPUT ──────────────────────────────
-    validated_text = validate_response(gen.text)
+    # Skip validation for template responses (trusted content).
+    # Only validate AI-generated text (Haiku/Sonnet).
+    if gen.model_used == "template":
+        validated_text = gen.text
+    else:
+        validated_text = validate_response(gen.text)
 
     # ── STEP 8: DELIVER ──────────────────────────────────────
     # Refusal detection (prevents magic string persistent DoS)

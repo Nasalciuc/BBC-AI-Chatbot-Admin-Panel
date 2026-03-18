@@ -85,36 +85,43 @@ def _call_model(
     max_tokens: int,
     temperature: float,
 ) -> tuple[Optional[str], float]:
-    """Internal: make a single Claude API call with logging. Returns (text, cost)."""
+    """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost)."""
     start = time.time()
-    try:
-        response = _get_client().messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-            timeout=settings.claude_timeout,
-        )
+    logger.info(f"Claude START | model={model} max_tokens={max_tokens}")
 
-        elapsed = round(time.time() - start, 3)
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
-        cost = _estimate_cost(model, input_tokens, output_tokens)
-        text = response.content[0].text.strip()
+    for attempt in range(2):
+        try:
+            response = _get_client().messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                timeout=settings.claude_timeout,
+            )
 
-        logger.info(
-            f"Claude | model={model} in={input_tokens} out={output_tokens} "
-            f"cost=${cost:.6f} time={elapsed}s"
-        )
-        return text, cost
+            elapsed = round(time.time() - start, 3)
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens
+            cost = _estimate_cost(model, input_tokens, output_tokens)
+            text = response.content[0].text.strip()
 
-    except anthropic.APITimeoutError:
-        logger.error(f"Claude timeout ({settings.claude_timeout}s) model={model}")
-        return None, 0.0
-    except anthropic.APIError as e:
-        logger.error(f"Claude API error: {e}")
-        return None, 0.0
-    except Exception as e:
-        logger.error(f"Claude unexpected error: {e}")
-        return None, 0.0
+            logger.info(
+                f"Claude SUCCESS | model={model} in={input_tokens} out={output_tokens} "
+                f"cost=${cost:.6f} time={elapsed}s"
+            )
+            return text, cost
+
+        except anthropic.APITimeoutError:
+            logger.error(f"Claude timeout ({settings.claude_timeout}s) model={model} attempt={attempt + 1}/2")
+            if attempt == 0:
+                continue  # retry once
+            return None, 0.0
+        except anthropic.APIError as e:
+            logger.error(f"Claude API error: {e} | model={model} | status={getattr(e, 'status_code', 'N/A')}")
+            return None, 0.0
+        except Exception as e:
+            logger.error(f"Claude unexpected error: {type(e).__name__}: {e} | model={model}")
+            return None, 0.0
+
+    return None, 0.0
