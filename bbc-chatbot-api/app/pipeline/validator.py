@@ -85,4 +85,7 @@ def validate_response(text: str) -> str:
     if not result.strip():
         return EMPTY_FALLBACK
 
+    # 6. XSS prevention: strip any HTML tags from AI output
+    result = re.sub(r"<[^>]+>", "", result)
+
     return result

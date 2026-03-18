@@ -265,6 +265,11 @@ def generate_response(
     user_messages = [m for m in history if m.get("role") == "user"]
     use_sonnet = len(user_messages) >= 5 or intent == Intent.BOOKING_CHANGE
 
+    # Wallet protection: suspicious long messages force Haiku
+    if use_sonnet and len(entities.get("_raw_message", "")) > 1500:
+        logger.info(f"Wallet protection: long message ({len(entities['_raw_message'])} chars) → forcing Haiku")
+        use_sonnet = False
+
     if use_sonnet:
         # 5a. Sonnet for complex conversations
         logger.info("Using Sonnet (complex conversation)")

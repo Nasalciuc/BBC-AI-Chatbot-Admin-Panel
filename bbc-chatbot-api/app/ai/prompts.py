@@ -147,7 +147,7 @@ def build_conversational_prompt(
         recent = history[-10:] if len(history) > 10 else history
         for msg in recent:
             role_label = "Visitor" if msg.get("role") == "user" else "You"
-            conv_lines.append(f"{role_label}: {msg.get('content', '')}")
+            conv_lines.append(f"{role_label}: {_sanitize_kb_content(msg.get('content', ''))}")
         sections.append("\n".join(conv_lines))
 
     return "\n\n".join(sections)

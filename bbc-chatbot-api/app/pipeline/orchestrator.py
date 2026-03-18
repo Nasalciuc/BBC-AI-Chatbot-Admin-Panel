@@ -215,6 +215,19 @@ async def _pipeline(
     validated_text = validate_response(gen.text)
 
     # ── STEP 8: DELIVER ──────────────────────────────────────
+    # Refusal detection (prevents magic string persistent DoS)
+    _refusal_signals = [
+        "i can't assist", "i cannot assist", "i'm not able to",
+        "i can't help with", "i cannot help with",
+        "i must decline", "i'm unable to",
+    ]
+    _is_refusal = any(s in validated_text.lower() for s in _refusal_signals)
+    if _is_refusal and len(validated_text) < 100:
+        logger.warning(f"[{cid}] Claude refusal detected — using fallback")
+        validated_text = get_template("ai_fallback", tunnel, visitor) or (
+            "Let me connect you with a specialist who can help with that right away."
+        )
+
     ai_msg = await conversation_service.add_message(
         conversation_id=cid,
         role="ai",
