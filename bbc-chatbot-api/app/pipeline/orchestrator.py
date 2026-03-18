@@ -95,6 +95,20 @@ async def _pipeline(
     intent = detect_intent(message, metadata)
     logger.info(f"[{cid}] Intent: {intent.value}")
 
+    # ── STEP 3.1: MULTI-TURN PROBE DETECTION ─────────────────
+    _probe_keywords = [
+        "guidelines", "instructions", "rules", "system prompt",
+        "what are you", "how do you work", "who made you",
+        "what model", "what version", "anthropic", "claude",
+    ]
+    if history:
+        probe_count = sum(
+            1 for m in history if m.get("role") == "user" and
+            any(kw in m.get("content", "").lower() for kw in _probe_keywords)
+        )
+        if probe_count >= 3:
+            logger.warning(f"[{cid}] Multi-turn probe detected ({probe_count} probes)")
+
     # ── STEP 3.5: AGENT HANDOFF CHECK ────────────────────────
     if intent == Intent.TALK_TO_AGENT and history:
         agent_keywords = ["agent", "human", "person", "someone", "speak", "talk to", "representative", "real person"]
