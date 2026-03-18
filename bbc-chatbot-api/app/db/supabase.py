@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _client: Optional[Client] = None
 
 # Dedicated thread pool for sync supabase-py calls (D-01)
-_executor = ThreadPoolExecutor(max_workers=5)
+_executor = ThreadPoolExecutor(max_workers=20)
 
 
 async def _run_sync(fn):

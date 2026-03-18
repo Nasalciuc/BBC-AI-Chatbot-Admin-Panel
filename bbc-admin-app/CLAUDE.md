@@ -9,14 +9,14 @@
 - **NOT:** Customer widget, backend API (`bbc-chatbot-api`), QM system
 - **Users:** Dan (owner/marketing), Maria (sales), Scaler (dev), Nasalciuc (dev)
 
-## Current State (2026-03-16)
+## Current State (2026-03-18)
 
-- Frontend: `admin-panel-error.vercel.app` (Vercel)
-- Backend: `admin-panel-error-production.up.railway.app` (Railway, BEHIND HEAD)
-- **All pages MOCK except Dashboard** (getDashboardStats from API)
-- Clerk REMOVED (was in package.json, never used)
-- Auth: custom JWT, cookie `bbc_admin_token`
-- Supabase: `service_role` key required, RLS active
+- Frontend: admin-panel-error.vercel.app (Vercel, LIVE)
+- Backend: admin-panel-error-production.up.railway.app (Railway, LIVE at HEAD)
+- Pages REAL: Dashboard, Leads (sort+CSV+drawer), Conversations, KB, Widget Preview, Widget Embed
+- Pages MOCK: Users (backend endpoint EXISTS), Tasks (no backend)
+- Auth: JWT cookie `bbc_admin_token`, Basic+Bearer to backend
+- Mock fallback: REMOVED from api.ts — errors propagate to React Query
 
 ## Stack
 
@@ -71,26 +71,16 @@ owner | admin | sales | support. Restricted = disabled + lock icon + tooltip. V1
 - Semantic tokens: `bg-background`, `text-foreground`, `text-muted-foreground`
 - NEVER bright/neon. NEVER heavy shadows. NEVER dark-first.
 
-## Current Sprint (completed 2026-03-17 to 2026-03-21)
-1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills, Agent Teams)
-2. ✅ Auth dual-mode (Basic + Bearer), 97/97 tests
-3. ✅ Response shape fixes (leads, conversations, KB)
-4. ✅ Railway LIVE — correct repo, auto-deploy, Hobby plan pending
-5. ✅ Vercel LIVE — SPA routing, npm build, iframe headers
-6. ✅ Widget Preview + Widget Embed (/widget-embed for iframe)
-7. ✅ CORS updated for buybusinessclass.com
-8. ✅ Qdrant semantic search — MiniLM 384d FREE, 15 entries
-9. ✅ Lead detail drawer — click row → Sheet with conversation
-10. ✅ Templates 23→33 keys, auto-summarization every 5 msgs
-11. ✅ System Prompt V2 — few-shot, handoff, premium tone
-12. ✅ KB gap analysis script + README rewrite + user guide
+## Completed Work
+- Sprint 1 (5 days): 20 deliverables — infra, widget, Qdrant, drawer, prompts, templates, docs
+- Week 2 (in progress): support KB expansion (30 entries), support intents (8), CSV export, Gold KPI, security hardening (S1-S3), handoff mechanism
+- Security: 4-layer defense (sanitizer 29 patterns + system prompt + validator + budget guard) + V2 tool executor foundation
 
-## Next Sprint (Week 2)
-1. ⬜ Widget pe buybusinessclass.com (Dan decision)
-2. ⬜ Railway Hobby upgrade (Dan — $5/mo)
-3. ⬜ Users page frontend (mock → real)
-4. ⬜ Dashboard polish (real data styling)
-5. ⬜ WhatsApp integration (Meta verification)
+## Next Actions
+1. ⬜ Railway Trial → Hobby (Dan — $5/mo, ~20 days remaining)
+2. ⬜ Widget embed on buybusinessclass.com (Dan — instructions in docs/WIDGET-EMBED-GUIDE.md)
+3. ⬜ UptimeRobot monitoring (/health every 5 min)
+4. ⬜ Post-launch: iterate based on real pipeline_runs data
 
 ## Git Rules
 - One scope per commit: feat(api), fix(ui), fix(infra), docs

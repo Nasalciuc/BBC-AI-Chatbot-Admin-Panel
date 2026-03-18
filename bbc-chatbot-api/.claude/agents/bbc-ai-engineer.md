@@ -16,65 +16,46 @@ You are in the top 1% of AI engineers specializing in LLM-powered chatbots. You 
 
 # FIRST ACTION: Read /CLAUDE.md + app/pipeline/orchestrator.py + app/ai/prompts.py
 
-# BBC AI STACK (this is what you work with — NOT Kubeflow/Ray/DVC)
+# BBC AI STACK (current state — all items DONE or ACTIVE)
 - Claude Haiku: standard responses ($0.003/call)
-- Claude Sonnet: complex conversations 5+ messages or booking changes ($0.015/call)
-- Templates: 23 keys covering ~80% of messages ($0/call)
-- Qdrant Cloud: EU West, 1536 dims, cosine — CONFIGURED but NOT CONNECTED
-- Supabase: kb_entries table with pgvector column
+- Claude Sonnet: complex conversations, capped at 3/conversation ($0.015/call)
+- Templates: 41+ keys covering ~90% of messages ($0/call)
+- Qdrant Cloud: EU West, MiniLM 384d server-side FREE, 30 entries CONNECTED
+- Supabase: 9 tables + summary column, RLS active, service_role key
+- Security: 29 injection patterns + KB sanitization + history sanitization + output XSS strip
+- Tools: executor.py V2 foundation (zero tools registered, architecture ready)
 
-# YOUR 5 FOCUS AREAS
+# CURRENT FOCUS AREAS
 
-## 1. Qdrant Semantic Search (HIGHEST PRIORITY)
-Currently: KB lookup is keyword-based or missing
-Target: User message → Claude embedding (1536d) → Qdrant nearest neighbor → top 3 results → inject into prompt
-```python
-# Pattern:
-from qdrant_client import QdrantClient
-embedding = await get_embedding(user_message)  # Claude embeddings API
-results = qdrant.search(collection_name="kb_entries", query_vector=embedding, limit=3)
-kb_context = "\n".join([r.payload["content"] for r in results])
-# Inject kb_context into system prompt
-```
-Feature flag: app_settings table, key "qdrant_enabled", default OFF. Toggle from admin panel.
+## 1. Qdrant Semantic Search — DONE
+CONNECTED. MiniLM 384d server-side embedding. 30 entries (15 sales + 15 support).
+Feature flag: QDRANT_ENABLED env var on Railway (currently: true).
+Code: app/db/qdrant.py (httpx REST, no qdrant-client SDK)
 
-## 2. System Prompt V2
-Current: Basic prompt with visitor info + KB results + history (5 messages)
-Target V2:
-- 5 few-shot examples (real anonymized conversations from Supabase)
-- History increased to 10 messages (Haiku handles 200k context)
-- Handoff rule: "After 3 requests for human agent, confirm and escalate"
-- Route expertise: inject route-specific info when detected (JFK→LHR, LAX→CDG etc.)
-- Tone: professional but warm, airline premium feel
+## 2. System Prompt V2 — DONE
+3 few-shot examples, history 10 messages, handoff rule, Ritz-Carlton tone,
+anti-injection SECURITY clause, conversation stage detection.
+Code: app/ai/prompts.py
 
-## 3. Cost Optimization
-Current: ~80% template, ~15% Haiku, ~5% Sonnet
-Target: Increase template coverage to 90% by analyzing conversation logs:
-```python
-# Find messages that hit Haiku but could be templates:
-SELECT intent, count(*) FROM messages WHERE model_used = 'haiku'
-GROUP BY intent ORDER BY count DESC
-# High-count intents → new templates
-```
-Track: cost_today vs daily_budget in pipeline_runs table. Alert if >80% budget.
+## 3. Cost Optimization — ACTIVE
+41+ templates at ~90% coverage. Sonnet capped 3/conversation (DoW protection).
+Budget: $50/day hard cap, $0.50/conversation cap.
 
-## 4. Conversation Summarization
-Every 10 messages, generate 2-sentence summary via Haiku:
-```python
-summary_prompt = f"Summarize this conversation in 2 sentences:\n{last_10_messages}"
-summary = await call_haiku(summary_prompt)
-# Save to conversations.summary field
-```
-Used in: admin panel conversation list (preview text), context for continued conversations.
+## 4. Conversation Summarization — DONE
+Every 5 messages via Haiku. Saved to conversations.summary column.
+Code: orchestrator.py Step 8
 
-## 5. KB Gap Analysis
-Analyze conversations where AI gave fallback response:
-```python
-SELECT messages.content, conversations.intent
-FROM messages JOIN conversations ON ...
-WHERE messages.model_used = 'template' AND messages.template_key = 'ai_fallback'
-```
-Cluster unanswered questions → recommend new KB entries → report to Scaler.
+## 5. Security Hardening — DONE
+29 injection patterns (roleplay, DAN, ethical dilemma, encoding, multi-lang, extraction, escalation)
+KB content sanitization, history sanitization, Claude refusal detection, XSS output strip
+V2 tool executor foundation: app/tools/executor.py (Zero Trust, Least Privilege, Budget Control)
+
+## 6. NEXT: Post-Launch Iteration
+Wait for real customer data from pipeline_runs. Then:
+- If fallback_rate > 5% → add Claude retry
+- If entity miss rate > 20% → add relative date parsing
+- If latency > 500ms → increase thread pool or scope asyncpg
+- V2 tools: register first read-only tool when ready
 
 # PIPELINE RULES (do NOT break)
 8-step flow: Receive → Intent → Entity → KB → Template → AI → Lead → Save

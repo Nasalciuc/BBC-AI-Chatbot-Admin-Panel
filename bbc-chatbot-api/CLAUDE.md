@@ -8,15 +8,17 @@
 - **Purpose:** FastAPI — chat pipeline, admin CRUD, KB search, leads
 - **NOT:** Frontend (`bbc-admin-app`), QM system, customer widget
 
-## Current State (2026-03-17)
+## Current State (2026-03-18)
 
-- Deploy: Railway LIVE at HEAD, auto-deploy ON
-- Chat pipeline WORKS: intent → entity → KB → template/Haiku/Sonnet
-- Qdrant: CONNECTED, 384d MiniLM, 15 entries, feature flag ON
-- Templates: 33 keys
-- Summarization: every 5 messages
-- Admin CRUD endpoints: conversations, leads, kb, users — shape aligned, auth dual (Basic+Bearer)
-- Supabase: service_role REQUIRED. supabase-py is SYNC.
+- Deploy: Railway LIVE at HEAD, auto-deploy ON, Trial plan (~20 days remaining)
+- Pipeline: 8 steps + 3 security sub-steps (3.5 handoff, 3.6 probe, 7.5 refusal)
+- Qdrant: CONNECTED, MiniLM 384d server-side FREE, 30 entries, feature flag ON
+- Templates: 41+ keys (~90% coverage)
+- Intents: 22 (14 original + 8 support V2)
+- Security: 29 injection patterns, KB sanitization, history sanitization, XSS strip, Sonnet DoW cap
+- Summarization: every 5 messages (Haiku)
+- Tools: executor.py V2 foundation (zero tools active)
+- ThreadPool: 20 workers (upgraded from 5)
 
 ## Stack
 
@@ -34,26 +36,16 @@ Python 3.11 | FastAPI async | supabase-py (sync — wrap) | Claude Haiku+Sonnet 
 
 app/main.py | app/db/supabase.py | app/pipeline/(orchestrator,intent,entity,generator,lead_service) | app/ai/(claude,prompts,templates) | app/models/ | app/routes/
 
-## Current Sprint (completed 2026-03-17 to 2026-03-21)
-1. ✅ SDD governance (CLAUDE.md, 10 agents, 3 skills, Agent Teams)
-2. ✅ Auth dual-mode (Basic + Bearer), 97/97 tests
-3. ✅ Response shape fixes (leads, conversations, KB)
-4. ✅ Railway LIVE — correct repo, auto-deploy, Hobby plan pending
-5. ✅ Vercel LIVE — SPA routing, npm build, iframe headers
-6. ✅ Widget Preview + Widget Embed (/widget-embed for iframe)
-7. ✅ CORS updated for buybusinessclass.com
-8. ✅ Qdrant semantic search — MiniLM 384d FREE, 15 entries
-9. ✅ Lead detail drawer — click row → Sheet with conversation
-10. ✅ Templates 23→33 keys, auto-summarization every 5 msgs
-11. ✅ System Prompt V2 — few-shot, handoff, premium tone
-12. ✅ KB gap analysis script + README rewrite + user guide
+## Completed Work
+- Sprint 1 (5 days): 20 deliverables — infra, widget, Qdrant, drawer, prompts, templates, docs
+- Week 2 (in progress): support KB expansion (30 entries), support intents (8), CSV export, Gold KPI, security hardening (S1-S3), handoff mechanism
+- Security: 4-layer defense (sanitizer 29 patterns + system prompt + validator + budget guard) + V2 tool executor foundation
 
-## Next Sprint (Week 2)
-1. ⬜ Widget pe buybusinessclass.com (Dan decision)
-2. ⬜ Railway Hobby upgrade (Dan — $5/mo)
-3. ⬜ Users page frontend (mock → real)
-4. ⬜ Dashboard polish (real data styling)
-5. ⬜ WhatsApp integration (Meta verification)
+## Next Actions
+1. ⬜ Railway Trial → Hobby (Dan — $5/mo, ~20 days remaining)
+2. ⬜ Widget embed on buybusinessclass.com (Dan — instructions in docs/WIDGET-EMBED-GUIDE.md)
+3. ⬜ UptimeRobot monitoring (/health every 5 min)
+4. ⬜ Post-launch: iterate based on real pipeline_runs data
 
 ## Git Rules
 - One scope per commit: feat(api), fix(ui), fix(infra), docs
