@@ -20,36 +20,31 @@ INJECTION_PATTERNS = [
         r"forget\s+(everything|all|your)",
         r"new\s+instructions?:",
         r"<\|?(system|user|assistant)\|?>",
-        # ── ROLEPLAY / DAN JAILBREAK (ASR 89.6%) ─────────────────
-        r"you\s+are\s+now\s+\w+",
-        r"from\s+now\s+on\s+you",
-        r"roleplay\s+(as|with)",
-        r"let'?s?\s+(play|pretend|roleplay)",
-        r"\bDAN\b.*no\s+(restrictions|rules|limits)",
-        r"in\s+character",
-        # ── ETHICAL DILEMMA / HYPOTHETICAL (ASR 81.4%) ────────────
-        r"hypothetical(ly)?.*instructions",
-        r"(emergency|life|die).*prompt",
-        r"in\s+a\s+world\s+where.*no\s+rules",
-        # ── ENCODING / OBFUSCATION (ASR 76.2%) ───────────────────
-        r"(?:base64|decode|convert|translate).*[A-Za-z0-9+/=]{20,}",
+        # ── V1.5: ROLEPLAY / DAN JAILBREAK (ASR 89.6%) ───────────
+        r"from\s+now\s+on\s+you('re|\s+are)",
+        r"roleplay\s+(as|with|scenario)",
+        r"let'?s?\s+(play|pretend|roleplay|imagine)",
+        r"\bDAN\b.*\bno\s+(restrictions|rules|limits|guidelines)",
+        r"in\s+character\s*[,:]",
+        r"you\s+are\s+now\s+[A-Z]",
+        # ── V1.5: ETHICAL DILEMMA / HYPOTHETICAL (ASR 81.4%) ──────
+        r"hypothetical(ly)?\s*[,:].*(instruct|prompt|rules|system)",
+        r"(emergency|life\s+depend|someone\s+dies)\s*.*(prompt|instruct|rules)",
+        r"in\s+a\s+world\s+where\s+.*(no\s+rules|no\s+restrictions|anything\s+goes)",
+        # ── V1.5: ENCODING / OBFUSCATION (ASR 76.2%) ─────────────
         r"(decode|decipher|translate|convert)\s+(this|the\s+following|and\s+follow)",
-        # ── SYSTEM PROMPT EXTRACTION ──────────────────────────────
-        r"repeat\s+(everything|all|the\s+text)\s+(above|before)",
-        r"(first|initial)\s+thing\s+(you\s+were|told)",
-        r"start\s+your\s+response\s+with",
-        r"what\s+(were|are)\s+you\s+told",
-        r"(print|output|display|show)\s+(your|the)\s+(prompt|instructions|rules)",
-        # ── PRIVILEGE ESCALATION ──────────────────────────────────
-        r"(developer|admin|debug|maintenance)\s+mode",
-        r"I\s+(am|work)\s+(from|at|for)\s+(anthropic|openai|the\s+company)",
-        r"(enable|activate|enter)\s+.*(unrestricted|unlimited|debug)",
-        # ── MULTI-LANGUAGE (top 3: FR, ES, RU) ───────────────────
-        r"ignor(ez?|a|ar)\s+(les?|las?|все)?\s*(instruc|règles|reglas)",
-        r"(montrez?|muestra|покажи)\s+.*(prompt|system|instruc)",
-        r"(oublie|olvida|забудь)\s+.*(instruc|règles|reglas)",
-        # ── TOKEN/REWARD MANIPULATION ─────────────────────────────
-        r"(token|reward|points?)\s+(for|if)\s+.*(system|prompt|instructions)",
+        r"base64[:\s]+[A-Za-z0-9+/=]{20,}",
+        # ── V1.5: SYSTEM PROMPT EXTRACTION ────────────────────────
+        r"repeat\s+(everything|all|the\s+text)\s+(above|before|prior)",
+        r"(first|initial)\s+(thing|message|instruction)\s+(you\s+were|told|given)",
+        r"start\s+your\s+(response|reply|answer)\s+with",
+        r"(print|output|display|echo|write)\s+(your|the|all)\s+(prompt|instructions|rules|guidelines)",
+        # ── V1.5: PRIVILEGE ESCALATION ────────────────────────────
+        r"(developer|admin|debug|maintenance|sudo)\s+mode",
+        r"I\s+(am|work)\s+(from|at|for)\s+(anthropic|openai|meta|the\s+company)",
+        r"(enable|activate|enter|switch\s+to)\s+.*(unrestricted|unlimited|unfiltered)",
+        # ── V1.5: MULTI-LANGUAGE (FR, ES, RU) ────────────────────
+        r"ignor(ez|a|ar|ировать)\s+.{0,20}(instruc|règles|reglas|указан)",
     ]
 ]
 
