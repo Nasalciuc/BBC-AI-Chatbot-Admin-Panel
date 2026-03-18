@@ -23,7 +23,7 @@ class ChatResponse(BaseModel):
     type: str  # "template" | "ai" | "template_fallback"
     model_used: str
     cost: float = 0.0
-    route_card: Optional[dict] = None
+    route_card: Optional["RouteCard"] = None
 
 
 class RouteCard(BaseModel):
