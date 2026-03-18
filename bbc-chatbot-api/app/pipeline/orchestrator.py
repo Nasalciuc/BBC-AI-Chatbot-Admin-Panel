@@ -88,6 +88,9 @@ async def _pipeline(
     )
     user_msg_id = user_msg["id"] if user_msg and isinstance(user_msg, dict) else None
 
+    # Fetch history early — needed by Steps 3.5, 3.6, and 6
+    history = await db.get_recent_messages(cid, limit=10)
+
     # ── STEP 2: AGENT CHECK (V3 placeholder) ─────────────────
     # V1: always AI mode. V3 will check agent availability here.
 
