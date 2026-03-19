@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     api_user: str = ""
     api_pass: str = ""
 
+    # JWT
+    jwt_secret: str = ""  # REQUIRED in production for auth
+    jwt_expiry_hours: int = 24
+
     # Budget
     daily_budget: float = 50.0
     per_conversation_budget: float = 0.50

@@ -13,6 +13,8 @@ If API_USER and API_PASS are both empty, auth is DISABLED (dev mode).
 import base64
 import logging
 import secrets
+
+import jwt as _jwt
 from fastapi import HTTPException, Request, status
 from config.settings import settings
 
@@ -71,18 +73,36 @@ def get_current_user(request: Request) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # V1.5: Bearer token must match API_PASS.
-        # V2: validate JWT against Supabase and extract real user info.
-        if settings.api_pass and not secrets.compare_digest(
-            token.encode("utf-8"), settings.api_pass.encode("utf-8")
-        ):
-            logger.warning(f"Invalid Bearer token | path={request.url.path}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid Bearer token",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return {"id": "admin", "role": "owner", "name": "admin"}
+        # V1.5: Try JWT decode first
+        if settings.jwt_secret:
+            try:
+                payload = _jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+                return {
+                    "id": payload.get("sub", "unknown"),
+                    "email": payload.get("email", ""),
+                    "role": payload.get("role", "sales"),
+                    "name": payload.get("name", ""),
+                    "tunnel_scope": payload.get("tunnel_scope", "sales"),
+                }
+            except _jwt.ExpiredSignatureError:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token expired — please login again",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            except _jwt.InvalidTokenError:
+                pass  # Fall through to API_PASS check below
+
+        # Fallback: Bearer token = API_PASS (backward compatible)
+        if settings.api_pass and secrets.compare_digest(token, settings.api_pass):
+            return {"id": "admin", "role": "owner", "name": "admin"}
+
+        logger.warning(f"Invalid Bearer token | path={request.url.path}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # ── No auth header ────────────────────────────────────────
     logger.warning(f"No Authorization header | path={request.url.path}")

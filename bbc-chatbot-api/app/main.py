@@ -13,6 +13,7 @@ from app.api.leads import router as leads_router
 from app.api.kb import router as kb_router
 from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
+from app.api.auth_routes import router as auth_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 
@@ -59,6 +60,9 @@ app.include_router(health_router, tags=["health"])
 
 # Chat: PUBLIC (customer widget — no auth)
 app.include_router(chat_router, prefix="/api", tags=["chat"])
+
+# Auth: PUBLIC login, protected invite (auth dependency inside the route)
+app.include_router(auth_router)
 
 # Admin: ALL PROTECTED by get_current_user (Basic + Bearer)
 from fastapi import Depends

@@ -404,6 +404,30 @@ async def get_users(
         return [], 0
 
 
+async def get_user_by_email(email: str) -> Optional[dict]:
+    """Get single user by email for login."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("users").select("*").eq("email", email).single().execute()
+        )
+        return res.data if res.data else None
+    except Exception as e:
+        logger.error(f"get_user_by_email error: {e}")
+        return None
+
+
+async def create_user(payload: dict) -> Optional[dict]:
+    """Create a new user (for invite flow)."""
+    try:
+        db = get_client()
+        res = await _run_sync(lambda: db.table("users").insert(payload).execute())
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"create_user error: {e}")
+        return None
+
+
 async def update_user(user_id: str, payload: dict) -> Optional[dict]:
     try:
         db = get_client()
