@@ -6,7 +6,8 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { sleep, cn } from '@/lib/utils'
+import { loginUser } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -50,34 +51,25 @@ export function UserAuthForm({
     },
   })
 
-  function onSubmit(data: z.infer<typeof formSchema>) {
+  async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
-
-    toast.promise(sleep(2000), {
-      loading: 'Signing in...',
-      success: () => {
-        setIsLoading(false)
-
-        // Mock successful authentication with expiry computed at success time
-        const mockUser = {
-          accountNo: 'ACC001',
-          email: data.email,
-          role: ['user'],
-          exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours from now
-        }
-
-        // Set user and access token
-        auth.setUser(mockUser)
-        auth.setAccessToken('mock-access-token')
-
-        // Redirect to the stored location or default to dashboard
-        const targetPath = redirectTo || '/'
-        navigate({ to: targetPath, replace: true })
-
-        return `Welcome back, ${data.email}!`
-      },
-      error: 'Error',
-    })
+    try {
+      const { token, user } = await loginUser(data.email, data.password)
+      auth.setUser({
+        accountNo: user.id,
+        email: user.email,
+        role: [user.role],
+        exp: Date.now() + 24 * 60 * 60 * 1000,
+      })
+      auth.setAccessToken(token)
+      toast.success(`Welcome back, ${user.name || user.email}!`)
+      navigate({ to: redirectTo || '/', replace: true })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Login failed'
+      toast.error(message)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (

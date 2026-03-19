@@ -28,6 +28,21 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
+// ── Auth ──────────────────────────────────────────────────────
+export async function loginUser(email: string, password: string) {
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: 'Login failed' }))
+    throw new Error(body.detail || 'Login failed')
+  }
+  return res.json()
+}
+
 // ── Generic fetch wrapper ─────────────────────────────────────
 export async function apiFetch<T>(
   path: string,
