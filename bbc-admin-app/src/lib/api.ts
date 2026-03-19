@@ -52,9 +52,8 @@ export async function apiFetch<T>(
 }
 
 // ── Dashboard ─────────────────────────────────────────────────
-export async function getDashboardStats(): Promise<DashboardStats> {
-  const res = await apiFetch<{ success: boolean; data: DashboardStats }>('/api/dashboard/stats')
-  return res.data
+export function getDashboardStats(): Promise<DashboardStats> {
+  return apiFetch<DashboardStats>('/api/dashboard/stats')
 }
 
 // ── Conversations ─────────────────────────────────────────────
