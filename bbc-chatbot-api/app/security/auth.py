@@ -71,8 +71,17 @@ def get_current_user(request: Request) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # V1: accept any non-empty token, return default admin user.
+        # V1.5: Bearer token must match API_PASS.
         # V2: validate JWT against Supabase and extract real user info.
+        if settings.api_pass and not secrets.compare_digest(
+            token.encode("utf-8"), settings.api_pass.encode("utf-8")
+        ):
+            logger.warning(f"Invalid Bearer token | path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return {"id": "admin", "role": "owner", "name": "admin"}
 
     # ── No auth header ────────────────────────────────────────

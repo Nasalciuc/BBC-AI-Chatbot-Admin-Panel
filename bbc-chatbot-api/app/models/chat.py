@@ -18,6 +18,8 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     conversation_id: str
     message: str
     type: str  # "template" | "ai" | "template_fallback"
