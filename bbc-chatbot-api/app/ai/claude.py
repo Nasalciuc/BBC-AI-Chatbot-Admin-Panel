@@ -24,9 +24,9 @@ def _get_client() -> anthropic.Anthropic:
 
 # ── Cost estimation ───────────────────────────────────────────
 COSTS: dict[str, dict[str, float]] = {
-    "claude-3-5-haiku-20241022": {
-        "input": 0.25 / 1_000_000,
-        "output": 1.25 / 1_000_000,
+    "claude-haiku-4-5-20251001": {
+        "input": 1.0 / 1_000_000,
+        "output": 5.0 / 1_000_000,
     },
     "claude-sonnet-4-20250514": {
         "input": 3.0 / 1_000_000,
