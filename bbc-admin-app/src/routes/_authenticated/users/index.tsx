@@ -12,8 +12,6 @@ const usersSearchSchema = z.object({
       z.union([
         z.literal('active'),
         z.literal('inactive'),
-        z.literal('invited'),
-        z.literal('suspended'),
       ])
     )
     .optional()
@@ -22,8 +20,7 @@ const usersSearchSchema = z.object({
     .array(z.enum(roles.map((r) => r.value as (typeof roles)[number]['value'])))
     .optional()
     .catch([]),
-  // Per-column text filter (example for username)
-  username: z.string().optional().catch(''),
+  name: z.string().optional().catch(''),
 })
 
 export const Route = createFileRoute('/_authenticated/users/')({

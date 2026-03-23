@@ -17,6 +17,7 @@ const userSchema = z.object({
   id: z.string(),
   name: z.string(),
   email: z.string(),
+  phone: z.string().nullable().optional(),
   role: userRoleSchema,
   tunnel_scope: z.string(),
   is_active: z.boolean(),

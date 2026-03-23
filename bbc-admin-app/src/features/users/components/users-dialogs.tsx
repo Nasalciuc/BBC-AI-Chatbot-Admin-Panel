@@ -4,19 +4,25 @@ import { UsersInviteDialog } from './users-invite-dialog'
 import { useUsers } from './users-provider'
 
 export function UsersDialogs() {
-  const { open, setOpen, currentRow, setCurrentRow } = useUsers()
+  const { open, setOpen, currentRow, setCurrentRow, onUserChanged } = useUsers()
   return (
     <>
       <UsersActionDialog
         key='user-add'
         open={open === 'add'}
-        onOpenChange={() => setOpen('add')}
+        onOpenChange={() => {
+          setOpen('add')
+          onUserChanged()
+        }}
       />
 
       <UsersInviteDialog
         key='user-invite'
         open={open === 'invite'}
-        onOpenChange={() => setOpen('invite')}
+        onOpenChange={() => {
+          setOpen('invite')
+          onUserChanged()
+        }}
       />
 
       {currentRow && (
@@ -26,6 +32,7 @@ export function UsersDialogs() {
             open={open === 'edit'}
             onOpenChange={() => {
               setOpen('edit')
+              onUserChanged()
               setTimeout(() => {
                 setCurrentRow(null)
               }, 500)
@@ -38,6 +45,7 @@ export function UsersDialogs() {
             open={open === 'delete'}
             onOpenChange={() => {
               setOpen('delete')
+              onUserChanged()
               setTimeout(() => {
                 setCurrentRow(null)
               }, 500)

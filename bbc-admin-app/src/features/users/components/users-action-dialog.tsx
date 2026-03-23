@@ -39,6 +39,11 @@ const formSchema = z
     email: z.email({
       error: (iss) => (iss.input === '' ? 'Email is required.' : undefined),
     }),
+    phone: z
+      .string()
+      .regex(/^\+?[1-9]\d{6,14}$/, 'Invalid phone (E.164: +1234567890)')
+      .optional()
+      .or(z.literal('')),
     role: z.string().min(1, 'Role is required.'),
     tunnel_scope: z.string().min(1, 'Tunnel is required.'),
     password: z.string().transform((pwd) => pwd.trim()),
@@ -104,6 +109,7 @@ export function UsersActionDialog({
       ? {
           name: currentRow?.name ?? '',
           email: currentRow?.email ?? '',
+          phone: (currentRow as any)?.phone ?? '',
           role: currentRow?.role ?? '',
           tunnel_scope: currentRow?.tunnel_scope ?? 'sales',
           password: '',
@@ -112,6 +118,7 @@ export function UsersActionDialog({
       : {
           name: '',
           email: '',
+          phone: '',
           role: '',
           tunnel_scope: 'sales',
           password: '',
@@ -123,8 +130,10 @@ export function UsersActionDialog({
     try {
       if (isEdit && currentRow) {
         await updateUser(currentRow.id, {
+          name: values.name,
           role: values.role,
           tunnel_scope: values.tunnel_scope,
+          ...(values.phone ? { phone: values.phone } : {}),
         })
         toast.success('User updated')
       } else {
@@ -198,6 +207,25 @@ export function UsersActionDialog({
                         placeholder='john.doe@gmail.com'
                         className='col-span-4'
                         disabled={isEdit}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage className='col-span-4 col-start-3' />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='phone'
+                render={({ field }) => (
+                  <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
+                    <FormLabel className='col-span-2 text-end'>
+                      Phone
+                    </FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='+1234567890'
+                        className='col-span-4'
                         {...field}
                       />
                     </FormControl>

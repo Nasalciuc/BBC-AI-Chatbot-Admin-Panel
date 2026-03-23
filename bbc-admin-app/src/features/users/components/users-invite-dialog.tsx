@@ -33,12 +33,19 @@ const tunnelOptions = [
   { label: 'All', value: 'all' },
 ]
 
+const phoneRegex = /^\+?[1-9]\d{6,14}$/
+
 const formSchema = z.object({
   name: z.string().min(2, 'Name is required (min 2 chars).'),
   email: z.email({
     error: (iss) =>
       iss.input === '' ? 'Please enter an email to invite.' : undefined,
   }),
+  phone: z
+    .string()
+    .regex(phoneRegex, 'Invalid phone number (use E.164: +1234567890)')
+    .optional()
+    .or(z.literal('')),
   role: z.string().min(1, 'Role is required.'),
   tunnel_scope: z.string().min(1, 'Tunnel is required.'),
   password: z.string().min(8, 'Password must be at least 8 characters.'),
@@ -57,7 +64,7 @@ export function UsersInviteDialog({
 }: UserInviteDialogProps) {
   const form = useForm<UserInviteForm>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: '', email: '', role: '', tunnel_scope: 'sales', password: '' },
+    defaultValues: { name: '', email: '', phone: '', role: '', tunnel_scope: 'sales', password: '' },
   })
 
   const [isLoading, setIsLoading] = useState(false)
@@ -71,6 +78,7 @@ export function UsersInviteDialog({
         role: values.role,
         tunnel_scope: values.tunnel_scope,
         password: values.password,
+        ...(values.phone ? { phone: values.phone } : {}),
       })
       toast.success(`User ${values.email} invited successfully!`)
       form.reset()

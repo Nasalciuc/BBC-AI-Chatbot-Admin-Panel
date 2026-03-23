@@ -4,6 +4,9 @@ import {
   Plus, Edit2, Trash2, Eye, EyeOff, X, Save, AlertCircle,
 } from 'lucide-react'
 import type { KBCategory, KBEntry, KBEntryCreate } from '@/lib/types'
+import { useAuthStore } from '@/stores/auth-store'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
 
 import {
   getKBCategories,
@@ -173,6 +176,10 @@ export function KnowledgeBase() {
   const [modalOpen,   setModalOpen]   = useState(false)
   const [deletingId,  setDeletingId]  = useState<string | null>(null)
 
+  const { auth } = useAuthStore()
+  const permissions = usePermissions((auth.user?.role ?? 'sales') as UserRole)
+  const canEdit = permissions.canEditKB
+
   const openCreate = () => { setEditEntry(null); setModalOpen(true) }
   const openEdit   = (e: KBEntry) => { setEditEntry(e); setModalOpen(true) }
   const closeModal = () => { setModalOpen(false); setEditEntry(null) }
@@ -307,10 +314,12 @@ export function KnowledgeBase() {
                 <button onClick={fetchAll} className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition">
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                 </button>
-                <button onClick={openCreate}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-[#0B1829] rounded-lg hover:bg-[#0B1829]/90 transition">
-                  <Plus className="w-4 h-4" />New Article
-                </button>
+                {canEdit && (
+                  <button onClick={openCreate}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-[#0B1829] rounded-lg hover:bg-[#0B1829]/90 transition">
+                    <Plus className="w-4 h-4" />New Article
+                  </button>
+                )}
               </div>
             </div>
 
@@ -321,9 +330,11 @@ export function KnowledgeBase() {
                 <div className="flex flex-col items-center justify-center py-16 text-gray-300">
                   <ClipboardList className="w-10 h-10 mb-2 opacity-30" />
                   <p className="text-sm">No articles in this category</p>
-                  <button onClick={openCreate} className="mt-3 text-xs text-[#C9A54E] hover:underline flex items-center gap-1">
-                    <Plus className="w-3 h-3" />Add first article
-                  </button>
+                  {canEdit && (
+                    <button onClick={openCreate} className="mt-3 text-xs text-[#C9A54E] hover:underline flex items-center gap-1">
+                      <Plus className="w-3 h-3" />Add first article
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -351,6 +362,7 @@ export function KnowledgeBase() {
                             <span>updated {timeAgo(entry.updated_at)}</span>
                           </div>
                         </div>
+                        {canEdit && (
                         <div className="flex items-center gap-1 shrink-0">
                           <button onClick={() => toggleActive(entry)} title={entry.is_active ? 'Deactivate' : 'Activate'}
                             className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition">
@@ -365,6 +377,7 @@ export function KnowledgeBase() {
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
+                        )}
                       </div>
                     </div>
                   ))}

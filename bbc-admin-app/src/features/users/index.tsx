@@ -21,16 +21,20 @@ export function Users() {
   const navigate = route.useNavigate()
   const [users, setUsers] = React.useState<User[]>([])
   const [loading, setLoading] = React.useState(true)
+  const [refreshKey, setRefreshKey] = React.useState(0)
+
+  const refreshUsers = React.useCallback(() => setRefreshKey((k) => k + 1), [])
 
   React.useEffect(() => {
+    setLoading(true)
     getUsers()
       .then((res) => setUsers(res.data as User[]))
       .catch((err) => console.error('[users] API error:', err))
       .finally(() => setLoading(false))
-  }, [])
+  }, [refreshKey])
 
   return (
-    <UsersProvider>
+    <UsersProvider onUserChanged={refreshUsers}>
       <Header fixed>
         <Search />
         <div className='ms-auto flex items-center space-x-4'>

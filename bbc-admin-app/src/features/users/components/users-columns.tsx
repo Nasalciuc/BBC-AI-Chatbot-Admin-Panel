@@ -62,6 +62,16 @@ export const usersColumns: ColumnDef<User>[] = [
     ),
   },
   {
+    accessorKey: 'phone',
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Phone' />
+    ),
+    cell: ({ row }) => (
+      <div className='text-nowrap'>{row.getValue('phone') || '\u2014'}</div>
+    ),
+    enableSorting: false,
+  },
+  {
     accessorKey: 'tunnel_scope',
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Tunnel' />

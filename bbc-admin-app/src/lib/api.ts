@@ -209,6 +209,7 @@ export async function inviteUser(data: {
   role: string
   tunnel_scope: string
   password: string
+  phone?: string
 }): Promise<{ success: boolean; data: any }> {
   return apiFetch('/api/auth/invite', {
     method: 'POST',
@@ -219,7 +220,7 @@ export async function inviteUser(data: {
 
 export async function updateUser(
   id: string,
-  data: { role?: string; is_active?: boolean; tunnel_scope?: string },
+  data: { name?: string; role?: string; is_active?: boolean; tunnel_scope?: string; phone?: string },
 ): Promise<{ success: boolean; data: any }> {
   return apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',
