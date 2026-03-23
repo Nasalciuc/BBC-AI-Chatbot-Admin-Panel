@@ -393,7 +393,7 @@ async def get_users(
             if role:    q = q.eq("role", role)
             if search:
                 q = q.or_(
-                    f"full_name.ilike.%{search}%,"
+                    f"name.ilike.%{search}%,"
                     f"email.ilike.%{search}%"
                 )
             return q.range(offset, offset + limit - 1).execute()
