@@ -83,6 +83,7 @@ def get_current_user(request: Request) -> dict:
                     "role": payload.get("role", "sales"),
                     "name": payload.get("name", ""),
                     "tunnel_scope": payload.get("tunnel_scope", "sales"),
+                    "phone": payload.get("phone", ""),
                 }
             except _jwt.ExpiredSignatureError:
                 raise HTTPException(

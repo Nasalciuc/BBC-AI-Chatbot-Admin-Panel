@@ -102,8 +102,11 @@ class LeadStatusUpdate(BaseModel):
 
 # ── Users ────────────────────────────────────────────────────
 class UserUpdate(BaseModel):
+    name: Optional[str] = None
     role: Optional[str] = None
+    tunnel_scope: Optional[str] = None
     is_active: Optional[bool] = None
+    phone: Optional[str] = None
 
 
 # ── KB ────────────────────────────────────────────────────────

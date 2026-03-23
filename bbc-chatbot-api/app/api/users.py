@@ -7,6 +7,7 @@ from app.models.admin import UserUpdate
 router = APIRouter()
 
 VALID_ROLES = {"owner", "admin", "sales", "support"}
+VALID_TUNNELS = {"sales", "support", "all"}
 
 
 @router.get("/admin/users")
@@ -30,6 +31,8 @@ async def update_user(user_id: str, body: UserUpdate):
         raise HTTPException(400, "No valid fields to update")
     if "role" in payload and payload["role"] not in VALID_ROLES:
         raise HTTPException(400, f"Invalid role. Must be one of: {VALID_ROLES}")
+    if "tunnel_scope" in payload and payload["tunnel_scope"] not in VALID_TUNNELS:
+        raise HTTPException(400, f"Invalid tunnel_scope. Must be one of: {VALID_TUNNELS}")
     result = await db.update_user(user_id, payload)
     if not result:
         raise HTTPException(404, "User not found")

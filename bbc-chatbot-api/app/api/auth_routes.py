@@ -5,8 +5,9 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config.settings import settings
 from app.db import supabase as db
@@ -28,11 +29,12 @@ class LoginResponse(BaseModel):
 
 
 class InviteRequest(BaseModel):
-    name: str
+    name: str = Field(..., min_length=2, max_length=255)
     email: str
     role: str = "sales"
     tunnel_scope: str = "sales"
     password: str  # Temporary password set by admin
+    phone: Optional[str] = None
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -78,6 +80,7 @@ async def login(req: LoginRequest):
             "name": user.get("name", ""),
             "role": user.get("role", "sales"),
             "tunnel_scope": user.get("tunnel_scope", "sales"),
+            "phone": user.get("phone", ""),
         },
     )
 
@@ -106,6 +109,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         "tunnel_scope": req.tunnel_scope,
         "password_hash": password_hash,
         "is_active": True,
+        **({"phone": req.phone} if req.phone else {}),
     })
 
     if not user:
