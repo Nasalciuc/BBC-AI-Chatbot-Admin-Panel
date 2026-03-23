@@ -6,7 +6,9 @@ const ACCESS_TOKEN = 'bbc_admin_token'
 interface AuthUser {
   accountNo: string
   email: string
-  role: string[]
+  name: string
+  role: string
+  tunnelScope: string
   exp: number
 }
 

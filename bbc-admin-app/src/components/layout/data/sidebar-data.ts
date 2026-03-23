@@ -4,48 +4,65 @@ import {
 } from 'lucide-react'
 import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
+import type { Permissions } from '@/lib/bbc/types'
 
-export const sidebarData: SidebarData = {
-  user: {
-    name: 'Scaler',
-    email: 'scaler@buybusinessclass.com',
-    avatar: '/avatars/shadcn.jpg',
-  },
-  teams: [
-    { name: 'BuyBusinessClass', logo: Logo, plan: 'Admin Panel' },
-  ],
-  navGroups: [
-    {
-      title: 'Main',
-      items: [
-        { title: 'Dashboard', url: '/', icon: LayoutDashboard },
-        { title: 'Conversations', url: '/chats', badge: '3', icon: MessageSquare },
-        // { title: 'Tasks', url: '/tasks', icon: ListTodo },  // V2: no backend
-        { title: 'Leads', url: '/leads', icon: UserPlus },
-      ],
+export function getSidebarData(
+  permissions: Permissions,
+  userName: string,
+  userEmail: string,
+): SidebarData {
+  return {
+    user: {
+      name: userName || 'User',
+      email: userEmail || '',
+      avatar: '/avatars/01.png',
     },
-    {
-      title: 'Management',
-      items: [
-        { title: 'Users', url: '/users', icon: Users },
-        { title: 'Knowledge Base', url: '/knowledge-base', icon: BookOpen },
-      ],
-    },
-    {
-      title: 'System',
-      items: [
-        // { title: 'Integrations', url: '/apps', icon: Puzzle },  // V2: no backend
-        {
-          title: 'Settings', icon: Settings,
-          items: [
-            { title: 'Profile', url: '/settings', icon: UserCog },
-            { title: 'Account', url: '/settings/account', icon: Wrench },
-            { title: 'Appearance', url: '/settings/appearance', icon: Palette },
-            { title: 'Notifications', url: '/settings/notifications', icon: Bell },
-            { title: 'Display', url: '/settings/display', icon: Monitor },
-          ],
-        },
-      ],
-    },
-  ],
+    teams: [
+      { name: 'BuyBusinessClass', logo: Logo, plan: 'Admin Panel' },
+    ],
+    navGroups: [
+      {
+        title: 'Main',
+        items: [
+          { title: 'Dashboard', url: '/', icon: LayoutDashboard },
+          { title: 'Conversations', url: '/chats', icon: MessageSquare },
+          ...(permissions.canViewLeads
+            ? [{ title: 'Leads', url: '/leads' as const, icon: UserPlus }]
+            : []),
+        ],
+      },
+      ...(permissions.canViewUsers || permissions.canViewKB
+        ? [{
+            title: 'Management',
+            items: [
+              ...(permissions.canViewUsers
+                ? [{ title: 'Users', url: '/users' as const, icon: Users }]
+                : []),
+              ...(permissions.canViewKB
+                ? [{ title: 'Knowledge Base', url: '/knowledge-base' as const, icon: BookOpen }]
+                : []),
+            ],
+          }]
+        : []),
+      {
+        title: 'System',
+        items: [
+          {
+            title: 'Settings', icon: Settings,
+            items: [
+              { title: 'Profile', url: '/settings' as const, icon: UserCog },
+              { title: 'Appearance', url: '/settings/appearance' as const, icon: Palette },
+              ...(permissions.canEditSettings
+                ? [
+                    { title: 'Account', url: '/settings/account' as const, icon: Wrench },
+                    { title: 'Notifications', url: '/settings/notifications' as const, icon: Bell },
+                    { title: 'Display', url: '/settings/display' as const, icon: Monitor },
+                  ]
+                : []),
+            ],
+          },
+        ],
+      },
+    ],
+  }
 }

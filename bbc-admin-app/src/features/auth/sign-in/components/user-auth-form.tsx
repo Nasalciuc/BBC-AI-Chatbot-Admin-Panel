@@ -58,7 +58,9 @@ export function UserAuthForm({
       auth.setUser({
         accountNo: user.id,
         email: user.email,
-        role: [user.role],
+        name: user.name || '',
+        role: user.role || 'sales',
+        tunnelScope: user.tunnel_scope || '',
         exp: Date.now() + 24 * 60 * 60 * 1000,
       })
       auth.setAccessToken(token)

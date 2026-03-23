@@ -24,6 +24,7 @@ import type {
   Lead,
   LeadsResponse,
 } from './types'
+import { getCookie } from './cookies'
 
 // ── Config ────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -32,6 +33,18 @@ const PASS = import.meta.env.VITE_API_PASS ?? ''
 
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {}
+  // Prefer JWT Bearer token from cookie
+  const cookie = getCookie('bbc_admin_token')
+  if (cookie) {
+    try {
+      const token = JSON.parse(cookie)
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+        return headers
+      }
+    } catch { /* fall through to Basic */ }
+  }
+  // Fallback to Basic Auth for dev/seed scenarios
   if (USER && PASS) {
     headers['Authorization'] = `Basic ${btoa(`${USER}:${PASS}`)}`
   }
