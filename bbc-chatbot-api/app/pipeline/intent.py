@@ -40,7 +40,7 @@ INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.BOOKING_CHANGE, re.compile(r"(change|cancel|modify|reschedule|refund)", re.I)),
     (Intent.BAGGAGE_INFO, re.compile(r"(baggage|luggage|bag|carry.on|checked|weight)", re.I)),
     (Intent.PRICE_INQUIRY, re.compile(r"(price|cost|how much|rate|fare|cheap|expensive|afford)", re.I)),
-    (Intent.SEAT_SELECTION, re.compile(r"(seat|seating|window|aisle|seat\s*map|seat\s*select)", re.I)),
+    (Intent.SEAT_SELECTION, re.compile(r"(\bseat\b|seating|window\s*seat|aisle\s*seat|seat\s*map|seat\s*select|seat\s*assign|seat\s*prefer)", re.I)),
     (Intent.MEAL_PREFERENCE, re.compile(r"(meal|food|diet|vegetarian|vegan|kosher|halal|gluten|pre.?order)", re.I)),
     (Intent.LOUNGE_ACCESS, re.compile(r"(lounge|priority\s*pass|airport\s*club|vip\s*area)", re.I)),
     (Intent.CHECK_IN, re.compile(r"(check.?in|checking\s+in|check\s+in|boarding\s+pass)", re.I)),

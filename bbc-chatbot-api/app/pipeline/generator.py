@@ -29,17 +29,26 @@ def _has_route_data(kb_results: list[KBResult], entities: dict | None = None) ->
     for result in kb_results:
         if any(w in result.content.lower() for w in route_keywords):
             # Relevance check: if user specified origin/destination,
-            # the KB entry must mention at least one of them.
+            # the KB entry must mention them in the correct direction.
             if entities:
                 origin = (entities.get("origin") or "").lower()
                 destination = (entities.get("destination") or "").lower()
-                content_lower = result.content.lower()
                 title_lower = result.title.lower()
-                if origin or destination:
+                content_lower = result.content.lower()
+
+                # Direction-aware: split KB title by " to "
+                title_parts = title_lower.split(" to ")
+                if len(title_parts) == 2:
+                    from_side, to_side = title_parts
+                    if origin and origin not in from_side:
+                        continue
+                    if destination and destination not in to_side:
+                        continue
+                elif origin or destination:
                     origin_match = origin and (origin in content_lower or origin in title_lower)
                     dest_match = destination and (destination in content_lower or destination in title_lower)
                     if not origin_match and not dest_match:
-                        continue  # KB entry doesn't match user's route
+                        continue
             return result
     return None
 
