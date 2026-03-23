@@ -1,10 +1,22 @@
 """Admin API — conversations CRUD."""
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.db import supabase as db
 from app.models.admin import ConversationUpdate
+from app.security.auth import get_current_user
 
 router = APIRouter()
+
+
+def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
+    """Force tunnel filter for sales/support roles."""
+    role = user.get("role", "sales")
+    if role in ("owner", "admin", "dev"):
+        return tunnel  # privileged users can filter freely
+    scope = user.get("tunnel_scope", role)
+    if tunnel and tunnel != scope:
+        raise HTTPException(status_code=403, detail="Access denied to this tunnel")
+    return scope
 
 
 @router.get("/conversations")
@@ -14,8 +26,10 @@ async def list_conversations(
     search: Optional[str] = Query(None, max_length=100),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
 ):
     try:
+        tunnel = _enforce_tunnel(user, tunnel)
         rows, total = await db.get_conversations(tunnel=tunnel, status=status, search=search, limit=limit, offset=offset)
         return {"success": True, "data": rows, "count": total}
     except Exception as e:

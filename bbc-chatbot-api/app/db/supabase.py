@@ -475,17 +475,21 @@ async def get_today_cost() -> float:
 # ADMIN — DASHBOARD STATS
 # ════════════════════════════════════════════════════════════════
 
-async def get_dashboard_stats() -> dict:
+async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
     """Dashboard statistics — all fields expected by frontend DashboardStats interface.
     Fetches bulk data via _run_sync, then processes in Python.
+    If tunnel_filter is set, only rows matching that tunnel are included.
     """
     try:
         db = get_client()
 
-        # ── Fetch all conversations ───────────────────────────
-        convos = await _run_sync(lambda: db.table("conversations").select(
+        # ── Fetch conversations (optionally filtered by tunnel) ──
+        convos_q = db.table("conversations").select(
             "id, tunnel, status, created_at, closed_at", count="exact"  # type: ignore[arg-type]
-        ).execute())
+        )
+        if tunnel_filter:
+            convos_q = convos_q.eq("tunnel", tunnel_filter)
+        convos = await _run_sync(lambda: convos_q.execute())
         all_convos = convos.data or []
 
         now = datetime.now(timezone.utc)
@@ -522,12 +526,23 @@ async def get_dashboard_stats() -> dict:
             1 for c in all_convos if c.get("status") == "active"
         )
 
-        # ── Fetch all leads ───────────────────────────────────
-        leads_res = await _run_sync(lambda: db.table("leads").select(
-            "id, score, tier, status, origin_code, destination_code, "
-            "route_display, created_at, conversation_id"
-        ).execute())
-        all_leads = leads_res.data or []
+        # ── Fetch leads (optionally filtered by tunnel via conversations join) ──
+        if tunnel_filter:
+            leads_res = await _run_sync(lambda: db.table("leads").select(
+                "id, score, tier, status, origin_code, destination_code, "
+                "route_display, created_at, conversation_id, "
+                "conversations!inner(tunnel)"
+            ).eq("conversations.tunnel", tunnel_filter).execute())
+            all_leads = leads_res.data or []
+            # Strip the nested join object so downstream code isn't affected
+            for lead in all_leads:
+                lead.pop("conversations", None)
+        else:
+            leads_res = await _run_sync(lambda: db.table("leads").select(
+                "id, score, tier, status, origin_code, destination_code, "
+                "route_display, created_at, conversation_id"
+            ).execute())
+            all_leads = leads_res.data or []
 
         leads_total = len(all_leads)
         leads_new = sum(1 for l in all_leads if l.get("status") == "new")
@@ -548,9 +563,12 @@ async def get_dashboard_stats() -> dict:
         )
 
         # ── Pipeline runs (cost, latency, fallback) ──────────
-        pipeline_res = await _run_sync(lambda: db.table("pipeline_runs").select(
+        pipeline_q = db.table("pipeline_runs").select(
             "cost, latency_ms, status, had_fallback, tunnel, created_at"
-        ).execute())
+        )
+        if tunnel_filter:
+            pipeline_q = pipeline_q.eq("tunnel", tunnel_filter)
+        pipeline_res = await _run_sync(lambda: pipeline_q.execute())
         all_runs = pipeline_res.data or []
 
         cost_today = sum(
