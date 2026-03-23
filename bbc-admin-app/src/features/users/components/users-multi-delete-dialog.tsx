@@ -4,7 +4,8 @@ import { useState } from 'react'
 import { type Table } from '@tanstack/react-table'
 import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
-import { sleep } from '@/lib/utils'
+import { deactivateUser } from '@/lib/api'
+import { type User } from '../data/schema'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -27,7 +28,7 @@ export function UsersMultiDeleteDialog<TData>({
 
   const selectedRows = table.getFilteredSelectedRowModel().rows
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (value.trim() !== CONFIRM_WORD) {
       toast.error(`Please type "${CONFIRM_WORD}" to confirm.`)
       return
@@ -35,17 +36,15 @@ export function UsersMultiDeleteDialog<TData>({
 
     onOpenChange(false)
 
-    toast.promise(sleep(2000), {
-      loading: 'Deleting users...',
-      success: () => {
-        setValue('')
-        table.resetRowSelection()
-        return `Deleted ${selectedRows.length} ${
-          selectedRows.length > 1 ? 'users' : 'user'
-        }`
-      },
-      error: 'Error',
-    })
+    try {
+      const users = selectedRows.map((row) => row.original as User)
+      await Promise.all(users.map((u) => deactivateUser(u.id)))
+      setValue('')
+      table.resetRowSelection()
+      toast.success(`Deactivated ${selectedRows.length} ${selectedRows.length > 1 ? 'users' : 'user'}`)
+    } catch {
+      toast.error('Failed to deactivate users')
+    }
   }
 
   return (

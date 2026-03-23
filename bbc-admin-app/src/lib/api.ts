@@ -195,6 +195,43 @@ export function deleteKBEntry(id: string): Promise<void> {
   })
 }
 
+// ── Users ─────────────────────────────────────────────────────
+export function getUsers(
+  params: Record<string, string> = {},
+): Promise<{ success: boolean; data: any[]; count: number }> {
+  const qs = new URLSearchParams(params).toString()
+  return apiFetch(`/api/admin/users?${qs}`)
+}
+
+export async function inviteUser(data: {
+  name: string
+  email: string
+  role: string
+  tunnel_scope: string
+  password: string
+}): Promise<{ success: boolean; data: any }> {
+  return apiFetch('/api/auth/invite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function updateUser(
+  id: string,
+  data: { role?: string; is_active?: boolean; tunnel_scope?: string },
+): Promise<{ success: boolean; data: any }> {
+  return apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deactivateUser(id: string): Promise<{ success: boolean; data: any }> {
+  return updateUser(id, { is_active: false })
+}
+
 // ── Chat (used by widget / playground) ────────────────────────
 export interface ChatResponse {
   conversation_id: string

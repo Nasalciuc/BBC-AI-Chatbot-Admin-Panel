@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { MailPlus, Send } from 'lucide-react'
-import { showSubmittedData } from '@/lib/show-submitted-data'
+import { toast } from 'sonner'
+import { inviteUser } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -22,17 +24,24 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { SelectDropdown } from '@/components/select-dropdown'
 import { roles } from '../data/data'
 
+const tunnelOptions = [
+  { label: 'Sales', value: 'sales' },
+  { label: 'Support', value: 'support' },
+  { label: 'All', value: 'all' },
+]
+
 const formSchema = z.object({
+  name: z.string().min(2, 'Name is required (min 2 chars).'),
   email: z.email({
     error: (iss) =>
       iss.input === '' ? 'Please enter an email to invite.' : undefined,
   }),
   role: z.string().min(1, 'Role is required.'),
-  desc: z.string().optional(),
+  tunnel_scope: z.string().min(1, 'Tunnel is required.'),
+  password: z.string().min(8, 'Password must be at least 8 characters.'),
 })
 
 type UserInviteForm = z.infer<typeof formSchema>
@@ -48,13 +57,30 @@ export function UsersInviteDialog({
 }: UserInviteDialogProps) {
   const form = useForm<UserInviteForm>({
     resolver: zodResolver(formSchema),
-    defaultValues: { email: '', role: '', desc: '' },
+    defaultValues: { name: '', email: '', role: '', tunnel_scope: 'sales', password: '' },
   })
 
-  const onSubmit = (values: UserInviteForm) => {
-    form.reset()
-    showSubmittedData(values)
-    onOpenChange(false)
+  const [isLoading, setIsLoading] = useState(false)
+
+  const onSubmit = async (values: UserInviteForm) => {
+    setIsLoading(true)
+    try {
+      await inviteUser({
+        name: values.name,
+        email: values.email,
+        role: values.role,
+        tunnel_scope: values.tunnel_scope,
+        password: values.password,
+      })
+      toast.success(`User ${values.email} invited successfully!`)
+      form.reset()
+      onOpenChange(false)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to invite user'
+      toast.error(message)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -81,6 +107,19 @@ export function UsersInviteDialog({
             onSubmit={form.handleSubmit(onSubmit)}
             className='space-y-4'
           >
+            <FormField
+              control={form.control}
+              name='name'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Full Name</FormLabel>
+                  <FormControl>
+                    <Input placeholder='eg: John Doe' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             <FormField
               control={form.control}
               name='email'
@@ -119,16 +158,28 @@ export function UsersInviteDialog({
             />
             <FormField
               control={form.control}
-              name='desc'
+              name='tunnel_scope'
               render={({ field }) => (
-                <FormItem className=''>
-                  <FormLabel>Description (optional)</FormLabel>
+                <FormItem>
+                  <FormLabel>Tunnel</FormLabel>
+                  <SelectDropdown
+                    defaultValue={field.value}
+                    onValueChange={field.onChange}
+                    placeholder='Select tunnel'
+                    items={tunnelOptions}
+                  />
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='password'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Temporary Password</FormLabel>
                   <FormControl>
-                    <Textarea
-                      className='resize-none'
-                      placeholder='Add a personal note to your invitation (optional)'
-                      {...field}
-                    />
+                    <Input type='password' placeholder='Min 8 characters' {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -140,7 +191,7 @@ export function UsersInviteDialog({
           <DialogClose asChild>
             <Button variant='outline'>Cancel</Button>
           </DialogClose>
-          <Button type='submit' form='user-invite-form'>
+          <Button type='submit' form='user-invite-form' disabled={isLoading}>
             Invite <Send />
           </Button>
         </DialogFooter>
