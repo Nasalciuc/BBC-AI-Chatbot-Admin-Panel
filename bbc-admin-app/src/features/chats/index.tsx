@@ -46,7 +46,7 @@ export function Chats() {
       if (tunnelFilter) params.tunnel = tunnelFilter
       if (statusFilter) params.status = statusFilter
       const json = await getConversations(params)
-      setConversations(json.data); setTotal(json.total); setUsingMock(false)
+      setConversations(json.data); setTotal(json.count); setUsingMock(false)
     } catch (err) {
       console.error('[chats] API error:', err)
       setConversations([]); setTotal(0); setUsingMock(false)

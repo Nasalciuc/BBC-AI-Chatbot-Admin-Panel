@@ -28,10 +28,9 @@ export interface Conversation {
 }
 
 export interface ConversationsResponse {
+  success: boolean
   data: Conversation[]
-  total: number
-  limit: number
-  offset: number
+  count: number
 }
 
 // ── Leads ─────────────────────────────────────────────────────
@@ -62,10 +61,9 @@ export interface Lead {
 }
 
 export interface LeadsResponse {
+  success: boolean
   data: Lead[]
-  total: number
-  limit: number
-  offset: number
+  count: number
 }
 
 // ── Knowledge Base ────────────────────────────────────────────

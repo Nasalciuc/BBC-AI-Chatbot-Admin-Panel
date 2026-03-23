@@ -4,6 +4,16 @@
  * On network failure the callers fall back to mock data in their own components.
  */
 
+/** Structured API error with HTTP status code for QueryCache error handling. */
+export class ApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 import type {
   Conversation,
   ConversationsResponse,
@@ -59,7 +69,7 @@ export async function apiFetch<T>(
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`API ${res.status}: ${text}`)
+    throw new ApiError(res.status, text || `HTTP ${res.status}`)
   }
   // 204 No Content → return undefined
   if (res.status === 204) return undefined as unknown as T

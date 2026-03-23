@@ -1,6 +1,6 @@
 import {
-  LayoutDashboard, ListTodo, MessageSquare, Users, UserPlus, BookOpen,
-  Puzzle, Settings, UserCog, Wrench, Palette, Bell, Monitor,
+  LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
+  Settings, UserCog, Wrench, Palette, Bell, Monitor,
 } from 'lucide-react'
 import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
@@ -20,7 +20,7 @@ export const sidebarData: SidebarData = {
       items: [
         { title: 'Dashboard', url: '/', icon: LayoutDashboard },
         { title: 'Conversations', url: '/chats', badge: '3', icon: MessageSquare },
-        { title: 'Tasks', url: '/tasks', icon: ListTodo },
+        // { title: 'Tasks', url: '/tasks', icon: ListTodo },  // V2: no backend
         { title: 'Leads', url: '/leads', icon: UserPlus },
       ],
     },
@@ -34,7 +34,7 @@ export const sidebarData: SidebarData = {
     {
       title: 'System',
       items: [
-        { title: 'Integrations', url: '/apps', icon: Puzzle },
+        // { title: 'Integrations', url: '/apps', icon: Puzzle },  // V2: no backend
         {
           title: 'Settings', icon: Settings,
           items: [

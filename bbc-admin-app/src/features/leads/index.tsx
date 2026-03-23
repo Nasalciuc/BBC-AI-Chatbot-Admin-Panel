@@ -64,7 +64,7 @@ export function Leads() {
       if (statusFilter) params.status = statusFilter
       if (tierFilter)   params.tier = tierFilter
       const json = await getLeads(params)
-      setLeads(json.data); setTotal(json.total); setUsingMock(false)
+      setLeads(json.data); setTotal(json.count); setUsingMock(false)
     } catch (err) {
       console.error('[leads] API error:', err)
       setLeads([]); setTotal(0); setUsingMock(false)
