@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useDeferredValue } from 'react'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
-import { getConversations } from '@/lib/api'
+import { getConversations, apiFetch } from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
@@ -40,51 +40,60 @@ export function Chats() {
   const [activeTab, setActiveTab]           = useState<TabKey>('my_active')
   const [conversations, setConversations]   = useState<Conversation[]>([])
   const [counts, setCounts]                 = useState<Record<TabKey, number>>({ my_active: 0, queue: 0, my_closed: 0 })
-  const [loading, setLoading]               = useState(true)
+  const [initialLoad, setInitialLoad]       = useState(true)
   const [search, setSearch]                 = useState('')
+  const debouncedSearch = useDeferredValue(search)
   const [tunnelFilter, setTunnel]           = useState('')
   const [selectedId, setSelectedId]         = useState<string | null>(null)
 
   // Fetch conversations for the active tab
   const fetchTab = useCallback(async () => {
-    setLoading(true)
     try {
       const tab = TABS.find(t => t.key === activeTab)!
       const params: Record<string, string> = { ...tab.params, limit: '50' }
-      if (search) params.search = search
+      if (debouncedSearch) params.search = debouncedSearch
       if (tunnelFilter) params.tunnel = tunnelFilter
       const json = await getConversations(params)
-      setConversations(json.data)
+      setConversations(prev => {
+        if (prev.length === json.data.length &&
+            prev[0]?.updated_at === json.data[0]?.updated_at &&
+            prev[prev.length-1]?.id === json.data[json.data.length-1]?.id) {
+          return prev  // same data, skip re-render
+        }
+        return json.data
+      })
       setCounts(prev => ({ ...prev, [activeTab]: json.count }))
     } catch (err) {
       console.error('[chats] fetch error:', err)
       setConversations([])
-    } finally { setLoading(false) }
-  }, [activeTab, search, tunnelFilter])
+    } finally { setInitialLoad(false) }
+  }, [activeTab, debouncedSearch, tunnelFilter])
 
-  // Fetch counts for ALL tabs (for badges)
+  // Fetch counts for ALL tabs (1 request via /counts endpoint)
   const fetchCounts = useCallback(async () => {
     try {
-      const results = await Promise.all(
-        TABS.map(async (tab) => {
-          const params: Record<string, string> = { ...tab.params, limit: '1' }
-          if (tunnelFilter) params.tunnel = tunnelFilter
-          const json = await getConversations(params)
-          return { key: tab.key, count: json.count }
-        })
+      const params: Record<string, string> = {}
+      if (tunnelFilter) params.tunnel = tunnelFilter
+      const qs = new URLSearchParams(params).toString()
+      const res = await apiFetch<{ success: boolean; data: Record<TabKey, number> }>(
+        `/api/conversations/counts${qs ? '?' + qs : ''}`
       )
-      const newCounts: Record<string, number> = {}
-      results.forEach(r => { newCounts[r.key] = r.count })
-      setCounts(newCounts as Record<TabKey, number>)
+      if (res.success && res.data) {
+        setCounts(res.data)
+      }
     } catch {}
   }, [tunnelFilter])
 
   useEffect(() => { fetchTab() }, [fetchTab])
   useEffect(() => { fetchCounts() }, [fetchCounts])
 
-  // Auto-refresh every 5 seconds
+  // Auto-refresh: 30s interval, pause when tab hidden
   useEffect(() => {
-    const interval = setInterval(() => { fetchTab(); fetchCounts() }, 5000)
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      fetchTab()
+      fetchCounts()
+    }, 30000)
     return () => clearInterval(interval)
   }, [fetchTab, fetchCounts])
 
@@ -152,7 +161,7 @@ export function Chats() {
 
             {/* Conversation list */}
             <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
-              {loading ? (
+              {initialLoad ? (
                 <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading...</div>
               ) : conversations.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-32 text-gray-400">

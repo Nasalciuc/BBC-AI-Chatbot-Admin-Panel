@@ -62,11 +62,39 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [conv?.messages?.length])
 
+  // Incremental polling: only fetch NEW messages, not everything
+  const lastMsgTime = useRef<string>('')
+
   useEffect(() => {
-    if (usingMock || conv?.status === 'closed') return
-    const interval = setInterval(reload, 5000)
+    if (conv?.messages?.length) {
+      lastMsgTime.current = conv.messages[conv.messages.length - 1].created_at
+    }
+  }, [conv?.messages?.length])
+
+  useEffect(() => {
+    // Only poll on My Active tab (no poll on Queue/Closed)
+    if (usingMock || conv?.status === 'closed' || activeTab !== 'my_active') return
+    const interval = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return
+      try {
+        const afterParam = lastMsgTime.current ? `?after=${encodeURIComponent(lastMsgTime.current)}` : ''
+        const res = await apiFetch<{ success: boolean; data: Message[] }>(
+          `/api/conversations/${conversationId}/messages${afterParam}`
+        )
+        if (res.success && res.data && res.data.length > 0) {
+          setConv(prev => {
+            if (!prev) return prev
+            const existingIds = new Set((prev.messages ?? []).map(m => m.id))
+            const newMsgs = res.data.filter(m => !existingIds.has(m.id))
+            if (newMsgs.length === 0) return prev
+            return { ...prev, messages: [...(prev.messages ?? []), ...newMsgs] }
+          })
+          lastMsgTime.current = res.data[res.data.length - 1].created_at
+        }
+      } catch {}
+    }, 5000)
     return () => clearInterval(interval)
-  }, [usingMock, conv?.status, reload])
+  }, [conversationId, usingMock, conv?.status, activeTab])
 
   const handleSend = async () => {
     if (!input.trim() || sending) return

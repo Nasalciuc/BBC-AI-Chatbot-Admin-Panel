@@ -38,16 +38,26 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Poll for new messages every 3 seconds
+  // Poll for NEW messages only (incremental) every 3 seconds
+  const lastMsgTime = useRef('')
+
   useEffect(() => {
     if (!convId) return
     const interval = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return
       try {
-        const res = await fetch(`${API_URL}/api/conversations/${convId}`)
+        const afterParam = lastMsgTime.current ? `?after=${encodeURIComponent(lastMsgTime.current)}` : ''
+        const res = await fetch(`${API_URL}/api/conversations/${convId}/messages${afterParam}`)
         if (!res.ok) return
         const json = await res.json()
-        if (json.success && json.data?.messages) {
-          setMessages(json.data.messages)
+        if (json.success && json.data && json.data.length > 0) {
+          setMessages(prev => {
+            const existingIds = new Set(prev.map(m => m.id))
+            const newMsgs = (json.data as Message[]).filter(m => !existingIds.has(m.id))
+            if (newMsgs.length === 0) return prev
+            return [...prev, ...newMsgs]
+          })
+          lastMsgTime.current = json.data[json.data.length - 1].created_at
         }
       } catch { /* polling failure is non-fatal */ }
     }, 3000)
