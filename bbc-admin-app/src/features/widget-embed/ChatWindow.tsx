@@ -110,6 +110,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose }: Props) {
           created_at: new Date().toISOString(),
         }
         setMessages(prev => [...prev, aiMsg])
+        lastMsgTime.current = aiMsg.created_at
       }
     } catch {
       const errMsg: Message = {
