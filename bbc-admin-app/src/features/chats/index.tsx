@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Search, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
+import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
 import { getConversations } from '@/lib/api'
 import { Header } from '@/components/layout/header'
@@ -18,6 +18,14 @@ const STATUS_DOT: Record<string, string> = {
   needs_agent: 'bg-red-400',
 }
 
+type TabKey = 'my_active' | 'queue' | 'my_closed'
+
+const TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
+  { key: 'my_active', label: 'My Active',  icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
+  { key: 'queue',     label: 'Queue',       icon: <Inbox className="w-4 h-4" />,     params: { assigned_to: 'none', status: 'active' } },
+  { key: 'my_closed', label: 'My Closed',   icon: <Archive className="w-4 h-4" />,   params: { assigned_to: 'me', status: 'closed' } },
+]
+
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
@@ -29,31 +37,63 @@ function timeAgo(iso: string): string {
 }
 
 export function Chats() {
-  const [conversations, setConversations] = useState<Conversation[]>([])
-  const [total, setTotal]                 = useState(0)
-  const [loading, setLoading]             = useState(true)
-  const [usingMock, setUsingMock]         = useState(false)
-  const [search, setSearch]               = useState('')
-  const [tunnelFilter, setTunnel]         = useState('')
-  const [statusFilter, setStatus]         = useState('')
-  const [selectedId, setSelectedId]       = useState<string | null>(null)
+  const [activeTab, setActiveTab]           = useState<TabKey>('my_active')
+  const [conversations, setConversations]   = useState<Conversation[]>([])
+  const [counts, setCounts]                 = useState<Record<TabKey, number>>({ my_active: 0, queue: 0, my_closed: 0 })
+  const [loading, setLoading]               = useState(true)
+  const [search, setSearch]                 = useState('')
+  const [tunnelFilter, setTunnel]           = useState('')
+  const [selectedId, setSelectedId]         = useState<string | null>(null)
 
-  const fetchConversations = useCallback(async () => {
+  // Fetch conversations for the active tab
+  const fetchTab = useCallback(async () => {
     setLoading(true)
     try {
-      const params: Record<string, string> = { limit: '50' }
-      if (search)       params.search = search
+      const tab = TABS.find(t => t.key === activeTab)!
+      const params: Record<string, string> = { ...tab.params, limit: '50' }
+      if (search) params.search = search
       if (tunnelFilter) params.tunnel = tunnelFilter
-      if (statusFilter) params.status = statusFilter
       const json = await getConversations(params)
-      setConversations(json.data); setTotal(json.count); setUsingMock(false)
+      setConversations(json.data)
+      setCounts(prev => ({ ...prev, [activeTab]: json.count }))
     } catch (err) {
-      console.error('[chats] API error:', err)
-      setConversations([]); setTotal(0); setUsingMock(false)
+      console.error('[chats] fetch error:', err)
+      setConversations([])
     } finally { setLoading(false) }
-  }, [search, tunnelFilter, statusFilter])
+  }, [activeTab, search, tunnelFilter])
 
-  useEffect(() => { fetchConversations() }, [fetchConversations])
+  // Fetch counts for ALL tabs (for badges)
+  const fetchCounts = useCallback(async () => {
+    try {
+      const results = await Promise.all(
+        TABS.map(async (tab) => {
+          const params: Record<string, string> = { ...tab.params, limit: '1' }
+          if (tunnelFilter) params.tunnel = tunnelFilter
+          const json = await getConversations(params)
+          return { key: tab.key, count: json.count }
+        })
+      )
+      const newCounts: Record<string, number> = {}
+      results.forEach(r => { newCounts[r.key] = r.count })
+      setCounts(newCounts as Record<TabKey, number>)
+    } catch {}
+  }, [tunnelFilter])
+
+  useEffect(() => { fetchTab() }, [fetchTab])
+  useEffect(() => { fetchCounts() }, [fetchCounts])
+
+  // Auto-refresh every 5 seconds
+  useEffect(() => {
+    const interval = setInterval(() => { fetchTab(); fetchCounts() }, 5000)
+    return () => clearInterval(interval)
+  }, [fetchTab, fetchCounts])
+
+  // When a conversation is claimed/closed, refresh
+  const handleConversationChange = () => {
+    setSelectedId(null)
+    fetchTab()
+    fetchCounts()
+  }
 
   return (
     <>
@@ -66,57 +106,60 @@ export function Chats() {
       </Header>
       <Main fixed>
         <div className="flex h-full overflow-hidden rounded-lg border border-gray-200">
-          {/* Left panel — list */}
+          {/* Left panel — tabs + list */}
           <div className={`flex flex-col border-r border-gray-200 bg-white transition-all duration-200 ${selectedId ? 'w-96 min-w-[24rem]' : 'flex-1'}`}>
-            <div className="px-4 py-4 border-b border-gray-100 space-y-2">
-              <div className="flex items-center justify-between">
-                <h1 className="text-xl font-bold text-[#0B1829]">Conversations</h1>
-                <span className="text-xs text-gray-400">{total}{usingMock && ' · mock'}</span>
-              </div>
+            {/* Tabs */}
+            <div className="flex border-b border-gray-200">
+              {TABS.map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => { setActiveTab(tab.key); setSelectedId(null) }}
+                  className={`flex-1 flex items-center justify-center gap-2 px-3 py-3 text-xs font-medium transition-colors border-b-2 ${
+                    activeTab === tab.key
+                      ? 'border-[#C9A54E] text-[#0B1829]'
+                      : 'border-transparent text-gray-400 hover:text-gray-600'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                  {counts[tab.key] > 0 && (
+                    <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                      tab.key === 'queue' && counts[tab.key] > 0
+                        ? 'bg-red-500 text-white animate-pulse'
+                        : 'bg-gray-100 text-gray-600'
+                    }`}>
+                      {counts[tab.key]}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Search + Tunnel filter */}
+            <div className="px-4 py-3 border-b border-gray-100 space-y-2">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <input type="text" placeholder="Search visitor..." value={search} onChange={e => setSearch(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
               </div>
-              <div className="flex gap-2">
-                {[
-                  { key: 'tunnel', val: tunnelFilter, setter: setTunnel, opts: ['', 'sales', 'support'] },
-                  { key: 'status', val: statusFilter, setter: setStatus, opts: ['', 'active', 'needs_agent', 'pending', 'closed'] },
-                ].map(({ key, val, setter, opts }) => (
-                  <div key={key} className="relative flex-1">
-                    <select value={val} onChange={e => setter(e.target.value)}
-                      className="w-full pl-3 pr-7 py-1.5 text-xs border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none capitalize">
-                      {opts.map(o => <option key={o} value={o}>{o || `All ${key}`}</option>)}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" />
-                  </div>
-                ))}
-              </div>
+              <select value={tunnelFilter} onChange={e => setTunnel(e.target.value)}
+                className="w-full pl-3 pr-7 py-1.5 text-xs border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none capitalize">
+                <option value="">All Tunnels</option>
+                <option value="sales">Sales</option>
+                <option value="support">Support</option>
+              </select>
             </div>
 
-            {(() => {
-              const needsAgentCount = conversations.filter(c => c.status === 'needs_agent').length
-              return !statusFilter && needsAgentCount > 0 ? (
-                <div className="flex items-center gap-2 border-b border-red-100 bg-red-50 px-4 py-2.5">
-                  <span className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ${needsAgentCount > 0 ? 'animate-pulse' : ''}`}>
-                    {needsAgentCount}
-                  </span>
-                  <span className="text-sm font-medium text-red-800">
-                    conversation{needsAgentCount > 1 ? 's' : ''} need agent attention
-                  </span>
-                  <button onClick={() => setStatus('needs_agent')}
-                    className="ml-auto text-xs font-medium text-red-700 hover:underline">
-                    Show →
-                  </button>
-                </div>
-              ) : null
-            })()}
+            {/* Conversation list */}
             <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
               {loading ? (
                 <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading...</div>
               ) : conversations.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-32 text-gray-400">
-                  <MessageSquare className="w-6 h-6 mb-1 opacity-30" /><p className="text-xs">No conversations</p>
+                  <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
+                  <p className="text-xs">
+                    {activeTab === 'queue' ? 'No conversations waiting' : activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
+                  </p>
                 </div>
               ) : conversations.map(conv => (
                 <button key={conv.id}
@@ -125,16 +168,16 @@ export function Chats() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status]}`} />
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status] ?? 'bg-gray-300'}`} />
                         <span className="font-medium text-sm text-gray-900 truncate">
                           {conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>}
                         </span>
                       </div>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[conv.tunnel]}`}>{conv.tunnel}</span>
-                        <span className="text-[10px] text-gray-400">{conv.message_count} msgs · ${conv.ai_cost_total.toFixed(4)}</span>
+                        <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[conv.tunnel] ?? ''}`}>{conv.tunnel}</span>
+                        <span className="text-[10px] text-gray-400">{conv.message_count} msgs</span>
+                        {conv.mode === 'ai' && <span className="text-[10px] text-amber-500">● AI</span>}
                       </div>
-                      {conv.visitor_email && <p className="text-xs text-gray-400 mt-0.5 truncate">{conv.visitor_email}</p>}
                     </div>
                     <div className="flex flex-col items-end gap-1 shrink-0">
                       <span className="text-[10px] text-gray-400 whitespace-nowrap">{timeAgo(conv.updated_at)}</span>
@@ -149,7 +192,12 @@ export function Chats() {
           {/* Right panel — detail */}
           {selectedId ? (
             <div className="flex-1 overflow-hidden">
-              <ConversationDetail conversationId={selectedId} onClose={() => setSelectedId(null)} usingMock={usingMock} />
+              <ConversationDetail
+                conversationId={selectedId}
+                onClose={() => setSelectedId(null)}
+                activeTab={activeTab}
+                onConversationChange={handleConversationChange}
+              />
             </div>
           ) : (
             <div className="flex-1 hidden md:flex flex-col items-center justify-center text-gray-300">

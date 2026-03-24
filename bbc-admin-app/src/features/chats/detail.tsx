@@ -4,9 +4,15 @@ import {
   Plane, Calendar, Users, FileText, TrendingUp, Clock,
 } from 'lucide-react'
 import type { Conversation, Message, Lead } from '@/lib/types'
-import { getConversation, sendAgentMessage } from '@/lib/api'
+import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
 
-interface Props { conversationId: string; onClose: () => void; usingMock?: boolean }
+interface Props {
+  conversationId: string
+  onClose: () => void
+  activeTab?: 'my_active' | 'queue' | 'my_closed'
+  onConversationChange?: () => void
+  usingMock?: boolean
+}
 
 const ROLE_STYLES: Record<string, { bubble: string; align: string; icon: React.ReactNode }> = {
   user:   { bubble: 'bg-[#0B1829] text-white rounded-2xl rounded-br-sm',                                      align: 'justify-end',    icon: <User className="w-4 h-4" /> },
@@ -21,7 +27,7 @@ const TIER_COLORS: Record<string, string> = {
   bronze: 'bg-orange-100 text-orange-800 border-orange-300',
 }
 
-export default function ConversationDetail({ conversationId, onClose, usingMock }: Props) {
+export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
   const [conv, setConv]       = useState<Conversation | null>(null)
   const [loading, setLoading] = useState(true)
   const [copied, setCopied]   = useState(false)
@@ -76,6 +82,27 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
+  }
+
+  // Claim conversation from queue
+  const handleClaim = async () => {
+    try {
+      await apiFetch(`/api/conversations/${conversationId}/claim`, { method: 'POST' })
+      onConversationChange?.()
+    } catch (err) {
+      console.error('[chat] claim failed:', err)
+    }
+  }
+
+  // Close conversation
+  const handleClose = async () => {
+    if (!confirm('Close this conversation?')) return
+    try {
+      await apiFetch(`/api/conversations/${conversationId}/close`, { method: 'POST' })
+      onConversationChange?.()
+    } catch (err) {
+      console.error('[chat] close failed:', err)
+    }
   }
 
   const copyId = () => {
@@ -173,34 +200,44 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
           <div ref={bottomRef} />
         </div>
 
-        {/* Input + Status */}
+        {/* Input + Actions + Status */}
         <div className="border-t border-gray-200 bg-white">
-          {conv.status !== 'closed' && (
+          {/* Agent input — only on My Active */}
+          {activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="px-4 pt-3 pb-2">
               <div className="flex gap-2">
-                <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Type a reply as agent..."
-                  rows={1}
-                  className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm
-                             focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30
-                             placeholder:text-gray-400 disabled:opacity-50"
-                  disabled={sending}
-                />
-                <button
-                  onClick={handleSend}
-                  disabled={!input.trim() || sending}
-                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0B1829] text-white text-sm font-medium
-                             hover:bg-[#0B1829]/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0"
-                >
-                  <Send className="w-4 h-4" />
-                  {sending ? '...' : 'Send'}
+                <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
+                  placeholder="Type a reply as agent..." rows={1} disabled={sending}
+                  className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-gray-400 disabled:opacity-50" />
+                <button onClick={handleSend} disabled={!input.trim() || sending}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0B1829] text-white text-sm font-medium hover:bg-[#0B1829]/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0">
+                  <Send className="w-4 h-4" />{sending ? '...' : 'Send'}
                 </button>
               </div>
             </div>
           )}
+
+          {/* Take button — only on Queue */}
+          {activeTab === 'queue' && (
+            <div className="px-4 py-3">
+              <button onClick={handleClaim}
+                className="w-full py-2.5 rounded-xl bg-[#C9A54E] text-white text-sm font-semibold hover:bg-[#C9A54E]/90 transition-all">
+                Take This Conversation
+              </button>
+            </div>
+          )}
+
+          {/* Close button — only on My Active */}
+          {activeTab === 'my_active' && conv.status !== 'closed' && (
+            <div className="px-4 pb-2">
+              <button onClick={handleClose}
+                className="w-full py-2 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50 hover:text-red-500 transition-all">
+                Close Conversation
+              </button>
+            </div>
+          )}
+
+          {/* Status bar */}
           <div className="px-4 py-2 flex items-center justify-between text-xs text-gray-400 border-t border-gray-50">
             <span>
               Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-gray-500'}`}>{conv.status}</span>
@@ -213,7 +250,8 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
         </div>
       </div>
 
-      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile) */}
+      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, hidden on My Closed) */}
+      {activeTab !== 'my_closed' && (
       <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto shrink-0 hidden lg:block">
         <div className="p-4 space-y-4">
 
@@ -387,6 +425,7 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
 
         </div>
       </div>
+      )}
 
     </div>
   )
