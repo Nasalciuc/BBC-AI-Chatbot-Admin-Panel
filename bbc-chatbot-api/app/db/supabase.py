@@ -178,7 +178,7 @@ async def get_conversations(
 
 
 async def get_conversation(conversation_id: str) -> Optional[dict]:
-    """One conversation + all its messages."""
+    """One conversation + all its messages + associated lead."""
     try:
         db = get_client()
         conv = await _run_sync(
@@ -193,8 +193,17 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
             .order("created_at", desc=False)
             .execute()
         )
+        # Fetch associated lead (if exists)
+        lead_res = await _run_sync(
+            lambda: db.table("leads")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .limit(1)
+            .execute()
+        )
         result = dict(conv.data)
         result["messages"] = msgs.data or []
+        result["lead"] = lead_res.data[0] if lead_res.data else None
         return result
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
