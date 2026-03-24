@@ -153,6 +153,8 @@ async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    agent_id_is_null: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list, int]:
@@ -160,9 +162,13 @@ async def get_conversations(
     try:
         db = get_client()
         def _query():
-            q = db.table("conversations").select("*", count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
+            q = db.table("conversations").select("*", count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
             if status:  q = q.eq("status", status)
+            if agent_id:
+                q = q.eq("assigned_agent_id", agent_id)
+            elif agent_id_is_null:
+                q = q.is_("assigned_agent_id", "null")
             if search:
                 q = q.or_(
                     f"visitor_name.ilike.%{search}%,"

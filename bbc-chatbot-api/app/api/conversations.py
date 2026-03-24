@@ -26,6 +26,7 @@ def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
 async def list_conversations(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
     status: Optional[str] = Query(None, pattern="^(active|pending|closed)$"),
+    assigned_to: Optional[str] = Query(None, pattern="^(me|none|all)$"),
     search: Optional[str] = Query(None, max_length=100),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -33,7 +34,21 @@ async def list_conversations(
 ):
     try:
         tunnel = _enforce_tunnel(user, tunnel)
-        rows, total = await db.get_conversations(tunnel=tunnel, status=status, search=search, limit=limit, offset=offset)
+
+        # Resolve assigned_to into an agent_id filter
+        agent_id_filter: Optional[str] = None
+        agent_id_is_null: bool = False
+        if assigned_to == "me":
+            agent_id_filter = user.get("id")
+        elif assigned_to == "none":
+            agent_id_is_null = True
+        # "all" or None → no agent filter (owner/admin sees everything)
+
+        rows, total = await db.get_conversations(
+            tunnel=tunnel, status=status, search=search,
+            agent_id=agent_id_filter, agent_id_is_null=agent_id_is_null,
+            limit=limit, offset=offset,
+        )
         return {"success": True, "data": rows, "count": total}
     except Exception as e:
         return {"success": False, "data": [], "count": 0, "error": str(e)}
@@ -98,3 +113,45 @@ async def send_agent_message(
     })
 
     return {"success": True, "data": msg}
+
+
+@router.post("/conversations/{conversation_id}/claim")
+async def claim_conversation(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Operator claims an unassigned conversation from the queue."""
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    # Check if already assigned to someone else
+    current_agent = conv.get("assigned_agent_id")
+    if current_agent and current_agent != user.get("id"):
+        raise HTTPException(status_code=409, detail="Conversation already taken by another agent")
+
+    await db.update_conversation(conversation_id, {
+        "mode": "human",
+        "assigned_agent_id": user.get("id"),
+    })
+    return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": user.get("id")}}
+
+
+@router.post("/conversations/{conversation_id}/close")
+async def close_conversation(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Close a conversation. Sets status=closed and closed_at."""
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    from datetime import datetime, timezone
+    await db.update_conversation(conversation_id, {
+        "status": "closed",
+        "closed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "data": {"conversation_id": conversation_id, "status": "closed"}}
