@@ -201,6 +201,23 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
         return None
 
 
+async def get_conversation_mode(conversation_id: str) -> Optional[str]:
+    """Get ONLY the mode of a conversation. Lightweight query for routing check."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .select("mode")
+            .eq("id", conversation_id)
+            .single()
+            .execute()
+        )
+        return res.data.get("mode") if res.data else None
+    except Exception as e:
+        logger.warning(f"get_conversation_mode error: {e}")
+        return None
+
+
 async def update_conversation(conversation_id: str, payload: dict) -> Optional[dict]:
     try:
         db = get_client()

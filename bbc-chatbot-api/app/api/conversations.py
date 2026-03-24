@@ -1,9 +1,12 @@
 """Admin API — conversations CRUD."""
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from app.db import supabase as db
 from app.models.admin import ConversationUpdate
 from app.security.auth import get_current_user
+from app.security.input_sanitizer import sanitize_message
+from app.services.conversation_service import add_message
 
 router = APIRouter()
 
@@ -59,3 +62,39 @@ async def update_conversation(conversation_id: str, body: ConversationUpdate):
         return {"success": True, "data": result, "count": 1}
     except Exception as e:
         return {"success": False, "data": None, "count": 0, "error": str(e)}
+
+
+class AgentMessageBody(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+@router.post("/conversations/{conversation_id}/messages")
+async def send_agent_message(
+    conversation_id: str,
+    body: AgentMessageBody,
+    user: dict = Depends(get_current_user),
+):
+    """Agent sends a message in a conversation. Auto-sets mode to 'human'."""
+    # 1. Verify conversation exists and agent has tunnel access
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    # 2. Sanitize agent message (same rules as visitor messages)
+    clean_content = sanitize_message(body.content)
+
+    # 3. Save message with role='agent'
+    msg = await add_message(
+        conversation_id=conversation_id,
+        role="agent",
+        content=clean_content,
+    )
+
+    # 4. Auto-set mode to 'human' and assign this agent
+    await db.update_conversation(conversation_id, {
+        "mode": "human",
+        "assigned_agent_id": user.get("id"),
+    })
+
+    return {"success": True, "data": msg}

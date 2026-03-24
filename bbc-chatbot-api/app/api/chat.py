@@ -36,7 +36,24 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 detail="Conversation message limit reached. Please start a new conversation.",
             )
 
-    # 3. Run pipeline
+    # 3. If existing conversation in 'human' mode → save message only, skip AI
+    if req.conversation_id:
+        mode = await db.get_conversation_mode(req.conversation_id)
+        if mode == "human":
+            from app.services.conversation_service import add_message
+            await add_message(
+                conversation_id=req.conversation_id,
+                role="user",
+                content=clean_message,
+            )
+            return ChatResponse(
+                conversation_id=req.conversation_id,
+                message="One moment please, connecting you with a specialist...",
+                type="queued",
+                model_used="none",
+            )
+
+    # 4. AI mode or new conversation → run pipeline as before
     response = await process_message(
         conversation_id=req.conversation_id,
         message=clean_message,
