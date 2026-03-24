@@ -23,6 +23,7 @@ import type {
   KBEntryCreate,
   Lead,
   LeadsResponse,
+  Message,
 } from './types'
 import { getCookie } from './cookies'
 
@@ -116,6 +117,22 @@ export async function updateConversation(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+  return res.data
+}
+
+export async function sendAgentMessage(
+  conversationId: string,
+  content: string,
+): Promise<Message> {
+  const res = await apiFetch<{ success: boolean; data: Message }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    },
+  )
+  if (!res.success) throw new ApiError(500, 'Failed to send message')
   return res.data
 }
 

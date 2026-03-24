@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
-import { X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send } from 'lucide-react'
 import type { Conversation, Message } from '@/lib/types'
-import { getConversation } from '@/lib/api'
+import { getConversation, sendAgentMessage } from '@/lib/api'
 
 interface Props { conversationId: string; onClose: () => void; usingMock?: boolean }
 
@@ -18,6 +18,40 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
   const [loading, setLoading] = useState(true)
   const [copied, setCopied]   = useState(false)
   const bottomRef             = useRef<HTMLDivElement>(null)
+
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+
+  // Reload conversation data (used by polling and after send)
+  const reload = useCallback(async () => {
+    if (usingMock) return
+    try {
+      const data = await getConversation(conversationId)
+      setConv(data)
+    } catch {}
+  }, [conversationId, usingMock])
+
+  // Send agent message
+  const handleSend = async () => {
+    if (!input.trim() || sending) return
+    setSending(true)
+    try {
+      await sendAgentMessage(conversationId, input.trim())
+      setInput('')
+      await reload()
+    } catch (err) {
+      console.error('[chat] Failed to send agent message:', err)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -37,6 +71,13 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
   }, [conversationId, usingMock])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [conv?.messages?.length])
+
+  // Poll for new messages every 5 seconds (only when conversation is active)
+  useEffect(() => {
+    if (usingMock || conv?.status === 'closed') return
+    const interval = setInterval(reload, 5000)
+    return () => clearInterval(interval)
+  }, [usingMock, conv?.status, reload])
 
   const copyId = () => {
     navigator.clipboard.writeText(conversationId)
@@ -116,12 +157,47 @@ export default function ConversationDetail({ conversationId, onClose, usingMock 
         <div ref={bottomRef} />
       </div>
 
-      {/* Footer */}
-      <div className="px-4 py-3 border-t border-gray-100 bg-white">
-        <div className="flex items-center justify-between text-xs text-gray-400">
+      {/* Input + Status Footer */}
+      <div className="border-t border-gray-200 bg-white">
+        {/* Agent chat input — only show if conversation is active */}
+        {conv.status !== 'closed' && (
+          <div className="px-4 pt-3 pb-2">
+            <div className="flex gap-2">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Type a reply as agent..."
+                rows={1}
+                className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm
+                           focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30
+                           placeholder:text-gray-400 disabled:opacity-50"
+                disabled={sending}
+              />
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || sending}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0B1829] text-white text-sm font-medium
+                           hover:bg-[#0B1829]/90 disabled:opacity-30 disabled:cursor-not-allowed
+                           transition-all shrink-0"
+              >
+                <Send className="w-4 h-4" />
+                {sending ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
+        )}
+        {/* Status bar */}
+        <div className="px-4 py-2 flex items-center justify-between text-xs text-gray-400 border-t border-gray-50">
           <span>
             Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-gray-500'}`}>{conv.status}</span>
-            {' · '}Mode: <span className="font-medium text-gray-600">{conv.mode}</span>
+            {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-gray-600'}`}>{conv.mode}</span>
+            {conv.mode === 'ai' && conv.status === 'active' && (
+              <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>
+            )}
+            {conv.mode === 'human' && (
+              <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>
+            )}
           </span>
           <span>{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
         </div>
