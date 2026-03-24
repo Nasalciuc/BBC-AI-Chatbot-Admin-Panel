@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useDeferredValue } from 'react'
+import { useState, useDeferredValue } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
 import { getConversations, apiFetch } from '@/lib/api'
@@ -37,71 +38,44 @@ function timeAgo(iso: string): string {
 }
 
 export function Chats() {
-  const [activeTab, setActiveTab]           = useState<TabKey>('my_active')
-  const [conversations, setConversations]   = useState<Conversation[]>([])
-  const [counts, setCounts]                 = useState<Record<TabKey, number>>({ my_active: 0, queue: 0, my_closed: 0 })
-  const [initialLoad, setInitialLoad]       = useState(true)
-  const [search, setSearch]                 = useState('')
+  const [activeTab, setActiveTab] = useState<TabKey>('my_active')
+  const [search, setSearch]       = useState('')
+  const [tunnelFilter, setTunnel] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const debouncedSearch = useDeferredValue(search)
-  const [tunnelFilter, setTunnel]           = useState('')
-  const [selectedId, setSelectedId]         = useState<string | null>(null)
+  const queryClient = useQueryClient()
 
-  // Fetch conversations for the active tab
-  const fetchTab = useCallback(async () => {
-    try {
-      const tab = TABS.find(t => t.key === activeTab)!
-      const params: Record<string, string> = { ...tab.params, limit: '50' }
-      if (debouncedSearch) params.search = debouncedSearch
-      if (tunnelFilter) params.tunnel = tunnelFilter
-      const json = await getConversations(params)
-      setConversations(prev => {
-        if (prev.length === json.data.length &&
-            prev[0]?.updated_at === json.data[0]?.updated_at &&
-            prev[prev.length-1]?.id === json.data[json.data.length-1]?.id) {
-          return prev  // same data, skip re-render
-        }
-        return json.data
-      })
-      setCounts(prev => ({ ...prev, [activeTab]: json.count }))
-    } catch (err) {
-      console.error('[chats] fetch error:', err)
-      setConversations([])
-    } finally { setInitialLoad(false) }
-  }, [activeTab, debouncedSearch, tunnelFilter])
+  // Conversation list — cached per tab, polls every 30s
+  const tab = TABS.find(t => t.key === activeTab)!
+  const listParams: Record<string, string> = { ...tab.params, limit: '50' }
+  if (debouncedSearch) listParams.search = debouncedSearch
+  if (tunnelFilter) listParams.tunnel = tunnelFilter
 
-  // Fetch counts for ALL tabs (1 request via /counts endpoint)
-  const fetchCounts = useCallback(async () => {
-    try {
-      const params: Record<string, string> = {}
-      if (tunnelFilter) params.tunnel = tunnelFilter
-      const qs = new URLSearchParams(params).toString()
+  const { data: convResponse, isLoading } = useQuery({
+    queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter],
+    queryFn: () => getConversations(listParams),
+    refetchInterval: 30_000,
+  })
+  const conversations: Conversation[] = convResponse?.data ?? []
+
+  // Counts — 1 request for 3 numbers, polls every 10s
+  const { data: counts = { my_active: 0, queue: 0, my_closed: 0 } } = useQuery({
+    queryKey: ['conversation-counts', tunnelFilter],
+    queryFn: async () => {
+      const qs = tunnelFilter ? `?tunnel=${tunnelFilter}` : ''
       const res = await apiFetch<{ success: boolean; data: Record<TabKey, number> }>(
-        `/api/conversations/counts${qs ? '?' + qs : ''}`
+        `/api/conversations/counts${qs}`
       )
-      if (res.success && res.data) {
-        setCounts(res.data)
-      }
-    } catch {}
-  }, [tunnelFilter])
+      return res.data
+    },
+    refetchInterval: 10_000,
+  })
 
-  useEffect(() => { fetchTab() }, [fetchTab])
-  useEffect(() => { fetchCounts() }, [fetchCounts])
-
-  // Auto-refresh: 30s interval, pause when tab hidden
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (document.visibilityState !== 'visible') return
-      fetchTab()
-      fetchCounts()
-    }, 30000)
-    return () => clearInterval(interval)
-  }, [fetchTab, fetchCounts])
-
-  // When a conversation is claimed/closed, refresh
+  // Refresh all data on claim/close
   const handleConversationChange = () => {
     setSelectedId(null)
-    fetchTab()
-    fetchCounts()
+    queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    queryClient.invalidateQueries({ queryKey: ['conversation-counts'] })
   }
 
   return (
@@ -161,7 +135,7 @@ export function Chats() {
 
             {/* Conversation list */}
             <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
-              {initialLoad ? (
+              {isLoading ? (
                 <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading...</div>
               ) : conversations.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-32 text-gray-400">

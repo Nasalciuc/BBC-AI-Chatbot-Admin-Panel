@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send,
   Plane, Calendar, Users, FileText, TrendingUp, Clock,
 } from 'lucide-react'
-import type { Conversation, Message, Lead } from '@/lib/types'
+import type { Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
 
 interface Props {
@@ -28,73 +29,55 @@ const TIER_COLORS: Record<string, string> = {
 }
 
 export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
-  const [conv, setConv]       = useState<Conversation | null>(null)
-  const [loading, setLoading] = useState(true)
   const [copied, setCopied]   = useState(false)
   const [input, setInput]     = useState('')
   const [sending, setSending] = useState(false)
   const bottomRef             = useRef<HTMLDivElement>(null)
+  const lastMsgTime           = useRef('')
+  const queryClient           = useQueryClient()
 
-  const reload = useCallback(async () => {
-    if (usingMock) return
-    try {
-      const data = await getConversation(conversationId)
-      setConv(data)
-    } catch {}
-  }, [conversationId, usingMock])
+  // Full conversation load — cached, long staleTime
+  const { data: conv, isLoading: loading } = useQuery({
+    queryKey: ['conversation', conversationId],
+    queryFn: () => getConversation(conversationId),
+    enabled: !usingMock,
+    staleTime: 60_000,
+  })
 
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    const load = async () => {
-      try {
-        if (usingMock) throw new Error('mock mode')
-        const data = await getConversation(conversationId)
-        if (!cancelled) setConv(data)
-      } catch (err) {
-        console.error('[chat-detail] API error:', err)
-        if (!cancelled) setConv(null)
-      } finally { if (!cancelled) setLoading(false) }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [conversationId, usingMock])
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [conv?.messages?.length])
-
-  // Incremental polling: only fetch NEW messages, not everything
-  const lastMsgTime = useRef<string>('')
-
+  // Track last message timestamp for incremental polling
   useEffect(() => {
     if (conv?.messages?.length) {
       lastMsgTime.current = conv.messages[conv.messages.length - 1].created_at
     }
   }, [conv?.messages?.length])
 
-  useEffect(() => {
-    // Only poll on My Active tab (no poll on Queue/Closed)
-    if (usingMock || conv?.status === 'closed' || activeTab !== 'my_active') return
-    const interval = setInterval(async () => {
-      if (document.visibilityState !== 'visible') return
-      try {
-        const afterParam = lastMsgTime.current ? `?after=${encodeURIComponent(lastMsgTime.current)}` : ''
-        const res = await apiFetch<{ success: boolean; data: Message[] }>(
-          `/api/conversations/${conversationId}/messages${afterParam}`
-        )
-        if (res.success && res.data && res.data.length > 0) {
-          setConv(prev => {
-            if (!prev) return prev
-            const existingIds = new Set((prev.messages ?? []).map(m => m.id))
-            const newMsgs = res.data.filter(m => !existingIds.has(m.id))
-            if (newMsgs.length === 0) return prev
-            return { ...prev, messages: [...(prev.messages ?? []), ...newMsgs] }
-          })
-          lastMsgTime.current = res.data[res.data.length - 1].created_at
-        }
-      } catch {}
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [conversationId, usingMock, conv?.status, activeTab])
+  // Incremental message polling — ONLY new messages, ONLY on My Active tab
+  const { data: newMessages = [] } = useQuery<Message[]>({
+    queryKey: ['messages-incremental', conversationId],
+    queryFn: async () => {
+      if (!lastMsgTime.current) return []
+      const res = await apiFetch<{ success: boolean; data: Message[] }>(
+        `/api/conversations/${conversationId}/messages?after=${encodeURIComponent(lastMsgTime.current)}`
+      )
+      if (res.success && res.data?.length > 0) {
+        lastMsgTime.current = res.data[res.data.length - 1].created_at
+      }
+      return res.success ? res.data : []
+    },
+    refetchInterval: activeTab === 'my_active' ? 5_000 : false,
+    enabled: !!conv && activeTab === 'my_active',
+  })
+
+  // Merge base messages + incremental new ones
+  const allMessages: Message[] = useMemo(() => {
+    const base = conv?.messages ?? []
+    if (!newMessages.length) return base
+    const existingIds = new Set(base.map(m => m.id))
+    const fresh = newMessages.filter(m => !existingIds.has(m.id))
+    return fresh.length > 0 ? [...base, ...fresh] : base
+  }, [conv?.messages, newMessages])
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
 
   const handleSend = async () => {
     if (!input.trim() || sending) return
@@ -102,7 +85,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     try {
       await sendAgentMessage(conversationId, input.trim())
       setInput('')
-      await reload()
+      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      queryClient.invalidateQueries({ queryKey: ['messages-incremental', conversationId] })
     } catch (err) {
       console.error('[chat] Failed to send:', err)
     } finally { setSending(false) }
@@ -147,7 +131,6 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     </div>
   )
 
-  const messages: Message[] = conv.messages ?? []
   const lead: Lead | null | undefined = conv.lead
 
   return (
@@ -182,7 +165,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               )}
             </div>
             <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-400">
-              <span>{messages.length} messages</span>
+              <span>{allMessages.length} messages</span>
               <span>${conv.ai_cost_total.toFixed(4)} AI cost</span>
               <button onClick={copyId} className="flex items-center gap-0.5 hover:text-gray-200 transition">
                 {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -197,9 +180,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-gray-50">
-          {messages.length === 0 ? (
+          {allMessages.length === 0 ? (
             <div className="text-center text-gray-400 text-sm py-8">No messages</div>
-          ) : messages.map(msg => {
+          ) : allMessages.map(msg => {
             const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system
             return (
               <div key={msg.id} className={`flex ${style.align} gap-2`}>
@@ -436,7 +419,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
             <div className="space-y-1 text-xs text-gray-500">
               <p>Started: <span className="text-gray-700">{new Date(conv.created_at).toLocaleString()}</span></p>
-              <p>Messages: <span className="text-gray-700">{messages.length}</span></p>
+              <p>Messages: <span className="text-gray-700">{allMessages.length}</span></p>
               <p>AI cost: <span className="text-gray-700">${conv.ai_cost_total.toFixed(4)}</span></p>
               {conv.assigned_agent_id && (
                 <p>Agent: <span className="text-gray-700">{conv.assigned_agent_id.slice(0, 8)}...</span></p>
