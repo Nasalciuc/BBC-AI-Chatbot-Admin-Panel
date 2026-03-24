@@ -38,6 +38,6 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 
-# Lock files (keep pnpm-lock, ignore others)
-package-lock.json
+# Lock files
 yarn.lock
+pnpm-lock.yaml
