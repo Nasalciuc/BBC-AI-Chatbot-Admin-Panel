@@ -23,7 +23,9 @@ export interface Conversation {
   created_at: string
   updated_at: string
   closed_at: string | null
+  summary?: string | null
   messages?: Message[]
+  lead?: Lead | null
   metadata?: Record<string, string>
 }
 
