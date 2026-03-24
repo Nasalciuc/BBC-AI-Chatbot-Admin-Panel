@@ -54,6 +54,31 @@ async def list_conversations(
         return {"success": False, "data": [], "count": 0, "error": str(e)}
 
 
+@router.get("/conversations/counts")
+async def get_conversation_counts(
+    tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
+    user: dict = Depends(get_current_user),
+):
+    """Lightweight counts for queue tabs. Returns 3 numbers in 1 request."""
+    tunnel = _enforce_tunnel(user, tunnel)
+    agent_id = user.get("id")
+    counts = await db.get_conversation_counts(
+        agent_id=agent_id,
+        tunnel=tunnel,
+    )
+    return {"success": True, "data": counts}
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: str,
+    after: Optional[str] = Query(None),
+):
+    """Get messages, optionally only those after a timestamp (incremental polling)."""
+    msgs = await db.get_messages_after(conversation_id, after)
+    return {"success": True, "data": msgs}
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str):
     try:

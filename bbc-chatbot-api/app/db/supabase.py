@@ -184,29 +184,34 @@ async def get_conversations(
 
 
 async def get_conversation(conversation_id: str) -> Optional[dict]:
-    """One conversation + all its messages + associated lead."""
+    """One conversation + all its messages + associated lead.
+    Messages and lead queries run in PARALLEL (don't depend on each other)."""
     try:
-        db = get_client()
+        import asyncio
+        db_client = get_client()
         conv = await _run_sync(
-            lambda: db.table("conversations").select("*").eq("id", conversation_id).single().execute()
+            lambda: db_client.table("conversations").select("*").eq("id", conversation_id).single().execute()
         )
         if not conv.data:
             return None
-        msgs = await _run_sync(
-            lambda: db.table("messages")
+
+        # Run msgs + lead in PARALLEL — both only need conversation_id
+        msgs_future = _run_sync(
+            lambda: db_client.table("messages")
             .select("*")
             .eq("conversation_id", conversation_id)
             .order("created_at", desc=False)
             .execute()
         )
-        # Fetch associated lead (if exists)
-        lead_res = await _run_sync(
-            lambda: db.table("leads")
+        lead_future = _run_sync(
+            lambda: db_client.table("leads")
             .select("*")
             .eq("conversation_id", conversation_id)
             .limit(1)
             .execute()
         )
+        msgs, lead_res = await asyncio.gather(msgs_future, lead_future)
+
         result = dict(conv.data)
         result["messages"] = msgs.data or []
         result["lead"] = lead_res.data[0] if lead_res.data else None
@@ -214,6 +219,61 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
         return None
+
+
+async def get_conversation_counts(
+    agent_id: str,
+    tunnel: Optional[str] = None,
+) -> dict:
+    """Lightweight counts for queue tabs. 3 fast count queries, zero row data."""
+    try:
+        db_client = get_client()
+
+        async def _count(agent_filter: str, status_val: str) -> int:
+            def _q():
+                q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
+                if tunnel:
+                    q = q.eq("tunnel", tunnel)
+                q = q.eq("status", status_val)
+                if agent_filter == "me":
+                    q = q.eq("assigned_agent_id", agent_id)
+                elif agent_filter == "none":
+                    q = q.is_("assigned_agent_id", "null")
+                return q.limit(0).execute()
+            res = await _run_sync(_q)
+            return res.count or 0
+
+        my_active = await _count("me", "active")
+        queue_count = await _count("none", "active")
+        my_closed = await _count("me", "closed")
+
+        return {"my_active": my_active, "queue": queue_count, "my_closed": my_closed}
+    except Exception as e:
+        logger.error(f"get_conversation_counts error: {e}")
+        return {"my_active": 0, "queue": 0, "my_closed": 0}
+
+
+async def get_messages_after(
+    conversation_id: str,
+    after: Optional[str] = None,
+) -> list:
+    """Get messages, optionally only those created after a timestamp.
+    When 'after' is provided, returns only NEW messages (incremental polling).
+    When 'after' is None, returns ALL messages (initial load)."""
+    try:
+        db_client = get_client()
+        def _q():
+            q = db_client.table("messages").select("*") \
+                .eq("conversation_id", conversation_id) \
+                .order("created_at", desc=False)
+            if after:
+                q = q.gt("created_at", after)
+            return q.execute()
+        res = await _run_sync(_q)
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_messages_after error: {e}")
+        return []
 
 
 async def get_conversation_mode(conversation_id: str) -> Optional[str]:
