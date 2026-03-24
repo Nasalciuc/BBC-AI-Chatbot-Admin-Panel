@@ -18,9 +18,7 @@ import {
 import { Input } from '@/components/ui/input'
 
 const formSchema = z.object({
-  email: z.email({
-    error: (iss) => (iss.input === '' ? 'Please enter your email' : undefined),
-  }),
+  email: z.string().min(1, 'Please enter your email').email('Invalid email address'),
 })
 
 export function ForgotPasswordForm({

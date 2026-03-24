@@ -36,9 +36,7 @@ const tunnelOptions = [
 const formSchema = z
   .object({
     name: z.string().min(2, 'Name is required (min 2 chars).'),
-    email: z.email({
-      error: (iss) => (iss.input === '' ? 'Email is required.' : undefined),
-    }),
+    email: z.string().min(1, 'Email is required.').email('Invalid email address'),
     phone: z
       .string()
       .regex(/^\+?[1-9]\d{6,14}$/, 'Invalid phone (E.164: +1234567890)')

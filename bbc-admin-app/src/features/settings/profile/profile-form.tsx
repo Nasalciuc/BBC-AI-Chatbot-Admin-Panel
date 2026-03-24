@@ -29,12 +29,7 @@ const profileFormSchema = z.object({
     .string('Please enter your username.')
     .min(2, 'Username must be at least 2 characters.')
     .max(30, 'Username must not be longer than 30 characters.'),
-  email: z.email({
-    error: (iss) =>
-      iss.input === undefined
-        ? 'Please select an email to display.'
-        : undefined,
-  }),
+  email: z.string().min(1, 'Please select an email to display.').email('Invalid email address'),
   bio: z.string().max(160).min(4),
   urls: z
     .array(

@@ -37,10 +37,7 @@ const phoneRegex = /^\+?[1-9]\d{6,14}$/
 
 const formSchema = z.object({
   name: z.string().min(2, 'Name is required (min 2 chars).'),
-  email: z.email({
-    error: (iss) =>
-      iss.input === '' ? 'Please enter an email to invite.' : undefined,
-  }),
+  email: z.string().min(1, 'Please enter an email to invite.').email('Invalid email address'),
   phone: z
     .string()
     .regex(phoneRegex, 'Invalid phone number (use E.164: +1234567890)')
