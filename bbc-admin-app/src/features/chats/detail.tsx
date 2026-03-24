@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send,
-  Plane, Calendar, Users, Star, FileText, TrendingUp, Clock,
+  Plane, Calendar, Users, FileText, TrendingUp, Clock,
 } from 'lucide-react'
 import type { Conversation, Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage } from '@/lib/api'
