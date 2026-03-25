@@ -1,4 +1,4 @@
-import { useState, useDeferredValue } from 'react'
+import { useState, useRef, useEffect, useDeferredValue } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
@@ -70,6 +70,15 @@ export function Chats() {
     },
     refetchInterval: 10_000,
   })
+
+  // Notification sound when queue grows (new conversation waiting)
+  const prevQueueRef = useRef(-1)
+  useEffect(() => {
+    if (prevQueueRef.current >= 0 && counts.queue > prevQueueRef.current) {
+      new Audio('/notification.wav').play().catch(() => {})
+    }
+    prevQueueRef.current = counts.queue
+  }, [counts.queue])
 
   // Refresh all data on claim/close
   const handleConversationChange = () => {
