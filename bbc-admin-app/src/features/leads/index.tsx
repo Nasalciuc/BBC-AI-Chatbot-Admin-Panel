@@ -188,7 +188,7 @@ export function Leads() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-gray-600 text-xs">{lead.departure_date ?? <span className="text-gray-300">—</span>}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <select value={lead.status} disabled={updatingId === lead.id}
                           onChange={e => handleStatusUpdate(lead.id, e.target.value)}
                           className="text-xs border border-gray-200 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A54E] disabled:opacity-50">

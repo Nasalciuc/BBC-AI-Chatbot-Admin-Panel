@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 
 interface Props {
   conversationId: string
@@ -29,8 +30,9 @@ const TIER_COLORS: Record<string, string> = {
 }
 
 export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
-  const [copied, setCopied]   = useState(false)
-  const [input, setInput]     = useState('')
+  const [copied, setCopied]           = useState(false)
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false)
+  const [input, setInput]             = useState('')
   const [sending, setSending] = useState(false)
   const bottomRef             = useRef<HTMLDivElement>(null)
   const lastMsgTime           = useRef('')
@@ -107,10 +109,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   // Close conversation
-  const handleClose = async () => {
-    if (!confirm('Close this conversation?')) return
+  const handleCloseConfirm = async () => {
     try {
       await apiFetch(`/api/conversations/${conversationId}/close`, { method: 'POST' })
+      setCloseDialogOpen(false)
       onConversationChange?.()
     } catch (err) {
       console.error('[chat] close failed:', err)
@@ -241,10 +243,19 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           {/* Close button — only on My Active */}
           {activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="px-4 pb-2">
-              <button onClick={handleClose}
+              <button onClick={() => setCloseDialogOpen(true)}
                 className="w-full py-2 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50 hover:text-red-500 transition-all">
                 Close Conversation
               </button>
+              <ConfirmDialog
+                open={closeDialogOpen}
+                onOpenChange={setCloseDialogOpen}
+                title="Close Conversation"
+                desc="Are you sure you want to close this conversation? The visitor will no longer receive replies."
+                confirmText="Close"
+                destructive
+                handleConfirm={handleCloseConfirm}
+              />
             </div>
           )}
 
@@ -254,7 +265,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-gray-500'}`}>{conv.status}</span>
               {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-gray-600'}`}>{conv.mode}</span>
               {conv.mode === 'ai' && conv.status === 'active' && <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>}
-              {conv.mode === 'human' && <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>}
+              {conv.mode === 'human' && conv.status === 'active' && <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>}
             </span>
             <span>{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
           </div>
