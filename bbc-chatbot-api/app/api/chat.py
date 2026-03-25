@@ -36,22 +36,39 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 detail="Conversation message limit reached. Please start a new conversation.",
             )
 
-    # 3. If existing conversation in 'human' mode → save message only, skip AI
+    # 3. If existing conversation in 'human' mode
     if req.conversation_id:
         mode = await db.get_conversation_mode(req.conversation_id)
         if mode == "human":
-            from app.services.conversation_service import add_message
-            await add_message(
-                conversation_id=req.conversation_id,
-                role="user",
-                content=clean_message,
+            # Check: has agent been silent > 5 minutes? → fallback to AI
+            from datetime import datetime, timezone, timedelta
+            last_agent_time = await db.get_last_agent_message_time(req.conversation_id)
+            agent_silent = (
+                last_agent_time is not None
+                and (datetime.now(timezone.utc) - last_agent_time) > timedelta(minutes=5)
             )
-            return ChatResponse(
-                conversation_id=req.conversation_id,
-                message="One moment please, connecting you with a specialist...",
-                type="queued",
-                model_used="none",
-            )
+            if agent_silent:
+                # Agent hasn't replied in 5 min → revert to AI, fall through to pipeline
+                logger.info(f"[fallback] Conv {req.conversation_id}: agent silent 5min → AI")
+                await db.update_conversation(req.conversation_id, {
+                    "mode": "ai",
+                    "assigned_agent_id": None,
+                })
+                # Don't return — fall through to step 3.5 / step 4 (AI pipeline)
+            else:
+                # Agent is active → save message for agent, skip AI
+                from app.services.conversation_service import add_message
+                await add_message(
+                    conversation_id=req.conversation_id,
+                    role="user",
+                    content=clean_message,
+                )
+                return ChatResponse(
+                    conversation_id=req.conversation_id,
+                    message="One moment please, connecting you with a specialist...",
+                    type="queued",
+                    model_used="none",
+                )
 
     # 3.5. New conversation? Try routing to an available agent first
     if not req.conversation_id:

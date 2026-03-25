@@ -893,6 +893,52 @@ async def get_agent_active_count(agent_id: str) -> int:
         return 0
 
 
+async def get_stale_agent_conversations(timeout_seconds: int) -> list:
+    """Get active human-mode conversations assigned to agents who went offline.
+    Uses !inner join on users table to filter by last_seen_at."""
+    try:
+        db_client = get_client()
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, assigned_agent_id, users!inner(last_seen_at)")
+            .eq("status", "active")
+            .eq("mode", "human")
+            .not_.is_("assigned_agent_id", "null")
+            .lt("users.last_seen_at", cutoff)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_stale_agent_conversations error: {e}")
+        return []
+
+
+async def get_last_agent_message_time(conversation_id: str):
+    """Get timestamp of the most recent agent message in a conversation.
+    Returns datetime or None."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("messages")
+            .select("created_at")
+            .eq("conversation_id", conversation_id)
+            .eq("role", "agent")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if res.data and res.data[0].get("created_at"):
+            from datetime import datetime
+            raw = res.data[0]["created_at"]
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return None
+    except Exception as e:
+        logger.error(f"get_last_agent_message_time error: {e}")
+        return None
+
+
 async def get_all_agents_status(timeout_seconds: int = 120) -> list:
     """All agents with computed online/offline status."""
     try:
