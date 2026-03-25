@@ -1,4 +1,5 @@
 import { Outlet } from '@tanstack/react-router'
+import { useHeartbeat } from '@/hooks/use-heartbeat'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
@@ -12,6 +13,7 @@ type AuthenticatedLayoutProps = {
 }
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
+  useHeartbeat()
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   return (
     <SearchProvider>
