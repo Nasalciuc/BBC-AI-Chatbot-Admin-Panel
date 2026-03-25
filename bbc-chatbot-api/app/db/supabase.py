@@ -830,3 +830,89 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             "conversations_trend_v2": [], "hot_leads": [],
             "leads_sparkline_7d": [0, 0, 0, 0, 0, 0, 0], "funnel": [],
         }
+
+
+# ════════════════════════════════════════════════════════════════
+# AGENT PRESENCE & ROUTING
+# ════════════════════════════════════════════════════════════════
+
+
+async def update_user_last_seen(user_id: str) -> None:
+    """Update agent's last_seen_at timestamp (heartbeat)."""
+    try:
+        db_client = get_client()
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await _run_sync(
+            lambda: db_client.table("users")
+            .update({"last_seen_at": now_iso})
+            .eq("id", user_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(f"update_user_last_seen error: {e}")
+
+
+async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
+    """Get agents online (heartbeat within timeout) matching tunnel scope."""
+    try:
+        db_client = get_client()
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
+
+        def _q():
+            return (
+                db_client.table("users")
+                .select("id, name, email, role, tunnel_scope, last_seen_at")
+                .eq("is_active", True)
+                .gt("last_seen_at", cutoff)
+                .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
+                .execute()
+            )
+        res = await _run_sync(_q)
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_available_agents error: {e}")
+        return []
+
+
+async def get_agent_active_count(agent_id: str) -> int:
+    """Count active conversations assigned to an agent."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id", count="exact")  # type: ignore[arg-type]
+            .eq("assigned_agent_id", agent_id)
+            .eq("status", "active")
+            .limit(0)
+            .execute()
+        )
+        return res.count or 0
+    except Exception:
+        return 0
+
+
+async def get_all_agents_status(timeout_seconds: int = 120) -> list:
+    """All agents with computed online/offline status."""
+    try:
+        db_client = get_client()
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
+        res = await _run_sync(
+            lambda: db_client.table("users")
+            .select("id, name, email, role, tunnel_scope, is_active, last_seen_at")
+            .in_("role", ["sales", "support", "admin", "owner"])
+            .execute()
+        )
+        agents = res.data or []
+        for a in agents:
+            a["is_online"] = bool(
+                a.get("is_active")
+                and a.get("last_seen_at")
+                and a["last_seen_at"] > cutoff
+            )
+        return agents
+    except Exception as e:
+        logger.error(f"get_all_agents_status error: {e}")
+        return []

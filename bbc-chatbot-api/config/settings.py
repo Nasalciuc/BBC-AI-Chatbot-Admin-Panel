@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     max_message_length: int = 2000
     max_messages_per_conversation: int = 50
 
+    # Agent Presence & Routing
+    max_concurrent_chats: int = 3
+    agent_timeout_seconds: int = 120
+
     # CRM
     crm_api_url: str = "https://crm.buybusinessclass.com/ai"
     crm_api_token: str = ""

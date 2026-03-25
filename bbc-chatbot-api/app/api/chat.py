@@ -53,7 +53,28 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 model_used="none",
             )
 
-    # 4. AI mode or new conversation → run pipeline as before
+    # 3.5. New conversation? Try routing to an available agent first
+    if not req.conversation_id:
+        from app.services.routing import route_conversation
+        route = await route_conversation(req.tunnel)
+        if route["agent_id"]:
+            # Agent available → create conv as human, skip AI pipeline
+            from app.services.conversation_service import add_message
+            conv = await db.get_or_create_conversation(None, req.tunnel, req.visitor)
+            if conv:
+                await db.update_conversation(conv["id"], {
+                    "mode": "human",
+                    "assigned_agent_id": route["agent_id"],
+                })
+                await add_message(conv["id"], "user", clean_message)
+                return ChatResponse(
+                    conversation_id=conv["id"],
+                    message="Connecting you with a specialist now...",
+                    type="routed",
+                    model_used="none",
+                )
+
+    # 4. AI mode or new conversation (no agent available) → run pipeline
     response = await process_message(
         conversation_id=req.conversation_id,
         message=clean_message,
