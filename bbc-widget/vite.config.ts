@@ -1,0 +1,20 @@
+import { defineConfig } from 'vite'
+import preact from '@preact/preset-vite'
+
+export default defineConfig({
+  plugins: [preact()],
+  build: {
+    lib: {
+      entry: 'src/entry.tsx',
+      name: 'BBCWidget',
+      formats: ['iife'],
+      fileName: () => 'bbc-widget.js',
+    },
+    outDir: 'dist',
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true,
+      },
+    },
+  },
+})

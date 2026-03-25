@@ -1,3 +1,6 @@
+// DEPRECATED: This route is kept for admin preview only.
+// All widget development happens in bbc-widget/ (standalone Preact build).
+// Do NOT make changes here — edit bbc-widget/src/ instead.
 import { useState } from 'react'
 import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm } from './TunnelForm'
