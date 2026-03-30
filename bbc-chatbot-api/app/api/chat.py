@@ -93,23 +93,20 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 agent_name = route.get("agent_name", "A specialist")
                 now = datetime.now(timezone.utc).isoformat()
 
-                msg1_id = str(uuid4())
-                msg2_id = str(uuid4())
-                msg3_id = str(uuid4())
+            connecting = settings.connecting_message
+            joined = settings.joined_message_template.format(agent_name=agent_name)
+            welcome = (settings.welcome_message_sales
+                       if req.tunnel == "sales"
+                       else settings.welcome_message_support)
+            qr = (settings.quick_replies_sales
+                  if req.tunnel == "sales"
+                  else settings.quick_replies_support)
 
-                connecting = settings.connecting_message
-                joined = settings.joined_message_template.format(agent_name=agent_name)
-                welcome = (settings.welcome_message_sales
-                           if req.tunnel == "sales"
-                           else settings.welcome_message_support)
-                qr = (settings.quick_replies_sales
-                      if req.tunnel == "sales"
-                      else settings.quick_replies_support)
-
-                # Save all 3 to DB (persist on refresh)
-                await add_message(conv["id"], "system", connecting)
-                await add_message(conv["id"], "system", joined)
-                await add_message(conv["id"], "system", welcome)
+            # Save all 3 to DB — capture real Supabase UUIDs to avoid polling duplicates
+            row1 = await add_message(conv["id"], "system", connecting)
+            row2 = await add_message(conv["id"], "system", joined)
+            row3 = await add_message(conv["id"], "system", welcome)
+            now = datetime.now(timezone.utc).isoformat()
 
                 return ChatResponse(
                     conversation_id=conv["id"],
@@ -118,9 +115,9 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                     model_used="none",
                     quick_replies=qr,
                     system_messages=[
-                        {"id": msg1_id, "role": "system", "content": connecting, "created_at": now},
-                        {"id": msg2_id, "role": "system", "content": joined, "created_at": now},
-                        {"id": msg3_id, "role": "system", "content": welcome, "created_at": now},
+                    {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": connecting, "created_at": row1.get("created_at", now) if row1 else now},
+                    {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": joined, "created_at": row2.get("created_at", now) if row2 else now},
+                    {"id": row3["id"] if row3 else str(uuid4()), "role": "system", "content": welcome, "created_at": row3.get("created_at", now) if row3 else now},
                     ],
                 )
 
