@@ -24,6 +24,26 @@ async def _cleanup_stale_conversations() -> int:
     return count
 
 
+
+async def _assign_pending_conversations(user_id: str, tunnel_scope: str) -> int:
+    """If agent is idle (0 active convs), auto-assign oldest unassigned AI conv."""
+    from config.settings import settings
+    count = await db.get_agent_active_count(user_id)
+    if count >= settings.max_concurrent_chats:
+        return 0
+    tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
+    for t in tunnels:
+        conv = await db.get_oldest_unassigned_conversation(t)
+        if conv:
+            await db.update_conversation(conv["id"], {
+                "assigned_agent_id": user_id,
+                "mode": "human",
+            })
+            logger.info(f"[heartbeat-assign] Conv {conv['id']} → {user_id}")
+            return 1
+    return 0
+
+
 @router.post("/agent/heartbeat")
 async def heartbeat(user: dict = Depends(get_current_user)):
     """Agent pings every 30s to signal online presence.
@@ -33,7 +53,10 @@ async def heartbeat(user: dict = Depends(get_current_user)):
         return {"success": False, "error": "No user ID in token"}
     await db.update_user_last_seen(user_id)
     cleaned = await _cleanup_stale_conversations()
-    return {"success": True, "cleaned": cleaned}
+    assigned = await _assign_pending_conversations(
+        user_id, user.get("tunnel_scope", "sales")
+    )
+    return {"success": True, "cleaned": cleaned, "assigned": assigned}
 
 
 @router.get("/agent/status")

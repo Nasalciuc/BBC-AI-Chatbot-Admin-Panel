@@ -179,4 +179,29 @@ async def close_conversation(
         "status": "closed",
         "closed_at": datetime.now(timezone.utc).isoformat(),
     })
-    return {"success": True, "data": {"conversation_id": conversation_id, "status": "closed"}}
+
+    # Auto-assign: freed operator picks up oldest unassigned AI conv
+    next_conv_id = None
+    agent_id = user.get("id")
+    tunnel_scope = user.get("tunnel_scope", "sales")
+    tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
+
+    for t in tunnels:
+        next_conv = await db.get_oldest_unassigned_conversation(t)
+        if next_conv:
+            await db.update_conversation(next_conv["id"], {
+                "assigned_agent_id": agent_id,
+                "mode": "human",
+            })
+            next_conv_id = next_conv["id"]
+            logger.info(f"[auto-assign] Conv {next_conv['id']} → {agent_id} (on close)")
+            break  # 1:1 rule — assign only 1
+
+    return {
+        "success": True,
+        "data": {
+            "conversation_id": conversation_id,
+            "status": "closed",
+            "next_conversation_id": next_conv_id,
+        },
+    }
