@@ -93,20 +93,20 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 agent_name = route.get("agent_name", "A specialist")
                 now = datetime.now(timezone.utc).isoformat()
 
-            connecting = settings.connecting_message
-            joined = settings.joined_message_template.format(agent_name=agent_name)
-            welcome = (settings.welcome_message_sales
-                       if req.tunnel == "sales"
-                       else settings.welcome_message_support)
-            qr = (settings.quick_replies_sales
-                  if req.tunnel == "sales"
-                  else settings.quick_replies_support)
+                connecting = settings.connecting_message
+                joined = settings.joined_message_template.format(agent_name=agent_name)
+                welcome = (settings.welcome_message_sales
+                        if req.tunnel == "sales"
+                        else settings.welcome_message_support)
+                qr = (settings.quick_replies_sales
+                    if req.tunnel == "sales"
+                    else settings.quick_replies_support)
 
-            # Save all 3 to DB — capture real Supabase UUIDs to avoid polling duplicates
-            row1 = await add_message(conv["id"], "system", connecting)
-            row2 = await add_message(conv["id"], "system", joined)
-            row3 = await add_message(conv["id"], "system", welcome)
-            now = datetime.now(timezone.utc).isoformat()
+                # Save all 3 to DB — capture real Supabase UUIDs to avoid polling duplicates
+                row1 = await add_message(conv["id"], "system", connecting)
+                row2 = await add_message(conv["id"], "system", joined)
+                row3 = await add_message(conv["id"], "system", welcome)
+                now = datetime.now(timezone.utc).isoformat()
 
                 return ChatResponse(
                     conversation_id=conv["id"],
