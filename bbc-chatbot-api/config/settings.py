@@ -60,8 +60,21 @@ class Settings(BaseSettings):
     max_messages_per_conversation: int = 50
 
     # Agent Presence & Routing
-    max_concurrent_chats: int = 3
+    max_concurrent_chats: int = 1
     agent_timeout_seconds: int = 120
+    agent_silent_timeout_seconds: int = 300
+
+    # System messages shown during routing flow
+    connecting_message: str = "Connecting you with a specialist now\u2026"
+    joined_message_template: str = "You\u2019ve been connected with {agent_name}. They\u2019ll respond shortly."
+
+    # Welcome messages per tunnel
+    welcome_message_sales: str = "Welcome! A travel specialist will be with you shortly. What are you looking for?"
+    welcome_message_support: str = "Welcome! A support agent will assist you shortly. How can we help?"
+
+    # Quick reply suggestions per tunnel
+    quick_replies_sales: list = ["Round-trip to Europe", "One-way flight", "Specific route quote", "Last-minute deal"]
+    quick_replies_support: list = ["Change my booking", "Cancel or refund", "Flight status", "Other question"]
 
     # CRM
     crm_api_url: str = "https://crm.buybusinessclass.com/ai"

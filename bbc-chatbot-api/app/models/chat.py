@@ -26,6 +26,8 @@ class ChatResponse(BaseModel):
     model_used: str
     cost: float = 0.0
     route_card: Optional["RouteCard"] = None
+    quick_replies: Optional[list[str]] = None
+    system_messages: Optional[list[dict]] = None
 
 
 class RouteCard(BaseModel):

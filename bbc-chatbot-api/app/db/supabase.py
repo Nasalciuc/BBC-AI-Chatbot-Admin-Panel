@@ -863,7 +863,7 @@ async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
         def _q():
             return (
                 db_client.table("users")
-                .select("id, name, email, role, tunnel_scope, last_seen_at")
+                .select("id, name, email, role, tunnel_scope, last_seen_at, chats_served_today, chats_served_date")
                 .eq("is_active", True)
                 .gt("last_seen_at", cutoff)
                 .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
@@ -962,3 +962,46 @@ async def get_all_agents_status(timeout_seconds: int = 120) -> list:
     except Exception as e:
         logger.error(f"get_all_agents_status error: {e}")
         return []
+
+
+
+async def increment_chats_served(agent: dict) -> None:
+    """Increment daily chat counter. Uses data already in agent dict — 1 DB call.
+    Lazy reset: if date changed, resets to 1 instead of incrementing."""
+    try:
+        from datetime import date
+        db_client = get_client()
+        today = date.today().isoformat()
+        served_date = agent.get("chats_served_date") or ""
+        current = agent.get("chats_served_today", 0) if served_date == today else 0
+        new_count = current + 1
+        await _run_sync(
+            lambda: db_client.table("users")
+            .update({"chats_served_today": new_count, "chats_served_date": today})
+            .eq("id", agent["id"])
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(f"increment_chats_served error (non-blocking): {e}")
+
+
+async def get_oldest_unassigned_conversation(tunnel: str) -> dict | None:
+    """Get oldest active AI conversation with no assigned agent.
+    Includes needs_agent status to prioritize explicit agent requests."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, tunnel, mode, status, created_at")
+            .in_("status", ["active", "needs_agent"])
+            .eq("mode", "ai")
+            .is_("assigned_agent_id", "null")
+            .eq("tunnel", tunnel)
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"get_oldest_unassigned_conversation error: {e}")
+        return None

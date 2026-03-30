@@ -45,7 +45,7 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
             last_agent_time = await db.get_last_agent_message_time(req.conversation_id)
             agent_silent = (
                 last_agent_time is not None
-                and (datetime.now(timezone.utc) - last_agent_time) > timedelta(minutes=5)
+                and (datetime.now(timezone.utc) - last_agent_time) > timedelta(seconds=settings.agent_silent_timeout_seconds)
             )
             if agent_silent:
                 # Agent hasn't replied in 5 min → revert to AI, fall through to pipeline
@@ -73,10 +73,14 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
     # 3.5. New conversation? Try routing to an available agent first
     if not req.conversation_id:
         from app.services.routing import route_conversation
+        # Step 3.5: Human-first routing (takes precedence over AI pipeline)
+        # If agent available → return here, AI pipeline NOT called
+        # If no agent → fall through to AI pipeline (step 4+)
         route = await route_conversation(req.tunnel)
         if route["agent_id"]:
-            # Agent available → create conv as human, skip AI pipeline
             from app.services.conversation_service import add_message
+            from uuid import uuid4
+            from datetime import datetime, timezone
             conv = await db.get_or_create_conversation(None, req.tunnel, req.visitor)
             if conv:
                 await db.update_conversation(conv["id"], {
@@ -84,11 +88,40 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                     "assigned_agent_id": route["agent_id"],
                 })
                 await add_message(conv["id"], "user", clean_message)
+
+                # Build 3 system messages
+                agent_name = route.get("agent_name", "A specialist")
+                now = datetime.now(timezone.utc).isoformat()
+
+                msg1_id = str(uuid4())
+                msg2_id = str(uuid4())
+                msg3_id = str(uuid4())
+
+                connecting = settings.connecting_message
+                joined = settings.joined_message_template.format(agent_name=agent_name)
+                welcome = (settings.welcome_message_sales
+                           if req.tunnel == "sales"
+                           else settings.welcome_message_support)
+                qr = (settings.quick_replies_sales
+                      if req.tunnel == "sales"
+                      else settings.quick_replies_support)
+
+                # Save all 3 to DB (persist on refresh)
+                await add_message(conv["id"], "system", connecting)
+                await add_message(conv["id"], "system", joined)
+                await add_message(conv["id"], "system", welcome)
+
                 return ChatResponse(
                     conversation_id=conv["id"],
-                    message="Connecting you with a specialist now...",
-                    type="routed",
+                    message=welcome,
+                    type="welcome",
                     model_used="none",
+                    quick_replies=qr,
+                    system_messages=[
+                        {"id": msg1_id, "role": "system", "content": connecting, "created_at": now},
+                        {"id": msg2_id, "role": "system", "content": joined, "created_at": now},
+                        {"id": msg3_id, "role": "system", "content": welcome, "created_at": now},
+                    ],
                 )
 
     # 4. AI mode or new conversation (no agent available) → run pipeline
