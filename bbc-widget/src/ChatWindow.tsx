@@ -29,6 +29,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [quickReplies, setQuickReplies] = useState<string[] | null>(null)
   const [convId, setConvId] = useState<string | null>(savedConvId)
   const bottomRef = useRef<HTMLDivElement>(null)
   const initialized = useRef(false)
@@ -77,6 +78,15 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
     setSending(true)
+    // Show "Connecting…" instantly — only on first message (convId is null before first response)
+    if (!convId && !sending) {
+      setMessages(prev => [...prev, {
+        id: '__connecting_temp__',
+        role: 'system' as const,
+        content: 'Connecting you with a specialist now\u2026',
+        created_at: new Date().toISOString(),
+      }])
+    }
 
     const optimisticMsg: Message = {
       id: `temp-${Date.now()}`,
@@ -111,7 +121,24 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         safeSet('bbc_conv_id', data.conversation_id)
       }
 
-      if (data.message && data.type !== 'queued') {
+      // Handle system_messages from routing response (zero polling duplicates)
+      if (data.system_messages && data.system_messages.length > 0) {
+        setMessages(prev => [
+          // Remove optimistic connecting message
+          ...prev.filter(m => m.id !== '__connecting_temp__'),
+          // Add real system messages with real UUIDs from backend
+          ...data.system_messages.map((sm: any) => ({
+            id: sm.id,
+            role: 'system' as const,
+            content: sm.content,
+            created_at: sm.created_at,
+          })),
+        ])
+        // Show quick reply buttons only on new conversations
+        if (data.quick_replies && data.quick_replies.length > 0 && !savedConvId) {
+          setQuickReplies(data.quick_replies)
+        }
+      } else if (data.message && data.type !== 'queued') {
         const aiMsg: Message = {
           id: `ai-${Date.now()}`,
           role: 'ai',
@@ -122,6 +149,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         lastMsgTime.current = aiMsg.created_at
       }
     } catch {
+      // Clean up optimistic message if the request failed
+      setMessages(prev => prev.filter(m => m.id !== '__connecting_temp__'))
       const errMsg: Message = {
         id: `err-${Date.now()}`,
         role: 'system',
@@ -138,6 +167,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     if (!input.trim() || sending) return
     sendMessage(input.trim())
     setInput('')
+  }
+
+  const handleQuickReply = (text: string) => {
+    setQuickReplies(null)
+    sendMessage(text)
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -195,6 +229,36 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         ))}
         <div ref={bottomRef} />
       </div>
+
+      {/* Quick reply buttons — shown after welcome message, hidden after click */}
+      {quickReplies && quickReplies.length > 0 && (
+        <div style={{
+          padding: '8px 14px',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 6,
+          borderTop: '1px solid #f3f4f6',
+        }}>
+          {quickReplies.map((text, i) => (
+            <button
+              key={i}
+              onClick={() => handleQuickReply(text)}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 16,
+                fontSize: 12,
+                border: '1.5px solid #C9A54E',
+                background: '#fff',
+                color: '#0B1829',
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div style={{
         borderTop: '1px solid #e5e7eb', padding: 12,
