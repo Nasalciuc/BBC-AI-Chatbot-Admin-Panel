@@ -1,4 +1,5 @@
 """Admin API — conversations CRUD."""
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -7,6 +8,8 @@ from app.models.admin import ConversationUpdate
 from app.security.auth import get_current_user
 from app.security.input_sanitizer import sanitize_message
 from app.services.conversation_service import add_message
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
