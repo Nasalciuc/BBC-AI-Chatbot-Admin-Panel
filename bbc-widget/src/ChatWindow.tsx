@@ -15,12 +15,12 @@ interface Props {
   apiUrl: string
 }
 
-// Safe sessionStorage (may be disabled)
+// Safe localStorage (may be disabled)
 function safeGet(key: string): string | null {
-  try { return sessionStorage.getItem(key) } catch { return null }
+  try { return localStorage.getItem(key) } catch { return null }
 }
 function safeSet(key: string, val: string): void {
-  try { sessionStorage.setItem(key, val) } catch {}
+  try { localStorage.setItem(key, val) } catch {}
 }
 
 export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props) {
@@ -49,6 +49,23 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   // eslint-disable-next-line
   }, [])
 
+  // Verify restored session is still active (runs once at mount)
+  useEffect(() => {
+    if (!savedConvId) return
+    fetch(`${apiUrl}/api/conversations/${savedConvId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.success || data.data?.status === 'closed') {
+          // Conversation was closed by agent — reset to fresh start
+          localStorage.removeItem('bbc_conv_id')
+          setConvId(null)
+          initialized.current = false  // allow greeting to fire again
+        }
+      })
+      .catch(() => { /* network error — keep session, polling will handle */ })
+  // eslint-disable-next-line
+  }, [])
+
   // Poll for new messages (incremental)
   const lastMsgTime = useRef('')
 
@@ -71,22 +88,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           lastMsgTime.current = json.data[json.data.length - 1].created_at
         }
       } catch { /* polling failure is non-fatal */ }
-    }, 3000)
+    }, 1000)
     return () => clearInterval(interval)
   }, [convId, apiUrl])
 
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
     setSending(true)
-    // Show "Connecting…" instantly — only on first message (convId is null before first response)
-    if (!convId && !sending) {
-      setMessages(prev => [...prev, {
-        id: '__connecting_temp__',
-        role: 'system' as const,
-        content: 'Connecting you with a specialist now\u2026',
-        created_at: new Date().toISOString(),
-      }])
-    }
 
     const optimisticMsg: Message = {
       id: `temp-${Date.now()}`,
@@ -95,6 +103,16 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       created_at: new Date().toISOString(),
     }
     setMessages(prev => [...prev, optimisticMsg])
+
+    // Show "Connecting…" after user message — only on first message
+    if (!convId && !sending) {
+      setMessages(prev => [...prev, {
+        id: '__connecting_temp__',
+        role: 'system' as const,
+        content: 'Connecting you with a specialist now\u2026',
+        created_at: new Date().toISOString(),
+      }])
+    }
 
     try {
       const res = await fetch(`${apiUrl}/api/chat`, {
