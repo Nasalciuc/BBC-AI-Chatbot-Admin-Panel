@@ -30,6 +30,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [quickReplies, setQuickReplies] = useState<string[] | null>(null)
+  const [pendingGreeting, setPendingGreeting] = useState(false)
   const [convId, setConvId] = useState<string | null>(savedConvId)
   const bottomRef = useRef<HTMLDivElement>(null)
   const initialized = useRef(false)
@@ -60,11 +61,22 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           localStorage.removeItem('bbc_conv_id')
           setConvId(null)
           initialized.current = false  // allow greeting to fire again
+          setPendingGreeting(true)
         }
       })
       .catch(() => { /* network error — keep session, polling will handle */ })
   // eslint-disable-next-line
   }, [])
+
+  // Send greeting after closed conversation was detected and cleared
+  useEffect(() => {
+    if (!pendingGreeting || convId || sending) return
+    setPendingGreeting(false)
+    sendMessage(tunnel === 'sales'
+      ? 'Hello, I\'m looking for business class flights.'
+      : 'Hello, I need help with my booking.'
+    )
+  }, [pendingGreeting, convId, sending])
 
   // Poll for new messages (incremental)
   const lastMsgTime = useRef('')
@@ -156,6 +168,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         if (data.quick_replies && data.quick_replies.length > 0 && !savedConvId) {
           setQuickReplies(data.quick_replies)
         }
+        // Update lastMsgTime so next poll doesn't re-fetch user message
+        const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
+        if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.message && data.type !== 'queued') {
         const aiMsg: Message = {
           id: `ai-${Date.now()}`,
@@ -164,7 +179,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           created_at: new Date().toISOString(),
         }
         setMessages(prev => [...prev, aiMsg])
-        lastMsgTime.current = aiMsg.created_at
+        lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
       }
     } catch {
       // Clean up optimistic message if the request failed
