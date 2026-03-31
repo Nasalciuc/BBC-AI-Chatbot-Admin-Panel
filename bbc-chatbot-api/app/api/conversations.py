@@ -64,7 +64,7 @@ async def get_conversation_counts(
 ):
     """Lightweight counts for queue tabs. Returns 3 numbers in 1 request."""
     tunnel = _enforce_tunnel(user, tunnel)
-    agent_id = user.get("id")
+    agent_id = user.get("id", "")
     counts = await db.get_conversation_counts(
         agent_id=agent_id,
         tunnel=tunnel,
