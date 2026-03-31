@@ -118,6 +118,79 @@ async def upsert_kb_entry(entry_id: str, title: str, content: str,
     return await asyncio.to_thread(_upsert_sync, entry_id, title, content, tunnel, category_id)
 
 
+async def upsert_kb_entry_dict(entry: dict) -> bool:
+    """Convenience wrapper — accepts a full KB row dict."""
+    return await upsert_kb_entry(
+        entry_id=entry["id"],
+        title=entry.get("title", ""),
+        content=entry.get("content", ""),
+        tunnel=entry.get("tunnel", "sales"),
+        category_id=entry.get("category_id"),
+    )
+
+
+# ════════════════════════════════════════════════════════════════
+# DELETE — remove a single point from collection
+# ════════════════════════════════════════════════════════════════
+
+def _delete_sync(entry_id: str) -> bool:
+    """Delete a single KB entry from Qdrant."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        body = {"points": [entry_id]}
+        resp = client.post(_collection_url("/points/delete"), json=body)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Qdrant delete failed for {entry_id}: {e}")
+        return False
+
+
+async def delete_kb_entry_qdrant(entry_id: str) -> bool:
+    return await asyncio.to_thread(_delete_sync, entry_id)
+
+
+# ════════════════════════════════════════════════════════════════
+# BATCH SYNC — upsert all entries in one call
+# ════════════════════════════════════════════════════════════════
+
+def _sync_all_sync(entries: list[dict]) -> dict:
+    """Batch upsert all KB entries to Qdrant in a single PUT."""
+    client = _get_client()
+    if not client:
+        return {"synced": 0, "failed": len(entries)}
+    try:
+        points = [
+            {
+                "id": e["id"],
+                "vector": {
+                    "text": f"{e.get('title', '')} — {e.get('content', '')}",
+                    "model": _EMBEDDING_MODEL,
+                },
+                "payload": {
+                    "title": e.get("title", ""),
+                    "content": e.get("content", ""),
+                    "tunnel": e.get("tunnel", "sales"),
+                    "category_id": e.get("category_id"),
+                },
+            }
+            for e in entries
+        ]
+        resp = client.put(_collection_url("/points"), json={"points": points})
+        resp.raise_for_status()
+        logger.info(f"[qdrant] batch synced {len(points)} entries")
+        return {"synced": len(points), "failed": 0}
+    except Exception as e:
+        logger.error(f"[qdrant] batch sync failed: {e}")
+        return {"synced": 0, "failed": len(entries)}
+
+
+async def sync_kb_entries(entries: list[dict]) -> dict:
+    return await asyncio.to_thread(_sync_all_sync, entries)
+
+
 # ════════════════════════════════════════════════════════════════
 # SEARCH — send raw text query, Qdrant embeds + searches
 # ════════════════════════════════════════════════════════════════
