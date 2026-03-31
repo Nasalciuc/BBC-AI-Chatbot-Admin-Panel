@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Qdrant (optional — empty = skip vector search)
     qdrant_url: str = ""
     qdrant_api_key: str = ""
-    qdrant_collection: str = "bbc_kb"
+    qdrant_collection: str = "kb_entries"
     qdrant_enabled: bool = False
 
     # Redis (optional — empty = skip rate limiting)
