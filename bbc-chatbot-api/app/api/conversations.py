@@ -8,6 +8,7 @@ from app.models.admin import ConversationUpdate
 from app.security.auth import get_current_user
 from app.security.input_sanitizer import sanitize_message
 from app.services.conversation_service import add_message
+from app.realtime.manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,9 @@ async def send_agent_message(
         "mode": "human",
         "assigned_agent_id": user.get("id"),
     })
+
+    # Push to active SSE connection — no-op if widget is using polling fallback
+    await manager.push(conversation_id, msg)
 
     return {"success": True, "data": msg}
 
