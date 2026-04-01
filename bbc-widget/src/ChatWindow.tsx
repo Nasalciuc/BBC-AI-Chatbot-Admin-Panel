@@ -53,7 +53,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   // Verify restored session is still active (runs once at mount)
   useEffect(() => {
     if (!savedConvId) return
-    fetch(`${apiUrl}/api/conversations/${savedConvId}`)
+    fetch(`${apiUrl}/api/chat/status/${savedConvId}`)
       .then(r => r.json())
       .then(data => {
         if (!data.success || data.data?.status === 'closed') {
@@ -78,30 +78,83 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     )
   }, [pendingGreeting, convId, sending])
 
-  // Poll for new messages (incremental)
+  // Real-time delivery: SSE primary + polling fallback (RxDB checkpoint pattern)
   const lastMsgTime = useRef('')
 
   useEffect(() => {
     if (!convId) return
-    const interval = setInterval(async () => {
+
+    let source: EventSource | null = null
+    let fallbackInterval: ReturnType<typeof setInterval> | null = null
+    let errorCount = 0
+    const MAX_ERRORS = 3
+
+    // Catch-up poll — syncs missed messages after SSE connect/reconnect
+    const catchUpPoll = async () => {
       if (document.visibilityState !== 'visible') return
       try {
-        const afterParam = lastMsgTime.current ? `?after=${encodeURIComponent(lastMsgTime.current)}` : ''
-        const res = await fetch(`${apiUrl}/api/conversations/${convId}/messages${afterParam}`)
+        const after = lastMsgTime.current
+          ? `?after=${encodeURIComponent(lastMsgTime.current)}`
+          : ''
+        const res = await fetch(`${apiUrl}/api/chat/messages/${convId}${after}`)
         if (!res.ok) return
         const json = await res.json()
         if (json.success && json.data && json.data.length > 0) {
           setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.id))
-            const newMsgs = (json.data as Message[]).filter(m => !existingIds.has(m.id))
+            const ids = new Set(prev.map(m => m.id))
+            const newMsgs = (json.data as Message[]).filter(m => !ids.has(m.id))
             if (newMsgs.length === 0) return prev
             return [...prev, ...newMsgs]
           })
           lastMsgTime.current = json.data[json.data.length - 1].created_at
         }
-      } catch { /* polling failure is non-fatal */ }
-    }, 1000)
-    return () => clearInterval(interval)
+      } catch { /* non-fatal */ }
+    }
+
+    // Polling fallback — activated permanently after 3 SSE errors
+    const startPolling = () => {
+      if (fallbackInterval) return
+      fallbackInterval = setInterval(catchUpPoll, 1000)
+    }
+
+    // SSE stream — primary real-time channel
+    const startSSE = () => {
+      source = new EventSource(`${apiUrl}/api/chat/stream/${convId}`)
+
+      source.onopen = () => {
+        errorCount = 0        // reset error counter on successful connect
+        catchUpPoll()         // sync messages missed during connect/reconnect
+      }
+
+      source.onmessage = (e: MessageEvent) => {
+        try {
+          const msg = JSON.parse(e.data) as Message
+          setMessages(prev => {
+            if (prev.some(m => m.id === msg.id)) return prev  // dedup
+            return [...prev, msg]
+          })
+          lastMsgTime.current = msg.created_at
+        } catch { /* malformed event — ignore */ }
+      }
+
+      source.onerror = () => {
+        errorCount++
+        if (errorCount >= MAX_ERRORS) {
+          // SSE not reliable in this environment — fall back to polling
+          source?.close()
+          source = null
+          startPolling()
+        }
+        // else: browser retries EventSource connection automatically
+      }
+    }
+
+    startSSE()
+
+    return () => {
+      source?.close()
+      if (fallbackInterval) clearInterval(fallbackInterval)
+    }
   }, [convId, apiUrl])
 
   const sendMessage = async (text: string) => {
