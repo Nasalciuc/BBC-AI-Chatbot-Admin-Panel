@@ -142,7 +142,8 @@ async def send_agent_message(
     })
 
     # Push to active SSE connection — no-op if widget is using polling fallback
-    await manager.push(conversation_id, msg)
+    if msg:
+        await manager.push(conversation_id, msg)
 
     return {"success": True, "data": msg}
 
