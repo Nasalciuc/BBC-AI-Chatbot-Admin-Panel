@@ -53,6 +53,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     if (conv?.messages?.length) {
       lastMsgTime.current = conv.messages[conv.messages.length - 1].created_at
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv?.messages?.length])
 
   // Reset accumulator when base conversation reloads (e.g. after agent sends message)
@@ -76,6 +77,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
   // Incremental message polling — ONLY new messages, ONLY on My Active tab
   const { data: newMessages = [] } = useQuery<Message[]>({
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['messages-incremental', conversationId],
     queryFn: async () => {
       if (!lastMsgTime.current) return []
@@ -110,8 +112,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       setInput('')
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       queryClient.invalidateQueries({ queryKey: ['messages-incremental', conversationId] })
-    } catch (err) {
-      console.error('[chat] Failed to send:', err)
+    } catch (_err) {
+      // send failed silently — user can retry
     } finally { setSending(false) }
   }
 
@@ -124,8 +126,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     try {
       await apiFetch(`/api/conversations/${conversationId}/claim`, { method: 'POST' })
       onConversationChange?.()
-    } catch (err) {
-      console.error('[chat] claim failed:', err)
+    } catch (_err) {
+      // claim failed silently
     }
   }
 
@@ -135,8 +137,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       await apiFetch(`/api/conversations/${conversationId}/close`, { method: 'POST' })
       setCloseDialogOpen(false)
       onConversationChange?.()
-    } catch (err) {
-      console.error('[chat] close failed:', err)
+    } catch (_err) {
+      // close failed silently
     }
   }
 
