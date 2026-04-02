@@ -23,8 +23,38 @@ function safeSet(key: string, val: string): void {
   try { localStorage.setItem(key, val) } catch {}
 }
 
+const SESSION_TTL_MS = 30 * 60 * 1000  // 30 minutes — must match Widget.tsx
+
+/** Validates stored conv_id against expiry and visitor fingerprint.
+ *  Returns the conv_id if valid, null if expired or visitor mismatch. */
+function getValidConvId(visitor: Props['visitor']): string | null {
+  const convId = safeGet('bbc_conv_id')
+  if (!convId) return null
+
+  // Check 30-minute expiry (rolling — updated on each message)
+  const ts = safeGet('bbc_conv_ts')
+  if (!ts || Date.now() - parseInt(ts) > SESSION_TTL_MS) {
+    try { localStorage.removeItem('bbc_conv_id') } catch {}
+    try { localStorage.removeItem('bbc_conv_ts') } catch {}
+    try { localStorage.removeItem('bbc_visitor_key') } catch {}
+    return null
+  }
+
+  // Check visitor fingerprint match
+  const savedKey = safeGet('bbc_visitor_key')
+  const currentKey = `${visitor.name || ''}|${visitor.email || ''}|${visitor.phone || ''}`
+  if (savedKey && currentKey && savedKey !== currentKey) {
+    try { localStorage.removeItem('bbc_conv_id') } catch {}
+    try { localStorage.removeItem('bbc_conv_ts') } catch {}
+    try { localStorage.removeItem('bbc_visitor_key') } catch {}
+    return null
+  }
+
+  return convId
+}
+
 export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props) {
-  const savedConvId = safeGet('bbc_conv_id')
+  const savedConvId = getValidConvId(visitor)
 
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -202,6 +232,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       if (data.conversation_id && !convId) {
         setConvId(data.conversation_id)
         safeSet('bbc_conv_id', data.conversation_id)
+        // Save initial timestamp for 30-minute rolling expiry
+        try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
       }
 
       // Handle system_messages from routing response (zero polling duplicates)
@@ -234,6 +266,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         setMessages(prev => [...prev, aiMsg])
         lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
       }
+      // Extend 30-minute rolling session on every successful message
+      try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
     } catch {
       // Clean up optimistic message if the request failed
       setMessages(prev => prev.filter(m => m.id !== '__connecting_temp__'))

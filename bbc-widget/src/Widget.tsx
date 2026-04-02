@@ -5,6 +5,8 @@ import { ChatWindow } from './ChatWindow'
 
 type Step = 'buttons' | 'form' | 'chat'
 
+const SESSION_TTL_MS = 30 * 60 * 1000  // 30 minutes of inactivity
+
 // Safe sessionStorage helpers (storage may be disabled)
 function safeGet(key: string): string | null {
   try { return sessionStorage.getItem(key) } catch { return null }
@@ -17,8 +19,12 @@ function safeRemove(key: string): void {
 }
 
 function clearWidgetStorage() {
-  safeRemove('bbc_widget')
-  safeRemove('bbc_conv_id')
+  safeRemove('bbc_widget')       // sessionStorage
+  safeRemove('bbc_conv_id')      // sessionStorage (legacy, may not exist)
+  // Also clear localStorage — conv_id lives there
+  try { localStorage.removeItem('bbc_conv_id') } catch {}
+  try { localStorage.removeItem('bbc_conv_ts') } catch {}
+  try { localStorage.removeItem('bbc_visitor_key') } catch {}
 }
 
 export function Widget({ apiUrl }: { apiUrl: string }) {
@@ -39,6 +45,20 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => {
     const vis = { name: data.name, email: data.email, phone: data.phone }
     const meta = data.booking_id ? { booking_id: data.booking_id } : {}
+
+    // Visitor mismatch check — clear old session if different person
+    const newKey = `${vis.name || ''}|${vis.email || ''}|${vis.phone || ''}`
+    const savedKey = (() => { try { return localStorage.getItem('bbc_visitor_key') } catch { return null } })()
+    if (savedKey && newKey && savedKey !== newKey) {
+      // Different visitor detected — remove old conversation to prevent mixing
+      try { localStorage.removeItem('bbc_conv_id') } catch {}
+      try { localStorage.removeItem('bbc_conv_ts') } catch {}
+    }
+    // Save visitor fingerprint for future mismatch detection
+    if (newKey !== '||') {
+      try { localStorage.setItem('bbc_visitor_key', newKey) } catch {}
+    }
+
     setVisitor(vis)
     setMetadata(meta)
     setStep('chat')
