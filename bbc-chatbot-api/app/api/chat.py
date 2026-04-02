@@ -19,7 +19,14 @@ from app.pipeline.orchestrator import process_message
 from app.db import supabase as db
 from app.realtime.manager import manager
 
+from pydantic import BaseModel
+
 logger = logging.getLogger(__name__)
+
+
+class TypingBody(BaseModel):
+    text: str = ""
+
 
 router = APIRouter()
 
@@ -143,6 +150,30 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
     )
 
     return response
+
+
+# ── Typing indicator endpoints (public — widget reports typing status) ─────
+
+@router.post("/chat/typing/{conversation_id}")
+async def set_typing_status(conversation_id: str, body: TypingBody):
+    """Widget reports client is actively typing.
+    Stored in Redis with 10s TTL — never saved to DB.
+    Called every ~500ms while client types (debounced on client side)."""
+    from app.realtime.typing import typing_manager
+    text = body.text.strip()
+    if text:
+        await typing_manager.set_typing(conversation_id, text)
+    else:
+        await typing_manager.clear_typing(conversation_id)
+    return {"success": True}
+
+
+@router.delete("/chat/typing/{conversation_id}")
+async def clear_typing_status(conversation_id: str):
+    """Widget reports client sent message or cleared input."""
+    from app.realtime.typing import typing_manager
+    await typing_manager.clear_typing(conversation_id)
+    return {"success": True}
 
 
 # ── Public widget endpoints (no auth required — conv_id UUID is the secret) ──

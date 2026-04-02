@@ -73,6 +73,21 @@ async def get_conversation_counts(
     return {"success": True, "data": counts}
 
 
+@router.get("/conversations/{conversation_id}/typing")
+async def get_typing_status(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Agent polls every 1s to see client's live typing text.
+    Returns empty state if client is not typing or Redis key expired."""
+    from app.realtime.typing import typing_manager
+    state = await typing_manager.get_typing(conversation_id)
+    return {
+        "success": True,
+        "data": state or {"is_typing": False, "text": ""},
+    }
+
+
 @router.get("/conversations/{conversation_id}/messages")
 async def get_conversation_messages(
     conversation_id: str,
