@@ -8,6 +8,7 @@ import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
+import { useAuthStore } from '@/stores/auth-store'
 import ConversationDetail from './detail'
 
 const TUNNEL_STYLES: Record<string, string> = {
@@ -23,7 +24,7 @@ type TabKey = 'my_active' | 'queue' | 'my_closed'
 
 const TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active',  icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
-  { key: 'queue',     label: 'Queue',       icon: <Inbox className="w-4 h-4" />,     params: { assigned_to: 'none', status: 'active' } },
+  { key: 'queue',     label: 'All',         icon: <Inbox className="w-4 h-4" />,     params: { status: 'active' } },
   { key: 'my_closed', label: 'My Closed',   icon: <Archive className="w-4 h-4" />,   params: { assigned_to: 'me', status: 'closed' } },
 ]
 
@@ -38,6 +39,11 @@ function timeAgo(iso: string): string {
 }
 
 export function Chats() {
+  const roleRaw = useAuthStore((s) => s.auth.user?.role)
+  const role = Array.isArray(roleRaw) ? roleRaw[0] : (roleRaw ?? 'sales')
+  const isManager = ['owner', 'admin', 'dev'].includes(role)
+  const visibleTabs = isManager ? TABS : TABS.filter(t => t.key !== 'queue')
+
   const [activeTab, setActiveTab] = useState<TabKey>('my_active')
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
@@ -46,7 +52,7 @@ export function Chats() {
   const queryClient = useQueryClient()
 
   // Conversation list — cached per tab, polls every 30s
-  const tab = TABS.find(t => t.key === activeTab)!
+  const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
   const listParams: Record<string, string> = { ...tab.params, limit: '50' }
   if (debouncedSearch) listParams.search = debouncedSearch
   if (tunnelFilter) listParams.tunnel = tunnelFilter
@@ -71,14 +77,14 @@ export function Chats() {
     refetchInterval: 10_000,
   })
 
-  // Notification sound when queue grows (new conversation waiting)
-  const prevQueueRef = useRef(-1)
+  // Notification sound when my_active grows (new conversation assigned)
+  const prevActiveRef = useRef(-1)
   useEffect(() => {
-    if (prevQueueRef.current >= 0 && counts.queue > prevQueueRef.current) {
+    if (prevActiveRef.current >= 0 && counts.my_active > prevActiveRef.current) {
       new Audio('/notification.wav').play().catch(() => {})
     }
-    prevQueueRef.current = counts.queue
-  }, [counts.queue])
+    prevActiveRef.current = counts.my_active
+  }, [counts.my_active])
 
   // Refresh all data on claim/close
   const handleConversationChange = () => {
@@ -102,7 +108,7 @@ export function Chats() {
           <div className={`flex flex-col border-r border-gray-200 bg-white transition-all duration-200 ${selectedId ? 'w-96 min-w-[24rem]' : 'flex-1'}`}>
             {/* Tabs */}
             <div className="flex border-b border-gray-200">
-              {TABS.map(tab => (
+              {visibleTabs.map(tab => (
                 <button
                   key={tab.key}
                   onClick={() => { setActiveTab(tab.key); setSelectedId(null) }}
@@ -150,7 +156,7 @@ export function Chats() {
                 <div className="flex flex-col items-center justify-center h-32 text-gray-400">
                   <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
                   <p className="text-xs">
-                    {activeTab === 'queue' ? 'No conversations waiting' : activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
+                    {activeTab === 'queue' ? 'No active conversations' : activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
                   </p>
                 </div>
               ) : conversations.map(conv => (
