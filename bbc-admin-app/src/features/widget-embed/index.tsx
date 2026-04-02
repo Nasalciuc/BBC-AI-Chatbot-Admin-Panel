@@ -1,42 +1,37 @@
-// DEPRECATED: This route is kept for admin preview only.
-// All widget development happens in bbc-widget/ (standalone Preact build).
-// Do NOT make changes here — edit bbc-widget/src/ instead.
-import { useState } from 'react'
-import { FloatingButtons } from './FloatingButtons'
-import { TunnelForm } from './TunnelForm'
-import { ChatWindow } from './ChatWindow'
+/**
+ * Widget embed test page.
+ * Loads the compiled bbc-widget.js IIFE — the same bundle used on buybusinessclass.com.
+ * This ensures /widget-embed always tests the real production widget code.
+ *
+ * To update the widget: edit bbc-widget/src/ → npm run build → copy dist/bbc-widget.js
+ */
+import { useEffect } from 'react'
 
-type Step = 'buttons' | 'form' | 'chat'
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  'https://admin-panel-error-production.up.railway.app'
 
 export default function WidgetEmbed() {
-  const [step, setStep] = useState<Step>('buttons')
-  const [tunnel, setTunnel] = useState<'sales' | 'support'>('sales')
-  const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>({})
-  const [metadata, setMetadata] = useState<{ booking_id?: string }>({})
+  useEffect(() => {
+    // Clean up any previous widget instance (handles React StrictMode double-invoke)
+    document.getElementById('bbc-widget-root')?.remove()
+    ;(window as any).__BBC_WIDGET_LOADED__ = false
 
-  const handleTunnelSelect = (t: 'sales' | 'support') => {
-    setTunnel(t)
-    setStep('form')
-  }
+    const script = document.createElement('script')
+    script.src = '/widget/bbc-widget.js'
+    script.setAttribute('data-api', API_URL)
+    script.async = true
+    document.body.appendChild(script)
 
-  const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => {
-    setVisitor({ name: data.name, email: data.email, phone: data.phone })
-    if (data.booking_id) setMetadata({ booking_id: data.booking_id })
-    setStep('chat')
-  }
+    return () => {
+      script.remove()
+      document.getElementById('bbc-widget-root')?.remove()
+      ;(window as any).__BBC_WIDGET_LOADED__ = false
+    }
+  }, [])
 
-  const handleBack = () => setStep('buttons')
-  const handleCloseChat = () => {
-    setStep('buttons')
-    setVisitor({})
-    setMetadata({})
-  }
-
+  // Empty page — widget renders itself into #bbc-widget-root
   return (
-    <div style={{ position: 'relative', width: '100vw', height: '100vh' }}>
-      {step === 'buttons' && <FloatingButtons onSelect={handleTunnelSelect} />}
-      {step === 'form' && <TunnelForm tunnel={tunnel} onSubmit={handleFormSubmit} onBack={handleBack} />}
-      {step === 'chat' && <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} />}
-    </div>
+    <div style={{ width: '100vw', height: '100vh', background: '#f9fafb' }} />
   )
 }
