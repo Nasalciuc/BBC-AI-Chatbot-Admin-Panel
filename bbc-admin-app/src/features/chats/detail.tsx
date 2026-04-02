@@ -37,6 +37,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const bottomRef             = useRef<HTMLDivElement>(null)
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
+  const [accumMsgs, setAccumMsgs] = useState<Message[]>([])
+  const prevBaseLen           = useRef(0)
 
   // Full conversation load — cached, long staleTime
   const { data: conv, isLoading: loading } = useQuery({
@@ -53,6 +55,25 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }, [conv?.messages?.length])
 
+  // Reset accumulator when base conversation reloads (e.g. after agent sends message)
+  useEffect(() => {
+    const baseLen = conv?.messages?.length ?? 0
+    if (baseLen !== prevBaseLen.current) {
+      prevBaseLen.current = baseLen
+      setAccumMsgs([])
+    }
+  }, [conv?.messages?.length])
+
+  // Accumulate incremental messages — never replace, only append new ones
+  useEffect(() => {
+    if (!newMessages.length) return
+    setAccumMsgs(prev => {
+      const existingIds = new Set(prev.map(m => m.id))
+      const fresh = newMessages.filter(m => !existingIds.has(m.id))
+      return fresh.length ? [...prev, ...fresh] : prev
+    })
+  }, [newMessages])
+
   // Incremental message polling — ONLY new messages, ONLY on My Active tab
   const { data: newMessages = [] } = useQuery<Message[]>({
     queryKey: ['messages-incremental', conversationId],
@@ -66,18 +87,18 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       }
       return res.success ? res.data : []
     },
-    refetchInterval: activeTab === 'my_active' ? 5_000 : false,
+    refetchInterval: activeTab === 'my_active' ? 2_000 : false,
     enabled: !!conv && activeTab === 'my_active',
   })
 
-  // Merge base messages + incremental new ones
+  // Merge base messages + accumulated incremental messages (dedup by id)
   const allMessages: Message[] = useMemo(() => {
     const base = conv?.messages ?? []
-    if (!newMessages.length) return base
+    if (!accumMsgs.length) return base
     const existingIds = new Set(base.map(m => m.id))
-    const fresh = newMessages.filter(m => !existingIds.has(m.id))
+    const fresh = accumMsgs.filter(m => !existingIds.has(m.id))
     return fresh.length > 0 ? [...base, ...fresh] : base
-  }, [conv?.messages, newMessages])
+  }, [conv?.messages, accumMsgs])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
 
