@@ -65,16 +65,6 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }, [conv?.messages?.length])
 
-  // Accumulate incremental messages — never replace, only append new ones
-  useEffect(() => {
-    if (!newMessages.length) return
-    setAccumMsgs(prev => {
-      const existingIds = new Set(prev.map(m => m.id))
-      const fresh = newMessages.filter(m => !existingIds.has(m.id))
-      return fresh.length ? [...prev, ...fresh] : prev
-    })
-  }, [newMessages])
-
   // Incremental message polling — ONLY new messages, ONLY on My Active tab
   const { data: newMessages = [] } = useQuery<Message[]>({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
@@ -92,6 +82,16 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     refetchInterval: activeTab === 'my_active' ? 2_000 : false,
     enabled: !!conv && activeTab === 'my_active',
   })
+
+  // Accumulate incremental messages — never replace, only append new ones
+  useEffect(() => {
+    if (!newMessages.length) return
+    setAccumMsgs(prev => {
+      const existingIds = new Set(prev.map(m => m.id))
+      const fresh = newMessages.filter(m => !existingIds.has(m.id))
+      return fresh.length ? [...prev, ...fresh] : prev
+    })
+  }, [newMessages])
 
   // Merge base messages + accumulated incremental messages (dedup by id)
   const allMessages: Message[] = useMemo(() => {
