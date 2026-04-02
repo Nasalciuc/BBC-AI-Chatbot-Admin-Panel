@@ -25,8 +25,13 @@ async def _cleanup_stale_conversations() -> int:
 
 
 
-async def _assign_pending_conversations(user_id: str, tunnel_scope: str) -> int:
-    """If agent is idle (0 active convs), auto-assign oldest unassigned AI conv."""
+async def _assign_pending_conversations(
+    user_id: str,
+    tunnel_scope: str,
+    agent_name: str = "A specialist",
+) -> int:
+    """If agent is idle (0 active convs), auto-assign oldest unassigned AI conv.
+    Sends system messages + SSE push to notify widget of the handoff."""
     from config.settings import settings
     count = await db.get_agent_active_count(user_id)
     if count >= settings.max_concurrent_chats:
@@ -39,7 +44,31 @@ async def _assign_pending_conversations(user_id: str, tunnel_scope: str) -> int:
                 "assigned_agent_id": user_id,
                 "mode": "human",
             })
-            logger.info(f"[heartbeat-assign] Conv {conv['id']} → {user_id}")
+
+            # Notify widget via system messages + SSE push
+            from app.services.conversation_service import add_message
+            from app.realtime.manager import manager
+
+            joined = settings.heartbeat_joined_template.format(agent_name=agent_name)
+            welcome = (
+                settings.heartbeat_welcome_sales
+                if conv.get("tunnel") == "sales"
+                else settings.heartbeat_welcome_support
+            )
+
+            row1 = await add_message(conv["id"], "system", joined)
+            row2 = await add_message(conv["id"], "system", welcome)
+
+            # Push to SSE stream — no-op if widget not currently connected
+            if row1:
+                await manager.push(conv["id"], row1)
+            if row2:
+                await manager.push(conv["id"], row2)
+
+            logger.info(
+                f"[heartbeat-assign] Conv {conv['id']} → {user_id} "
+                f"({agent_name}), SSE pushed"
+            )
             return 1
     return 0
 
@@ -53,8 +82,11 @@ async def heartbeat(user: dict = Depends(get_current_user)):
         return {"success": False, "error": "No user ID in token"}
     await db.update_user_last_seen(user_id)
     cleaned = await _cleanup_stale_conversations()
+    agent_name = user.get("name") or user.get("email", "A specialist")
     assigned = await _assign_pending_conversations(
-        user_id, user.get("tunnel_scope", "sales")
+        user_id,
+        user.get("tunnel_scope", "sales"),
+        agent_name,
     )
     return {"success": True, "cleaned": cleaned, "assigned": assigned}
 

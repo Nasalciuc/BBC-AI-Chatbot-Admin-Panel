@@ -66,15 +66,20 @@ class Settings(BaseSettings):
 
     # System messages shown during routing flow
     connecting_message: str = "Connecting you with a specialist now\u2026"
-    joined_message_template: str = "You\u2019ve been connected with {agent_name}. They\u2019ll respond shortly."
+    joined_message_template: str = "You\u2019re now being assisted by {agent_name}."
 
     # Welcome messages per tunnel
-    welcome_message_sales: str = "Welcome! A travel specialist will be with you shortly. What are you looking for?"
-    welcome_message_support: str = "Welcome! A support agent will assist you shortly. How can we help?"
+    welcome_message_sales: str = "Where would you like to fly? I\u2019ll find you the best business class options."
+    welcome_message_support: str = "What can I help you with today?"
 
     # Quick reply suggestions per tunnel
     quick_replies_sales: list = ["Round-trip to Europe", "One-way flight", "Specific route quote", "Last-minute deal"]
     quick_replies_support: list = ["Change my booking", "Cancel or refund", "Flight status", "Other question"]
+
+    # Messages shown to widget when heartbeat assigns an AI conv to a newly available agent
+    heartbeat_joined_template: str = "{agent_name} has joined — they’ll take it from here."
+    heartbeat_welcome_sales: str = "Let’s continue — where would you like to fly?"
+    heartbeat_welcome_support: str = "Let’s continue — what can I help you with?"
 
     # CRM
     crm_api_url: str = "https://crm.buybusinessclass.com/ai"
