@@ -107,6 +107,7 @@ class UserUpdate(BaseModel):
     tunnel_scope: Optional[str] = None
     is_active: Optional[bool] = None
     phone: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 # ── KB ────────────────────────────────────────────────────────

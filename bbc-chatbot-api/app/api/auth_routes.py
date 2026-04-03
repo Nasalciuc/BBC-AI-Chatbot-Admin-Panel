@@ -66,6 +66,7 @@ async def login(req: LoginRequest):
         "name": user.get("name", ""),
         "role": user.get("role", "sales"),
         "tunnel_scope": user.get("tunnel_scope", "sales"),
+        "avatar_url": user.get("avatar_url") or None,
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
     }
     token = jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -81,6 +82,7 @@ async def login(req: LoginRequest):
             "role": user.get("role", "sales"),
             "tunnel_scope": user.get("tunnel_scope", "sales"),
             "phone": user.get("phone", ""),
+            "avatar_url": user.get("avatar_url") or None,
         },
     )
 
