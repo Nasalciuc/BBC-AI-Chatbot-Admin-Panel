@@ -10,6 +10,8 @@ interface AuthUser {
   role: string
   tunnelScope: string
   exp: number
+  avatar_url?: string | null
+  phone?: string
 }
 
 interface AuthState {

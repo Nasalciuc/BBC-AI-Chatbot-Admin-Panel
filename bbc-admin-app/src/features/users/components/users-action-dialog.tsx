@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { SelectDropdown } from '@/components/select-dropdown'
+import { BBCAvatar } from '@/components/bbc-avatar'
 import { roles } from '../data/data'
 import { type User } from '../data/schema'
 
@@ -36,6 +37,11 @@ const tunnelOptions = [
 const formSchema = z
   .object({
     name: z.string().min(2, 'Name is required (min 2 chars).'),
+    avatar_url: z
+      .string()
+      .url('Must be a valid URL')
+      .optional()
+      .or(z.literal('')),
     email: z.string().min(1, 'Email is required.').email('Invalid email address'),
     phone: z
       .string()
@@ -107,9 +113,10 @@ export function UsersActionDialog({
       ? {
           name: currentRow?.name ?? '',
           email: currentRow?.email ?? '',
-          phone: (currentRow as any)?.phone ?? '',
+          phone: currentRow?.phone ?? '',
           role: currentRow?.role ?? '',
           tunnel_scope: currentRow?.tunnel_scope ?? 'sales',
+          avatar_url: currentRow?.avatar_url ?? '',
           password: '',
           isEdit,
         }
@@ -119,6 +126,7 @@ export function UsersActionDialog({
           phone: '',
           role: '',
           tunnel_scope: 'sales',
+          avatar_url: '',
           password: '',
           isEdit,
         },
@@ -132,6 +140,7 @@ export function UsersActionDialog({
           role: values.role,
           tunnel_scope: values.tunnel_scope,
           ...(values.phone ? { phone: values.phone } : {}),
+          avatar_url: values.avatar_url || null,
         })
         toast.success('User updated')
       } else {
@@ -174,6 +183,32 @@ export function UsersActionDialog({
               onSubmit={form.handleSubmit(onSubmit)}
               className='space-y-4 px-0.5'
             >
+              {/* Avatar preview */}
+              <FormField
+                control={form.control}
+                name='avatar_url'
+                render={({ field }) => (
+                  <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
+                    <FormLabel className='col-span-2 text-end'>Photo</FormLabel>
+                    <div className='col-span-4 flex items-center gap-3'>
+                      <BBCAvatar
+                        name={form.getValues('name') || 'User'}
+                        url={field.value || null}
+                        size={48}
+                        editable
+                      />
+                      <FormControl>
+                        <Input
+                          placeholder='https://example.com/photo.jpg'
+                          {...field}
+                        />
+                      </FormControl>
+                    </div>
+                    <FormMessage className='col-span-4 col-start-3' />
+                  </FormItem>
+                )}
+              />
+
               <FormField
                 control={form.control}
                 name='name'

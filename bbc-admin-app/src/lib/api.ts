@@ -237,7 +237,7 @@ export async function inviteUser(data: {
 
 export async function updateUser(
   id: string,
-  data: { name?: string; role?: string; is_active?: boolean; tunnel_scope?: string; phone?: string },
+  data: { name?: string; role?: string; is_active?: boolean; tunnel_scope?: string; phone?: string; avatar_url?: string | null },
 ): Promise<{ success: boolean; data: any }> {
   return apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',
