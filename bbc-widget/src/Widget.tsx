@@ -32,8 +32,30 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const saved = safeGet('bbc_widget')
   const restored = saved ? (() => { try { return JSON.parse(saved) } catch { return null } })() : null
 
-  const [step, setStep] = useState<Step>(restored?.step === 'chat' ? 'chat' : 'buttons')
-  const [tunnel, setTunnel] = useState<'sales' | 'support'>(restored?.tunnel || 'sales')
+  // Check if a valid session exists in localStorage (survives tab close + browser restart)
+  // Used to skip the form when user reopens within 30-minute window
+  const hasValidSession = (() => {
+    try {
+      const convId = localStorage.getItem('bbc_conv_id')
+      const ts = localStorage.getItem('bbc_conv_ts')
+      if (!convId || !ts) return false
+      return Date.now() - parseInt(ts) < SESSION_TTL_MS
+    } catch { return false }
+  })()
+
+  // Restore tunnel from localStorage if sessionStorage is gone
+  const savedTunnel = (() => {
+    try {
+      return (localStorage.getItem('bbc_conv_tunnel') as 'sales' | 'support') || 'sales'
+    } catch { return 'sales' as const }
+  })()
+
+  const [step, setStep] = useState<Step>(
+    restored?.step === 'chat' || hasValidSession ? 'chat' : 'buttons'
+  )
+  const [tunnel, setTunnel] = useState<'sales' | 'support'>(
+    restored?.tunnel || (hasValidSession ? savedTunnel : 'sales')
+  )
   const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(restored?.visitor || {})
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(restored?.metadata || {})
 
@@ -63,6 +85,8 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     setMetadata(meta)
     setStep('chat')
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor: vis, metadata: meta }))
+    // Save tunnel to localStorage so it survives tab close
+    try { localStorage.setItem('bbc_conv_tunnel', tunnel) } catch {}
   }
 
   const handleBack = () => {
@@ -74,7 +98,8 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     setStep('buttons')
     setVisitor({})
     setMetadata({})
-    clearWidgetStorage()
+    // Only remove sessionStorage UI state — localStorage persists for 30-minute session
+    safeRemove('bbc_widget')
   }
 
   // Escape key closes form/chat
@@ -84,7 +109,8 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
         setStep('buttons')
         setVisitor({})
         setMetadata({})
-        clearWidgetStorage()
+        // Only remove sessionStorage — localStorage persists for 30-minute session
+        safeRemove('bbc_widget')
       }
     }
     window.addEventListener('keydown', handler)
