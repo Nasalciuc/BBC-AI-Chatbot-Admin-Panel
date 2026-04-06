@@ -76,91 +76,91 @@ export function ProfileForm() {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Avatar preview + click to edit */}
-      <div className="flex flex-col items-start gap-3">
-        <p className="text-sm font-medium">Profile Photo</p>
-        <BBCAvatar
-          name={auth.user?.name || 'User'}
-          url={avatarUrl || auth.user?.avatar_url}
-          size={80}
-          editable
-          onClick={() => setShowUrlInput(v => !v)}
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
+
+        {/* Avatar — INSIDE Form so FormField has context */}
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-sm font-medium">Profile Photo</p>
+          <BBCAvatar
+            name={auth.user?.name || 'User'}
+            url={avatarUrl || auth.user?.avatar_url}
+            size={80}
+            editable
+            onClick={() => setShowUrlInput(v => !v)}
+          />
+          {showUrlInput && (
+            <FormField
+              control={form.control}
+              name="avatar_url"
+              render={({ field }) => (
+                <FormItem className="w-full max-w-sm">
+                  <FormControl>
+                    <Input
+                      placeholder="https://example.com/photo.jpg"
+                      autoFocus
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Paste a direct link to your profile photo.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+        </div>
+
+        {/* Read-only email */}
+        <div className="grid grid-cols-6 items-center gap-x-4">
+          <p className="col-span-2 text-sm font-medium text-end text-muted-foreground">Email</p>
+          <p className="col-span-4 text-sm text-muted-foreground">{auth.user?.email}</p>
+        </div>
+
+        {/* Name */}
+        <FormField
+          control={form.control}
+          name="name"
+          render={({ field }) => (
+            <FormItem className="grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1">
+              <FormLabel className="col-span-2 text-end">Full Name</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder="First Last"
+                  className="col-span-4"
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage className="col-span-4 col-start-3" />
+            </FormItem>
+          )}
         />
-        {showUrlInput && (
-          <FormField
-            control={form.control}
-            name="avatar_url"
-            render={({ field }) => (
-              <FormItem className="w-full max-w-sm">
-                <FormControl>
-                  <Input
-                    placeholder="https://example.com/photo.jpg"
-                    autoFocus
-                    {...field}
-                  />
-                </FormControl>
-                <FormDescription>
-                  Paste a direct link to your profile photo.
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        )}
-      </div>
 
-      <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-          {/* Read-only email */}
-          <div className="grid grid-cols-6 items-center gap-x-4">
-            <p className="col-span-2 text-sm font-medium text-end text-muted-foreground">Email</p>
-            <p className="col-span-4 text-sm text-muted-foreground">{auth.user?.email}</p>
-          </div>
+        {/* Phone */}
+        <FormField
+          control={form.control}
+          name="phone"
+          render={({ field }) => (
+            <FormItem className="grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1">
+              <FormLabel className="col-span-2 text-end">Phone</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder="+1234567890"
+                  className="col-span-4"
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage className="col-span-4 col-start-3" />
+            </FormItem>
+          )}
+        />
 
-          {/* Name */}
-          <FormField
-            control={form.control}
-            name="name"
-            render={({ field }) => (
-              <FormItem className="grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1">
-                <FormLabel className="col-span-2 text-end">Full Name</FormLabel>
-                <FormControl>
-                  <Input
-                    placeholder="First Last"
-                    className="col-span-4"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage className="col-span-4 col-start-3" />
-              </FormItem>
-            )}
-          />
+        <Button type="submit" disabled={form.formState.isSubmitting}>
+          {form.formState.isSubmitting ? 'Saving...' : 'Save profile'}
+        </Button>
 
-          {/* Phone */}
-          <FormField
-            control={form.control}
-            name="phone"
-            render={({ field }) => (
-              <FormItem className="grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1">
-                <FormLabel className="col-span-2 text-end">Phone</FormLabel>
-                <FormControl>
-                  <Input
-                    placeholder="+1234567890"
-                    className="col-span-4"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage className="col-span-4 col-start-3" />
-              </FormItem>
-            )}
-          />
-
-          <Button type="submit" disabled={form.formState.isSubmitting}>
-            {form.formState.isSubmitting ? 'Saving...' : 'Save profile'}
-          </Button>
-        </form>
-      </Form>
-    </div>
+      </form>
+    </Form>
   )
 }
