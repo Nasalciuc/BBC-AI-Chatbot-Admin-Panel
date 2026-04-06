@@ -58,6 +58,7 @@ export function Chats() {
   if (tunnelFilter) listParams.tunnel = tunnelFilter
 
   const { data: convResponse, isLoading } = useQuery({
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter],
     queryFn: () => getConversations(listParams),
     refetchInterval: 30_000,
