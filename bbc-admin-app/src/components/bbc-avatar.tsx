@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 /**
  * BBCAvatar — unified operator avatar component.
  * 4 states:
@@ -37,6 +39,15 @@ export function BBCAvatar({
   onClick,
   className = '',
 }: BBCAvatarProps) {
+  const [imgError, setImgError] = useState(false)
+  const [prevUrl, setPrevUrl] = useState(url)
+
+  // Reset error state when URL changes (so new valid URLs are tried)
+  if (prevUrl !== url) {
+    setPrevUrl(url)
+    setImgError(false)
+  }
+
   const initials = getInitials(name)
   const hue = getHue(name)
 
@@ -52,21 +63,19 @@ export function BBCAvatar({
     cursor: editable ? 'pointer' : 'default',
   }
 
-  // State 1: URL + non-editable → image
-  if (url && !editable) {
+  // State 1: URL + non-editable + no load error → image
+  if (url && !editable && !imgError) {
     return (
       <img
         src={url}
         alt={name}
         style={{ ...base, objectFit: 'cover' }}
         className={className}
-        onError={(e) => {
-          const target = e.target as HTMLImageElement
-          target.style.display = 'none'
-        }}
+        onError={() => setImgError(true)}
       />
     )
   }
+  // If imgError=true → falls through to State 4 (colored initials) ↓
 
   // State 2: No URL + editable → dashed circle with X
   if (!url && editable) {
@@ -96,8 +105,8 @@ export function BBCAvatar({
     )
   }
 
-  // State 3: URL + editable → image with edit overlay on hover
-  if (url && editable) {
+  // State 3: URL + editable + no load error → image with edit overlay on hover
+  if (url && editable && !imgError) {
     return (
       <div
         onClick={onClick}
@@ -109,6 +118,7 @@ export function BBCAvatar({
           src={url}
           alt={name}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          onError={() => setImgError(true)}
         />
         <div style={{
           position: 'absolute', inset: 0, borderRadius: '50%',
