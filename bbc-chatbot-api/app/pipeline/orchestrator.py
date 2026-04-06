@@ -133,7 +133,10 @@ async def _pipeline(
     extracted = extract_entities(message)
     entities: dict = {
         "_raw_message": message,
-        "name": extracted.name or (visitor.name if visitor.name else None),
+        # name: ALWAYS from visitor form data — never extract from message text
+        # extracting name from message causes "looking for" or other text fragments
+        # to override the real visitor name submitted in the form
+        "name": visitor.name if visitor.name else None,
         "email": extracted.email or (visitor.email if visitor.email else None),
         "phone": extracted.phone or (visitor.phone if visitor.phone else None),
         "origin": extracted.origin_code,

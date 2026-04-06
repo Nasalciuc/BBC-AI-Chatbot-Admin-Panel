@@ -201,6 +201,8 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
     if not client:
         return []
     try:
+        _SCORE_THRESHOLD = 0.60  # Minimum cosine similarity — below this, KB entry is irrelevant
+
         body: dict = {
             "query": {
                 "text": query_text,
@@ -208,6 +210,7 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
             },
             "limit": limit,
             "with_payload": True,
+            "score_threshold": _SCORE_THRESHOLD,
         }
         if tunnel:
             body["filter"] = {
@@ -219,13 +222,17 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
 
         results = []
         for point in data.get("result", {}).get("points", []):
+            score = point.get("score", 0.0)
+            if score < _SCORE_THRESHOLD:  # Python safety net
+                continue
             payload = point.get("payload", {})
             results.append({
                 "id": point.get("id"),
                 "title": payload.get("title", ""),
                 "content": payload.get("content", ""),
-                "score": point.get("score", 0.0),
+                "score": score,
             })
+        logger.info(f"[qdrant] query='{query_text[:50]}' \u2192 {len(results)} results above threshold {_SCORE_THRESHOLD}")
         return results
     except Exception as e:
         logger.warning(f"Qdrant search failed (falling back to keyword): {e}")
