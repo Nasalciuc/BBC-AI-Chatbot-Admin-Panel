@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useDeferredValue } from 'react'
+import { useState, useRef, useEffect, useDeferredValue, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
@@ -50,6 +50,38 @@ export function Chats() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const debouncedSearch = useDeferredValue(search)
   const queryClient = useQueryClient()
+
+  // Resizable panel — persists in localStorage
+  const [leftWidth, setLeftWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('bbc_panel_width')
+      return saved ? Math.min(600, Math.max(280, parseInt(saved))) : 384
+    } catch { return 384 }
+  })
+  const isResizing = useRef(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    isResizing.current = true
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isResizing.current || !containerRef.current) return
+      const rect = containerRef.current.getBoundingClientRect()
+      const newWidth = Math.min(600, Math.max(280, e.clientX - rect.left))
+      setLeftWidth(newWidth)
+    }
+    const onMouseUp = () => {
+      isResizing.current = false
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }, [])
+
+  useEffect(() => {
+    try { localStorage.setItem('bbc_panel_width', String(leftWidth)) } catch { /* ignore */ }
+  }, [leftWidth])
 
   // Conversation list — cached per tab, polls every 30s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
@@ -104,9 +136,13 @@ export function Chats() {
         </div>
       </Header>
       <Main fixed>
-        <div className="flex h-full overflow-hidden rounded-lg border border-gray-200">
+        <div ref={containerRef} className="flex h-full overflow-hidden rounded-lg border border-gray-200">
           {/* Left panel — tabs + list */}
-          <div className={`flex flex-col border-r border-gray-200 bg-white transition-all duration-200 ${selectedId ? 'w-96 min-w-[24rem]' : 'flex-1'}`}>
+          <div
+            data-panel="left"
+            className="flex flex-col border-r border-gray-200 bg-white"
+            style={selectedId ? { width: leftWidth, minWidth: 280, maxWidth: 600, flexShrink: 0 } : { flex: 1 }}
+          >
             {/* Tabs */}
             <div className="flex border-b border-gray-200">
               {visibleTabs.map(tab => (
@@ -187,6 +223,16 @@ export function Chats() {
               ))}
             </div>
           </div>
+
+          {/* Drag handle */}
+          {selectedId && (
+            <div
+              onMouseDown={startResize}
+              className="w-1.5 shrink-0 bg-gray-200 hover:bg-[#C9A54E]/60 active:bg-[#C9A54E] transition-colors"
+              style={{ cursor: 'col-resize' }}
+              title="Drag to resize"
+            />
+          )}
 
           {/* Right panel — detail */}
           {selectedId ? (

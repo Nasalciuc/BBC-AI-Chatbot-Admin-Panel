@@ -64,6 +64,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const [convId, setConvId] = useState<string | null>(savedConvId)
   const bottomRef = useRef<HTMLDivElement>(null)
   const initialized = useRef(false)
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages.length])
@@ -184,11 +185,36 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     return () => {
       source?.close()
       if (fallbackInterval) clearInterval(fallbackInterval)
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     }
   }, [convId, apiUrl])
 
+  // Send typing event to server (debounced 500ms)
+  const sendTypingEvent = (text: string) => {
+    if (!convId) return  // no active conversation yet — skip
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+    typingTimeoutRef.current = setTimeout(() => {
+      if (text.trim()) {
+        fetch(`${apiUrl}/api/chat/typing/${convId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        }).catch(() => {})
+      } else {
+        fetch(`${apiUrl}/api/chat/typing/${convId}`, {
+          method: 'DELETE',
+        }).catch(() => {})
+      }
+    }, 500)
+  }
+
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
+    // Clear typing indicator immediately when sending
+    if (convId) {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+      fetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
+    }
     setSending(true)
 
     const optimisticMsg: Message = {
@@ -386,7 +412,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       }}>
         <input
           value={input}
-          onInput={e => setInput((e.target as HTMLInputElement).value)}
+          onInput={e => {
+            const val = (e.target as HTMLInputElement).value
+            setInput(val)
+            sendTypingEvent(val)
+          }}
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           aria-label="Type a message"

@@ -7,6 +7,7 @@ import { LongText } from '@/components/long-text'
 import { callTypes, roles } from '../data/data'
 import { type User } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
+import { BBCAvatar } from '@/components/bbc-avatar'
 
 export const usersColumns: ColumnDef<User>[] = [
   {
@@ -41,9 +42,19 @@ export const usersColumns: ColumnDef<User>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Name' />
     ),
-    cell: ({ row }) => (
-      <LongText className='max-w-36 ps-3'>{row.getValue('name')}</LongText>
-    ),
+    cell: ({ row }) => {
+      const user = row.original
+      return (
+        <div className="flex items-center gap-2">
+          <BBCAvatar
+            name={user.name || 'User'}
+            url={(user as Record<string, unknown>).avatar_url as string | undefined}
+            size={32}
+          />
+          <LongText>{row.getValue('name')}</LongText>
+        </div>
+      )
+    },
     meta: {
       className: cn(
         'drop-shadow-[0_1px_2px_rgb(0_0_0_/_0.1)] dark:drop-shadow-[0_1px_2px_rgb(255_255_255_/_0.1)]',

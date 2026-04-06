@@ -65,6 +65,19 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }, [conv?.messages?.length])
 
+  // Typing indicator — polls every 1s to show client's live text to agent
+  const { data: typingData } = useQuery<{ is_typing: boolean; text: string }>({
+    queryKey: ['typing', conversationId],
+    queryFn: async () => {
+      const res = await apiFetch<{ success: boolean; data: { is_typing: boolean; text: string } }>(
+        `/api/conversations/${conversationId}/typing`
+      )
+      return res.data ?? { is_typing: false, text: '' }
+    },
+    refetchInterval: activeTab === 'my_active' ? 1_000 : false,
+    enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
+  })
+
   // Incremental message polling — ONLY new messages, ONLY on My Active tab
   const { data: newMessages = [] } = useQuery<Message[]>({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
@@ -238,6 +251,27 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
         {/* Input + Actions + Status */}
         <div className="border-t border-gray-200 bg-white">
+          {/* Typing preview — shown when client is composing a message */}
+          {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
+            <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl">
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-[10px] font-medium text-blue-500 uppercase tracking-wide">
+                  Client is composing
+                </span>
+                <span className="flex gap-0.5 items-center">
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                </span>
+              </div>
+              {typingData.text && (
+                <p className="text-sm text-gray-600 italic leading-relaxed">
+                  &ldquo;{typingData.text}&rdquo;
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Agent input — only on My Active */}
           {activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="px-4 pt-3 pb-2">
