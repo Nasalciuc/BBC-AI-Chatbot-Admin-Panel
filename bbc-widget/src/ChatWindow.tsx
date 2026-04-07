@@ -65,6 +65,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const bottomRef = useRef<HTMLDivElement>(null)
   const initialized = useRef(false)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastTypingSentRef = useRef<number>(0)
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages.length])
@@ -189,23 +190,31 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     }
   }, [convId, apiUrl])
 
-  // Send typing event to server (debounced 500ms)
+  // Send typing event to server
+  // Throttle: send at most every 200ms so operator sees text live
+  // Clear debounce: if no typing for 3s → clear indicator
   const sendTypingEvent = (text: string) => {
-    if (!convId) return  // no active conversation yet — skip
+    if (!convId) return
+
+    const now = Date.now()
+
+    // Throttle — send immediately if 200ms passed since last send
+    if (text.trim() && now - lastTypingSentRef.current > 200) {
+      lastTypingSentRef.current = now
+      fetch(`${apiUrl}/api/chat/typing/${convId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }).catch(() => {})
+    }
+
+    // Debounce clear — if user stops typing for 3s → clear indicator
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     typingTimeoutRef.current = setTimeout(() => {
-      if (text.trim()) {
-        fetch(`${apiUrl}/api/chat/typing/${convId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        }).catch(() => {})
-      } else {
-        fetch(`${apiUrl}/api/chat/typing/${convId}`, {
-          method: 'DELETE',
-        }).catch(() => {})
-      }
-    }, 500)
+      fetch(`${apiUrl}/api/chat/typing/${convId}`, {
+        method: 'DELETE',
+      }).catch(() => {})
+    }, 3_000)
   }
 
   const sendMessage = async (text: string) => {

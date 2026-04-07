@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks'
+import { useState, useEffect, useRef } from 'preact/hooks'
 import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm } from './TunnelForm'
 import { ChatWindow } from './ChatWindow'
@@ -58,6 +58,19 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   )
   const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(restored?.visitor || {})
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(restored?.metadata || {})
+
+  // Auto-open: after 10 seconds on page, open the sales form
+  // Only if no active session and not already opened this page visit
+  const autoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (step !== 'buttons' || autoOpenedRef.current) return
+    const timer = setTimeout(() => {
+      autoOpenedRef.current = true
+      setTunnel('sales')
+      setStep('form')
+    }, 10_000)
+    return () => clearTimeout(timer)
+  }, []) // run only once on mount
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
     setTunnel(t)

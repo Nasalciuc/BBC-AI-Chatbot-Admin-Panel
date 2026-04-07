@@ -205,7 +205,10 @@ export function Chats() {
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status] ?? 'bg-gray-300'}`} />
                         <span className="font-medium text-sm text-gray-900 truncate">
-                          {conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>}
+                          {activeTab === 'my_closed'
+                            ? <span className="text-gray-400 italic text-xs">Closed conversation</span>
+                            : (conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>)
+                          }
                         </span>
                       </div>
                       <div className="flex items-center gap-2 mt-1">

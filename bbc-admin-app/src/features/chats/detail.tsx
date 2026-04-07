@@ -74,7 +74,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       )
       return res.data ?? { is_typing: false, text: '' }
     },
-    refetchInterval: activeTab === 'my_active' ? 1_000 : false,
+    refetchInterval: activeTab === 'my_active' ? 500 : false,
     enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
@@ -182,7 +182,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h2 className="text-base font-semibold text-white truncate">
-                {conv.visitor_name ?? 'Anonymous Visitor'}
+                {conv.status === 'closed'
+                  ? <span className="text-gray-400 italic">Closed conversation</span>
+                  : (conv.visitor_name ?? 'Anonymous Visitor')
+                }
               </h2>
               <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-medium ${
                 conv.tunnel === 'sales' ? 'bg-blue-500/20 text-blue-200' : 'bg-purple-500/20 text-purple-200'
@@ -191,12 +194,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               </span>
             </div>
             <div className="flex items-center gap-4 mt-1.5">
-              {conv.visitor_phone && (
+              {conv.visitor_phone && conv.status !== 'closed' && (
                 <span className="flex items-center gap-1 text-xs text-gray-300">
                   <Phone className="w-3 h-3" />{conv.visitor_phone}
                 </span>
               )}
-              {conv.visitor_email && (
+              {conv.visitor_email && conv.status !== 'closed' && (
                 <span className="flex items-center gap-1 text-xs text-gray-400">
                   <Mail className="w-3 h-3" />{conv.visitor_email}
                 </span>
