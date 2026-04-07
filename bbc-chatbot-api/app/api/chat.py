@@ -49,6 +49,19 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 detail="Conversation message limit reached. Please start a new conversation.",
             )
 
+    # 2.5. Reopen closed conversation if client writes again within session window
+    if req.conversation_id:
+        conv_info = await db.get_conversation_simple(req.conversation_id)
+        if conv_info and conv_info.get('status') == 'closed':
+            logger.info(f"[reopen] Conv {req.conversation_id} closed — client wrote again, reopening")
+            await db.update_conversation(req.conversation_id, {
+                'status': 'active',
+                'mode': 'ai',
+                'assigned_agent_id': None,
+            })
+            # Fall through: AI pipeline handles this message
+            # Heartbeat will re-assign to operator if online within 30s
+
     # 3. If existing conversation in 'human' mode
     if req.conversation_id:
         mode = await db.get_conversation_mode(req.conversation_id)

@@ -183,6 +183,23 @@ async def get_conversations(
         return [], 0
 
 
+async def get_conversation_simple(conv_id: str) -> Optional[dict]:
+    """Get minimal conversation info — status and mode only. Fast check."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .select("id, status, mode, assigned_agent_id")
+            .eq("id", conv_id)
+            .single()
+            .execute()
+        )
+        return res.data
+    except Exception as e:
+        logger.error(f"get_conversation_simple error: {e}")
+        return None
+
+
 async def get_conversation(conversation_id: str) -> Optional[dict]:
     """One conversation + all its messages + associated lead.
     Messages and lead queries run in PARALLEL (don't depend on each other)."""
