@@ -67,7 +67,10 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     const timer = setTimeout(() => {
       autoOpenedRef.current = true
       setTunnel('sales')
-      setStep('form')
+      setVisitor({})
+      setMetadata({})
+      setStep('chat')
+      safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel: 'sales', visitor: {}, metadata: {} }))
     }, 10_000)
     return () => clearTimeout(timer)
   }, []) // run only once on mount
