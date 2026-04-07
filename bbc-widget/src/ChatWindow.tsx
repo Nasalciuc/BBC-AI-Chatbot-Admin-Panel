@@ -89,11 +89,21 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       .then(r => r.json())
       .then(data => {
         if (!data.success || data.data?.status === 'closed') {
-          // Conversation was closed by agent — reset to fresh start
+          // Conversation was closed by agent — clear all storage and reset widget
           localStorage.removeItem('bbc_conv_id')
+          localStorage.removeItem('bbc_conv_ts')
+          localStorage.removeItem('bbc_visitor_key')
+          localStorage.removeItem('bbc_conv_tunnel')
           setConvId(null)
-          initialized.current = false  // allow greeting to fire again
-          setPendingGreeting(true)
+          // Show a closing message in the chat for good UX
+          setMessages(prev => [...prev, {
+            id: '__conv_closed__',
+            role: 'system' as const,
+            content: 'This conversation has been closed. Thank you for contacting us!',
+            created_at: new Date().toISOString(),
+          }])
+          // After 3 seconds reset widget completely to buttons
+          setTimeout(() => { onClose() }, 3_000)
         }
       })
       .catch(() => { /* network error — keep session, polling will handle */ })
