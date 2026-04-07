@@ -266,6 +266,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       if (data.conversation_id && !convId) {
         setConvId(data.conversation_id)
         safeSet('bbc_conv_id', data.conversation_id)
+        try { localStorage.setItem('bbc_conv_id', data.conversation_id) } catch {}
         // Save initial timestamp for 30-minute rolling expiry
         try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
       }
