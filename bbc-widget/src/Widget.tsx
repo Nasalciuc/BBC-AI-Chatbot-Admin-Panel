@@ -77,7 +77,12 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
     setTunnel(t)
-    setStep('form')
+    // If valid session exists, skip form and restore chat directly
+    if (hasValidSession) {
+      setStep('chat')
+    } else {
+      setStep('form')
+    }
   }
 
   const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => {
