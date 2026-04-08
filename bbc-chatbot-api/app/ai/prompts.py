@@ -80,6 +80,12 @@ You: "Great choice — Dubai is one of our most popular routes! Business class f
 Visitor: "I want to fly to Tokyo next month but I'm not sure about dates."
 You: "Tokyo in business class is a wonderful experience — several airlines offer fully flat beds on that route. Flexible dates actually work in your favour, as we can target the sharpest fares. Would you prefer a direct flight, or are you open to a one-stop option that can save up to 40%?"
 
+Visitor: "hey, i am interested in business class from Boston to San Francisco"
+You: "Boston to San Francisco in Business — excellent choice! Fares typically range $1,200–$2,800 depending on dates, with carriers like United and American offering lie-flat seats. Are you looking at specific dates, or shall I check what's most competitive this month?"
+
+Visitor: "That's too expensive"
+You: "I completely understand — these are significant fares. The good news is we often secure rates 20–35% below what airlines show publicly. Could I have one of our specialists check live availability for your specific dates? They frequently find deals that aren't visible online."
+
 Visitor: "Can I speak to someone?"
 You: "Of course! I'd be happy to connect you with one of our travel specialists. Could I grab your phone number so they can call you directly? They'll be able to check live availability and lock in the best fare for you."
 """
@@ -104,6 +110,7 @@ def build_conversational_prompt(
     lead: Optional[dict] = None,
     kb_results: Optional[list[KBResult]] = None,
     history: Optional[list[dict]] = None,
+    entities: Optional[dict] = None,
 ) -> str:
     """Assemble the full system prompt with dynamic context sections."""
     sections: list[str] = []
@@ -128,8 +135,22 @@ def build_conversational_prompt(
         missing = get_missing_fields(lead)
         if missing:
             visitor_lines.append(f"Missing info: {', '.join(missing)}")
-    msg_count = len(history) if history else 0
-    visitor_lines.append(f"Conversation stage: {_conversation_stage(msg_count)}")
+    # Count only real user messages for stage detection
+    user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
+    visitor_lines.append(f"Conversation stage: {_conversation_stage(user_msg_count)}")
+
+    # Add extracted entities if available
+    if entities:
+        if entities.get("origin") or entities.get("destination"):
+            route = f"{entities.get('origin', '?')} \u2192 {entities.get('destination', '?')}"
+            visitor_lines.append(f"Route mentioned: {route}")
+        if entities.get("departure_date"):
+            visitor_lines.append(f"Travel date: {entities['departure_date']}")
+        if entities.get("passengers"):
+            visitor_lines.append(f"Passengers: {entities['passengers']}")
+        if entities.get("cabin_class"):
+            visitor_lines.append(f"Cabin class: {entities['cabin_class']}")
+
     sections.append("\n".join(visitor_lines))
 
     # 4. Knowledge base context
@@ -146,8 +167,18 @@ def build_conversational_prompt(
         conv_lines: list[str] = ["[CONVERSATION]"]
         recent = history[-10:] if len(history) > 10 else history
         for msg in recent:
-            role_label = "Visitor" if msg.get("role") == "user" else "You"
+            role = msg.get("role", "")
+            # Skip system messages — they are routing artifacts, not conversation
+            if role == "system":
+                continue
+            if role == "user":
+                role_label = "Visitor"
+            elif role == "agent":
+                role_label = "Agent"
+            else:
+                role_label = "You"
             conv_lines.append(f"{role_label}: {_sanitize_kb_content(msg.get('content', ''))}")
-        sections.append("\n".join(conv_lines))
+        if len(conv_lines) > 1:  # only add if there are actual messages
+            sections.append("\n".join(conv_lines))
 
     return "\n\n".join(sections)

@@ -114,6 +114,14 @@ def generate_response(
        b. Else → Haiku ($0.003)
        c. If AI fails → fallback template ($0)
     """
+    # Count only real user messages in history (exclude system/agent)
+    user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
+
+    # If conversation already has user messages, GREETING is impossible
+    # Client said "hey" but already started conversation — treat as GENERAL
+    if intent == Intent.GREETING and user_msg_count > 1:
+        intent = Intent.GENERAL_QUESTION
+
     # 1. Greeting
     if intent == Intent.GREETING:
         text = get_template("welcome", tunnel, visitor)
@@ -281,6 +289,7 @@ def generate_response(
         lead=lead,
         kb_results=kb_results if kb_results else None,
         history=history if history else None,
+        entities=entities,
     )
 
     user_messages = [m for m in history if m.get("role") == "user"]
