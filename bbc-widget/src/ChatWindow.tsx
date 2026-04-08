@@ -180,6 +180,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       }
     }
 
+    catchUpPoll()  // instant load — don't wait for SSE onopen (1-2s delay)
     startSSE()
 
     return () => {
