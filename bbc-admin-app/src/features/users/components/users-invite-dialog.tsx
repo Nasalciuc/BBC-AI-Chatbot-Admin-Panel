@@ -45,7 +45,6 @@ const formSchema = z.object({
     .or(z.literal('')),
   role: z.string().min(1, 'Role is required.'),
   tunnel_scope: z.string().min(1, 'Tunnel is required.'),
-  password: z.string().min(8, 'Password must be at least 8 characters.'),
 })
 
 type UserInviteForm = z.infer<typeof formSchema>
@@ -61,7 +60,7 @@ export function UsersInviteDialog({
 }: UserInviteDialogProps) {
   const form = useForm<UserInviteForm>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: '', email: '', phone: '', role: '', tunnel_scope: 'sales', password: '' },
+    defaultValues: { name: '', email: '', phone: '', role: '', tunnel_scope: 'sales' },
   })
 
   const [isLoading, setIsLoading] = useState(false)
@@ -74,10 +73,9 @@ export function UsersInviteDialog({
         email: values.email,
         role: values.role,
         tunnel_scope: values.tunnel_scope,
-        password: values.password,
         ...(values.phone ? { phone: values.phone } : {}),
       })
-      toast.success(`User ${values.email} invited successfully!`)
+      toast.success('Invitation sent! User will receive login details by email.')
       form.reset()
       onOpenChange(false)
     } catch (err: unknown) {
@@ -177,19 +175,7 @@ export function UsersInviteDialog({
                 </FormItem>
               )}
             />
-            <FormField
-              control={form.control}
-              name='password'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Temporary Password</FormLabel>
-                  <FormControl>
-                    <Input type='password' placeholder='Min 8 characters' {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+
           </form>
         </Form>
         <DialogFooter className='gap-y-2'>

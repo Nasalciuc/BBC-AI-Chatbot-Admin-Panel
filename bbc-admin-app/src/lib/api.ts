@@ -225,7 +225,6 @@ export async function inviteUser(data: {
   email: string
   role: string
   tunnel_scope: string
-  password: string
   phone?: string
 }): Promise<{ success: boolean; data: any }> {
   return apiFetch('/api/auth/invite', {
