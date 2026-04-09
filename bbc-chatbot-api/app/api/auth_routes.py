@@ -33,7 +33,6 @@ class InviteRequest(BaseModel):
     email: str
     role: str = "sales"
     tunnel_scope: str = "sales"
-    password: str  # Temporary password set by admin
     phone: Optional[str] = None
 
 
@@ -98,9 +97,13 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
     if existing:
         raise HTTPException(409, "Email already exists")
 
+    # Auto-generate temporary password
+    from app.services.email import generate_temp_password, send_invite_email
+    temp_password = generate_temp_password()
+
     # Hash password
     password_hash = bcrypt.hashpw(
-        req.password.encode("utf-8"),
+        temp_password.encode("utf-8"),
         bcrypt.gensalt(),
     ).decode("utf-8")
 
@@ -119,4 +122,8 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
 
     logger.info(f"User invited | email={req.email} role={req.role} by={current_user.get('email', 'admin')}")
 
-    return {"success": True, "data": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]}}
+    email_sent = await send_invite_email(req.email, req.name, temp_password)
+    if not email_sent:
+        logger.warning(f"Invite email failed for {req.email} — user still created")
+
+    return {"success": True, "data": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "email_sent": email_sent}}

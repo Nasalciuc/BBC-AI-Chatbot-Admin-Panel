@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     crm_api_url: str = "https://crm.buybusinessclass.com/ai"
     crm_api_token: str = ""
 
+    # Postmark email
+    postmark_token: str = ""
+    email_from: str = "noreply@buybusinessclass.com"
+    admin_panel_url: str = "https://admin-panel-error.vercel.app"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
