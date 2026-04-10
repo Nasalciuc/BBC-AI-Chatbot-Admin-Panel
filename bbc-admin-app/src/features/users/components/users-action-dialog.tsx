@@ -50,49 +50,8 @@ const formSchema = z
       .or(z.literal('')),
     role: z.string().min(1, 'Role is required.'),
     tunnel_scope: z.string().min(1, 'Tunnel is required.'),
-    password: z.string().transform((pwd) => pwd.trim()),
     isEdit: z.boolean(),
   })
-  .refine(
-    (data) => {
-      if (data.isEdit && !data.password) return true
-      return data.password.length > 0
-    },
-    {
-      message: 'Password is required.',
-      path: ['password'],
-    }
-  )
-  .refine(
-    ({ isEdit, password }) => {
-      if (isEdit && !password) return true
-      return password.length >= 8
-    },
-    {
-      message: 'Password must be at least 8 characters long.',
-      path: ['password'],
-    }
-  )
-  .refine(
-    ({ isEdit, password }) => {
-      if (isEdit && !password) return true
-      return /[a-z]/.test(password)
-    },
-    {
-      message: 'Password must contain at least one lowercase letter.',
-      path: ['password'],
-    }
-  )
-  .refine(
-    ({ isEdit, password }) => {
-      if (isEdit && !password) return true
-      return /\d/.test(password)
-    },
-    {
-      message: 'Password must contain at least one number.',
-      path: ['password'],
-    }
-  )
 type UserForm = z.infer<typeof formSchema>
 
 type UserActionDialogProps = {
@@ -117,7 +76,6 @@ export function UsersActionDialog({
           role: currentRow?.role ?? '',
           tunnel_scope: currentRow?.tunnel_scope ?? 'sales',
           avatar_url: currentRow?.avatar_url ?? '',
-          password: '',
           isEdit,
         }
       : {
@@ -127,7 +85,6 @@ export function UsersActionDialog({
           role: '',
           tunnel_scope: 'sales',
           avatar_url: '',
-          password: '',
           isEdit,
         },
   })
@@ -149,7 +106,6 @@ export function UsersActionDialog({
           email: values.email,
           role: values.role,
           tunnel_scope: values.tunnel_scope,
-          password: values.password,
         })
         toast.success('User created')
       }
@@ -303,28 +259,7 @@ export function UsersActionDialog({
                   </FormItem>
                 )}
               />
-              {!isEdit && (
-                <FormField
-                  control={form.control}
-                  name='password'
-                  render={({ field }) => (
-                    <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                      <FormLabel className='col-span-2 text-end'>
-                        Password
-                      </FormLabel>
-                      <FormControl>
-                        <Input
-                          type='password'
-                          placeholder='e.g., S3cur3P@ssw0rd'
-                          className='col-span-4'
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage className='col-span-4 col-start-3' />
-                    </FormItem>
-                  )}
-                />
-              )}
+
             </form>
           </Form>
         </div>
