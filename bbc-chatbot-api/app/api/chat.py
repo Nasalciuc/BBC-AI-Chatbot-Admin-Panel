@@ -102,13 +102,13 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
         # Step 3.5: Human-first routing (takes precedence over AI pipeline)
         # If agent available → return here, AI pipeline NOT called
         # If no agent → fall through to AI pipeline (step 4+)
-        route = await route_conversation(req.tunnel)
+        route = await route_conversation(req.tunnel, visitor=req.visitor)
         if not route["agent_id"]:
             # No agent on first attempt — wait 2s and retry once
             # This catches agents who just logged in (heartbeat in flight)
             logger.info(f"[routing] No agent for tunnel={req.tunnel} — retrying in 2s")
             await asyncio.sleep(2)
-            route = await route_conversation(req.tunnel)
+            route = await route_conversation(req.tunnel, visitor=req.visitor)
         if route["agent_id"]:
             from app.services.conversation_service import add_message
             from uuid import uuid4
@@ -119,39 +119,52 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                     "mode": "human",
                     "assigned_agent_id": route["agent_id"],
                 })
-                await add_message(conv["id"], "user", clean_message)
+                # Race condition guard: verify agent not overloaded
+                actual_count = await db.get_agent_active_count(route["agent_id"])
+                if actual_count > settings.max_concurrent_chats:
+                    logger.warning(
+                        f"[routing] Race condition detected for agent "
+                        f"{route['agent_id'][:8]}... — falling back to AI"
+                    )
+                    await db.update_conversation(conv["id"], {
+                        "mode": "ai",
+                        "assigned_agent_id": None,
+                    })
+                    # Fall through to AI pipeline (Step 4)
+                else:
+                    await add_message(conv["id"], "user", clean_message)
 
-                # Build 3 system messages
-                agent_name = route.get("agent_name", "A specialist")
-                now = datetime.now(timezone.utc).isoformat()
+                    # Build 3 system messages
+                    agent_name = route.get("agent_name", "A specialist")
+                    now = datetime.now(timezone.utc).isoformat()
 
-                connecting = settings.connecting_message
-                joined = settings.joined_message_template.format(agent_name=agent_name)
-                welcome = (settings.welcome_message_sales
+                    connecting = settings.connecting_message
+                    joined = settings.joined_message_template.format(agent_name=agent_name)
+                    welcome = (settings.welcome_message_sales
+                            if req.tunnel == "sales"
+                            else settings.welcome_message_support)
+                    qr = (settings.quick_replies_sales
                         if req.tunnel == "sales"
-                        else settings.welcome_message_support)
-                qr = (settings.quick_replies_sales
-                    if req.tunnel == "sales"
-                    else settings.quick_replies_support)
+                        else settings.quick_replies_support)
 
-                # Save all 3 to DB — capture real Supabase UUIDs to avoid polling duplicates
-                row1 = await add_message(conv["id"], "system", connecting)
-                row2 = await add_message(conv["id"], "system", joined)
-                row3 = await add_message(conv["id"], "system", welcome)
-                now = datetime.now(timezone.utc).isoformat()
+                    # Save all 3 to DB — capture real Supabase UUIDs to avoid polling duplicates
+                    row1 = await add_message(conv["id"], "system", connecting)
+                    row2 = await add_message(conv["id"], "system", joined)
+                    row3 = await add_message(conv["id"], "system", welcome)
+                    now = datetime.now(timezone.utc).isoformat()
 
-                return ChatResponse(
-                    conversation_id=conv["id"],
-                    message=welcome,
-                    type="welcome",
-                    model_used="none",
-                    quick_replies=qr,
-                    system_messages=[
-                    {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": connecting, "created_at": row1.get("created_at", now) if row1 else now},
-                    {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": joined, "created_at": row2.get("created_at", now) if row2 else now},
-                    {"id": row3["id"] if row3 else str(uuid4()), "role": "system", "content": welcome, "created_at": row3.get("created_at", now) if row3 else now},
-                    ],
-                )
+                    return ChatResponse(
+                        conversation_id=conv["id"],
+                        message=welcome,
+                        type="welcome",
+                        model_used="none",
+                        quick_replies=qr,
+                        system_messages=[
+                        {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": connecting, "created_at": row1.get("created_at", now) if row1 else now},
+                        {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": joined, "created_at": row2.get("created_at", now) if row2 else now},
+                        {"id": row3["id"] if row3 else str(uuid4()), "role": "system", "content": welcome, "created_at": row3.get("created_at", now) if row3 else now},
+                        ],
+                    )
 
     # 4. AI mode or new conversation (no agent available) → run pipeline
     response = await process_message(

@@ -200,6 +200,47 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         return None
 
 
+    async def get_last_agent_for_visitor(
+        email: Optional[str],
+        phone: Optional[str],
+    ) -> Optional[str]:
+        """Get assigned_agent_id from visitor's most recent conversation.
+        Used for returning visitor routing — route back to same operator.
+        Searches by email OR phone. Returns None if no previous agent found."""
+        email_clean = email.lower().strip() if email else None
+        phone_clean = phone.strip() if phone else None
+        if not email_clean and not phone_clean:
+            return None
+        try:
+            db_client = get_client()
+
+            def _q():
+                q = (
+                    db_client.table("conversations")
+                    .select("assigned_agent_id")
+                    .not_.is_("assigned_agent_id", "null")
+                    .order("created_at", desc=True)
+                    .limit(1)
+                )
+                if email_clean and phone_clean:
+                    q = q.or_(
+                        f"visitor_email.eq.{email_clean},"
+                        f"visitor_phone.eq.{phone_clean}"
+                    )
+                elif email_clean:
+                    q = q.eq("visitor_email", email_clean)
+                else:
+                    q = q.eq("visitor_phone", phone_clean)
+                return q.execute()
+
+            res = await _run_sync(_q)
+            if res and res.data:
+                return res.data[0].get("assigned_agent_id")
+            return None
+        except Exception as e:
+            logger.error(f"get_last_agent_for_visitor error: {e}")
+            return None
+
 async def get_conversation(conversation_id: str) -> Optional[dict]:
     """One conversation + all its messages + associated lead.
     Messages and lead queries run in PARALLEL (don't depend on each other)."""
