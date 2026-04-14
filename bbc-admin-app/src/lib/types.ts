@@ -147,3 +147,46 @@ export interface DashboardStats {
 
   funnel: Array<{ name: string; count: number; color: string }>
 }
+
+// ── Notifications ────────────────────────────────────────
+export interface StaleConversation {
+  id: string
+  visitor_name: string | null
+  minutes_waiting: number
+  tunnel: 'sales' | 'support'
+}
+
+export interface NotificationsResponse {
+  success: boolean
+  stale_conversations: StaleConversation[]
+  count: number
+}
+
+// ── Tasks ──────────────────────────────────────────────
+export interface Task {
+  id: string
+  title: string
+  description: string | null
+  status: 'todo' | 'in progress' | 'done' | 'canceled' | 'backlog'
+  label: 'bug' | 'feature' | 'documentation'
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  assignee_id: string | null
+  assignee_name: string | null
+  created_by: string | null
+  due_date: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TasksResponse {
+  success: boolean
+  data: Task[]
+  count: number
+}
+
+export interface UserOption {
+  id: string
+  name: string
+  email: string
+  role: string
+}

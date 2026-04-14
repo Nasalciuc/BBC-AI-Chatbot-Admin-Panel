@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useDeferredValue, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive } from 'lucide-react'
+import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
-import { getConversations, apiFetch } from '@/lib/api'
+import { getConversations, getNotifications, apiFetch } from '@/lib/api'
+import { NotificationBell } from '@/components/notification-bell'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
@@ -44,10 +45,22 @@ export function Chats() {
   const isManager = ['owner', 'admin', 'dev'].includes(role)
   const visibleTabs = isManager ? TABS : TABS.filter(t => t.key !== 'queue')
 
-  const [activeTab, setActiveTab] = useState<TabKey>('my_active')
+  // Highlight from URL param (click from bell dropdown)
+  const urlHighlight = new URLSearchParams(window.location.search).get('highlight')
+
+  const [activeTab, setActiveTab] = useState<TabKey>(urlHighlight ? 'my_active' : 'my_active')
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
+  const [highlightId] = useState<string | null>(urlHighlight)
+
+  // Stale conversation IDs for red highlight
+  const { data: notifData } = useQuery({
+    queryKey: ['notifications'],
+    queryFn: getNotifications,
+    refetchInterval: 30_000,
+  })
+  const staleIds = new Set(notifData?.stale_conversations?.map(s => s.id) ?? [])
   const debouncedSearch = useDeferredValue(search)
   const queryClient = useQueryClient()
 
@@ -131,6 +144,7 @@ export function Chats() {
       <Header>
         <div className='ms-auto flex items-center space-x-4'>
           <ConnectionBanner />
+          <NotificationBell />
           <ThemeSwitch />
           <ProfileDropdown />
         </div>
@@ -199,7 +213,7 @@ export function Chats() {
               ) : conversations.map(conv => (
                 <button key={conv.id}
                   onClick={() => setSelectedId(conv.id === selectedId ? null : conv.id)}
-                  className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : ''}`}>
+                  className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
@@ -207,7 +221,12 @@ export function Chats() {
                         <span className="font-medium text-sm text-gray-900 truncate">
                           {activeTab === 'my_closed'
                             ? <span className="text-gray-400 italic text-xs">Closed conversation</span>
-                            : (conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>)
+                            : <span className='flex items-center gap-1'>
+                                {staleIds.has(conv.id) && (
+                                  <AlertTriangle className='h-3 w-3 text-red-400 shrink-0' />
+                                )}
+                                {conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>}
+                              </span>
                           }
                         </span>
                       </div>

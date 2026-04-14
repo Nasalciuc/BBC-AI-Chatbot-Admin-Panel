@@ -24,6 +24,9 @@ import type {
   Lead,
   LeadsResponse,
   Message,
+  NotificationsResponse,
+  Task,
+  TasksResponse,
 } from './types'
 import { getCookie } from './cookies'
 
@@ -215,7 +218,7 @@ export function deleteKBEntry(id: string): Promise<void> {
 // ── Users ─────────────────────────────────────────────────────
 export function getUsers(
   params: Record<string, string> = {},
-): Promise<{ success: boolean; data: any[]; count: number }> {
+): Promise<{ success: boolean; data: Record<string, unknown>[]; count: number }> {
   const qs = new URLSearchParams(params).toString()
   return apiFetch(`/api/admin/users?${qs}`)
 }
@@ -226,7 +229,7 @@ export async function inviteUser(data: {
   role: string
   tunnel_scope: string
   phone?: string
-}): Promise<{ success: boolean; data: any }> {
+}): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return apiFetch('/api/auth/invite', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -237,7 +240,7 @@ export async function inviteUser(data: {
 export async function updateUser(
   id: string,
   data: { name?: string; role?: string; is_active?: boolean; tunnel_scope?: string; phone?: string; avatar_url?: string | null },
-): Promise<{ success: boolean; data: any }> {
+): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -245,7 +248,7 @@ export async function updateUser(
   })
 }
 
-export async function deactivateUser(id: string): Promise<{ success: boolean; data: any }> {
+export async function deactivateUser(id: string): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return updateUser(id, { is_active: false })
 }
 
@@ -274,5 +277,53 @@ export function sendChatMessage(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ conversation_id: conversationId, message, tunnel }),
+  })
+}
+
+// ── Notifications ────────────────────────────────────────
+export function getNotifications() {
+  return apiFetch<NotificationsResponse>('/api/notifications')
+}
+
+// ── Tasks ──────────────────────────────────────────────
+export function getTasks() {
+  return apiFetch<TasksResponse>('/api/tasks')
+}
+
+export function createTask(data: {
+  title: string
+  description?: string
+  status: string
+  label: string
+  priority: string
+  assignee_id?: string
+  due_date?: string
+}) {
+  return apiFetch<{ success: boolean; data: Task }>('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export function updateTask(id: string, data: Partial<{
+  title: string
+  description: string
+  status: string
+  label: string
+  priority: string
+  assignee_id: string
+  due_date: string
+}>) {
+  return apiFetch<{ success: boolean; data: Task }>(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export function deleteTask(id: string) {
+  return apiFetch<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
   })
 }
