@@ -30,7 +30,7 @@ export function Users() {
       if (!res.success) throw new Error('Failed to load users')
       return (res.data ?? []) as User[]
     },
-    staleTime: 30_000,
+    staleTime: 0,
     meta: { errorToast: false },
   })
 

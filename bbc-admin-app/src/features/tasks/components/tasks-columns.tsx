@@ -36,7 +36,10 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Task' />
     ),
-    cell: ({ row }) => <div className='w-[80px]'>{row.getValue('id')}</div>,
+    cell: ({ row }) => {
+      const id = row.getValue('id') as string
+      return <div className='w-[80px]'>TASK-{id.slice(0, 4)}</div>
+    },
     enableSorting: false,
     enableHiding: false,
   },

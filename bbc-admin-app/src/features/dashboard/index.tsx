@@ -18,7 +18,7 @@ export function Dashboard() {
   const { data: stats } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
     queryFn: () => getDashboardStats(),
-    staleTime: 60_000, // cache 1 min — dashboard doesn't need real-time
+    staleTime: 0,
     refetchInterval: 60_000,
   })
 
