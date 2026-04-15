@@ -1,6 +1,7 @@
 import React from 'react'
 import { getRouteApi } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { type User } from './data/schema'
 import { getUsers } from '@/lib/api'
 import { ConfigDrawer } from '@/components/config-drawer'
@@ -22,11 +23,20 @@ export function Users() {
   const navigate = route.useNavigate()
   const queryClient = useQueryClient()
 
-  const { data: users = [], isLoading: loading } = useQuery({
+  const { data: users = [], isLoading: loading, isError } = useQuery({
     queryKey: ['users'],
-    queryFn: () => getUsers().then((res) => (res.data ?? []) as User[]),
+    queryFn: async () => {
+      const res = await getUsers()
+      if (!res.success) throw new Error('Failed to load users')
+      return (res.data ?? []) as User[]
+    },
     staleTime: 30_000,
+    meta: { errorToast: false },
   })
+
+  React.useEffect(() => {
+    if (isError) toast.error('Failed to load users — check your connection')
+  }, [isError])
 
   const refreshUsers = React.useCallback(
     () => queryClient.invalidateQueries({ queryKey: ['users'] }),

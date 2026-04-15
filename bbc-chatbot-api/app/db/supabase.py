@@ -536,22 +536,18 @@ async def get_users(
     offset: int = 0,
 ) -> tuple[list, int]:
     """List users with filters. Returns (rows, total_count)."""
-    try:
-        db = get_client()
-        def _query():
-            q = db.table("users").select("*", count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
-            if role:    q = q.eq("role", role)
-            if search:
-                q = q.or_(
-                    f"name.ilike.%{search}%,"
-                    f"email.ilike.%{search}%"
-                )
-            return q.range(offset, offset + limit - 1).execute()
-        res = await _run_sync(_query)
-        return res.data or [], res.count or 0
-    except Exception as e:
-        logger.error(f"get_users error: {e}")
-        return [], 0
+    db = get_client()
+    def _query():
+        q = db.table("users").select("*", count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
+        if role:    q = q.eq("role", role)
+        if search:
+            q = q.or_(
+                f"name.ilike.%{search}%,"
+                f"email.ilike.%{search}%"
+            )
+        return q.range(offset, offset + limit - 1).execute()
+    res = await _run_sync(_query)
+    return res.data or [], res.count or 0
 
 
 async def get_user_by_email(email: str) -> Optional[dict]:

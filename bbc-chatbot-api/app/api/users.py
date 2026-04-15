@@ -1,9 +1,11 @@
 """Admin API — users CRUD."""
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from app.db import supabase as db
 from app.models.admin import UserUpdate
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VALID_ROLES = {"owner", "admin", "sales", "support"}
@@ -21,7 +23,8 @@ async def list_users(
         rows, total = await db.get_users(role=role, search=search, limit=limit, offset=offset)
         return {"success": True, "data": rows, "count": total}
     except Exception as e:
-        return {"success": False, "data": [], "count": 0, "error": str(e)}
+        logger.error(f"list_users error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load users")
 
 
 @router.patch("/admin/users/{user_id}")
