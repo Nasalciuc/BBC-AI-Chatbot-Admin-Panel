@@ -58,11 +58,11 @@ export function TasksMutateDrawer({
   // Fetch users for assignee dropdown
   const { data: usersData } = useQuery({
     queryKey: ['users'],
-    queryFn: getUsers,
+    queryFn: () => getUsers(),
   })
-  const userOptions = (usersData?.data ?? []).map((u: { id: string; name: string; role: string }) => ({
-    label: `${u.name} (${u.role})`,
-    value: u.id,
+  const userOptions = (usersData?.data ?? []).map((u) => ({
+    label: `${u.name as string} (${u.role as string})`,
+    value: u.id as string,
   }))
 
   const form = useForm<TaskForm>({
