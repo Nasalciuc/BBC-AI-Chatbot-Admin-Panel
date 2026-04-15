@@ -80,7 +80,7 @@ async def get_typing_status(
 ):
     """Agent polls every 1s to see client's live typing text.
     Returns empty state if client is not typing or Redis key expired."""
-    from app.realtime.typing import typing_manager
+    from app.realtime.typing_indicator import typing_manager
     state = await typing_manager.get_typing(conversation_id)
     return {
         "success": True,

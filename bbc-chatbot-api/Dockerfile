@@ -26,7 +26,7 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 COPY app/ /app/app/
 COPY config/ /app/config/
 
-ENV PYTHONPATH=/app:/app/app
+ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
