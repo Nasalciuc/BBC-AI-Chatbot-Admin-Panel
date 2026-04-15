@@ -15,6 +15,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
 from app.api.agent import router as agent_router
 from app.api.tasks import router as tasks_router
+from app.api.notifications import router as notifications_router
 from app.api.auth_routes import router as auth_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
@@ -76,6 +77,7 @@ app.include_router(dashboard_router,     prefix="/api", tags=["dashboard"],     
 app.include_router(users_router,         prefix="/api", tags=["users"],         dependencies=admin_deps)
 app.include_router(agent_router,         prefix="/api", tags=["agent"],         dependencies=admin_deps)
 app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         dependencies=admin_deps)
+app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)
 
 
 # ── Startup ───────────────────────────────────────────────────

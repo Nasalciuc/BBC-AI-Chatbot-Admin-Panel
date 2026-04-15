@@ -1131,3 +1131,41 @@ async def delete_task(task_id: str) -> bool:
         lambda: db_client.table("tasks").delete().eq("id", task_id).execute()
     )
     return bool(res.data)
+
+
+# ════════════════════════════════════════════════════════════════
+# NOTIFICATIONS
+# ════════════════════════════════════════════════════════════════
+
+async def get_pending_conversations() -> list[dict]:
+    """Conversations waiting for an agent (mode='waiting_for_agent', status='active').
+    Returns list of {id, visitor_name, minutes_waiting, tunnel}."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, visitor_name, tunnel, updated_at")
+            .eq("status", "active")
+            .eq("mode", "waiting_for_agent")
+            .order("updated_at", desc=False)
+            .execute()
+        )
+        now = datetime.now(timezone.utc)
+        rows = []
+        for c in (res.data or []):
+            updated = c.get("updated_at", "")
+            try:
+                dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                minutes = int((now - dt).total_seconds() / 60)
+            except Exception:
+                minutes = 0
+            rows.append({
+                "id": c["id"],
+                "visitor_name": c.get("visitor_name"),
+                "minutes_waiting": minutes,
+                "tunnel": c.get("tunnel", "sales"),
+            })
+        return rows
+    except Exception as e:
+        logger.error(f"get_pending_conversations error: {e}")
+        return []
