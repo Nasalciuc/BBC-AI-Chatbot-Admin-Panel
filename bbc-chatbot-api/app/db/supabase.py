@@ -630,9 +630,10 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
         db = get_client()
 
         # ── Parallel fetch: conversations, leads, pipeline_runs, messages count ──
+        # NOTE: Supabase default limit = 1000 rows; use .limit(10000) to fetch all
         convos_q = db.table("conversations").select(
-            "id, tunnel, status, visitor_name, created_at, closed_at", count="exact"
-        )
+            "id, tunnel, status, visitor_name, created_at, closed_at"
+        ).limit(10000)
         if tunnel_filter:
             convos_q = convos_q.eq("tunnel", tunnel_filter)
 
@@ -641,16 +642,16 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
                 "id, score, tier, status, origin_code, destination_code, "
                 "route_display, created_at, conversation_id, "
                 "conversations!inner(tunnel)"
-            ).eq("conversations.tunnel", tunnel_filter).execute())
+            ).eq("conversations.tunnel", tunnel_filter).limit(10000).execute())
         else:
             leads_future = _run_sync(lambda: db.table("leads").select(
                 "id, score, tier, status, origin_code, destination_code, "
                 "route_display, created_at, conversation_id"
-            ).execute())
+            ).limit(10000).execute())
 
         pipeline_q = db.table("pipeline_runs").select(
             "cost, latency_ms, status, had_fallback, tunnel, created_at"
-        )
+        ).limit(10000)
         if tunnel_filter:
             pipeline_q = pipeline_q.eq("tunnel", tunnel_filter)
 
@@ -659,7 +660,7 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             _run_sync(lambda: convos_q.execute()),
             leads_future,
             _run_sync(lambda: pipeline_q.execute()),
-            _run_sync(lambda: db.table("messages").select("id", count="exact").execute()),
+            _run_sync(lambda: db.table("messages").select("id", count="exact").limit(0).execute()),  # type: ignore[arg-type]
         )
 
         all_convos = convos.data or []
