@@ -1210,7 +1210,7 @@ async def get_assigned_tasks(user_id: str) -> list[dict]:
                 db_client.table("tasks")
                 .select("id, task_number, title, priority, status, created_at")
                 .eq("assignee_id", user_id)
-                .not_.in_("status", ["done", "cancelled"])
+                .not_.in_("status", '("done","canceled")')
                 .order("created_at", desc=True)
                 .limit(20)
                 .execute()
