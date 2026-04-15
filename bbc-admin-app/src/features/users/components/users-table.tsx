@@ -109,6 +109,7 @@ export function UsersTable({ data, search, navigate }: DataTableProps) {
             title: 'Status',
             options: [
               { label: 'Active', value: 'active' },
+              { label: 'Invited', value: 'invited' },
               { label: 'Inactive', value: 'inactive' },
             ],
           },

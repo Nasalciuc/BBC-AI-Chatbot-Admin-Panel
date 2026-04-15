@@ -101,16 +101,20 @@ export const usersColumns: ColumnDef<User>[] = [
     ),
     cell: ({ row }) => {
       const active = row.getValue('is_active') as boolean
-      const badgeColor = callTypes.get(active ? 'active' : 'inactive')
+      const lastSeen = row.original.last_seen_at
+      const status = !active ? 'inactive' : lastSeen ? 'active' : 'invited'
+      const badgeColor = callTypes.get(status)
       return (
         <Badge variant='outline' className={cn('capitalize', badgeColor)}>
-          {active ? 'Active' : 'Inactive'}
+          {status === 'invited' ? 'Invited' : status === 'active' ? 'Active' : 'Inactive'}
         </Badge>
       )
     },
     filterFn: (row, id, value) => {
       const active = row.getValue(id) as boolean
-      return value.includes(active ? 'active' : 'inactive')
+      const lastSeen = row.original.last_seen_at
+      const status = !active ? 'inactive' : lastSeen ? 'active' : 'invited'
+      return value.includes(status)
     },
     enableHiding: false,
     enableSorting: false,

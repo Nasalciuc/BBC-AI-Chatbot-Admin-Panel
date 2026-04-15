@@ -3,6 +3,7 @@ import { z } from 'zod'
 const userStatusSchema = z.union([
   z.literal('active'),
   z.literal('inactive'),
+  z.literal('invited'),
 ])
 export type UserStatus = z.infer<typeof userStatusSchema>
 
@@ -21,6 +22,7 @@ const userSchema = z.object({
   role: userRoleSchema,
   tunnel_scope: z.string(),
   is_active: z.boolean(),
+  last_seen_at: z.string().nullable().optional(),
   avatar_url: z.string().nullable().optional(),
   created_at: z.coerce.date(),
   updated_at: z.coerce.date(),
