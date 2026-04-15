@@ -68,14 +68,18 @@ export function UsersInviteDialog({
   const onSubmit = async (values: UserInviteForm) => {
     setIsLoading(true)
     try {
-      await inviteUser({
+      const result = await inviteUser({
         name: values.name,
         email: values.email,
         role: values.role,
         tunnel_scope: values.tunnel_scope,
         ...(values.phone ? { phone: values.phone } : {}),
       })
-      toast.success('Invitation sent! User will receive login details by email.')
+      if ((result as Record<string, unknown>)?.data && (((result as Record<string, unknown>).data) as Record<string, unknown>)?.reactivated) {
+        toast.success('User reactivated! New login details sent by email.')
+      } else {
+        toast.success('Invitation sent! User will receive login details by email.')
+      }
       form.reset()
       onOpenChange(false)
     } catch (err: unknown) {
