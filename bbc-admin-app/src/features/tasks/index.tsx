@@ -17,6 +17,8 @@ export function Tasks() {
   const { data: tasksData, isLoading } = useQuery({
     queryKey: ['tasks'],
     queryFn: getTasks,
+    staleTime: 0,
+    refetchOnMount: 'always',
   })
   const tasks = tasksData?.data ?? []
 

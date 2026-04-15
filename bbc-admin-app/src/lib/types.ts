@@ -165,6 +165,7 @@ export interface NotificationsResponse {
 // ── Tasks ──────────────────────────────────────────────
 export interface Task {
   id: string
+  task_number: number | null
   title: string
   description: string | null
   status: 'todo' | 'in progress' | 'done' | 'canceled' | 'backlog'

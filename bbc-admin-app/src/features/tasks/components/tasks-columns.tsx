@@ -32,13 +32,14 @@ export const tasksColumns: ColumnDef<Task>[] = [
     enableHiding: false,
   },
   {
-    accessorKey: 'id',
+    accessorKey: 'task_number',
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Task' />
     ),
     cell: ({ row }) => {
-      const id = row.getValue('id') as string
-      return <div className='w-[80px]'>TASK-{id.slice(0, 4)}</div>
+      const num = row.getValue('task_number') as number | null
+      const display = num ? String(num).padStart(4, '0') : String(row.index + 1).padStart(4, '0')
+      return <div className='w-[80px]'>TASK-{display}</div>
     },
     enableSorting: false,
     enableHiding: false,

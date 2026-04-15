@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 export const taskSchema = z.object({
   id: z.string(),
+  task_number: z.number().optional().nullable(),
   title: z.string(),
   description: z.string().nullable(),
   status: z.enum(['todo', 'in progress', 'done', 'canceled', 'backlog']),

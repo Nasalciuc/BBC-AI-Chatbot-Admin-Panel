@@ -31,6 +31,7 @@ export function Users() {
       return (res.data ?? []) as User[]
     },
     staleTime: 0,
+    refetchOnMount: 'always',
     meta: { errorToast: false },
   })
 
