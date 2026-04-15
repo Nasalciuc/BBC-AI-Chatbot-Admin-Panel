@@ -1067,7 +1067,7 @@ async def get_oldest_unassigned_conversation(tunnel: str) -> dict | None:
 # ════════════════════════════════════════════════════════════════
 
 TASK_SELECT = (
-    "id, title, description, status, label, priority, "
+    "id, task_number, title, description, status, label, priority, "
     "assignee_id, created_by, due_date, created_at, updated_at"
 )
 
@@ -1137,35 +1137,65 @@ async def delete_task(task_id: str) -> bool:
 # NOTIFICATIONS
 # ════════════════════════════════════════════════════════════════
 
-async def get_pending_conversations() -> list[dict]:
-    """Conversations waiting for an agent (mode='waiting_for_agent', status='active').
-    Returns list of {id, visitor_name, minutes_waiting, tunnel}."""
+async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict]:
+    """Get conversations waiting for agent response > 5 minutes.
+    If agent_id provided → only that agent's conversations.
+    If None (owner/admin) → all stale conversations."""
     try:
         db_client = get_client()
-        res = await _run_sync(
-            lambda: db_client.table("conversations")
-            .select("id, visitor_name, tunnel, updated_at")
-            .eq("status", "active")
-            .eq("mode", "waiting_for_agent")
-            .order("updated_at", desc=False)
-            .execute()
-        )
+
+        def _q():
+            q = (
+                db_client.table("conversations")
+                .select("id, visitor_name, tunnel, assigned_agent_id, created_at, messages(role, created_at)")
+                .eq("status", "active")
+                .eq("mode", "human")
+                .not_.is_("assigned_agent_id", "null")
+            )
+            if agent_id:
+                q = q.eq("assigned_agent_id", agent_id)
+            return q.execute()
+
+        res = await _run_sync(_q)
+        conversations = res.data or []
+
+        stale = []
         now = datetime.now(timezone.utc)
-        rows = []
-        for c in (res.data or []):
-            updated = c.get("updated_at", "")
-            try:
-                dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
-                minutes = int((now - dt).total_seconds() / 60)
-            except Exception:
-                minutes = 0
-            rows.append({
-                "id": c["id"],
-                "visitor_name": c.get("visitor_name"),
-                "minutes_waiting": minutes,
-                "tunnel": c.get("tunnel", "sales"),
-            })
-        return rows
+
+        for conv in conversations:
+            messages = conv.get("messages", [])
+            client_msgs = [m for m in messages if m.get("role") == "user"]
+            agent_msgs = [m for m in messages if m.get("role") == "agent"]
+
+            if not client_msgs:
+                continue
+
+            last_client = max(client_msgs, key=lambda m: m["created_at"])
+            last_agent = max(agent_msgs, key=lambda m: m["created_at"]) if agent_msgs else None
+
+            last_client_ts = datetime.fromisoformat(
+                last_client["created_at"].replace("Z", "+00:00")
+            )
+
+            if last_agent:
+                last_agent_ts = datetime.fromisoformat(
+                    last_agent["created_at"].replace("Z", "+00:00")
+                )
+                if last_client_ts <= last_agent_ts:
+                    continue  # Agent already responded
+
+            minutes_waiting = int((now - last_client_ts).total_seconds() / 60)
+
+            if minutes_waiting >= 5:
+                stale.append({
+                    "id": conv["id"],
+                    "visitor_name": conv.get("visitor_name"),
+                    "tunnel": conv.get("tunnel"),
+                    "minutes_waiting": minutes_waiting,
+                })
+
+        return sorted(stale, key=lambda x: x["minutes_waiting"], reverse=True)
+
     except Exception as e:
         logger.error(f"get_pending_conversations error: {e}")
         return []
