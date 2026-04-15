@@ -1060,3 +1060,74 @@ async def get_oldest_unassigned_conversation(tunnel: str) -> dict | None:
     except Exception as e:
         logger.error(f"get_oldest_unassigned_conversation error: {e}")
         return None
+
+
+# ════════════════════════════════════════════════════════════════
+# TASKS
+# ════════════════════════════════════════════════════════════════
+
+TASK_SELECT = (
+    "id, title, description, status, label, priority, "
+    "assignee_id, created_by, due_date, created_at, updated_at"
+)
+
+
+async def get_tasks(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    assignee_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list, int]:
+    """List tasks with optional filters. Returns (rows, total)."""
+    db_client = get_client()
+
+    def _query():
+        q = db_client.table("tasks").select(TASK_SELECT, count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
+        if status:
+            q = q.eq("status", status)
+        if priority:
+            q = q.eq("priority", priority)
+        if assignee_id:
+            q = q.eq("assignee_id", assignee_id)
+        return q.range(offset, offset + limit - 1).execute()
+
+    res = await _run_sync(_query)
+    return res.data or [], res.count or 0
+
+
+async def get_task(task_id: str) -> Optional[dict]:
+    """Get a single task by ID."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("tasks").select(TASK_SELECT).eq("id", task_id).single().execute()
+    )
+    return res.data if res.data else None
+
+
+async def create_task(payload: dict) -> Optional[dict]:
+    """Create a new task."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("tasks").insert(payload).execute()
+    )
+    return res.data[0] if res.data else None
+
+
+async def update_task(task_id: str, payload: dict) -> Optional[dict]:
+    """Update a task by ID."""
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("tasks").update(payload).eq("id", task_id).execute()
+    )
+    return res.data[0] if res.data else None
+
+
+async def delete_task(task_id: str) -> bool:
+    """Delete a task by ID."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("tasks").delete().eq("id", task_id).execute()
+    )
+    return bool(res.data)
