@@ -1,5 +1,6 @@
 import React from 'react'
 import { getRouteApi } from '@tanstack/react-router'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type User } from './data/schema'
 import { getUsers } from '@/lib/api'
 import { ConfigDrawer } from '@/components/config-drawer'
@@ -19,19 +20,18 @@ const route = getRouteApi('/_authenticated/users/')
 export function Users() {
   const search = route.useSearch()
   const navigate = route.useNavigate()
-  const [users, setUsers] = React.useState<User[]>([])
-  const [loading, setLoading] = React.useState(true)
-  const [refreshKey, setRefreshKey] = React.useState(0)
+  const queryClient = useQueryClient()
 
-  const refreshUsers = React.useCallback(() => setRefreshKey((k) => k + 1), [])
+  const { data: users = [], isLoading: loading } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => getUsers().then((res) => (res.data ?? []) as User[]),
+    staleTime: 30_000,
+  })
 
-  React.useEffect(() => {
-    setLoading(true)
-    getUsers()
-      .then((res) => setUsers(res.data as User[]))
-      .catch((err) => console.error('[users] API error:', err))
-      .finally(() => setLoading(false))
-  }, [refreshKey])
+  const refreshUsers = React.useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+    [queryClient],
+  )
 
   return (
     <UsersProvider onUserChanged={refreshUsers}>

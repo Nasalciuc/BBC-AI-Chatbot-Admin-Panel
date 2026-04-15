@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
@@ -6,6 +5,7 @@ import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { getDashboardStats } from '@/lib/api'
 import type { DashboardStats } from '@/lib/types'
+import { useQuery } from '@tanstack/react-query'
 import { AlertBanner } from './components/alert-banner'
 import { KpiCards } from './components/kpi-cards'
 import { ConversationsTrend } from './components/conversations-trend'
@@ -15,11 +15,12 @@ import { LeadFunnel } from './components/lead-funnel'
 import { AiHealthIndicator } from './components/ai-health-indicator'
 
 export function Dashboard() {
-  const [stats, setStats] = useState<DashboardStats | null>(null)
-
-  useEffect(() => {
-    getDashboardStats().then(setStats)
-  }, [])
+  const { data: stats } = useQuery<DashboardStats>({
+    queryKey: ['dashboard-stats'],
+    queryFn: () => getDashboardStats(),
+    staleTime: 60_000, // cache 1 min — dashboard doesn't need real-time
+    refetchInterval: 60_000,
+  })
 
   return (
     <>

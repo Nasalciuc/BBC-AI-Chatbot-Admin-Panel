@@ -627,20 +627,52 @@ async def get_today_cost() -> float:
 
 async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
     """Dashboard statistics — all fields expected by frontend DashboardStats interface.
-    Fetches bulk data via _run_sync, then processes in Python.
+    Fetches bulk data via parallel _run_sync calls, then processes in Python.
     If tunnel_filter is set, only rows matching that tunnel are included.
     """
     try:
         db = get_client()
 
-        # ── Fetch conversations (optionally filtered by tunnel) ──
+        # ── Parallel fetch: conversations, leads, pipeline_runs, messages count ──
         convos_q = db.table("conversations").select(
-            "id, tunnel, status, created_at, closed_at", count="exact"  # type: ignore[arg-type]
+            "id, tunnel, status, visitor_name, created_at, closed_at", count="exact"
         )
         if tunnel_filter:
             convos_q = convos_q.eq("tunnel", tunnel_filter)
-        convos = await _run_sync(lambda: convos_q.execute())
+
+        if tunnel_filter:
+            leads_future = _run_sync(lambda: db.table("leads").select(
+                "id, score, tier, status, origin_code, destination_code, "
+                "route_display, created_at, conversation_id, "
+                "conversations!inner(tunnel)"
+            ).eq("conversations.tunnel", tunnel_filter).execute())
+        else:
+            leads_future = _run_sync(lambda: db.table("leads").select(
+                "id, score, tier, status, origin_code, destination_code, "
+                "route_display, created_at, conversation_id"
+            ).execute())
+
+        pipeline_q = db.table("pipeline_runs").select(
+            "cost, latency_ms, status, had_fallback, tunnel, created_at"
+        )
+        if tunnel_filter:
+            pipeline_q = pipeline_q.eq("tunnel", tunnel_filter)
+
+        # Fire all 4 queries in parallel
+        convos, leads_res, pipeline_res, msgs_res = await asyncio.gather(
+            _run_sync(lambda: convos_q.execute()),
+            leads_future,
+            _run_sync(lambda: pipeline_q.execute()),
+            _run_sync(lambda: db.table("messages").select("id", count="exact").execute()),
+        )
+
         all_convos = convos.data or []
+        all_leads = leads_res.data or []
+        if tunnel_filter:
+            for lead in all_leads:
+                lead.pop("conversations", None)
+        all_runs = pipeline_res.data or []
+        messages_total_month = msgs_res.count or 0
 
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -676,24 +708,7 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             1 for c in all_convos if c.get("status") == "active"
         )
 
-        # ── Fetch leads (optionally filtered by tunnel via conversations join) ──
-        if tunnel_filter:
-            leads_res = await _run_sync(lambda: db.table("leads").select(
-                "id, score, tier, status, origin_code, destination_code, "
-                "route_display, created_at, conversation_id, "
-                "conversations!inner(tunnel)"
-            ).eq("conversations.tunnel", tunnel_filter).execute())
-            all_leads = leads_res.data or []
-            # Strip the nested join object so downstream code isn't affected
-            for lead in all_leads:
-                lead.pop("conversations", None)
-        else:
-            leads_res = await _run_sync(lambda: db.table("leads").select(
-                "id, score, tier, status, origin_code, destination_code, "
-                "route_display, created_at, conversation_id"
-            ).execute())
-            all_leads = leads_res.data or []
-
+        # ── Leads aggregates ──
         leads_total = len(all_leads)
         leads_new = sum(1 for l in all_leads if l.get("status") == "new")
         leads_contacted = sum(1 for l in all_leads if l.get("status") == "contacted")
@@ -705,21 +720,11 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
         leads_bronze = sum(1 for l in all_leads if l.get("tier") == "bronze")
         leads_uncalled = leads_new
 
-        # SLA breach — new leads older than 2 hours
         sla_cutoff = now - timedelta(hours=2)
         leads_sla_breach = sum(
             1 for l in all_leads
             if l.get("status") == "new" and (dt := parse_dt(l.get("created_at"))) and dt < sla_cutoff
         )
-
-        # ── Pipeline runs (cost, latency, fallback) ──────────
-        pipeline_q = db.table("pipeline_runs").select(
-            "cost, latency_ms, status, had_fallback, tunnel, created_at"
-        )
-        if tunnel_filter:
-            pipeline_q = pipeline_q.eq("tunnel", tunnel_filter)
-        pipeline_res = await _run_sync(lambda: pipeline_q.execute())
-        all_runs = pipeline_res.data or []
 
         cost_today = sum(
             float(r.get("cost", 0)) for r in all_runs
@@ -754,9 +759,8 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
                     durations.append((end - start).total_seconds() / 60)
         avg_duration_minutes = round(statistics.mean(durations), 1) if durations else 0.0
 
-        # ── Messages total month ─────────────────────────────
-        msgs_res = await _run_sync(lambda: db.table("messages").select("id", count="exact").execute())  # type: ignore[arg-type]
-        messages_total_month = msgs_res.count or 0
+        # ── Messages total month (already fetched in parallel) ─
+        # messages_total_month set above from parallel gather
 
         # ── Top routes ────────────────────────────────────────
         route_counter: Counter = Counter()
@@ -804,6 +808,8 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             leads_sparkline_7d.append(count)
 
         # ── Hot leads (top 5 by score, new status) ────────────
+        # Build conv_id→visitor_name lookup from already-fetched conversations (no N+1)
+        conv_name_map = {c["id"]: c.get("visitor_name") for c in all_convos}
         hot_leads = []
         new_leads_sorted = sorted(
             [l for l in all_leads if l.get("status") == "new"],
@@ -812,14 +818,9 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
         for l in new_leads_sorted:
             created = parse_dt(l.get("created_at"))
             minutes_since = int((now - created).total_seconds() / 60) if created else 0
-            cid = l.get("conversation_id", "")
-            conv_res = await _run_sync(
-                lambda: db.table("conversations").select("visitor_name").eq("id", cid).limit(1).execute()
-            )
-            visitor_name = conv_res.data[0].get("visitor_name") if conv_res.data else None
             hot_leads.append({
                 "id": l["id"],
-                "visitor_name": visitor_name,
+                "visitor_name": conv_name_map.get(l.get("conversation_id", ""), None),
                 "route": l.get("route_display") or f"{l.get('origin_code', '?')} → {l.get('destination_code', '?')}",
                 "score": l.get("score", 0),
                 "tier": l.get("tier", "bronze"),
