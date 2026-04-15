@@ -15,6 +15,9 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useAuthStore } from '@/stores/auth-store'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
 import { labels } from '../data/data'
 import { taskSchema } from '../data/schema'
 import { useTasks } from './tasks-provider'
@@ -29,6 +32,9 @@ export function DataTableRowActions<TData>({
   const task = taskSchema.parse(row.original)
 
   const { setOpen, setCurrentRow } = useTasks()
+  const { auth } = useAuthStore()
+  const permissions = usePermissions((auth.user?.role ?? 'sales') as UserRole)
+  const isManager = permissions.canAssignTasks
 
   return (
     <DropdownMenu modal={false}>
@@ -42,17 +48,19 @@ export function DataTableRowActions<TData>({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align='end' className='w-[160px]'>
-        <DropdownMenuItem
-          onClick={() => {
-            setCurrentRow(task)
-            setOpen('update')
-          }}
-        >
-          Edit
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled>Make a copy</DropdownMenuItem>
-        <DropdownMenuItem disabled>Favorite</DropdownMenuItem>
-        <DropdownMenuSeparator />
+        {isManager && (
+          <DropdownMenuItem
+            onClick={() => {
+              setCurrentRow(task)
+              setOpen('update')
+            }}
+          >
+            Edit
+          </DropdownMenuItem>
+        )}
+        {isManager && <DropdownMenuItem disabled>Make a copy</DropdownMenuItem>}
+        {isManager && <DropdownMenuItem disabled>Favorite</DropdownMenuItem>}
+        {isManager && <DropdownMenuSeparator />}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Labels</DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
@@ -65,18 +73,22 @@ export function DataTableRowActions<TData>({
             </DropdownMenuRadioGroup>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={() => {
-            setCurrentRow(task)
-            setOpen('delete')
-          }}
-        >
-          Delete
-          <DropdownMenuShortcut>
-            <Trash2 size={16} />
-          </DropdownMenuShortcut>
-        </DropdownMenuItem>
+        {isManager && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => {
+                setCurrentRow(task)
+                setOpen('delete')
+              }}
+            >
+              Delete
+              <DropdownMenuShortcut>
+                <Trash2 size={16} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

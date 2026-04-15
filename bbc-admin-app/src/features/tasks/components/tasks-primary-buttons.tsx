@@ -1,9 +1,17 @@
 import { Download, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useAuthStore } from '@/stores/auth-store'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
 import { useTasks } from './tasks-provider'
 
 export function TasksPrimaryButtons() {
   const { setOpen } = useTasks()
+  const { auth } = useAuthStore()
+  const permissions = usePermissions((auth.user?.role ?? 'sales') as UserRole)
+
+  if (!permissions.canAssignTasks) return null
+
   return (
     <div className='flex gap-2'>
       <Button

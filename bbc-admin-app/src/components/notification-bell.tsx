@@ -1,4 +1,4 @@
-import { Bell, AlertTriangle } from 'lucide-react'
+import { Bell, AlertTriangle, ClipboardList } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { getNotifications } from '@/lib/api'
-import type { StaleConversation } from '@/lib/types'
+import type { StaleConversation, AssignedTask } from '@/lib/types'
 
 export function NotificationBell() {
   const navigate = useNavigate()
@@ -23,10 +23,15 @@ export function NotificationBell() {
   })
 
   const stale: StaleConversation[] = data?.stale_conversations ?? []
-  const count = stale.length
+  const tasks: AssignedTask[] = data?.assigned_tasks ?? []
+  const count = stale.length + tasks.length
 
   const handleGoToChat = (convId: string) => {
     navigate({ to: '/chats', search: { highlight: convId } })
+  }
+
+  const handleGoToTasks = () => {
+    navigate({ to: '/tasks' })
   }
 
   return (
@@ -52,31 +57,60 @@ export function NotificationBell() {
           )}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {stale.length === 0 ? (
+
+        {/* Stale conversations */}
+        {stale.map((conv) => (
+          <DropdownMenuItem
+            key={conv.id}
+            className='flex items-start gap-3 p-3 cursor-pointer'
+            onClick={() => handleGoToChat(conv.id)}
+          >
+            <AlertTriangle className='h-4 w-4 text-amber-500 mt-0.5 shrink-0' />
+            <div className='min-w-0'>
+              <p className='text-sm font-medium truncate'>
+                {conv.visitor_name ?? 'Anonymous visitor'}
+              </p>
+              <p className='text-xs text-gray-500'>
+                Waiting {conv.minutes_waiting} min — {conv.tunnel}
+              </p>
+            </div>
+            <span className='ml-auto text-xs text-red-500 font-medium shrink-0'>
+              {conv.minutes_waiting}m
+            </span>
+          </DropdownMenuItem>
+        ))}
+
+        {/* Separator between sections */}
+        {stale.length > 0 && tasks.length > 0 && <DropdownMenuSeparator />}
+
+        {/* Assigned tasks */}
+        {tasks.length > 0 && (
+          <DropdownMenuLabel className='text-xs text-muted-foreground'>
+            Assigned Tasks
+          </DropdownMenuLabel>
+        )}
+        {tasks.map((task) => (
+          <DropdownMenuItem
+            key={task.id}
+            className='flex items-start gap-3 p-3 cursor-pointer'
+            onClick={handleGoToTasks}
+          >
+            <ClipboardList className='h-4 w-4 text-blue-500 mt-0.5 shrink-0' />
+            <div className='min-w-0'>
+              <p className='text-sm font-medium truncate'>
+                TASK-{String(task.task_number ?? 0).padStart(4, '0')}
+              </p>
+              <p className='text-xs text-gray-500 truncate'>
+                {task.title} — {task.priority}
+              </p>
+            </div>
+          </DropdownMenuItem>
+        ))}
+
+        {count === 0 && (
           <div className='p-4 text-sm text-gray-500 text-center'>
-            No pending conversations
+            All clear — no notifications
           </div>
-        ) : (
-          stale.map((conv) => (
-            <DropdownMenuItem
-              key={conv.id}
-              className='flex items-start gap-3 p-3 cursor-pointer'
-              onClick={() => handleGoToChat(conv.id)}
-            >
-              <AlertTriangle className='h-4 w-4 text-amber-500 mt-0.5 shrink-0' />
-              <div className='min-w-0'>
-                <p className='text-sm font-medium truncate'>
-                  {conv.visitor_name ?? 'Anonymous visitor'}
-                </p>
-                <p className='text-xs text-gray-500'>
-                  Waiting {conv.minutes_waiting} min — {conv.tunnel}
-                </p>
-              </div>
-              <span className='ml-auto text-xs text-red-500 font-medium shrink-0'>
-                {conv.minutes_waiting}m
-              </span>
-            </DropdownMenuItem>
-          ))
         )}
       </DropdownMenuContent>
     </DropdownMenu>

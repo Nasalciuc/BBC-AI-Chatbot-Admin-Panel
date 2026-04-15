@@ -156,9 +156,19 @@ export interface StaleConversation {
   tunnel: 'sales' | 'support'
 }
 
+export interface AssignedTask {
+  id: string
+  task_number: number | null
+  title: string
+  priority: string
+  status: string
+  created_at: string
+}
+
 export interface NotificationsResponse {
   success: boolean
   stale_conversations: StaleConversation[]
+  assigned_tasks: AssignedTask[]
   count: number
 }
 

@@ -1199,3 +1199,24 @@ async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict
     except Exception as e:
         logger.error(f"get_pending_conversations error: {e}")
         return []
+
+
+async def get_assigned_tasks(user_id: str) -> list[dict]:
+    """Return active tasks assigned to *user_id* (not done/canceled)."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: (
+                db_client.table("tasks")
+                .select("id, task_number, title, priority, status, created_at")
+                .eq("assignee_id", user_id)
+                .not_.in_("status", ["done", "cancelled"])
+                .order("created_at", desc=True)
+                .limit(20)
+                .execute()
+            )
+        )
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_assigned_tasks error: {e}")
+        return []

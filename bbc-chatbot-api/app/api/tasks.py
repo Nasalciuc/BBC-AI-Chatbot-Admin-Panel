@@ -1,11 +1,12 @@
-"""Admin API — tasks CRUD."""
+"""Admin API — tasks CRUD with role-based access."""
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db import supabase as db
+from app.security.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -13,6 +14,7 @@ router = APIRouter()
 VALID_STATUSES = {"backlog", "todo", "in progress", "done", "canceled"}
 VALID_LABELS = {"bug", "feature", "documentation"}
 VALID_PRIORITIES = {"low", "medium", "high", "critical"}
+MANAGER_ROLES = {"owner", "admin", "dev"}
 
 
 class TaskCreate(BaseModel):
@@ -42,8 +44,14 @@ async def list_tasks(
     assignee_id: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
 ):
     try:
+        role = current_user.get("role", "sales")
+        # Sales/support only see their own tasks
+        if role not in MANAGER_ROLES:
+            assignee_id = current_user["id"]
+
         rows, total = await db.get_tasks(
             status=status, priority=priority,
             assignee_id=assignee_id, limit=limit, offset=offset,
@@ -63,7 +71,11 @@ async def list_tasks(
 
 
 @router.post("/tasks")
-async def create_task(body: TaskCreate):
+async def create_task(body: TaskCreate, current_user: dict = Depends(get_current_user)):
+    role = current_user.get("role", "sales")
+    if role not in MANAGER_ROLES:
+        raise HTTPException(403, "Only owner/admin can create tasks")
+
     if body.status not in VALID_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {VALID_STATUSES}")
     if body.label not in VALID_LABELS:
@@ -72,6 +84,7 @@ async def create_task(body: TaskCreate):
         raise HTTPException(400, f"Invalid priority. Must be one of: {VALID_PRIORITIES}")
 
     payload = body.model_dump(exclude_none=True)
+    payload["created_by"] = current_user["id"]
     task = await db.create_task(payload)
     if not task:
         raise HTTPException(500, "Failed to create task")
@@ -79,10 +92,21 @@ async def create_task(body: TaskCreate):
 
 
 @router.patch("/tasks/{task_id}")
-async def update_task(task_id: str, body: TaskUpdate):
+async def update_task(task_id: str, body: TaskUpdate, current_user: dict = Depends(get_current_user)):
+    role = current_user.get("role", "sales")
     payload = body.model_dump(exclude_none=True)
     if not payload:
         raise HTTPException(400, "No fields to update")
+
+    # Sales/support can only update status on their own tasks
+    if role not in MANAGER_ROLES:
+        existing = await db.get_task(task_id)
+        if not existing or existing.get("assignee_id") != current_user["id"]:
+            raise HTTPException(403, "You can only update your own tasks")
+        allowed = {"status"}
+        if set(payload.keys()) - allowed:
+            raise HTTPException(403, "You can only change the status of your tasks")
+
     if "status" in payload and payload["status"] not in VALID_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {VALID_STATUSES}")
     if "label" in payload and payload["label"] not in VALID_LABELS:
@@ -97,7 +121,10 @@ async def update_task(task_id: str, body: TaskUpdate):
 
 
 @router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
+async def delete_task(task_id: str, current_user: dict = Depends(get_current_user)):
+    role = current_user.get("role", "sales")
+    if role not in MANAGER_ROLES:
+        raise HTTPException(403, "Only owner/admin can delete tasks")
     deleted = await db.delete_task(task_id)
     if not deleted:
         raise HTTPException(404, "Task not found")
