@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
-  Settings, UserCog, Wrench, Palette, Bell, Monitor,
+  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks,
 } from 'lucide-react'
 import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
@@ -31,7 +31,7 @@ export function getSidebarData(
             : []),
         ],
       },
-      ...(permissions.canViewUsers || permissions.canViewKB
+      ...(permissions.canViewUsers || permissions.canViewKB || permissions.canAssignTasks
         ? [{
             title: 'Management',
             items: [
@@ -40,6 +40,9 @@ export function getSidebarData(
                 : []),
               ...(permissions.canViewKB
                 ? [{ title: 'Knowledge Base', url: '/knowledge-base' as const, icon: BookOpen }]
+                : []),
+              ...(permissions.canAssignTasks
+                ? [{ title: 'Tasks', url: '/tasks' as const, icon: ListChecks }]
                 : []),
             ],
           }]
