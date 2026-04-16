@@ -203,22 +203,25 @@ async def close_conversation(
         "closed_at": datetime.now(timezone.utc).isoformat(),
     })
 
-    # Auto-assign: freed operator picks up oldest unassigned AI conv
+    # Auto-assign: freed operator picks up oldest unassigned AI conv.
+    # Management roles (owner/admin/dev) do NOT auto-receive conversations.
     next_conv_id = None
     agent_id = user.get("id")
-    tunnel_scope = user.get("tunnel_scope", "sales")
-    tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
+    role = user.get("role", "")
+    if role not in db._MANAGEMENT_ROLES:
+        tunnel_scope = user.get("tunnel_scope", "sales")
+        tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
 
-    for t in tunnels:
-        next_conv = await db.get_oldest_unassigned_conversation(t)
-        if next_conv:
-            await db.update_conversation(next_conv["id"], {
-                "assigned_agent_id": agent_id,
-                "mode": "human",
-            })
-            next_conv_id = next_conv["id"]
-            logger.info(f"[auto-assign] Conv {next_conv['id']} → {agent_id} (on close)")
-            break  # 1:1 rule — assign only 1
+        for t in tunnels:
+            next_conv = await db.get_oldest_unassigned_conversation(t)
+            if next_conv:
+                await db.update_conversation(next_conv["id"], {
+                    "assigned_agent_id": agent_id,
+                    "mode": "human",
+                })
+                next_conv_id = next_conv["id"]
+                logger.info(f"[auto-assign] Conv {next_conv['id']} → {agent_id} (on close)")
+                break  # 1:1 rule — assign only 1
 
     return {
         "success": True,

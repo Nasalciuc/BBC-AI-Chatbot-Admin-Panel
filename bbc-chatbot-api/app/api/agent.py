@@ -76,18 +76,22 @@ async def _assign_pending_conversations(
 @router.post("/agent/heartbeat")
 async def heartbeat(user: dict = Depends(get_current_user)):
     """Agent pings every 30s to signal online presence.
-    Also cleans up conversations from offline agents."""
+    Also cleans up conversations from offline agents.
+    Management roles (owner/admin/dev) update presence but do NOT auto-receive conversations."""
     user_id = user.get("id")
     if not user_id:
         return {"success": False, "error": "No user ID in token"}
     await db.update_user_last_seen(user_id)
     cleaned = await _cleanup_stale_conversations()
-    agent_name = user.get("name") or user.get("email", "A specialist")
-    assigned = await _assign_pending_conversations(
-        user_id,
-        user.get("tunnel_scope", "sales"),
-        agent_name,
-    )
+    role = user.get("role", "")
+    assigned = 0
+    if role not in db._MANAGEMENT_ROLES:
+        agent_name = user.get("name") or user.get("email", "A specialist")
+        assigned = await _assign_pending_conversations(
+            user_id,
+            user.get("tunnel_scope", "sales"),
+            agent_name,
+        )
     return {"success": True, "cleaned": cleaned, "assigned": assigned}
 
 

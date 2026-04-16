@@ -239,6 +239,19 @@ async def _pipeline(
             "Let me connect you with a specialist who can help with that right away."
         )
 
+    # Guard: if an agent claimed this conversation while the pipeline was running,
+    # discard the AI response — never let AI and human work in parallel.
+    current_mode = await db.get_conversation_mode(cid)
+    if current_mode == "human":
+        logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
+        from app.models.chat import ChatResponse
+        return ChatResponse(
+            conversation_id=cid,
+            message="One moment please, connecting you with a specialist...",
+            type="queued",
+            model_used="none",
+        )
+
     ai_msg = await conversation_service.add_message(
         conversation_id=cid,
         role="ai",

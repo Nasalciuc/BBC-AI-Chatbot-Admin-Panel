@@ -1137,8 +1137,13 @@ async def update_user_last_seen(user_id: str) -> None:
         logger.warning(f"update_user_last_seen error: {e}")
 
 
+# Roles that are management-only and must never receive auto-routed conversations.
+_MANAGEMENT_ROLES = ("owner", "admin", "dev")
+
+
 async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
-    """Get agents online (heartbeat within timeout) matching tunnel scope."""
+    """Get agents online (heartbeat within timeout) matching tunnel scope.
+    Excludes management roles (owner/admin/dev) — they are not operators."""
     try:
         db_client = get_client()
         from datetime import datetime, timezone, timedelta
@@ -1151,6 +1156,7 @@ async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
                 .eq("is_active", True)
                 .gt("last_seen_at", cutoff)
                 .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
+                .not_.in_("role", list(_MANAGEMENT_ROLES))
                 .execute()
             )
         res = await _run_sync(_q)
