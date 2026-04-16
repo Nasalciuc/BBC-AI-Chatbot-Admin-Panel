@@ -43,6 +43,15 @@ function getValidConvId(visitor: Props['visitor']): string | null {
   // Check visitor fingerprint match
   const savedKey = safeGet('bbc_visitor_key')
   const currentKey = `${visitor.name || ''}|${visitor.email || ''}|${visitor.phone || ''}`
+
+  // Anonymous sessions are too risky to restore from persistent localStorage:
+  // they can attach to a stale conversation on shared browsers.
+  if (currentKey === '||') {
+    try { localStorage.removeItem('bbc_conv_id') } catch {}
+    try { localStorage.removeItem('bbc_conv_ts') } catch {}
+    return null
+  }
+
   if (savedKey && currentKey && savedKey !== currentKey) {
     try { localStorage.removeItem('bbc_conv_id') } catch {}
     try { localStorage.removeItem('bbc_conv_ts') } catch {}

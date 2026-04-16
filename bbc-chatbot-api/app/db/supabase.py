@@ -62,7 +62,37 @@ async def get_or_create_conversation(
         if conversation_id:
             res = await _run_sync(lambda: db.table("conversations").select("*").eq("id", conversation_id).single().execute())
             if res.data:
-                return res.data
+                existing = res.data
+
+                # Safety guard against cross-visitor mix-ups caused by stale client IDs.
+                req_email = (getattr(visitor, "email", None) or "").strip().lower()
+                req_phone = (getattr(visitor, "phone", None) or "").strip()
+                req_name = (getattr(visitor, "name", None) or "").strip()
+
+                ex_email = (existing.get("visitor_email") or "").strip().lower()
+                ex_phone = (existing.get("visitor_phone") or "").strip()
+                ex_name = (existing.get("visitor_name") or "").strip()
+
+                has_req_identity = bool(req_email or req_phone or req_name)
+                has_ex_identity = bool(ex_email or ex_phone or ex_name)
+
+                mismatch = False
+                if req_email and ex_email and req_email != ex_email:
+                    mismatch = True
+                if req_phone and ex_phone and req_phone != ex_phone:
+                    mismatch = True
+
+                # Anonymous request must never attach to an identified conversation.
+                if not has_req_identity and has_ex_identity:
+                    mismatch = True
+
+                if not mismatch:
+                    return existing
+
+                logger.warning(
+                    "get_or_create_conversation: rejected stale/mismatched conversation_id "
+                    f"{conversation_id} (tunnel={tunnel})"
+                )
         payload: dict = {"tunnel": tunnel, "mode": "ai", "status": "active"}
         if visitor and visitor.name:  payload["visitor_name"]  = visitor.name
         if visitor and visitor.email: payload["visitor_email"] = visitor.email
