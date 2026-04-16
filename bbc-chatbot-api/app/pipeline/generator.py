@@ -128,6 +128,28 @@ def generate_response(
         if text:
             return GeneratedResponse(text=text, model_used="template")
 
+    # 1.5 First follow-up: Ask about previous contact (company split policy)
+    # This triggers when:
+    # - User just replied to the greeting (history has welcome + first user message)
+    # - And they're not already providing route/booking data
+    # - SALES tunnel only (support has different flow)
+    if tunnel == "sales" and user_msg_count == 1 and history:
+        # Check if last AI message was a greeting
+        ai_msgs = [m for m in history if m.get("role") == "ai"]
+        if ai_msgs:
+            last_ai_content = ai_msgs[-1].get("content", "").lower()
+            is_greeting = any(w in last_ai_content for w in ["welcome", "where are you looking", "tell me"])
+            
+            # Check if user is already answering with route/booking info
+            has_route = bool(entities.get("origin") or entities.get("destination"))
+            has_dates = bool(entities.get("departure_date"))
+            
+            if is_greeting and not has_route and not has_dates:
+                text = get_template("ask_previous_contact", tunnel, visitor)
+                if text:
+                    logger.info(f"[{visitor.name or 'visitor'}] Asking about previous contact (split policy)")
+                    return GeneratedResponse(text=text, model_used="template")
+
     # 2. Closing
     if intent == Intent.CLOSING:
         text = get_template("closing", tunnel, visitor)

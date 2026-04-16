@@ -2,12 +2,40 @@ import { useState } from 'preact/hooks'
 
 interface Props {
   tunnel: 'sales' | 'support'
-  onSubmit: (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => void
+  onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => void
   onBack: () => void
 }
 
+// Popular country codes (ISO 3166-1 alpha-3)
+const COUNTRY_CODES = [
+  { code: 'US', name: 'United States', dial: '+1' },
+  { code: 'GB', name: 'United Kingdom', dial: '+44' },
+  { code: 'DE', name: 'Germany', dial: '+49' },
+  { code: 'FR', name: 'France', dial: '+33' },
+  { code: 'IT', name: 'Italy', dial: '+39' },
+  { code: 'ES', name: 'Spain', dial: '+34' },
+  { code: 'NL', name: 'Netherlands', dial: '+31' },
+  { code: 'BE', name: 'Belgium', dial: '+32' },
+  { code: 'CH', name: 'Switzerland', dial: '+41' },
+  { code: 'AT', name: 'Austria', dial: '+43' },
+  { code: 'CA', name: 'Canada', dial: '+1' },
+  { code: 'AU', name: 'Australia', dial: '+61' },
+  { code: 'NZ', name: 'New Zealand', dial: '+64' },
+  { code: 'SG', name: 'Singapore', dial: '+65' },
+  { code: 'HK', name: 'Hong Kong', dial: '+852' },
+  { code: 'JP', name: 'Japan', dial: '+81' },
+  { code: 'CN', name: 'China', dial: '+86' },
+  { code: 'IN', name: 'India', dial: '+91' },
+  { code: 'BR', name: 'Brazil', dial: '+55' },
+  { code: 'MX', name: 'Mexico', dial: '+52' },
+  { code: 'AE', name: 'United Arab Emirates', dial: '+971' },
+  { code: 'SA', name: 'Saudi Arabia', dial: '+966' },
+  { code: 'ZA', name: 'South Africa', dial: '+27' },
+]
+
 export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
   const [name, setName] = useState('')
+  const [countryCode, setCountryCode] = useState('US')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
@@ -18,13 +46,14 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
     setError('')
     if (tunnel === 'sales') {
       if (!name.trim()) return setError('Please enter your name')
+      if (!countryCode) return setError('Please select your country')
       if (!phone.trim()) return setError('Please enter your phone number')
       if (!email.trim() || !email.includes('@')) return setError('Please enter a valid email')
-      onSubmit({ name: name.trim(), phone: phone.trim(), email: email.trim() })
+      onSubmit({ name: name.trim(), phone: phone.trim(), country_code: countryCode, email: email.trim() })
     } else {
       if (!email.trim() && !phone.trim()) return setError('Please enter your email or phone')
       if (!bookingId.trim()) return setError('Please enter your booking ID')
-      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, booking_id: bookingId.trim() })
+      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: countryCode || undefined, booking_id: bookingId.trim() })
     }
   }
 
@@ -32,6 +61,12 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
     width: '100%', padding: '10px 14px', borderRadius: 10,
     border: '1px solid #e5e7eb', fontSize: 14, outline: 'none',
     boxSizing: 'border-box' as const,
+  }
+
+  const selectStyle = {
+    ...inputStyle,
+    backgroundColor: '#fff',
+    cursor: 'pointer',
   }
 
   return (
@@ -64,7 +99,26 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
         {tunnel === 'sales' ? (
           <>
             <input style={inputStyle} placeholder="Your name *" value={name} onInput={e => setName((e.target as HTMLInputElement).value)} />
-            <input style={inputStyle} placeholder="Phone number *" type="tel" value={phone} onInput={e => setPhone((e.target as HTMLInputElement).value)} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <select
+                style={{ ...selectStyle, flex: '0 0 120px' }}
+                value={countryCode}
+                onChange={e => setCountryCode((e.target as HTMLSelectElement).value)}
+              >
+                {COUNTRY_CODES.map(c => (
+                  <option key={c.code} value={c.code}>
+                    {c.dial} {c.code}
+                  </option>
+                ))}
+              </select>
+              <input 
+                style={{ ...inputStyle, flex: 1 }}
+                placeholder="Phone number *" 
+                type="tel" 
+                value={phone} 
+                onInput={e => setPhone((e.target as HTMLInputElement).value)} 
+              />
+            </div>
             <input style={inputStyle} placeholder="Email address *" type="email" value={email} onInput={e => setEmail((e.target as HTMLInputElement).value)} />
           </>
         ) : (

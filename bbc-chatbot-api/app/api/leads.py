@@ -71,3 +71,56 @@ async def update_lead(lead_id: str, body: dict):
     if not result:
         raise HTTPException(404, "Lead not found")
     return result
+
+
+@router.get("/leads/check/existing")
+async def check_existing_lead(
+    email: Optional[str] = Query(None, max_length=255),
+    phone: Optional[str] = Query(None, max_length=50),
+):
+    """Check if a lead already exists in the system by email or phone.
+    Used for: CRM duplicate detection, returning visitor identification.
+    Returns: { exists: bool, lead: {...}, assigned_agent_id: "...", tunnel: "..." }
+    """
+    if not email and not phone:
+        return {"success": False, "error": "Must provide email or phone", "exists": False}
+    
+    try:
+        existing = await db.get_existing_lead_by_contact(email=email, phone=phone)
+        if existing:
+            return {
+                "success": True,
+                "exists": True,
+                "lead_id": existing.get("id"),
+                "conversation_id": existing.get("conversation_id"),
+                "visitor_name": existing.get("visitor_name"),
+                "visitor_email": existing.get("visitor_email"),
+                "visitor_phone": existing.get("visitor_phone"),
+                "assigned_agent_id": existing.get("assigned_agent_id"),
+                "lead_tier": existing.get("tier"),
+                "lead_status": existing.get("status"),
+                "tunnel": existing.get("tunnel"),
+            }
+        return {"success": True, "exists": False}
+    except Exception as e:
+        return {"success": False, "error": str(e), "exists": False}
+
+
+@router.patch("/leads/{lead_id}/mark-crm-created")
+async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_current_user)):
+    """Mark a lead as successfully created in the external CRM system.
+    Updates created_in_crm flag and timestamp.
+    Requires authentication."""
+    if user.get("role") not in ("owner", "admin", "dev", "sales"):
+        raise HTTPException(status_code=403, detail="Not authorized to mark leads as CRM created")
+    
+    try:
+        result = await db.mark_lead_created_in_crm(lead_id)
+        if not result:
+            raise HTTPException(404, "Lead not found")
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to mark lead: {str(e)}")
+

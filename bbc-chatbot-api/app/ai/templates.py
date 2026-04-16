@@ -69,6 +69,11 @@ TEMPLATES: dict[str, list[str]] = {
         "We'll be in touch soon.",
         "Thanks{name_suffix}! Our team is already working on your request.",
     ],
+    "ask_previous_contact:sales": [
+        "Have you contacted us before about business class travel?",
+        "Have you worked with us previously on flight bookings?",
+        "Is this your first time reaching out to us?",
+    ],
 
     # ── SUPPORT ────────────────────────────────────────────────
     "welcome:support": [

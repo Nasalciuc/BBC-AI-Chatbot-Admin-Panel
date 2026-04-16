@@ -67,6 +67,7 @@ async def get_or_create_conversation(
         if visitor and visitor.name:  payload["visitor_name"]  = visitor.name
         if visitor and visitor.email: payload["visitor_email"] = visitor.email
         if visitor and visitor.phone: payload["visitor_phone"] = visitor.phone
+        if visitor and visitor.country_code: payload["visitor_phone_country"] = visitor.country_code
         res = await _run_sync(lambda: db.table("conversations").insert(payload).execute())
         return res.data[0] if res.data else None
     except Exception as e:
@@ -445,6 +446,73 @@ async def update_lead(lead_id: str, payload: dict) -> Optional[dict]:
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"update_lead error: {e}")
+        return None
+
+
+async def get_existing_lead_by_contact(
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+) -> Optional[dict]:
+    """Check if a lead exists by email or phone (CRM duplicate check).
+    Returns the lead with conversation contact info and assigned agent if found.
+    Used for: Routing returning visitors to same agent, CRM integration checks."""
+    if not email and not phone:
+        return None
+    email_clean = email.lower().strip() if email else None
+    phone_clean = phone.strip() if phone else None
+    try:
+        db_client = get_client()
+        def _q():
+            q = (
+                db_client.table("leads")
+                .select("*, conversations(id, visitor_name, visitor_email, visitor_phone, assigned_agent_id, tunnel)")
+                .order("created_at", desc=True)
+                .limit(1)
+            )
+            # Search by email OR phone in conversations
+            if email_clean and phone_clean:
+                q = q.or_(
+                    f"conversations.visitor_email.eq.{email_clean},"
+                    f"conversations.visitor_phone.eq.{phone_clean}"
+                )
+            elif email_clean:
+                q = q.eq("conversations.visitor_email", email_clean)
+            else:
+                q = q.eq("conversations.visitor_phone", phone_clean)
+            return q.execute()
+        res = await _run_sync(_q)
+        if res and res.data:
+            lead = dict(res.data[0])
+            conv = lead.pop("conversations", {}) or {}
+            lead["visitor_name"] = conv.get("visitor_name")
+            lead["visitor_email"] = conv.get("visitor_email")
+            lead["visitor_phone"] = conv.get("visitor_phone")
+            lead["assigned_agent_id"] = conv.get("assigned_agent_id")
+            lead["conversation_id"] = conv.get("id")
+            lead["tunnel"] = conv.get("tunnel")
+            return lead
+        return None
+    except Exception as e:
+        logger.error(f"get_existing_lead_by_contact error: {e}")
+        return None
+
+
+async def mark_lead_created_in_crm(lead_id: str) -> Optional[dict]:
+    """Mark a lead as successfully created in the CRM system.
+    Updates: created_in_crm=true, created_in_crm_at=NOW()"""
+    try:
+        db_client = get_client()
+        from datetime import datetime
+        payload = {
+            "created_in_crm": True,
+            "created_in_crm_at": datetime.utcnow().isoformat(),
+        }
+        res = await _run_sync(
+            lambda: db_client.table("leads").update(payload).eq("id", lead_id).execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"mark_lead_created_in_crm error: {e}")
         return None
 
 

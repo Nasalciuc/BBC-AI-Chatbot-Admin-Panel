@@ -7,6 +7,7 @@ class VisitorInfo(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    country_code: Optional[str] = None  # ISO 3166-1 alpha-2 (e.g. "US", "GB")
 
 
 class ChatRequest(BaseModel):
