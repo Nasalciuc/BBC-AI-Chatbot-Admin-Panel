@@ -59,18 +59,29 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(restored?.visitor || {})
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(restored?.metadata || {})
 
-  // Auto-open: after 10 seconds on page, open the sales form
-  // Only if no active session and not already opened this page visit
+  // Auto-open: after 10 seconds of inactivity, nudge user to the sales form.
+  // Conditions: no active session, not already opened, AND user is NOT typing anywhere on the page.
+  // Timer only opens the FORM — visitor must still submit their data manually.
   const autoOpenedRef = useRef(false)
+  const userTypingRef = useRef(false)
+
+  // Track any keyboard activity on the entire page
+  useEffect(() => {
+    const onKey = () => { userTypingRef.current = true }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [])
+
   useEffect(() => {
     if (step !== 'buttons' || autoOpenedRef.current) return
     const timer = setTimeout(() => {
+      // If user is actively typing anywhere on the page (e.g. a booking form), do not interrupt
+      if (userTypingRef.current) return
       autoOpenedRef.current = true
       setTunnel('sales')
       setVisitor({})
       setMetadata({})
-      setStep('chat')
-      safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel: 'sales', visitor: {}, metadata: {} }))
+      setStep('form')  // open form only — never skip to chat automatically
     }, 10_000)
     return () => clearTimeout(timer)
   }, [step])
