@@ -135,8 +135,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
                     setPhone(val)
 
                     const country = detectCountryFromPhone(val)
-                    const activeCountry = country || detectedCountry
-                    if (country) setDetectedCountry(country)
+                    if (country) {
+                      setDetectedCountry(country)
+                    } else if (val.startsWith('+')) {
+                      // Prevent stale country state (e.g. previously RU) when
+                      // the new prefix no longer matches any known dial code.
+                      setDetectedCountry(COUNTRIES[0])
+                    }
+
+                    const activeCountry = country || (val.startsWith(detectedCountry.dial) ? detectedCountry : null)
 
                     if (val.length > 1) {
                       const isValid = validatePhone(val, activeCountry)
