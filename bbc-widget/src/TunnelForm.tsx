@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -7,8 +7,14 @@ interface Props {
   onInteraction?: () => void
 }
 
-// Popular country codes (ISO 3166-1 alpha-3)
-const COUNTRY_CODES = [
+type CountryOption = {
+  code: string
+  name: string
+  dial: string
+}
+
+// Fallback list if external API is unavailable.
+const FALLBACK_COUNTRY_CODES: CountryOption[] = [
   { code: 'US', name: 'United States', dial: '+1' },
   { code: 'GB', name: 'United Kingdom', dial: '+44' },
   { code: 'DE', name: 'Germany', dial: '+49' },
@@ -41,16 +47,70 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
   const [error, setError] = useState('')
+  const [countries, setCountries] = useState<CountryOption[]>(FALLBACK_COUNTRY_CODES)
+
+  useEffect(() => {
+    let mounted = true
+
+    const loadCountries = async () => {
+      try {
+        const resp = await fetch('https://restcountries.com/v3.1/all?fields=cca2,name,idd')
+        if (!resp.ok) throw new Error('Failed to fetch countries')
+        const rows = await resp.json() as Array<{
+          cca2?: string
+          name?: { common?: string }
+          idd?: { root?: string; suffixes?: string[] }
+        }>
+
+        const mapped = rows
+          .map((r) => {
+            const code = (r.cca2 || '').toUpperCase().trim()
+            const common = (r.name?.common || '').trim()
+            const root = (r.idd?.root || '').trim()
+            const suffix = (r.idd?.suffixes?.[0] || '').trim()
+            const dial = `${root}${suffix}`
+            if (!code || !common || !dial.startsWith('+')) return null
+            return { code, name: common, dial }
+          })
+          .filter((c): c is CountryOption => Boolean(c))
+          .sort((a, b) => a.name.localeCompare(b.name))
+
+        if (mounted && mapped.length > 0) {
+          setCountries(mapped)
+          if (!mapped.some(c => c.code === countryCode)) {
+            setCountryCode(mapped[0].code)
+          }
+        }
+      } catch {
+        // Keep fallback countries silently.
+      }
+    }
+
+    loadCountries()
+    return () => { mounted = false }
+  }, [])
 
   const handleSubmit = (e: Event) => {
     e.preventDefault()
     setError('')
     if (tunnel === 'sales') {
-      if (!name.trim()) return setError('Please enter your name')
+      const normalizedName = name.trim()
+      const nameRegex = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/
+      if (!normalizedName) return setError('Please enter your name')
+      if (normalizedName.length < 2 || normalizedName.length > 20) {
+        return setError('Name must be between 2 and 20 characters')
+      }
+      if (!nameRegex.test(normalizedName)) {
+        return setError('Name can contain only letters, spaces, apostrophes, and hyphens')
+      }
       if (!countryCode) return setError('Please select your country')
+      const phoneDigits = phone.replace(/\D/g, '')
       if (!phone.trim()) return setError('Please enter your phone number')
+      if (phoneDigits.length < 10 || phoneDigits.length > 20) {
+        return setError('Phone number must contain between 10 and 20 digits')
+      }
       if (!email.trim() || !email.includes('@')) return setError('Please enter a valid email')
-      onSubmit({ name: name.trim(), phone: phone.trim(), country_code: countryCode, email: email.trim() })
+      onSubmit({ name: normalizedName, phone: phone.trim(), country_code: countryCode, email: email.trim() })
     } else {
       if (!email.trim() && !phone.trim()) return setError('Please enter your email or phone')
       if (!bookingId.trim()) return setError('Please enter your booking ID')
@@ -106,7 +166,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
                 value={countryCode}
                 onChange={e => { onInteraction?.(); setCountryCode((e.target as HTMLSelectElement).value) }}
               >
-                {COUNTRY_CODES.map(c => (
+                {countries.map(c => (
                   <option key={c.code} value={c.code}>
                     {c.dial} {c.code}
                   </option>
