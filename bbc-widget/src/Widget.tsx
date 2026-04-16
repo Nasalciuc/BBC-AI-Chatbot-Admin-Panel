@@ -66,11 +66,26 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const userTypingRef = useRef(false)
   const formFlowStartedRef = useRef(false)
 
-  // Track any keyboard activity on the entire page
+  // Track user activity on the entire page.
+  // Any interaction means visitor is not passive, so auto-chat must not trigger.
   useEffect(() => {
-    const onKey = () => { userTypingRef.current = true }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
+    const markActive = () => { userTypingRef.current = true }
+    window.addEventListener('keydown', markActive, { capture: true })
+    window.addEventListener('input', markActive, { capture: true })
+    window.addEventListener('change', markActive, { capture: true })
+    window.addEventListener('paste', markActive, { capture: true })
+    window.addEventListener('mousedown', markActive, { capture: true })
+    window.addEventListener('touchstart', markActive, { capture: true })
+    window.addEventListener('focusin', markActive, { capture: true })
+    return () => {
+      window.removeEventListener('keydown', markActive, { capture: true })
+      window.removeEventListener('input', markActive, { capture: true })
+      window.removeEventListener('change', markActive, { capture: true })
+      window.removeEventListener('paste', markActive, { capture: true })
+      window.removeEventListener('mousedown', markActive, { capture: true })
+      window.removeEventListener('touchstart', markActive, { capture: true })
+      window.removeEventListener('focusin', markActive, { capture: true })
+    }
   }, [])
 
   useEffect(() => {
@@ -92,11 +107,6 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     formFlowStartedRef.current = true
     autoOpenedRef.current = true // user intentionally opened widget; cancel auto-open logic
     setTunnel(t)
-      const handleFormInteraction = () => {
-        // Once user starts filling the form, keep standard manual flow only.
-        formFlowStartedRef.current = true
-        autoOpenedRef.current = true
-      }
 
     // If valid session exists, skip form and restore chat directly
     if (hasValidSession) {
@@ -104,6 +114,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     } else {
       setStep('form')
     }
+  }
+
+  const handleFormInteraction = () => {
+    // Once user starts filling the form, keep standard manual flow only.
+    formFlowStartedRef.current = true
+    autoOpenedRef.current = true
+    userTypingRef.current = true
   }
 
   const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => {
