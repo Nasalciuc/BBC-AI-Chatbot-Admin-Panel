@@ -41,6 +41,7 @@ export default function SetPasswordPage() {
     try {
       await apiFetch('/api/auth/set-password', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, password: values.password }),
       })
       toast.success('Password set successfully! Please login.')

@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"
     admin_panel_url: str = "https://admin-panel-error.vercel.app"
+    invite_link_expiry_minutes: int = 30
+    invite_link_path: str = "/set-password"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

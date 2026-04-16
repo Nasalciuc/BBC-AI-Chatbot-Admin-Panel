@@ -36,6 +36,11 @@ class InviteRequest(BaseModel):
     phone: Optional[str] = None
 
 
+class SetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=512)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest):
     """Authenticate user with email + password, return JWT."""
@@ -93,7 +98,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         raise HTTPException(403, "Only owner/admin can invite users")
 
     # Check email not taken — or reactivate if inactive
-    from app.services.email import generate_temp_password, send_invite_email
+    from app.services.email import generate_invite_token, send_invite_email
     existing = await db.get_user_by_email(req.email.lower().strip())
     if existing:
         if not existing.get("is_active", True):
@@ -105,16 +110,10 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
             if existing_role == "owner" and not is_requester_owner:
                 raise HTTPException(403, "Only an owner can reactivate another owner")
 
-            temp_password = generate_temp_password()
-            password_hash = bcrypt.hashpw(
-                temp_password.encode("utf-8"),
-                bcrypt.gensalt(),
-            ).decode("utf-8")
-
             # Owner can change role; admin keeps original role
             update_payload = {
                 "is_active": True,
-                "password_hash": password_hash,
+                "password_hash": None,
                 "name": req.name,
                 "role": req.role if is_requester_owner else existing_role,
                 "tunnel_scope": req.tunnel_scope if is_requester_owner else existing.get("tunnel_scope", "sales"),
@@ -126,7 +125,26 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
             if not updated:
                 raise HTTPException(500, "Failed to reactivate user")
 
-            email_sent = await send_invite_email(req.email, req.name, temp_password)
+            await db.invalidate_active_invite_tokens(existing["id"], purpose="set_password")
+            token = generate_invite_token()
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.invite_link_expiry_minutes)
+            token_row = await db.create_invite_token({
+                "user_id": existing["id"],
+                "token": token,
+                "purpose": "set_password",
+                "expires_at": expires_at.isoformat(),
+                "created_by": current_user.get("id"),
+            })
+            if not token_row:
+                raise HTTPException(500, "Failed to generate invite token")
+
+            invite_url = f"{settings.admin_panel_url.rstrip('/')}{settings.invite_link_path}?token={token}"
+            email_sent = await send_invite_email(
+                req.email,
+                req.name,
+                invite_url,
+                settings.invite_link_expiry_minutes,
+            )
             if not email_sent:
                 logger.warning(f"Reactivation email failed for {req.email} — user still reactivated")
 
@@ -150,21 +168,12 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         else:
             raise HTTPException(409, "Email already in use by an active user")
 
-    # Auto-generate temporary password
-    temp_password = generate_temp_password()
-
-    # Hash password
-    password_hash = bcrypt.hashpw(
-        temp_password.encode("utf-8"),
-        bcrypt.gensalt(),
-    ).decode("utf-8")
-
     user = await db.create_user({
         "email": req.email.lower().strip(),
         "name": req.name,
         "role": req.role,
         "tunnel_scope": req.tunnel_scope,
-        "password_hash": password_hash,
+        "password_hash": None,
         "is_active": True,
         **({"phone": req.phone} if req.phone else {}),
     })
@@ -174,8 +183,51 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
 
     logger.info(f"User invited | email={req.email} role={req.role} by={current_user.get('email', 'admin')}")
 
-    email_sent = await send_invite_email(req.email, req.name, temp_password)
+    await db.invalidate_active_invite_tokens(user["id"], purpose="set_password")
+    token = generate_invite_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.invite_link_expiry_minutes)
+    token_row = await db.create_invite_token({
+        "user_id": user["id"],
+        "token": token,
+        "purpose": "set_password",
+        "expires_at": expires_at.isoformat(),
+        "created_by": current_user.get("id"),
+    })
+    if not token_row:
+        raise HTTPException(500, "Failed to generate invite token")
+
+    invite_url = f"{settings.admin_panel_url.rstrip('/')}{settings.invite_link_path}?token={token}"
+    email_sent = await send_invite_email(
+        req.email,
+        req.name,
+        invite_url,
+        settings.invite_link_expiry_minutes,
+    )
     if not email_sent:
         logger.warning(f"Invite email failed for {req.email} — user still created")
 
     return {"success": True, "data": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "email_sent": email_sent}}
+
+
+@router.post("/set-password")
+async def set_password(req: SetPasswordRequest):
+    """One-time invite token activation.
+    Token is valid only if unused and not expired (30m by default)."""
+    token_row = await db.consume_valid_invite_token(req.token, purpose="set_password")
+    if not token_row:
+        raise HTTPException(400, "Invite link expired or invalid")
+
+    password_hash = bcrypt.hashpw(
+        req.password.encode("utf-8"),
+        bcrypt.gensalt(),
+    ).decode("utf-8")
+
+    user_id = token_row.get("user_id")
+    if not user_id:
+        raise HTTPException(400, "Invite token is malformed")
+
+    updated = await db.update_user(user_id, {"password_hash": password_hash, "is_active": True})
+    if not updated:
+        raise HTTPException(500, "Failed to set password")
+
+    return {"success": True, "data": {"user_id": user_id}}

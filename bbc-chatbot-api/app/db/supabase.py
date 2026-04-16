@@ -652,6 +652,95 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
         return None
 
 
+async def create_invite_token(payload: dict) -> Optional[dict]:
+    """Create one-time invite token row."""
+    try:
+        db = get_client()
+        res = await _run_sync(lambda: db.table("invite_tokens").insert(payload).execute())
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"create_invite_token error: {e}")
+        return None
+
+
+async def invalidate_active_invite_tokens(user_id: str, purpose: str = "set_password") -> int:
+    """Invalidate previous unused tokens for a user (single active link policy)."""
+    try:
+        db = get_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await _run_sync(
+            lambda: db.table("invite_tokens")
+            .update({"used_at": now_iso})
+            .eq("user_id", user_id)
+            .eq("purpose", purpose)
+            .is_("used_at", "null")
+            .execute()
+        )
+        return len(res.data or [])
+    except Exception as e:
+        logger.error(f"invalidate_active_invite_tokens error: {e}")
+        return 0
+
+
+async def get_valid_invite_token(token: str, purpose: str = "set_password") -> Optional[dict]:
+    """Return invite token row only if unused and not expired."""
+    try:
+        db = get_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await _run_sync(
+            lambda: db.table("invite_tokens")
+            .select("*")
+            .eq("token", token)
+            .eq("purpose", purpose)
+            .is_("used_at", "null")
+            .gt("expires_at", now_iso)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"get_valid_invite_token error: {e}")
+        return None
+
+
+async def mark_invite_token_used(token: str) -> Optional[dict]:
+    """Mark token as consumed (first successful use)."""
+    try:
+        db = get_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await _run_sync(
+            lambda: db.table("invite_tokens")
+            .update({"used_at": now_iso})
+            .eq("token", token)
+            .is_("used_at", "null")
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"mark_invite_token_used error: {e}")
+        return None
+
+
+async def consume_valid_invite_token(token: str, purpose: str = "set_password") -> Optional[dict]:
+    """Atomically consume invite token if still unused and not expired."""
+    try:
+        db = get_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await _run_sync(
+            lambda: db.table("invite_tokens")
+            .update({"used_at": now_iso})
+            .eq("token", token)
+            .eq("purpose", purpose)
+            .is_("used_at", "null")
+            .gt("expires_at", now_iso)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"consume_valid_invite_token error: {e}")
+        return None
+
+
 # ════════════════════════════════════════════════════════════════
 # PIPELINE RUNS — recording
 # ════════════════════════════════════════════════════════════════
