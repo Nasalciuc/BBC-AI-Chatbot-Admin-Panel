@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useState } from 'preact/hooks'
+import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from './countries'
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -7,114 +8,50 @@ interface Props {
   onInteraction?: () => void
 }
 
-type CountryOption = {
-  code: string
-  name: string
-  dial: string
-}
-
-// Fallback list if external API is unavailable.
-const FALLBACK_COUNTRY_CODES: CountryOption[] = [
-  { code: 'US', name: 'United States', dial: '+1' },
-  { code: 'GB', name: 'United Kingdom', dial: '+44' },
-  { code: 'DE', name: 'Germany', dial: '+49' },
-  { code: 'FR', name: 'France', dial: '+33' },
-  { code: 'IT', name: 'Italy', dial: '+39' },
-  { code: 'ES', name: 'Spain', dial: '+34' },
-  { code: 'NL', name: 'Netherlands', dial: '+31' },
-  { code: 'BE', name: 'Belgium', dial: '+32' },
-  { code: 'CH', name: 'Switzerland', dial: '+41' },
-  { code: 'AT', name: 'Austria', dial: '+43' },
-  { code: 'CA', name: 'Canada', dial: '+1' },
-  { code: 'AU', name: 'Australia', dial: '+61' },
-  { code: 'NZ', name: 'New Zealand', dial: '+64' },
-  { code: 'SG', name: 'Singapore', dial: '+65' },
-  { code: 'HK', name: 'Hong Kong', dial: '+852' },
-  { code: 'JP', name: 'Japan', dial: '+81' },
-  { code: 'CN', name: 'China', dial: '+86' },
-  { code: 'IN', name: 'India', dial: '+91' },
-  { code: 'BR', name: 'Brazil', dial: '+55' },
-  { code: 'MX', name: 'Mexico', dial: '+52' },
-  { code: 'AE', name: 'United Arab Emirates', dial: '+971' },
-  { code: 'SA', name: 'Saudi Arabia', dial: '+966' },
-  { code: 'ZA', name: 'South Africa', dial: '+27' },
-]
-
 export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
   const [name, setName] = useState('')
-  const [countryCode, setCountryCode] = useState('US')
   const [phone, setPhone] = useState('')
+  const [detectedCountry, setDetectedCountry] = useState<Country>(COUNTRIES[0])
+  const [phoneError, setPhoneError] = useState(false)
+  const [nameError, setNameError] = useState(false)
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
   const [error, setError] = useState('')
-  const [countries, setCountries] = useState<CountryOption[]>(FALLBACK_COUNTRY_CODES)
-
-  useEffect(() => {
-    let mounted = true
-
-    const loadCountries = async () => {
-      try {
-        const resp = await fetch('https://restcountries.com/v3.1/all?fields=cca2,name,idd')
-        if (!resp.ok) throw new Error('Failed to fetch countries')
-        const rows = await resp.json() as Array<{
-          cca2?: string
-          name?: { common?: string }
-          idd?: { root?: string; suffixes?: string[] }
-        }>
-
-        const mapped = rows
-          .map((r) => {
-            const code = (r.cca2 || '').toUpperCase().trim()
-            const common = (r.name?.common || '').trim()
-            const root = (r.idd?.root || '').trim()
-            const suffix = (r.idd?.suffixes?.[0] || '').trim()
-            const dial = `${root}${suffix}`
-            if (!code || !common || !dial.startsWith('+')) return null
-            return { code, name: common, dial }
-          })
-          .filter((c): c is CountryOption => Boolean(c))
-          .sort((a, b) => a.name.localeCompare(b.name))
-
-        if (mounted && mapped.length > 0) {
-          setCountries(mapped)
-          if (!mapped.some(c => c.code === countryCode)) {
-            setCountryCode(mapped[0].code)
-          }
-        }
-      } catch {
-        // Keep fallback countries silently.
-      }
-    }
-
-    loadCountries()
-    return () => { mounted = false }
-  }, [])
 
   const handleSubmit = (e: Event) => {
     e.preventDefault()
     setError('')
+    setNameError(false)
+    setPhoneError(false)
     if (tunnel === 'sales') {
       const normalizedName = name.trim()
-      const nameRegex = /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/
+      const nameRegex = /^[A-Za-z' -]+$/
       if (!normalizedName) return setError('Please enter your name')
-      if (normalizedName.length < 2 || normalizedName.length > 20) {
-        return setError('Name must be between 2 and 20 characters')
+      const invalidName = normalizedName.length < 2 || normalizedName.length > 20 || /\d/.test(normalizedName)
+      if (invalidName || !nameRegex.test(normalizedName)) {
+        setNameError(true)
+        return setError('Name must be 2-20 letters, no numbers')
       }
-      if (!nameRegex.test(normalizedName)) {
-        return setError('Name can contain only letters, spaces, apostrophes, and hyphens')
+
+      const phoneTrimmed = phone.trim()
+      if (phoneTrimmed) {
+        if (!validatePhone(phoneTrimmed, detectedCountry)) {
+          setPhoneError(true)
+          return setError(`Invalid phone number for ${detectedCountry.name}`)
+        }
       }
-      if (!countryCode) return setError('Please select your country')
-      const phoneDigits = phone.replace(/\D/g, '')
-      if (!phone.trim()) return setError('Please enter your phone number')
-      if (phoneDigits.length < 10 || phoneDigits.length > 20) {
-        return setError('Phone number must contain between 10 and 20 digits')
-      }
+
       if (!email.trim() || !email.includes('@')) return setError('Please enter a valid email')
-      onSubmit({ name: normalizedName, phone: phone.trim(), country_code: countryCode, email: email.trim() })
+      onSubmit({
+        name: normalizedName,
+        email: email.trim(),
+        phone: phoneTrimmed || undefined,
+        country_code: detectedCountry.code,
+      })
     } else {
       if (!email.trim() && !phone.trim()) return setError('Please enter your email or phone')
       if (!bookingId.trim()) return setError('Please enter your booking ID')
-      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: countryCode || undefined, booking_id: bookingId.trim() })
+      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: detectedCountry.code, booking_id: bookingId.trim() })
     }
   }
 
@@ -122,12 +59,6 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
     width: '100%', padding: '10px 14px', borderRadius: 10,
     border: '1px solid #e5e7eb', fontSize: 14, outline: 'none',
     boxSizing: 'border-box' as const,
-  }
-
-  const selectStyle = {
-    ...inputStyle,
-    backgroundColor: '#fff',
-    cursor: 'pointer',
   }
 
   return (
@@ -160,26 +91,88 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
         {tunnel === 'sales' ? (
           <>
             <input style={inputStyle} placeholder="Your name *" value={name} onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value) }} />
-            <div style={{ display: 'flex', gap: 8 }}>
-              <select
-                style={{ ...selectStyle, flex: '0 0 120px' }}
-                value={countryCode}
-                onChange={e => { onInteraction?.(); setCountryCode((e.target as HTMLSelectElement).value) }}
+            {nameError && (
+              <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '-6px' }}>
+                Name must be 2-20 letters, no numbers
+              </div>
+            )}
+
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+                Phone <span style={{ opacity: 0.8 }}>(optional)</span>
+              </label>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  background: '#ffffff',
+                  border: `1px solid ${phoneError ? '#ef4444' : '#e5e7eb'}`,
+                  borderRadius: '10px',
+                  overflow: 'hidden',
+                  transition: 'border-color 0.2s',
+                }}
               >
-                {countries.map(c => (
-                  <option key={c.code} value={c.code}>
-                    {c.dial} {c.code}
-                  </option>
-                ))}
-              </select>
-              <input 
-                style={{ ...inputStyle, flex: 1 }}
-                placeholder="Phone number *" 
-                type="tel" 
-                value={phone} 
-                onInput={e => { onInteraction?.(); setPhone((e.target as HTMLInputElement).value) }} 
-              />
+                <div
+                  style={{
+                    padding: '10px 12px',
+                    borderRight: '1px solid #e5e7eb',
+                    fontSize: '18px',
+                    lineHeight: 1,
+                    minWidth: '48px',
+                    textAlign: 'center',
+                    userSelect: 'none',
+                  }}
+                >
+                  {detectedCountry.flag}
+                </div>
+
+                <input
+                  type="tel"
+                  value={phone}
+                  placeholder="+1 (555) 000-0000"
+                  onInput={(e) => {
+                    const val = (e.target as HTMLInputElement).value
+                    setPhone(val)
+
+                    const country = detectCountryFromPhone(val)
+                    const activeCountry = country || detectedCountry
+                    if (country) setDetectedCountry(country)
+
+                    if (val.length > 1) {
+                      const isValid = validatePhone(val, activeCountry)
+                      setPhoneError(val.length > 4 && !isValid)
+                    } else {
+                      setPhoneError(false)
+                    }
+
+                    onInteraction?.()
+                  }}
+                  style={{
+                    flex: 1,
+                    background: 'transparent',
+                    border: 'none',
+                    outline: 'none',
+                    color: '#111827',
+                    fontSize: '14px',
+                    padding: '10px 12px',
+                    fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+
+              {phone.length > 1 && (
+                <div style={{ fontSize: '11px', color: '#9ba8b8', marginTop: '4px', paddingLeft: '2px' }}>
+                  {detectedCountry.flag} {detectedCountry.name} ({detectedCountry.dial})
+                </div>
+              )}
+
+              {phoneError && (
+                <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px', paddingLeft: '2px' }}>
+                  Invalid phone number for {detectedCountry.name}
+                </div>
+              )}
             </div>
+
             <input style={inputStyle} placeholder="Email address *" type="email" value={email} onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value) }} />
           </>
         ) : (
