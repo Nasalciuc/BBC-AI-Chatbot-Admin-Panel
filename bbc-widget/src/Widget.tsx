@@ -58,6 +58,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   )
   const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(restored?.visitor || {})
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(restored?.metadata || {})
+  const [showAttention, setShowAttention] = useState(false)
 
   // Auto-open: after 10 seconds of inactivity, open chat directly for passive visitors.
   // If user enters the form flow and starts typing, auto-open is cancelled and
@@ -65,6 +66,35 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const autoOpenedRef = useRef(false)
   const userTypingRef = useRef(false)
   const formFlowStartedRef = useRef(false)
+
+  // Intent detection refs
+  const intentFiredRef = useRef(false)
+  const intentDwellTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const intentChatTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cachedBtnRect = useRef<DOMRect | null>(null)
+
+  // Injectăm @keyframes în <head> — o singură dată la mount
+  // Inline style nu suportă @keyframes → trebuie <style> tag
+  useEffect(() => {
+    const styleId = 'bbc-widget-keyframes'
+    if (document.getElementById(styleId)) return // deja injectat
+
+    const style = document.createElement('style')
+    style.id = styleId
+    style.textContent = `
+      @keyframes bbc-bounce {
+        0%, 100% { transform: translateY(0) scale(1); }
+        30%       { transform: translateY(-10px) scale(1.08); }
+        60%       { transform: translateY(-5px) scale(1.03); }
+      }
+      @keyframes bbc-fadein {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+    `
+    document.head.appendChild(style)
+    // Nu facem cleanup — keyframes rămân pe tot parcursul sesiunii
+  }, [])
 
   // Track user activity on the entire page.
   // Any interaction means visitor is not passive, so auto-chat must not trigger.
@@ -88,22 +118,114 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     }
   }, [])
 
+  // ─── EFFECT A: Attention Grabber (20 secunde inactivitate) ───────────────────
   useEffect(() => {
-    if (step !== 'buttons' || autoOpenedRef.current || formFlowStartedRef.current) return
-    const timer = setTimeout(() => {
-      // If user is typing or already entered the form flow, do not auto-open chat.
-      if (userTypingRef.current || formFlowStartedRef.current) return
+    if (step !== 'buttons') return
+    if (autoOpenedRef.current || formFlowStartedRef.current) return
+    if (safeGet('bbc_attention_shown') === '1') return
+
+    const attentionTimer = setTimeout(() => {
+      if (formFlowStartedRef.current || userTypingRef.current) return
+      setShowAttention(true)
+      safeSet('bbc_attention_shown', '1')
+
+      // Badge dispare după 8 secunde
+      setTimeout(() => setShowAttention(false), 8_000)
+    }, 20_000)
+
+    return () => clearTimeout(attentionTimer)
+  }, [step])
+
+  // ─── EFFECT B: Intent Detection — Desktop (mouse dwell lângă buton) ──────────
+  useEffect(() => {
+    if (step !== 'buttons') return
+
+    // Mobile detection: touch device fără mouse precis
+    const isMobile = navigator.maxTouchPoints > 0 &&
+      !window.matchMedia('(pointer: fine)').matches
+    if (isMobile) return
+
+    // Cache rect-ul butonului (recalculat la resize)
+    const updateRect = () => {
+      const el = document.getElementById('bbc-floating-btn')
+      if (el) cachedBtnRect.current = el.getBoundingClientRect()
+    }
+    updateRect()
+    window.addEventListener('resize', updateRect, { passive: true })
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Nu mai triggereăm dacă: deja fired, form flow, sau typing
+      if (intentFiredRef.current || formFlowStartedRef.current || userTypingRef.current) return
+
+      const rect = cachedBtnRect.current
+      if (!rect) return
+
+      // Distanța față de centrul butonului
+      const dist = Math.hypot(
+        e.clientX - (rect.left + rect.width / 2),
+        e.clientY - (rect.top + rect.height / 2)
+      )
+
+      if (dist < 180) {
+        // User e aproape de buton — dacă nu avem deja dwell timer, pornim unul
+        if (!intentDwellTimer.current) {
+          intentDwellTimer.current = setTimeout(() => {
+            // 1.5s dwell confirmat — intent real detectat
+            if (formFlowStartedRef.current || userTypingRef.current) return
+            intentFiredRef.current = true
+
+            // Timer 10s: dacă nu intră în form → deschidem chat
+            intentChatTimer.current = setTimeout(() => {
+              if (formFlowStartedRef.current || userTypingRef.current) return
+              autoOpenedRef.current = true
+              setTunnel('sales')
+              setVisitor({})
+              setMetadata({})
+              setStep('chat')
+              safeSet('bbc_widget', JSON.stringify({
+                step: 'chat', tunnel: 'sales', visitor: {}, metadata: {}
+              }))
+            }, 10_000)
+          }, 1_500)
+        }
+        // ONE-WAY: nu anulăm timer-ul la ieșirea din zonă
+      }
+    }
+
+    window.addEventListener('mousemove', handleMouseMove, { passive: true })
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('resize', updateRect)
+      if (intentDwellTimer.current) clearTimeout(intentDwellTimer.current)
+      if (intentChatTimer.current) clearTimeout(intentChatTimer.current)
+    }
+  }, [step])
+
+  // ─── EFFECT C: Mobile Fallback (3 minute timer simplu) ───────────────────────
+  useEffect(() => {
+    const isMobile = navigator.maxTouchPoints > 0 &&
+      !window.matchMedia('(pointer: fine)').matches
+    if (!isMobile || step !== 'buttons') return
+    if (autoOpenedRef.current || formFlowStartedRef.current) return
+
+    const mobileTimer = setTimeout(() => {
+      if (formFlowStartedRef.current || userTypingRef.current) return
       autoOpenedRef.current = true
       setTunnel('sales')
       setVisitor({})
       setMetadata({})
       setStep('chat')
-      safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel: 'sales', visitor: {}, metadata: {} }))
-    }, 10_000)
-    return () => clearTimeout(timer)
+      safeSet('bbc_widget', JSON.stringify({
+        step: 'chat', tunnel: 'sales', visitor: {}, metadata: {}
+      }))
+    }, 3 * 60 * 1000) // 3 minute
+
+    return () => clearTimeout(mobileTimer)
   }, [step])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
+    setShowAttention(false)  // ← reset badge
     formFlowStartedRef.current = true
     autoOpenedRef.current = true // user intentionally opened widget; cancel auto-open logic
     setTunnel(t)
@@ -178,7 +300,12 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
   return (
     <>
-      {step === 'buttons' && <FloatingButtons onSelect={handleTunnelSelect} />}
+      {step === 'buttons' && (
+        <FloatingButtons
+          onSelect={handleTunnelSelect}
+          showAttention={showAttention}
+        />
+      )}
       {step === 'form' && (
         <TunnelForm
           tunnel={tunnel}
