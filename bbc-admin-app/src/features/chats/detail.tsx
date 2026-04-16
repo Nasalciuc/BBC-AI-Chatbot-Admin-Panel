@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send,
+  X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
   Plane, Calendar, Users, FileText, TrendingUp, Clock,
 } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
@@ -33,6 +33,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [copied, setCopied]           = useState(false)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [input, setInput]             = useState('')
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
   const bottomRef             = useRef<HTMLDivElement>(null)
   const lastMsgTime           = useRef('')
@@ -128,6 +129,13 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     } catch (_err) {
       // send failed silently — user can retry
     } finally { setSending(false) }
+  }
+
+  const QUICK_EMOJIS = ['🙂', '😊', '👍', '🙏', '✈️', '💼', '✅', '🎉', '📞', '💬']
+
+  const handleInsertEmoji = (emoji: string) => {
+    setInput(prev => `${prev}${emoji}`)
+    setShowEmojiPicker(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -278,7 +286,36 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           {/* Agent input — only on My Active */}
           {activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="px-4 pt-3 pb-2">
-              <div className="flex gap-2">
+              <div className="relative flex gap-2">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowEmojiPicker(v => !v)}
+                    className="h-full px-3 rounded-xl border border-gray-200 text-gray-600 hover:text-[#0B1829] hover:border-gray-300 transition-all"
+                    aria-label="Insert emoji"
+                    title="Insert emoji"
+                  >
+                    <Smile className="w-4 h-4" />
+                  </button>
+                  {showEmojiPicker && (
+                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg">
+                      <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-400">Quick emoji</p>
+                      <div className="grid grid-cols-5 gap-1">
+                        {QUICK_EMOJIS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => handleInsertEmoji(emoji)}
+                            className="rounded-md px-2 py-1.5 text-lg hover:bg-gray-100"
+                            aria-label={`Insert ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
                   placeholder="Type a reply as agent..." rows={1} disabled={sending}
                   className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-gray-400 disabled:opacity-50" />
