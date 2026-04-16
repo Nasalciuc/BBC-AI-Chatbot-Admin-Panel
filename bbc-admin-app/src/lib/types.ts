@@ -26,7 +26,7 @@ export interface Conversation {
   summary?: string | null
   messages?: Message[]
   lead?: Lead | null
-  metadata?: Record<string, string>
+  metadata?: Record<string, unknown>
 }
 
 export interface ConversationsResponse {

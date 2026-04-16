@@ -66,6 +66,16 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const initialized = useRef(false)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSentRef = useRef<number>(0)
+  const closeSentRef = useRef(false)
+
+  const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false) => {
+    if (!convId || closeSentRef.current) return
+    closeSentRef.current = true
+    fetch(`${apiUrl}/api/chat/session/${convId}/close?reason=${reason}`, {
+      method: 'POST',
+      keepalive,
+    }).catch(() => {})
+  }
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages.length])
@@ -115,6 +125,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
 
   useEffect(() => {
     if (!convId) return
+    closeSentRef.current = false
+
+    const handlePageLeave = () => notifySessionClose('left', true)
+    window.addEventListener('pagehide', handlePageLeave)
+    window.addEventListener('beforeunload', handlePageLeave)
 
     let source: EventSource | null = null
     let fallbackInterval: ReturnType<typeof setInterval> | null = null
@@ -185,10 +200,12 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     startSSE()
 
     return () => {
-      fetch(`${apiUrl}/api/chat/session/${convId}/close`, { method: 'POST', keepalive: true }).catch(() => {})
+      notifySessionClose('minimized', true)
       source?.close()
       if (fallbackInterval) clearInterval(fallbackInterval)
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+      window.removeEventListener('pagehide', handlePageLeave)
+      window.removeEventListener('beforeunload', handlePageLeave)
     }
   }, [convId, apiUrl])
 
@@ -355,7 +372,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? 'Business Class Experts' : 'Booking Support'}
           </div>
         </div>
-        <button onClick={onClose} aria-label="Close chat" style={{
+        <button onClick={() => { notifySessionClose('minimized', true); onClose() }} aria-label="Close chat" style={{
           background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff',
           width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', fontSize: 13,
         }}>✕</button>

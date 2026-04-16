@@ -194,19 +194,31 @@ async def mark_chat_session_open(conversation_id: str):
         return {"success": False, "data": None}
     metadata = dict(conv.get("metadata") or {})
     metadata["widget_open"] = True
+    metadata["widget_presence"] = "online"
+    metadata["widget_last_event"] = "open"
     metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
     await db.update_conversation(conversation_id, {"metadata": metadata})
     return {"success": True}
 
 
 @router.post("/chat/session/{conversation_id}/close")
-async def mark_chat_session_close(conversation_id: str):
-    """Client closed widget with X or collapsed chat while still on site."""
+async def mark_chat_session_close(
+    conversation_id: str,
+    reason: str = Query("minimized", pattern="^(minimized|left)$"),
+):
+    """Client stopped active chat session.
+
+    reason=minimized -> chat collapsed with X while still on page
+    reason=left -> browser tab/page closed or navigated away
+    """
     conv = await db.get_conversation(conversation_id)
     if not conv:
         return {"success": False, "data": None}
     metadata = dict(conv.get("metadata") or {})
     metadata["widget_open"] = False
+    metadata["widget_presence"] = reason
+    metadata["widget_last_event"] = "close"
+    metadata["widget_last_close_reason"] = reason
     metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
     await db.update_conversation(conversation_id, {"metadata": metadata})
     from app.realtime.typing_indicator import typing_manager

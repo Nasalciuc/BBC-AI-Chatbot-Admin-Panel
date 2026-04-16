@@ -117,6 +117,20 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     return fresh.length > 0 ? [...base, ...fresh] : base
   }, [conv?.messages, accumMsgs])
 
+  const clientPresence = useMemo(() => {
+    const m = (conv?.metadata ?? {}) as Record<string, unknown>
+    const widgetOpen = m.widget_open === true || m.widget_open === 'true'
+    const reason = String(m.widget_last_close_reason ?? m.widget_presence ?? '')
+
+    if (widgetOpen) {
+      return { label: 'Client is online', dot: 'bg-emerald-500', text: 'text-emerald-600' }
+    }
+    if (reason === 'left') {
+      return { label: 'Client left the website', dot: 'bg-red-500', text: 'text-red-600' }
+    }
+    return { label: 'Client minimized chat', dot: 'bg-amber-500', text: 'text-amber-600' }
+  }, [conv?.metadata])
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
 
   const handleSend = async () => {
@@ -388,6 +402,11 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <span>
               Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-gray-500'}`}>{conv.status}</span>
               {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-gray-600'}`}>{conv.mode}</span>
+              {' · '}Client:
+              <span className={`ml-1 inline-flex items-center gap-1 font-medium ${clientPresence.text}`}>
+                <span className={`inline-block h-2 w-2 rounded-full ${clientPresence.dot}`} />
+                {clientPresence.label}
+              </span>
               {conv.mode === 'ai' && conv.status === 'active' && <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>}
               {conv.mode === 'human' && conv.status === 'active' && <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>}
             </span>
