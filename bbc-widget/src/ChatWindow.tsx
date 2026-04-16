@@ -85,6 +85,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   // Verify restored session is still active (runs once at mount)
   useEffect(() => {
     if (!savedConvId) return
+    fetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
     fetch(`${apiUrl}/api/chat/status/${savedConvId}`)
       .then(r => r.json())
       .then(data => {
@@ -184,6 +185,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     startSSE()
 
     return () => {
+      fetch(`${apiUrl}/api/chat/session/${convId}/close`, { method: 'POST', keepalive: true }).catch(() => {})
       source?.close()
       if (fallbackInterval) clearInterval(fallbackInterval)
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
@@ -266,6 +268,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
 
       if (data.conversation_id && !convId) {
         setConvId(data.conversation_id)
+        fetch(`${apiUrl}/api/chat/session/${data.conversation_id}/open`, { method: 'POST' }).catch(() => {})
         safeSet('bbc_conv_id', data.conversation_id)
         try { localStorage.setItem('bbc_conv_id', data.conversation_id) } catch {}
         // Save initial timestamp for 30-minute rolling expiry

@@ -73,9 +73,10 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
       safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel: 'sales', visitor: {}, metadata: {} }))
     }, 10_000)
     return () => clearTimeout(timer)
-  }, []) // run only once on mount
+  }, [step])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
+    autoOpenedRef.current = true // user intentionally opened widget; cancel auto-open logic
     setTunnel(t)
     // If valid session exists, skip form and restore chat directly
     if (hasValidSession) {

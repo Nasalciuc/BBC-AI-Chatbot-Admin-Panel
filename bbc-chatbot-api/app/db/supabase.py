@@ -201,46 +201,46 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         return None
 
 
-    async def get_last_agent_for_visitor(
-        email: Optional[str],
-        phone: Optional[str],
-    ) -> Optional[str]:
-        """Get assigned_agent_id from visitor's most recent conversation.
-        Used for returning visitor routing — route back to same operator.
-        Searches by email OR phone. Returns None if no previous agent found."""
-        email_clean = email.lower().strip() if email else None
-        phone_clean = phone.strip() if phone else None
-        if not email_clean and not phone_clean:
-            return None
-        try:
-            db_client = get_client()
+async def get_last_agent_for_visitor(
+    email: Optional[str],
+    phone: Optional[str],
+) -> Optional[str]:
+    """Get assigned_agent_id from visitor's most recent conversation.
+    Used for returning visitor routing — route back to same operator.
+    Searches by email OR phone. Returns None if no previous agent found."""
+    email_clean = email.lower().strip() if email else None
+    phone_clean = phone.strip() if phone else None
+    if not email_clean and not phone_clean:
+        return None
+    try:
+        db_client = get_client()
 
-            def _q():
-                q = (
-                    db_client.table("conversations")
-                    .select("assigned_agent_id")
-                    .not_.is_("assigned_agent_id", "null")
-                    .order("created_at", desc=True)
-                    .limit(1)
+        def _q():
+            q = (
+                db_client.table("conversations")
+                .select("assigned_agent_id")
+                .not_.is_("assigned_agent_id", "null")
+                .order("created_at", desc=True)
+                .limit(1)
+            )
+            if email_clean and phone_clean:
+                q = q.or_(
+                    f"visitor_email.eq.{email_clean},"
+                    f"visitor_phone.eq.{phone_clean}"
                 )
-                if email_clean and phone_clean:
-                    q = q.or_(
-                        f"visitor_email.eq.{email_clean},"
-                        f"visitor_phone.eq.{phone_clean}"
-                    )
-                elif email_clean:
-                    q = q.eq("visitor_email", email_clean)
-                else:
-                    q = q.eq("visitor_phone", phone_clean)
-                return q.execute()
+            elif email_clean:
+                q = q.eq("visitor_email", email_clean)
+            else:
+                q = q.eq("visitor_phone", phone_clean)
+            return q.execute()
 
-            res = await _run_sync(_q)
-            if res and res.data:
-                return res.data[0].get("assigned_agent_id")
-            return None
-        except Exception as e:
-            logger.error(f"get_last_agent_for_visitor error: {e}")
-            return None
+        res = await _run_sync(_q)
+        if res and res.data:
+            return res.data[0].get("assigned_agent_id")
+        return None
+    except Exception as e:
+        logger.error(f"get_last_agent_for_visitor error: {e}")
+        return None
 
 async def get_conversation(conversation_id: str) -> Optional[dict]:
     """One conversation + all its messages + associated lead.
@@ -306,10 +306,29 @@ async def get_conversation_counts(
         queue_count = await _count("none", "active")
         my_closed = await _count("me", "closed")
 
-        return {"my_active": my_active, "queue": queue_count, "my_closed": my_closed}
+        async def _count_all(status_val: str) -> int:
+            def _q():
+                q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
+                if tunnel:
+                    q = q.eq("tunnel", tunnel)
+                q = q.eq("status", status_val)
+                return q.limit(0).execute()
+            res = await _run_sync(_q)
+            return res.count or 0
+
+        all_active = await _count_all("active")
+        all_closed = await _count_all("closed")
+
+        return {
+            "my_active": my_active,
+            "queue": queue_count,
+            "my_closed": my_closed,
+            "all_active": all_active,
+            "all_closed": all_closed,
+        }
     except Exception as e:
         logger.error(f"get_conversation_counts error: {e}")
-        return {"my_active": 0, "queue": 0, "my_closed": 0}
+        return {"my_active": 0, "queue": 0, "my_closed": 0, "all_active": 0, "all_closed": 0}
 
 
 async def get_messages_after(

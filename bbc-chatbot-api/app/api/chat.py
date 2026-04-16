@@ -6,6 +6,7 @@ import logging
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -54,47 +55,30 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
         conv_info = await db.get_conversation_simple(req.conversation_id)
         if conv_info and conv_info.get('status') == 'closed':
             logger.info(f"[reopen] Conv {req.conversation_id} closed — client wrote again, reopening")
+            reopen_mode = "human" if conv_info.get("assigned_agent_id") else "ai"
             await db.update_conversation(req.conversation_id, {
                 'status': 'active',
-                'mode': 'ai',
-                'assigned_agent_id': None,
+                'mode': reopen_mode,
             })
-            # Fall through: AI pipeline handles this message
-            # Heartbeat will re-assign to operator if online within 30s
+            # Fall through: if assigned agent exists, message is queued for human mode.
 
     # 3. If existing conversation in 'human' mode
     if req.conversation_id:
         mode = await db.get_conversation_mode(req.conversation_id)
         if mode == "human":
-            # Check: has agent been silent > 5 minutes? → fallback to AI
-            from datetime import datetime, timezone, timedelta
-            last_agent_time = await db.get_last_agent_message_time(req.conversation_id)
-            agent_silent = (
-                last_agent_time is not None
-                and (datetime.now(timezone.utc) - last_agent_time) > timedelta(seconds=settings.agent_silent_timeout_seconds)
+            # Human mode is authoritative: never auto-switch to AI on client input.
+            from app.services.conversation_service import add_message
+            await add_message(
+                conversation_id=req.conversation_id,
+                role="user",
+                content=clean_message,
             )
-            if agent_silent:
-                # Agent hasn't replied in 5 min → revert to AI, fall through to pipeline
-                logger.info(f"[fallback] Conv {req.conversation_id}: agent silent 5min → AI")
-                await db.update_conversation(req.conversation_id, {
-                    "mode": "ai",
-                    "assigned_agent_id": None,
-                })
-                # Don't return — fall through to step 3.5 / step 4 (AI pipeline)
-            else:
-                # Agent is active → save message for agent, skip AI
-                from app.services.conversation_service import add_message
-                await add_message(
-                    conversation_id=req.conversation_id,
-                    role="user",
-                    content=clean_message,
-                )
-                return ChatResponse(
-                    conversation_id=req.conversation_id,
-                    message="One moment please, connecting you with a specialist...",
-                    type="queued",
-                    model_used="none",
-                )
+            return ChatResponse(
+                conversation_id=req.conversation_id,
+                message="One moment please, connecting you with a specialist...",
+                type="queued",
+                model_used="none",
+            )
 
     # 3.5. New conversation? Try routing to an available agent first
     if not req.conversation_id:
@@ -197,6 +181,34 @@ async def set_typing_status(conversation_id: str, body: TypingBody):
 @router.delete("/chat/typing/{conversation_id}")
 async def clear_typing_status(conversation_id: str):
     """Widget reports client sent message or cleared input."""
+    from app.realtime.typing_indicator import typing_manager
+    await typing_manager.clear_typing(conversation_id)
+    return {"success": True}
+
+
+@router.post("/chat/session/{conversation_id}/open")
+async def mark_chat_session_open(conversation_id: str):
+    """Client opened widget chat UI but did not necessarily send a message yet."""
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        return {"success": False, "data": None}
+    metadata = dict(conv.get("metadata") or {})
+    metadata["widget_open"] = True
+    metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
+    await db.update_conversation(conversation_id, {"metadata": metadata})
+    return {"success": True}
+
+
+@router.post("/chat/session/{conversation_id}/close")
+async def mark_chat_session_close(conversation_id: str):
+    """Client closed widget with X or collapsed chat while still on site."""
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        return {"success": False, "data": None}
+    metadata = dict(conv.get("metadata") or {})
+    metadata["widget_open"] = False
+    metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
+    await db.update_conversation(conversation_id, {"metadata": metadata})
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_typing(conversation_id)
     return {"success": True}

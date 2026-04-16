@@ -11,7 +11,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 interface Props {
   conversationId: string
   onClose: () => void
-  activeTab?: 'my_active' | 'queue' | 'my_closed'
+  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
   onConversationChange?: () => void
   usingMock?: boolean
 }
@@ -35,6 +35,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [input, setInput]             = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
+  const [markingLead, setMarkingLead] = useState(false)
   const bottomRef             = useRef<HTMLDivElement>(null)
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
@@ -160,6 +161,20 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       onConversationChange?.()
     } catch (_err) {
       // close failed silently
+    }
+  }
+
+  const handleMarkLeadCreated = async () => {
+    if (!lead?.id || markingLead) return
+    setMarkingLead(true)
+    try {
+      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' })
+      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      onConversationChange?.()
+    } catch (_err) {
+      // non-fatal — operator can retry
+    } finally {
+      setMarkingLead(false)
     }
   }
 
@@ -328,11 +343,23 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           )}
 
           {/* Take button — only on Queue */}
-          {activeTab === 'queue' && (
+          {activeTab === 'all_active' && (
             <div className="px-4 py-3">
               <button onClick={handleClaim}
                 className="w-full py-2.5 rounded-xl bg-[#C9A54E] text-white text-sm font-semibold hover:bg-[#C9A54E]/90 transition-all">
                 Take This Conversation
+              </button>
+            </div>
+          )}
+
+          {(activeTab === 'my_closed' || activeTab === 'all_closed') && lead && !(lead as any).created_in_crm && (
+            <div className="px-4 py-2">
+              <button
+                onClick={handleMarkLeadCreated}
+                disabled={markingLead}
+                className="w-full py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 text-xs font-medium hover:bg-emerald-100 disabled:opacity-60 transition-all"
+              >
+                {markingLead ? 'Marking...' : 'Lead Created'}
               </button>
             </div>
           )}
@@ -370,7 +397,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       </div>
 
       {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, hidden on My Closed) */}
-      {activeTab !== 'my_closed' && (
+      {activeTab !== 'my_closed' && activeTab !== 'all_closed' && (
       <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto shrink-0 hidden lg:block">
         <div className="p-4 space-y-4">
 

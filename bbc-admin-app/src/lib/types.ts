@@ -57,6 +57,8 @@ export interface Lead {
   updated_at: string
   contacted_at: string | null
   converted_at: string | null
+  created_in_crm?: boolean
+  created_in_crm_at?: string | null
   visitor_name: string | null
   visitor_email: string | null
   visitor_phone: string | null

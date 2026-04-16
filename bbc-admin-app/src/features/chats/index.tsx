@@ -21,12 +21,17 @@ const STATUS_DOT: Record<string, string> = {
   needs_agent: 'bg-red-400',
 }
 
-type TabKey = 'my_active' | 'queue' | 'my_closed'
+type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
 
-const TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
-  { key: 'my_active', label: 'My Active',  icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
-  { key: 'queue',     label: 'All',         icon: <Inbox className="w-4 h-4" />,     params: { status: 'active' } },
-  { key: 'my_closed', label: 'My Closed',   icon: <Archive className="w-4 h-4" />,   params: { assigned_to: 'me', status: 'closed' } },
+const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
+  { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
+  { key: 'my_closed', label: 'My Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'me', status: 'closed' } },
+]
+
+const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
+  { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
+  { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
+  { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
 ]
 
 function timeAgo(iso: string): string {
@@ -42,13 +47,13 @@ function timeAgo(iso: string): string {
 export function Chats() {
   const roleRaw = useAuthStore((s) => s.auth.user?.role)
   const role = Array.isArray(roleRaw) ? roleRaw[0] : (roleRaw ?? 'sales')
-  const isManager = ['owner', 'admin', 'dev'].includes(role)
-  const visibleTabs = isManager ? TABS : TABS.filter(t => t.key !== 'queue')
+  const isManager = ['owner', 'admin', 'dev', 'qa'].includes(role)
+  const visibleTabs = isManager ? MANAGER_TABS : AGENT_TABS
 
   // Highlight from URL param (click from bell dropdown)
   const urlHighlight = new URLSearchParams(window.location.search).get('highlight')
 
-  const [activeTab, setActiveTab] = useState<TabKey>(urlHighlight ? 'my_active' : 'my_active')
+  const [activeTab, setActiveTab] = useState<TabKey>('my_active')
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
@@ -111,7 +116,7 @@ export function Chats() {
   const conversations: Conversation[] = convResponse?.data ?? []
 
   // Counts — 1 request for 3 numbers, polls every 10s
-  const { data: counts = { my_active: 0, queue: 0, my_closed: 0 } } = useQuery({
+  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
     queryKey: ['conversation-counts', tunnelFilter],
     queryFn: async () => {
       const qs = tunnelFilter ? `?tunnel=${tunnelFilter}` : ''
@@ -173,7 +178,7 @@ export function Chats() {
                   {tab.label}
                   {counts[tab.key] > 0 && (
                     <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                      tab.key === 'queue' && counts[tab.key] > 0
+                      tab.key === 'all_active' && counts[tab.key] > 0
                         ? 'bg-red-500 text-white animate-pulse'
                         : 'bg-gray-100 text-gray-600'
                     }`}>
@@ -207,7 +212,7 @@ export function Chats() {
                 <div className="flex flex-col items-center justify-center h-32 text-gray-400">
                   <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
                   <p className="text-xs">
-                    {activeTab === 'queue' ? 'No active conversations' : activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
+                    {activeTab === 'all_closed' || activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
                   </p>
                 </div>
               ) : conversations.map(conv => (
@@ -219,7 +224,7 @@ export function Chats() {
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status] ?? 'bg-gray-300'}`} />
                         <span className="font-medium text-sm text-gray-900 truncate">
-                          {activeTab === 'my_closed'
+                          {activeTab === 'my_closed' || activeTab === 'all_closed'
                             ? <span className="text-gray-400 italic text-xs">Closed conversation</span>
                             : <span className='flex items-center gap-1'>
                                 {staleIds.has(conv.id) && (
