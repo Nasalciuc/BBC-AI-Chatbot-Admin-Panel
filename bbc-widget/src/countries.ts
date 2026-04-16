@@ -92,8 +92,10 @@ export const COUNTRIES: Country[] = [
  * Uses longest matching dial code.
  */
 export function detectCountryFromPhone(phone: string): Country | null {
-  if (!phone.startsWith('+')) return null
-  const digits = phone.replace(/\D/g, '')
+  const raw = phone.trim()
+  if (!raw) return null
+  const digits = raw.replace(/\D/g, '')
+  if (!digits) return null
 
   const sorted = [...COUNTRIES].sort(
     (a, b) => b.dial.replace(/\D/g, '').length - a.dial.replace(/\D/g, '').length
@@ -115,6 +117,7 @@ export function validatePhone(phone: string, country: Country | null): boolean {
   if (!phone || !country) return false
   const dialDigits = country.dial.replace(/\D/g, '')
   const allDigits = phone.replace(/\D/g, '')
+  if (!allDigits) return false
   if (!allDigits.startsWith(dialDigits)) return false
   const localDigits = allDigits.slice(dialDigits.length)
   return localDigits.length >= country.minDigits && localDigits.length <= country.maxDigits

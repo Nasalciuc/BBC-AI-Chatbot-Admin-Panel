@@ -10,7 +10,7 @@ interface Props {
 
 export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
   const [name, setName] = useState('')
-  const [phone, setPhone] = useState('')
+  const [phone, setPhone] = useState('+')
   const [detectedCountry, setDetectedCountry] = useState<Country>(COUNTRIES[0])
   const [phoneError, setPhoneError] = useState(false)
   const [nameError, setNameError] = useState(false)
@@ -34,8 +34,9 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       }
 
       const phoneTrimmed = phone.trim()
-      if (phoneTrimmed) {
-        if (!validatePhone(phoneTrimmed, detectedCountry)) {
+      const normalizedPhone = phoneTrimmed === '+' ? '' : phoneTrimmed
+      if (normalizedPhone) {
+        if (!validatePhone(normalizedPhone, detectedCountry)) {
           setPhoneError(true)
           return setError(`Invalid phone number for ${detectedCountry.name}`)
         }
@@ -45,7 +46,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       onSubmit({
         name: normalizedName,
         email: email.trim(),
-        phone: phoneTrimmed || undefined,
+        phone: normalizedPhone || undefined,
         country_code: detectedCountry.code,
       })
     } else {
@@ -131,7 +132,9 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
                   value={phone}
                   placeholder="+1 (555) 000-0000"
                   onInput={(e) => {
-                    const val = (e.target as HTMLInputElement).value
+                    const raw = (e.target as HTMLInputElement).value
+                    const trimmed = raw.trim()
+                    const val = /^\\d/.test(trimmed) ? `+${trimmed}` : (trimmed || '+')
                     setPhone(val)
 
                     const country = detectCountryFromPhone(val)
@@ -167,7 +170,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
                 />
               </div>
 
-              {phone.length > 1 && (
+              {phone.length > 1 && phone !== '+' && (
                 <div style={{ fontSize: '11px', color: '#9ba8b8', marginTop: '4px', paddingLeft: '2px' }}>
                   {detectedCountry.flag} {detectedCountry.name} ({detectedCountry.dial})
                 </div>
