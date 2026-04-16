@@ -27,6 +27,7 @@ import type {
   NotificationsResponse,
   Task,
   TasksResponse,
+  UserAccessAuditItem,
 } from './types'
 import { getCookie } from './cookies'
 
@@ -250,6 +251,13 @@ export async function updateUser(
 
 export async function deactivateUser(id: string): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return updateUser(id, { is_active: false })
+}
+
+export function getUserAccessHistory(
+  id: string,
+  limit = 30,
+): Promise<{ success: boolean; data: UserAccessAuditItem[]; count: number }> {
+  return apiFetch(`/api/admin/users/${encodeURIComponent(id)}/access-history?limit=${limit}`)
 }
 
 // ── Chat (used by widget / playground) ────────────────────────

@@ -201,3 +201,20 @@ export interface UserOption {
   email: string
   role: string
 }
+
+export interface UserAccessAuditItem {
+  id: string
+  target_user_id: string
+  changed_by_user_id: string | null
+  action: string
+  old_role: string | null
+  new_role: string | null
+  old_tunnel_scope: string | null
+  new_tunnel_scope: string | null
+  old_is_active: boolean | null
+  new_is_active: boolean | null
+  changed_fields: string[]
+  changed_by_name?: string | null
+  changed_by_email?: string | null
+  created_at: string
+}

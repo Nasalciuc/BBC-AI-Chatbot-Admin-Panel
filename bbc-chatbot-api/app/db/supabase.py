@@ -606,7 +606,10 @@ async def get_users(
     """List users with filters. Returns (rows, total_count)."""
     db = get_client()
     def _query():
-        q = db.table("users").select("*", count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
+        q = db.table("users").select(
+            "id,email,name,role,tunnel_scope,avatar_url,is_active,last_seen_at,phone,created_at,updated_at",
+            count="exact",  # type: ignore[arg-type]
+        ).order("created_at", desc=True)
         if role:    q = q.eq("role", role)
         if search:
             q = q.or_(
@@ -631,6 +634,19 @@ async def get_user_by_email(email: str) -> Optional[dict]:
         return None
 
 
+async def get_user_by_id(user_id: str) -> Optional[dict]:
+    """Get single user by id."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("users").select("*").eq("id", user_id).single().execute()
+        )
+        return res.data if res.data else None
+    except Exception as e:
+        logger.error(f"get_user_by_id error: {e}")
+        return None
+
+
 async def create_user(payload: dict) -> Optional[dict]:
     """Create a new user (for invite flow)."""
     try:
@@ -650,6 +666,42 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
     except Exception as e:
         logger.error(f"update_user error: {e}")
         return None
+
+
+async def create_user_access_audit(payload: dict) -> Optional[dict]:
+    """Record access rights change for a user."""
+    try:
+        db = get_client()
+        res = await _run_sync(lambda: db.table("user_access_audit").insert(payload).execute())
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"create_user_access_audit error: {e}")
+        return None
+
+
+async def get_user_access_audit(target_user_id: str, limit: int = 50) -> list:
+    """Get recent access-rights history for a specific user."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("user_access_audit")
+            .select("*, actor:users!changed_by_user_id(name,email)")
+            .eq("target_user_id", target_user_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = []
+        for row in (res.data or []):
+            flat = dict(row)
+            actor = flat.pop("actor", {}) or {}
+            flat["changed_by_name"] = actor.get("name")
+            flat["changed_by_email"] = actor.get("email")
+            rows.append(flat)
+        return rows
+    except Exception as e:
+        logger.error(f"get_user_access_audit error: {e}")
+        return []
 
 
 async def create_invite_token(payload: dict) -> Optional[dict]:

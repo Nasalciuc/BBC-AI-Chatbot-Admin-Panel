@@ -3,8 +3,9 @@
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { inviteUser, updateUser } from '@/lib/api'
+import { getUserAccessHistory, inviteUser, updateUser } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -66,6 +67,15 @@ export function UsersActionDialog({
   onOpenChange,
 }: UserActionDialogProps) {
   const isEdit = !!currentRow
+  const { data: accessHistory = [] } = useQuery({
+    queryKey: ['user-access-history', currentRow?.id],
+    queryFn: async () => {
+      if (!currentRow?.id) return []
+      const res = await getUserAccessHistory(currentRow.id, 20)
+      return res.success ? res.data : []
+    },
+    enabled: open && isEdit && !!currentRow?.id,
+  })
   const form = useForm<UserForm>({
     resolver: zodResolver(formSchema),
     defaultValues: isEdit
@@ -259,6 +269,32 @@ export function UsersActionDialog({
                   </FormItem>
                 )}
               />
+
+              {isEdit && (
+                <div className='rounded-xl border border-gray-200 bg-gray-50 p-3'>
+                  <p className='mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500'>
+                    Access Rights History
+                  </p>
+                  {accessHistory.length === 0 ? (
+                    <p className='text-xs text-gray-400 italic'>No access changes recorded yet.</p>
+                  ) : (
+                    <div className='max-h-40 space-y-2 overflow-y-auto pr-1'>
+                      {accessHistory.map((item) => (
+                        <div key={item.id} className='rounded-lg border border-gray-200 bg-white px-2.5 py-2'>
+                          <p className='text-xs text-gray-700'>
+                            {item.changed_by_name || item.changed_by_email || 'Unknown admin'} changed
+                            {' '}
+                            <span className='font-medium'>{(item.changed_fields || []).join(', ') || 'access rights'}</span>
+                          </p>
+                          <p className='text-[11px] text-gray-500'>
+                            {new Date(item.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
             </form>
           </Form>
