@@ -7,6 +7,10 @@ import {
 import type { Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ReassignPanel } from '@/components/reassign-panel'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
+import { useAuthStore } from '@/stores/auth-store'
 
 interface Props {
   conversationId: string
@@ -30,6 +34,8 @@ const TIER_COLORS: Record<string, string> = {
 }
 
 export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
+  const role = (useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole)
+  const permissions = usePermissions(role)
   const [copied, setCopied]           = useState(false)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [input, setInput]             = useState('')
@@ -207,6 +213,35 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   )
 
   const lead: Lead | null | undefined = conv.lead
+
+  if (!permissions.canReadMessages) {
+    return (
+      <div className='h-full p-6 flex flex-col gap-4 bg-white'>
+        <div className='bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800'>
+          ⚠️ You are viewing this conversation as a supervisor.
+          Message content is not visible. You can reassign this conversation.
+        </div>
+
+        <div className='space-y-2 text-sm text-gray-700'>
+          <p><strong>Visitor:</strong> {conv.visitor_name ?? 'Anonymous'}</p>
+          <p><strong>Tunnel:</strong> {conv.tunnel}</p>
+          <p><strong>Status:</strong> {conv.status}</p>
+          <p><strong>Agent:</strong> {conv.assigned_agent_id ?? 'Unassigned'}</p>
+          <p><strong>Started:</strong> {conv.created_at ? new Date(conv.created_at).toLocaleString() : '—'}</p>
+        </div>
+
+        {permissions.canReassignConversations && (
+          <ReassignPanel
+            conversationId={conv.id}
+            onReassigned={() => {
+              queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+              onConversationChange?.()
+            }}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="h-full flex bg-white">

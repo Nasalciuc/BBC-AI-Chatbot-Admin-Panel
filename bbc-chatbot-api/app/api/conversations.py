@@ -18,7 +18,7 @@ router = APIRouter()
 def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
     """Force tunnel filter for sales/support roles."""
     role = user.get("role", "sales")
-    if role in ("owner", "admin", "dev"):
+    if role in ("owner", "admin", "dev", "supervisor"):
         return tunnel  # privileged users can filter freely
     scope = user.get("tunnel_scope", role)
     if tunnel and tunnel != scope:
@@ -92,18 +92,38 @@ async def get_typing_status(
 async def get_conversation_messages(
     conversation_id: str,
     after: Optional[str] = Query(None),
+    user: dict = Depends(get_current_user),
 ):
     """Get messages, optionally only those after a timestamp (incremental polling)."""
+    # Supervisors can manage queues but cannot access message content.
+    if user.get("role") == "supervisor":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Supervisors cannot access message content. "
+                "Use /conversations for metadata only."
+            ),
+        )
     msgs = await db.get_messages_after(conversation_id, after)
     return {"success": True, "data": msgs}
 
 
 @router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
     try:
         conv = await db.get_conversation(conversation_id)
         if not conv:
             return {"success": False, "data": None, "count": 0, "error": "Not found"}
+        _enforce_tunnel(user, conv.get("tunnel"))
+
+        # Supervisors can see metadata only, never message content.
+        if user.get("role") == "supervisor":
+            conv = dict(conv)
+            conv["messages"] = []
+
         return {"success": True, "data": conv, "count": 1}
     except Exception as e:
         return {"success": False, "data": None, "count": 0, "error": str(e)}
@@ -134,6 +154,9 @@ async def send_agent_message(
     user: dict = Depends(get_current_user),
 ):
     """Agent sends a message in a conversation. Auto-sets mode to 'human'."""
+    if user.get("role") == "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisors cannot send messages")
+
     # 1. Verify conversation exists and agent has tunnel access
     conv = await db.get_conversation(conversation_id)
     if not conv:
@@ -231,3 +254,60 @@ async def close_conversation(
             "next_conversation_id": next_conv_id,
         },
     }
+
+
+class ReassignRequest(BaseModel):
+    agent_id: str = Field(..., min_length=36, max_length=36)
+
+
+@router.post("/conversations/{conversation_id}/reassign")
+async def reassign_conversation(
+    conversation_id: str,
+    body: ReassignRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Reassign conversation to another operator."""
+    allowed_roles = {"supervisor", "admin", "owner", "dev"}
+    if user.get("role") not in allowed_roles:
+        raise HTTPException(403, "Only supervisors and admins can reassign conversations")
+
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+
+    if conv.get("status") == "closed":
+        raise HTTPException(400, "Cannot reassign a closed conversation")
+
+    target_agent = await db.get_user_by_id(body.agent_id)
+    if not target_agent or not target_agent.get("is_active"):
+        raise HTTPException(404, "Target agent not found or inactive")
+
+    if target_agent.get("role") not in ("sales", "support"):
+        raise HTTPException(400, "Target must be an active sales/support operator")
+
+    from datetime import datetime, timezone
+
+    await db.update_conversation(conversation_id, {
+        "assigned_agent_id": body.agent_id,
+        "mode": "human",
+        "metadata": {
+            **(conv.get("metadata") or {}),
+            "reassigned_by": user.get("id"),
+            "reassigned_at": datetime.now(timezone.utc).isoformat(),
+        },
+    })
+
+    agent_name = target_agent.get("name") or target_agent.get("email", "a specialist")
+    requester_name = user.get("name") or user.get("email", "supervisor")
+    await add_message(
+        conversation_id,
+        "system",
+        f"Conversation reassigned to {agent_name} by {requester_name}.",
+    )
+
+    logger.info(
+        f"[reassign] Conv {conversation_id} -> {body.agent_id} "
+        f"by {user.get('email')} (role={user.get('role')})"
+    )
+
+    return {"success": True, "assigned_to": body.agent_id}

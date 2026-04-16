@@ -128,7 +128,7 @@ export interface MetricEvent {
 
 // ── RBAC Types (NEW — for V1 demo) ──────────────────────────────
 
-export type UserRole = 'owner' | 'admin' | 'sales' | 'support'
+export type UserRole = 'owner' | 'admin' | 'dev' | 'qa' | 'sales' | 'support' | 'supervisor'
 export type Tunnel = 'sales' | 'support' | 'all'
 
 export interface BBCUser {
@@ -145,6 +145,8 @@ export interface Permissions {
   canViewLeads: boolean
   canEditLeads: boolean
   canViewAllConversations: boolean
+  canReadMessages: boolean
+  canReassignConversations: boolean
   canViewUsers: boolean
   canEditUsers: boolean
   canEditKB: boolean

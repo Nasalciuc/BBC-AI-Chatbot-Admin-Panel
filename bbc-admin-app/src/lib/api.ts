@@ -140,6 +140,17 @@ export async function sendAgentMessage(
   return res.data
 }
 
+export async function reassignConversation(
+  conversationId: string,
+  agentId: string,
+): Promise<{ success: boolean }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/reassign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId }),
+  })
+}
+
 // ── Leads ─────────────────────────────────────────────────────
 export function getLeads(
   params: Record<string, string> = {},

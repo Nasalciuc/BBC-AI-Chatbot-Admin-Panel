@@ -1,6 +1,7 @@
 """Agent presence — heartbeat endpoint."""
 import logging
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from app.db import supabase as db
 from app.security.auth import get_current_user
 
@@ -87,11 +88,17 @@ async def heartbeat(user: dict = Depends(get_current_user)):
     assigned = 0
     if role not in db._MANAGEMENT_ROLES:
         agent_name = user.get("name") or user.get("email", "A specialist")
-        assigned = await _assign_pending_conversations(
-            user_id,
-            user.get("tunnel_scope", "sales"),
-            agent_name,
-        )
+        # Re-fetch readiness from DB because JWT payload can be stale.
+        user_db = await db.get_user_by_id(user_id)
+        is_ready = user_db.get("is_ready", True) if user_db else True
+        if is_ready:
+            assigned = await _assign_pending_conversations(
+                user_id,
+                user.get("tunnel_scope", "sales"),
+                agent_name,
+            )
+        else:
+            assigned = 0
     return {"success": True, "cleaned": cleaned, "assigned": assigned}
 
 
@@ -103,3 +110,30 @@ async def agent_status(user: dict = Depends(get_current_user)):
         timeout_seconds=settings.agent_timeout_seconds
     )
     return {"success": True, "data": agents}
+
+
+class ReadyStatusRequest(BaseModel):
+    is_ready: bool
+
+
+@router.post("/agent/ready")
+async def set_ready_status(
+    body: ReadyStatusRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Agent sets their availability (ready/not-ready)."""
+    user_id = user.get("id")
+    if not user_id:
+        return {"success": False, "error": "No user ID"}
+
+    role = user.get("role", "sales")
+    if role in db._MANAGEMENT_ROLES:
+        return {
+            "success": False,
+            "error": "Management roles cannot set ready status",
+        }
+
+    await db.update_user(user_id, {"is_ready": body.is_ready})
+    status_str = "ready" if body.is_ready else "not_ready"
+    logger.info(f"[agent-status] {user.get('email')} -> {status_str}")
+    return {"success": True, "is_ready": body.is_ready}

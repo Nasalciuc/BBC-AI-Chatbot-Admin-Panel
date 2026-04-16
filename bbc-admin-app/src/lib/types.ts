@@ -27,6 +27,8 @@ export interface Conversation {
   messages?: Message[]
   lead?: Lead | null
   metadata?: Record<string, unknown>
+  has_flagged_content?: boolean
+  flagged_reason?: string | null
 }
 
 export interface ConversationsResponse {

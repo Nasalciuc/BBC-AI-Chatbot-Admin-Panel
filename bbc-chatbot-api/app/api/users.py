@@ -9,14 +9,14 @@ from app.security.auth import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_ROLES = {"owner", "admin", "sales", "support"}
+VALID_ROLES = {"owner", "admin", "sales", "support", "supervisor"}
 VALID_TUNNELS = {"sales", "support", "all"}
 PRIVILEGED = {"owner", "admin", "dev"}
 
 
 @router.get("/admin/users")
 async def list_users(
-    role:   Optional[str] = Query(None, pattern="^(owner|admin|sales|support)$"),
+    role:   Optional[str] = Query(None, pattern="^(owner|admin|sales|support|supervisor)$"),
     search: Optional[str] = Query(None, max_length=100),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),

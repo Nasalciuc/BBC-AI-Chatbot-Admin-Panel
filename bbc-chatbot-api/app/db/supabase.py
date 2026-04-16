@@ -1168,7 +1168,7 @@ async def update_user_last_seen(user_id: str) -> None:
 
 
 # Roles that are management-only and must never receive auto-routed conversations.
-_MANAGEMENT_ROLES = ("owner", "admin", "dev")
+_MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor")
 
 
 async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
@@ -1187,6 +1187,7 @@ async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
                 .gt("last_seen_at", cutoff)
                 .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
                 .not_.in_("role", list(_MANAGEMENT_ROLES))
+                .eq("is_ready", True)
                 .execute()
             )
         res = await _run_sync(_q)

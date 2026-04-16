@@ -4,6 +4,7 @@ import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTr
 import type { Conversation } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { NotificationBell } from '@/components/notification-bell'
+import { ReadyToggle } from '@/components/ready-toggle'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
@@ -47,7 +48,7 @@ function timeAgo(iso: string): string {
 export function Chats() {
   const roleRaw = useAuthStore((s) => s.auth.user?.role)
   const role = Array.isArray(roleRaw) ? roleRaw[0] : (roleRaw ?? 'sales')
-  const isManager = ['owner', 'admin', 'dev', 'qa'].includes(role)
+  const isManager = ['owner', 'admin', 'dev', 'qa', 'supervisor'].includes(role)
   const visibleTabs = isManager ? MANAGER_TABS : AGENT_TABS
 
   // Highlight from URL param (click from bell dropdown)
@@ -149,6 +150,7 @@ export function Chats() {
       <Header>
         <div className='ms-auto flex items-center space-x-4'>
           <ConnectionBanner />
+          <ReadyToggle />
           <NotificationBell />
           <ThemeSwitch />
           <ProfileDropdown />
@@ -231,6 +233,14 @@ export function Chats() {
                                   <AlertTriangle className='h-3 w-3 text-red-400 shrink-0' />
                                 )}
                                 {conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>}
+                                {conv.has_flagged_content && (
+                                  <span
+                                    title={conv.flagged_reason || 'Contains flagged content'}
+                                    className='text-amber-500 text-xs font-bold ml-1'
+                                  >
+                                    ⚠️
+                                  </span>
+                                )}
                               </span>
                           }
                         </span>

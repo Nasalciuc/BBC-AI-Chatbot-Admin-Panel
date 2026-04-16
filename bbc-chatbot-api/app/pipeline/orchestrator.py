@@ -88,6 +88,16 @@ async def _pipeline(
     )
     user_msg_id = user_msg["id"] if user_msg and isinstance(user_msg, dict) else None
 
+    # Step 2.5: Content moderation (non-blocking)
+    try:
+        from app.services.moderation import moderate_message
+        asyncio.create_task(
+            moderate_message(cid, message, sender_role="user"),
+            name=f"moderate_{cid}",
+        )
+    except Exception as _mod_err:
+        logger.warning(f"[{cid}] Moderation task failed to schedule: {_mod_err}")
+
     # Fetch history early — needed by Steps 3.5, 3.6, and 6
     history = await db.get_recent_messages(cid, limit=10)
 
