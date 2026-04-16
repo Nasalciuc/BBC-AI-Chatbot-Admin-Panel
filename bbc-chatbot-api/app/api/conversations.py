@@ -88,6 +88,30 @@ async def get_typing_status(
     }
 
 
+@router.get("/conversations/{conversation_id}/presence")
+async def get_conversation_presence(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Lightweight client presence metadata for real-time status in admin UI."""
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    metadata = dict(conv.get("metadata") or {})
+    return {
+        "success": True,
+        "data": {
+            "widget_open": metadata.get("widget_open", False),
+            "widget_presence": metadata.get("widget_presence", "minimized"),
+            "widget_last_close_reason": metadata.get("widget_last_close_reason"),
+            "widget_last_event_at": metadata.get("widget_last_event_at"),
+            "updated_at": conv.get("updated_at"),
+        },
+    }
+
+
 @router.get("/conversations/{conversation_id}/messages")
 async def get_conversation_messages(
     conversation_id: str,

@@ -104,6 +104,19 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     enabled: !!conv && activeTab === 'my_active',
   })
 
+  // Presence polling — lightweight metadata endpoint for real-time client status.
+  const { data: presenceData } = useQuery<Record<string, unknown>>({
+    queryKey: ['presence', conversationId],
+    queryFn: async () => {
+      const res = await apiFetch<{ success: boolean; data: Record<string, unknown> }>(
+        `/api/conversations/${conversationId}/presence`
+      )
+      return res.data ?? {}
+    },
+    refetchInterval: activeTab === 'my_active' ? 2_000 : false,
+    enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
+  })
+
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {
     if (!newMessages.length) return
@@ -124,7 +137,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }, [conv?.messages, accumMsgs])
 
   const clientPresence = useMemo(() => {
-    const m = (conv?.metadata ?? {}) as Record<string, unknown>
+    const m = (presenceData ?? conv?.metadata ?? {}) as Record<string, unknown>
     const widgetOpen = m.widget_open === true || m.widget_open === 'true'
     const reason = String(m.widget_last_close_reason ?? m.widget_presence ?? '')
 
@@ -135,7 +148,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       return { label: 'Client left the website', dot: 'bg-red-500', text: 'text-red-600' }
     }
     return { label: 'Client minimized chat', dot: 'bg-amber-500', text: 'text-amber-600' }
-  }, [conv?.metadata])
+  }, [presenceData, conv?.metadata])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
 

@@ -220,7 +220,7 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         db = get_client()
         res = await _run_sync(
             lambda: db.table("conversations")
-            .select("id, status, mode, assigned_agent_id")
+            .select("id, tunnel, status, mode, assigned_agent_id, metadata, updated_at")
             .eq("id", conv_id)
             .single()
             .execute()
