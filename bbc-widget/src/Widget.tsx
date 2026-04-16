@@ -59,11 +59,12 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(restored?.visitor || {})
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(restored?.metadata || {})
 
-  // Auto-open: after 10 seconds of inactivity, nudge user to the sales form.
-  // Conditions: no active session, not already opened, AND user is NOT typing anywhere on the page.
-  // Timer only opens the FORM — visitor must still submit their data manually.
+  // Auto-open: after 10 seconds of inactivity, open chat directly for passive visitors.
+  // If user enters the form flow and starts typing, auto-open is cancelled and
+  // the standard form -> Start Chat procedure applies.
   const autoOpenedRef = useRef(false)
   const userTypingRef = useRef(false)
+  const formFlowStartedRef = useRef(false)
 
   // Track any keyboard activity on the entire page
   useEffect(() => {
@@ -73,22 +74,30 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   }, [])
 
   useEffect(() => {
-    if (step !== 'buttons' || autoOpenedRef.current) return
+    if (step !== 'buttons' || autoOpenedRef.current || formFlowStartedRef.current) return
     const timer = setTimeout(() => {
-      // If user is actively typing anywhere on the page (e.g. a booking form), do not interrupt
-      if (userTypingRef.current) return
+      // If user is typing or already entered the form flow, do not auto-open chat.
+      if (userTypingRef.current || formFlowStartedRef.current) return
       autoOpenedRef.current = true
       setTunnel('sales')
       setVisitor({})
       setMetadata({})
-      setStep('form')  // open form only — never skip to chat automatically
+      setStep('chat')
+      safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel: 'sales', visitor: {}, metadata: {} }))
     }, 10_000)
     return () => clearTimeout(timer)
   }, [step])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
+    formFlowStartedRef.current = true
     autoOpenedRef.current = true // user intentionally opened widget; cancel auto-open logic
     setTunnel(t)
+      const handleFormInteraction = () => {
+        // Once user starts filling the form, keep standard manual flow only.
+        formFlowStartedRef.current = true
+        autoOpenedRef.current = true
+      }
+
     // If valid session exists, skip form and restore chat directly
     if (hasValidSession) {
       setStep('chat')
@@ -153,7 +162,14 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   return (
     <>
       {step === 'buttons' && <FloatingButtons onSelect={handleTunnelSelect} />}
-      {step === 'form' && <TunnelForm tunnel={tunnel} onSubmit={handleFormSubmit} onBack={handleBack} />}
+      {step === 'form' && (
+        <TunnelForm
+          tunnel={tunnel}
+          onSubmit={handleFormSubmit}
+          onBack={handleBack}
+          onInteraction={handleFormInteraction}
+        />
+      )}
       {step === 'chat' && (
         <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} />
       )}

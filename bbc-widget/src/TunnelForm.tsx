@@ -4,6 +4,7 @@ interface Props {
   tunnel: 'sales' | 'support'
   onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => void
   onBack: () => void
+  onInteraction?: () => void
 }
 
 // Popular country codes (ISO 3166-1 alpha-3)
@@ -33,7 +34,7 @@ const COUNTRY_CODES = [
   { code: 'ZA', name: 'South Africa', dial: '+27' },
 ]
 
-export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
+export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
   const [name, setName] = useState('')
   const [countryCode, setCountryCode] = useState('US')
   const [phone, setPhone] = useState('')
@@ -98,12 +99,12 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
       <form onSubmit={handleSubmit} style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
         {tunnel === 'sales' ? (
           <>
-            <input style={inputStyle} placeholder="Your name *" value={name} onInput={e => setName((e.target as HTMLInputElement).value)} />
+            <input style={inputStyle} placeholder="Your name *" value={name} onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value) }} />
             <div style={{ display: 'flex', gap: 8 }}>
               <select
                 style={{ ...selectStyle, flex: '0 0 120px' }}
                 value={countryCode}
-                onChange={e => setCountryCode((e.target as HTMLSelectElement).value)}
+                onChange={e => { onInteraction?.(); setCountryCode((e.target as HTMLSelectElement).value) }}
               >
                 {COUNTRY_CODES.map(c => (
                   <option key={c.code} value={c.code}>
@@ -116,15 +117,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
                 placeholder="Phone number *" 
                 type="tel" 
                 value={phone} 
-                onInput={e => setPhone((e.target as HTMLInputElement).value)} 
+                onInput={e => { onInteraction?.(); setPhone((e.target as HTMLInputElement).value) }} 
               />
             </div>
-            <input style={inputStyle} placeholder="Email address *" type="email" value={email} onInput={e => setEmail((e.target as HTMLInputElement).value)} />
+            <input style={inputStyle} placeholder="Email address *" type="email" value={email} onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value) }} />
           </>
         ) : (
           <>
-            <input style={inputStyle} placeholder="Email or phone *" value={email} onInput={e => setEmail((e.target as HTMLInputElement).value)} />
-            <input style={inputStyle} placeholder="Booking ID *" value={bookingId} onInput={e => setBookingId((e.target as HTMLInputElement).value)} />
+            <input style={inputStyle} placeholder="Email or phone *" value={email} onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value) }} />
+            <input style={inputStyle} placeholder="Booking ID *" value={bookingId} onInput={e => { onInteraction?.(); setBookingId((e.target as HTMLInputElement).value) }} />
           </>
         )}
         {error && <p style={{ color: '#ef4444', fontSize: 12, margin: 0 }}>{error}</p>}
