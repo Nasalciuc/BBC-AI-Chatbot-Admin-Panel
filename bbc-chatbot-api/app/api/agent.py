@@ -13,14 +13,11 @@ async def _cleanup_stale_conversations() -> int:
     """Revert conversations from offline agents back to AI mode.
     Called on every heartbeat — each online agent helps clean up."""
     from config.settings import settings
+    from app.services.handoff import fall_back_to_ai
     stale = await db.get_stale_agent_conversations(settings.agent_timeout_seconds)
     count = 0
     for conv in stale:
-        await db.update_conversation(conv["id"], {
-            "mode": "ai",
-            "assigned_agent_id": None,
-        })
-        logger.info(f"[fallback] Conv {conv['id']}: agent offline → AI mode")
+        await fall_back_to_ai(conv["id"])
         count += 1
     return count
 
@@ -41,12 +38,18 @@ async def _assign_pending_conversations(
     for t in tunnels:
         conv = await db.get_oldest_unassigned_conversation(t)
         if conv:
-            await db.update_conversation(conv["id"], {
-                "assigned_agent_id": user_id,
-                "mode": "human",
-            })
+            # Use handoff service for the assignment (mode + agent_id),
+            # but skip its system messages — heartbeat uses different templates.
+            from app.services.handoff import perform_handoff_to_agent
+            await perform_handoff_to_agent(
+                conversation_id=conv["id"],
+                agent_id=user_id,
+                agent_name=agent_name,
+                tunnel=t,
+                emit_messages=False,
+            )
 
-            # Notify widget via system messages + SSE push
+            # Heartbeat-specific system messages (different wording from initial routing)
             from app.services.conversation_service import add_message
             from app.realtime.manager import manager
 

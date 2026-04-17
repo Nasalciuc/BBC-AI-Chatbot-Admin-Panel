@@ -218,10 +218,13 @@ async def send_agent_message(
     )
 
     # 4. Auto-set mode to 'human' and assign this agent
-    await db.update_conversation(conversation_id, {
-        "mode": "human",
-        "assigned_agent_id": user.get("id"),
-    })
+    from app.services.handoff import perform_handoff_to_agent
+    await perform_handoff_to_agent(
+        conversation_id=conversation_id,
+        agent_id=user.get("id"),
+        tunnel=conv.get("tunnel", "sales"),
+        emit_messages=False,
+    )
 
     # Push to active SSE connection — no-op if widget is using polling fallback
     if msg:
@@ -246,10 +249,13 @@ async def claim_conversation(
     if current_agent and current_agent != user.get("id"):
         raise HTTPException(status_code=409, detail="Conversation already taken by another agent")
 
-    await db.update_conversation(conversation_id, {
-        "mode": "human",
-        "assigned_agent_id": user.get("id"),
-    })
+    from app.services.handoff import perform_handoff_to_agent
+    await perform_handoff_to_agent(
+        conversation_id=conversation_id,
+        agent_id=user.get("id"),
+        tunnel=conv.get("tunnel", "sales"),
+        emit_messages=False,
+    )
     return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": user.get("id")}}
 
 
@@ -282,10 +288,15 @@ async def close_conversation(
         for t in tunnels:
             next_conv = await db.get_oldest_unassigned_conversation(t)
             if next_conv:
-                await db.update_conversation(next_conv["id"], {
-                    "assigned_agent_id": agent_id,
-                    "mode": "human",
-                })
+                from app.services.handoff import perform_handoff_to_agent
+                agent_name = user.get("name") or user.get("email", "A specialist")
+                await perform_handoff_to_agent(
+                    conversation_id=next_conv["id"],
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    tunnel=t,
+                    emit_messages=False,
+                )
                 next_conv_id = next_conv["id"]
                 logger.info(f"[auto-assign] Conv {next_conv['id']} → {agent_id} (on close)")
                 break  # 1:1 rule — assign only 1
@@ -330,10 +341,15 @@ async def reassign_conversation(
         raise HTTPException(400, "Target must be an active sales/support operator")
 
     from datetime import datetime, timezone
+    from app.services.handoff import perform_handoff_to_agent
 
+    await perform_handoff_to_agent(
+        conversation_id=conversation_id,
+        agent_id=body.agent_id,
+        tunnel=conv.get("tunnel", "sales"),
+        emit_messages=False,
+    )
     await db.update_conversation(conversation_id, {
-        "assigned_agent_id": body.agent_id,
-        "mode": "human",
         "metadata": {
             **(conv.get("metadata") or {}),
             "reassigned_by": user.get("id"),

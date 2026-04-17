@@ -68,23 +68,34 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
     if req.conversation_id:
         mode = await db.get_conversation_mode(req.conversation_id)
         if mode == "human":
-            # Human mode is authoritative: never auto-switch to AI on client input.
-            from app.services.conversation_service import add_message
-            await add_message(
-                conversation_id=req.conversation_id,
-                role="user",
-                content=clean_message,
-            )
-            return ChatResponse(
-                conversation_id=req.conversation_id,
-                message="One moment please, connecting you with a specialist...",
-                type="queued",
-                model_used="none",
-            )
+            # H1: Check if assigned agent is effectively offline before queuing
+            from app.services.handoff import is_agent_effectively_offline, fall_back_to_ai
+            if await is_agent_effectively_offline(req.conversation_id):
+                logger.info(
+                    f"[H1] Conv {req.conversation_id}: agent offline in human mode "
+                    f"→ falling back to AI"
+                )
+                await fall_back_to_ai(req.conversation_id)
+                # Fall through to step 4 (AI pipeline) instead of returning "queued"
+            else:
+                # Agent is still online — queue the message for human handling
+                from app.services.conversation_service import add_message
+                await add_message(
+                    conversation_id=req.conversation_id,
+                    role="user",
+                    content=clean_message,
+                )
+                return ChatResponse(
+                    conversation_id=req.conversation_id,
+                    message="One moment please, connecting you with a specialist...",
+                    type="queued",
+                    model_used="none",
+                )
 
     # 3.5. New conversation? Try routing to an available agent first
     if not req.conversation_id:
         from app.services.routing import route_conversation
+        from app.services.handoff import perform_handoff_to_agent
         # Step 3.5: Human-first routing (takes precedence over AI pipeline)
         # If agent available → return here, AI pipeline NOT called
         # If no agent → fall through to AI pipeline (step 4+)
@@ -98,13 +109,8 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
         if route["agent_id"]:
             from app.services.conversation_service import add_message
             from uuid import uuid4
-            from datetime import datetime, timezone
             conv = await db.get_or_create_conversation(None, req.tunnel, req.visitor, visitor_id=req.visitor_id)
             if conv:
-                await db.update_conversation(conv["id"], {
-                    "mode": "human",
-                    "assigned_agent_id": route["agent_id"],
-                })
                 # Race condition guard: verify agent not overloaded
                 actual_count = await db.get_agent_active_count(route["agent_id"])
                 if actual_count > settings.max_concurrent_chats:
@@ -120,24 +126,24 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 else:
                     await add_message(conv["id"], "user", clean_message)
 
-                    # Build 3 system messages
+                    # H3: unified handoff — single function for assign + system messages
                     agent_name = route.get("agent_name", "A specialist")
-                    now = datetime.now(timezone.utc).isoformat()
+                    result = await perform_handoff_to_agent(
+                        conversation_id=conv["id"],
+                        agent_id=route["agent_id"],
+                        agent_name=agent_name,
+                        tunnel=req.tunnel,
+                    )
 
-                    connecting = settings.connecting_message
-                    joined = settings.joined_message_template.format(agent_name=agent_name)
-                    welcome = (settings.welcome_message_sales
-                            if req.tunnel == "sales"
-                            else settings.welcome_message_support)
-                    qr = (settings.quick_replies_sales
-                        if req.tunnel == "sales"
-                        else settings.quick_replies_support)
-
-                    # Save all 3 to DB — capture real Supabase UUIDs to avoid polling duplicates
-                    row1 = await add_message(conv["id"], "system", connecting)
-                    row2 = await add_message(conv["id"], "system", joined)
-                    row3 = await add_message(conv["id"], "system", welcome)
                     now = datetime.now(timezone.utc).isoformat()
+                    row1 = result.get("connecting")
+                    row2 = result.get("joined")
+                    row3 = result.get("welcome")
+                    qr = result.get("quick_replies", [])
+                    welcome = row3.get("content", "") if row3 else (
+                        settings.welcome_message_sales if req.tunnel == "sales"
+                        else settings.welcome_message_support
+                    )
 
                     return ChatResponse(
                         conversation_id=conv["id"],
@@ -146,8 +152,8 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                         model_used="none",
                         quick_replies=qr,
                         system_messages=[
-                        {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": connecting, "created_at": row1.get("created_at", now) if row1 else now},
-                        {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": joined, "created_at": row2.get("created_at", now) if row2 else now},
+                        {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": row1.get("content", "") if row1 else settings.connecting_message, "created_at": row1.get("created_at", now) if row1 else now},
+                        {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": row2.get("content", "") if row2 else "", "created_at": row2.get("created_at", now) if row2 else now},
                         {"id": row3["id"] if row3 else str(uuid4()), "role": "system", "content": welcome, "created_at": row3.get("created_at", now) if row3 else now},
                         ],
                     )
