@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # System messages shown during routing flow
     connecting_message: str = "Connecting you with a specialist now\u2026"
     joined_message_template: str = "You\u2019re now being assisted by {agent_name}."
+    affinity_welcome_back_template: str = (
+        "Welcome back! {agent_name} is joining you shortly."
+    )
 
     # Welcome messages per tunnel
     welcome_message_sales: str = "Where would you like to fly? I\u2019ll find you the best business class options."

@@ -99,21 +99,24 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
         # Step 3.5: Human-first routing (takes precedence over AI pipeline)
         # If agent available → return here, AI pipeline NOT called
         # If no agent → fall through to AI pipeline (step 4+)
-        route = await route_conversation(req.tunnel, visitor=req.visitor)
+        route = await route_conversation(req.tunnel, visitor=req.visitor, visitor_id=req.visitor_id)
         if not route["agent_id"]:
             # No agent on first attempt — wait 2s and retry once
             # This catches agents who just logged in (heartbeat in flight)
             logger.info(f"[routing] No agent for tunnel={req.tunnel} — retrying in 2s")
             await asyncio.sleep(2)
-            route = await route_conversation(req.tunnel, visitor=req.visitor)
+            route = await route_conversation(req.tunnel, visitor=req.visitor, visitor_id=req.visitor_id)
         if route["agent_id"]:
             from app.services.conversation_service import add_message
             from uuid import uuid4
             conv = await db.get_or_create_conversation(None, req.tunnel, req.visitor, visitor_id=req.visitor_id)
             if conv:
                 # Race condition guard: verify agent not overloaded
+                # Sticky/affinity routes bypass max_concurrent — returning
+                # clients always go back to their operator regardless of load
+                reason = route.get("reason", "dispatch")
                 actual_count = await db.get_agent_active_count(route["agent_id"])
-                if actual_count > settings.max_concurrent_chats:
+                if reason != "affinity" and actual_count > settings.max_concurrent_chats:
                     logger.warning(
                         f"[routing] Race condition detected for agent "
                         f"{route['agent_id'][:8]}... — falling back to AI"
@@ -128,21 +131,50 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
 
                     # H3: unified handoff — single function for assign + system messages
                     agent_name = route.get("agent_name", "A specialist")
+
+                    # Assign agent (mode='human' + assigned_agent_id) but emit
+                    # custom system messages here since UX differs per reason.
                     result = await perform_handoff_to_agent(
                         conversation_id=conv["id"],
                         agent_id=route["agent_id"],
                         agent_name=agent_name,
                         tunnel=req.tunnel,
+                        emit_messages=False,
                     )
 
-                    now = datetime.now(timezone.utc).isoformat()
-                    row1 = result.get("connecting")
-                    row2 = result.get("joined")
-                    row3 = result.get("welcome")
-                    qr = result.get("quick_replies", [])
-                    welcome = row3.get("content", "") if row3 else (
-                        settings.welcome_message_sales if req.tunnel == "sales"
+                    # Build the system-message trio per route reason
+                    from app.services.conversation_service import add_message as _add
+                    from app.realtime.manager import manager as _mgr
+
+                    if reason == "affinity":
+                        opener = settings.affinity_welcome_back_template.format(
+                            agent_name=agent_name
+                        )
+                    else:
+                        opener = settings.connecting_message
+
+                    joined = settings.joined_message_template.format(
+                        agent_name=agent_name
+                    )
+                    welcome = (
+                        settings.welcome_message_sales
+                        if req.tunnel == "sales"
                         else settings.welcome_message_support
+                    )
+
+                    row1 = await _add(conv["id"], "system", opener)
+                    row2 = await _add(conv["id"], "system", joined)
+                    row3 = await _add(conv["id"], "system", welcome)
+
+                    for row in (row1, row2, row3):
+                        if row:
+                            await _mgr.push(conv["id"], row)
+
+                    now = datetime.now(timezone.utc).isoformat()
+                    qr = (
+                        settings.quick_replies_sales
+                        if req.tunnel == "sales"
+                        else settings.quick_replies_support
                     )
 
                     return ChatResponse(
@@ -152,8 +184,8 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                         model_used="none",
                         quick_replies=qr,
                         system_messages=[
-                        {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": row1.get("content", "") if row1 else settings.connecting_message, "created_at": row1.get("created_at", now) if row1 else now},
-                        {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": row2.get("content", "") if row2 else "", "created_at": row2.get("created_at", now) if row2 else now},
+                        {"id": row1["id"] if row1 else str(uuid4()), "role": "system", "content": opener, "created_at": row1.get("created_at", now) if row1 else now},
+                        {"id": row2["id"] if row2 else str(uuid4()), "role": "system", "content": joined, "created_at": row2.get("created_at", now) if row2 else now},
                         {"id": row3["id"] if row3 else str(uuid4()), "role": "system", "content": welcome, "created_at": row3.get("created_at", now) if row3 else now},
                         ],
                     )

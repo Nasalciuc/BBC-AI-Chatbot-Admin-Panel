@@ -3,92 +3,145 @@
 Algorithm: Fisher-Yates shuffle (CSPRNG) + sort by chats_served_today.
 Least-served-today agent wins. Equal counts: random tiebreak.
 Daily counter resets lazily (date check, no cron needed).
+
+Sticky affinity: returning clients (closed conv within 90 days) go back to
+the same operator if they're online, bypassing max_concurrent_chats.
+New leads still respect the max_concurrent cap.
 """
 import secrets
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from config.settings import settings
 from app.db import supabase as db
 
 logger = logging.getLogger(__name__)
 
+AFFINITY_WINDOW_DAYS = 90  # Dan's business rule — returning-client definition
 
-async def route_returning_visitor(
-    tunnel: str,
-    visitor_email: Optional[str],
-    visitor_phone: Optional[str],
+# TODO (privacy hardening): shared-browser residual risk — on a shared PC,
+# user B completing the form with user A's email+phone (or being auto-
+# restored via visitor_id in localStorage) will be routed to user A's
+# previous operator, potentially exposing A's identity/context to B.
+# Mitigation (separate ticket): add an email re-verify challenge on tab-
+# close reopen. For BBC's primarily-personal-device user base the risk is
+# accepted. Do NOT remove this TODO.
+
+
+async def _find_sticky_operator(
+    visitor,
+    visitor_id: Optional[str],
 ) -> Optional[dict]:
-    """Try to route returning visitor to their last operator.
-    Returns routing dict if same operator is available and free.
-    Returns None to fall through to casino-fair routing."""
-    last_agent_id = await db.get_last_agent_for_visitor(visitor_email, visitor_phone)
-    if not last_agent_id:
-        return None  # new visitor or no previous agent
+    """Find the most recent operator this visitor spoke with in the last 90 days.
+    Returns routing dict if found and effectively online, else None.
 
-    try:
-        agents = await db.get_available_agents(
-            tunnel=tunnel,
-            timeout_seconds=settings.agent_timeout_seconds,
-        )
-        available_map = {a["id"]: a for a in agents}
+    Bypasses max_concurrent_chats — returning clients always go back to their
+    operator regardless of load (Dan's policy).
+    """
+    cutoff_iso = (
+        datetime.now(timezone.utc) - timedelta(days=AFFINITY_WINDOW_DAYS)
+    ).isoformat()
 
-        if last_agent_id not in available_map:
-            logger.info(
-                f"[routing] Returning visitor: "
-                f"last agent {last_agent_id[:8]}... offline → casino"
-            )
-            return None
+    db_client = db.get_client()
+    query = db_client.table("conversations").select(
+        "assigned_agent_id, updated_at"
+    )
 
-        count = await db.get_agent_active_count(last_agent_id)
-        if count >= settings.max_concurrent_chats:
-            logger.info(
-                f"[routing] Returning visitor: "
-                f"last agent {last_agent_id[:8]}... busy ({count} chats) → casino"
-            )
-            return None
+    if visitor_id:
+        query = query.eq("visitor_id", visitor_id)
+    else:
+        email = getattr(visitor, "email", None) if visitor else None
+        phone = getattr(visitor, "phone", None) if visitor else None
+        if not email and not phone:
+            return None  # no way to identify visitor — treat as new lead
+        # Require BOTH to match when present, to reduce shared-browser false positives
+        if email and phone:
+            query = query.eq("visitor_email", email).eq("visitor_phone", phone)
+        elif email:
+            query = query.eq("visitor_email", email)
+        else:
+            query = query.eq("visitor_phone", phone)
 
-        agent = available_map[last_agent_id]
-        await db.increment_chats_served(agent)
-        agent_name = agent.get("name") or agent.get("email", "A specialist")
-        logger.info(
-            f"[routing] Returning visitor → same agent {agent_name} "
-            f"(tunnel={tunnel})"
-        )
-        return {
-            "agent_id": last_agent_id,
-            "mode": "human",
-            "agent_name": agent_name,
-        }
-    except Exception as e:
-        logger.error(f"route_returning_visitor error: {e} → casino fallback")
+    query = (
+        query.eq("status", "closed")
+        .not_.is_("assigned_agent_id", "null")
+        .gte("updated_at", cutoff_iso)
+        .order("updated_at", desc=True)
+        .limit(1)
+    )
+
+    res = await db._run_sync(lambda: query.execute())
+    if not res.data:
         return None
 
+    candidate_agent_id = res.data[0]["assigned_agent_id"]
 
-async def route_conversation(tunnel: str, visitor=None) -> dict:
+    # Is the candidate effectively online?
+    agent = await db.get_user_by_id(candidate_agent_id)
+    if not agent:
+        return None
+    if not agent.get("is_active"):
+        return None
+    if not agent.get("is_ready"):
+        return None
+    if agent.get("role") in db._MANAGEMENT_ROLES:
+        return None  # guards against former operator promoted to admin/dev/owner
+
+    last_seen = agent.get("last_seen_at")
+    if not last_seen:
+        return None
+    try:
+        last_seen_dt = datetime.fromisoformat(
+            last_seen.replace("Z", "+00:00")
+            if isinstance(last_seen, str)
+            else last_seen.isoformat()
+        )
+    except (ValueError, TypeError):
+        return None
+    if (
+        datetime.now(timezone.utc) - last_seen_dt
+    ).total_seconds() > settings.agent_timeout_seconds:
+        return None  # heartbeat stale — treat as offline
+
+    agent_name = agent.get("name") or agent.get("email") or "A specialist"
+    return {
+        "agent_id": candidate_agent_id,
+        "agent_name": agent_name,
+        "mode": "human",
+        "reason": "affinity",
+    }
+
+
+async def route_conversation(
+    tunnel: str, visitor=None, visitor_id: Optional[str] = None
+) -> dict:
     """Pick a FREE operator using casino-fair distribution.
 
-    If visitor has email/phone and was served before, tries to route back
-    to the same operator first (returning visitor affinity).
-    Falls back to casino-fair if same operator is unavailable.
-
-    FREE = 0 active human conversations, online (heartbeat within timeout),
-    tunnel match, below max_concurrent_chats.
+    Order of preference:
+      1. Sticky routing — returning client's previous operator, if online.
+         Bypasses max_concurrent_chats.
+      2. Normal routing — least-loaded eligible operator under max_concurrent.
+      3. No agent — returns {'agent_id': None, 'mode': 'ai'}, caller falls
+         through to AI pipeline.
 
     Returns: {"agent_id": uuid|None, "mode": "human"|"ai", "agent_name": str|None}
     """
     try:
-        # Step 0: Returning visitor — try same operator first
-        visitor_email = getattr(visitor, 'email', None) if visitor else None
-        visitor_phone = getattr(visitor, 'phone', None) if visitor else None
-        if visitor_email or visitor_phone:
-            result = await route_returning_visitor(
-                tunnel=tunnel,
-                visitor_email=visitor_email,
-                visitor_phone=visitor_phone,
-            )
-            if result:
-                return result
+        # Step 0: Sticky affinity — returning client's previous operator
+        try:
+            sticky = await _find_sticky_operator(visitor, visitor_id)
+            if sticky:
+                logger.info(
+                    f"[routing] Sticky affinity hit: visitor "
+                    f"(id={visitor_id}) → agent "
+                    f"{sticky['agent_id'][:8]}... ({sticky['agent_name']})"
+                )
+                await db.increment_chats_served(
+                    await db.get_user_by_id(sticky["agent_id"]) or {}
+                )
+                return sticky
+        except Exception as e:
+            logger.error(f"[routing] Sticky check failed: {e} → normal routing")
 
         agents = await db.get_available_agents(
             tunnel=tunnel,
@@ -133,7 +186,7 @@ async def route_conversation(tunnel: str, visitor=None) -> dict:
             f"(served {selected.get('chats_served_today', 0)} today) "
             f"for tunnel={tunnel}"
         )
-        return {"agent_id": selected["id"], "mode": "human", "agent_name": agent_name}
+        return {"agent_id": selected["id"], "mode": "human", "agent_name": agent_name, "reason": "dispatch"}
 
     except Exception as e:
         logger.error(f"[routing] Unexpected error: {e} → fallback AI")
