@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
+import { apiFetch, getVisitorId } from './api'
 
 interface Message {
   id: string
@@ -15,58 +16,14 @@ interface Props {
   apiUrl: string
 }
 
-// Safe localStorage (may be disabled)
-function safeGet(key: string): string | null {
-  try { return localStorage.getItem(key) } catch { return null }
-}
-function safeSet(key: string, val: string): void {
-  try { localStorage.setItem(key, val) } catch {}
-}
-
-const SESSION_TTL_MS = 30 * 60 * 1000  // 30 minutes — must match Widget.tsx
-
-/** Validates stored conv_id against expiry and visitor fingerprint.
- *  Returns the conv_id if valid, null if expired or visitor mismatch. */
-function getValidConvId(visitor: Props['visitor']): string | null {
-  const convId = safeGet('bbc_conv_id')
-  if (!convId) return null
-
-  // Check 30-minute expiry (rolling — updated on each message)
-  const ts = safeGet('bbc_conv_ts')
-  if (!ts || Date.now() - parseInt(ts) > SESSION_TTL_MS) {
-    try { localStorage.removeItem('bbc_conv_id') } catch {}
-    try { localStorage.removeItem('bbc_conv_ts') } catch {}
-    try { localStorage.removeItem('bbc_visitor_key') } catch {}
-    return null
-  }
-
-  // Check visitor fingerprint match
-  const savedKey = safeGet('bbc_visitor_key')
-  const currentKey = `${visitor.name || ''}|${visitor.email || ''}|${visitor.phone || ''}`
-
-  // Anonymous sessions are not restored — but we do NOT destroy the stored
-  // session here. Destroying localStorage on every empty-visitor call would
-  // break the normal "X → reopen" flow where handleCloseChat has wiped
-  // in-memory visitor state but the session is still valid on disk.
-  // The shared-browser safety property is enforced by the fingerprint
-  // mismatch check below (savedKey !== currentKey). DO NOT re-add destructive
-  // cleanup here — see Bug 1 forensic (commit 3f2e4f5, 16.04.2026).
-  if (currentKey === '||') {
-    return null
-  }
-
-  if (savedKey && currentKey && savedKey !== currentKey) {
-    try { localStorage.removeItem('bbc_conv_id') } catch {}
-    try { localStorage.removeItem('bbc_conv_ts') } catch {}
-    try { localStorage.removeItem('bbc_visitor_key') } catch {}
-    return null
-  }
-
-  return convId
+/** Read cached conv_id from localStorage. Widget.tsx has already verified
+ *  it with the backend on mount — ChatWindow trusts the cache. */
+function getCachedConvId(): string | null {
+  try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
 export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props) {
-  const savedConvId = getValidConvId(visitor)
+  const savedConvId = getCachedConvId()
 
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -83,7 +40,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false) => {
     if (!convId || closeSentRef.current) return
     closeSentRef.current = true
-    fetch(`${apiUrl}/api/chat/session/${convId}/close?reason=${reason}`, {
+    apiFetch(`${apiUrl}/api/chat/session/${convId}/close?reason=${reason}`, {
       method: 'POST',
       keepalive,
     }).catch(() => {})
@@ -107,7 +64,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   // Verify restored session is still active (runs once at mount)
   useEffect(() => {
     if (!savedConvId) return
-    fetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
+    apiFetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
     fetch(`${apiUrl}/api/chat/status/${savedConvId}`)
       .then(r => r.json())
       .then(data => {
@@ -232,7 +189,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     // Throttle — send immediately if 200ms passed since last send
     if (text.trim() && now - lastTypingSentRef.current > 200) {
       lastTypingSentRef.current = now
-      fetch(`${apiUrl}/api/chat/typing/${convId}`, {
+      apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
@@ -242,7 +199,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     // Debounce clear — if user stops typing for 3s → clear indicator
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     typingTimeoutRef.current = setTimeout(() => {
-      fetch(`${apiUrl}/api/chat/typing/${convId}`, {
+      apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
         method: 'DELETE',
       }).catch(() => {})
     }, 3_000)
@@ -253,7 +210,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     // Clear typing indicator immediately when sending
     if (convId) {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-      fetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
+      apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
     }
     setSending(true)
 
@@ -276,7 +233,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     }
 
     try {
-      const res = await fetch(`${apiUrl}/api/chat`, {
+      const res = await apiFetch(`${apiUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -289,6 +246,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             phone: visitor.phone || null,
           },
           metadata: metadata || {},
+          visitor_id: getVisitorId(),
         }),
       })
 
@@ -297,8 +255,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
 
       if (data.conversation_id && !convId) {
         setConvId(data.conversation_id)
-        fetch(`${apiUrl}/api/chat/session/${data.conversation_id}/open`, { method: 'POST' }).catch(() => {})
-        safeSet('bbc_conv_id', data.conversation_id)
+        apiFetch(`${apiUrl}/api/chat/session/${data.conversation_id}/open`, { method: 'POST' }).catch(() => {})
         try { localStorage.setItem('bbc_conv_id', data.conversation_id) } catch {}
         // Save initial timestamp for 30-minute rolling expiry
         try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}

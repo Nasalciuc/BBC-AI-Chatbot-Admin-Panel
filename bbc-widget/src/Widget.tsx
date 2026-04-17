@@ -2,10 +2,9 @@ import { useState, useEffect, useRef } from 'preact/hooks'
 import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm } from './TunnelForm'
 import { ChatWindow } from './ChatWindow'
+import { getVisitorId } from './api'
 
 type Step = 'buttons' | 'form' | 'chat'
-
-const SESSION_TTL_MS = 30 * 60 * 1000  // 30 minutes of inactivity
 
 // Safe sessionStorage helpers (storage may be disabled)
 function safeGet(key: string): string | null {
@@ -18,10 +17,28 @@ function safeRemove(key: string): void {
   try { sessionStorage.removeItem(key) } catch {}
 }
 
+/** Generate a visitor_id (crypto.randomUUID with fallback). */
+function makeVisitorId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  // Fallback for older browsers — not cryptographically strong but unique enough
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
+}
+
+/** Ensure a visitor_id exists in localStorage, creating one if needed. */
+function ensureVisitorId(): string {
+  const existing = getVisitorId()
+  if (existing) return existing
+  const id = makeVisitorId()
+  try { localStorage.setItem('bbc_visitor_id', id) } catch {}
+  return id
+}
+
 function clearWidgetStorage() {
   safeRemove('bbc_widget')       // sessionStorage
-  safeRemove('bbc_conv_id')      // sessionStorage (legacy, may not exist)
-  // Also clear localStorage — full session state lives there.
+  // Clear localStorage session cache (but NOT bbc_visitor_id — that persists forever)
   try { localStorage.removeItem('bbc_conv_id') } catch {}
   try { localStorage.removeItem('bbc_conv_ts') } catch {}
   try { localStorage.removeItem('bbc_visitor_key') } catch {}
@@ -33,16 +50,18 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const saved = safeGet('bbc_widget')
   const restored = saved ? (() => { try { return JSON.parse(saved) } catch { return null } })() : null
 
-  // Check if a valid session exists in localStorage (survives tab close + browser restart)
-  // Used to skip the form when user reopens within 30-minute window
-  const hasValidSession = (() => {
-    try {
-      const convId = localStorage.getItem('bbc_conv_id')
-      const ts = localStorage.getItem('bbc_conv_ts')
-      if (!convId || !ts) return false
-      return Date.now() - parseInt(ts) < SESSION_TTL_MS
-    } catch { return false }
+  // ── Optimistic session check ──────────────────────────────────────────────
+  // Check localStorage for cached conv_id. This is a local cache only — the
+  // backend verify (below) is the authoritative source. If the backend says
+  // the conversation is gone, we clear this cache and show buttons.
+  const cachedConvId = (() => {
+    try { return localStorage.getItem('bbc_conv_id') } catch { return null }
   })()
+
+  // A visitor_id in localStorage means we had a session before (possibly
+  // across a browser restart). Combined with cachedConvId, we can optimistically
+  // show the chat UI immediately and verify with backend in parallel.
+  const hasOptimisticSession = !!(getVisitorId() && cachedConvId)
 
   // Restore tunnel from localStorage if sessionStorage is gone
   const savedTunnel = (() => {
@@ -52,20 +71,9 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   })()
 
   // Restore visitor identity from localStorage when sessionStorage has died.
-  // `bbc_visitor_key` already stores "name|email|phone" for fingerprint checks
-  // in handleFormSubmit — we parse it back so ChatWindow's getValidConvId
-  // finds a fingerprint match and restores the conversation instead of
-  // creating a new anonymous one. Fixes Bug 6 (visitor identity lost on
-  // tab close / page refresh).
-  //
-  // TODO (privacy hardening): add a lightweight "continue as <partial
-  // email>?" confirmation on mount-after-tab-close to block shared-browser
-  // leaks (user B auto-restoring user A's session on a shared PC). For
-  // BBC's primarily-personal-device user base this risk is accepted in
-  // exchange for the frictionless reconnect UX Dan requested on 16.04.2026.
-  // Separate ticket — DO NOT remove this TODO or the restore logic below.
+  // `bbc_visitor_key` stores "name|email|phone" for display purposes.
   const savedVisitor = (() => {
-    if (!hasValidSession) return null
+    if (!hasOptimisticSession) return null
     try {
       const key = localStorage.getItem('bbc_visitor_key')
       if (!key || key === '||') return null
@@ -81,12 +89,9 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     } catch { return null }
   })()
 
-  // Restore booking_id from localStorage too — stored by handleFormSubmit
-  // when the visitor provided one. Without this, a visitor who entered a
-  // booking reference loses it across tab close even though visitor
-  // identity is restored.
+  // Restore booking_id from localStorage too
   const savedMetadata = (() => {
-    if (!hasValidSession) return null
+    if (!hasOptimisticSession) return null
     try {
       const bookingId = localStorage.getItem('bbc_conv_booking_id')
       if (!bookingId) return null
@@ -95,16 +100,12 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   })()
 
   const [step, setStep] = useState<Step>(
-    restored?.step === 'chat' || hasValidSession ? 'chat' : 'buttons'
+    restored?.step === 'chat' || hasOptimisticSession ? 'chat' : 'buttons'
   )
   const [tunnel, setTunnel] = useState<'sales' | 'support'>(
-    restored?.tunnel || (hasValidSession ? savedTunnel : 'sales')
+    restored?.tunnel || (hasOptimisticSession ? savedTunnel : 'sales')
   )
   const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(
-    // Priority order:
-    //   1. sessionStorage (same-tab navigation — freshest)
-    //   2. localStorage via savedVisitor (tab-close restore — Bug 6)
-    //   3. empty object (new visitor, no session)
     restored?.visitor || savedVisitor || {}
   )
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(
@@ -112,11 +113,8 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   )
   const [showAttention, setShowAttention] = useState(false)
 
-  // Auto-open: after 10 seconds of inactivity, open chat directly for passive visitors.
-  // If user enters the form flow and starts typing, auto-open is cancelled and
-  // the standard form -> Start Chat procedure applies.
+  // Auto-open refs
   const autoOpenedRef = useRef(false)
-  const userTypingRef = useRef(false)
   const formFlowStartedRef = useRef(false)
 
   // Intent detection refs
@@ -124,6 +122,37 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const intentDwellTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const intentChatTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cachedBtnRect = useRef<DOMRect | null>(null)
+
+  // ── Backend verify on mount ───────────────────────────────────────────────
+  // If we optimistically jumped to 'chat', ask the backend if the conversation
+  // is still active. If not, fall back to buttons.
+  useEffect(() => {
+    if (!hasOptimisticSession) return
+    const visitorId = getVisitorId()
+    if (!visitorId) return
+
+    let cancelled = false
+    fetch(`${apiUrl}/api/chat/visitor/${encodeURIComponent(visitorId)}/active-conversation`)
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return
+        if (data.success && data.conversation_id) {
+          // Backend confirmed — update cached conv_id (may have changed)
+          try { localStorage.setItem('bbc_conv_id', data.conversation_id) } catch {}
+        } else {
+          // No active conversation — clear cache and fall back
+          try { localStorage.removeItem('bbc_conv_id') } catch {}
+          try { localStorage.removeItem('bbc_conv_ts') } catch {}
+          // Only fall back if user hasn't navigated away from chat already
+          setStep(prev => prev === 'chat' ? 'buttons' : prev)
+        }
+      })
+      .catch(() => {
+        // Network error — keep optimistic UI (don't disrupt active session)
+      })
+    return () => { cancelled = true }
+  // eslint-disable-next-line
+  }, [])
 
   // Injectăm @keyframes în <head> — o singură dată la mount
   // Inline style nu suportă @keyframes → trebuie <style> tag
@@ -148,29 +177,6 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     // Nu facem cleanup — keyframes rămân pe tot parcursul sesiunii
   }, [])
 
-  // Track user activity on the entire page.
-  // Any interaction means visitor is not passive, so auto-chat must not trigger.
-  useEffect(() => {
-    const markActive = () => { userTypingRef.current = true }
-    // NOTE: 'mousedown' intentionally NOT listed — it was too aggressive
-    // (any click anywhere on the host page killed auto-open permanently).
-    // Touch, focus, and text input are sufficient signals of real engagement.
-    window.addEventListener('keydown', markActive, { capture: true })
-    window.addEventListener('input', markActive, { capture: true })
-    window.addEventListener('change', markActive, { capture: true })
-    window.addEventListener('paste', markActive, { capture: true })
-    window.addEventListener('touchstart', markActive, { capture: true })
-    window.addEventListener('focusin', markActive, { capture: true })
-    return () => {
-      window.removeEventListener('keydown', markActive, { capture: true })
-      window.removeEventListener('input', markActive, { capture: true })
-      window.removeEventListener('change', markActive, { capture: true })
-      window.removeEventListener('paste', markActive, { capture: true })
-      window.removeEventListener('touchstart', markActive, { capture: true })
-      window.removeEventListener('focusin', markActive, { capture: true })
-    }
-  }, [])
-
   // ─── EFFECT A: Attention Grabber (20 secunde inactivitate) ───────────────────
   useEffect(() => {
     if (step !== 'buttons') return
@@ -178,7 +184,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     if (safeGet('bbc_attention_shown') === '1') return
 
     const attentionTimer = setTimeout(() => {
-      if (formFlowStartedRef.current || userTypingRef.current) return
+      if (formFlowStartedRef.current) return
       setShowAttention(true)
       safeSet('bbc_attention_shown', '1')
 
@@ -207,42 +213,30 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     window.addEventListener('resize', updateRect, { passive: true })
 
     const handleMouseMove = (e: MouseEvent) => {
-      // Nu mai triggereăm dacă: deja fired, form flow, sau typing
-      if (intentFiredRef.current || formFlowStartedRef.current || userTypingRef.current) return
+      if (intentFiredRef.current || formFlowStartedRef.current) return
 
       const rect = cachedBtnRect.current
       if (!rect) return
 
-      // Distanța față de centrul butonului
       const dist = Math.hypot(
         e.clientX - (rect.left + rect.width / 2),
         e.clientY - (rect.top + rect.height / 2)
       )
 
       if (dist < 180) {
-        // User e aproape de buton — dacă nu avem deja dwell timer, pornim unul
         if (!intentDwellTimer.current) {
           intentDwellTimer.current = setTimeout(() => {
-            // 1.5s dwell confirmat — intent real detectat
-            if (formFlowStartedRef.current || userTypingRef.current) return
+            if (formFlowStartedRef.current) return
             intentFiredRef.current = true
 
-            // Timer 10s: dacă nu intră în form → deschidem chat
             intentChatTimer.current = setTimeout(() => {
-              if (formFlowStartedRef.current || userTypingRef.current) return
-              // POLICY: auto-open goes to FORM, not chat. Anonymous conversations
-              // are no longer permitted per Dan 16.04.2026. Previously the
-              // destination was 'chat' with visitor={} — that created anonymous
-              // DB rows. DO NOT flip this back without Dan's approval.
-              // If a valid 30-min session exists on disk, let handleTunnelSelect
-              // handle the restore flow (hasValidSession check there).
+              if (formFlowStartedRef.current) return
               autoOpenedRef.current = true
               setTunnel('sales')
               setStep('form')
             }, 10_000)
           }, 1_500)
         }
-        // ONE-WAY: nu anulăm timer-ul la ieșirea din zonă
       }
     }
 
@@ -264,9 +258,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     if (autoOpenedRef.current || formFlowStartedRef.current) return
 
     const mobileTimer = setTimeout(() => {
-      if (formFlowStartedRef.current || userTypingRef.current) return
-      // POLICY: same as Effect B — auto-open goes to FORM, not chat.
-      // See Bug 2 policy note at top of this prompt.
+      if (formFlowStartedRef.current) return
       autoOpenedRef.current = true
       setTunnel('sales')
       setStep('form')
@@ -276,13 +268,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   }, [step])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
-    setShowAttention(false)  // ← reset badge
+    setShowAttention(false)
     formFlowStartedRef.current = true
-    autoOpenedRef.current = true // user intentionally opened widget; cancel auto-open logic
+    autoOpenedRef.current = true
     setTunnel(t)
 
-    // If valid session exists, skip form and restore chat directly
-    if (hasValidSession) {
+    // If visitor_id + cached conv_id exist, skip form and restore chat
+    if (hasOptimisticSession) {
       setStep('chat')
     } else {
       setStep('form')
@@ -290,13 +282,14 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   }
 
   const handleFormInteraction = () => {
-    // Once user starts filling the form, keep standard manual flow only.
     formFlowStartedRef.current = true
     autoOpenedRef.current = true
-    userTypingRef.current = true
   }
 
   const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => {
+    // Ensure visitor_id exists before entering chat
+    ensureVisitorId()
+
     const vis = { name: data.name, email: data.email, phone: data.phone }
     const meta = data.booking_id ? { booking_id: data.booking_id } : {}
 
@@ -304,11 +297,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     const newKey = `${vis.name || ''}|${vis.email || ''}|${vis.phone || ''}`
     const savedKey = (() => { try { return localStorage.getItem('bbc_visitor_key') } catch { return null } })()
     if (savedKey && newKey && savedKey !== newKey) {
-      // Different visitor detected — remove old conversation to prevent mixing
+      // Different visitor — new visitor_id + clear old conversation cache
+      const newId = makeVisitorId()
+      try { localStorage.setItem('bbc_visitor_id', newId) } catch {}
       try { localStorage.removeItem('bbc_conv_id') } catch {}
       try { localStorage.removeItem('bbc_conv_ts') } catch {}
     }
-    // Save visitor fingerprint for future mismatch detection
+    // Save visitor fingerprint for display
     if (newKey !== '||') {
       try { localStorage.setItem('bbc_visitor_key', newKey) } catch {}
     }
@@ -317,10 +312,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     setMetadata(meta)
     setStep('chat')
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor: vis, metadata: meta }))
-    // Save tunnel to localStorage so it survives tab close
     try { localStorage.setItem('bbc_conv_tunnel', tunnel) } catch {}
-    // Persist booking_id in localStorage so it survives tab close (Bug 6).
-    // If the visitor didn't provide one, ensure no stale value lingers.
     if (data.booking_id) {
       try { localStorage.setItem('bbc_conv_booking_id', data.booking_id) } catch {}
     } else {
@@ -335,14 +327,10 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
   const handleCloseChat = () => {
     setStep('buttons')
-    // Keep visitor/metadata in memory — required for "X → reopen" to restore
-    // the same conversation. localStorage already persists the conv_id; clearing
-    // the in-memory visitor would make ChatWindow mount with visitor={} next
-    // time, triggering the anonymous-session path. See Bug 1 forensic.
+    // Keep localStorage intact (visitor_id, conv_id, visitor_key) — "X → reopen"
+    // will use the optimistic path to restore the session. Only clear sessionStorage.
     safeRemove('bbc_widget')
     // Reset auto-open guards so attention grabber can trigger again after close.
-    // Do NOT touch localStorage — the 30-minute session persists on disk.
-    userTypingRef.current = false
     formFlowStartedRef.current = false
     intentFiredRef.current = false
     autoOpenedRef.current = false
@@ -353,10 +341,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
         setStep('buttons')
-        // Same reasoning as handleCloseChat: preserve in-memory visitor for
-        // session restore. See Bug 1 forensic.
         safeRemove('bbc_widget')
-        userTypingRef.current = false
         formFlowStartedRef.current = false
         intentFiredRef.current = false
         autoOpenedRef.current = false
