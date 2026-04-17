@@ -54,7 +54,11 @@ async def list_conversations(
             limit=limit, offset=offset,
         )
         return {"success": True, "data": rows, "count": total}
+    except HTTPException:
+        # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.
+        raise
     except Exception as e:
+        logger.error(f"list_conversations unexpected error: {e}", exc_info=True)
         return {"success": False, "data": [], "count": 0, "error": str(e)}
 
 
@@ -149,7 +153,23 @@ async def get_conversation(
             conv["messages"] = []
 
         return {"success": True, "data": conv, "count": 1}
+    except HTTPException:
+        # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.
+        # Letting it propagate returns proper HTTP status codes to the client.
+        # Previously this was caught by `except Exception` below and returned
+        # HTTP 200 with {data: null}, which the frontend rendered as
+        # "Conversation not found" — hiding legitimate auth errors. See Bug 5
+        # forensic (17.04.2026).
+        raise
     except Exception as e:
+        # Any OTHER exception (Supabase errors, unexpected bugs) is still
+        # converted to a JSON error envelope for backwards compatibility,
+        # but logged so we can measure frequency. The frontend now checks
+        # isError and differentiates this from a real 404.
+        logger.error(
+            f"get_conversation({conversation_id}) unexpected error: {e}",
+            exc_info=True,
+        )
         return {"success": False, "data": None, "count": 0, "error": str(e)}
 
 
