@@ -22,6 +22,8 @@ from app.realtime.manager import manager
 
 from pydantic import BaseModel
 
+from app.deps.ownership import require_visitor_ownership
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,7 +99,7 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
             from app.services.conversation_service import add_message
             from uuid import uuid4
             from datetime import datetime, timezone
-            conv = await db.get_or_create_conversation(None, req.tunnel, req.visitor)
+            conv = await db.get_or_create_conversation(None, req.tunnel, req.visitor, visitor_id=req.visitor_id)
             if conv:
                 await db.update_conversation(conv["id"], {
                     "mode": "human",
@@ -157,6 +159,7 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
         tunnel=req.tunnel,
         visitor=req.visitor,
         metadata=req.metadata,
+        visitor_id=req.visitor_id,
     )
 
     return response
@@ -165,7 +168,11 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
 # ── Typing indicator endpoints (public — widget reports typing status) ─────
 
 @router.post("/chat/typing/{conversation_id}")
-async def set_typing_status(conversation_id: str, body: TypingBody):
+async def set_typing_status(
+    conversation_id: str,
+    body: TypingBody,
+    _owner: None = Depends(require_visitor_ownership),
+):
     """Widget reports client is actively typing.
     Stored in Redis with 10s TTL — never saved to DB.
     Called every ~500ms while client types (debounced on client side)."""
@@ -179,7 +186,10 @@ async def set_typing_status(conversation_id: str, body: TypingBody):
 
 
 @router.delete("/chat/typing/{conversation_id}")
-async def clear_typing_status(conversation_id: str):
+async def clear_typing_status(
+    conversation_id: str,
+    _owner: None = Depends(require_visitor_ownership),
+):
     """Widget reports client sent message or cleared input."""
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_typing(conversation_id)
@@ -187,7 +197,10 @@ async def clear_typing_status(conversation_id: str):
 
 
 @router.post("/chat/session/{conversation_id}/open")
-async def mark_chat_session_open(conversation_id: str):
+async def mark_chat_session_open(
+    conversation_id: str,
+    _owner: None = Depends(require_visitor_ownership),
+):
     """Client opened widget chat UI but did not necessarily send a message yet."""
     conv = await db.get_conversation(conversation_id)
     if not conv:
@@ -205,6 +218,7 @@ async def mark_chat_session_open(conversation_id: str):
 async def mark_chat_session_close(
     conversation_id: str,
     reason: str = Query("minimized", pattern="^(minimized|left)$"),
+    _owner: None = Depends(require_visitor_ownership),
 ):
     """Client stopped active chat session.
 
@@ -227,6 +241,29 @@ async def mark_chat_session_close(
 
 
 # ── Public widget endpoints (no auth required — conv_id UUID is the secret) ──
+
+@router.get("/chat/visitor/{visitor_id}/active-conversation")
+async def get_active_conversation_for_visitor(visitor_id: str):
+    """Widget calls this on mount to find a visitor's active conversation.
+    Returns conversation_id if one exists, else null — so the widget can
+    reconnect across tabs/sessions without a stale localStorage ID."""
+    try:
+        client = db.get_client()
+        res = await db._run_sync(
+            lambda: client.table("conversations")
+            .select("id")
+            .eq("visitor_id", visitor_id)
+            .eq("status", "active")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        conv_id = res.data[0]["id"] if res.data else None
+        return {"success": True, "conversation_id": conv_id}
+    except Exception as e:
+        logger.error(f"get_active_conversation_for_visitor error: {e}")
+        return {"success": True, "conversation_id": None}
+
 
 @router.get("/chat/status/{conversation_id}")
 async def public_get_conversation_status(conversation_id: str):

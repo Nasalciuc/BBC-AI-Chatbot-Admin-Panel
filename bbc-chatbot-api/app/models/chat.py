@@ -13,6 +13,7 @@ class VisitorInfo(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     conversation_id: Optional[str] = None
+    visitor_id: Optional[str] = None
     tunnel: str = Field(default="sales", pattern="^(sales|support)$")
     visitor: VisitorInfo = Field(default_factory=VisitorInfo)
     metadata: Optional[dict] = None

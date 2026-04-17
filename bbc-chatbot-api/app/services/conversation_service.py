@@ -6,8 +6,11 @@ from app.db import supabase as db
 logger = logging.getLogger(__name__)
 
 
-async def get_or_create_conversation(conversation_id: Optional[str], tunnel: str, visitor: Any):
-    return await db.get_or_create_conversation(conversation_id, tunnel, visitor)
+async def get_or_create_conversation(
+    conversation_id: Optional[str], tunnel: str, visitor: Any,
+    visitor_id: Optional[str] = None,
+):
+    return await db.get_or_create_conversation(conversation_id, tunnel, visitor, visitor_id=visitor_id)
 
 
 async def add_message(conversation_id: str, role: str, content: str,

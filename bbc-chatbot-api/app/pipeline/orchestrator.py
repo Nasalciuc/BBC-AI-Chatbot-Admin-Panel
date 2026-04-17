@@ -23,12 +23,13 @@ async def process_message(
     tunnel: str,
     visitor: VisitorInfo,
     metadata: Optional[dict] = None,
+    visitor_id: Optional[str] = None,
 ) -> ChatResponse:
     """Run the 8-step pipeline. Always returns a response — never crashes."""
     conv = None
     try:
         return await asyncio.wait_for(
-            _pipeline(conversation_id, message, tunnel, visitor, metadata),
+            _pipeline(conversation_id, message, tunnel, visitor, metadata, visitor_id=visitor_id),
             timeout=settings.pipeline_timeout,
         )
     except asyncio.TimeoutError:
@@ -63,6 +64,7 @@ async def _pipeline(
     tunnel: str,
     visitor: VisitorInfo,
     metadata: Optional[dict],
+    visitor_id: Optional[str] = None,
 ) -> ChatResponse:
     """Internal pipeline implementation with 8 steps."""
     import time
@@ -75,6 +77,7 @@ async def _pipeline(
         conversation_id=conversation_id,
         tunnel=tunnel,
         visitor=visitor,
+        visitor_id=visitor_id,
     )
     if not conv or "id" not in conv:
         raise RuntimeError("Failed to create conversation")

@@ -55,16 +55,24 @@ async def get_or_create_conversation(
     conversation_id: Optional[str],
     tunnel: str,
     visitor: Any,
+    visitor_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """Return existing conversation or create a new one."""
+    """Return existing conversation or create a new one.
+
+    Dual-path matching:
+      Path A — conversation_id supplied & passes fingerprint check → return it.
+      Path B — visitor_id supplied → find newest active conv for this visitor.
+      Fallback — create new conversation.
+    """
     try:
         db = get_client()
+
+        # ── Path A: conversation_id supplied ──────────────────────
         if conversation_id:
             res = await _run_sync(lambda: db.table("conversations").select("*").eq("id", conversation_id).single().execute())
             if res.data:
                 existing = res.data
 
-                # Safety guard against cross-visitor mix-ups caused by stale client IDs.
                 req_email = (getattr(visitor, "email", None) or "").strip().lower()
                 req_phone = (getattr(visitor, "phone", None) or "").strip()
                 req_name = (getattr(visitor, "name", None) or "").strip()
@@ -81,19 +89,43 @@ async def get_or_create_conversation(
                     mismatch = True
                 if req_phone and ex_phone and req_phone != ex_phone:
                     mismatch = True
-
-                # Anonymous request must never attach to an identified conversation.
                 if not has_req_identity and has_ex_identity:
                     mismatch = True
 
                 if not mismatch:
+                    # Back-fill visitor_id if missing on existing row
+                    if visitor_id and not existing.get("visitor_id"):
+                        await _run_sync(
+                            lambda: db.table("conversations")
+                            .update({"visitor_id": visitor_id})
+                            .eq("id", conversation_id)
+                            .execute()
+                        )
                     return existing
 
                 logger.warning(
                     "get_or_create_conversation: rejected stale/mismatched conversation_id "
                     f"{conversation_id} (tunnel={tunnel})"
                 )
+
+        # ── Path B: visitor_id supplied — find active conv ────────
+        if visitor_id:
+            res = await _run_sync(
+                lambda: db.table("conversations")
+                .select("*")
+                .eq("visitor_id", visitor_id)
+                .eq("status", "active")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return res.data[0]
+
+        # ── Fallback: create new conversation ─────────────────────
         payload: dict = {"tunnel": tunnel, "mode": "ai", "status": "active"}
+        if visitor_id:
+            payload["visitor_id"] = visitor_id
         if visitor and visitor.name:  payload["visitor_name"]  = visitor.name
         if visitor and visitor.email: payload["visitor_email"] = visitor.email
         if visitor and visitor.phone: payload["visitor_phone"] = visitor.phone
@@ -220,7 +252,7 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         db = get_client()
         res = await _run_sync(
             lambda: db.table("conversations")
-            .select("id, tunnel, status, mode, assigned_agent_id, metadata, updated_at")
+            .select("id, tunnel, status, mode, assigned_agent_id, visitor_id, metadata, updated_at")
             .eq("id", conv_id)
             .single()
             .execute()
