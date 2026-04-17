@@ -21,10 +21,11 @@ function safeRemove(key: string): void {
 function clearWidgetStorage() {
   safeRemove('bbc_widget')       // sessionStorage
   safeRemove('bbc_conv_id')      // sessionStorage (legacy, may not exist)
-  // Also clear localStorage — conv_id lives there
+  // Also clear localStorage — full session state lives there.
   try { localStorage.removeItem('bbc_conv_id') } catch {}
   try { localStorage.removeItem('bbc_conv_ts') } catch {}
   try { localStorage.removeItem('bbc_visitor_key') } catch {}
+  try { localStorage.removeItem('bbc_conv_booking_id') } catch {}
 }
 
 export function Widget({ apiUrl }: { apiUrl: string }) {
@@ -50,14 +51,65 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     } catch { return 'sales' as const }
   })()
 
+  // Restore visitor identity from localStorage when sessionStorage has died.
+  // `bbc_visitor_key` already stores "name|email|phone" for fingerprint checks
+  // in handleFormSubmit — we parse it back so ChatWindow's getValidConvId
+  // finds a fingerprint match and restores the conversation instead of
+  // creating a new anonymous one. Fixes Bug 6 (visitor identity lost on
+  // tab close / page refresh).
+  //
+  // TODO (privacy hardening): add a lightweight "continue as <partial
+  // email>?" confirmation on mount-after-tab-close to block shared-browser
+  // leaks (user B auto-restoring user A's session on a shared PC). For
+  // BBC's primarily-personal-device user base this risk is accepted in
+  // exchange for the frictionless reconnect UX Dan requested on 16.04.2026.
+  // Separate ticket — DO NOT remove this TODO or the restore logic below.
+  const savedVisitor = (() => {
+    if (!hasValidSession) return null
+    try {
+      const key = localStorage.getItem('bbc_visitor_key')
+      if (!key || key === '||') return null
+      const parts = key.split('|')
+      if (parts.length !== 3) return null
+      const [name, email, phone] = parts
+      if (!name && !email && !phone) return null
+      return {
+        name:  name  || undefined,
+        email: email || undefined,
+        phone: phone || undefined,
+      }
+    } catch { return null }
+  })()
+
+  // Restore booking_id from localStorage too — stored by handleFormSubmit
+  // when the visitor provided one. Without this, a visitor who entered a
+  // booking reference loses it across tab close even though visitor
+  // identity is restored.
+  const savedMetadata = (() => {
+    if (!hasValidSession) return null
+    try {
+      const bookingId = localStorage.getItem('bbc_conv_booking_id')
+      if (!bookingId) return null
+      return { booking_id: bookingId }
+    } catch { return null }
+  })()
+
   const [step, setStep] = useState<Step>(
     restored?.step === 'chat' || hasValidSession ? 'chat' : 'buttons'
   )
   const [tunnel, setTunnel] = useState<'sales' | 'support'>(
     restored?.tunnel || (hasValidSession ? savedTunnel : 'sales')
   )
-  const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(restored?.visitor || {})
-  const [metadata, setMetadata] = useState<{ booking_id?: string }>(restored?.metadata || {})
+  const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(
+    // Priority order:
+    //   1. sessionStorage (same-tab navigation — freshest)
+    //   2. localStorage via savedVisitor (tab-close restore — Bug 6)
+    //   3. empty object (new visitor, no session)
+    restored?.visitor || savedVisitor || {}
+  )
+  const [metadata, setMetadata] = useState<{ booking_id?: string }>(
+    restored?.metadata || savedMetadata || {}
+  )
   const [showAttention, setShowAttention] = useState(false)
 
   // Auto-open: after 10 seconds of inactivity, open chat directly for passive visitors.
@@ -267,6 +319,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor: vis, metadata: meta }))
     // Save tunnel to localStorage so it survives tab close
     try { localStorage.setItem('bbc_conv_tunnel', tunnel) } catch {}
+    // Persist booking_id in localStorage so it survives tab close (Bug 6).
+    // If the visitor didn't provide one, ensure no stale value lingers.
+    if (data.booking_id) {
+      try { localStorage.setItem('bbc_conv_booking_id', data.booking_id) } catch {}
+    } else {
+      try { localStorage.removeItem('bbc_conv_booking_id') } catch {}
+    }
   }
 
   const handleBack = () => {
