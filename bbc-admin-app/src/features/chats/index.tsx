@@ -112,7 +112,7 @@ export function Chats() {
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter],
     queryFn: () => getConversations(listParams),
-    refetchInterval: 30_000,
+    refetchInterval: 5_000, // Bug 3: agents need near-realtime assignment visibility
   })
   const conversations: Conversation[] = convResponse?.data ?? []
 

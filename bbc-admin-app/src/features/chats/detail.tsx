@@ -49,11 +49,17 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const prevBaseLen           = useRef(0)
 
   // Full conversation load — cached, long staleTime
-  const { data: conv, isLoading: loading } = useQuery({
+  const { data: conv, isLoading: loading, isError, error } = useQuery({
     queryKey: ['conversation', conversationId],
     queryFn: () => getConversation(conversationId),
     enabled: !usingMock,
-    staleTime: 60_000,
+    // Bug 5: do NOT cache null/error — otherwise a single transient Supabase
+    // failure poisons the UI with "not found" for 60 seconds. staleTime=0
+    // means every click refetches; combined with retry, a genuine flake
+    // is recovered within ~1 second.
+    staleTime: 0,
+    retry: 1,
+    retryDelay: 500,
   })
 
   // Track last message timestamp for incremental polling
@@ -218,6 +224,21 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   if (loading) return <div className="h-full flex items-center justify-center text-gray-400 text-sm">Loading...</div>
+
+  // Bug 5: differentiate "genuine not found" from "transient error".
+  // The backend endpoint may return {success:false, data:null} with HTTP 200
+  // when a query fails — that used to render identically to a real 404.
+  if (isError) {
+    const msg = error instanceof Error ? error.message : 'Unable to load conversation.'
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-gray-400">
+        <p className="text-sm">Unable to load conversation</p>
+        <p className="text-xs text-gray-300 mt-1">{msg}</p>
+        <button onClick={onClose} className="mt-2 text-xs text-[#C9A54E] hover:underline">Close</button>
+      </div>
+    )
+  }
+
   if (!conv) return (
     <div className="h-full flex flex-col items-center justify-center text-gray-400">
       <p className="text-sm">Conversation not found</p>
