@@ -44,11 +44,14 @@ function getValidConvId(visitor: Props['visitor']): string | null {
   const savedKey = safeGet('bbc_visitor_key')
   const currentKey = `${visitor.name || ''}|${visitor.email || ''}|${visitor.phone || ''}`
 
-  // Anonymous sessions are too risky to restore from persistent localStorage:
-  // they can attach to a stale conversation on shared browsers.
+  // Anonymous sessions are not restored — but we do NOT destroy the stored
+  // session here. Destroying localStorage on every empty-visitor call would
+  // break the normal "X → reopen" flow where handleCloseChat has wiped
+  // in-memory visitor state but the session is still valid on disk.
+  // The shared-browser safety property is enforced by the fingerprint
+  // mismatch check below (savedKey !== currentKey). DO NOT re-add destructive
+  // cleanup here — see Bug 1 forensic (commit 3f2e4f5, 16.04.2026).
   if (currentKey === '||') {
-    try { localStorage.removeItem('bbc_conv_id') } catch {}
-    try { localStorage.removeItem('bbc_conv_ts') } catch {}
     return null
   }
 

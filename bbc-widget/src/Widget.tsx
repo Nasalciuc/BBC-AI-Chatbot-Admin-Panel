@@ -100,11 +100,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   // Any interaction means visitor is not passive, so auto-chat must not trigger.
   useEffect(() => {
     const markActive = () => { userTypingRef.current = true }
+    // NOTE: 'mousedown' intentionally NOT listed — it was too aggressive
+    // (any click anywhere on the host page killed auto-open permanently).
+    // Touch, focus, and text input are sufficient signals of real engagement.
     window.addEventListener('keydown', markActive, { capture: true })
     window.addEventListener('input', markActive, { capture: true })
     window.addEventListener('change', markActive, { capture: true })
     window.addEventListener('paste', markActive, { capture: true })
-    window.addEventListener('mousedown', markActive, { capture: true })
     window.addEventListener('touchstart', markActive, { capture: true })
     window.addEventListener('focusin', markActive, { capture: true })
     return () => {
@@ -112,7 +114,6 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
       window.removeEventListener('input', markActive, { capture: true })
       window.removeEventListener('change', markActive, { capture: true })
       window.removeEventListener('paste', markActive, { capture: true })
-      window.removeEventListener('mousedown', markActive, { capture: true })
       window.removeEventListener('touchstart', markActive, { capture: true })
       window.removeEventListener('focusin', markActive, { capture: true })
     }
@@ -177,14 +178,15 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
             // Timer 10s: dacă nu intră în form → deschidem chat
             intentChatTimer.current = setTimeout(() => {
               if (formFlowStartedRef.current || userTypingRef.current) return
+              // POLICY: auto-open goes to FORM, not chat. Anonymous conversations
+              // are no longer permitted per Dan 16.04.2026. Previously the
+              // destination was 'chat' with visitor={} — that created anonymous
+              // DB rows. DO NOT flip this back without Dan's approval.
+              // If a valid 30-min session exists on disk, let handleTunnelSelect
+              // handle the restore flow (hasValidSession check there).
               autoOpenedRef.current = true
               setTunnel('sales')
-              setVisitor({})
-              setMetadata({})
-              setStep('chat')
-              safeSet('bbc_widget', JSON.stringify({
-                step: 'chat', tunnel: 'sales', visitor: {}, metadata: {}
-              }))
+              setStep('form')
             }, 10_000)
           }, 1_500)
         }
@@ -211,15 +213,12 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
     const mobileTimer = setTimeout(() => {
       if (formFlowStartedRef.current || userTypingRef.current) return
+      // POLICY: same as Effect B — auto-open goes to FORM, not chat.
+      // See Bug 2 policy note at top of this prompt.
       autoOpenedRef.current = true
       setTunnel('sales')
-      setVisitor({})
-      setMetadata({})
-      setStep('chat')
-      safeSet('bbc_widget', JSON.stringify({
-        step: 'chat', tunnel: 'sales', visitor: {}, metadata: {}
-      }))
-    }, 3 * 60 * 1000) // 3 minute
+      setStep('form')
+    }, 3 * 60 * 1000) // 3 minutes
 
     return () => clearTimeout(mobileTimer)
   }, [step])
@@ -277,10 +276,17 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
   const handleCloseChat = () => {
     setStep('buttons')
-    setVisitor({})
-    setMetadata({})
-    // Only remove sessionStorage UI state — localStorage persists for 30-minute session
+    // Keep visitor/metadata in memory — required for "X → reopen" to restore
+    // the same conversation. localStorage already persists the conv_id; clearing
+    // the in-memory visitor would make ChatWindow mount with visitor={} next
+    // time, triggering the anonymous-session path. See Bug 1 forensic.
     safeRemove('bbc_widget')
+    // Reset auto-open guards so attention grabber can trigger again after close.
+    // Do NOT touch localStorage — the 30-minute session persists on disk.
+    userTypingRef.current = false
+    formFlowStartedRef.current = false
+    intentFiredRef.current = false
+    autoOpenedRef.current = false
   }
 
   // Escape key closes form/chat
@@ -288,10 +294,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
         setStep('buttons')
-        setVisitor({})
-        setMetadata({})
-        // Only remove sessionStorage — localStorage persists for 30-minute session
+        // Same reasoning as handleCloseChat: preserve in-memory visitor for
+        // session restore. See Bug 1 forensic.
         safeRemove('bbc_widget')
+        userTypingRef.current = false
+        formFlowStartedRef.current = false
+        intentFiredRef.current = false
+        autoOpenedRef.current = false
       }
     }
     window.addEventListener('keydown', handler)
