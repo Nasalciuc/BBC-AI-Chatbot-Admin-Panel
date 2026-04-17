@@ -1199,8 +1199,13 @@ async def update_user_last_seen(user_id: str) -> None:
         logger.warning(f"update_user_last_seen error: {e}")
 
 
-# Roles that are management-only and must never receive auto-routed conversations.
-_MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor")
+# Management roles that do NOT auto-receive conversations.
+# NOTE: 'supervisor' is an operational role (views + reassigns + moderates)
+# and SHOULD receive conversations. It was briefly grouped here in commit
+# 2c45c33 which broke routing whenever any operator had role='supervisor'
+# — they became invisible to both get_available_agents() and the heartbeat
+# auto-assignment path. Keep supervisor OUT of this tuple.
+_MANAGEMENT_ROLES = ("owner", "admin", "dev")
 
 
 async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
