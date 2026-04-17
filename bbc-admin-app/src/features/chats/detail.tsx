@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
+import type { ApiError } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ReassignPanel } from '@/components/reassign-panel'
 import { usePermissions } from '@/lib/bbc/hooks'
@@ -49,7 +50,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const prevBaseLen           = useRef(0)
 
   // Full conversation load — cached, long staleTime
-  const { data: conv, isLoading: loading, isError, error } = useQuery({
+  const { data: conv, isLoading: loading, isError, error, refetch } = useQuery({
     queryKey: ['conversation', conversationId],
     queryFn: () => getConversation(conversationId),
     enabled: !usingMock,
@@ -229,20 +230,36 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   // The backend endpoint may return {success:false, data:null} with HTTP 200
   // when a query fails — that used to render identically to a real 404.
   if (isError) {
-    const msg = error instanceof Error ? error.message : 'Unable to load conversation.'
+    const status = (error as ApiError)?.status
+    if (status === 403) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center">
+          <p className="text-lg font-semibold text-gray-600 mb-2">Access restricted</p>
+          <p className="text-sm text-gray-400">
+            This conversation belongs to a different tunnel or team.
+          </p>
+          <button onClick={onClose} className="mt-4 text-sm text-[#C9A54E] hover:underline">Back to chats</button>
+        </div>
+      )
+    }
     return (
-      <div className="h-full flex flex-col items-center justify-center text-gray-400">
-        <p className="text-sm">Unable to load conversation</p>
-        <p className="text-xs text-gray-300 mt-1">{msg}</p>
-        <button onClick={onClose} className="mt-2 text-xs text-[#C9A54E] hover:underline">Close</button>
+      <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center">
+        <p className="text-lg font-semibold text-gray-600 mb-2">Couldn't load conversation</p>
+        <p className="text-sm text-gray-400">
+          Something went wrong loading this conversation. Please try again.
+        </p>
+        <button onClick={() => refetch()} className="mt-4 text-sm text-[#C9A54E] hover:underline">Retry</button>
       </div>
     )
   }
 
   if (!conv) return (
-    <div className="h-full flex flex-col items-center justify-center text-gray-400">
-      <p className="text-sm">Conversation not found</p>
-      <button onClick={onClose} className="mt-2 text-xs text-[#C9A54E] hover:underline">Close</button>
+    <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center">
+      <p className="text-lg font-semibold text-gray-600 mb-2">Conversation not found</p>
+      <p className="text-sm text-gray-400">
+        It may have been deleted or moved. Return to the list to see your current chats.
+      </p>
+      <button onClick={onClose} className="mt-4 text-sm text-[#C9A54E] hover:underline">Back to chats</button>
     </div>
   )
 
