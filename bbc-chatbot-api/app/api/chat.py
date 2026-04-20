@@ -3,6 +3,7 @@ Thin controller: validate → sanitize → orchestrate → respond.
 """
 
 import logging
+import uuid as _uuid_mod
 
 import asyncio
 import json
@@ -37,6 +38,21 @@ router = APIRouter()
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> ChatResponse:
     """Handle a single chat message from the widget."""
+
+    # 0. Validate conversation_id format if provided — widgets from a prior
+    # backend bug may persist literal 'unknown' or other non-UUID values.
+    if req.conversation_id is not None:
+        try:
+            _uuid_mod.UUID(req.conversation_id)
+        except (ValueError, AttributeError, TypeError):
+            logger.warning(
+                f"[chat] Rejecting non-UUID conversation_id from widget: "
+                f"{req.conversation_id!r}"
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid conversation_id format",
+            )
 
     # 1. Sanitize
     clean_message = sanitize_message(req.message)
@@ -308,6 +324,10 @@ async def public_get_conversation_status(conversation_id: str):
     """Session restore check for widget. Returns only status and mode.
     Fixes the 401 bug where widget incorrectly reset sessions on every open."""
     try:
+        _uuid_mod.UUID(conversation_id)
+    except (ValueError, AttributeError, TypeError):
+        return {"success": False, "data": None}
+    try:
         conv = await db.get_conversation(conversation_id)
         if not conv:
             return {"success": False, "data": None}
@@ -331,6 +351,10 @@ async def public_get_messages(
     """Public incremental message polling for widget.
     Used as SSE fallback and for catch-up after reconnect."""
     try:
+        _uuid_mod.UUID(conversation_id)
+    except (ValueError, AttributeError, TypeError):
+        return {"success": False, "data": [], "error": "invalid conversation_id"}
+    try:
         msgs = await db.get_messages_after(conversation_id, after)
         return {"success": True, "data": msgs}
     except Exception as e:
@@ -344,6 +368,10 @@ async def sse_stream(conversation_id: str, request: Request):
     Pushes agent messages instantly (~50ms vs 1s polling).
     X-Accel-Buffering: no disables Railway/nginx proxy buffering — required for SSE.
     Widget falls back to polling if SSE fails 3 times."""
+    try:
+        _uuid_mod.UUID(conversation_id)
+    except (ValueError, AttributeError, TypeError):
+        return {"success": False, "error": "invalid conversation_id"}
 
     async def event_generator():
         queue = await manager.connect(conversation_id)

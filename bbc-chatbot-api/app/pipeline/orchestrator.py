@@ -257,7 +257,6 @@ async def _pipeline(
     current_mode = await db.get_conversation_mode(cid)
     if current_mode == "human":
         logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
-        from app.models.chat import ChatResponse
         return ChatResponse(
             conversation_id=cid,
             message="One moment please, connecting you with a specialist...",
