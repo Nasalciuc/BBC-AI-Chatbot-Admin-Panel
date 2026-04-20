@@ -67,6 +67,19 @@ async def get_or_create_conversation(
     try:
         db = get_client()
 
+        # Defence-in-depth: reject non-UUID conversation_id early so the
+        # Supabase query never sends an invalid value (avoids 22P02).
+        if conversation_id is not None:
+            import uuid as _uuid
+            try:
+                _uuid.UUID(conversation_id)
+            except (ValueError, AttributeError, TypeError):
+                logger.warning(
+                    f"get_or_create_conversation: invalid conversation_id "
+                    f"{conversation_id!r}, treating as new conversation"
+                )
+                conversation_id = None
+
         # ── Path A: conversation_id supplied ──────────────────────
         if conversation_id:
             res = await _run_sync(lambda: db.table("conversations").select("*").eq("id", conversation_id).single().execute())
@@ -1260,7 +1273,7 @@ async def get_stale_agent_conversations(timeout_seconds: int) -> list:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
         res = await _run_sync(
             lambda: db_client.table("conversations")
-            .select("id, assigned_agent_id, users!inner(last_seen_at)")
+            .select("id, assigned_agent_id, users!conversations_assigned_agent_id_fkey!inner(last_seen_at)")
             .eq("status", "active")
             .eq("mode", "human")
             .not_.is_("assigned_agent_id", "null")
