@@ -178,16 +178,40 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     }
   }, [convId, apiUrl])
 
-  // Send typing event to server
-  // Throttle: send at most every 200ms so operator sees text live
-  // Clear debounce: if no typing for 3s → clear indicator
+  // Send typing event to server.
+  //
+  // Operator sees the client's typed text in real time. Text stays
+  // visible until the client sends / clears input / closes the widget.
+  // Previously a 3-second auto-clear timer made the text disappear on
+  // pauses — removed because it made it hard for the operator to see
+  // what the client was writing during natural pauses (especially for
+  // long messages).
+  //
+  // Clear paths still in place:
+  //   1. Input cleared by client → DELETE here (immediately below)
+  //   2. Message sent → DELETE in sendMessage() and handleSend()
+  //   3. Widget closed / unmounted → no explicit call; backend Redis TTL
+  //      (5 min) cleans up orphan state.
   const sendTypingEvent = (text: string) => {
     if (!convId) return
 
-    const now = Date.now()
+    // Input cleared by client → clear indicator immediately.
+    if (!text.trim()) {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current)
+        typingTimeoutRef.current = null
+      }
+      apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
+        method: 'DELETE',
+      }).catch(() => {})
+      return
+    }
 
-    // Throttle — send immediately if 200ms passed since last send
-    if (text.trim() && now - lastTypingSentRef.current > 200) {
+    // Throttle POST — at most every 200ms while typing.
+    // This also refreshes the backend Redis TTL so the indicator
+    // persists across natural typing pauses.
+    const now = Date.now()
+    if (now - lastTypingSentRef.current > 200) {
       lastTypingSentRef.current = now
       apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
         method: 'POST',
@@ -196,13 +220,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       }).catch(() => {})
     }
 
-    // Debounce clear — if user stops typing for 3s → clear indicator
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-    typingTimeoutRef.current = setTimeout(() => {
-      apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
-        method: 'DELETE',
-      }).catch(() => {})
-    }, 3_000)
+    // NO auto-clear timer — removed to fix the "text disappears when
+    // client pauses" bug. See the comment block at top of this function.
   }
 
   const sendMessage = async (text: string) => {
