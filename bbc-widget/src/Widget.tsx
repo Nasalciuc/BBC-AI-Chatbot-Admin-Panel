@@ -50,6 +50,23 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const saved = safeGet('bbc_widget')
   const restored = saved ? (() => { try { return JSON.parse(saved) } catch { return null } })() : null
 
+  // ── Corrupt value repair ─────────────────────────────────────────────────
+  // An earlier backend bug (UnboundLocalError in orchestrator.py) caused the
+  // chat endpoint to return conversation_id: "unknown" as a literal string.
+  // Widgets from that period persisted it in localStorage and then sent it
+  // back on every subsequent request. Clear on mount so they self-heal.
+  // Safe to remove 30 days after 2026-04-20.
+  try {
+    if (localStorage.getItem('bbc_conv_id') === 'unknown') {
+      localStorage.removeItem('bbc_conv_id')
+      localStorage.removeItem('bbc_conv_ts')
+      localStorage.removeItem('bbc_conv_tunnel')
+      localStorage.removeItem('bbc_conv_booking_id')
+      // Intentionally do NOT clear bbc_visitor_id — that UUID is fine;
+      // only the conversation pointer was corrupt.
+    }
+  } catch { /* localStorage disabled — no corrupt value to clear */ }
+
   // ── Optimistic session check ──────────────────────────────────────────────
   // Check localStorage for cached conv_id. This is a local cache only — the
   // backend verify (below) is the authoritative source. If the backend says
