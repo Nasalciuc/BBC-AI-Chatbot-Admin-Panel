@@ -5,7 +5,7 @@ Uses Redis SETEX for automatic TTL — no manual cleanup needed.
 Works correctly with multiple Railway workers (shared state).
 
 Key format: bbc:typing:{conv_id}
-TTL: 10 seconds (reset on every keystroke via debounce)
+TTL: 5 minutes (safety fallback — see _TYPING_TTL comment)
 """
 import json
 import logging
@@ -15,7 +15,14 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-_TYPING_TTL = 10  # seconds — auto-expires if client stops typing
+_TYPING_TTL = 300  # 5 minutes — safety fallback for orphan state when
+                   # widget disconnects without sending DELETE (crash,
+                   # network drop). During normal use, typing indicator
+                   # is cleared explicitly by widget on: send, input
+                   # cleared, or widget closed. Long TTL prevents the
+                   # indicator from disappearing during natural typing
+                   # pauses (previously 10s caused the operator to lose
+                   # visibility on what the client was writing).
 
 
 class TypingManager:
