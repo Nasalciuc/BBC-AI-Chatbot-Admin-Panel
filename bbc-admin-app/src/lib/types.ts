@@ -18,6 +18,7 @@ export interface Conversation {
   visitor_email: string | null
   visitor_phone: string | null
   assigned_agent_id: string | null
+  assigned_agent_name?: string | null
   message_count: number
   ai_cost_total: number
   created_at: string

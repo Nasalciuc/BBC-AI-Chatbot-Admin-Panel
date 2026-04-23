@@ -280,7 +280,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           <p><strong>Visitor:</strong> {conv.visitor_name ?? 'Anonymous'}</p>
           <p><strong>Tunnel:</strong> {conv.tunnel}</p>
           <p><strong>Status:</strong> {conv.status}</p>
-          <p><strong>Agent:</strong> {conv.assigned_agent_id ?? 'Unassigned'}</p>
+          <p><strong>Agent:</strong> {conv.assigned_agent_name ?? conv.assigned_agent_id ?? 'Unassigned'}</p>
           <p><strong>Started:</strong> {conv.created_at ? new Date(conv.created_at).toLocaleString() : '—'}</p>
         </div>
 
@@ -715,7 +715,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               <p>Messages: <span className="text-gray-700">{allMessages.length}</span></p>
               <p>AI cost: <span className="text-gray-700">${conv.ai_cost_total.toFixed(4)}</span></p>
               {conv.assigned_agent_id && (
-                <p>Agent: <span className="text-gray-700">{conv.assigned_agent_id.slice(0, 8)}...</span></p>
+                <p>Agent: <span className="text-gray-700">{conv.assigned_agent_name ?? conv.assigned_agent_id?.slice(0, 8) ?? 'Unassigned'}</span></p>
               )}
             </div>
           </div>
