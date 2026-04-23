@@ -110,9 +110,8 @@ async def check_existing_lead(
 async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_current_user)):
     """Mark a lead as successfully created in the external CRM system.
     Updates created_in_crm flag and timestamp.
-    Requires authentication. Both Sales and Support can create leads, since both
-    roles interact with potential customers who may not yet have a booking."""
-    if user.get("role") not in ("owner", "admin", "dev", "sales", "support"):
+    Requires authentication."""
+    if user.get("role") not in ("owner", "admin", "dev", "sales"):
         raise HTTPException(status_code=403, detail="Not authorized to mark leads as CRM created")
     
     try:
