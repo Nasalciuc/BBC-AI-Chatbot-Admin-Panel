@@ -467,6 +467,7 @@ async def get_leads(
     search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    include_drafts: bool = False,
 ) -> tuple[list, int]:
     """List leads with JOIN on conversations for contact details. Returns (rows, total_count)."""
     try:
@@ -476,6 +477,8 @@ async def get_leads(
                 "*, conversations!inner(visitor_name, visitor_email, visitor_phone, tunnel)",
                 count="exact"  # type: ignore[arg-type]
             ).order("score", desc=True)
+            if not include_drafts:
+                q = q.eq("created_in_crm", True)
             if status:  q = q.eq("status", status)
             if tier:    q = q.eq("tier", tier)
             if tunnel:  q = q.eq("conversations.tunnel", tunnel)
