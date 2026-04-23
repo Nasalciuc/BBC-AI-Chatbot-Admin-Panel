@@ -30,7 +30,6 @@ const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: R
 ]
 
 const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
-  { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
   { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
   { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
 ]
@@ -54,7 +53,7 @@ export function Chats() {
   // Highlight from URL param (click from bell dropdown)
   const urlHighlight = new URLSearchParams(window.location.search).get('highlight')
 
-  const [activeTab, setActiveTab] = useState<TabKey>('my_active')
+  const [activeTab, setActiveTab] = useState<TabKey>(isManager ? 'all_active' : 'my_active')
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
