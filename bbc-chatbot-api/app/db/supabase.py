@@ -324,7 +324,7 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
         import asyncio
         db_client = get_client()
         conv = await _run_sync(
-            lambda: db_client.table("conversations").select("*").eq("id", conversation_id).single().execute()
+            lambda: db_client.table("conversations").select("*, assigned_agent:users!conversations_assigned_agent_id_fkey(name, email)").eq("id", conversation_id).single().execute()
         )
         if not conv.data:
             return None
@@ -347,6 +347,12 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
         msgs, lead_res = await asyncio.gather(msgs_future, lead_future)
 
         result = dict(conv.data)
+        # Flatten nested agent data into top-level field
+        agent_data = result.pop("assigned_agent", None)
+        result["assigned_agent_name"] = (
+            agent_data.get("name") or agent_data.get("email")
+            if agent_data else None
+        )
         result["messages"] = msgs.data or []
         result["lead"] = lead_res.data[0] if lead_res.data else None
         return result
