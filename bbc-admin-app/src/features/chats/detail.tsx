@@ -43,6 +43,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
   const [markingLead, setMarkingLead] = useState(false)
+  const [markLeadError, setMarkLeadError] = useState<string | null>(null)
   const bottomRef             = useRef<HTMLDivElement>(null)
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
@@ -207,12 +208,14 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const handleMarkLeadCreated = async () => {
     if (!lead?.id || markingLead) return
     setMarkingLead(true)
+    setMarkLeadError(null)
     try {
       await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' })
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       onConversationChange?.()
-    } catch (_err) {
-      // non-fatal — operator can retry
+    } catch (err) {
+      const msg = (err as ApiError)?.message ?? 'Failed to create lead. Please try again.'
+      setMarkLeadError(msg)
     } finally {
       setMarkingLead(false)
     }
@@ -452,15 +455,65 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
           )}
 
-          {(activeTab === 'my_closed' || activeTab === 'all_closed') && lead && !(lead as any).created_in_crm && (
+          {lead && permissions.canReadMessages && (
             <div className="px-4 py-2">
-              <button
-                onClick={handleMarkLeadCreated}
-                disabled={markingLead}
-                className="w-full py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 text-xs font-medium hover:bg-emerald-100 disabled:opacity-60 transition-all"
-              >
-                {markingLead ? 'Marking...' : 'Lead Created'}
-              </button>
+              {markLeadError && (
+                <div className="mb-2 px-2 py-1.5 rounded border border-red-200 bg-red-50 text-[11px] text-red-700">
+                  {markLeadError}
+                </div>
+              )}
+              {(() => {
+                const hasName  = !!lead.visitor_name?.trim() || !!conv.visitor_name?.trim()
+                const hasEmail = !!lead.visitor_email?.trim() || !!conv.visitor_email?.trim()
+                const hasPhone = !!lead.visitor_phone?.trim() || !!conv.visitor_phone?.trim()
+                const missing: string[] = []
+                if (!hasName)  missing.push('name')
+                if (!hasEmail) missing.push('email')
+                if (!hasPhone) missing.push('phone')
+                const isCreated  = lead.created_in_crm === true
+                const hasAllData = missing.length === 0
+
+                if (isCreated) {
+                  return (
+                    <button
+                      disabled
+                      className="w-full py-2 rounded-lg border border-emerald-400 bg-emerald-100 text-emerald-800 text-xs font-semibold cursor-default flex items-center justify-center gap-1.5"
+                    >
+                      <Check className="w-3 h-3" />
+                      Lead Created
+                    </button>
+                  )
+                }
+                if (markingLead) {
+                  return (
+                    <button
+                      disabled
+                      className="w-full py-2 rounded-lg border border-gray-300 bg-gray-50 text-gray-500 text-xs font-medium cursor-wait"
+                    >
+                      Creating...
+                    </button>
+                  )
+                }
+                if (!hasAllData) {
+                  return (
+                    <button
+                      disabled
+                      title={`Missing: ${missing.join(', ')}`}
+                      className="w-full py-2 rounded-lg border border-gray-200 bg-gray-50 text-gray-400 text-xs font-medium cursor-not-allowed"
+                    >
+                      Create Lead
+                    </button>
+                  )
+                }
+                return (
+                  <button
+                    onClick={handleMarkLeadCreated}
+                    className="w-full py-2 rounded-lg border border-[#C9A54E] bg-[#C9A54E]/10 text-[#0B1829] text-xs font-semibold hover:bg-[#C9A54E]/20 transition-all"
+                  >
+                    Create Lead
+                  </button>
+                )
+              })()}
             </div>
           )}
 
