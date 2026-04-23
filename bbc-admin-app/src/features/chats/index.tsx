@@ -30,6 +30,7 @@ const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: R
 ]
 
 const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
+  { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
   { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
   { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
 ]
@@ -48,12 +49,16 @@ export function Chats() {
   const roleRaw = useAuthStore((s) => s.auth.user?.role)
   const role = Array.isArray(roleRaw) ? roleRaw[0] : (roleRaw ?? 'sales')
   const isManager = ['owner', 'admin', 'dev', 'qa', 'supervisor'].includes(role)
-  const visibleTabs = isManager ? MANAGER_TABS : AGENT_TABS
+  // My Active hidden for admin/supervisor/qa — they oversee the queue, don't claim conversations
+  const hideMyActive = ['admin', 'supervisor', 'qa'].includes(role)
+  const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
+    (t) => !(hideMyActive && t.key === 'my_active')
+  )
 
   // Highlight from URL param (click from bell dropdown)
   const urlHighlight = new URLSearchParams(window.location.search).get('highlight')
 
-  const [activeTab, setActiveTab] = useState<TabKey>(isManager ? 'all_active' : 'my_active')
+  const [activeTab, setActiveTab] = useState<TabKey>(hideMyActive ? 'all_active' : 'my_active')
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
