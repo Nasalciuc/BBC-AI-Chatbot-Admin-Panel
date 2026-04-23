@@ -12,6 +12,9 @@ router = APIRouter()
 VALID_ROLES = {"owner", "admin", "sales", "support", "supervisor"}
 VALID_TUNNELS = {"sales", "support", "all"}
 PRIVILEGED = {"owner", "admin", "dev"}
+# Roles that can read user list (extends PRIVILEGED for reassign dropdown).
+# Write operations (update, invite, delete) remain restricted to PRIVILEGED only.
+CAN_LIST_USERS = PRIVILEGED | {"supervisor"}
 
 
 @router.get("/admin/users")
@@ -22,7 +25,7 @@ async def list_users(
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
-    if user.get("role") not in PRIVILEGED:
+    if user.get("role") not in CAN_LIST_USERS:
         raise HTTPException(status_code=403, detail="Only owner/admin can list users")
     try:
         rows, total = await db.get_users(role=role, search=search, limit=limit, offset=offset)
