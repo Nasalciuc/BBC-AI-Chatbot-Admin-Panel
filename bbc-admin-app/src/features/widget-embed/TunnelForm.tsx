@@ -23,7 +23,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
       onSubmit({ name: name.trim(), phone: phone.trim(), email: email.trim() })
     } else {
       if (!email.trim() && !phone.trim()) return setError('Please enter your email or phone')
-      if (!bookingId.trim()) return setError('Please enter your booking ID')
+      if (!bookingId.trim()) return setError('Please enter your ticket number')
       onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, booking_id: bookingId.trim() })
     }
   }
@@ -71,7 +71,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack }: Props) {
         ) : (
           <>
             <input style={inputStyle} placeholder="Email or phone *" value={email} onChange={e => setEmail(e.target.value)} />
-            <input style={inputStyle} placeholder="Booking ID *" value={bookingId} onChange={e => setBookingId(e.target.value)} />
+            <input style={inputStyle} placeholder="Ticket Number *" value={bookingId} onChange={e => setBookingId(e.target.value)} />
           </>
         )}
         {error && <p style={{ color: '#ef4444', fontSize: 12, margin: 0 }}>{error}</p>}
