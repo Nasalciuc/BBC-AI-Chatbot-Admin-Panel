@@ -182,7 +182,7 @@ and a consultant can give you options right away."
 
 SUPPORT_INSTRUCTIONS = """[TUNNEL: SUPPORT]
 Your goal: resolve booking issues efficiently.
-For changes/cancellations: collect booking ID, then say a team member will review within 2 hours.
+For changes/cancellations: collect ticket number, then say a team member will review within 2 hours.
 NEVER discuss pricing or offer new bookings — redirect to Sales."""
 
 
