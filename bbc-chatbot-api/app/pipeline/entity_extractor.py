@@ -44,21 +44,65 @@ AIRPORTS = {
     "IST", "DOH", "AUH", "EWR", "IAD", "DFW", "SEA", "DEN", "PHX", "LGA",
     "YYZ", "YVR", "MEX", "GRU", "SCL", "LIM", "BOG", "PTY", "SYD", "MEL",
     "ZRH", "VIE", "MUC", "CPH", "OSL", "ARN", "HEL", "LIS", "DUB", "EDI",
+    # Extended coverage — popular BBC destinations
+    "MXP", "LIN", "BKK", "DEL", "BOM", "CAI", "JNB", "EZE", "GIG",
+    "KUL", "CGK", "MNL", "TPE", "KIX", "PEK", "PVG", "CAN",
+    "NBO", "LOS", "ACC", "CMN", "ATH", "WAW", "PRG", "BUD", "OTP",
+    "BRU", "NCE", "LYO", "MAN", "YUL", "YYC", "HNL",
+    "LAS", "MCO", "IAH", "PHL", "CLT", "PDX", "SAN", "TPA", "MSP",
+    "DTW", "SLC", "MSY", "BNA", "AUS", "RDU", "PIT", "CLE", "CMH",
+    "IND", "STL", "MKE", "MCI", "CVG", "RUH",
 }
 AIRPORT_RE = re.compile(r'\b([A-Z]{3})\b')
 
 CITY_TO_CODE = {
+    # North America
     "new york": "JFK", "nyc": "JFK", "manhattan": "JFK",
-    "london": "LHR", "paris": "CDG", "rome": "FCO",
-    "los angeles": "LAX", "la": "LAX", "san francisco": "SFO",
+    "los angeles": "LAX", "la": "LAX",
+    "san francisco": "SFO", "sf": "SFO",
     "chicago": "ORD", "miami": "MIA", "boston": "BOS",
-    "dubai": "DXB", "singapore": "SIN", "hong kong": "HKG",
-    "tokyo": "NRT", "frankfurt": "FRA", "amsterdam": "AMS",
-    "madrid": "MAD", "barcelona": "BCN", "istanbul": "IST",
     "atlanta": "ATL", "seattle": "SEA", "denver": "DEN",
-    "toronto": "YYZ", "vancouver": "YVR", "zurich": "ZRH",
-    "vienna": "VIE", "munich": "MUC", "sydney": "SYD",
+    "dallas": "DFW", "houston": "IAH",
+    "washington": "IAD", "dc": "IAD",
+    "philadelphia": "PHL", "charlotte": "CLT", "phoenix": "PHX",
+    "portland": "PDX", "san diego": "SAN", "tampa": "TPA",
+    "minneapolis": "MSP", "detroit": "DTW", "salt lake city": "SLC",
+    "new orleans": "MSY", "nashville": "BNA", "austin": "AUS",
+    "raleigh": "RDU", "pittsburgh": "PIT", "cleveland": "CLE",
+    "columbus": "CMH", "indianapolis": "IND",
+    "st louis": "STL", "saint louis": "STL",
+    "milwaukee": "MKE", "kansas city": "MCI", "cincinnati": "CVG",
+    "las vegas": "LAS", "orlando": "MCO", "honolulu": "HNL",
+    "toronto": "YYZ", "vancouver": "YVR", "montreal": "YUL", "calgary": "YYC",
+    "mexico city": "MEX",
+    # Europe
+    "london": "LHR", "paris": "CDG", "rome": "FCO", "roma": "FCO",
+    "milan": "MXP", "milano": "MXP",
+    "frankfurt": "FRA", "amsterdam": "AMS",
+    "madrid": "MAD", "barcelona": "BCN", "istanbul": "IST",
+    "zurich": "ZRH", "vienna": "VIE", "munich": "MUC",
     "dublin": "DUB", "lisbon": "LIS", "copenhagen": "CPH",
+    "athens": "ATH", "warsaw": "WAW", "prague": "PRG",
+    "budapest": "BUD", "bucharest": "OTP",
+    "helsinki": "HEL", "oslo": "OSL", "stockholm": "ARN",
+    "brussels": "BRU", "nice": "NCE", "lyon": "LYO",
+    "edinburgh": "EDI", "manchester": "MAN",
+    # Middle East
+    "dubai": "DXB", "doha": "DOH", "abu dhabi": "AUH", "riyadh": "RUH",
+    # Asia Pacific
+    "singapore": "SIN", "hong kong": "HKG",
+    "tokyo": "NRT", "osaka": "KIX",
+    "seoul": "ICN", "beijing": "PEK", "shanghai": "PVG",
+    "guangzhou": "CAN", "taipei": "TPE",
+    "bangkok": "BKK", "kuala lumpur": "KUL", "jakarta": "CGK",
+    "manila": "MNL", "delhi": "DEL", "new delhi": "DEL", "mumbai": "BOM",
+    "sydney": "SYD", "melbourne": "MEL",
+    # South America
+    "sao paulo": "GRU", "rio de janeiro": "GIG", "rio": "GIG",
+    "buenos aires": "EZE", "lima": "LIM", "bogota": "BOG",
+    # Africa
+    "cairo": "CAI", "johannesburg": "JNB", "nairobi": "NBO",
+    "lagos": "LOS", "accra": "ACC", "casablanca": "CMN",
 }
 
 NAME_PATTERNS = [
@@ -77,6 +121,11 @@ CABIN_MAP = {
 
 ROUTE_RE = re.compile(
     r'(?:(?:from|departing|leaving|flying)\s+)?([\w\s]{2,25}?)\s+(?:to|→|->|–)\s+([\w\s]{2,25}?)(?:\s|$|[,.])',
+    re.I,
+)
+# "flights from Dallas to Dubai" — ROUTE_RE alone captures origin wrong; this disambiguates.
+ROUTE_FROM_TO_RE = re.compile(
+    r'\bfrom\s+([\w\s]{2,25}?)\s+(?:to|→|->|–)\s+([\w\s]{2,25}?)(?:\s|$|[,.])',
     re.I,
 )
 
@@ -229,6 +278,13 @@ def extract_entities(message: str) -> ExtractedEntities:
             dest = m.group(2).strip().lower()
             entities.origin_code = CITY_TO_CODE.get(origin) or (origin.upper() if origin.upper() in AIRPORTS else None)
             entities.destination_code = CITY_TO_CODE.get(dest) or (dest.upper() if dest.upper() in AIRPORTS else None)
+        if not entities.origin_code or not entities.destination_code:
+            m2 = ROUTE_FROM_TO_RE.search(text)
+            if m2:
+                origin = m2.group(1).strip().lower()
+                dest = m2.group(2).strip().lower()
+                entities.origin_code = CITY_TO_CODE.get(origin) or (origin.upper() if origin.upper() in AIRPORTS else None)
+                entities.destination_code = CITY_TO_CODE.get(dest) or (dest.upper() if dest.upper() in AIRPORTS else None)
 
     # 6. Passengers
     m = PAX_RE.search(text)

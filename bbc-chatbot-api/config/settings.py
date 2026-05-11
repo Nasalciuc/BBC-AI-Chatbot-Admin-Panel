@@ -61,7 +61,7 @@ class Settings(BaseSettings):
 
     # Agent Presence & Routing
     max_concurrent_chats: int = 1
-    agent_timeout_seconds: int = 120
+    agent_timeout_seconds: int = 600
     agent_silent_timeout_seconds: int = 300
 
     # System messages shown during routing flow
