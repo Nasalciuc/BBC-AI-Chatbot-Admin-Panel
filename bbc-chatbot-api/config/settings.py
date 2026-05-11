@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     heartbeat_welcome_support: str = "Let’s continue — what can I help you with?"
 
     # CRM
-    crm_api_url: str = "https://crm.buybusinessclass.com/ai"
+    crm_api_url: str = "https://webapi.buybusinessclass.com"
     crm_api_token: str = ""
 
     # Postmark email
