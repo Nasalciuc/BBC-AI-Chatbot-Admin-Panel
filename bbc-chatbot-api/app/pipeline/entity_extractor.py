@@ -76,7 +76,7 @@ CABIN_MAP = {
 }
 
 ROUTE_RE = re.compile(
-    r'(?:from|departing|leaving|flying)\s+([\w\s]{2,25}?)\s+(?:to|→|->|–)\s+([\w\s]{2,25}?)(?:\s|$|[,.])',
+    r'(?:(?:from|departing|leaving|flying)\s+)?([\w\s]{2,25}?)\s+(?:to|→|->|–)\s+([\w\s]{2,25}?)(?:\s|$|[,.])',
     re.I,
 )
 
@@ -227,8 +227,8 @@ def extract_entities(message: str) -> ExtractedEntities:
         if m:
             origin = m.group(1).strip().lower()
             dest = m.group(2).strip().lower()
-            entities.origin_code = CITY_TO_CODE.get(origin)
-            entities.destination_code = CITY_TO_CODE.get(dest)
+            entities.origin_code = CITY_TO_CODE.get(origin) or (origin.upper() if origin.upper() in AIRPORTS else None)
+            entities.destination_code = CITY_TO_CODE.get(dest) or (dest.upper() if dest.upper() in AIRPORTS else None)
 
     # 6. Passengers
     m = PAX_RE.search(text)
