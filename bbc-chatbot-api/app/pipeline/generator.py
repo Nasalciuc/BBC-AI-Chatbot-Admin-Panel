@@ -122,6 +122,50 @@ def generate_response(
     if intent == Intent.GREETING and user_msg_count > 1:
         intent = Intent.GENERAL_QUESTION
 
+    # ── AI-FIRST: All messages through Claude (templates = fallback only) ──
+    # Skip AI-first for: TALK_TO_AGENT (handoff logic), CLOSING (simple goodbye)
+    _template_only_intents = {Intent.TALK_TO_AGENT, Intent.CLOSING}
+    if intent not in _template_only_intents:
+        # Budget check before AI call
+        if budget_remaining is None or budget_remaining > 0:
+            try:
+                _system = build_conversational_prompt(
+                    tunnel=tunnel,
+                    visitor=visitor,
+                    lead=lead,
+                    kb_results=kb_results if kb_results else None,
+                    history=history if history else None,
+                    entities=entities,
+                )
+                _raw = entities.get("_raw_message", "")
+                _user_msgs = [m for m in (history or []) if m.get("role") == "user"]
+                _use_sonnet = len(_user_msgs) >= 5 or intent == Intent.BOOKING_CHANGE
+                if _use_sonnet and len(_raw) > 1500:
+                    _use_sonnet = False
+
+                if _use_sonnet:
+                    _ai_text, _ai_cost = call_sonnet(_system, _raw)
+                else:
+                    _ai_text, _ai_cost = call_haiku(_system, _raw)
+
+                if _ai_text:
+                    logger.info(f"AI-first response | model={'sonnet' if _use_sonnet else 'haiku'} | intent={intent.value}")
+                    return GeneratedResponse(
+                        text=_ai_text,
+                        model_used="sonnet" if _use_sonnet else "haiku",
+                        cost=_ai_cost,
+                    )
+                else:
+                    logger.warning("AI-first: Claude returned empty — falling through to templates")
+            except Exception as e:
+                logger.error(f"AI-first error (falling through to templates): {e}")
+
+    # ── TEMPLATE FALLBACK (original logic, unchanged) ────────
+    # Templates below activate ONLY if:
+    # 1. Intent is TALK_TO_AGENT or CLOSING (skipped AI above)
+    # 2. Claude failed/returned empty (fell through)
+    # 3. Budget exceeded (skipped AI above)
+
     # 1. Greeting
     if intent == Intent.GREETING:
         text = get_template("welcome", tunnel, visitor)
