@@ -8,6 +8,7 @@ from config.settings import settings
 from app.models.chat import ChatResponse, VisitorInfo
 from app.models.kb import KBResult
 from app.services import conversation_service, lead_service
+from app.services.crm import check_crm_ready, submit_to_crm
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response
@@ -165,6 +166,18 @@ async def _pipeline(
     if has_useful:
         await lead_service.update_lead_from_entities(cid, entities)
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and k != '_raw_message')}")
+
+    # ── STEP 4.5: CRM SUBMISSION ─────────────────────────────
+    if tunnel == "sales" and settings.crm_api_url and has_useful:
+        try:
+            _lead = await lead_service.get_or_create_lead(cid)
+            if _lead and not _lead.get("created_in_crm"):
+                if check_crm_ready(_lead, visitor):
+                    _crm = await submit_to_crm(_lead, visitor, cid)
+                    if _crm.success:
+                        await db.mark_lead_created_in_crm(_lead["id"])
+        except Exception as e:
+            logger.error(f"CRM step error (non-blocking): {e}")
 
     # ── STEP 5: KB SEARCH ────────────────────────────────────
     kb_results: list[KBResult] = []
