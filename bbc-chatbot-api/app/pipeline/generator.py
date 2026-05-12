@@ -274,7 +274,12 @@ def generate_response(
         )
 
         if has_some_data:
-            missing = get_missing_fields(lead)
+            conv_from_visitor = {
+                "visitor_name": visitor.name,
+                "visitor_email": visitor.email,
+                "visitor_phone": visitor.phone,
+            }
+            missing = get_missing_fields(lead, conv_from_visitor)
 
             if not missing:
                 # All fields captured → hand off to specialist
@@ -301,7 +306,11 @@ def generate_response(
                 pass  # Don't ask for route via template — too complex
 
             # Dates missing → ask dates (if we didn't just ask)
-            elif "travel dates" in missing_str:
+            elif (
+                "travel dates" in missing_str
+                or "departure date" in missing_str
+                or "return date" in missing_str
+            ):
                 if not any(w in last_ai for w in ["when", "dates", "travel", "flexibility"]):
                     # If we have origin+destination, use confirm_route template
                     if lead.get("origin_code") and lead.get("destination_code"):
