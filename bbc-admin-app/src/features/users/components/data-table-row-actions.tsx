@@ -1,6 +1,8 @@
 import { DotsHorizontalIcon } from '@radix-ui/react-icons'
 import { type Row } from '@tanstack/react-table'
-import { Trash2, UserPen } from 'lucide-react'
+import { Mail, Trash2, UserPen } from 'lucide-react'
+import { toast } from 'sonner'
+import { inviteUser } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 import { Button } from '@/components/ui/button'
 import {
@@ -46,6 +48,28 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
               <UserPen size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
+          {row.original.is_active && !row.original.last_seen_at && (
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  await inviteUser({
+                    name: row.original.name || '',
+                    email: row.original.email,
+                    role: row.original.role,
+                    tunnel_scope: row.original.tunnel_scope || 'sales',
+                  })
+                  toast.success('Invite resent successfully')
+                } catch (err: unknown) {
+                  toast.error(err instanceof Error ? err.message : 'Failed to resend invite')
+                }
+              }}
+            >
+              Resend Invite
+              <DropdownMenuShortcut>
+                <Mail size={16} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => {
