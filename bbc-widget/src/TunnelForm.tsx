@@ -35,11 +35,13 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
 
       const phoneTrimmed = phone.trim()
       const normalizedPhone = phoneTrimmed === '+' ? '' : phoneTrimmed
-      if (normalizedPhone) {
-        if (!validatePhone(normalizedPhone, detectedCountry)) {
-          setPhoneError(true)
-          return setError(`Invalid phone number for ${detectedCountry.name}`)
-        }
+      if (!normalizedPhone || normalizedPhone.length < 8) {
+        setPhoneError(true)
+        return setError('Please enter your phone number')
+      }
+      if (!validatePhone(normalizedPhone, detectedCountry)) {
+        setPhoneError(true)
+        return setError(`Invalid phone number for ${detectedCountry.name}`)
       }
 
       if (!email.trim() || !email.includes('@')) return setError('Please enter a valid email')
@@ -100,7 +102,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
 
             <div>
               <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
-                Phone <span style={{ opacity: 0.8 }}>(optional)</span>
+                Phone <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <div
                 style={{
