@@ -56,7 +56,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
                     name: row.original.name || '',
                     email: row.original.email,
                     role: row.original.role,
-                    tunnel_scope: row.original.tunnel_scope || 'sales',
+                    tunnel_scope: row.original.tunnel_scope || 'all',
                   })
                   toast.success('Invite resent successfully')
                 } catch (err: unknown) {
