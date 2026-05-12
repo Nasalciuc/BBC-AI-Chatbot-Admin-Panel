@@ -165,8 +165,46 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
                     "email_sent": email_sent,
                 },
             }
-        else:
-            raise HTTPException(409, "Email already in use by an active user")
+        # Active user without password = invite not completed → allow reinvite
+        if not existing.get("password_hash"):
+            user_id = existing["id"]
+            await db.invalidate_active_invite_tokens(user_id, purpose="set_password")
+            token = generate_invite_token()
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                minutes=settings.invite_link_expiry_minutes
+            )
+            token_row = await db.create_invite_token({
+                "user_id": user_id,
+                "token": token,
+                "purpose": "set_password",
+                "expires_at": expires_at.isoformat(),
+                "created_by": current_user.get("id"),
+            })
+            if not token_row:
+                raise HTTPException(500, "Failed to generate invite token")
+
+            invite_url = (
+                f"{settings.admin_panel_url.rstrip('/')}"
+                f"{settings.invite_link_path}?token={token}"
+            )
+            email_sent = await send_invite_email(
+                req.email.lower().strip(),
+                existing.get("name") or req.name,
+                invite_url,
+                settings.invite_link_expiry_minutes,
+            )
+            logger.info(f"Reinvite sent to {req.email} (email_sent={email_sent})")
+            return {
+                "success": True,
+                "data": {
+                    "id": user_id,
+                    "email": req.email.lower().strip(),
+                    "reinvited": True,
+                    "email_sent": email_sent,
+                },
+            }
+
+        raise HTTPException(409, "Email already in use by an active user")
 
     user = await db.create_user({
         "email": req.email.lower().strip(),
