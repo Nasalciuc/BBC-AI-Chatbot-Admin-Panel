@@ -152,7 +152,19 @@ export function UsersInviteDialog({
                   <FormLabel>Role</FormLabel>
                   <SelectDropdown
                     defaultValue={field.value}
-                    onValueChange={field.onChange}
+                    onValueChange={(newRole: string) => {
+                      field.onChange(newRole)
+                      // Auto-set tunnel based on role
+                      const tunnelMap: Record<string, string> = {
+                        sales: 'sales',
+                        support: 'support',
+                        owner: 'all',
+                        admin: 'all',
+                      }
+                      if (tunnelMap[newRole]) {
+                        form.setValue('tunnel_scope', tunnelMap[newRole])
+                      }
+                    }}
                     placeholder='Select a role'
                     items={roles.map(({ label, value }) => ({
                       label,
