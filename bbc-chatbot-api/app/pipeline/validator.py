@@ -85,6 +85,12 @@ def validate_response(text: str) -> str:
     if not result.strip():
         return EMPTY_FALLBACK
 
+    # 5b. Strip markdown formatting — widget renders plain text
+    result = re.sub(r"\*\*(.+?)\*\*", r"\1", result)  # **bold** → bold
+    result = re.sub(r"\*(.+?)\*", r"\1", result)  # *italic* → italic
+    result = re.sub(r"#{1,3}\s*", "", result)  # ## headers → remove
+    result = re.sub(r"^[-•]\s+", "", result, flags=re.MULTILINE)  # bullet points → remove
+
     # 6. XSS prevention: strip any HTML tags from AI output
     result = re.sub(r"<[^>]+>", "", result)
 
