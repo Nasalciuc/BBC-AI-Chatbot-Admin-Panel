@@ -10,7 +10,7 @@ interface Message {
 
 interface Props {
   tunnel: 'sales' | 'support'
-  visitor: { name?: string; email?: string; phone?: string }
+  visitor: { name?: string; email?: string; phone?: string; country_code?: string }
   metadata?: { booking_id?: string }
   onClose: () => void
   apiUrl: string
@@ -263,6 +263,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             name: visitor.name || null,
             email: visitor.email || null,
             phone: visitor.phone || null,
+            country_code: visitor.country_code || null,
           },
           metadata: metadata || {},
           visitor_id: getVisitorId(),
