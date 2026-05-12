@@ -122,7 +122,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   const [tunnel, setTunnel] = useState<'sales' | 'support'>(
     restored?.tunnel || (hasOptimisticSession ? savedTunnel : 'sales')
   )
-  const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string }>(
+  const [visitor, setVisitor] = useState<{ name?: string; email?: string; phone?: string; country_code?: string }>(
     restored?.visitor || savedVisitor || {}
   )
   const [metadata, setMetadata] = useState<{ booking_id?: string }>(
@@ -303,11 +303,11 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     autoOpenedRef.current = true
   }
 
-  const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; booking_id?: string }) => {
+  const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => {
     // Ensure visitor_id exists before entering chat
     ensureVisitorId()
 
-    const vis = { name: data.name, email: data.email, phone: data.phone }
+    const vis = { name: data.name, email: data.email, phone: data.phone, country_code: data.country_code }
     const meta = data.booking_id ? { booking_id: data.booking_id } : {}
 
     // Visitor mismatch check — clear old session if different person
