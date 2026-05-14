@@ -152,7 +152,10 @@ COLLECTION STRATEGY:
 - CONFIRM what you heard + ASK what is missing in the SAME response
 - Never push more than 3 times for any single field — offer phone +1 (888) 322-7999 as alternative
 
-SUMMARY — when you have ALL required fields, confirm with the customer:
+SUMMARY — show this ONLY when "Still needed" is empty AND "CRM" shows "Submitted" or "Ready to submit":
+If "Still needed" lists ANY field, do NOT show the summary — collect the missing data instead.
+If "CRM" shows "Waiting", do NOT say "submitted" or "confirmed" — data is still incomplete.
+When conditions are met, confirm with the customer:
 "Let me confirm your request:
 ✈ [Origin] to [Destination]
 📅 [Departure date] — [Return date / One-way]
@@ -304,6 +307,13 @@ def build_conversational_prompt(
             visitor_lines.append(f"Collected: {', '.join(collected_items)}")
         if missing:
             visitor_lines.append(f"Still needed: {', '.join(missing)}")
+        # CRM status — prevents AI from saying "submitted" when it hasn't been
+        if lead.get("created_in_crm"):
+            visitor_lines.append("CRM: Submitted — consultant will call soon")
+        elif not missing:
+            visitor_lines.append("CRM: Ready to submit")
+        else:
+            visitor_lines.append("CRM: Waiting — collect missing data first")
     # Count only real user messages for stage detection
     user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
     visitor_lines.append(f"Conversation stage: {_conversation_stage(user_msg_count)}")
