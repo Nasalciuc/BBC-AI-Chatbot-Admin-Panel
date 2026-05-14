@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""  # Optional for dev — required only for AI pipeline
     claude_haiku_model: str = "claude-haiku-4-5-20251001"
     claude_sonnet_model: str = "claude-sonnet-4-20250514"
-    claude_timeout: int = 8
+    claude_timeout: int = 5
 
     # Supabase
     supabase_url: str  # REQUIRED
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     rate_daily_max: int = 300
 
     # Pipeline
-    pipeline_timeout: int = 10
+    pipeline_timeout: int = 20
     max_message_length: int = 2000
     max_messages_per_conversation: int = 50
 
