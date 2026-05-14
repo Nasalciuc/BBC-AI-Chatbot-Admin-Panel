@@ -176,12 +176,13 @@ async def _pipeline(
                     _crm = await submit_to_crm(_lead, visitor, cid)
                     if _crm.success:
                         await db.mark_lead_created_in_crm(_lead["id"])
-                        # Agent will contact via phone from CRM — no chat routing needed
+                        # Lead sent to CRM — close conversation, agent calls from CRM
                         await db.update_conversation(cid, {
+                            "status": "closed",
                             "mode": "ai",
                             "assigned_agent_id": None,
                         })
-                        logger.info(f"[{cid}] CRM submitted — routing disabled, AI-only mode")
+                        logger.info(f"[{cid}] CRM submitted — conversation closed")
         except Exception as e:
             logger.error(f"CRM step error (non-blocking): {e}")
 
