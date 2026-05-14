@@ -76,6 +76,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         if entities.get("cabin_class"):     lead_payload["cabin_class"]      = entities["cabin_class"]
         if entities.get("departure_date"):  lead_payload["departure_date"]   = entities["departure_date"]
         if entities.get("return_date"):     lead_payload["return_date"]      = entities["return_date"]
+        if entities.get("trip_type"):       lead_payload["trip_type"]        = entities["trip_type"]
         # Set human-readable route display for handoff messages
         if entities.get("origin") and entities.get("destination"):
             lead_payload["route_display"] = f"{entities['origin']} → {entities['destination']}"

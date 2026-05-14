@@ -27,6 +27,7 @@ class ExtractedEntities:
     cabin_class: Optional[str] = None
     departure_date: Optional[str] = None   # YYYY-MM-DD
     return_date: Optional[str] = None      # YYYY-MM-DD
+    trip_type: Optional[str] = None        # one_way, round_trip
 
 
 # ── Patterns ──────────────────────────────────────────────────
@@ -159,6 +160,14 @@ ROUTE_RE = re.compile(
 ROUTE_FROM_TO_RE = re.compile(
     r'\bfrom\s+([\w\s]{2,25}?)\s+(?:to|→|->|–)\s+([\w\s]{2,25}?)(?:\s|$|[,.])',
     re.I,
+)
+
+# Trip type detection
+ONE_WAY_RE = re.compile(
+    r'\b(?:one[\s\-]?way|ow|single|only\s+going)\b', re.I
+)
+ROUND_TRIP_RE = re.compile(
+    r'\b(?:round[\s\-]?trip|rt|return\s+(?:trip|flight)|back\s+and\s+forth)\b', re.I
 )
 
 # ── Date extraction ───────────────────────────────────────────
@@ -374,6 +383,12 @@ def extract_entities(message: str) -> ExtractedEntities:
     if m:
         entities.cabin_class = CABIN_MAP.get(m.group(1).lower().strip(), "business")
 
+    # 7b. Trip type (one-way vs round-trip)
+    if ONE_WAY_RE.search(text):
+        entities.trip_type = "one_way"
+    elif ROUND_TRIP_RE.search(text):
+        entities.trip_type = "round_trip"
+
     # 8. Dates
     dep, ret = _extract_dates(text)
     if dep:
@@ -381,8 +396,12 @@ def extract_entities(message: str) -> ExtractedEntities:
     if ret:
         entities.return_date = ret
 
+    # Infer trip_type from return_date if not explicitly stated
+    if entities.return_date and not entities.trip_type:
+        entities.trip_type = "round_trip"
+
     found = [k for k in ["email", "phone", "name", "origin_code", "destination_code",
-                          "passengers", "cabin_class", "departure_date", "return_date"]
+                          "passengers", "cabin_class", "departure_date", "return_date", "trip_type"]
              if getattr(entities, k) is not None]
     if found:
         logger.info(f"Entities extracted: {', '.join(found)}")

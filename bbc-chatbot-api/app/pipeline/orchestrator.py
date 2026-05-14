@@ -160,6 +160,7 @@ async def _pipeline(
         "cabin_class": extracted.cabin_class,
         "departure_date": extracted.departure_date,
         "return_date": extracted.return_date,
+        "trip_type": extracted.trip_type,
     }
 
     # ── STEP 4.1: CLAUDE IATA FALLBACK ──────────────────────
@@ -202,11 +203,10 @@ async def _pipeline(
                         await db.mark_lead_created_in_crm(_lead["id"])
                         # Lead sent to CRM — close conversation, agent calls from CRM
                         await db.update_conversation(cid, {
-                            "status": "closed",
                             "mode": "ai",
                             "assigned_agent_id": None,
                         })
-                        logger.info(f"[{cid}] CRM submitted — conversation closed")
+                        logger.info(f"[{cid}] CRM submitted — AI-only, agent can take manually")
         except Exception as e:
             logger.error(f"CRM step error (non-blocking): {e}")
 
