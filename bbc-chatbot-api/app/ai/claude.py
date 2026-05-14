@@ -50,7 +50,7 @@ def call_haiku(system_prompt: str, user_message: str) -> tuple[Optional[str], fl
         model=settings.claude_haiku_model,
         system_prompt=system_prompt,
         user_message=user_message,
-        max_tokens=200,
+        max_tokens=150,
         temperature=0.3,
     )
 
@@ -61,7 +61,7 @@ def call_sonnet(system_prompt: str, user_message: str) -> tuple[Optional[str], f
         model=settings.claude_sonnet_model,
         system_prompt=system_prompt,
         user_message=user_message,
-        max_tokens=300,
+        max_tokens=200,
         temperature=0.4,
     )
 
