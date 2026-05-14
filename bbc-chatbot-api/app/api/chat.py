@@ -20,6 +20,7 @@ from app.security.rate_limiter import check_rate_limit
 from app.pipeline.orchestrator import process_message
 from app.db import supabase as db
 from app.realtime.manager import manager
+from app.services import lead_service
 
 from pydantic import BaseModel
 
@@ -79,6 +80,63 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                 'mode': reopen_mode,
             })
             # Fall through: if assigned agent exists, message is queued for human mode.
+
+    # ── POST-CRM: re-route to operator or template ──────────
+    if req.conversation_id:
+        _lead = await lead_service.get_or_create_lead(req.conversation_id)
+        if _lead and _lead.get("created_in_crm"):
+            _post_crm_mode = await db.get_conversation_mode(req.conversation_id)
+            if _post_crm_mode == "ai":
+                # Lead already submitted — try routing to available agent (once per AI rail)
+                from app.services.routing import route_conversation
+                from app.services.conversation_service import add_message as _postcrm_add
+                _route = await route_conversation(
+                    req.tunnel, visitor=req.visitor, visitor_id=req.visitor_id
+                )
+                if _route and _route.get("agent_id"):
+                    from app.services.handoff import perform_handoff_to_agent
+                    _agent_name = _route.get("agent_name", "a consultant")
+                    await _postcrm_add(
+                        conversation_id=req.conversation_id,
+                        role="user",
+                        content=clean_message,
+                    )
+                    await perform_handoff_to_agent(
+                        conversation_id=req.conversation_id,
+                        agent_id=_route["agent_id"],
+                        agent_name=_agent_name,
+                        tunnel=req.tunnel,
+                        emit_messages=True,
+                    )
+                    return ChatResponse(
+                        conversation_id=req.conversation_id,
+                        message=f"Connecting you with {_agent_name}!",
+                        type="handoff",
+                        model_used="none",
+                    )
+                _post_crm_msg = (
+                    "Your flight request is confirmed! A travel consultant "
+                    "will contact you shortly. For immediate help, "
+                    "call +1 (888) 322-7999."
+                )
+                await _postcrm_add(
+                    conversation_id=req.conversation_id,
+                    role="user",
+                    content=clean_message,
+                )
+                await _postcrm_add(
+                    req.conversation_id,
+                    "ai",
+                    _post_crm_msg,
+                    "template",
+                    0.0,
+                )
+                return ChatResponse(
+                    conversation_id=req.conversation_id,
+                    message=_post_crm_msg,
+                    type="template",
+                    model_used="template",
+                )
 
     # 3. If existing conversation in 'human' mode
     if req.conversation_id:
