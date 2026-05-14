@@ -9,6 +9,7 @@ from app.models.chat import ChatResponse, VisitorInfo
 from app.models.kb import KBResult
 from app.services import conversation_service, lead_service
 from app.services.crm import check_crm_ready, submit_to_crm
+from app.pipeline.iata_extractor import extract_iata_via_claude
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response
@@ -160,6 +161,22 @@ async def _pipeline(
         "departure_date": extracted.departure_date,
         "return_date": extracted.return_date,
     }
+
+    # ── STEP 4.1: CLAUDE IATA FALLBACK ──────────────────────
+    # If regex missed origin OR destination, ask Claude to extract IATA codes
+    if not entities.get("origin") or not entities.get("destination"):
+        try:
+            iata = await extract_iata_via_claude(message)
+            if iata.get("origin") and not entities.get("origin"):
+                entities["origin"] = iata["origin"]
+                logger.info(f"[{cid}] IATA fallback: origin={iata['origin']}")
+            if iata.get("destination") and not entities.get("destination"):
+                entities["destination"] = iata["destination"]
+                logger.info(f"[{cid}] IATA fallback: destination={iata['destination']}")
+            if iata.get("passengers") and not entities.get("passengers"):
+                entities["passengers"] = iata["passengers"]
+        except Exception as e:
+            logger.warning(f"[{cid}] IATA fallback failed (non-blocking): {e}")
 
     # Update lead with all extracted entities
     has_useful = any(entities.get(k) for k in ["name", "email", "phone", "origin", "destination", "departure_date"])

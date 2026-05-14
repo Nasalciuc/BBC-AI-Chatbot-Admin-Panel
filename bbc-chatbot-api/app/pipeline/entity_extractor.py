@@ -52,6 +52,9 @@ AIRPORTS = {
     "LAS", "MCO", "IAH", "PHL", "CLT", "PDX", "SAN", "TPA", "MSP",
     "DTW", "SLC", "MSY", "BNA", "AUS", "RDU", "PIT", "CLE", "CMH",
     "IND", "STL", "MKE", "MCI", "CVG", "RUH",
+    "KIV", "TAS", "BEG", "KBP", "TBS", "GYD", "TLL", "RIX", "VNO",
+    "SOF", "ZAG", "AKL", "CUN", "MAA", "CCU", "BLR", "HYD",
+    "GOI", "JED", "MCT", "KWI", "AMM", "ADD", "DAR", "KGL",
 }
 AIRPORT_RE = re.compile(r'\b([A-Z]{3})\b')
 
@@ -103,6 +106,35 @@ CITY_TO_CODE = {
     # Africa
     "cairo": "CAI", "johannesburg": "JNB", "nairobi": "NBO",
     "lagos": "LOS", "accra": "ACC", "casablanca": "CMN",
+    # Abbreviations, typos, and missing cities
+    "mil": "MXP", "malpensa": "MXP",
+    "chisinau": "KIV", "kishinev": "KIV",
+    "istambul": "IST",
+    "tashkent": "TAS",
+    "belgrade": "BEG", "beograd": "BEG",
+    "kyiv": "KBP", "kiev": "KBP",
+    "tbilisi": "TBS",
+    "baku": "GYD",
+    "tallinn": "TLL",
+    "riga": "RIX",
+    "vilnius": "VNO",
+    "sofia": "SOF",
+    "zagreb": "ZAG",
+    "bucuresti": "OTP",
+    "auckland": "AKL",
+    "cancun": "CUN",
+    "chennai": "MAA", "madras": "MAA",
+    "kolkata": "CCU", "calcutta": "CCU",
+    "bangalore": "BLR", "bengaluru": "BLR",
+    "hyderabad": "HYD",
+    "goa": "GOI",
+    "jeddah": "JED",
+    "muscat": "MCT",
+    "kuwait": "KWI",
+    "amman": "AMM",
+    "addis ababa": "ADD", "addis": "ADD",
+    "dar es salaam": "DAR",
+    "kigali": "KGL",
 }
 
 NAME_PATTERNS = [
@@ -296,6 +328,14 @@ def extract_entities(message: str) -> ExtractedEntities:
         entities.passengers = 1
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
+
+    # Standalone single digit (1-9) — likely answering "how many passengers?"
+    if not entities.passengers:
+        standalone_m = re.match(r'^(\d)$', text.strip())
+        if standalone_m:
+            n = int(standalone_m.group(1))
+            if 1 <= n <= 9:
+                entities.passengers = n
 
     # 7. Cabin class
     m = CABIN_RE.search(text)
