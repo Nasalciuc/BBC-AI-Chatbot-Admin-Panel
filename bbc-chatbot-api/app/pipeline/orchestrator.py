@@ -164,15 +164,22 @@ async def _pipeline(
 
     # ── STEP 4.1: CLAUDE IATA FALLBACK ──────────────────────
     # If regex missed origin OR destination, ask Claude to extract IATA codes
-    if not entities.get("origin") or not entities.get("destination"):
+    # Detect impossible same-route (origin == destination, e.g. JFK→JFK)
+    _same_route = (
+        entities.get("origin") and entities.get("destination")
+        and entities["origin"] == entities["destination"]
+    )
+    if not entities.get("origin") or not entities.get("destination") or _same_route:
         try:
             iata = await extract_iata_via_claude(message)
-            if iata.get("origin") and not entities.get("origin"):
-                entities["origin"] = iata["origin"]
-                logger.info(f"[{cid}] IATA fallback: origin={iata['origin']}")
-            if iata.get("destination") and not entities.get("destination"):
-                entities["destination"] = iata["destination"]
-                logger.info(f"[{cid}] IATA fallback: destination={iata['destination']}")
+            if iata.get("origin"):
+                if not entities.get("origin") or _same_route:
+                    entities["origin"] = iata["origin"]
+                    logger.info(f"[{cid}] IATA fallback: origin={iata['origin']}")
+            if iata.get("destination"):
+                if not entities.get("destination") or _same_route:
+                    entities["destination"] = iata["destination"]
+                    logger.info(f"[{cid}] IATA fallback: destination={iata['destination']}")
             if iata.get("passengers") and not entities.get("passengers"):
                 entities["passengers"] = iata["passengers"]
         except Exception as e:
