@@ -300,23 +300,55 @@ def extract_entities(message: str) -> ExtractedEntities:
         entities.origin_code = codes[0]
         entities.destination_code = codes[1]
     elif len(codes) == 1:
-        entities.destination_code = codes[0]
+        # Context-aware: determine if code is origin or destination
+        code = codes[0]
+        code_lower = code.lower()
+        lower_text = text.lower()
+        from_match = re.search(
+            r'(?:from|departing|leaving)\s+' + re.escape(code_lower),
+            lower_text,
+        )
+        to_match = re.search(
+            r'(?:to|arriving|going\s+to|bound\s+for|heading\s+to)\s+' + re.escape(code_lower),
+            lower_text,
+        )
+        if from_match and not to_match:
+            entities.origin_code = code
+        elif to_match and not from_match:
+            entities.destination_code = code
+        # Both or neither matched? Don't assign — let ROUTE_RE / Claude handle it
 
-    # 5. City names → airport codes (fallback if no codes found)
-    if not entities.origin_code and not entities.destination_code:
+    # 5. City names → airport codes (fallback if either endpoint still missing)
+    if not entities.origin_code or not entities.destination_code:
         m = ROUTE_RE.search(text)
         if m:
             origin = m.group(1).strip().lower()
             dest = m.group(2).strip().lower()
-            entities.origin_code = CITY_TO_CODE.get(origin) or (origin.upper() if origin.upper() in AIRPORTS else None)
-            entities.destination_code = CITY_TO_CODE.get(dest) or (dest.upper() if dest.upper() in AIRPORTS else None)
+            origin_iata = CITY_TO_CODE.get(origin) or (
+                origin.upper() if origin.upper() in AIRPORTS else None
+            )
+            dest_iata = CITY_TO_CODE.get(dest) or (
+                dest.upper() if dest.upper() in AIRPORTS else None
+            )
+            if origin_iata and not entities.origin_code:
+                entities.origin_code = origin_iata
+            if dest_iata and not entities.destination_code:
+                entities.destination_code = dest_iata
         if not entities.origin_code or not entities.destination_code:
             m2 = ROUTE_FROM_TO_RE.search(text)
             if m2:
                 origin = m2.group(1).strip().lower()
                 dest = m2.group(2).strip().lower()
-                entities.origin_code = CITY_TO_CODE.get(origin) or (origin.upper() if origin.upper() in AIRPORTS else None)
-                entities.destination_code = CITY_TO_CODE.get(dest) or (dest.upper() if dest.upper() in AIRPORTS else None)
+                origin_iata = CITY_TO_CODE.get(origin) or (
+                    origin.upper() if origin.upper() in AIRPORTS else None
+                )
+                dest_iata = CITY_TO_CODE.get(dest) or (
+                    dest.upper() if dest.upper() in AIRPORTS else None
+                )
+                if origin_iata and not entities.origin_code:
+                    entities.origin_code = origin_iata
+                if dest_iata and not entities.destination_code:
+                    entities.destination_code = dest_iata
 
     # 6. Passengers
     m = PAX_RE.search(text)
