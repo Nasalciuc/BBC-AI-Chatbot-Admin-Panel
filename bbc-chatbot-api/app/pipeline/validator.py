@@ -37,7 +37,7 @@ HALLUCINATION_REPLACEMENT = (
     "Let me connect you with a specialist who can confirm those details."
 )
 
-MAX_LENGTH = 500
+MAX_LENGTH = 350
 EMPTY_FALLBACK = "How can I help you with business class travel today?"
 PRICE_REPLACEMENT = "contact our specialists for current pricing"
 
