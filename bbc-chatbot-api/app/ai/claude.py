@@ -131,9 +131,23 @@ def _call_model(
 TRAVEL_TOOL = {
     "name": "save_travel_details",
     "description": (
-        "Save extracted travel details from the customer message to the booking system. "
-        "Call this whenever the customer mentions flight routes, dates, passenger counts, "
-        "or travel preferences."
+        "Save travel details from the customer's message. "
+        "ALWAYS call when customer mentions ANY travel info, even partial or misspelled.\n"
+        "RULES:\n"
+        "1. CITIES: Convert to 3-letter IATA code. Handle typos: londn=LHR, dubei=DXB, millan=MXP, pariz=CDG. "
+        "Handle slang: nyc=JFK, la=LAX, lon=LHR, chi=ORD, sf=SFO, bos=BOS, vegas=LAS.\n"
+        "2. ORIGIN/DEST: First city mentioned=origin, second=destination. "
+        "'jfk lhr' means origin=JFK dest=LHR. 'I am from London, fly to Dubai' means origin=LHR dest=DXB.\n"
+        "3. CHANGED MIND: Use LAST mentioned value. 'from JFK no wait LAX' means origin=LAX. "
+        "Signals: actually, no wait, I mean, sorry, not X but Y.\n"
+        "4. IGNORE IRRELEVANT: 'friend works at JFK' — JFK is NOT origin. "
+        "'last time I flew to London' — ignore past trips, extract only CURRENT request.\n"
+        "5. PASSENGERS: '2 ppl'=2, 'couple'=2, 'solo'=1, 'just me'=1, "
+        "'me and wife'=2, 'family of 4'=4, 'three of us'=3, '2 adults'=2.\n"
+        "6. TRIP TYPE: oneway/ow/single=one_way. roundtrip/rt/return=round_trip. "
+        "If return date exists, use round_trip even if they said one way.\n"
+        "7. CABIN: business/biz/j class=business. first/f class=first. premium economy=premium_economy.\n"
+        "8. DATES: Convert to YYYY-MM-DD. 'june 15'=2026-06-15. If too vague like 'next month', omit."
     ),
     "input_schema": {
         "type": "object",
@@ -195,7 +209,7 @@ def call_haiku_with_tools(
         response = _get_client().messages.create(
             model=model,
             max_tokens=200,
-            temperature=0.3,
+            temperature=0,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             tools=[TRAVEL_TOOL],
