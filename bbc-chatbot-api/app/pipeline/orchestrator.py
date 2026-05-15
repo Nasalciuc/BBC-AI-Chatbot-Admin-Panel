@@ -73,6 +73,7 @@ async def _pipeline(
     from app.pipeline.entity_extractor import extract_entities, extract_kb_keywords
 
     pipeline_start = time.perf_counter()
+    _crm_submitted_this_turn = False
 
     # ── STEP 1: GET/CREATE CONVERSATION ───────────────────────
     conv = await conversation_service.get_or_create_conversation(
@@ -215,12 +216,8 @@ async def _pipeline(
                     _crm = await submit_to_crm(_lead, visitor, cid)
                     if _crm.success:
                         await db.mark_lead_created_in_crm(_lead["id"])
-                        # Lead sent to CRM — close conversation, agent calls from CRM
-                        await db.update_conversation(cid, {
-                            "mode": "ai",
-                            "assigned_agent_id": None,
-                        })
-                        logger.info(f"[{cid}] CRM submitted — AI-only, agent can take manually")
+                        _crm_submitted_this_turn = True
+                        logger.info(f"[{cid}] CRM submitted — handoff after response")
         except Exception as e:
             logger.error(f"CRM step error (non-blocking): {e}")
 
@@ -349,14 +346,8 @@ async def _pipeline(
                     _crm = await submit_to_crm(_lead_fresh, visitor, cid)
                     if _crm.success:
                         await db.mark_lead_created_in_crm(_lead_fresh["id"])
-                        await db.update_conversation(
-                            cid,
-                            {
-                                "mode": "ai",
-                                "assigned_agent_id": None,
-                            },
-                        )
-                        logger.info(f"[{cid}] CRM submitted via Claude extraction")
+                        _crm_submitted_this_turn = True
+                        logger.info(f"[{cid}] CRM submitted via Claude — handoff after response")
         except Exception as e:
             logger.error(f"CRM re-check error (non-blocking): {e}")
 
@@ -402,6 +393,34 @@ async def _pipeline(
         cost=gen.cost,
     )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
+
+    # ── STEP 8.1: SILENT POST-CRM HANDOFF ────────────────────
+    if _crm_submitted_this_turn:
+        try:
+            from app.services.routing import route_conversation
+            from app.services.handoff import perform_handoff_to_agent
+            _hoff_route = await route_conversation(tunnel, visitor=visitor, visitor_id=visitor_id)
+            if _hoff_route and _hoff_route.get("agent_id"):
+                await perform_handoff_to_agent(
+                    conversation_id=cid,
+                    agent_id=_hoff_route["agent_id"],
+                    agent_name=_hoff_route.get("agent_name", "a consultant"),
+                    tunnel=tunnel,
+                    emit_messages=False,
+                )
+                logger.info(f"[{cid}] Silent handoff to {_hoff_route.get('agent_name')}")
+            else:
+                await db.update_conversation(cid, {
+                    "mode": "ai",
+                    "assigned_agent_id": None,
+                })
+                logger.info(f"[{cid}] No agent available — AI mode")
+        except Exception as e:
+            logger.warning(f"[{cid}] Post-CRM handoff failed: {e}")
+            await db.update_conversation(cid, {
+                "mode": "ai",
+                "assigned_agent_id": None,
+            })
 
     # ── Auto-summarize every 5 messages ──────────────────────
     try:
