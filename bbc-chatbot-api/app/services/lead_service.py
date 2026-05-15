@@ -50,7 +50,21 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
 
         res = await _run_sync(lambda: db_client.table("leads").select("id,score").eq("conversation_id", conversation_id).limit(1).execute())
         if not res.data:
-            has_useful = any(entities.get(k) for k in ["name", "email", "phone", "origin", "destination", "departure_date"])
+            has_useful = any(
+                entities.get(k)
+                for k in [
+                    "name",
+                    "email",
+                    "phone",
+                    "origin",
+                    "destination",
+                    "departure_date",
+                    "return_date",
+                    "trip_type",
+                    "passengers",
+                    "cabin_class",
+                ]
+            )
             if not has_useful:
                 return
             lead_res = await _run_sync(lambda: db_client.table("leads").insert({"conversation_id": conversation_id}).execute())

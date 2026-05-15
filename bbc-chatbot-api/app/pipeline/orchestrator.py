@@ -187,7 +187,21 @@ async def _pipeline(
             logger.warning(f"[{cid}] IATA fallback failed (non-blocking): {e}")
 
     # Update lead with all extracted entities
-    has_useful = any(entities.get(k) for k in ["name", "email", "phone", "origin", "destination", "departure_date"])
+    has_useful = any(
+        entities.get(k)
+        for k in [
+            "name",
+            "email",
+            "phone",
+            "origin",
+            "destination",
+            "departure_date",
+            "return_date",
+            "trip_type",
+            "passengers",
+            "cabin_class",
+        ]
+    )
     if has_useful:
         await lead_service.update_lead_from_entities(cid, entities)
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and k != '_raw_message')}")
@@ -273,6 +287,78 @@ async def _pipeline(
         budget_remaining=budget_remaining,
     )
     logger.info(f"[{cid}] Generated via {gen.model_used} | cost=${gen.cost:.4f}")
+
+    # ── STEP 6.1: MERGE CLAUDE TOOL ENTITIES ─────────────────
+    if gen.tool_entities:
+        _te = gen.tool_entities
+        _merged = False
+        for key in [
+            "origin",
+            "destination",
+            "departure_date",
+            "return_date",
+            "trip_type",
+            "passengers",
+            "cabin_class",
+        ]:
+            val = _te.get(key)
+            if val is None:
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+            if key in ("origin", "destination"):
+                if not isinstance(val, str):
+                    continue
+                val = val.strip().upper()
+                if not (len(val) == 3 and val.isalpha()):
+                    continue
+            if key == "passengers":
+                if isinstance(val, str) and val.strip().isdigit():
+                    val = int(val.strip())
+                elif isinstance(val, float) and val.is_integer():
+                    val = int(val)
+                if not (isinstance(val, int) and 1 <= val <= 9):
+                    continue
+            if key == "trip_type":
+                if not isinstance(val, str):
+                    continue
+                val = val.strip().lower().replace("-", "_")
+                if val not in ("one_way", "round_trip"):
+                    continue
+            if key == "cabin_class":
+                if not isinstance(val, str):
+                    continue
+                val = val.strip().lower().replace(" ", "_")
+                if val not in ("business", "first", "premium_economy"):
+                    continue
+            if key in ("departure_date", "return_date") and isinstance(val, str):
+                val = val.strip()
+            entities[key] = val
+            _merged = True
+
+        if _merged:
+            await lead_service.update_lead_from_entities(cid, entities)
+            logger.info(f"[{cid}] Claude extraction merged: {list(_te.keys())}")
+
+    # ── STEP 6.2: CRM RE-CHECK (on corrected lead) ────────────
+    if gen.tool_entities and tunnel == "sales" and settings.crm_api_url:
+        try:
+            _lead_fresh = await lead_service.get_or_create_lead(cid)
+            if _lead_fresh and not _lead_fresh.get("created_in_crm"):
+                if check_crm_ready(_lead_fresh, visitor):
+                    _crm = await submit_to_crm(_lead_fresh, visitor, cid)
+                    if _crm.success:
+                        await db.mark_lead_created_in_crm(_lead_fresh["id"])
+                        await db.update_conversation(
+                            cid,
+                            {
+                                "mode": "ai",
+                                "assigned_agent_id": None,
+                            },
+                        )
+                        logger.info(f"[{cid}] CRM submitted via Claude extraction")
+        except Exception as e:
+            logger.error(f"CRM re-check error (non-blocking): {e}")
 
     # ── STEP 7: VALIDATE OUTPUT ──────────────────────────────
     # Skip validation for template responses (trusted content).

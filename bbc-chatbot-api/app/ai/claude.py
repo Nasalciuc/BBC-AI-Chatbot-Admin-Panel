@@ -125,3 +125,113 @@ def _call_model(
             return None, 0.0
 
     return None, 0.0
+
+
+# ── Travel extraction tool ────────────────────────────────────
+TRAVEL_TOOL = {
+    "name": "save_travel_details",
+    "description": (
+        "Save extracted travel details from the customer message to the booking system. "
+        "Call this whenever the customer mentions flight routes, dates, passenger counts, "
+        "or travel preferences."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "origin": {
+                "type": "string",
+                "description": (
+                    "3-letter IATA airport code for departure city (e.g. JFK, LHR, CDG, DXB). "
+                    "Use the MAIN international airport."
+                ),
+            },
+            "destination": {
+                "type": "string",
+                "description": (
+                    "3-letter IATA airport code for arrival city (e.g. MXP for Milan, "
+                    "FLR for Florence, NRT for Tokyo)."
+                ),
+            },
+            "departure_date": {
+                "type": "string",
+                "description": "Departure date in YYYY-MM-DD format.",
+            },
+            "return_date": {
+                "type": "string",
+                "description": "Return date in YYYY-MM-DD format. Omit if one-way.",
+            },
+            "trip_type": {
+                "type": "string",
+                "enum": ["one_way", "round_trip"],
+                "description": "one_way or round_trip based on customer message.",
+            },
+            "passengers": {
+                "type": "integer",
+                "description": "Number of passengers (1-9).",
+            },
+            "cabin_class": {
+                "type": "string",
+                "enum": ["business", "first", "premium_economy"],
+                "description": "Cabin class preference.",
+            },
+        },
+    },
+}
+
+
+def call_haiku_with_tools(
+    system_prompt: str, user_message: str
+) -> tuple[Optional[str], float, dict]:
+    """Call Haiku with travel extraction tool. Returns (text, cost, entities).
+
+    entities contains keys Claude extracted (origin, destination, etc.).
+    Empty dict if Claude did not call the tool or on failure.
+    """
+    start = time.time()
+    model = settings.claude_haiku_model
+    logger.info(f"Claude+Tool START | model={model}")
+
+    try:
+        response = _get_client().messages.create(
+            model=model,
+            max_tokens=200,
+            temperature=0.3,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            tools=[TRAVEL_TOOL],
+            timeout=settings.claude_timeout,
+        )
+
+        elapsed = round(time.time() - start, 3)
+        cost = _estimate_cost(
+            model, response.usage.input_tokens, response.usage.output_tokens
+        )
+
+        text = ""
+        tool_entities: dict = {}
+
+        for block in response.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text = (getattr(block, "text", None) or "").strip()
+            elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
+                raw_in = getattr(block, "input", None) or {}
+                tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+
+        logger.info(
+            f"Claude+Tool SUCCESS | text={len(text)}ch entities={list(tool_entities.keys())} "
+            f"cost=${cost:.6f} time={elapsed}s"
+        )
+        return text, cost, tool_entities
+
+    except anthropic.APITimeoutError:
+        logger.error(f"Claude+Tool timeout ({settings.claude_timeout}s)")
+        return None, 0.0, {}
+    except anthropic.APIError as e:
+        logger.error(
+            f"Claude+Tool API error: {e} | status={getattr(e, 'status_code', 'N/A')}"
+        )
+        return None, 0.0, {}
+    except Exception as e:
+        logger.error(f"Claude+Tool error: {type(e).__name__}: {e}")
+        return None, 0.0, {}
