@@ -1,7 +1,7 @@
 """Response generation — decision tree: template → Haiku → Sonnet → fallback."""
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from app.pipeline.intent import Intent
@@ -10,7 +10,7 @@ from app.models.lead import get_missing_fields
 from app.models.kb import KBResult
 from app.ai.templates import get_template
 from app.ai.prompts import build_conversational_prompt
-from app.ai.claude import call_haiku, call_sonnet
+from app.ai.claude import call_haiku, call_haiku_with_tools, call_sonnet
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ class GeneratedResponse:
     model_used: str                       # "template", "haiku", "sonnet"
     cost: float = 0.0
     route_card: Optional[RouteCard] = None
+    tool_entities: Optional[dict] = None
 
 
 def _has_route_data(kb_results: list[KBResult], entities: dict | None = None) -> Optional[KBResult]:
@@ -145,8 +146,14 @@ def generate_response(
 
                 if _use_sonnet:
                     _ai_text, _ai_cost = call_sonnet(_system, _raw)
+                    _tool_entities = None
                 else:
-                    _ai_text, _ai_cost = call_haiku(_system, _raw)
+                    _ai_text, _ai_cost, _te = call_haiku_with_tools(_system, _raw)
+                    _tool_entities = _te if _te else None
+                    if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
+                        _ai_text = (
+                            "Thanks — I've noted your trip details. What else can I help you with?"
+                        )
 
                 if _ai_text:
                     logger.info(f"AI-first response | model={'sonnet' if _use_sonnet else 'haiku'} | intent={intent.value}")
@@ -154,6 +161,7 @@ def generate_response(
                         text=_ai_text,
                         model_used="sonnet" if _use_sonnet else "haiku",
                         cost=_ai_cost,
+                        tool_entities=_tool_entities,
                     )
                 else:
                     logger.warning("AI-first: Claude returned empty — falling through to templates")
@@ -380,13 +388,24 @@ def generate_response(
         logger.info("Using Sonnet (complex conversation)")
         ai_text, ai_cost = call_sonnet(system_prompt, entities.get("_raw_message", ""))
         if ai_text:
-            return GeneratedResponse(text=ai_text, model_used="sonnet", cost=ai_cost)
+            return GeneratedResponse(
+                text=ai_text, model_used="sonnet", cost=ai_cost, tool_entities=None
+            )
     else:
         # 5b. Haiku for standard responses
         logger.info("Using Haiku (standard response)")
-        ai_text, ai_cost = call_haiku(system_prompt, entities.get("_raw_message", ""))
+        ai_text, ai_cost, _te = call_haiku_with_tools(
+            system_prompt, entities.get("_raw_message", "")
+        )
+        tool_entities = _te if _te else None
+        if (not ai_text or not str(ai_text).strip()) and tool_entities:
+            ai_text = (
+                "Thanks — I've noted your trip details. What else can I help you with?"
+            )
         if ai_text:
-            return GeneratedResponse(text=ai_text, model_used="haiku", cost=ai_cost)
+            return GeneratedResponse(
+                text=ai_text, model_used="haiku", cost=ai_cost, tool_entities=tool_entities
+            )
 
     # 5c. Fallback
     logger.warning("AI generation failed — using fallback template")

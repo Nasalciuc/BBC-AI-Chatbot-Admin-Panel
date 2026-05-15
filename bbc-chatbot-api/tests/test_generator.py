@@ -19,7 +19,13 @@ from app.pipeline.generator import generate_response
 # Mock Claude to return None — forces template-only behavior
 @pytest.fixture(autouse=True)
 def mock_claude():
-    with patch("app.ai.claude._call_model", return_value=(None, 0.0)):
+    with (
+        patch("app.ai.claude._call_model", return_value=(None, 0.0)),
+        patch(
+            "app.pipeline.generator.call_haiku_with_tools",
+            return_value=(None, 0.0, {}),
+        ),
+    ):
         yield
 
 
