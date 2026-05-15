@@ -188,12 +188,12 @@ async def get_recent_messages(conversation_id: str, limit: int = 5) -> list:
                 db.table("messages")
                 .select("role,content,model_used,created_at")
                 .eq("conversation_id", conversation_id)
-                .order("created_at", desc=False)
+                .order("created_at", desc=True)
                 .limit(limit)
                 .execute()
             )
         res = await _run_sync(_query)
-        return res.data or []
+        return list(reversed(res.data)) if res.data else []
     except Exception:
         return []
 
