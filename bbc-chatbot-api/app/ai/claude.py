@@ -131,6 +131,7 @@ def _call_model(
 TRAVEL_TOOL = {
     "name": "save_travel_details",
     "description": (
+        "IMPORTANT: Always write a helpful response to the customer AND save their travel details. Never call this tool without also responding. "
         "Save travel details from the customer's message. "
         "ALWAYS call when customer mentions ANY travel info, even partial or misspelled.\n"
         "RULES:\n"
@@ -209,7 +210,7 @@ def call_haiku_with_tools(
         response = _get_client().messages.create(
             model=model,
             max_tokens=200,
-            temperature=0,
+            temperature=0.3,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             tools=[TRAVEL_TOOL],

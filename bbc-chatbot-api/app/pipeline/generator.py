@@ -151,9 +151,11 @@ def generate_response(
                     _ai_text, _ai_cost, _te = call_haiku_with_tools(_system, _raw)
                     _tool_entities = _te if _te else None
                     if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
-                        _ai_text = (
-                            "Thanks — I've noted your trip details. What else can I help you with?"
-                        )
+                        # Tool call succeeded but no text — re-call without tools for natural response
+                        _ai_text, _fallback_cost = call_haiku(_system, _raw)
+                        _ai_cost += _fallback_cost
+                        if not _ai_text or not str(_ai_text).strip():
+                            _ai_text = "Let me find the best options for your trip!"
 
                 if _ai_text:
                     logger.info(f"AI-first response | model={'sonnet' if _use_sonnet else 'haiku'} | intent={intent.value}")
@@ -399,9 +401,11 @@ def generate_response(
         )
         tool_entities = _te if _te else None
         if (not ai_text or not str(ai_text).strip()) and tool_entities:
-            ai_text = (
-                "Thanks — I've noted your trip details. What else can I help you with?"
-            )
+            # Tool call succeeded but no text — re-call without tools for natural response
+            ai_text, _fallback_cost = call_haiku(system_prompt, entities.get("_raw_message", ""))
+            ai_cost += _fallback_cost
+            if not ai_text or not str(ai_text).strip():
+                ai_text = "Let me find the best options for your trip!"
         if ai_text:
             return GeneratedResponse(
                 text=ai_text, model_used="haiku", cost=ai_cost, tool_entities=tool_entities
