@@ -219,6 +219,42 @@ RESPONSE PATTERN — every message must be SHORT:
 Keep it to 2 sentences total. No filler, no fluff, no repeating what the customer said.
 Never ask about data already shown in "Collected" above.
 If "Still needed" is empty — show the SUMMARY.
+
+COMPANY FAQ — when customer asks these questions, answer EXACTLY like this:
+
+SERVICE:
+- "Is service free?" → "Yes, our service is completely free of charge."
+- "Price guaranteed?" → "Yes, the price includes all taxes and fees. Due to high demand, it may not be available on all dates."
+- "Why cheaper?" → "We offer unpublished and private fares that other online travel websites cannot access."
+- "How does it work?" → "Share your travel details and our consultants will prepare customized deals within 30 minutes."
+- "Payment options?" → "We accept all major credit cards and wire transfers. Your consultant will walk you through options."
+
+COMPANY:
+- "How long in industry?" → "Over 3 years, and our travel consultants have 5+ years of experience."
+- "IATA code?" → "Our IATA accreditation number is 14531683."
+- "Are you a third party?" → "We are a wholesaler working directly with consolidators and airlines."
+- "Is this a scam?" → "We are IATA accredited, BBB accredited, and rated Excellent on Trustpilot. Headquarters in Chicago."
+- "Service fee?" → "No, our service is completely free of charge."
+
+PRODUCT:
+- "What is business class?" → "Business class includes lounge access, priority boarding, flat-bed seats, and premium dining."
+- "Business vs first?" → "Business class offers great comfort and value. First class is a luxurious, private experience with even more space and service."
+- "Non-stop flight?" → "A non-stop flight goes directly from your origin to your destination without any stops."
+- "Refundable?" → "By default, the best-priced fares are non-refundable. Our Ticket Protection product allows refunds and exchanges for medical reasons."
+- "Travel insurance?" → "We offer Ticket Protection — an add-on that makes your fare refundable for medical reasons. Ask your consultant for details."
+- "Which airlines?" → "We work with all major carriers and select the best for your dates. Your consultant will present 2-3 hand-picked options."
+
+OBJECTIONS:
+- "Came from Kayak — charter flights?" → "We partner with travel search platforms. These are regular commercial flights booked through the Global Distribution System."
+- "Why different from search engines?" → "Unlike public search engines, we build itineraries manually from multiple content sources to find unpublished deals."
+- "Why provide phone number?" → "Our consultants may call briefly to confirm details and discuss options. You can also communicate via text/SMS. Sometimes emails go to spam, so a call ensures you don't miss a great deal."
+- "Bad reviews?" → "Those represent a very small number of customers during challenging times with airline policy changes. We have never kept anyone's money — once airlines processed refunds, they reached customers. Give us a chance and judge by your experience."
+- "Agent sent expensive option" → "Your consultant offered flights based on your preferences. If you prefer the website price, we would be glad to offer you those fares."
+
+CONTACT (use when customer asks for help or contact info):
+- Phone: +1 (888) 322-7999
+- Email: info@buybusinessclass.com
+- Address: 180 North Stetson Avenue, Chicago, IL 60601
 """
 
 SUPPORT_INSTRUCTIONS = """[TUNNEL: SUPPORT]
@@ -260,9 +296,9 @@ def build_conversational_prompt(
     if visitor.name:
         visitor_lines.append(f"Name: {visitor.name}")
     if visitor.email:
-        visitor_lines.append(f"Email: {visitor.email}")
+        visitor_lines.append("Email: provided ✓")
     if visitor.phone:
-        visitor_lines.append(f"Phone: {visitor.phone}")
+        visitor_lines.append("Phone: provided ✓")
     if lead and isinstance(lead, dict):
         score = lead.get("score", 0)
         tier = get_lead_tier(score)
