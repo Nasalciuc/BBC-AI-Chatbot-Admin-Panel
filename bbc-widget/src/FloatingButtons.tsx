@@ -3,6 +3,10 @@ interface Props {
   showAttention?: boolean
 }
 
+/** Official BBC airplane-in-circle mark (white on transparent, for navy button). */
+const BBC_LOGO_URL =
+  'https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png'
+
 export function FloatingButtons({ onSelect, showAttention = false }: Props) {
   return (
     <div
@@ -12,82 +16,76 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
         bottom: 24,
         right: 24,
         display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
+        alignItems: 'center',
+        gap: 12,
         zIndex: 2147483000,
       }}
     >
-      {/* Badge attention — apare deasupra butonului principal */}
       {showAttention && (
         <div
+          role="tooltip"
+          onClick={() => onSelect('sales')}
           style={{
-            position: 'absolute',
-            bottom: 'calc(100% + 10px)',
-            right: 0,
-            background: '#0B1829',
-            border: '1px solid #C9A54E',
-            borderRadius: '20px',
-            padding: '8px 16px',
-            color: '#C9A54E',
-            fontSize: '13px',
-            fontWeight: 600,
+            position: 'relative',
+            fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+            fontSize: '11px',
+            fontWeight: 500,
+            color: '#4B5563',
+            background: '#FFFFFF',
+            padding: '6px 12px',
+            borderRadius: '6px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
             whiteSpace: 'nowrap',
-            boxShadow: '0 4px 20px rgba(201,165,78,0.25)',
             cursor: 'pointer',
             animation: 'bbc-fadein 0.3s ease forwards',
-            fontFamily: 'system-ui, -apple-system, sans-serif',
           }}
-          onClick={() => onSelect('sales')}
         >
-          ✈️ Ask our travel specialists
+          New booking
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              right: -6,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              width: 0,
+              height: 0,
+              borderTop: '6px solid transparent',
+              borderBottom: '6px solid transparent',
+              borderLeft: '6px solid #FFFFFF',
+            }}
+          />
         </div>
       )}
 
-      {/* Buton principal — Book Business Class */}
       <button
+        type="button"
         onClick={() => onSelect('sales')}
-        aria-label="Chat with sales"
+        aria-label="New booking"
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '12px 20px',
-          borderRadius: 50,
-          background: '#C9A54E',
-          color: '#fff',
-          border: 'none',
-          cursor: 'pointer',
-          fontSize: 14,
-          fontWeight: 600,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          animation: showAttention ? 'bbc-bounce 0.7s ease 2' : 'none',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-        }}
-      >
-        💬 Book Business Class
-      </button>
-
-      {/* Buton secundar — Support */}
-      <button
-        onClick={() => onSelect('support')}
-        aria-label="Chat with support"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '10px 18px',
-          borderRadius: 50,
+          width: 60,
+          height: 60,
+          borderRadius: '50%',
           background: '#0B1829',
-          color: '#fff',
-          border: 'none',
+          border: '2px solid #C9A54E',
+          boxShadow: '0 4px 20px rgba(201,165,78,0.25)',
           cursor: 'pointer',
-          fontSize: 13,
-          fontWeight: 500,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 0,
+          flexShrink: 0,
+          animation: showAttention ? 'bbc-bounce 0.7s ease 2' : 'none',
         }}
       >
-        🎧 Support
+        <img
+          src={BBC_LOGO_URL}
+          alt=""
+          width={30}
+          height={30}
+          draggable={false}
+          style={{ display: 'block', pointerEvents: 'none' }}
+        />
       </button>
     </div>
   )
