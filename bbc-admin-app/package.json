@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
-    "knip": "knip"
+    "knip": "knip",
+    "sync-widget": "npm run build --prefix ../bbc-widget && node -e \"require('fs').copyFileSync(require('path').resolve('../bbc-widget/dist/bbc-widget.js'), require('path').resolve('public/widget/bbc-widget.js')); console.log('Widget bundle synced')\""
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
