@@ -2,7 +2,6 @@
  * Conditional warning banner for unhealthy AI pipeline metrics.
  * Renders null when all metrics are within acceptable thresholds.
  * Data source: DashboardStats fetched from GET /api/dashboard/stats (FastAPI backend)
- * Fallback: MOCK_STATS from src/lib/mock-data.ts when API is offline
  * Parent: src/features/dashboard/index.tsx passes latency, fallback rate, and cost metrics
  */
 

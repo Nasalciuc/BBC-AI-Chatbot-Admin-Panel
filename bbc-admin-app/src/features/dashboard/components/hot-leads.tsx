@@ -1,7 +1,6 @@
 /**
  * Hot leads list — uncontacted high-value leads requiring immediate action.
  * Data source: DashboardStats.hot_leads fetched from GET /api/dashboard/stats (FastAPI backend)
- * Fallback: MOCK_STATS from src/lib/mock-data.ts when API is offline
  * Parent: src/features/dashboard/index.tsx passes hot_leads array as props
  */
 

@@ -169,7 +169,6 @@ export function KnowledgeBase() {
   const [categories,  setCategories]  = useState<KBCategory[]>([])
   const [entries,     setEntries]     = useState<KBEntry[]>([])
   const [loading,     setLoading]     = useState(true)
-  const [usingMock,   setUsingMock]   = useState(false)
   const [selectedCat, setSelectedCat] = useState<KBCategory | null>(null)
   const [tunnelFilter, setTunnelFilter]  = useState<'all' | 'sales' | 'support'>('all')
   const [editEntry,   setEditEntry]   = useState<Partial<KBEntry> | null>(null)
@@ -193,10 +192,9 @@ export function KnowledgeBase() {
       ])
       setCategories(catsJson.data)
       setEntries(entriesJson.data)
-      setUsingMock(false)
     } catch (err) {
       console.error('[kb] API error:', err)
-      setCategories([]); setEntries([]); setUsingMock(false)
+      setCategories([]); setEntries([])
     } finally { setLoading(false) }
   }, [])
 
@@ -205,34 +203,18 @@ export function KnowledgeBase() {
   const handleSave = async (data: KBEntryCreate | Partial<KBEntry>, id?: string) => {
     try {
       if (id) {
-        // Edit existing
-        if (!usingMock) {
-          await updateKBEntry(id, data as Partial<KBEntry>)
-        }
+        await updateKBEntry(id, data as Partial<KBEntry>)
         setEntries(prev => prev.map(e => e.id === id ? { ...e, ...(data as Partial<KBEntry>) } : e))
       } else {
-        // Create new
-        if (!usingMock) {
-          const created = await createKBEntry(data as KBEntryCreate)
-          setEntries(prev => [created, ...prev])
-        } else {
-          const payload = data as KBEntryCreate
-          const mock: KBEntry = {
-            id: `mock-${Date.now()}`, ...payload,
-            is_active: payload.is_active ?? true,
-            view_count: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-          }
-          setEntries(prev => [mock, ...prev])
-        }
+        const created = await createKBEntry(data as KBEntryCreate)
+        setEntries(prev => [created, ...prev])
       }
     } finally { closeModal() }
   }
 
   const toggleActive = async (entry: KBEntry) => {
     const newVal = !entry.is_active
-    if (!usingMock) {
-      await updateKBEntry(entry.id, { is_active: newVal })
-    }
+    await updateKBEntry(entry.id, { is_active: newVal })
     setEntries(prev => prev.map(e => e.id === entry.id ? { ...e, is_active: newVal } : e))
   }
 
@@ -240,7 +222,7 @@ export function KnowledgeBase() {
     if (!confirm('Delete this article? This cannot be undone.')) return
     setDeletingId(entryId)
     try {
-      if (!usingMock) await deleteKBEntry(entryId)
+      await deleteKBEntry(entryId)
       setEntries(prev => prev.filter(e => e.id !== entryId))
     } finally { setDeletingId(null) }
   }
@@ -268,7 +250,7 @@ export function KnowledgeBase() {
           <div className="w-64 border-r border-gray-200 bg-white flex flex-col shrink-0">
             <div className="px-4 py-4 border-b border-gray-100">
               <h1 className="text-lg font-bold text-[#0B1829]">Knowledge Base</h1>
-              <p className="text-xs text-gray-400 mt-0.5">{entries.length} articles{usingMock && ' · mock'}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{entries.length} articles</p>
               <div className="flex mt-3 bg-gray-100 rounded-lg p-0.5">
                 {(['all', 'sales', 'support'] as const).map(t => (
                   <button key={t} onClick={() => { setTunnelFilter(t); setSelectedCat(null) }}

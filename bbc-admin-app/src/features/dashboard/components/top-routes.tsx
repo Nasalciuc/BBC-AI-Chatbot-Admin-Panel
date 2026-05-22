@@ -1,7 +1,6 @@
 /**
  * Top 5 most popular flight routes with progress bars.
  * Data source: DashboardStats.top_routes fetched from GET /api/dashboard/stats (FastAPI backend)
- * Fallback: MOCK_STATS from src/lib/mock-data.ts when API is offline
  * Parent: src/features/dashboard/index.tsx passes top_routes array as props
  */
 
