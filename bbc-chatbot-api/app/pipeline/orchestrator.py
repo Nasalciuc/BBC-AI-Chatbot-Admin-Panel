@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from config.settings import settings
@@ -414,33 +415,41 @@ async def _pipeline(
     )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
 
-    # ── STEP 8.1: SILENT POST-CRM HANDOFF ────────────────────
+    # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
     if _crm_submitted_this_turn:
         try:
-            from app.services.routing import route_conversation
-            from app.services.handoff import perform_handoff_to_agent
-            _hoff_route = await route_conversation(tunnel, visitor=visitor, visitor_id=visitor_id)
-            if _hoff_route and _hoff_route.get("agent_id"):
-                await perform_handoff_to_agent(
-                    conversation_id=cid,
-                    agent_id=_hoff_route["agent_id"],
-                    agent_name=_hoff_route.get("agent_name", "a consultant"),
-                    tunnel=tunnel,
-                    emit_messages=False,
-                )
-                logger.info(f"[{cid}] Silent handoff to {_hoff_route.get('agent_name')}")
-            else:
-                await db.update_conversation(cid, {
-                    "mode": "ai",
-                    "assigned_agent_id": None,
-                })
-                logger.info(f"[{cid}] No agent available — AI mode")
-        except Exception as e:
-            logger.warning(f"[{cid}] Post-CRM handoff failed: {e}")
+            # 1. Send closing template so client sees confirmation
+            from app.realtime.manager import manager
+            _closing_msg = await conversation_service.add_message(
+                conversation_id=cid,
+                role="ai",
+                content=settings.post_crm_closing_message,
+                model_used="template",
+                cost=0.0,
+            )
+            if _closing_msg:
+                await manager.push(cid, _closing_msg)
+
+            # 2. Close conversation — sales team calls from CRM directly
             await db.update_conversation(cid, {
+                "status": "closed",
+                "closed_at": datetime.now(timezone.utc).isoformat(),
                 "mode": "ai",
                 "assigned_agent_id": None,
             })
+            logger.info(f"[{cid}] CRM submitted — conversation auto-closed (no handoff)")
+        except Exception as e:
+            logger.error(f"Post-CRM auto-close error (non-blocking): {e}")
+            # Fallback: at minimum close the conversation
+            try:
+                await db.update_conversation(cid, {
+                    "status": "closed",
+                    "closed_at": datetime.now(timezone.utc).isoformat(),
+                    "mode": "ai",
+                    "assigned_agent_id": None,
+                })
+            except Exception:
+                pass
 
     # ── Auto-summarize every 5 messages ──────────────────────
     try:
