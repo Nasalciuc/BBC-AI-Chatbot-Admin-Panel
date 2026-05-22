@@ -15,6 +15,8 @@ router = APIRouter()
 @router.get("/health")
 async def health() -> dict:
     """Return system health status and service availability."""
+    if not settings.debug:
+        return {"status": "ok"}
 
     # Check Supabase connectivity
     db_ok = await check_connection()

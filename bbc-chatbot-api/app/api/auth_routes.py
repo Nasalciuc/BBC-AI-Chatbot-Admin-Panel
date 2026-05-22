@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from config.settings import settings
 from app.db import supabase as db
 from app.security.auth import get_current_user
+from app.security.rate_limiter import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class SetPasswordRequest(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, _rate: None = Depends(check_rate_limit)):
     """Authenticate user with email + password, return JWT."""
     user = await db.get_user_by_email(req.email.lower().strip())
     if not user:
@@ -248,7 +249,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
 
 
 @router.post("/set-password")
-async def set_password(req: SetPasswordRequest):
+async def set_password(req: SetPasswordRequest, _rate: None = Depends(check_rate_limit)):
     """One-time invite token activation.
     Token is valid only if unused and not expired (30m by default)."""
     token_row = await db.consume_valid_invite_token(req.token, purpose="set_password")

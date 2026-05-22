@@ -14,6 +14,8 @@ class Settings(BaseSettings):
         "http://localhost:5174",
         "https://bbc-admin.vercel.app",
         "https://admin-panel-error.vercel.app",
+        "https://bbc-admin-panel-eight.vercel.app",
+        "https://bbc-widget.vercel.app",
     ]
 
     # Claude
