@@ -112,7 +112,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         const after = lastMsgTime.current
           ? `?after=${encodeURIComponent(lastMsgTime.current)}`
           : ''
-        const res = await fetch(`${apiUrl}/api/chat/messages/${convId}${after}`)
+        const res = await fetch(`${apiUrl}/api/chat/messages/${convId}${after}`, {
+          headers: { 'X-Visitor-Id': getVisitorId() || '' },
+        })
         if (!res.ok) return
         const json = await res.json()
         if (json.success && json.data && json.data.length > 0) {
@@ -135,7 +137,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
 
     // SSE stream — primary real-time channel
     const startSSE = () => {
-      source = new EventSource(`${apiUrl}/api/chat/stream/${convId}`)
+      source = new EventSource(`${apiUrl}/api/chat/stream/${convId}?vid=${encodeURIComponent(getVisitorId() || '')}`)
 
       source.onopen = () => {
         errorCount = 0        // reset error counter on successful connect
