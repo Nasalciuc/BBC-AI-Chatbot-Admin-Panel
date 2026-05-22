@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         "https://bbc-admin.vercel.app",
         "https://admin-panel-error.vercel.app",
         "https://bbc-admin-panel-eight.vercel.app",
+        "https://chat.buybusinessclass.com",
         "https://bbc-widget.vercel.app",
     ]
 
@@ -93,7 +94,7 @@ class Settings(BaseSettings):
     # Postmark email
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"
-    admin_panel_url: str = "https://admin-panel-error.vercel.app"
+    admin_panel_url: str = "https://chat.buybusinessclass.com"
     invite_link_expiry_minutes: int = 30
     invite_link_path: str = "/set-password"
 
