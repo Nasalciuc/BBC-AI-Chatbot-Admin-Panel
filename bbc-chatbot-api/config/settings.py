@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # Welcome messages per tunnel
     welcome_message_sales: str = "Where would you like to fly? I\u2019ll find you the best business class options."
     welcome_message_support: str = "What can I help you with today?"
+    post_crm_closing_message: str = (
+        "Your flight request is confirmed! A travel consultant "
+        "will contact you shortly. For immediate help, "
+        "call +1 (888) 322-7999."
+    )
 
     # Quick reply suggestions per tunnel
     quick_replies_sales: list = ["Round-trip to Europe", "One-way flight", "Specific route quote", "Last-minute deal"]
