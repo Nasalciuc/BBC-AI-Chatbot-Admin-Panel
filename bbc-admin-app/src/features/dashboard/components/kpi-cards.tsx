@@ -1,7 +1,6 @@
 /**
  * KPI metric cards for the main dashboard.
  * Data source: DashboardStats fetched from GET /api/dashboard/stats (FastAPI backend)
- * Fallback: MOCK_STATS from src/lib/mock-data.ts when API is offline
  * Parent: src/features/dashboard/index.tsx passes props from stats object
  */
 

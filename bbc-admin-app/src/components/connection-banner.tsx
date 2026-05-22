@@ -20,7 +20,7 @@ export function ConnectionBanner() {
         if (!res.ok) throw new Error()
         const data: HealthResponse = await res.json()
         setHealth(data)
-        setIsLive(data.status === 'healthy' || data.status === 'degraded')
+        setIsLive(['healthy', 'degraded', 'ok'].includes(data.status ?? ''))
       } catch {
         setIsLive(false)
         setHealth(null)
@@ -40,7 +40,7 @@ export function ConnectionBanner() {
       {isLive ? (
         <>
           <Wifi className='w-3 h-3' />
-          <span>Live Data</span>
+          <span>Connected</span>
           {health?.status === 'degraded' && (
             <span className='text-amber-600 ml-1'>(degraded)</span>
           )}
@@ -48,7 +48,7 @@ export function ConnectionBanner() {
       ) : (
         <>
           <WifiOff className='w-3 h-3' />
-          <span>Mock Data</span>
+          <span>Offline</span>
         </>
       )}
     </div>
