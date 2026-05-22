@@ -117,7 +117,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   })()
 
   const [step, setStep] = useState<Step>(
-    restored?.step === 'chat' || hasOptimisticSession ? 'chat' : 'buttons'
+    restored?.step === 'chat' || (hasOptimisticSession && savedVisitor) ? 'chat' : 'buttons'
   )
   const [tunnel, setTunnel] = useState<'sales' | 'support'>(
     restored?.tunnel || (hasOptimisticSession ? savedTunnel : 'sales')
@@ -194,7 +194,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     // Nu facem cleanup — keyframes rămân pe tot parcursul sesiunii
   }, [])
 
-  // ─── EFFECT A: Attention Grabber (20 secunde inactivitate) ───────────────────
+  // ─── EFFECT A: Auto-open form (20 secunde inactivitate) ─────────────────────
   useEffect(() => {
     if (step !== 'buttons') return
     if (autoOpenedRef.current || formFlowStartedRef.current) return
@@ -202,11 +202,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
     const attentionTimer = setTimeout(() => {
       if (formFlowStartedRef.current) return
-      setShowAttention(true)
+      // Deschide formularul direct, nu doar tooltip
+      autoOpenedRef.current = true
+      formFlowStartedRef.current = true
+      setShowAttention(false)
+      setTunnel('sales')
+      setStep('form')
       safeSet('bbc_attention_shown', '1')
-
-      // Badge dispare după 8 secunde
-      setTimeout(() => setShowAttention(false), 8_000)
     }, 20_000)
 
     return () => clearTimeout(attentionTimer)
@@ -290,8 +292,8 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     autoOpenedRef.current = true
     setTunnel(t)
 
-    // If visitor_id + cached conv_id exist, skip form and restore chat
-    if (hasOptimisticSession) {
+    // Skip form ONLY if visitor completed form before (has name+email+phone)
+    if (hasOptimisticSession && savedVisitor) {
       setStep('chat')
     } else {
       setStep('form')
@@ -377,12 +379,14 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
         />
       )}
       {step === 'form' && (
-        <TunnelForm
-          tunnel={tunnel}
-          onSubmit={handleFormSubmit}
-          onBack={handleBack}
-          onInteraction={handleFormInteraction}
-        />
+        <div style={{ animation: 'bbc-fadein 0.3s ease' }}>
+          <TunnelForm
+            tunnel={tunnel}
+            onSubmit={handleFormSubmit}
+            onBack={handleBack}
+            onInteraction={handleFormInteraction}
+          />
+        </div>
       )}
       {step === 'chat' && (
         <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} />
