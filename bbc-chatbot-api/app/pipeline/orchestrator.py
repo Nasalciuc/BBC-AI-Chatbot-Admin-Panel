@@ -106,6 +106,8 @@ async def _pipeline(
 
     # Fetch history early — needed by Steps 3.5, 3.6, and 6
     history = await db.get_recent_messages(cid, limit=10)
+    logger.info(f"[{cid}] [PERF] setup: {(time.perf_counter() - pipeline_start) * 1000:.0f}ms")
+    t_section = time.perf_counter()
 
     # ── STEP 2: AGENT CHECK (V3 placeholder) ─────────────────
     # V1: always AI mode. V3 will check agent availability here.
@@ -144,6 +146,9 @@ async def _pipeline(
                 logger.info(f"[{cid}] HANDOFF: {agent_request_count + 1} agent requests → status=needs_agent")
             except Exception as e:
                 logger.warning(f"[{cid}] Failed to set needs_agent status: {e}")
+
+    logger.info(f"[{cid}] [PERF] intent: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    t_section = time.perf_counter()
 
     # ── STEP 4: ENTITY EXTRACTION ────────────────────────────
     extracted = extract_entities(message)
@@ -207,6 +212,9 @@ async def _pipeline(
         await lead_service.update_lead_from_entities(cid, entities)
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and k != '_raw_message')}")
 
+    logger.info(f"[{cid}] [PERF] extraction: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    t_section = time.perf_counter()
+
     # ── STEP 4.5: CRM SUBMISSION ─────────────────────────────
     if tunnel == "sales" and settings.crm_api_url and has_useful:
         try:
@@ -220,6 +228,9 @@ async def _pipeline(
                         logger.info(f"[{cid}] CRM submitted — handoff after response")
         except Exception as e:
             logger.error(f"CRM step error (non-blocking): {e}")
+
+    logger.info(f"[{cid}] [PERF] crm: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    t_section = time.perf_counter()
 
     # ── STEP 5: KB SEARCH ────────────────────────────────────
     kb_results: list[KBResult] = []
@@ -265,6 +276,9 @@ async def _pipeline(
 
         kb_source = kb_results[0].source if kb_results else "none"
         logger.info(f"[{cid}] KB: {len(kb_results)} results (source: {kb_source})")
+
+    logger.info(f"[{cid}] [PERF] kb_search: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    t_section = time.perf_counter()
 
     # ── STEP 6: GENERATE RESPONSE ────────────────────────────
     # history already fetched at line 92 — reuse (saves ~400ms roundtrip)
@@ -351,6 +365,9 @@ async def _pipeline(
         except Exception as e:
             logger.error(f"CRM re-check error (non-blocking): {e}")
 
+    logger.info(f"[{cid}] [PERF] generate: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    t_section = time.perf_counter()
+
     # ── STEP 7: VALIDATE OUTPUT ──────────────────────────────
     # Skip validation for template responses (trusted content).
     # Only validate AI-generated text (Haiku/Sonnet).
@@ -358,6 +375,9 @@ async def _pipeline(
         validated_text = gen.text
     else:
         validated_text = validate_response(gen.text)
+
+    logger.info(f"[{cid}] [PERF] validate: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    t_section = time.perf_counter()
 
     # ── STEP 8: DELIVER ──────────────────────────────────────
     # Refusal detection (prevents magic string persistent DoS)
@@ -465,6 +485,8 @@ async def _pipeline(
         })
 
     resp_type = "template" if gen.model_used == "template" else "ai"
+    logger.info(f"[{cid}] [PERF] deliver: {(time.perf_counter() - t_section) * 1000:.0f}ms")
+    logger.info(f"[{cid}] [PERF] TOTAL: {latency_ms}ms")
     logger.info(f"[{cid}] Pipeline complete | type={resp_type} | {latency_ms}ms")
 
     return ChatResponse(
