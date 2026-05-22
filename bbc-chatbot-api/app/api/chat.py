@@ -405,6 +405,7 @@ async def public_get_conversation_status(conversation_id: str):
 async def public_get_messages(
     conversation_id: str,
     after: Optional[str] = Query(None),
+    _owner: None = Depends(require_visitor_ownership),
 ):
     """Public incremental message polling for widget.
     Used as SSE fallback and for catch-up after reconnect."""
@@ -421,7 +422,11 @@ async def public_get_messages(
 
 
 @router.get("/chat/stream/{conversation_id}")
-async def sse_stream(conversation_id: str, request: Request):
+async def sse_stream(
+    conversation_id: str,
+    request: Request,
+    _owner: None = Depends(require_visitor_ownership),
+):
     """SSE real-time stream for widget.
     Pushes agent messages instantly (~50ms vs 1s polling).
     X-Accel-Buffering: no disables Railway/nginx proxy buffering — required for SSE.

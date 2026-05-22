@@ -10,7 +10,7 @@ visitor_id are always allowed through.
 import logging
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Query
 
 from app.db import supabase as db
 
@@ -20,23 +20,23 @@ logger = logging.getLogger(__name__)
 async def require_visitor_ownership(
     conversation_id: str,
     x_visitor_id: Optional[str] = Header(None),
+    vid: Optional[str] = Query(None),
 ) -> None:
-    """FastAPI dependency — call before any mutation on a conversation.
-    Raises 403 if visitor_id is present on both sides and they differ."""
-    if not x_visitor_id:
-        return  # no visitor_id header → legacy widget, allow through
+    """Strict ownership — blocks access when conv has visitor_id but caller doesn't prove it."""
+    effective_id = (x_visitor_id or vid or "").strip() or None
 
     conv = await db.get_conversation_simple(conversation_id)
     if not conv:
-        return  # conversation not found — let the endpoint handle 404 itself
+        return  # conv not found — let the handler return 404
 
     conv_visitor = conv.get("visitor_id")
     if not conv_visitor:
-        return  # legacy conversation without visitor_id, allow through
+        return  # legacy conv without visitor — allow
 
-    if conv_visitor != x_visitor_id:
+    # Conv HAS visitor_id — caller MUST prove ownership
+    if not effective_id or effective_id != conv_visitor:
         logger.warning(
-            f"Ownership mismatch: header={x_visitor_id[:8]}... "
-            f"vs conv={conv_visitor[:8]}... (conv_id={conversation_id})"
+            f"Ownership denied for {conversation_id[:8]}: "
+            f"expected={conv_visitor[:8]} got={effective_id[:8] if effective_id else 'NONE'}"
         )
-        raise HTTPException(status_code=403, detail="Visitor does not own this conversation")
+        raise HTTPException(status_code=403, detail="Access denied")
