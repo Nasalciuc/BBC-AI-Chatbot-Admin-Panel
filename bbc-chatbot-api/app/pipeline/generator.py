@@ -100,6 +100,7 @@ def generate_response(
     history: list[dict],
     tunnel: str,
     budget_remaining: Optional[float] = None,
+    skip_templates: bool = False,
 ) -> GeneratedResponse:
     """Decision tree for response generation.
 
@@ -125,7 +126,12 @@ def generate_response(
 
     # ── AI-FIRST: All messages through Claude (templates = fallback only) ──
     # Skip AI-first for: TALK_TO_AGENT (handoff logic), CLOSING (simple goodbye)
-    _template_only_intents = {Intent.TALK_TO_AGENT, Intent.CLOSING}
+    # skip_templates (bad words): force AI empathetic response, not scripted handoff
+    _template_only_intents = (
+        {Intent.CLOSING}
+        if skip_templates
+        else {Intent.TALK_TO_AGENT, Intent.CLOSING}
+    )
     if intent not in _template_only_intents:
         # Budget check before AI call
         if budget_remaining is None or budget_remaining > 0:
@@ -211,8 +217,16 @@ def generate_response(
             return GeneratedResponse(text=text, model_used="template")
 
     # 3. Talk to agent
-    if intent == Intent.TALK_TO_AGENT:
+    if intent == Intent.TALK_TO_AGENT and not skip_templates:
         text = get_template("talk_to_agent", tunnel, visitor)
+        if text and history:
+            last_ai = next(
+                (m for m in reversed(history[-3:]) if m.get("role") == "ai"),
+                None,
+            )
+            if last_ai and last_ai.get("content", "").strip() == text.strip():
+                logger.debug("Template talk_to_agent identical to last — skipping")
+                text = None
         if text:
             return GeneratedResponse(text=text, model_used="template")
 
@@ -291,15 +305,39 @@ def generate_response(
             }
             missing = get_missing_fields(lead, conv_from_visitor)
 
-            if not missing:
-                # All fields captured → hand off to specialist
-                text = get_template(
-                    "specialist_handoff", tunnel, visitor,
-                    route=lead.get("route_display", "your route"),
-                )
-                if text:
-                    logger.info("Smart routing: specialist_handoff (lead complete)")
-                    return GeneratedResponse(text=text, model_used="template")
+            if not missing and not skip_templates:
+                # All fields captured — but don't repeat handoff template
+                already_sent = False
+                if history:
+                    for msg in reversed(history[-5:]):
+                        if msg.get("role") == "ai":
+                            content = (msg.get("content") or "").lower()
+                            if (
+                                "specialist" in content
+                                and (
+                                    "reach out" in content
+                                    or "contact you" in content
+                                    or "connect" in content
+                                )
+                            ):
+                                already_sent = True
+                                break
+
+                if not already_sent:
+                    text = get_template(
+                        "specialist_handoff", tunnel, visitor,
+                        route=lead.get("route_display", "your route"),
+                    )
+                    if text:
+                        logger.info(
+                            "Smart routing: specialist_handoff (lead complete, first time)"
+                        )
+                        return GeneratedResponse(text=text, model_used="template")
+                else:
+                    logger.debug(
+                        "specialist_handoff already sent — AI responds normally"
+                    )
+                # Fall through to AI-first generation
 
             # Check what's missing in CONVERSATION order (not scoring order)
             missing_str = " ".join(missing)
@@ -362,8 +400,11 @@ def generate_response(
     # ── 4.9 Budget guard ─────────────────────────────────────
     if budget_remaining is not None and budget_remaining <= 0:
         logger.warning(f"Daily budget exceeded (remaining=${budget_remaining:.2f}) — skipping AI")
-        text = get_template("ai_fallback", tunnel, visitor) or (
-            "Let me connect you with a specialist who can help with that right away."
+        fallback_key = "no_agent_available" if skip_templates else "ai_fallback"
+        text = get_template(fallback_key, tunnel, visitor) or (
+            "For immediate assistance, please call +1 (888) 322-7999."
+            if skip_templates
+            else "Let me connect you with a specialist who can help with that right away."
         )
         return GeneratedResponse(text=text, model_used="template")
 
@@ -413,7 +454,10 @@ def generate_response(
 
     # 5c. Fallback
     logger.warning("AI generation failed — using fallback template")
-    text = get_template("ai_fallback", tunnel, visitor) or (
-        "Let me connect you with a specialist who can help with that right away."
+    fallback_key = "no_agent_available" if skip_templates else "ai_fallback"
+    text = get_template(fallback_key, tunnel, visitor) or (
+        "For immediate assistance, please call +1 (888) 322-7999."
+        if skip_templates
+        else "Let me connect you with a specialist who can help with that right away."
     )
     return GeneratedResponse(text=text, model_used="template")
