@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     crm_api_url: str = "https://webapi.buybusinessclass.com"
     crm_api_token: str = ""
 
+    # Cron — abandoned conversations
+    cron_secret: str = ""
+    abandoned_timeout_minutes: int = 30
+
     # Postmark email
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"

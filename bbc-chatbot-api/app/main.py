@@ -17,6 +17,7 @@ from app.api.agent import router as agent_router
 from app.api.tasks import router as tasks_router
 from app.api.notifications import router as notifications_router
 from app.api.auth_routes import router as auth_router
+from app.api.cron import router as cron_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 
@@ -64,6 +65,9 @@ app.include_router(health_router, tags=["health"])
 
 # Chat: PUBLIC (customer widget — no auth)
 app.include_router(chat_router, prefix="/api", tags=["chat"])
+
+# Cron: PUBLIC with CRON_SECRET header (not JWT)
+app.include_router(cron_router, prefix="/api", tags=["cron"])
 
 # Auth: PUBLIC login, protected invite (auth dependency inside the route)
 app.include_router(auth_router)

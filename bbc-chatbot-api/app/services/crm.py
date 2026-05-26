@@ -11,6 +11,7 @@ Auth: none required (confirmed via testing).
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -183,4 +184,91 @@ async def submit_to_crm(lead: dict, visitor, conversation_id: str) -> CRMResult:
         return CRMResult(success=False, error="Timeout")
     except Exception as e:
         logger.error(f"CRM ERROR conv={conversation_id}: {e}")
+        return CRMResult(success=False, error=str(e))
+
+
+async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
+    """Submit abandoned conv to CRM. Bypasses check_crm_ready, uses defaults for missing route."""
+    if not settings.crm_api_url:
+        return CRMResult(success=False, error="CRM URL not configured")
+
+    try:
+        lead = lead or {}
+        origin = (lead.get("origin_code") or "AAA").upper()[:3]
+        dest = (lead.get("destination_code") or "AAA").upper()[:3]
+        dep_date = lead.get("departure_date")
+        ret_date = lead.get("return_date")
+        cabin = lead.get("cabin_class") or "business"
+        pax = lead.get("passengers") or 1
+        if isinstance(pax, str):
+            try:
+                pax = int(pax)
+            except ValueError:
+                pax = 1
+        pax = max(1, min(9, int(pax)))
+        trip_type = "round_trip" if ret_date else "one_way"
+
+        if not dep_date:
+            dep_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+        else:
+            dep_date = format_date_iso(dep_date)
+
+        phone = format_phone_international(conv.get("visitor_phone", ""))
+        if not phone:
+            return CRMResult(success=False, error="Phone invalid")
+
+        flights = [{"from": origin, "to": dest, "date": str(dep_date)}]
+        if trip_type == "round_trip" and ret_date:
+            flights.append({
+                "from": dest,
+                "to": origin,
+                "date": format_date_iso(ret_date),
+            })
+
+        cabin_map = {
+            "business": "business",
+            "first": "first",
+            "premium_economy": "premium_economy",
+        }
+        payload = {
+            "trip_type": trip_type,
+            "cabin_class": cabin_map.get(str(cabin).lower(), "business"),
+            "coupon": "",
+            "client": {
+                "name": (conv.get("visitor_name") or "Customer").strip(),
+                "email": (conv.get("visitor_email") or "").lower().strip(),
+                "phone": phone,
+            },
+            "passengers": {"adult": pax, "child": 0, "infant": 0},
+            "flights": flights,
+            "sms": False,
+        }
+
+        endpoint = f"{settings.crm_api_url.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
+        cid = conv.get("id", "?")
+        logger.info(f"[CRM-ABANDONED] conv={cid} {origin}->{dest} {dep_date}")
+
+        async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
+            resp = await client.post(
+                endpoint,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success") is False:
+                logger.error(f"[CRM-ABANDONED] FAIL conv={cid} body success=false: {resp.text[:300]}")
+                return CRMResult(success=False, error="CRM returned success=false")
+            req_id = data.get("data", {}).get("id", "")
+            logger.info(f"[CRM-ABANDONED] OK conv={cid} crm_id={req_id}")
+            return CRMResult(success=True, request_id=req_id)
+
+        body = resp.text[:300]
+        logger.error(f"[CRM-ABANDONED] FAIL conv={cid} status={resp.status_code} body={body}")
+        return CRMResult(success=False, error=f"HTTP {resp.status_code}: {body}")
+
+    except httpx.TimeoutException:
+        return CRMResult(success=False, error="Timeout")
+    except Exception as e:
         return CRMResult(success=False, error=str(e))
