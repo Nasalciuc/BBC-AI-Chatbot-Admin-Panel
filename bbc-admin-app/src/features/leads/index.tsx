@@ -173,7 +173,7 @@ export function Leads() {
                       <td className="px-4 py-3">
                         <RouteDisplay lead={lead} />
                         <div className="text-xs text-gray-400 mt-0.5 capitalize">
-                          {lead.trip_type.replace('_', '-')}{lead.passengers ? ` · ${lead.passengers} pax` : ''}
+                          {(lead.trip_type || 'round_trip').replace('_', '-')}{lead.passengers ? ` · ${lead.passengers} pax` : ''}
                         </div>
                       </td>
                       <td className="px-4 py-3">

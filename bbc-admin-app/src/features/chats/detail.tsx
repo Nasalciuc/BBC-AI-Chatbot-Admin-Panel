@@ -320,12 +320,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               </span>
             </div>
             <div className="flex items-center gap-4 mt-1.5">
-              {conv.visitor_phone && conv.status !== 'closed' && (
+              {conv.visitor_phone && (
                 <span className="flex items-center gap-1 text-xs text-gray-300">
                   <Phone className="w-3 h-3" />{conv.visitor_phone}
                 </span>
               )}
-              {conv.visitor_email && conv.status !== 'closed' && (
+              {conv.visitor_email && (
                 <span className="flex items-center gap-1 text-xs text-gray-400">
                   <Mail className="w-3 h-3" />{conv.visitor_email}
                 </span>
@@ -554,8 +554,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         </div>
       </div>
 
-      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, hidden on My Closed) */}
-      {activeTab !== 'my_closed' && activeTab !== 'all_closed' && (
+      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile) */}
       <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto shrink-0 hidden lg:block">
         <div className="p-4 space-y-4">
 
@@ -729,7 +728,6 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
         </div>
       </div>
-      )}
 
     </div>
   )

@@ -160,32 +160,35 @@ export function getLeads(
 }
 
 export async function getLeadFull(id: string): Promise<Lead> {
-  const res = await apiFetch<{ success: boolean; data: Lead }>(`/api/leads/${encodeURIComponent(id)}`)
-  return res.data
+  const res = await apiFetch<Lead & { success?: boolean; data?: Lead }>(`/api/leads/${encodeURIComponent(id)}`)
+  if (res && typeof res === 'object' && 'data' in res && res.data) return res.data
+  return res as Lead
 }
 
 export async function updateLeadStatus(
   id: string,
   status: string,
 ): Promise<Lead> {
-  const res = await apiFetch<{ success: boolean; data: Lead }>(`/api/leads/${encodeURIComponent(id)}/status`, {
+  const res = await apiFetch<Lead & { success?: boolean; data?: Lead }>(`/api/leads/${encodeURIComponent(id)}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   })
-  return res.data
+  if (res && typeof res === 'object' && 'data' in res && res.data) return res.data
+  return res as Lead
 }
 
 export async function updateLead(
   id: string,
   data: Partial<Lead>,
 ): Promise<Lead> {
-  const res = await apiFetch<{ success: boolean; data: Lead }>(`/api/leads/${encodeURIComponent(id)}`, {
+  const res = await apiFetch<Lead & { success?: boolean; data?: Lead }>(`/api/leads/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
-  return res.data
+  if (res && typeof res === 'object' && 'data' in res && res.data) return res.data
+  return res as Lead
 }
 
 // ── Knowledge Base ────────────────────────────────────────────
