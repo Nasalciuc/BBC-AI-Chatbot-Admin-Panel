@@ -36,6 +36,7 @@ const TIER_COLORS: Record<string, string> = {
 
 export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
   const role = (useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole)
+  const isAdmin = ['owner', 'admin', 'dev'].includes(role)
   const permissions = usePermissions(role)
   const [copied, setCopied]           = useState(false)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
@@ -554,7 +555,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         </div>
       </div>
 
-      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile) */}
+      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
+      {(isAdmin || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
       <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto shrink-0 hidden lg:block">
         <div className="p-4 space-y-4">
 
@@ -728,6 +730,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
         </div>
       </div>
+      )}
 
     </div>
   )
