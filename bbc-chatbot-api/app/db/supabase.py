@@ -1634,6 +1634,25 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     return abandoned
 
 
+async def get_last_system_message(conversation_id: str) -> dict | None:
+    """Get the most recent system message in a conversation."""
+    try:
+        db = get_client()
+        result = await _run_sync(lambda cid=conversation_id: (
+            db.table("messages")
+            .select("id, content, created_at")
+            .eq("conversation_id", cid)
+            .eq("role", "system")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        ))
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.warning(f"get_last_system_message error: {e}")
+        return None
+
+
 async def ensure_lead_for_conversation(conversation_id: str) -> dict | None:
     """Get existing lead or create minimal one. Handles UNIQUE constraint race."""
     db = get_client()

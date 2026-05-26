@@ -1,5 +1,7 @@
 """Agent presence — heartbeat endpoint."""
 import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.db import supabase as db
@@ -7,6 +9,21 @@ from app.security.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_HANDOFF_COOLDOWN_SECONDS = 120
+
+
+def _recent_fallback_system_message(last_sys: dict | None) -> bool:
+    """True if the last system message is a recent specialist-unavailable fallback."""
+    if not last_sys or "no longer available" not in (last_sys.get("content") or ""):
+        return False
+    try:
+        msg_time = datetime.fromisoformat(last_sys["created_at"].replace("Z", "+00:00"))
+        return (
+            datetime.now(timezone.utc) - msg_time
+        ).total_seconds() < _HANDOFF_COOLDOWN_SECONDS
+    except Exception:
+        return False
 
 
 async def _cleanup_stale_conversations() -> int:
@@ -17,7 +34,11 @@ async def _cleanup_stale_conversations() -> int:
     stale = await db.get_stale_agent_conversations(settings.agent_timeout_seconds)
     count = 0
     for conv in stale:
-        await fall_back_to_ai(conv["id"])
+        conv_id = conv["id"]
+        last_sys = await db.get_last_system_message(conv_id)
+        if _recent_fallback_system_message(last_sys):
+            continue
+        await fall_back_to_ai(conv_id)
         count += 1
     return count
 
@@ -38,11 +59,25 @@ async def _assign_pending_conversations(
     for t in tunnels:
         conv = await db.get_oldest_unassigned_conversation(t)
         if conv:
+            conv_id = conv["id"]
+
+            conv_data = await db.get_conversation(conv_id)
+            if (
+                conv_data
+                and conv_data.get("mode") == "human"
+                and conv_data.get("assigned_agent_id") == user_id
+            ):
+                continue
+
+            last_sys = await db.get_last_system_message(conv_id)
+            if _recent_fallback_system_message(last_sys):
+                continue
+
             # Use handoff service for the assignment (mode + agent_id),
             # but skip its system messages — heartbeat uses different templates.
-            from app.services.handoff import perform_handoff_to_agent
+            from app.services.handoff import perform_handoff_to_agent, _safe_system_msg
             await perform_handoff_to_agent(
-                conversation_id=conv["id"],
+                conversation_id=conv_id,
                 agent_id=user_id,
                 agent_name=agent_name,
                 tunnel=t,
@@ -50,7 +85,6 @@ async def _assign_pending_conversations(
             )
 
             # Heartbeat-specific system messages (different wording from initial routing)
-            from app.services.conversation_service import add_message
             from app.realtime.manager import manager
 
             joined = settings.heartbeat_joined_template.format(agent_name=agent_name)
@@ -60,17 +94,17 @@ async def _assign_pending_conversations(
                 else settings.heartbeat_welcome_support
             )
 
-            row1 = await add_message(conv["id"], "system", joined)
-            row2 = await add_message(conv["id"], "system", welcome)
+            row1 = await _safe_system_msg(conv_id, joined, cooldown_seconds=60)
+            row2 = await _safe_system_msg(conv_id, welcome, cooldown_seconds=60)
 
             # Push to SSE stream — no-op if widget not currently connected
             if row1:
-                await manager.push(conv["id"], row1)
+                await manager.push(conv_id, row1)
             if row2:
-                await manager.push(conv["id"], row2)
+                await manager.push(conv_id, row2)
 
             logger.info(
-                f"[heartbeat-assign] Conv {conv['id']} → {user_id} "
+                f"[heartbeat-assign] Conv {conv_id} → {user_id} "
                 f"({agent_name}), SSE pushed"
             )
             return 1

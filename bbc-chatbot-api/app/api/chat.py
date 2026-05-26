@@ -128,8 +128,20 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                     f"[H1] Conv {req.conversation_id}: agent offline in human mode "
                     f"→ falling back to AI"
                 )
+                from app.services.conversation_service import add_message
+                await add_message(
+                    conversation_id=req.conversation_id,
+                    role="user",
+                    content=clean_message,
+                )
                 await fall_back_to_ai(req.conversation_id)
-                # Fall through to step 4 (AI pipeline) instead of returning "queued"
+                from app.services.handoff import _FALLBACK_MSG
+                return ChatResponse(
+                    conversation_id=req.conversation_id,
+                    message=_FALLBACK_MSG,
+                    type="fallback",
+                    model_used="none",
+                )
             else:
                 # Agent is still online — queue the message for human handling
                 from app.services.conversation_service import add_message
