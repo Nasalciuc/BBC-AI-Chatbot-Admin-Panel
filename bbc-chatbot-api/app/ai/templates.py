@@ -120,14 +120,19 @@ TEMPLATES: dict[str, list[str]] = {
         "Our specialists are available 9 AM – 6 PM EST. "
         "Leave your number and we'll reach out first thing tomorrow.",
     ],
+    "no_agent_available": [
+        "I apologize \u2014 all our travel specialists are currently assisting "
+        "other clients. We have your details and will call you shortly, or you "
+        "can reach us directly at +1 (888) 322-7999 \u2014 we're available 24/7.",
+    ],
     "ai_fallback": [
         "Let me connect you with a specialist who can help with that right away.",
         "I want to make sure you get the best answer — let me connect you with our team.",
         "That's a great question for our travel specialists. Let me get someone for you.",
     ],
     "rate_limited": [
-        "You've been chatting with us a lot! For the fastest service, "
-        "call us at +1-XXX-XXX-XXXX.",
+        "I need a moment to process that. For immediate assistance, "
+        "please call +1 (888) 322-7999.",
     ],
     "error": [
         "I'm sorry, something went wrong on our end. "

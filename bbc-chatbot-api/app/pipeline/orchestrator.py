@@ -13,7 +13,7 @@ from app.services.crm import check_crm_ready, submit_to_crm
 from app.pipeline.iata_extractor import extract_iata_via_claude
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
-from app.pipeline.generator import generate_response
+from app.pipeline.generator import generate_response, GeneratedResponse
 from app.pipeline.validator import validate_response
 from app.ai.templates import get_template
 
@@ -104,6 +104,18 @@ async def _pipeline(
         )
     except Exception as _mod_err:
         logger.warning(f"[{cid}] Moderation task failed to schedule: {_mod_err}")
+
+    # ── STEP 2.6: Check flagged content — skip templates if abusive
+    _skip_templates = False
+    try:
+        from app.services.moderation import detect_bad_words
+        if detect_bad_words(message):
+            _skip_templates = True
+            logger.info(
+                f"[{cid}] Bad words detected — will skip templates, AI responds with empathy"
+            )
+    except Exception:
+        pass
 
     # Fetch history early — needed by Steps 3.5, 3.6, and 6
     history = await db.get_recent_messages(cid, limit=10)
@@ -297,8 +309,43 @@ async def _pipeline(
         history=history,
         tunnel=tunnel,
         budget_remaining=budget_remaining,
+        skip_templates=_skip_templates,
     )
     logger.info(f"[{cid}] Generated via {gen.model_used} | cost=${gen.cost:.4f}")
+
+    # ── STEP 6.05: Process [HANDOFF_REQUESTED] token
+    if gen and gen.text and "[HANDOFF_REQUESTED]" in gen.text:
+        logger.info(f"[{cid}] AI requested handoff — checking availability")
+        try:
+            from app.services.routing import route_conversation
+            from app.ai.templates import get_template
+
+            route_result = await route_conversation(
+                tunnel, visitor=visitor, visitor_id=visitor_id
+            )
+            if route_result and route_result.get("agent_id"):
+                await db.update_conversation(cid, {"status": "needs_agent"})
+                gen = GeneratedResponse(
+                    text=(
+                        "I'm connecting you with a travel specialist now. "
+                        "One moment please."
+                    ),
+                    model_used="handoff",
+                )
+            else:
+                no_agent = get_template("no_agent_available", tunnel, visitor)
+                gen = GeneratedResponse(
+                    text=no_agent or (
+                        "All specialists are busy. Please call +1 (888) 322-7999."
+                    ),
+                    model_used="template",
+                )
+        except Exception as e:
+            logger.warning(f"[{cid}] Handoff routing error: {e}")
+            gen = GeneratedResponse(
+                text="For immediate assistance, please call +1 (888) 322-7999.",
+                model_used="template",
+            )
 
     # ── STEP 6.1: MERGE CLAUDE TOOL ENTITIES ─────────────────
     if gen.tool_entities:
