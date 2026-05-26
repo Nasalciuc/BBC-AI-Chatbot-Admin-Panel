@@ -1,0 +1,32 @@
+name: Process Abandoned Conversations
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Call abandoned CRM endpoint
+        env:
+          RAILWAY_URL: ${{ secrets.RAILWAY_API_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_SECRET }}
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            "${RAILWAY_URL}/api/cron/abandoned-crm" \
+            -H "Authorization: Bearer ${CRON_TOKEN}" \
+            -H "Content-Type: application/json")
+          
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -n -1)
+          
+          echo "Status: $http_code"
+          echo "Response: $body"
+          
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Cron failed with status $http_code"
+            exit 1
+          fi
