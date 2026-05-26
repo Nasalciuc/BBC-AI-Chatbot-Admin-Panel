@@ -31,19 +31,26 @@ class CRMResult:
 
 
 def format_phone_international(phone: str) -> str:
-    """Ensure phone matches CRM regex ^\\+[\\d]+$."""
+    """Format phone to E.164: +{country}{number} — digits only after +.
+
+    Handles all known broken formats:
+      '1+2108844081'      → '+12108844081'
+      '+1+2108844081'     → '+12108844081'
+      '+1 (210) 884-4081'  → '+12108844081'
+      '2108844081'        → '+12108844081' (assume US)
+      '+442079460958'      → '+442079460958'
+      '0044207946'        → '+44207946' (strip intl prefix 00)
+    """
     if not phone:
         return ""
-    cleaned = re.sub(r"[^\d+]", "", phone)
-    if cleaned.startswith("+"):
-        return cleaned
-    if cleaned.startswith("1") and len(cleaned) == 11:
-        return f"+{cleaned}"
-    if len(cleaned) == 10:
-        return f"+1{cleaned}"
-    if cleaned:
-        return f"+{cleaned}"
-    return cleaned
+    digits = re.sub(r"\D", "", phone)
+    if not digits or len(digits) < 7:
+        return ""
+    if digits.startswith("00") and len(digits) > 2:
+        digits = digits[2:]
+    if len(digits) == 10:
+        digits = f"1{digits}"
+    return f"+{digits}"
 
 
 def format_date_iso(date_str) -> str:
