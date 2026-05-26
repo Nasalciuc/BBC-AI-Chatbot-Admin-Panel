@@ -357,10 +357,19 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         background: '#0B1829', color: '#fff', padding: '14px 18px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
       }}>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>BBC Travel Concierge</div>
-          <div style={{ fontSize: 11, opacity: 0.6, marginTop: 1 }}>
-            {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? 'Business Class Experts' : 'Booking Support'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <img
+            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+            alt="BBC"
+            width={24}
+            height={24}
+            style={{ borderRadius: 5, objectFit: 'contain' }}
+          />
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>BBC Travel Concierge</div>
+            <div style={{ fontSize: 11, opacity: 0.6, marginTop: 1 }}>
+              {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? 'Business Class Experts' : 'Booking Support'}
+            </div>
           </div>
         </div>
         <button onClick={() => { notifySessionClose('minimized', true); onClose() }} aria-label="Close chat" style={{
