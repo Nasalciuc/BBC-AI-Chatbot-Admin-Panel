@@ -34,7 +34,13 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       }
 
       const phoneTrimmed = phone.trim()
-      const normalizedPhone = phoneTrimmed === '+' ? '' : phoneTrimmed
+      const rawPhone = phoneTrimmed === '+' ? '' : phoneTrimmed
+      const digits = rawPhone.replace(/\D/g, '')
+      let normalizedPhone = ''
+      if (digits.length >= 7) {
+        const withCountry = digits.length === 10 ? `1${digits}` : digits
+        normalizedPhone = `+${withCountry}`
+      }
       if (!normalizedPhone || normalizedPhone.length < 8) {
         setPhoneError(true)
         return setError('Please enter your phone number')
@@ -136,7 +142,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
                   onInput={(e) => {
                     const raw = (e.target as HTMLInputElement).value
                     const trimmed = raw.trim()
-                    const val = /^\\d/.test(trimmed) ? `+${trimmed}` : (trimmed || '+')
+                    const val = /^\d/.test(trimmed) ? `+${trimmed}` : (trimmed || '+')
                     setPhone(val)
 
                     const country = detectCountryFromPhone(val)
