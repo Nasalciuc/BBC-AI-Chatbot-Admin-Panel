@@ -82,12 +82,21 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
         background: '#0B1829', color: '#fff', padding: '16px 20px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 15 }}>
-            {tunnel === 'sales' ? 'Buy Business Class' : 'Support'}
-          </div>
-          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
-            {tunnel === 'sales' ? 'Please enter your details to get started' : "We'll look into your booking"}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <img
+            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+            alt="BBC"
+            width={28}
+            height={28}
+            style={{ borderRadius: 6, objectFit: 'contain' }}
+          />
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>
+              {tunnel === 'sales' ? 'Buy Business Class' : 'Support'}
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
+              {tunnel === 'sales' ? 'Please enter your details to get started' : "We'll look into your booking"}
+            </div>
           </div>
         </div>
         <button onClick={onBack} aria-label="Close" style={{
