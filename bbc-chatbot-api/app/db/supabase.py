@@ -141,7 +141,9 @@ async def get_or_create_conversation(
             payload["visitor_id"] = visitor_id
         if visitor and visitor.name:  payload["visitor_name"]  = visitor.name
         if visitor and visitor.email: payload["visitor_email"] = visitor.email
-        if visitor and visitor.phone: payload["visitor_phone"] = visitor.phone
+        if visitor and visitor.phone:
+            from app.services.crm import format_phone_international
+            payload["visitor_phone"] = format_phone_international(visitor.phone)
         if visitor and visitor.country_code: payload["visitor_phone_country"] = visitor.country_code
         res = await _run_sync(lambda: db.table("conversations").insert(payload).execute())
         return res.data[0] if res.data else None

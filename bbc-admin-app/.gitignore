@@ -24,3 +24,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Compiled widget bundle — generated at build time by prebuild/sync-widget
+public/widget/bbc-widget.js
