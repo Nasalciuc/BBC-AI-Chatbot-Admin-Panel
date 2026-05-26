@@ -12,7 +12,7 @@ router = APIRouter()
 def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
     """Force tunnel filter for sales/support roles."""
     role = user.get("role", "sales")
-    if role in ("owner", "admin", "dev"):
+    if role in ("owner", "admin", "dev", "qa"):
         return tunnel
     scope = user.get("tunnel_scope", role)
     if tunnel and tunnel != scope:
@@ -37,7 +37,9 @@ async def list_leads(
 
         user_role = user.get("role", "")
         user_id = user.get("id", "")
-        if user_role in ("sales", "support"):
+        if user_role == "qa":
+            agent_filter = "all"
+        elif user_role in ("sales", "support"):
             agent_filter = user_id
         elif assigned_to == "me":
             agent_filter = user_id
@@ -85,7 +87,13 @@ async def update_lead_status(lead_id: str, body: LeadStatusUpdate):
 
 
 @router.patch("/leads/{lead_id}")
-async def update_lead(lead_id: str, body: dict):
+async def update_lead(
+    lead_id: str,
+    body: dict,
+    user: dict = Depends(get_current_user),
+):
+    if user.get("role") == "qa":
+        raise HTTPException(403, "QA role cannot modify leads")
     allowed = {"score", "tier", "cabin_class", "passengers", "flexible_dates", "notes", "intent_signals"}
     payload = {k: v for k, v in body.items() if k in allowed}
     if not payload:

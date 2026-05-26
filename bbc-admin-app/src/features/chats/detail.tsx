@@ -447,7 +447,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           )}
 
           {/* Take button — only on Queue */}
-          {activeTab === 'all_active' && (
+          {activeTab === 'all_active' && role !== 'qa' && (
             <div className="px-4 py-3">
               <button onClick={handleClaim}
                 className="w-full py-2.5 rounded-xl bg-[#C9A54E] text-white text-sm font-semibold hover:bg-[#C9A54E]/90 transition-all">
@@ -456,7 +456,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
           )}
 
-          {lead && permissions.canReadMessages && (
+          {lead && permissions.canReadMessages && permissions.canEditLeads && (
             <div className="px-4 py-2">
               {markLeadError && (
                 <div className="mb-2 px-2 py-1.5 rounded border border-red-200 bg-red-50 text-[11px] text-red-700">
@@ -556,7 +556,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       </div>
 
       {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
-      {(isAdmin || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
+      {(isAdmin || role === 'qa' || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
       <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto shrink-0 hidden lg:block">
         <div className="p-4 space-y-4">
 

@@ -48,7 +48,7 @@ type LeadTab = 'my_leads' | 'all_leads'
 
 export function Leads() {
   const user = useAuthStore((s) => s.auth.user)
-  const isAdmin = ['owner', 'admin', 'dev'].includes(user?.role || '')
+  const isAdmin = ['owner', 'admin', 'dev', 'qa'].includes(user?.role || '')
 
   const [activeTab, setActiveTab] = useState<LeadTab>(isAdmin ? 'all_leads' : 'my_leads')
   const [leads, setLeads]           = useState<Lead[]>([])

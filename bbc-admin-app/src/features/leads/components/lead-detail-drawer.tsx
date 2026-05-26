@@ -19,7 +19,10 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getLeadFull, getConversation, updateLeadStatus } from '@/lib/api'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
 import type { Message } from '@/lib/types'
+import { useAuthStore } from '@/stores/auth-store'
 
 interface Props {
   leadId: string | null
@@ -60,6 +63,8 @@ function CopyButton({ text }: { text: string }) {
 
 export function LeadDetailDrawer({ leadId, onClose }: Props) {
   const queryClient = useQueryClient()
+  const user = useAuthStore((s) => s.auth.user)
+  const permissions = usePermissions((user?.role ?? 'sales') as UserRole)
 
   const { data: lead, isLoading: leadLoading, isError: leadError } = useQuery({
     queryKey: ['lead', leadId],
@@ -189,7 +194,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
                 <Select
                   value={lead.status}
                   onValueChange={(v) => statusMutation.mutate(v)}
-                  disabled={statusMutation.isPending}
+                  disabled={statusMutation.isPending || !permissions.canEditLeads}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
