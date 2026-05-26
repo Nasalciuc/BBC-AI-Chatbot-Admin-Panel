@@ -9,13 +9,21 @@ function getPermissions(role: UserRole): Permissions {
     case 'owner':
     case 'admin':
     case 'dev':
-    case 'qa':
       return {
         canViewLeads: true, canEditLeads: true, canViewAllConversations: true,
         canReadMessages: true, canReassignConversations: true,
         canViewUsers: true, canEditUsers: true, canEditKB: true, canViewKB: true,
         canProposeKBChanges: true, canViewIntegrations: true, canEditSettings: true,
         canViewAllSettings: true, canViewDashboardGlobal: true, canAssignTasks: true,
+        visibleTunnels: ['all'],
+      }
+    case 'qa':
+      return {
+        canViewLeads: true, canEditLeads: false, canViewAllConversations: true,
+        canReadMessages: true, canReassignConversations: false,
+        canViewUsers: false, canEditUsers: false, canEditKB: false, canViewKB: true,
+        canProposeKBChanges: false, canViewIntegrations: false, canEditSettings: false,
+        canViewAllSettings: false, canViewDashboardGlobal: true, canAssignTasks: false,
         visibleTunnels: ['all'],
       }
     case 'sales':

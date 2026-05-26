@@ -1246,7 +1246,7 @@ async def update_user_last_seen(user_id: str) -> None:
 # Roles excluded from chat distribution (auto-assignment, sticky routing, stale cleanup).
 # These users manage/observe but never handle visitor conversations directly.
 # If adding a new role, decide: does this role HANDLE chats? If NO → add here.
-_MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor")
+_MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor", "qa")
 
 
 async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:

@@ -10,7 +10,7 @@ export function ReadyToggle() {
   const [isReady, setIsReady] = useState(true)
   const [loading, setLoading] = useState(false)
 
-  if (!user || ['owner', 'admin', 'dev', 'supervisor'].includes(user.role ?? '')) {
+  if (!user || ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(user.role ?? '')) {
     return null
   }
 

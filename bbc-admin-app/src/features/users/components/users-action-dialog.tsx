@@ -248,6 +248,7 @@ export function UsersActionDialog({
                           support: 'support',
                           owner: 'all',
                           admin: 'all',
+                          qa: 'all',
                         }
                         if (tunnelMap[newRole]) {
                           form.setValue('tunnel_scope', tunnelMap[newRole])

@@ -9,7 +9,7 @@ from app.security.auth import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_ROLES = {"owner", "admin", "sales", "support", "supervisor"}
+VALID_ROLES = {"owner", "admin", "dev", "sales", "support", "supervisor", "qa"}
 VALID_TUNNELS = {"sales", "support", "all"}
 PRIVILEGED = {"owner", "admin", "dev"}
 # Roles that can read user list (extends PRIVILEGED for reassign dropdown).

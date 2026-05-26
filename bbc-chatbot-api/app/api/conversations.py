@@ -18,7 +18,7 @@ router = APIRouter()
 def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
     """Force tunnel filter for sales/support roles."""
     role = user.get("role", "sales")
-    if role in ("owner", "admin", "dev", "supervisor"):
+    if role in ("owner", "admin", "dev", "supervisor", "qa"):
         return tunnel  # privileged users can filter freely
     scope = user.get("tunnel_scope", role)
     if tunnel and tunnel != scope:
@@ -198,7 +198,7 @@ async def send_agent_message(
     user: dict = Depends(get_current_user),
 ):
     """Agent sends a message in a conversation. Auto-sets mode to 'human'."""
-    if user.get("role") == "supervisor":
+    if user.get("role") in ("supervisor", "qa"):
         raise HTTPException(status_code=403, detail="Supervisors cannot send messages")
 
     # 1. Verify conversation exists and agent has tunnel access
@@ -265,6 +265,8 @@ async def close_conversation(
     user: dict = Depends(get_current_user),
 ):
     """Close a conversation. Sets status=closed and closed_at."""
+    if user.get("role") == "qa":
+        raise HTTPException(403, "QA role cannot close conversations")
     conv = await db.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
