@@ -84,10 +84,10 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       }}>
         <div>
           <div style={{ fontWeight: 600, fontSize: 15 }}>
-            {tunnel === 'sales' ? 'Book Business Class' : 'Support'}
+            {tunnel === 'sales' ? 'Buy Business Class' : 'Support'}
           </div>
           <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
-            {tunnel === 'sales' ? 'Enter your details to start' : "We'll look into your booking"}
+            {tunnel === 'sales' ? 'Please enter your details to get started' : "We'll look into your booking"}
           </div>
         </div>
         <button onClick={onBack} aria-label="Close" style={{
