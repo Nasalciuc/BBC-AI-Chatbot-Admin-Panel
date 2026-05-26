@@ -451,7 +451,26 @@ async def _pipeline(
             except Exception:
                 pass
 
-    # ── Auto-summarize every 5 messages ──────────────────────
+    # Record pipeline run (non-blocking, non-fatal)
+    latency_ms = int((time.perf_counter() - pipeline_start) * 1000)
+    if ai_msg_id:
+        await db.create_pipeline_run({
+            "message_id": ai_msg_id,
+            "conversation_id": cid,
+            "step_name": "orchestrator_v1",
+            "intent_detected": intent.value,
+            "kb_entries_used": len(kb_results),
+            "model_used": gen.model_used,
+            "cost": gen.cost,
+            "latency_ms": latency_ms,
+            "status": "success",
+            "tunnel": tunnel,
+            "had_fallback": gen.model_used == "template" and intent not in (
+                Intent.GREETING, Intent.CLOSING, Intent.TALK_TO_AGENT
+            ),
+        })
+
+    # ── Auto-summarize every 5 messages (after latency measurement) ──
     try:
         total_msgs = len(history) + 2
         if total_msgs >= 5 and total_msgs % 5 == 0:
@@ -473,25 +492,6 @@ async def _pipeline(
                     logger.info(f"[{cid}] Summary updated ({total_msgs} msgs, cost=${sum_cost:.4f})")
     except Exception as e:
         logger.warning(f"[{cid}] Summary failed (non-fatal): {e}")
-
-    # Record pipeline run (non-blocking, non-fatal)
-    latency_ms = int((time.perf_counter() - pipeline_start) * 1000)
-    if ai_msg_id:
-        await db.create_pipeline_run({
-            "message_id": ai_msg_id,
-            "conversation_id": cid,
-            "step_name": "orchestrator_v1",
-            "intent_detected": intent.value,
-            "kb_entries_used": len(kb_results),
-            "model_used": gen.model_used,
-            "cost": gen.cost,
-            "latency_ms": latency_ms,
-            "status": "success",
-            "tunnel": tunnel,
-            "had_fallback": gen.model_used == "template" and intent not in (
-                Intent.GREETING, Intent.CLOSING, Intent.TALK_TO_AGENT
-            ),
-        })
 
     resp_type = "template" if gen.model_used == "template" else "ai"
     logger.info(f"[{cid}] [PERF] deliver: {(time.perf_counter() - t_section) * 1000:.0f}ms")

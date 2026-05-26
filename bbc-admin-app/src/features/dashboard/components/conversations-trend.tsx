@@ -1,7 +1,6 @@
 /**
  * Conversations trend area chart — 14 days, sales vs support split.
  * Data source: DashboardStats.conversations_trend_v2 fetched from GET /api/dashboard/stats (FastAPI backend)
- * Fallback: MOCK_STATS from src/lib/mock-data.ts when API is offline
  * Parent: src/features/dashboard/index.tsx passes conversations_trend_v2 array as props
  */
 

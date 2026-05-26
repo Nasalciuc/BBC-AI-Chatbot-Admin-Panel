@@ -47,7 +47,6 @@ export function Leads() {
   const [leads, setLeads]           = useState<Lead[]>([])
   const [total, setTotal]           = useState(0)
   const [loading, setLoading]       = useState(true)
-  const [usingMock, setUsingMock]   = useState(false)
   const [search, setSearch]         = useState('')
   const [statusFilter, setStatus]   = useState('')
   const [tierFilter, setTier]       = useState('')
@@ -64,10 +63,10 @@ export function Leads() {
       if (statusFilter) params.status = statusFilter
       if (tierFilter)   params.tier = tierFilter
       const json = await getLeads(params)
-      setLeads(json.data); setTotal(json.count); setUsingMock(false)
+      setLeads(json.data); setTotal(json.count)
     } catch (err) {
       console.error('[leads] API error:', err)
-      setLeads([]); setTotal(0); setUsingMock(false)
+      setLeads([]); setTotal(0)
     } finally { setLoading(false) }
   }, [search, statusFilter, tierFilter, offset])
 
@@ -103,7 +102,7 @@ export function Leads() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-[#0B1829]">Leads</h1>
-              <p className="text-sm text-gray-500 mt-0.5">{total} total{usingMock && ' · mock data'}</p>
+              <p className="text-sm text-gray-500 mt-0.5">{total} total</p>
             </div>
             <div className="flex items-center gap-2">
               <ExportLeadsButton leads={sortedLeads} />

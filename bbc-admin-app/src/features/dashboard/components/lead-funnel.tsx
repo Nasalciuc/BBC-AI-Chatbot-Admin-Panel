@@ -1,7 +1,6 @@
 /**
  * Horizontal lead funnel visualization showing pipeline stages.
  * Data source: DashboardStats.funnel fetched from GET /api/dashboard/stats (FastAPI backend)
- * Fallback: MOCK_STATS from src/lib/mock-data.ts when API is offline
  * Parent: src/features/dashboard/index.tsx passes funnel array as props
  */
 

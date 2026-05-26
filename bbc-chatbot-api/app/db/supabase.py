@@ -1050,8 +1050,22 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             if (dt := parse_dt(r.get("created_at"))) and dt >= month_ago
         )
 
-        latencies = [r["latency_ms"] for r in all_runs if r.get("latency_ms")]
+        latencies = [
+            r["latency_ms"] for r in all_runs
+            if r.get("latency_ms")
+            and (dt := parse_dt(r.get("created_at")))
+            and dt >= week_ago
+        ]
         latency_median = round(statistics.median(latencies)) if latencies else 0
+        if latencies:
+            sorted_lat = sorted(latencies)
+            p95_idx = min(int(len(sorted_lat) * 0.95), len(sorted_lat) - 1)
+            logger.info(
+                "Dashboard latency 7d: median=%sms p95=%sms n=%s",
+                latency_median,
+                sorted_lat[p95_idx],
+                len(latencies),
+            )
 
         total_runs = len(all_runs)
         fallback_count = sum(1 for r in all_runs if r.get("had_fallback") or r.get("status") == "fallback")
