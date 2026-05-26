@@ -194,7 +194,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     // Nu facem cleanup — keyframes rămân pe tot parcursul sesiunii
   }, [])
 
-  // ─── EFFECT A: Auto-open form (20 secunde inactivitate) ─────────────────────
+  // ─── EFFECT A: Auto-open form (10 secunde inactivitate) ─────────────────────
   useEffect(() => {
     if (step !== 'buttons') return
     if (autoOpenedRef.current || formFlowStartedRef.current) return
@@ -209,7 +209,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
       setTunnel('sales')
       setStep('form')
       safeSet('bbc_attention_shown', '1')
-    }, 20_000)
+    }, 10_000)
 
     return () => clearTimeout(attentionTimer)
   }, [step])
