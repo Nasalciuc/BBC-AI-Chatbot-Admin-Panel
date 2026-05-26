@@ -61,7 +61,7 @@ function CopyButton({ text }: { text: string }) {
 export function LeadDetailDrawer({ leadId, onClose }: Props) {
   const queryClient = useQueryClient()
 
-  const { data: lead, isLoading: leadLoading } = useQuery({
+  const { data: lead, isLoading: leadLoading, isError: leadError } = useQuery({
     queryKey: ['lead', leadId],
     queryFn: () => getLeadFull(leadId!),
     enabled: !!leadId,
@@ -95,6 +95,10 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
             <Skeleton className="h-20 w-full" />
             <Skeleton className="h-20 w-full" />
             <Skeleton className="h-40 w-full" />
+          </div>
+        ) : leadError ? (
+          <div className="flex h-full items-center justify-center text-sm text-red-600 px-6 text-center">
+            Could not load lead. Please try again.
           </div>
         ) : !lead ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
