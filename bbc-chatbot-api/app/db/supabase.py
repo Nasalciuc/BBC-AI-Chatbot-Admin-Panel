@@ -1558,3 +1558,106 @@ async def get_assigned_tasks(user_id: str) -> list[dict]:
     except Exception as e:
         logger.error(f"get_assigned_tasks error: {e}")
         return []
+
+
+async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
+    """Active AI sales convs with contact, last message older than timeout."""
+    db = get_client()
+    try:
+        result = await _run_sync(lambda: (
+            db.table("conversations")
+            .select(
+                "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
+                "tunnel, message_count, mode, status"
+            )
+            .eq("status", "active")
+            .eq("mode", "ai")
+            .eq("tunnel", "sales")
+            .not_.is_("visitor_name", "null")
+            .neq("visitor_name", "")
+            .not_.is_("visitor_phone", "null")
+            .neq("visitor_phone", "")
+            .not_.is_("visitor_email", "null")
+            .neq("visitor_email", "")
+            .execute()
+        ))
+    except Exception as e:
+        logger.error(f"get_abandoned_conversations query error: {e}")
+        return []
+
+    if not result.data:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+    abandoned = []
+
+    for conv in result.data:
+        cid = conv["id"]
+        try:
+            lead_res = await _run_sync(lambda cid=cid: (
+                db.table("leads")
+                .select("id, created_in_crm")
+                .eq("conversation_id", cid)
+                .limit(1)
+                .execute()
+            ))
+            if lead_res.data and lead_res.data[0].get("created_in_crm"):
+                continue
+
+            msg_res = await _run_sync(lambda cid=cid: (
+                db.table("messages")
+                .select("created_at")
+                .eq("conversation_id", cid)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            ))
+            if not msg_res.data:
+                continue
+
+            raw_ts = msg_res.data[0]["created_at"]
+            last_msg = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            if last_msg > cutoff:
+                continue
+
+            abandoned.append(conv)
+        except Exception as e:
+            logger.warning(f"get_abandoned check error conv={cid}: {e}")
+            continue
+
+    return abandoned
+
+
+async def ensure_lead_for_conversation(conversation_id: str) -> dict | None:
+    """Get existing lead or create minimal one. Handles UNIQUE constraint race."""
+    db = get_client()
+    try:
+        existing = await _run_sync(lambda conv_id=conversation_id: (
+            db.table("leads")
+            .select("*")
+            .eq("conversation_id", conv_id)
+            .limit(1)
+            .execute()
+        ))
+        if existing.data:
+            return existing.data[0]
+
+        result = await _run_sync(lambda conv_id=conversation_id: (
+            db.table("leads")
+            .insert({"conversation_id": conv_id})
+            .execute()
+        ))
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.error(f"ensure_lead_for_conversation error: {e}")
+        try:
+            existing = await _run_sync(lambda conv_id=conversation_id: (
+                db.table("leads")
+                .select("*")
+                .eq("conversation_id", conv_id)
+                .limit(1)
+                .execute()
+            ))
+            return existing.data[0] if existing.data else None
+        except Exception:
+            return None
