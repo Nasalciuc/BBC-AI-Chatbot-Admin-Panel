@@ -9,6 +9,7 @@ import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { LeadDetailDrawer } from './components/lead-detail-drawer'
 import { ExportLeadsButton } from './components/export-leads-button'
+import { useAuthStore } from '@/stores/auth-store'
 
 const TIER_STYLES: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
@@ -43,7 +44,13 @@ function RouteDisplay({ lead }: { lead: Lead }) {
   return <span className="text-sm text-gray-400 italic">No route</span>
 }
 
+type LeadTab = 'my_leads' | 'all_leads'
+
 export function Leads() {
+  const user = useAuthStore((s) => s.auth.user)
+  const isAdmin = ['owner', 'admin', 'dev'].includes(user?.role || '')
+
+  const [activeTab, setActiveTab] = useState<LeadTab>(isAdmin ? 'all_leads' : 'my_leads')
   const [leads, setLeads]           = useState<Lead[]>([])
   const [total, setTotal]           = useState(0)
   const [loading, setLoading]       = useState(true)
@@ -68,7 +75,7 @@ export function Leads() {
       console.error('[leads] API error:', err)
       setLeads([]); setTotal(0)
     } finally { setLoading(false) }
-  }, [search, statusFilter, tierFilter, offset])
+  }, [search, statusFilter, tierFilter, offset, activeTab])
 
   useEffect(() => { fetchLeads() }, [fetchLeads])
 
@@ -111,6 +118,34 @@ export function Leads() {
                 <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Refresh
               </button>
             </div>
+          </div>
+
+          {/* Tabs: My Leads / All Leads */}
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={() => { setActiveTab('my_leads'); setOffset(0) }}
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                activeTab === 'my_leads'
+                  ? 'bg-[#0B1829] text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              My Leads
+            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => { setActiveTab('all_leads'); setOffset(0) }}
+                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                  activeTab === 'all_leads'
+                    ? 'bg-[#0B1829] text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                All Leads
+              </button>
+            )}
           </div>
 
           {/* Filters */}

@@ -473,6 +473,7 @@ async def get_leads(
     tier: Optional[str] = None,
     tunnel: Optional[str] = None,
     search: Optional[str] = None,
+    assigned_to: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     include_drafts: bool = False,
@@ -482,7 +483,7 @@ async def get_leads(
         db = get_client()
         def _query():
             q = db.table("leads").select(
-                "*, conversations!inner(visitor_name, visitor_email, visitor_phone, tunnel)",
+                "*, conversations!inner(visitor_name, visitor_email, visitor_phone, tunnel, assigned_agent_id)",
                 count="exact"  # type: ignore[arg-type]
             ).order("score", desc=True)
             if not include_drafts:
@@ -497,6 +498,10 @@ async def get_leads(
                     f"origin_code.ilike.%{search}%,"
                     f"destination_code.ilike.%{search}%"
                 )
+            if assigned_to == "none":
+                q = q.is_("conversations.assigned_agent_id", "null")
+            elif assigned_to and assigned_to != "all":
+                q = q.eq("conversations.assigned_agent_id", assigned_to)
             return q.range(offset, offset + limit - 1).execute()
         res = await _run_sync(_query)
         rows = []
@@ -506,6 +511,7 @@ async def get_leads(
             flat["visitor_name"]  = conv.get("visitor_name")
             flat["visitor_email"] = conv.get("visitor_email")
             flat["visitor_phone"] = conv.get("visitor_phone")
+            flat["assigned_agent_id"] = conv.get("assigned_agent_id")
             rows.append(flat)
         return rows, res.count or 0
     except Exception as e:
