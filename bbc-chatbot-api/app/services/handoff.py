@@ -87,6 +87,35 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
     return False
 
 
+_FALLBACK_MSG = (
+    "Your specialist is no longer available. "
+    "I'll continue assisting you — how can I help?"
+)
+
+
+async def _safe_system_msg(
+    conversation_id: str,
+    content: str,
+    cooldown_seconds: int = 60,
+) -> Optional[dict]:
+    """Add system message only if not a duplicate within the cooldown window."""
+    last = await db.get_last_system_message(conversation_id)
+    if last and last.get("content") == content:
+        created = last.get("created_at", "")
+        try:
+            msg_time = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            elapsed = (datetime.now(timezone.utc) - msg_time).total_seconds()
+            if elapsed < cooldown_seconds:
+                logger.debug(
+                    f"[handoff] Skip duplicate system msg "
+                    f"({elapsed:.0f}s < {cooldown_seconds}s)"
+                )
+                return None
+        except Exception:
+            pass
+    return await add_message(conversation_id, "system", content)
+
+
 async def fall_back_to_ai(conversation_id: str) -> None:
     """Revert a human-mode conversation back to AI.
     Clears agent assignment, sets mode='ai', and emits a system message."""
@@ -94,12 +123,7 @@ async def fall_back_to_ai(conversation_id: str) -> None:
         "mode": "ai",
         "assigned_agent_id": None,
     })
-    msg = await add_message(
-        conversation_id,
-        "system",
-        "Your specialist is no longer available. "
-        "I'll continue assisting you — how can I help?",
-    )
+    msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
     if msg:
         await manager.push(conversation_id, msg)
     logger.info(f"[handoff] Conv {conversation_id}: agent offline → fell back to AI")
@@ -140,9 +164,9 @@ async def perform_handoff_to_agent(
         else settings.quick_replies_support
     )
 
-    row1 = await add_message(conversation_id, "system", connecting)
-    row2 = await add_message(conversation_id, "system", joined)
-    row3 = await add_message(conversation_id, "system", welcome)
+    row1 = await _safe_system_msg(conversation_id, connecting, cooldown_seconds=60)
+    row2 = await _safe_system_msg(conversation_id, joined, cooldown_seconds=60)
+    row3 = await _safe_system_msg(conversation_id, welcome, cooldown_seconds=60)
 
     # Push to SSE — no-op if widget isn't connected
     for row in (row1, row2, row3):
