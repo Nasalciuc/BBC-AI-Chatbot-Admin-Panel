@@ -78,7 +78,9 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         conv_payload: dict = {}
         if entities.get("name"):   conv_payload["visitor_name"]  = entities["name"]
         if entities.get("email"):  conv_payload["visitor_email"] = entities["email"]
-        if entities.get("phone"):  conv_payload["visitor_phone"] = entities["phone"]
+        if entities.get("phone"):
+            from app.services.crm import format_phone_international
+            conv_payload["visitor_phone"] = format_phone_international(entities["phone"])
         if conv_payload:
             await _run_sync(lambda: db_client.table("conversations").update(conv_payload).eq("id", conversation_id).execute())
 
