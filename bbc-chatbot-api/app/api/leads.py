@@ -27,17 +27,31 @@ async def list_leads(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
     search: Optional[str] = Query(None, max_length=100),
     include_drafts: bool = Query(False, description="Include leads not yet marked as Create Lead by an agent"),
+    assigned_to: Optional[str] = Query(None, pattern="^(me|all|none)$"),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
     try:
         tunnel = _enforce_tunnel(user, tunnel)
+
+        user_role = user.get("role", "")
+        user_id = user.get("id", "")
+        if user_role in ("sales", "support"):
+            agent_filter = user_id
+        elif assigned_to == "me":
+            agent_filter = user_id
+        elif assigned_to == "none":
+            agent_filter = "none"
+        else:
+            agent_filter = "all"
+
         rows, total = await db.get_leads(
             status=status,
             tier=tier,
             tunnel=tunnel,
             search=search,
+            assigned_to=agent_filter,
             include_drafts=include_drafts,
             limit=limit,
             offset=offset,
