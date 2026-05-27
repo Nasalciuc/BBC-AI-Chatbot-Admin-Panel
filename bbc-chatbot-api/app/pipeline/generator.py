@@ -136,7 +136,7 @@ def generate_response(
         # Budget check before AI call
         if budget_remaining is None or budget_remaining > 0:
             try:
-                _system = build_conversational_prompt(
+                _static, _dynamic = build_conversational_prompt(
                     tunnel=tunnel,
                     visitor=visitor,
                     lead=lead,
@@ -144,6 +144,7 @@ def generate_response(
                     history=history if history else None,
                     entities=entities,
                 )
+                _system = f"{_static}\n\n{_dynamic}"
                 _raw = entities.get("_raw_message", "")
                 _user_msgs = [m for m in (history or []) if m.get("role") == "user"]
                 _use_sonnet = len(_user_msgs) >= 5 or intent == Intent.BOOKING_CHANGE
@@ -409,7 +410,7 @@ def generate_response(
         return GeneratedResponse(text=text, model_used="template")
 
     # 5. AI generation
-    system_prompt = build_conversational_prompt(
+    _static, _dynamic = build_conversational_prompt(
         tunnel=tunnel,
         visitor=visitor,
         lead=lead,
@@ -417,6 +418,7 @@ def generate_response(
         history=history if history else None,
         entities=entities,
     )
+    system_prompt = f"{_static}\n\n{_dynamic}"
 
     user_messages = [m for m in history if m.get("role") == "user"]
     use_sonnet = len(user_messages) >= 5 or intent == Intent.BOOKING_CHANGE
