@@ -1,5 +1,6 @@
 import { useState } from 'preact/hooks'
 import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from './countries'
+import brand from './config'
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -79,7 +80,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       zIndex: 2147483000, overflow: 'hidden',
     }}>
       <div style={{
-        background: '#0B1829', color: '#fff', padding: '16px 20px',
+        background: brand.headerColor, color: '#fff', padding: '16px 20px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -95,7 +96,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
               {tunnel === 'sales' ? 'Business Class Tickets' : 'Support'}
             </div>
             <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
-              {tunnel === 'sales' ? 'Please enter your details to get started' : "We'll look into your booking"}
+              {tunnel === 'sales' ? brand.formSubtitle : "We'll look into your booking"}
             </div>
           </div>
         </div>

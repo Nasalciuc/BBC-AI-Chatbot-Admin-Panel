@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { apiFetch, getVisitorId } from './api'
+import brand from './config'
 
 interface Message {
   id: string
@@ -354,7 +355,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       zIndex: 2147483000, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     }}>
       <div style={{
-        background: '#0B1829', color: '#fff', padding: '14px 18px',
+        background: brand.headerColor, color: '#fff', padding: '14px 18px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -368,7 +369,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>BCT Travel Concierge</div>
             <div style={{ fontSize: 11, opacity: 0.6, marginTop: 1 }}>
-              {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? 'Business Class Experts' : 'Booking Support'}
+              {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? brand.chatSubtitle : 'Booking Support'}
             </div>
           </div>
         </div>

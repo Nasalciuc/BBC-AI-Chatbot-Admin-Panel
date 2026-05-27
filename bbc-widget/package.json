@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "build": "vite build",
+    "build:bbc": "vite build --mode bbc",
+    "build:bct": "vite build --mode bct",
+    "build:all": "npm run build:bbc && npm run build:bct",
     "dev": "vite"
   },
   "dependencies": {

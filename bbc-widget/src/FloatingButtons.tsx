@@ -1,3 +1,5 @@
+import brand from './config'
+
 interface Props {
   onSelect: (tunnel: 'sales' | 'support') => void
   showAttention?: boolean
