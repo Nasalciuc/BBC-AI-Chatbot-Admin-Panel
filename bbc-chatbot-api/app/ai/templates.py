@@ -65,8 +65,7 @@ TEMPLATES: dict[str, list[str]] = {
         "We'll contact you at {contact}.",
     ],
     "closing:sales": [
-        "Thank you for choosing Buy Business Class{name_suffix}! "
-        "We'll be in touch soon.",
+        "Thank you for choosing us{name_suffix}! We'll be in touch soon.",
         "Thanks{name_suffix}! Our team is already working on your request.",
     ],
     "ask_previous_contact:sales": [
