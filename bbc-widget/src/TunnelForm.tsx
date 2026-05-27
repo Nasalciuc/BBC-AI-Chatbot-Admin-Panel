@@ -85,7 +85,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
-            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+            src={brand.logoUrl}
             alt={brand.logoAlt}
             width={28}
             height={28}

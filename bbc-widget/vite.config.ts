@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
         formats: ['iife'],
         fileName: () => `${site}-widget.js`,
       },
-      outDir: 'dist',
+      outDir: `dist/${site}`,
       rollupOptions: { output: { inlineDynamicImports: true } },
     },
   }
