@@ -101,6 +101,7 @@ def generate_response(
     tunnel: str,
     budget_remaining: Optional[float] = None,
     skip_templates: bool = False,
+    on_chunk=None,
 ) -> GeneratedResponse:
     """Decision tree for response generation.
 
@@ -152,10 +153,22 @@ def generate_response(
                     _use_sonnet = False
 
                 if _use_sonnet:
-                    _ai_text, _ai_cost = call_sonnet((_static, _dynamic), _raw)
+                    if on_chunk:
+                        from app.ai.claude import stream_sonnet
+                        _ai_text, _ai_cost = stream_sonnet(
+                            (_static, _dynamic), _raw, on_chunk=on_chunk
+                        )
+                    else:
+                        _ai_text, _ai_cost = call_sonnet((_static, _dynamic), _raw)
                     _tool_entities = None
                 else:
-                    _ai_text, _ai_cost, _te = call_haiku_with_tools((_static, _dynamic), _raw)
+                    if on_chunk:
+                        from app.ai.claude import stream_haiku_with_tools
+                        _ai_text, _ai_cost, _te = stream_haiku_with_tools(
+                            (_static, _dynamic), _raw, on_chunk=on_chunk
+                        )
+                    else:
+                        _ai_text, _ai_cost, _te = call_haiku_with_tools((_static, _dynamic), _raw)
                     _tool_entities = _te if _te else None
                     if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
                         # Tool call succeeded but no text — re-call without tools for natural response
@@ -413,8 +426,6 @@ def generate_response(
         history=history if history else None,
         entities=entities,
     )
-    system_prompt = f"{_static}\n\n{_dynamic}"
-
     user_messages = [m for m in history if m.get("role") == "user"]
     use_sonnet = len(user_messages) >= 5 or intent == Intent.BOOKING_CHANGE
 
@@ -426,7 +437,13 @@ def generate_response(
     if use_sonnet:
         # 5a. Sonnet for complex conversations
         logger.info("Using Sonnet (complex conversation)")
-        ai_text, ai_cost = call_sonnet((_static, _dynamic), entities.get("_raw_message", ""))
+        if on_chunk:
+            from app.ai.claude import stream_sonnet
+            ai_text, ai_cost = stream_sonnet(
+                (_static, _dynamic), entities.get("_raw_message", ""), on_chunk=on_chunk
+            )
+        else:
+            ai_text, ai_cost = call_sonnet((_static, _dynamic), entities.get("_raw_message", ""))
         if ai_text:
             return GeneratedResponse(
                 text=ai_text, model_used="sonnet", cost=ai_cost, tool_entities=None
@@ -434,9 +451,15 @@ def generate_response(
     else:
         # 5b. Haiku for standard responses
         logger.info("Using Haiku (standard response)")
-        ai_text, ai_cost, _te = call_haiku_with_tools(
-            (_static, _dynamic), entities.get("_raw_message", "")
-        )
+        if on_chunk:
+            from app.ai.claude import stream_haiku_with_tools
+            ai_text, ai_cost, _te = stream_haiku_with_tools(
+                (_static, _dynamic), entities.get("_raw_message", ""), on_chunk=on_chunk
+            )
+        else:
+            ai_text, ai_cost, _te = call_haiku_with_tools(
+                (_static, _dynamic), entities.get("_raw_message", "")
+            )
         tool_entities = _te if _te else None
         if (not ai_text or not str(ai_text).strip()) and tool_entities:
             # Tool call succeeded but no text — re-call without tools for natural response

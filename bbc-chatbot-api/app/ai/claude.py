@@ -263,3 +263,106 @@ def call_haiku_with_tools(
     except Exception as e:
         logger.error(f"Claude+Tool error: {type(e).__name__}: {e}")
         return None, 0.0, {}
+
+
+def stream_haiku_with_tools(
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+) -> tuple[Optional[str], float, dict]:
+    """Stream Haiku response with tool support. Calls on_chunk(text) per delta.
+    Returns same (text, cost, tool_entities) as call_haiku_with_tools.
+    """
+    start = time.time()
+    model = settings.claude_haiku_model
+    logger.info(f"Claude+Tool STREAM START | model={model}")
+
+    try:
+        with _get_client().messages.stream(
+            model=model,
+            max_tokens=200,
+            temperature=0.3,
+            system=_build_system(system_prompt),
+            messages=[{"role": "user", "content": user_message}],
+            tools=[TRAVEL_TOOL],
+            timeout=settings.claude_timeout,
+        ) as stream:
+            full_text = ""
+            for text_chunk in stream.text_stream:
+                full_text += text_chunk
+                if on_chunk and text_chunk:
+                    on_chunk(text_chunk)
+
+            final = stream.get_final_message()
+
+        elapsed = round(time.time() - start, 3)
+        cost = _estimate_cost(
+            model, final.usage.input_tokens, final.usage.output_tokens
+        )
+
+        tool_entities: dict = {}
+        for block in final.content:
+            btype = getattr(block, "type", None)
+            if btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
+                raw_in = getattr(block, "input", None) or {}
+                tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+
+        if not full_text.strip():
+            for block in final.content:
+                if getattr(block, "type", None) == "text":
+                    full_text = (getattr(block, "text", None) or "").strip()
+
+        logger.info(
+            f"Claude+Tool STREAM SUCCESS | text={len(full_text)}ch entities={list(tool_entities.keys())} "
+            f"cost=${cost:.6f} time={elapsed}s"
+        )
+        return full_text, cost, tool_entities
+
+    except anthropic.APITimeoutError:
+        logger.warning(f"Claude+Tool STREAM timeout after {time.time() - start:.1f}s")
+        return None, 0.0, {}
+    except anthropic.APIError as e:
+        logger.error(f"Claude+Tool STREAM API error: {e}")
+        return None, 0.0, {}
+    except Exception as e:
+        logger.error(f"Claude+Tool STREAM unexpected error: {e}")
+        return None, 0.0, {}
+
+
+def stream_sonnet(
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+) -> tuple[Optional[str], float]:
+    """Stream Sonnet response. Returns (text, cost)."""
+    start = time.time()
+    model = settings.claude_sonnet_model
+    logger.info(f"Claude Sonnet STREAM START | model={model}")
+
+    try:
+        with _get_client().messages.stream(
+            model=model,
+            max_tokens=200,
+            temperature=0.4,
+            system=_build_system(system_prompt),
+            messages=[{"role": "user", "content": user_message}],
+            timeout=settings.claude_timeout,
+        ) as stream:
+            full_text = ""
+            for text_chunk in stream.text_stream:
+                full_text += text_chunk
+                if on_chunk and text_chunk:
+                    on_chunk(text_chunk)
+
+            final = stream.get_final_message()
+
+        cost = _estimate_cost(model, final.usage.input_tokens, final.usage.output_tokens)
+        logger.info(
+            f"Claude Sonnet STREAM SUCCESS | text={len(full_text)}ch cost=${cost:.6f} "
+            f"time={round(time.time() - start, 3)}s"
+        )
+        return full_text, cost
+
+    except Exception as e:
+        logger.error(f"Claude Sonnet STREAM error: {e}")
+        return None, 0.0

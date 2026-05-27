@@ -29,6 +29,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [streamingText, setStreamingText] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false)
+  const isStreamingRef = useRef(false)
   const [quickReplies, setQuickReplies] = useState<string[] | null>(null)
   const [pendingGreeting, setPendingGreeting] = useState(false)
   const [convId, setConvId] = useState<string | null>(savedConvId)
@@ -48,7 +51,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   }
 
   // Scroll to bottom on new messages
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages.length])
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages.length, streamingText])
 
   // Send first greeting — SKIP if restored session
   useEffect(() => {
@@ -147,12 +152,33 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
 
       source.onmessage = (e: MessageEvent) => {
         try {
-          const msg = JSON.parse(e.data) as Message
+          const parsed = JSON.parse(e.data)
+
+          if (parsed.event === 'stream_chunk') {
+            setStreamingText(prev => prev + (parsed.delta || ''))
+            return
+          }
+
+          if (parsed.event === 'stream_end') {
+            setStreamingText('')
+            setIsStreaming(false)
+            isStreamingRef.current = false
+            setSending(false)
+            const msg = parsed as Message
+            setMessages(prev => {
+              if (prev.some(m => m.id === msg.id)) return prev
+              return [...prev, msg]
+            })
+            if (msg.created_at) lastMsgTime.current = msg.created_at
+            return
+          }
+
+          const msg = parsed as Message
           setMessages(prev => {
-            if (prev.some(m => m.id === msg.id)) return prev  // dedup
+            if (prev.some(m => m.id === msg.id)) return prev
             return [...prev, msg]
           })
-          lastMsgTime.current = msg.created_at
+          if (msg.created_at) lastMsgTime.current = msg.created_at
         } catch { /* malformed event — ignore */ }
       }
 
@@ -235,6 +261,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
     }
     setSending(true)
+    setStreamingText('')
 
     const optimisticMsg: Message = {
       id: `temp-${Date.now()}`,
@@ -304,6 +331,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         // Update lastMsgTime so next poll doesn't re-fetch user message
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
+      } else if (data.streaming) {
+        setIsStreaming(true)
+        isStreamingRef.current = true
       } else if (data.message && data.type !== 'queued') {
         const aiMsg: Message = {
           id: `ai-${Date.now()}`,
@@ -317,6 +347,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       // Extend 30-minute rolling session on every successful message
       try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
     } catch {
+      setStreamingText('')
+      setIsStreaming(false)
+      isStreamingRef.current = false
       // Clean up optimistic message if the request failed
       setMessages(prev => prev.filter(m => m.id !== '__connecting_temp__'))
       const errMsg: Message = {
@@ -327,7 +360,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       }
       setMessages(prev => [...prev, errMsg])
     } finally {
-      setSending(false)
+      if (!isStreamingRef.current) {
+        setSending(false)
+      }
     }
   }
 
@@ -404,6 +439,16 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             </div>
           </div>
         ))}
+        {streamingText && (
+          <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
+            <div style={{
+              padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
+              background: '#f3f4f6', color: '#1f2937', borderBottomLeftRadius: 4,
+            }}>
+              {streamingText}
+            </div>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
