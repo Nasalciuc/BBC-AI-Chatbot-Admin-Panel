@@ -54,10 +54,6 @@ TEMPLATES: dict[str, list[str]] = {
         "Wonderful{name_suffix}! I have everything I need. One of our travel "
         "specialists will reach out within 2 hours with the best options. "
         "We'll contact you at {contact}.",
-        "All set{name_suffix}! A specialist will contact you shortly with "
-        "personalized options and our best fares.",
-        "Thank you{name_suffix}! Our team will prepare a tailored quote "
-        "and reach out to you soon at {contact}.",
     ],
     "lead_captured:sales": [
         "Perfect, {name}! One of our travel specialists will reach out "
@@ -105,8 +101,7 @@ TEMPLATES: dict[str, list[str]] = {
 
     # ── UNIVERSAL ──────────────────────────────────────────────
     "talk_to_agent": [
-        "I'll connect you with a travel specialist right away. "
-        "One moment please.",
+        "Let me check if a specialist is available for you.",
     ],
     "handoff_confirmed": [
         "Absolutely — I'm connecting you with a specialist right now. "
@@ -125,9 +120,8 @@ TEMPLATES: dict[str, list[str]] = {
         "can reach us directly at +1 (888) 322-7999 \u2014 we're available 24/7.",
     ],
     "ai_fallback": [
-        "Let me connect you with a specialist who can help with that right away.",
-        "I want to make sure you get the best answer — let me connect you with our team.",
-        "That's a great question for our travel specialists. Let me get someone for you.",
+        "For the best answer on that, I'd recommend calling our team directly at +1 (888) 322-7999.",
+        "That's a great question — our travel specialists can help. Call +1 (888) 322-7999 for immediate assistance.",
     ],
     "rate_limited": [
         "I need a moment to process that. For immediate assistance, "

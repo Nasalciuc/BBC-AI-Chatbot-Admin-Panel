@@ -116,6 +116,76 @@ async def _safe_system_msg(
     return await add_message(conversation_id, "system", content)
 
 
+async def _handoff_phrase_recently_sent(conversation_id: str, lookback: int = 8) -> bool:
+    """Check if a handoff/connecting phrase was sent recently in last N messages."""
+    try:
+        msgs = await db.get_recent_messages(conversation_id, limit=lookback)
+        _patterns = (
+            "connecting you",
+            "specialist",
+            "reach out",
+            "contact you",
+            "no longer available",
+            "connect you",
+            "one moment",
+        )
+        for msg in reversed(msgs):
+            role = msg.get("role", "")
+            if role in ("ai", "system"):
+                content = (msg.get("content") or "").lower()
+                if any(p in content for p in _patterns):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+async def get_handoff_response(
+    conversation_id: str,
+    tunnel: str,
+    visitor,
+    skip_if_recent: bool = True,
+    visitor_id: Optional[str] = None,
+) -> tuple[str, str]:
+    """Decide honest handoff response based on agent availability.
+
+    Returns: (response_text, model_used)
+    """
+    from app.services.routing import route_conversation
+    from app.ai.templates import get_template
+
+    if skip_if_recent:
+        already = await _handoff_phrase_recently_sent(conversation_id)
+        if already:
+            return (
+                "I understand you'd like to speak with someone. "
+                "You can reach us directly at +1 (888) 322-7999 — available 24/7.",
+                "template",
+            )
+
+    route = await route_conversation(tunnel, visitor=visitor, visitor_id=visitor_id)
+
+    if route and route.get("agent_id"):
+        await perform_handoff_to_agent(
+            conversation_id,
+            agent_id=route["agent_id"],
+            agent_name=route.get("agent_name", "A specialist"),
+            tunnel=tunnel,
+            emit_messages=True,
+        )
+        return (
+            "I'm connecting you with a specialist now. They'll have all the details "
+            "from our conversation.",
+            "handoff",
+        )
+
+    text = get_template("no_agent_available", tunnel, visitor)
+    return (
+        text or "All specialists are currently busy. Please call +1 (888) 322-7999.",
+        "template",
+    )
+
+
 async def fall_back_to_ai(conversation_id: str) -> None:
     """Revert a human-mode conversation back to AI.
     Clears agent assignment, sets mode='ai', and emits a system message."""
