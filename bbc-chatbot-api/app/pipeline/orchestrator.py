@@ -10,7 +10,6 @@ from app.models.chat import ChatResponse, VisitorInfo
 from app.models.kb import KBResult
 from app.services import conversation_service, lead_service
 from app.services.crm import check_crm_ready, submit_to_crm
-from app.pipeline.iata_extractor import extract_iata_via_claude
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response, GeneratedResponse
@@ -182,28 +181,37 @@ async def _pipeline(
         "trip_type": extracted.trip_type,
     }
 
-    # ── STEP 4.1: CLAUDE IATA FALLBACK ──────────────────────
-    # If regex missed origin OR destination, ask Claude to extract IATA codes
-    # Detect impossible same-route (origin == destination, e.g. JFK→JFK)
-    _same_route = (
-        entities.get("origin") and entities.get("destination")
-        and entities["origin"] == entities["destination"]
-    )
-    if not entities.get("origin") or not entities.get("destination") or _same_route:
-        try:
-            iata = await extract_iata_via_claude(message)
-            if iata.get("origin"):
-                if not entities.get("origin") or _same_route:
-                    entities["origin"] = iata["origin"]
-                    logger.info(f"[{cid}] IATA fallback: origin={iata['origin']}")
-            if iata.get("destination"):
-                if not entities.get("destination") or _same_route:
-                    entities["destination"] = iata["destination"]
-                    logger.info(f"[{cid}] IATA fallback: destination={iata['destination']}")
-            if iata.get("passengers") and not entities.get("passengers"):
-                entities["passengers"] = iata["passengers"]
-        except Exception as e:
-            logger.warning(f"[{cid}] IATA fallback failed (non-blocking): {e}")
+    # IATA LLM fallback removed (PR1) — TRAVEL_TOOL in generate extracts
+    # origin/destination as superset. Route captured via tool_entities merge
+    # at Step 6.1, then CRM re-check at Step 6.2.
+
+    # ── KB search started in parallel (independent of entities/lead) ──
+    _kb_task = None
+    _skip_kb = intent in (Intent.GREETING, Intent.CLOSING, Intent.TALK_TO_AGENT)
+    if not _skip_kb:
+
+        async def _fetch_kb():
+            try:
+                if settings.qdrant_enabled and settings.qdrant_url:
+                    from app.db.qdrant import search_kb as qdrant_search_kb
+                    raw = await qdrant_search_kb(message, tunnel=tunnel, limit=3)
+                    if raw:
+                        return [
+                            KBResult(
+                                entry_id=r["id"],
+                                title=r["title"],
+                                content=r["content"],
+                                score=r.get("score", 0.8),
+                                source="vector",
+                            )
+                            for r in raw
+                        ]
+                return []
+            except Exception as e:
+                logger.warning(f"[{cid}] KB parallel search failed: {e}")
+                return []
+
+        _kb_task = asyncio.create_task(_fetch_kb())
 
     # Update lead with all extracted entities
     has_useful = any(
@@ -245,50 +253,28 @@ async def _pipeline(
     logger.info(f"[{cid}] [PERF] crm: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()
 
-    # ── STEP 5: KB SEARCH ────────────────────────────────────
+    # ── STEP 5: KB results (started earlier in parallel) ──────
     kb_results: list[KBResult] = []
-    skip_kb = intent in (Intent.GREETING, Intent.CLOSING, Intent.TALK_TO_AGENT)
+    if _kb_task:
+        kb_results = await _kb_task
+    elif not _skip_kb:
+        # Keyword fallback (Qdrant disabled)
+        keywords = extract_kb_keywords(message)
+        if keywords:
+            raw_results = await db.keyword_search_kb(keywords, tunnel=tunnel, limit=3)
+            kb_results = [
+                KBResult(
+                    entry_id=r["id"],
+                    title=r["title"],
+                    content=r["content"],
+                    score=1.0,
+                    source="keyword",
+                )
+                for r in raw_results
+            ]
 
-    if not skip_kb:
-        # 5a. Qdrant vector search (server-side embedding)
-        if settings.qdrant_enabled and settings.qdrant_url:
-            try:
-                from app.db.qdrant import search_kb as qdrant_search_kb
-                raw_vector = await qdrant_search_kb(message, tunnel=tunnel, limit=3)
-                if raw_vector:
-                    kb_results = [
-                        KBResult(
-                            entry_id=r["id"],
-                            title=r["title"],
-                            content=r["content"],
-                            score=r.get("score", 0.8),
-                            source="vector",
-                        )
-                        for r in raw_vector
-                    ]
-                    logger.info(f"[{cid}] Qdrant results: {len(kb_results)}")
-            except Exception as e:
-                logger.warning(f"[{cid}] Qdrant failed, keyword fallback: {e}")
-                kb_results = []
-
-        # 5b. Keyword fallback
-        if not kb_results:
-            keywords = extract_kb_keywords(message)
-            if keywords:
-                raw_results = await db.keyword_search_kb(keywords, tunnel=tunnel, limit=3)
-                kb_results = [
-                    KBResult(
-                        entry_id=r["id"],
-                        title=r["title"],
-                        content=r["content"],
-                        score=1.0,
-                        source="keyword",
-                    )
-                    for r in raw_results
-                ]
-
-        kb_source = kb_results[0].source if kb_results else "none"
-        logger.info(f"[{cid}] KB: {len(kb_results)} results (source: {kb_source})")
+    kb_source = kb_results[0].source if kb_results else "none"
+    logger.info(f"[{cid}] KB: {len(kb_results)} results (source: {kb_source})")
 
     logger.info(f"[{cid}] [PERF] kb_search: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()

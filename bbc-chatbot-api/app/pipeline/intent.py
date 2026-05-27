@@ -48,7 +48,12 @@ INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.TRAVEL_INSURANCE, re.compile(r"(insurance|coverage|protect|insured)", re.I)),
     (Intent.PAYMENT_METHODS, re.compile(r"(payment|pay|credit\s*card|wire|transfer|install|invoice)", re.I)),
     (Intent.RECEIPT_REQUEST, re.compile(r"(receipt|invoice|confirmation|proof\s*of)", re.I)),
-    (Intent.NEW_BOOKING, re.compile(r"(book|booking|fly(?!\s+direct)|flying|flight|tickets?|travel|trips?|help|want|need)\b", re.I)),
+    # ── Speed: catch common short replies without LLM ──
+    (Intent.NEW_BOOKING, re.compile(r"^(ok|okay|yes|yeah|yep|sure|sounds?\s*good|that\s*works|perfect|great|got\s*it|alright|absolutely|definitely|cool|nice|yup)\s*[.!]?$", re.I)),
+    (Intent.GENERAL_QUESTION, re.compile(r"^(no|nope|not\s*really|nah|no\s*thanks?)\s*[.!]?$", re.I)),
+    (Intent.NEW_BOOKING, re.compile(r"^\d{1,2}\s*$")),
+    (Intent.NEW_BOOKING, re.compile(r"^[A-Z]{3}\s*(to|[-\u2013\u2192])\s*[A-Z]{3}", re.I)),
+    (Intent.NEW_BOOKING, re.compile(r"(book|booking|fly(?!\s*direct)|flying|flight|tickets?|travel|trips?|help|want|need)\b", re.I)),
     (Intent.ROUTE_INFO, re.compile(r"(route|airline|nonstop|direct|duration|how\s+long)", re.I)),
 ]
 
@@ -89,6 +94,12 @@ def detect_intent(message: str, metadata: Optional[dict] = None) -> Intent:
         if pattern.search(lower):
             logger.debug(f"Intent from regex: {intent.value}")
             return intent
+
+    # 2.5. Short messages — skip expensive LLM classify
+    word_count = len(message.split())
+    if word_count <= 3:
+        logger.debug(f"Short message ({word_count} words), no regex → GENERAL_QUESTION (skip LLM)")
+        return Intent.GENERAL_QUESTION
 
     # 3. Claude Haiku fallback
     logger.debug("No regex match — calling Claude classifier")
