@@ -152,14 +152,14 @@ def generate_response(
                     _use_sonnet = False
 
                 if _use_sonnet:
-                    _ai_text, _ai_cost = call_sonnet(_system, _raw)
+                    _ai_text, _ai_cost = call_sonnet((_static, _dynamic), _raw)
                     _tool_entities = None
                 else:
-                    _ai_text, _ai_cost, _te = call_haiku_with_tools(_system, _raw)
+                    _ai_text, _ai_cost, _te = call_haiku_with_tools((_static, _dynamic), _raw)
                     _tool_entities = _te if _te else None
                     if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
                         # Tool call succeeded but no text — re-call without tools for natural response
-                        _ai_text, _fallback_cost = call_haiku(_system, _raw)
+                        _ai_text, _fallback_cost = call_haiku((_static, _dynamic), _raw)
                         _ai_cost += _fallback_cost
                         if not _ai_text or not str(_ai_text).strip():
                             _ai_text = "Let me find the best options for your trip!"
@@ -431,7 +431,7 @@ def generate_response(
     if use_sonnet:
         # 5a. Sonnet for complex conversations
         logger.info("Using Sonnet (complex conversation)")
-        ai_text, ai_cost = call_sonnet(system_prompt, entities.get("_raw_message", ""))
+        ai_text, ai_cost = call_sonnet((_static, _dynamic), entities.get("_raw_message", ""))
         if ai_text:
             return GeneratedResponse(
                 text=ai_text, model_used="sonnet", cost=ai_cost, tool_entities=None
@@ -440,12 +440,12 @@ def generate_response(
         # 5b. Haiku for standard responses
         logger.info("Using Haiku (standard response)")
         ai_text, ai_cost, _te = call_haiku_with_tools(
-            system_prompt, entities.get("_raw_message", "")
+            (_static, _dynamic), entities.get("_raw_message", "")
         )
         tool_entities = _te if _te else None
         if (not ai_text or not str(ai_text).strip()) and tool_entities:
             # Tool call succeeded but no text — re-call without tools for natural response
-            ai_text, _fallback_cost = call_haiku(system_prompt, entities.get("_raw_message", ""))
+            ai_text, _fallback_cost = call_haiku((_static, _dynamic), entities.get("_raw_message", ""))
             ai_cost += _fallback_cost
             if not ai_text or not str(ai_text).strip():
                 ai_text = "Let me find the best options for your trip!"
