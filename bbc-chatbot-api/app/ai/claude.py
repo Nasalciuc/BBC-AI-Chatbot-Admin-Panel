@@ -42,9 +42,22 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     )
 
 
+def _build_system(system_prompt):
+    """Convert system prompt to cached blocks if tuple (static, dynamic)."""
+    if isinstance(system_prompt, tuple):
+        static, dynamic = system_prompt
+        blocks = [
+            {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
+        ]
+        if dynamic and dynamic.strip():
+            blocks.append({"type": "text", "text": dynamic})
+        return blocks
+    return system_prompt  # string — classify, summary, legacy
+
+
 # ── API calls ─────────────────────────────────────────────────
 
-def call_haiku(system_prompt: str, user_message: str) -> tuple[Optional[str], float]:
+def call_haiku(system_prompt, user_message: str) -> tuple[Optional[str], float]:
     """Call Claude Haiku (cheap, fast). Returns (text, cost) — (None, 0) on failure."""
     return _call_model(
         model=settings.claude_haiku_model,
@@ -55,7 +68,7 @@ def call_haiku(system_prompt: str, user_message: str) -> tuple[Optional[str], fl
     )
 
 
-def call_sonnet(system_prompt: str, user_message: str) -> tuple[Optional[str], float]:
+def call_sonnet(system_prompt, user_message: str) -> tuple[Optional[str], float]:
     """Call Claude Sonnet (expensive, smarter). Returns (text, cost) — (None, 0) on failure."""
     return _call_model(
         model=settings.claude_sonnet_model,
@@ -80,7 +93,7 @@ def classify_intent(message: str) -> tuple[Optional[str], float]:
 
 def _call_model(
     model: str,
-    system_prompt: str,
+    system_prompt,
     user_message: str,
     max_tokens: int,
     temperature: float,
@@ -95,7 +108,7 @@ def _call_model(
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                system=system_prompt,
+                system=_build_system(system_prompt),
                 messages=[{"role": "user", "content": user_message}],
                 timeout=settings.claude_timeout,
             )
@@ -195,7 +208,7 @@ TRAVEL_TOOL = {
 
 
 def call_haiku_with_tools(
-    system_prompt: str, user_message: str
+    system_prompt, user_message: str
 ) -> tuple[Optional[str], float, dict]:
     """Call Haiku with travel extraction tool. Returns (text, cost, entities).
 
@@ -211,7 +224,7 @@ def call_haiku_with_tools(
             model=model,
             max_tokens=200,
             temperature=0.3,
-            system=system_prompt,
+            system=_build_system(system_prompt),
             messages=[{"role": "user", "content": user_message}],
             tools=[TRAVEL_TOOL],
             timeout=settings.claude_timeout,
