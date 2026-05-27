@@ -150,9 +150,17 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                     role="user",
                     content=clean_message,
                 )
+                from app.services.handoff import _handoff_phrase_recently_sent
+
+                already = await _handoff_phrase_recently_sent(req.conversation_id)
+                queued_msg = (
+                    "Your message has been sent to the specialist."
+                    if already
+                    else "One moment please, connecting you with a specialist..."
+                )
                 return ChatResponse(
                     conversation_id=req.conversation_id,
-                    message="One moment please, connecting you with a specialist...",
+                    message=queued_msg,
                     type="queued",
                     model_used="none",
                 )
@@ -207,8 +215,8 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                         emit_messages=False,
                     )
 
-                    # Build the system-message trio per route reason
-                    from app.services.conversation_service import add_message as _add
+                    # Build the system-message trio per route reason (deduped)
+                    from app.services.handoff import _safe_system_msg
                     from app.realtime.manager import manager as _mgr
 
                     if reason == "affinity":
@@ -227,9 +235,9 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
                         else settings.welcome_message_support
                     )
 
-                    row1 = await _add(conv["id"], "system", opener)
-                    row2 = await _add(conv["id"], "system", joined)
-                    row3 = await _add(conv["id"], "system", welcome)
+                    row1 = await _safe_system_msg(conv["id"], opener, cooldown_seconds=60)
+                    row2 = await _safe_system_msg(conv["id"], joined, cooldown_seconds=60)
+                    row3 = await _safe_system_msg(conv["id"], welcome, cooldown_seconds=60)
 
                     for row in (row1, row2, row3):
                         if row:

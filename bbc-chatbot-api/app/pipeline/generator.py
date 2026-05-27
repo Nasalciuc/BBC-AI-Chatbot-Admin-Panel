@@ -217,19 +217,12 @@ def generate_response(
         if text:
             return GeneratedResponse(text=text, model_used="template")
 
-    # 3. Talk to agent
+    # 3. Talk to agent — signal orchestrator for real routing (async)
     if intent == Intent.TALK_TO_AGENT and not skip_templates:
-        text = get_template("talk_to_agent", tunnel, visitor)
-        if text and history:
-            last_ai = next(
-                (m for m in reversed(history[-3:]) if m.get("role") == "ai"),
-                None,
-            )
-            if last_ai and last_ai.get("content", "").strip() == text.strip():
-                logger.debug("Template talk_to_agent identical to last — skipping")
-                text = None
-        if text:
-            return GeneratedResponse(text=text, model_used="template")
+        return GeneratedResponse(
+            text="[HANDOFF_REQUESTED]",
+            model_used="handoff_signal",
+        )
 
     # 4. Route card (NEW_BOOKING or ROUTE_INFO with KB data)
     if intent in (Intent.NEW_BOOKING, Intent.ROUTE_INFO) and kb_results:
@@ -310,8 +303,9 @@ def generate_response(
                 # All fields captured — but don't repeat handoff template
                 already_sent = False
                 if history:
-                    for msg in reversed(history[-5:]):
-                        if msg.get("role") == "ai":
+                    for msg in reversed(history[-8:]):
+                        role = msg.get("role", "")
+                        if role in ("ai", "system"):
                             content = (msg.get("content") or "").lower()
                             if (
                                 "specialist" in content
@@ -319,6 +313,7 @@ def generate_response(
                                     "reach out" in content
                                     or "contact you" in content
                                     or "connect" in content
+                                    or "within" in content
                                 )
                             ):
                                 already_sent = True

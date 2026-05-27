@@ -314,26 +314,50 @@ async def _pipeline(
     if gen and gen.text and "[HANDOFF_REQUESTED]" in gen.text:
         logger.info(f"[{cid}] AI requested handoff — checking availability")
         try:
+            from app.services.handoff import (
+                _handoff_phrase_recently_sent,
+                perform_handoff_to_agent,
+            )
             from app.services.routing import route_conversation
             from app.ai.templates import get_template
 
-            route_result = await route_conversation(
-                tunnel, visitor=visitor, visitor_id=visitor_id
-            )
-            if route_result and route_result.get("agent_id"):
-                await db.update_conversation(cid, {"status": "needs_agent"})
+            if await _handoff_phrase_recently_sent(cid):
                 gen = GeneratedResponse(
                     text=(
-                        "I'm connecting you with a travel specialist now. "
-                        "One moment please."
+                        "I understand you'd like to speak with someone. "
+                        "You can reach us directly at +1 (888) 322-7999 — available 24/7."
+                    ),
+                    model_used="template",
+                )
+            else:
+                route_result = await route_conversation(
+                    tunnel, visitor=visitor, visitor_id=visitor_id
+                )
+            if (
+                gen.model_used != "template"
+                and route_result
+                and route_result.get("agent_id")
+            ):
+                await perform_handoff_to_agent(
+                    cid,
+                    agent_id=route_result["agent_id"],
+                    agent_name=route_result.get("agent_name", "A specialist"),
+                    tunnel=tunnel,
+                    emit_messages=True,
+                )
+                gen = GeneratedResponse(
+                    text=(
+                        "I've connected you with a specialist. They have all the "
+                        "details from our conversation."
                     ),
                     model_used="handoff",
                 )
-            else:
+            elif gen.model_used != "template":
                 no_agent = get_template("no_agent_available", tunnel, visitor)
                 gen = GeneratedResponse(
                     text=no_agent or (
-                        "All specialists are busy. Please call +1 (888) 322-7999."
+                        "All specialists are currently busy. "
+                        "Please call +1 (888) 322-7999."
                     ),
                     model_used="template",
                 )
