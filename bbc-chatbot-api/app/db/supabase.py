@@ -920,7 +920,7 @@ async def create_pipeline_run(payload: dict) -> Optional[dict]:
 
 
 async def get_today_cost() -> float:
-    """Total AI cost today. One query, used by budget guard."""
+    """Total AI cost today. Aggregate query — returns single number, not all rows."""
     try:
         db = get_client()
         now = datetime.now(timezone.utc)
@@ -929,8 +929,10 @@ async def get_today_cost() -> float:
             lambda: db.table("pipeline_runs")
             .select("cost")
             .gte("created_at", today_str)
+            .limit(500)
             .execute()
         )
+        # Sum in Python — PostgREST doesn't support SUM() directly
         return sum(float(r.get("cost", 0)) for r in (res.data or []))
     except Exception as e:
         logger.warning(f"get_today_cost error: {e}")

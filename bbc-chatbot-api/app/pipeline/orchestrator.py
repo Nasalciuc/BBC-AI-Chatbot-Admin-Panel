@@ -1,6 +1,7 @@
 """8-step pipeline orchestrator — THE BRAIN of the chatbot."""
 
 import asyncio
+import functools
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -242,11 +243,18 @@ async def _pipeline(
             _lead = await lead_service.get_or_create_lead(cid)
             if _lead and not _lead.get("created_in_crm"):
                 if check_crm_ready(_lead, visitor):
-                    _crm = await submit_to_crm(_lead, visitor, cid)
-                    if _crm.success:
-                        await db.mark_lead_created_in_crm(_lead["id"])
-                        _crm_submitted_this_turn = True
-                        logger.info(f"[{cid}] CRM submitted — handoff after response")
+                    _lead_id = _lead["id"]
+
+                    async def _crm_submit_pre():
+                        try:
+                            _crm = await submit_to_crm(_lead, visitor, cid)
+                            if _crm.success:
+                                await db.mark_lead_created_in_crm(_lead_id)
+                                logger.info(f"[{cid}] CRM submitted (background)")
+                        except Exception as err:
+                            logger.warning(f"[{cid}] CRM background submit failed: {err}")
+
+                    asyncio.create_task(_crm_submit_pre(), name=f"crm_pre_{cid}")
         except Exception as e:
             logger.error(f"CRM step error (non-blocking): {e}")
 
@@ -281,12 +289,14 @@ async def _pipeline(
 
     # ── STEP 6: GENERATE RESPONSE ────────────────────────────
     # history already fetched at line 92 — reuse (saves ~400ms roundtrip)
-    lead = await lead_service.get_or_create_lead(cid)
-
-    today_cost = await db.get_today_cost()
+    lead, today_cost = await asyncio.gather(
+        lead_service.get_or_create_lead(cid),
+        db.get_today_cost(),
+    )
     budget_remaining = settings.daily_budget - today_cost
 
-    gen = generate_response(
+    _gen_fn = functools.partial(
+        generate_response,
         intent=intent,
         entities=entities,
         kb_results=kb_results,
@@ -297,6 +307,7 @@ async def _pipeline(
         budget_remaining=budget_remaining,
         skip_templates=_skip_templates,
     )
+    gen = await asyncio.to_thread(_gen_fn)
     logger.info(f"[{cid}] Generated via {gen.model_used} | cost=${gen.cost:.4f}")
 
     # ── STEP 6.05: Process [HANDOFF_REQUESTED] token
@@ -519,7 +530,7 @@ async def _pipeline(
                     "budget, and current status (browsing/interested/ready to book)."
                 )
                 from app.ai.claude import call_haiku as _summarize
-                summary_text, sum_cost = _summarize(summary_prompt, msg_text)
+                summary_text, sum_cost = await asyncio.to_thread(_summarize, summary_prompt, msg_text)
                 if summary_text:
                     await db.update_conversation(cid, {"summary": summary_text})
                     logger.info(f"[{cid}] Summary updated ({total_msgs} msgs, cost=${sum_cost:.4f})")

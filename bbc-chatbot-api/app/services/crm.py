@@ -23,6 +23,19 @@ logger = logging.getLogger(__name__)
 CRM_CHATBOT_ENDPOINT = "/requests/chatbot"
 CRM_TIMEOUT = 10
 
+# Shared HTTP client for CRM — avoids TLS handshake per call
+_crm_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_crm_client() -> httpx.AsyncClient:
+    global _crm_client
+    if _crm_client is None:
+        _crm_client = httpx.AsyncClient(
+            timeout=CRM_TIMEOUT,
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+        )
+    return _crm_client
+
 
 @dataclass
 class CRMResult:
@@ -158,12 +171,12 @@ async def submit_to_crm(lead: dict, visitor, conversation_id: str) -> CRMResult:
     endpoint = f"{settings.crm_api_url.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
 
     try:
-        async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
-            resp = await client.post(
-                endpoint,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
+        client = _get_crm_client()
+        resp = await client.post(
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
 
         if resp.status_code == 200:
             data = resp.json()
@@ -248,12 +261,12 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         cid = conv.get("id", "?")
         logger.info(f"[CRM-ABANDONED] conv={cid} {origin}->{dest} {dep_date}")
 
-        async with httpx.AsyncClient(timeout=CRM_TIMEOUT) as client:
-            resp = await client.post(
-                endpoint,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
+        client = _get_crm_client()
+        resp = await client.post(
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
 
         if resp.status_code == 200:
             data = resp.json()

@@ -168,8 +168,8 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
         if not route["agent_id"]:
             # No agent on first attempt — wait 2s and retry once
             # This catches agents who just logged in (heartbeat in flight)
-            logger.info(f"[routing] No agent for tunnel={req.tunnel} — retrying in 2s")
-            await asyncio.sleep(2)
+            logger.info(f"[routing] No agent for tunnel={req.tunnel} — retrying in 0.5s")
+            await asyncio.sleep(0.5)
             route = await route_conversation(req.tunnel, visitor=req.visitor, visitor_id=req.visitor_id)
         if route["agent_id"]:
             from app.services.conversation_service import add_message
