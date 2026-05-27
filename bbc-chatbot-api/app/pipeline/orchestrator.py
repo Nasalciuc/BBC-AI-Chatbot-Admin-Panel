@@ -16,6 +16,7 @@ from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response, GeneratedResponse
 from app.pipeline.validator import validate_response
 from app.ai.templates import get_template
+from app.realtime.manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,18 @@ async def _pipeline(
     )
     budget_remaining = settings.daily_budget - today_cost
 
+    # Streaming callback (sync→async bridge for thread pool)
+    _event_loop = asyncio.get_running_loop()
+    _is_streaming = False
+
+    def _on_chunk(delta: str):
+        nonlocal _is_streaming
+        _is_streaming = True
+        asyncio.run_coroutine_threadsafe(
+            manager.push_chunk(cid, delta),
+            _event_loop,
+        )
+
     _gen_fn = functools.partial(
         generate_response,
         intent=intent,
@@ -306,6 +319,7 @@ async def _pipeline(
         tunnel=tunnel,
         budget_remaining=budget_remaining,
         skip_templates=_skip_templates,
+        on_chunk=_on_chunk,
     )
     gen = await asyncio.to_thread(_gen_fn)
     logger.info(f"[{cid}] Generated via {gen.model_used} | cost=${gen.cost:.4f}")
@@ -483,11 +497,13 @@ async def _pipeline(
     )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
 
+    if _is_streaming and ai_msg:
+        await manager.push_stream_end(cid, ai_msg)
+
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
     if _crm_submitted_this_turn:
         try:
             # 1. Send closing template so client sees confirmation
-            from app.realtime.manager import manager
             _closing_msg = await conversation_service.add_message(
                 conversation_id=cid,
                 role="ai",
@@ -568,7 +584,8 @@ async def _pipeline(
 
     return ChatResponse(
         conversation_id=cid,
-        message=validated_text,
+        message="" if _is_streaming else validated_text,
+        streaming=_is_streaming,
         type=resp_type,
         model_used=gen.model_used,
         cost=gen.cost,

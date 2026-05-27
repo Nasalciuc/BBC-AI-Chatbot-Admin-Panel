@@ -24,6 +24,7 @@ class ChatResponse(BaseModel):
 
     conversation_id: str
     message: str
+    streaming: bool = False
     type: str  # "template" | "ai" | "template_fallback"
     model_used: str
     cost: float = 0.0
