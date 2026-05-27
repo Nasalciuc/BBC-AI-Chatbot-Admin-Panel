@@ -85,15 +85,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
-            src={brand.logoUrl}
-            alt={brand.logoAlt}
+            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+            alt="BCT"
             width={28}
             height={28}
             style={{ borderRadius: 6, objectFit: 'contain' }}
           />
           <div>
             <div style={{ fontWeight: 600, fontSize: 15 }}>
-              {tunnel === 'sales' ? brand.formTitle : 'Support'}
+              {tunnel === 'sales' ? 'Business Class Tickets' : 'Support'}
             </div>
             <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
               {tunnel === 'sales' ? brand.formSubtitle : "We'll look into your booking"}
@@ -212,7 +212,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
         {error && <p style={{ color: '#ef4444', fontSize: 12, margin: 0 }}>{error}</p>}
         <button type="submit" style={{
           width: '100%', padding: '12px', borderRadius: 12,
-          background: brand.brandColor, color: '#fff', border: 'none',
+          background: '#800020', color: '#fff', border: 'none',
           fontWeight: 600, fontSize: 14, cursor: 'pointer',
         }}>
           Start Chat →

@@ -360,14 +360,14 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
-            src={brand.logoUrl}
-            alt={brand.logoAlt}
+            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+            alt="BCT"
             width={24}
             height={24}
             style={{ borderRadius: 5, objectFit: 'contain' }}
           />
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{brand.chatTitle}</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>BCT Travel Concierge</div>
             <div style={{ fontSize: 11, opacity: 0.6, marginTop: 1 }}>
               {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? brand.chatSubtitle : 'Booking Support'}
             </div>
@@ -424,7 +424,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
                 padding: '6px 12px',
                 borderRadius: 16,
                 fontSize: 12,
-                border: '1.5px solid #C9A54E',
+                border: '1.5px solid #800020',
                 background: '#fff',
                 color: '#0B1829',
                 cursor: 'pointer',
@@ -462,7 +462,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           disabled={!input.trim() || sending}
           style={{
             padding: '10px 16px', borderRadius: 10,
-            background: !input.trim() || sending ? '#d1d5db' : brand.brandColor,
+            background: !input.trim() || sending ? '#d1d5db' : '#800020',
             color: '#fff', border: 'none', cursor: !input.trim() || sending ? 'default' : 'pointer',
             fontWeight: 600, fontSize: 13, flexShrink: 0,
           }}
