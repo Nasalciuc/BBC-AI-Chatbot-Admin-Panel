@@ -25,5 +25,6 @@ dist-ssr
 *.sln
 *.sw?
 
-# Compiled widget bundle — generated at build time by prebuild/sync-widget
+# Compiled widget bundles — generated at build time by prebuild/sync-widget
 public/widget/bbc-widget.js
+public/widget/bct-widget.js

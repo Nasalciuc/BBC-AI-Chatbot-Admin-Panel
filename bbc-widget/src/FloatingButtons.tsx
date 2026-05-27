@@ -1,11 +1,9 @@
+import brand from './config'
+
 interface Props {
   onSelect: (tunnel: 'sales' | 'support') => void
   showAttention?: boolean
 }
-
-/** Official BBC airplane-in-circle mark (white on transparent, for navy button). */
-const BBC_LOGO_URL =
-  'https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png'
 
 export function FloatingButtons({ onSelect, showAttention = false }: Props) {
   return (
@@ -79,7 +77,7 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
         }}
       >
         <img
-          src={BBC_LOGO_URL}
+          src={brand.logoUrl}
           alt=""
           width={30}
           height={30}
