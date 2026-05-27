@@ -144,6 +144,7 @@ def generate_response(
                     history=history if history else None,
                     entities=entities,
                 )
+                _system = f"{_static}\n\n{_dynamic}"
                 _raw = entities.get("_raw_message", "")
                 _user_msgs = [m for m in (history or []) if m.get("role") == "user"]
                 _use_sonnet = len(_user_msgs) >= 5 or intent == Intent.BOOKING_CHANGE
@@ -412,6 +413,8 @@ def generate_response(
         history=history if history else None,
         entities=entities,
     )
+    system_prompt = f"{_static}\n\n{_dynamic}"
+
     user_messages = [m for m in history if m.get("role") == "user"]
     use_sonnet = len(user_messages) >= 5 or intent == Intent.BOOKING_CHANGE
 
