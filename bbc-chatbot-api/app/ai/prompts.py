@@ -309,8 +309,8 @@ def build_conversational_prompt(
             visitor_lines.append(f"Collected: {', '.join(collected_items)}")
         if missing:
             visitor_lines.append(f"Still needed: {', '.join(missing)}")
-        # CRM status — prevents AI from saying "submitted" when it hasn't been
-        if lead.get("created_in_crm"):
+        # CRM status — NEVER show "Submitted" while fields are still missing.
+        if not missing and lead.get("created_in_crm"):
             visitor_lines.append("CRM: Submitted — consultant will call soon")
         elif not missing:
             visitor_lines.append("CRM: Ready to submit")

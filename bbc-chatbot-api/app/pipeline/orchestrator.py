@@ -503,25 +503,38 @@ async def _pipeline(
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
     if _crm_submitted_this_turn:
         try:
-            # 1. Send closing template so client sees confirmation
-            _closing_msg = await conversation_service.add_message(
-                conversation_id=cid,
-                role="ai",
-                content=settings.post_crm_closing_message,
-                model_used="template",
-                cost=0.0,
-            )
-            if _closing_msg:
-                await manager.push(cid, _closing_msg)
+            from app.models.lead import get_missing_fields
 
-            # 2. Close conversation — sales team calls from CRM directly
-            await db.update_conversation(cid, {
-                "status": "closed",
-                "closed_at": datetime.now(timezone.utc).isoformat(),
-                "mode": "ai",
-                "assigned_agent_id": None,
-            })
-            logger.info(f"[{cid}] CRM submitted — conversation auto-closed (no handoff)")
+            _final_lead = await lead_service.get_or_create_lead(cid)
+            _conv_check = {
+                "visitor_name": getattr(visitor, "name", None),
+                "visitor_email": getattr(visitor, "email", None),
+                "visitor_phone": getattr(visitor, "phone", None),
+            }
+            _final_missing = get_missing_fields(_final_lead or {}, _conv_check)
+
+            if not _final_missing:
+                _closing_msg = await conversation_service.add_message(
+                    conversation_id=cid,
+                    role="ai",
+                    content=settings.post_crm_closing_message,
+                    model_used="template",
+                    cost=0.0,
+                )
+                if _closing_msg:
+                    await manager.push(cid, _closing_msg)
+
+                await db.update_conversation(cid, {
+                    "status": "closed",
+                    "closed_at": datetime.now(timezone.utc).isoformat(),
+                    "mode": "ai",
+                    "assigned_agent_id": None,
+                })
+                logger.info(f"[{cid}] CRM submitted — conversation auto-closed (no handoff)")
+            else:
+                logger.warning(
+                    f"[{cid}] CRM submitted but missing fields remain: {_final_missing} — skipping closing"
+                )
         except Exception as e:
             logger.error(f"Post-CRM auto-close error (non-blocking): {e}")
             # Fallback: at minimum close the conversation
