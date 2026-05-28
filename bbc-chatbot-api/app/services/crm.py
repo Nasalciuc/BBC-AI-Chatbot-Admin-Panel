@@ -83,28 +83,20 @@ def format_date_iso(date_str) -> str:
 def check_crm_ready(lead: dict, visitor) -> bool:
     """Check if we have ALL required fields for CRM submission.
 
-    Contact info comes from visitor (form data).
-    Route info comes from lead (accumulated across messages).
+    Uses get_missing_fields as single source of truth — same logic
+    that drives the AI's "Still needed" display in VISITOR CONTEXT.
+    CRM submits ONLY when the AI has nothing left to collect.
     """
-    # Contact — from visitor form
-    if not getattr(visitor, "name", None) or len(visitor.name.strip()) < 2:
-        return False
-    if not getattr(visitor, "email", None) or "@" not in visitor.email:
-        return False
-    if not getattr(visitor, "phone", None) or len(visitor.phone.strip()) < 7:
-        return False
+    from app.models.lead import get_missing_fields
 
-    # Route — from lead (accumulated)
-    origin = lead.get("origin_code") or ""
-    dest = lead.get("destination_code") or ""
-    if len(origin) != 3 or len(dest) != 3:
-        return False
+    conv = {
+        "visitor_name": getattr(visitor, "name", None),
+        "visitor_email": getattr(visitor, "email", None),
+        "visitor_phone": getattr(visitor, "phone", None),
+    }
 
-    # Date — from lead
-    if not lead.get("departure_date"):
-        return False
-
-    return True
+    missing = get_missing_fields(lead, conv)
+    return len(missing) == 0
 
 
 def build_crm_payload(lead: dict, visitor) -> dict:
@@ -114,7 +106,7 @@ def build_crm_payload(lead: dict, visitor) -> dict:
     departure = format_date_iso(lead.get("departure_date"))
     return_date = lead.get("return_date")
 
-    trip_type = "round_trip" if return_date else "one_way"
+    trip_type = lead.get("trip_type") or ("round_trip" if return_date else "one_way")
 
     cabin = lead.get("cabin_class") or "business"
     cabin_map = {
@@ -125,11 +117,19 @@ def build_crm_payload(lead: dict, visitor) -> dict:
     }
     cabin_class = cabin_map.get(str(cabin).lower(), "business")
 
-    pax = lead.get("passengers") or 1
+    pax = lead.get("passengers")
+    if not pax:
+        logger.warning(
+            "CRM payload: passengers is None (check_crm_ready should have blocked)"
+        )
+        pax = 1
     if isinstance(pax, str):
         try:
             pax = int(pax)
         except ValueError:
+            logger.warning(
+                f"CRM payload: passengers='{pax}' not parseable, defaulting to 1"
+            )
             pax = 1
     pax = max(1, min(9, int(pax)))
 

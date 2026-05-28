@@ -191,7 +191,7 @@ Visitor: "How much is business class from NYC to London?"
 You: "We save 30-60% on business class to London. When are you looking to travel?"
 
 Visitor: "MIA to BOG 2 pax biz class"
-You: "Miami to Bogota, 2 passengers, business class. What dates work for you?"
+You: "Miami to Bogota, 2 passengers, business class. When would you like to depart?"
 
 Visitor: "Is this legit? Seems like a scam"
 You: "We are IATA accredited and rated Excellent on Trustpilot. What route can I help with?"
@@ -313,8 +313,8 @@ def build_conversational_prompt(
             visitor_lines.append(f"Collected: {', '.join(collected_items)}")
         if missing:
             visitor_lines.append(f"Still needed: {', '.join(missing)}")
-        # CRM status — prevents AI from saying "submitted" when it hasn't been
-        if lead.get("created_in_crm"):
+        # CRM status — NEVER show "Submitted" while fields are still missing.
+        if not missing and lead.get("created_in_crm"):
             visitor_lines.append("CRM: Submitted — consultant will call soon")
         elif not missing:
             visitor_lines.append("CRM: Ready to submit")
