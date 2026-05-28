@@ -39,20 +39,14 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────
-# Ensure origins is always a list (Pydantic may parse JSON string differently)
+# settings.cors_origins: parsed from CORS_ORIGINS env + REQUIRED_CORS_ORIGINS merge
 origins = settings.cors_origins
-if isinstance(origins, str):
-    import json
-    try:
-        origins = json.loads(origins)
-    except (json.JSONDecodeError, TypeError):
-        origins = [origins]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
