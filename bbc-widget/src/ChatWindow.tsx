@@ -355,7 +355,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       const errMsg: Message = {
         id: `err-${Date.now()}`,
         role: 'system',
-        content: 'Connection error. Please try again.',
+        content: 'Something went wrong. Please try again or call +1 (888) 322-7999 for immediate help.',
         created_at: new Date().toISOString(),
       }
       setMessages(prev => [...prev, errMsg])
