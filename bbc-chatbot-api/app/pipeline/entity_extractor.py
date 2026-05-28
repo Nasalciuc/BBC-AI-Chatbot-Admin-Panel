@@ -10,7 +10,7 @@ Those are V2 (Claude-based extraction).
 import re
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -142,14 +142,26 @@ NAME_PATTERNS = [
     re.compile(r"(?:my name is|I'm|I am|this is|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", re.I),
 ]
 
-PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us)', re.I)
+PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us|adults?)', re.I)
+CHILD_RE = re.compile(r'(\d+)\s*(?:child(?:ren)?|kids?|minors?)', re.I)
+INFANT_RE = re.compile(r'(\d+)\s*(?:infants?|babies|baby)', re.I)
 
-CABIN_KEYWORDS = {"business", "business class", "first", "first class", "economy", "coach"}
-CABIN_RE = re.compile(r'\b(business\s*class|first\s*class|business|first|economy|coach)\b', re.I)
+CABIN_KEYWORDS = {
+    "business", "business class", "first", "first class", "economy", "coach",
+    "biz", "biz class", "j class", "premium economy", "premium",
+}
+CABIN_RE = re.compile(
+    r'\b(business\s*class|first\s*class|biz\s*class|j\s*class|premium\s*economy|'
+    r'business|first|economy|coach|biz|premium)\b',
+    re.I,
+)
 CABIN_MAP = {
     "business": "business", "business class": "business",
+    "biz": "business", "biz class": "business",
+    "j class": "business",
     "first": "first", "first class": "first",
     "economy": "economy", "coach": "economy",
+    "premium economy": "premium_economy", "premium": "premium_economy",
 }
 
 ROUTE_RE = re.compile(
@@ -266,6 +278,38 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
         if len(dates) == 1:
             return dates[0], None
 
+    # 4. Relative dates: "next month", "tomorrow", "next week"
+    _today = datetime.now()
+    _lower = text.lower()
+
+    if "tomorrow" in _lower:
+        dep = (_today + timedelta(days=1)).strftime("%Y-%m-%d")
+        return dep, None
+
+    if re.search(r'\bnext\s+month\b', _lower):
+        if _today.month == 12:
+            dep_date = _today.replace(year=_today.year + 1, month=1, day=15)
+        else:
+            dep_date = _today.replace(month=_today.month + 1, day=15)
+        return dep_date.strftime("%Y-%m-%d"), None
+
+    if re.search(r'\bnext\s+week\b', _lower):
+        days_until_monday = (7 - _today.weekday()) % 7 or 7
+        dep_date = _today + timedelta(days=days_until_monday)
+        return dep_date.strftime("%Y-%m-%d"), None
+
+    if re.search(r'\bthis\s+month\b', _lower):
+        dep_date = _today.replace(day=15)
+        if dep_date < _today:
+            dep_date = _today + timedelta(days=3)
+        return dep_date.strftime("%Y-%m-%d"), None
+
+    _in_weeks = re.search(r'\bin\s+(\d+)\s+weeks?\b', _lower)
+    if _in_weeks:
+        weeks = int(_in_weeks.group(1))
+        dep_date = _today + timedelta(weeks=weeks)
+        return dep_date.strftime("%Y-%m-%d"), None
+
     return None, None
 
 
@@ -369,6 +413,18 @@ def extract_entities(message: str) -> ExtractedEntities:
         entities.passengers = 1
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
+
+    # Children/infants — add to adult count if both present
+    child_m = CHILD_RE.search(text)
+    infant_m = INFANT_RE.search(text)
+    children_count = int(child_m.group(1)) if child_m else 0
+    infant_count = int(infant_m.group(1)) if infant_m else 0
+
+    if children_count or infant_count:
+        adult_count = entities.passengers or 0
+        if not adult_count and (children_count or infant_count):
+            adult_count = 1
+        entities.passengers = adult_count + children_count + infant_count
 
     # Standalone single digit (1-9) — likely answering "how many passengers?"
     if not entities.passengers:

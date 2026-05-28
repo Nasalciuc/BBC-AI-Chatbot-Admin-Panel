@@ -3,6 +3,7 @@ Client: supabase-py (HTTP). NO asyncpg. NO SQLAlchemy.
 """
 import asyncio
 import logging
+import re
 import statistics
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -201,12 +202,18 @@ async def get_recent_messages(conversation_id: str, limit: int = 5) -> list:
 
 
 async def keyword_search_kb(keywords: list[str], tunnel: str = "sales", limit: int = 3) -> list:
-    """V1: full-text search. V2: Qdrant vector search.
-    Searches both tunnel-specific AND universal ('all') entries.
-    """
+    """Full-text search on KB entries. Handles multi-word keywords safely."""
     try:
         db = get_client()
-        query = " | ".join(keywords)
+        tokens = []
+        for kw in keywords:
+            for word in kw.split():
+                clean = re.sub(r'[^a-zA-Z0-9]', '', word).strip()
+                if clean and len(clean) >= 2:
+                    tokens.append(clean)
+        if not tokens:
+            return []
+        query = " | ".join(tokens)
         def _query():
             return (
                 db.table("kb_entries")
