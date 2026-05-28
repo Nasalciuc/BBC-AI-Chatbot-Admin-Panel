@@ -271,16 +271,6 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     }
     setMessages(prev => [...prev, optimisticMsg])
 
-    // Show "Connecting…" after user message — only on first message
-    if (!convId && !sending) {
-      setMessages(prev => [...prev, {
-        id: '__connecting_temp__',
-        role: 'system' as const,
-        content: 'Connecting you with a specialist now\u2026',
-        created_at: new Date().toISOString(),
-      }])
-    }
-
     try {
       const res = await apiFetch(`${apiUrl}/api/chat`, {
         method: 'POST',
