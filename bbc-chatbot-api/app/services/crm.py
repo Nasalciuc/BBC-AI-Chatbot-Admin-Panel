@@ -133,6 +133,10 @@ def build_crm_payload(lead: dict, visitor) -> dict:
             pax = 1
     pax = max(1, min(9, int(pax)))
 
+    _children = int(lead.get("children_count") or lead.get("_children_count") or 0)
+    _infants = int(lead.get("infant_count") or lead.get("_infant_count") or 0)
+    _adults = max(1, pax - _children - _infants)
+
     phone = format_phone_international(getattr(visitor, "phone", "") or "")
 
     flights = [{"from": origin, "to": dest, "date": departure}]
@@ -152,9 +156,9 @@ def build_crm_payload(lead: dict, visitor) -> dict:
             "phone": phone,
         },
         "passengers": {
-            "adult": pax,
-            "child": 0,
-            "infant": 0,
+            "adult": min(9, _adults),
+            "child": min(9, _children),
+            "infant": min(9, _infants),
         },
         "coupon": "",
         "flights": flights,
@@ -219,6 +223,9 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             except ValueError:
                 pax = 1
         pax = max(1, min(9, int(pax)))
+        _children = int(lead.get("children_count") or lead.get("_children_count") or 0)
+        _infants = int(lead.get("infant_count") or lead.get("_infant_count") or 0)
+        _adults = max(1, pax - _children - _infants)
         trip_type = "round_trip" if ret_date else "one_way"
 
         if not dep_date:
@@ -252,7 +259,11 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
                 "email": (conv.get("visitor_email") or "").lower().strip(),
                 "phone": phone,
             },
-            "passengers": {"adult": pax, "child": 0, "infant": 0},
+            "passengers": {
+                "adult": min(9, _adults),
+                "child": min(9, _children),
+                "infant": min(9, _infants),
+            },
             "flights": flights,
             "sms": False,
         }

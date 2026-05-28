@@ -181,6 +181,8 @@ async def _pipeline(
         "departure_date": extracted.departure_date,
         "return_date": extracted.return_date,
         "trip_type": extracted.trip_type,
+        "_children_count": extracted.children_count or 0,
+        "_infant_count": extracted.infant_count or 0,
     }
 
     # IATA LLM fallback removed (PR1) — TRAVEL_TOOL in generate extracts
