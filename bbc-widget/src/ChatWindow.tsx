@@ -41,6 +41,17 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   const lastTypingSentRef = useRef<number>(0)
   const closeSentRef = useRef(false)
 
+  // Safety net: force-unlock sending after 15s (protects against any stuck state)
+  useEffect(() => {
+    if (!sending) return
+    const timeout = setTimeout(() => {
+      setSending(false)
+      setIsStreaming(false)
+      isStreamingRef.current = false
+    }, 15000)
+    return () => clearTimeout(timeout)
+  }, [sending])
+
   const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false) => {
     if (!convId || closeSentRef.current) return
     closeSentRef.current = true
@@ -124,10 +135,16 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         if (!res.ok) return
         const json = await res.json()
         if (json.success && json.data && json.data.length > 0) {
+          const incoming = json.data as Message[]
           setMessages(prev => {
             const ids = new Set(prev.map(m => m.id))
-            const newMsgs = (json.data as Message[]).filter(m => !ids.has(m.id))
+            const newMsgs = incoming.filter(m => !ids.has(m.id))
             if (newMsgs.length === 0) return prev
+            if (newMsgs.some(m => m.role === 'ai')) {
+              setIsStreaming(false)
+              isStreamingRef.current = false
+              setSending(false)
+            }
             return [...prev, ...newMsgs]
           })
           lastMsgTime.current = json.data[json.data.length - 1].created_at
@@ -322,8 +339,14 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.streaming) {
-        setIsStreaming(true)
-        isStreamingRef.current = true
+        // Only enable streaming mode if SSE is already connected (existing conv).
+        // New conversations: SSE connects AFTER POST response → stream_end would be lost.
+        if (convId) {
+          setIsStreaming(true)
+          isStreamingRef.current = true
+        }
+        // New conv (no convId yet): skip streaming → finally does setSending(false)
+        // AI message arrives via catchUpPoll after SSE connects
       } else if (data.message && data.type !== 'queued') {
         const aiMsg: Message = {
           id: `ai-${Date.now()}`,
