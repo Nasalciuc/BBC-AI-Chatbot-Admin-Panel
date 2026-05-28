@@ -28,6 +28,8 @@ class ExtractedEntities:
     departure_date: Optional[str] = None   # YYYY-MM-DD
     return_date: Optional[str] = None      # YYYY-MM-DD
     trip_type: Optional[str] = None        # one_way, round_trip
+    children_count: Optional[int] = None
+    infant_count: Optional[int] = None
 
 
 # ── Patterns ──────────────────────────────────────────────────
@@ -145,6 +147,10 @@ NAME_PATTERNS = [
 PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us|adults?)', re.I)
 CHILD_RE = re.compile(r'(\d+)\s*(?:child(?:ren)?|kids?|minors?)', re.I)
 INFANT_RE = re.compile(r'(\d+)\s*(?:infants?|babies|baby)', re.I)
+FAMILY_RE = re.compile(r'\bfamily\s+of\s+(\d+)\b', re.I)
+GROUP_RE = re.compile(r'\b(?:group|party)\s+of\s+(\d+)\b', re.I)
+COUPLE_RE = re.compile(r'\b(?:a\s+)?couple\b', re.I)
+SOLO_RE = re.compile(r'\bsolo(?:\s+traveler)?\b', re.I)
 
 CABIN_KEYWORDS = {
     "business", "business class", "first", "first class", "economy", "coach",
@@ -232,8 +238,36 @@ def _make_date(month: int, day: int, year: int | None = None) -> str | None:
 def _extract_dates(text: str) -> tuple[str | None, str | None]:
     """Extract departure and optional return date from message text.
     Returns (departure_date, return_date) as YYYY-MM-DD strings or None.
-    Only handles ABSOLUTE dates. Does NOT handle relative dates like 'next Monday'.
+    Handles absolute dates, relative dates, and 'returning/coming back' signals.
     """
+    # 0. Return signal: "returning/coming back/back on [date]" → return_date
+    _return_signal = re.search(
+        r'\b(?:returning|coming\s+back|back\s+on|return(?:ing)?\s+on)\b', text, re.I
+    )
+    if _return_signal:
+        _after = text[_return_signal.end():]
+        _before = text[:_return_signal.start()]
+        _ret_matches = list(_DATE_MONTH_DAY.finditer(_after))
+        if _ret_matches:
+            _rm = _ret_matches[0]
+            _rm_name = (_rm.group("m1") or _rm.group("m2") or "").lower()
+            _rm_day = int(_rm.group("d1") or _rm.group("d2") or "0")
+            _rm_year = int(_rm.group("y")) if _rm.group("y") else None
+            _rm_month = MONTH_NAMES.get(_rm_name)
+            if _rm_month and _rm_day:
+                ret_date = _make_date(_rm_month, _rm_day, _rm_year)
+                dep_date = None
+                _dep_matches = list(_DATE_MONTH_DAY.finditer(_before))
+                if _dep_matches:
+                    _dm = _dep_matches[0]
+                    _dm_name = (_dm.group("m1") or _dm.group("m2") or "").lower()
+                    _dm_day = int(_dm.group("d1") or _dm.group("d2") or "0")
+                    _dm_year = int(_dm.group("y")) if _dm.group("y") else None
+                    _dm_month = MONTH_NAMES.get(_dm_name)
+                    if _dm_month and _dm_day:
+                        dep_date = _make_date(_dm_month, _dm_day, _dm_year)
+                return dep_date, ret_date
+
     # 1. Same-month range: "March 15-22"
     m = _DATE_RANGE_DASH.search(text)
     if m:
@@ -350,8 +384,19 @@ def extract_entities(message: str) -> ExtractedEntities:
     # 4. Airport codes (direct in message)
     codes = [c.group(1) for c in AIRPORT_RE.finditer(text) if c.group(1) in AIRPORTS]
     if len(codes) >= 2:
-        entities.origin_code = codes[0]
-        entities.destination_code = codes[1]
+        _from_iata = None
+        _to_iata = None
+        for code in codes:
+            if re.search(r'\bfrom\s+' + re.escape(code) + r'\b', text, re.I):
+                _from_iata = code
+            if re.search(r'\bto\s+' + re.escape(code) + r'\b', text, re.I):
+                _to_iata = code
+        if _from_iata and _to_iata and _from_iata != _to_iata:
+            entities.origin_code = _from_iata
+            entities.destination_code = _to_iata
+        else:
+            entities.origin_code = codes[0]
+            entities.destination_code = codes[1]
     elif len(codes) == 1:
         # Context-aware: determine if code is origin or destination
         code = codes[0]
@@ -407,8 +452,10 @@ def extract_entities(message: str) -> ExtractedEntities:
     m = PAX_RE.search(text)
     if m:
         n = int(m.group(1))
-        if 1 <= n <= 20:
+        if 1 <= n <= 9:
             entities.passengers = n
+        elif n > 9:
+            entities.passengers = 9
     elif re.search(r'\bjust\s+me\b', text, re.I):
         entities.passengers = 1
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
@@ -425,6 +472,28 @@ def extract_entities(message: str) -> ExtractedEntities:
         if not adult_count and (children_count or infant_count):
             adult_count = 1
         entities.passengers = adult_count + children_count + infant_count
+        entities.children_count = children_count
+        entities.infant_count = infant_count
+
+    # Extended patterns: family, group, couple, solo
+    if not entities.passengers:
+        fm = FAMILY_RE.search(text)
+        if fm:
+            entities.passengers = min(9, max(1, int(fm.group(1))))
+    if not entities.passengers:
+        gm = GROUP_RE.search(text)
+        if gm:
+            entities.passengers = min(9, max(1, int(gm.group(1))))
+    if not entities.passengers:
+        if COUPLE_RE.search(text):
+            entities.passengers = 2
+    if not entities.passengers:
+        if SOLO_RE.search(text):
+            entities.passengers = 1
+
+    # Cap passengers at 9 (CRM API max)
+    if entities.passengers and entities.passengers > 9:
+        entities.passengers = 9
 
     # Standalone single digit (1-9) — likely answering "how many passengers?"
     if not entities.passengers:
