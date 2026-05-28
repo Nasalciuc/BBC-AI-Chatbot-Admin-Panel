@@ -1,23 +1,60 @@
 """Centralized configuration — all settings loaded from environment variables."""
 
+import json
+
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings
+
+# Always allowed — merged into cors_origins even when CORS_ORIGINS env omits BCT
+REQUIRED_CORS_ORIGINS: tuple[str, ...] = (
+    "https://businessclass-tickets.com",
+    "https://www.businessclass-tickets.com",
+    "https://buybusinessclass.com",
+    "https://www.buybusinessclass.com",
+)
+
+_DEFAULT_CORS_ORIGINS: tuple[str, ...] = (
+    *REQUIRED_CORS_ORIGINS,
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://bbc-admin.vercel.app",
+    "https://admin-panel-error.vercel.app",
+    "https://bbc-admin-panel-eight.vercel.app",
+    "https://chat.buybusinessclass.com",
+    "https://bbc-widget.vercel.app",
+)
+
+
+def _parse_cors_origins_env(raw: str) -> list[str]:
+    """Parse CORS_ORIGINS from JSON array or comma-separated URLs."""
+    s = (raw or "").strip()
+    if not s:
+        return list(_DEFAULT_CORS_ORIGINS)
+    if s.startswith("["):
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [part.strip() for part in s.split(",") if part.strip()]
+
+
+def _merge_required_cors_origins(origins: list[str]) -> list[str]:
+    merged = list(REQUIRED_CORS_ORIGINS)
+    for origin in origins:
+        normalized = origin.strip().rstrip("/")
+        if normalized and normalized not in merged:
+            merged.append(normalized)
+    return merged
 
 
 class Settings(BaseSettings):
     # API
     app_name: str = "BBC Chatbot API"
     debug: bool = False
-    cors_origins: list[str] = [
-        "https://buybusinessclass.com",
-        "https://www.buybusinessclass.com",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "https://bbc-admin.vercel.app",
-        "https://admin-panel-error.vercel.app",
-        "https://bbc-admin-panel-eight.vercel.app",
-        "https://chat.buybusinessclass.com",
-        "https://bbc-widget.vercel.app",
-    ]
+    # String env avoids pydantic-settings JSON-decoding list fields before validators run
+    cors_origins_env: str = Field(default="", validation_alias="CORS_ORIGINS")
 
     # Claude
     anthropic_api_key: str = ""  # Optional for dev — required only for AI pipeline
@@ -106,6 +143,12 @@ class Settings(BaseSettings):
     admin_panel_url: str = "https://chat.buybusinessclass.com"
     invite_link_expiry_minutes: int = 30
     invite_link_path: str = "/set-password"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cors_origins(self) -> list[str]:
+        """Resolved CORS allowlist: env + required BCT/BBC domains."""
+        return _merge_required_cors_origins(_parse_cors_origins_env(self.cors_origins_env))
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
