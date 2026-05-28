@@ -50,7 +50,8 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lambda: db_client.table("leads")
             .select(
                 "id,score,origin_code,destination_code,departure_date,"
-                "passengers,cabin_class,return_date,trip_type"
+                "passengers,cabin_class,return_date,trip_type,"
+                "children_count,infant_count"
             )
             .eq("conversation_id", conversation_id)
             .limit(1)
@@ -105,6 +106,10 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lead_payload["return_date"] = entities["return_date"]
         if entities.get("trip_type"):
             lead_payload["trip_type"] = entities["trip_type"]
+        if entities.get("_children_count"):
+            lead_payload["children_count"] = entities["_children_count"]
+        if entities.get("_infant_count"):
+            lead_payload["infant_count"] = entities["_infant_count"]
         if entities.get("origin") and entities.get("destination"):
             lead_payload["route_display"] = f"{entities['origin']} → {entities['destination']}"
 
