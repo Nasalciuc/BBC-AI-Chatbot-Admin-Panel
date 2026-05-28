@@ -238,26 +238,8 @@ async def _pipeline(
     logger.info(f"[{cid}] [PERF] extraction: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()
 
-    # ── STEP 4.5: CRM SUBMISSION ─────────────────────────────
-    if tunnel == "sales" and settings.crm_api_url and has_useful:
-        try:
-            _lead = await lead_service.get_or_create_lead(cid)
-            if _lead and not _lead.get("created_in_crm"):
-                if check_crm_ready(_lead, visitor):
-                    _lead_id = _lead["id"]
-
-                    async def _crm_submit_pre():
-                        try:
-                            _crm = await submit_to_crm(_lead, visitor, cid)
-                            if _crm.success:
-                                await db.mark_lead_created_in_crm(_lead_id)
-                                logger.info(f"[{cid}] CRM submitted (background)")
-                        except Exception as err:
-                            logger.warning(f"[{cid}] CRM background submit failed: {err}")
-
-                    asyncio.create_task(_crm_submit_pre(), name=f"crm_pre_{cid}")
-        except Exception as e:
-            logger.error(f"CRM step error (non-blocking): {e}")
+    # ── STEP 4.5: CRM — deferred to Step 6.2 (single submit point) ──
+    # Removed pre-generate CRM to prevent race conditions and premature submit.
 
     logger.info(f"[{cid}] [PERF] crm: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()
@@ -327,6 +309,7 @@ async def _pipeline(
     # ── STEP 6.05: Process [HANDOFF_REQUESTED] token
     if gen and gen.text and "[HANDOFF_REQUESTED]" in gen.text:
         logger.info(f"[{cid}] AI requested handoff — checking availability")
+        _saved_tool_entities = gen.tool_entities
         try:
             from app.services.handoff import (
                 _handoff_phrase_recently_sent,
@@ -343,6 +326,8 @@ async def _pipeline(
                     ),
                     model_used="template",
                 )
+                if _saved_tool_entities:
+                    gen.tool_entities = _saved_tool_entities
             else:
                 route_result = await route_conversation(
                     tunnel, visitor=visitor, visitor_id=visitor_id
@@ -366,6 +351,8 @@ async def _pipeline(
                     ),
                     model_used="handoff",
                 )
+                if _saved_tool_entities:
+                    gen.tool_entities = _saved_tool_entities
             elif gen.model_used != "template":
                 no_agent = get_template("no_agent_available", tunnel, visitor)
                 gen = GeneratedResponse(
@@ -375,12 +362,16 @@ async def _pipeline(
                     ),
                     model_used="template",
                 )
+                if _saved_tool_entities:
+                    gen.tool_entities = _saved_tool_entities
         except Exception as e:
             logger.warning(f"[{cid}] Handoff routing error: {e}")
             gen = GeneratedResponse(
                 text="For immediate assistance, please call +1 (888) 322-7999.",
                 model_used="template",
             )
+            if _saved_tool_entities:
+                gen.tool_entities = _saved_tool_entities
 
     # ── STEP 6.1: MERGE CLAUDE TOOL ENTITIES ─────────────────
     if gen.tool_entities:
@@ -427,6 +418,12 @@ async def _pipeline(
                     continue
             if key in ("departure_date", "return_date") and isinstance(val, str):
                 val = val.strip()
+            # Protect user-provided data from tool overwrite
+            if key in ("passengers", "cabin_class") and entities.get(key):
+                logger.info(
+                    f"[{cid}] Tool {key}={val} skipped — user already set {entities[key]}"
+                )
+                continue
             entities[key] = val
             _merged = True
 
@@ -434,8 +431,8 @@ async def _pipeline(
             await lead_service.update_lead_from_entities(cid, entities)
             logger.info(f"[{cid}] Claude extraction merged: {list(_te.keys())}")
 
-    # ── STEP 6.2: CRM RE-CHECK (on corrected lead) ────────────
-    if gen.tool_entities and tunnel == "sales" and settings.crm_api_url:
+    # ── STEP 6.2: CRM SUBMIT (single point — after merge) ─────
+    if tunnel == "sales" and settings.crm_api_url:
         try:
             _lead_fresh = await lead_service.get_or_create_lead(cid)
             if _lead_fresh and not _lead_fresh.get("created_in_crm"):
@@ -488,6 +485,20 @@ async def _pipeline(
             model_used="none",
         )
 
+    # ── STEP 7.5: CRM closing replaces AI response (one message, not two) ──
+    if _crm_submitted_this_turn:
+        from app.models.lead import get_missing_fields as _gmf
+
+        _fl = await lead_service.get_or_create_lead(cid)
+        _cc = {
+            "visitor_name": getattr(visitor, "name", None),
+            "visitor_email": getattr(visitor, "email", None),
+            "visitor_phone": getattr(visitor, "phone", None),
+        }
+        if not _gmf(_fl or {}, _cc):
+            validated_text = settings.post_crm_closing_message
+            logger.info(f"[{cid}] CRM closing replaces AI response")
+
     ai_msg = await conversation_service.add_message(
         conversation_id=cid,
         role="ai",
@@ -501,52 +512,28 @@ async def _pipeline(
         await manager.push_stream_end(cid, ai_msg)
 
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
+    # Closing already handled in Step 7.5 (replaces AI text).
+    # Only close conversation status here.
     if _crm_submitted_this_turn:
         try:
-            from app.models.lead import get_missing_fields
+            from app.models.lead import get_missing_fields as _gmf2
 
-            _final_lead = await lead_service.get_or_create_lead(cid)
-            _conv_check = {
+            _fl2 = await lead_service.get_or_create_lead(cid)
+            _cc2 = {
                 "visitor_name": getattr(visitor, "name", None),
                 "visitor_email": getattr(visitor, "email", None),
                 "visitor_phone": getattr(visitor, "phone", None),
             }
-            _final_missing = get_missing_fields(_final_lead or {}, _conv_check)
-
-            if not _final_missing:
-                _closing_msg = await conversation_service.add_message(
-                    conversation_id=cid,
-                    role="ai",
-                    content=settings.post_crm_closing_message,
-                    model_used="template",
-                    cost=0.0,
-                )
-                if _closing_msg:
-                    await manager.push(cid, _closing_msg)
-
+            if not _gmf2(_fl2 or {}, _cc2):
                 await db.update_conversation(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                     "mode": "ai",
                     "assigned_agent_id": None,
                 })
-                logger.info(f"[{cid}] CRM submitted — conversation auto-closed (no handoff)")
-            else:
-                logger.warning(
-                    f"[{cid}] CRM submitted but missing fields remain: {_final_missing} — skipping closing"
-                )
+                logger.info(f"[{cid}] Conversation auto-closed post-CRM")
         except Exception as e:
-            logger.error(f"Post-CRM auto-close error (non-blocking): {e}")
-            # Fallback: at minimum close the conversation
-            try:
-                await db.update_conversation(cid, {
-                    "status": "closed",
-                    "closed_at": datetime.now(timezone.utc).isoformat(),
-                    "mode": "ai",
-                    "assigned_agent_id": None,
-                })
-            except Exception:
-                pass
+            logger.warning(f"[{cid}] Auto-close error: {e}")
 
     # Record pipeline run (non-blocking, non-fatal)
     latency_ms = int((time.perf_counter() - pipeline_start) * 1000)

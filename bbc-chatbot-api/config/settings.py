@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""  # Optional for dev — required only for AI pipeline
     claude_haiku_model: str = "claude-haiku-4-5-20251001"
     claude_sonnet_model: str = "claude-sonnet-4-20250514"
-    claude_timeout: int = 5
+    claude_timeout: int = 15
 
     # Supabase
     supabase_url: str  # REQUIRED

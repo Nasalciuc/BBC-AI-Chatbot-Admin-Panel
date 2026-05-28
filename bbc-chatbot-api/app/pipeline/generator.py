@@ -147,7 +147,7 @@ def generate_response(
                 )
                 _raw = entities.get("_raw_message", "")
                 _user_msgs = [m for m in (history or []) if m.get("role") == "user"]
-                _use_sonnet = len(_user_msgs) >= 5 or intent == Intent.BOOKING_CHANGE
+                _use_sonnet = intent == Intent.BOOKING_CHANGE
                 if _use_sonnet and len(_raw) > 1500:
                     _use_sonnet = False
 
@@ -426,7 +426,7 @@ def generate_response(
         entities=entities,
     )
     user_messages = [m for m in history if m.get("role") == "user"]
-    use_sonnet = len(user_messages) >= 5 or intent == Intent.BOOKING_CHANGE
+    use_sonnet = intent == Intent.BOOKING_CHANGE
 
     # Wallet protection: suspicious long messages force Haiku
     if use_sonnet and len(entities.get("_raw_message", "")) > 1500:

@@ -146,7 +146,7 @@ TRAVEL_TOOL = {
     "description": (
         "IMPORTANT: Always write a helpful response to the customer AND save their travel details. Never call this tool without also responding. "
         "Save travel details from the customer's message. "
-        "ALWAYS call when customer mentions ANY travel info, even partial or misspelled.\n"
+        "Call when customer mentions route, destination, dates, or trip type. Do NOT call on greetings, confirmations, or questions without travel details.\n"
         "RULES:\n"
         "1. CITIES: Convert to 3-letter IATA code. Handle typos: londn=LHR, dubei=DXB, millan=MXP, pariz=CDG. "
         "Handle slang: nyc=JFK, la=LAX, lon=LHR, chi=ORD, sf=SFO, bos=BOS, vegas=LAS.\n"
@@ -156,12 +156,9 @@ TRAVEL_TOOL = {
         "Signals: actually, no wait, I mean, sorry, not X but Y.\n"
         "4. IGNORE IRRELEVANT: 'friend works at JFK' — JFK is NOT origin. "
         "'last time I flew to London' — ignore past trips, extract only CURRENT request.\n"
-        "5. PASSENGERS: '2 ppl'=2, 'couple'=2, 'solo'=1, 'just me'=1, "
-        "'me and wife'=2, 'family of 4'=4, 'three of us'=3, '2 adults'=2.\n"
-        "6. TRIP TYPE: oneway/ow/single=one_way. roundtrip/rt/return=round_trip. "
+        "5. TRIP TYPE: oneway/ow/single=one_way. roundtrip/rt/return=round_trip. "
         "If return date exists, use round_trip even if they said one way.\n"
-        "7. CABIN: business/biz/j class=business. first/f class=first. premium economy=premium_economy.\n"
-        "8. DATES: Convert to YYYY-MM-DD. 'june 15'=2026-06-15. If too vague like 'next month', omit."
+        "6. DATES: Convert to YYYY-MM-DD. 'june 15'=2026-06-15. If too vague like 'next month', omit."
     ),
     "input_schema": {
         "type": "object",
@@ -192,15 +189,6 @@ TRAVEL_TOOL = {
                 "type": "string",
                 "enum": ["one_way", "round_trip"],
                 "description": "one_way or round_trip based on customer message.",
-            },
-            "passengers": {
-                "type": "integer",
-                "description": "Number of passengers (1-9).",
-            },
-            "cabin_class": {
-                "type": "string",
-                "enum": ["business", "first", "premium_economy"],
-                "description": "Cabin class preference.",
             },
         },
     },
@@ -253,8 +241,35 @@ def call_haiku_with_tools(
         return text, cost, tool_entities
 
     except anthropic.APITimeoutError:
-        logger.error(f"Claude+Tool timeout ({settings.claude_timeout}s)")
-        return None, 0.0, {}
+        logger.warning(f"Claude+Tool timeout ({settings.claude_timeout}s) — retrying once")
+        try:
+            response = _get_client().messages.create(
+                model=model,
+                max_tokens=200,
+                temperature=0.3,
+                system=_build_system(system_prompt),
+                messages=[{"role": "user", "content": user_message}],
+                tools=[TRAVEL_TOOL],
+                timeout=settings.claude_timeout,
+            )
+            elapsed = round(time.time() - start, 3)
+            cost = _estimate_cost(
+                model, response.usage.input_tokens, response.usage.output_tokens
+            )
+            text = ""
+            tool_entities: dict = {}
+            for block in response.content:
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    text = (getattr(block, "text", None) or "").strip()
+                elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
+                    raw_in = getattr(block, "input", None) or {}
+                    tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+            logger.info(f"Claude+Tool RETRY SUCCESS | time={elapsed}s")
+            return text, cost, tool_entities
+        except Exception as retry_err:
+            logger.error(f"Claude+Tool retry also failed: {retry_err}")
+            return None, 0.0, {}
     except anthropic.APIError as e:
         logger.error(
             f"Claude+Tool API error: {e} | status={getattr(e, 'status_code', 'N/A')}"
