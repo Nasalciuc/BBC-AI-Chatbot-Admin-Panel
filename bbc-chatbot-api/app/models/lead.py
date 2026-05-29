@@ -29,8 +29,10 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None) -> lis
         lead_dict.get("origin_code") and lead_dict.get("destination_code")
     )
     has_departure = bool(lead_dict.get("departure_date"))
+    # BBC rule: any confirmed trip_type counts (consultant clarifies details)
     has_return_or_oneway = bool(
-        lead_dict.get("return_date") or lead_dict.get("trip_type") == "one_way"
+        lead_dict.get("return_date")
+        or lead_dict.get("trip_type") in ("one_way", "round_trip", "multi_city", "open_jaw")
     )
     has_passengers = bool(lead_dict.get("passengers"))
 
@@ -52,8 +54,9 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None) -> lis
         missing.append("departure date")
     if has_departure and not has_return_or_oneway:
         missing.append("return date or one-way confirmation")
-    if not has_passengers:
-        missing.append("number of travelers (adults, children, infants)")
+    # Passengers optional for CRM — consultant will confirm on follow-up call
+    # if not has_passengers:
+    #     missing.append("number of travelers (adults, children, infants)")
     # Contact info — only if NOT provided via form
     if not has_name:
         missing.append("name")
