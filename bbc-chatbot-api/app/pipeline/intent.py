@@ -49,7 +49,7 @@ INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.PAYMENT_METHODS, re.compile(r"(payment|pay|credit\s*card|wire|transfer|install|invoice)", re.I)),
     (Intent.RECEIPT_REQUEST, re.compile(r"(receipt|invoice|confirmation|proof\s*of)", re.I)),
     # ── Speed: catch common short replies without LLM ──
-    (Intent.GENERAL_QUESTION, re.compile(r"^(ok|okay|yes|yeah|yep|sure|sounds?\s*good|that\s*works|perfect|great|got\s*it|alright|absolutely|definitely|cool|nice|yup)\s*[.!]?$", re.I)),
+    (Intent.NEW_BOOKING, re.compile(r"^(ok|okay|yes|yeah|yep|sure|sounds?\s*good|that\s*works|perfect|great|got\s*it|alright|absolutely|definitely|cool|nice|yup)\s*[.!]?$", re.I)),
     (Intent.GENERAL_QUESTION, re.compile(r"^(no|nope|not\s*really|nah|no\s*thanks?)\s*[.!]?$", re.I)),
     (Intent.NEW_BOOKING, re.compile(r"^\d{1,2}\s*$")),
     (Intent.NEW_BOOKING, re.compile(r"^[A-Z]{3}\s*(to|[-\u2013\u2192])\s*[A-Z]{3}", re.I)),

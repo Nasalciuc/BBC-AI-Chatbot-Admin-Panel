@@ -250,24 +250,21 @@ async def _pipeline(
     kb_results: list[KBResult] = []
     if _kb_task:
         kb_results = await _kb_task
-    # Keyword fallback: if Qdrant returned empty OR was disabled
-    if not kb_results and not _skip_kb:
-        try:
-            keywords = extract_kb_keywords(message)
-            if keywords:
-                raw_results = await db.keyword_search_kb(keywords, tunnel=tunnel, limit=3)
-                kb_results = [
-                    KBResult(
-                        entry_id=r["id"],
-                        title=r["title"],
-                        content=r["content"],
-                        score=1.0,
-                        source="keyword",
-                    )
-                    for r in raw_results
-                ]
-        except Exception as e:
-            logger.warning(f"[{cid}] Keyword KB fallback failed: {e}")
+    elif not _skip_kb:
+        # Keyword fallback (Qdrant disabled)
+        keywords = extract_kb_keywords(message)
+        if keywords:
+            raw_results = await db.keyword_search_kb(keywords, tunnel=tunnel, limit=3)
+            kb_results = [
+                KBResult(
+                    entry_id=r["id"],
+                    title=r["title"],
+                    content=r["content"],
+                    score=1.0,
+                    source="keyword",
+                )
+                for r in raw_results
+            ]
 
     kb_source = kb_results[0].source if kb_results else "none"
     logger.info(f"[{cid}] KB: {len(kb_results)} results (source: {kb_source})")
@@ -277,17 +274,10 @@ async def _pipeline(
 
     # ── STEP 6: GENERATE RESPONSE ────────────────────────────
     # history already fetched at line 92 — reuse (saves ~400ms roundtrip)
-    _gather = await asyncio.gather(
+    lead, today_cost = await asyncio.gather(
         lead_service.get_or_create_lead(cid),
         db.get_today_cost(),
-        return_exceptions=True,
     )
-    lead = _gather[0] if not isinstance(_gather[0], Exception) else None
-    today_cost = _gather[1] if not isinstance(_gather[1], Exception) else 0.0
-    if isinstance(_gather[0], Exception):
-        logger.error(f"[{cid}] Lead fetch failed: {_gather[0]}")
-    if isinstance(_gather[1], Exception):
-        logger.warning(f"[{cid}] Cost fetch failed, defaulting to 0: {_gather[1]}")
     budget_remaining = settings.daily_budget - today_cost
 
     # Streaming callback (sync→async bridge for thread pool)
