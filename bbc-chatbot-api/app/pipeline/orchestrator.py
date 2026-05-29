@@ -437,13 +437,28 @@ async def _pipeline(
     if tunnel == "sales" and settings.crm_api_url:
         try:
             _lead_fresh = await lead_service.get_or_create_lead(cid)
-            if _lead_fresh and not _lead_fresh.get("created_in_crm"):
-                if check_crm_ready(_lead_fresh, visitor):
-                    _crm = await submit_to_crm(_lead_fresh, visitor, cid)
-                    if _crm.success:
-                        await db.mark_lead_created_in_crm(_lead_fresh["id"])
-                        _crm_submitted_this_turn = True
-                        logger.info(f"[{cid}] CRM submitted via Claude — handoff after response")
+            if not _lead_fresh:
+                logger.warning(f"[{cid}] CRM skip: no lead row exists")
+            elif _lead_fresh.get("created_in_crm"):
+                logger.info(f"[{cid}] CRM skip: already submitted")
+            elif not check_crm_ready(_lead_fresh, visitor):
+                from app.models.lead import get_missing_fields
+
+                _miss = get_missing_fields(
+                    _lead_fresh,
+                    {
+                        "visitor_name": getattr(visitor, "name", None),
+                        "visitor_email": getattr(visitor, "email", None),
+                        "visitor_phone": getattr(visitor, "phone", None),
+                    },
+                )
+                logger.warning(f"[{cid}] CRM skip: missing={_miss}")
+            else:
+                _crm = await submit_to_crm(_lead_fresh, visitor, cid)
+                if _crm.success:
+                    await db.mark_lead_created_in_crm(_lead_fresh["id"])
+                    _crm_submitted_this_turn = True
+                    logger.info(f"[{cid}] CRM submitted via Claude — handoff after response")
         except Exception as e:
             logger.error(f"CRM re-check error (non-blocking): {e}")
 

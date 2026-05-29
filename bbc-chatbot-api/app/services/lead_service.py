@@ -78,6 +78,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 return
             lead_id = lead_res.data[0]["id"]  # type: ignore[index]
             lead_data = lead_res.data[0]  # type: ignore[index]
+            logger.info(f"[{conversation_id}] Lead INSERT success: {lead_id}")
         else:
             lead_id = res.data[0]["id"]  # type: ignore[index]
             lead_data = res.data[0]  # type: ignore[index]
@@ -159,4 +160,10 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             )
 
     except Exception as e:
-        logger.error(f"update_lead_from_entities error: {e}")
+        logger.error(
+            f"[{conversation_id}] update_lead_from_entities FAILED: {type(e).__name__}: {e}"
+        )
+        try:
+            logger.error(f"[{conversation_id}] Lead payload was: {lead_payload}")
+        except NameError:
+            pass
