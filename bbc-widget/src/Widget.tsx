@@ -3,6 +3,7 @@ import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm } from './TunnelForm'
 import { ChatWindow } from './ChatWindow'
 import { getVisitorId } from './api'
+import { getUtm } from './utm'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -111,8 +112,10 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     if (!hasOptimisticSession) return null
     try {
       const bookingId = localStorage.getItem('bbc_conv_booking_id')
-      if (!bookingId) return null
-      return { booking_id: bookingId }
+      return {
+        ...getUtm(),
+        ...(bookingId ? { booking_id: bookingId } : {}),
+      }
     } catch { return null }
   })()
 
@@ -310,7 +313,10 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     ensureVisitorId()
 
     const vis = { name: data.name, email: data.email, phone: data.phone, country_code: data.country_code }
-    const meta = data.booking_id ? { booking_id: data.booking_id } : {}
+    const meta = {
+      ...getUtm(),
+      ...(data.booking_id ? { booking_id: data.booking_id } : {}),
+    }
 
     // Visitor mismatch check — clear old session if different person
     const newKey = `${vis.name || ''}|${vis.email || ''}|${vis.phone || ''}`

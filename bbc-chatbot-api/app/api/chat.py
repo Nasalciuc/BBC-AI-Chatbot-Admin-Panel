@@ -37,7 +37,11 @@ router = APIRouter()
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> ChatResponse:
+async def chat(
+    req: ChatRequest,
+    request: Request,
+    _rate: None = Depends(check_rate_limit),
+) -> ChatResponse:
     """Handle a single chat message from the widget."""
 
     # 0. Validate conversation_id format if provided — widgets from a prior
@@ -171,12 +175,27 @@ async def chat(req: ChatRequest, _rate: None = Depends(check_rate_limit)) -> Cha
     # and "Connecting you with a specialist..." with no AI follow-up.
 
     # 4. AI mode or new conversation → run pipeline
+    # Enrich metadata with client IP + User-Agent
+    _meta = dict(req.metadata or {})
+    _client_ip = (
+        request.headers.get("cf-connecting-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "")
+    )
+    if _client_ip:
+        _meta.setdefault("client_ip", _client_ip)
+    _ua = request.headers.get("user-agent")
+    if _ua:
+        _meta.setdefault("user_agent", _ua)
+    if req.visitor_id:
+        _meta.setdefault("visitor_id", req.visitor_id)
+
     response = await process_message(
         conversation_id=req.conversation_id,
         message=clean_message,
         tunnel=req.tunnel,
         visitor=req.visitor,
-        metadata=req.metadata,
+        metadata=_meta or None,
         visitor_id=req.visitor_id,
     )
 

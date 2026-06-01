@@ -52,11 +52,34 @@ async def check_connection() -> bool:
 # CONVERSATIONS — pipeline (existing + complete)
 # ════════════════════════════════════════════════════════════════
 
+async def _merge_conv_metadata(conv_id: str, incoming: Optional[dict]) -> None:
+    """Merge incoming metadata into conversation (first-touch: don't overwrite existing keys)."""
+    if not incoming:
+        return
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations").select("metadata").eq("id", conv_id).single().execute()
+        )
+        existing = (res.data or {}).get("metadata") or {}
+        merged = {**existing}
+        for k, v in incoming.items():
+            if v is not None and k not in merged:
+                merged[k] = v
+        if merged != existing:
+            await _run_sync(
+                lambda: db.table("conversations").update({"metadata": merged}).eq("id", conv_id).execute()
+            )
+    except Exception as e:
+        logger.warning(f"_merge_conv_metadata error: {e}")
+
+
 async def get_or_create_conversation(
     conversation_id: Optional[str],
     tunnel: str,
     visitor: Any,
     visitor_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> Optional[dict]:
     """Return existing conversation or create a new one.
 
@@ -115,6 +138,13 @@ async def get_or_create_conversation(
                             .eq("id", conversation_id)
                             .execute()
                         )
+                    if metadata:
+                        await _merge_conv_metadata(conversation_id, metadata)
+                        ex_meta = existing.get("metadata") or {}
+                        for k, v in metadata.items():
+                            if v is not None and k not in ex_meta:
+                                ex_meta[k] = v
+                        existing["metadata"] = ex_meta
                     return existing
 
                 logger.warning(
@@ -134,10 +164,20 @@ async def get_or_create_conversation(
                 .execute()
             )
             if res.data:
-                return res.data[0]
+                found = res.data[0]
+                if metadata:
+                    await _merge_conv_metadata(found["id"], metadata)
+                    ex_meta = found.get("metadata") or {}
+                    for k, v in metadata.items():
+                        if v is not None and k not in ex_meta:
+                            ex_meta[k] = v
+                    found["metadata"] = ex_meta
+                return found
 
         # ── Fallback: create new conversation ─────────────────────
         payload: dict = {"tunnel": tunnel, "mode": "ai", "status": "active"}
+        if metadata:
+            payload["metadata"] = metadata
         if visitor_id:
             payload["visitor_id"] = visitor_id
         if visitor and visitor.name:  payload["visitor_name"]  = visitor.name
@@ -1583,7 +1623,7 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             db.table("conversations")
             .select(
                 "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
-                "tunnel, message_count, mode, status"
+                "tunnel, message_count, mode, status, metadata, visitor_id"
             )
             .eq("status", "active")
             .eq("mode", "ai")
