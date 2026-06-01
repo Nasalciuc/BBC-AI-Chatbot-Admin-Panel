@@ -99,7 +99,7 @@ def check_crm_ready(lead: dict, visitor) -> bool:
     return len(missing) == 0
 
 
-def build_crm_payload(lead: dict, visitor) -> dict:
+def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, suid: str | None = None) -> dict:
     """Build CRM API request body from lead + visitor data."""
     origin = (lead.get("origin_code") or "").upper()
     dest = (lead.get("destination_code") or "").upper()
@@ -147,6 +147,18 @@ def build_crm_payload(lead: dict, visitor) -> dict:
             "date": format_date_iso(return_date),
         })
 
+    # UTM marketing attribution
+    _meta = conv_metadata or {}
+    _utm = {}
+    if _meta.get("utm_source"):
+        _utm["_utmsource"] = _meta["utm_source"]
+    if _meta.get("utm_medium"):
+        _utm["_utmmedium"] = _meta["utm_medium"]
+    if _meta.get("utm_campaign"):
+        _utm["_utmcampaign"] = _meta["utm_campaign"]
+    if suid:
+        _utm["suid"] = suid
+
     return {
         "trip_type": trip_type,
         "cabin_class": cabin_class,
@@ -163,15 +175,21 @@ def build_crm_payload(lead: dict, visitor) -> dict:
         "coupon": "",
         "flights": flights,
         "sms": False,
+        **_utm,
     }
 
 
-async def submit_to_crm(lead: dict, visitor, conversation_id: str) -> CRMResult:
+async def submit_to_crm(
+    lead: dict, visitor, conversation_id: str,
+    conv_metadata: dict | None = None,
+    client_ip: str | None = None,
+    suid: str | None = None,
+) -> CRMResult:
     """Submit flight request to BBC CRM. Non-blocking errors."""
     if not settings.crm_api_url:
         return CRMResult(success=False, error="CRM not configured")
 
-    payload = build_crm_payload(lead, visitor)
+    payload = build_crm_payload(lead, visitor, conv_metadata=conv_metadata, suid=suid)
     endpoint = f"{settings.crm_api_url.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
 
     try:
@@ -179,7 +197,10 @@ async def submit_to_crm(lead: dict, visitor, conversation_id: str) -> CRMResult:
         resp = await client.post(
             endpoint,
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                **({"x-custom-client-ip": client_ip} if client_ip else {}),
+            },
         )
 
         if resp.status_code == 200:
@@ -268,6 +289,18 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             "sms": False,
         }
 
+        # UTM from conversation metadata
+        _ab_meta = conv.get("metadata") or {}
+        if _ab_meta.get("utm_source"):
+            payload["_utmsource"] = _ab_meta["utm_source"]
+        if _ab_meta.get("utm_medium"):
+            payload["_utmmedium"] = _ab_meta["utm_medium"]
+        if _ab_meta.get("utm_campaign"):
+            payload["_utmcampaign"] = _ab_meta["utm_campaign"]
+        _ab_suid = conv.get("visitor_id")
+        if _ab_suid:
+            payload["suid"] = _ab_suid
+
         endpoint = f"{settings.crm_api_url.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
         cid = conv.get("id", "?")
         logger.info(f"[CRM-ABANDONED] conv={cid} {origin}->{dest} {dep_date}")
@@ -276,7 +309,10 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         resp = await client.post(
             endpoint,
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                **({"x-custom-client-ip": _ab_meta.get("client_ip")} if _ab_meta.get("client_ip") else {}),
+            },
         )
 
         if resp.status_code == 200:

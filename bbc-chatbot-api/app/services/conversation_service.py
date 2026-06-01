@@ -9,8 +9,11 @@ logger = logging.getLogger(__name__)
 async def get_or_create_conversation(
     conversation_id: Optional[str], tunnel: str, visitor: Any,
     visitor_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ):
-    return await db.get_or_create_conversation(conversation_id, tunnel, visitor, visitor_id=visitor_id)
+    return await db.get_or_create_conversation(
+        conversation_id, tunnel, visitor, visitor_id=visitor_id, metadata=metadata,
+    )
 
 
 async def add_message(conversation_id: str, role: str, content: str,

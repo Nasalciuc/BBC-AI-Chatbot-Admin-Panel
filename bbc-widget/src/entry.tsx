@@ -1,11 +1,13 @@
 import { render } from 'preact'
 import { Widget } from './Widget'
+import { captureUtm } from './utm'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
   // already loaded
 } else {
   (window as any).__BBC_WIDGET_LOADED__ = true
+  captureUtm()
 
   // Read API URL from script data-api attribute
   const script = document.currentScript as HTMLScriptElement | null

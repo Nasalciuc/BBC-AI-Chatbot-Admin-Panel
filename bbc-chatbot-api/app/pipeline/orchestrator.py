@@ -83,6 +83,7 @@ async def _pipeline(
         tunnel=tunnel,
         visitor=visitor,
         visitor_id=visitor_id,
+        metadata=metadata,
     )
     if not conv or "id" not in conv:
         raise RuntimeError("Failed to create conversation")
@@ -454,7 +455,15 @@ async def _pipeline(
                 )
                 logger.warning(f"[{cid}] CRM skip: missing={_miss}")
             else:
-                _crm = await submit_to_crm(_lead_fresh, visitor, cid)
+                _conv_meta = (conv or {}).get("metadata") or {}
+                _client_ip = _conv_meta.get("client_ip")
+                _suid = visitor_id or _conv_meta.get("visitor_id")
+                _crm = await submit_to_crm(
+                    _lead_fresh, visitor, cid,
+                    conv_metadata=_conv_meta,
+                    client_ip=_client_ip,
+                    suid=_suid,
+                )
                 if _crm.success:
                     await db.mark_lead_created_in_crm(_lead_fresh["id"])
                     _crm_submitted_this_turn = True
