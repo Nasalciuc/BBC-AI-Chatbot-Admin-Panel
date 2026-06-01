@@ -54,9 +54,9 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None) -> lis
         missing.append("departure date")
     if has_departure and not has_return_or_oneway:
         missing.append("return date or one-way confirmation")
-    # Passengers optional for CRM — consultant will confirm on follow-up call
-    # if not has_passengers:
-    #     missing.append("number of travelers (adults, children, infants)")
+    # Passengers required for pipeline CRM (cron abandoned bypasses this gate)
+    if not has_passengers:
+        missing.append("number of travelers (adults, children, infants)")
     # Contact info — only if NOT provided via form
     if not has_name:
         missing.append("name")
