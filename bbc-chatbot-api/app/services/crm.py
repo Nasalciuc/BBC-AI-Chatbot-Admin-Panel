@@ -156,6 +156,12 @@ def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, su
         _utm["_utmmedium"] = _meta["utm_medium"]
     if _meta.get("utm_campaign"):
         _utm["_utmcampaign"] = _meta["utm_campaign"]
+    if _meta.get("referrer"):
+        _utm["http_referrer"] = _meta["referrer"]
+    if _meta.get("google_analytics_client_id"):
+        _utm["google_analytics_client_id"] = _meta["google_analytics_client_id"]
+    if _meta.get("kayak_click_id"):
+        _utm["kayak_click_id"] = _meta["kayak_click_id"]
     if suid:
         _utm["suid"] = suid
 
@@ -297,6 +303,12 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             payload["_utmmedium"] = _ab_meta["utm_medium"]
         if _ab_meta.get("utm_campaign"):
             payload["_utmcampaign"] = _ab_meta["utm_campaign"]
+        if _ab_meta.get("referrer"):
+            payload["http_referrer"] = _ab_meta["referrer"]
+        if _ab_meta.get("google_analytics_client_id"):
+            payload["google_analytics_client_id"] = _ab_meta["google_analytics_client_id"]
+        if _ab_meta.get("kayak_click_id"):
+            payload["kayak_click_id"] = _ab_meta["kayak_click_id"]
         _ab_suid = conv.get("visitor_id")
         if _ab_suid:
             payload["suid"] = _ab_suid
