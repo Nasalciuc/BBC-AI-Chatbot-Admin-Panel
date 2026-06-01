@@ -137,15 +137,19 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         if (json.success && json.data && json.data.length > 0) {
           const incoming = json.data as Message[]
           setMessages(prev => {
-            const ids = new Set(prev.map(m => m.id))
+            // Remove optimistic temp-* messages — real versions arrived from server
+            const cleaned = prev.filter(m => !m.id.startsWith('temp-'))
+            const ids = new Set(cleaned.map(m => m.id))
             const newMsgs = incoming.filter(m => !ids.has(m.id))
-            if (newMsgs.length === 0) return prev
+            if (newMsgs.length === 0) {
+              return cleaned.length !== prev.length ? cleaned : prev
+            }
             if (newMsgs.some(m => m.role === 'ai')) {
               setIsStreaming(false)
               isStreamingRef.current = false
               setSending(false)
             }
-            return [...prev, ...newMsgs]
+            return [...cleaned, ...newMsgs]
           })
           lastMsgTime.current = json.data[json.data.length - 1].created_at
         }

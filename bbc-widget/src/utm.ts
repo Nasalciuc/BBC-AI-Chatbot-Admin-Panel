@@ -23,6 +23,22 @@ export function captureUtm(): void {
     if (pageUrl) extra.page_url = pageUrl
     if (document.referrer) extra.referrer = document.referrer
 
+    // Google Analytics client ID from _ga cookie
+    try {
+      const gaCookie = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('_ga='))
+      if (gaCookie) {
+        // _ga=GA1.2.XXXXXXXXXX.XXXXXXXXXX → extract client ID part
+        const parts = gaCookie.split('=')[1]?.split('.')
+        if (parts && parts.length >= 4) {
+          extra.google_analytics_client_id = parts.slice(2).join('.')
+        }
+      }
+    } catch { /* cookie access blocked */ }
+
+    // Kayak click ID from URL params
+    const kayakId = params.get('kayak_click_id') || params.get('kclid')
+    if (kayakId) extra.kayak_click_id = kayakId
+
     const data = { ...captured, ...extra }
     if (Object.keys(data).length > 0) {
       // First-touch: don't overwrite existing UTM
@@ -36,7 +52,12 @@ export function captureUtm(): void {
 /**
  * Get stored UTM data. Returns {} if none captured.
  */
-export function getUtm(): UtmFields & { page_url?: string; referrer?: string } {
+export function getUtm(): UtmFields & {
+  page_url?: string
+  referrer?: string
+  google_analytics_client_id?: string
+  kayak_click_id?: string
+} {
   try {
     const raw = sessionStorage.getItem(UTM_KEY)
     return raw ? JSON.parse(raw) : {}
