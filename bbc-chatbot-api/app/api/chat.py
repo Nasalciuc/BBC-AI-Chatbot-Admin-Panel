@@ -187,6 +187,9 @@ async def chat(
     _ua = request.headers.get("user-agent")
     if _ua:
         _meta.setdefault("user_agent", _ua)
+    _referer = request.headers.get("referer") or request.headers.get("referrer")
+    if _referer:
+        _meta.setdefault("referrer", _referer)
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
 

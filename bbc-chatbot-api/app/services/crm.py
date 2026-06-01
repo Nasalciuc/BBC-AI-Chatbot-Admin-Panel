@@ -156,6 +156,14 @@ def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, su
         _utm["_utmmedium"] = _meta["utm_medium"]
     if _meta.get("utm_campaign"):
         _utm["_utmcampaign"] = _meta["utm_campaign"]
+    if _meta.get("utm_term"):
+        _utm["utm_term"] = _meta["utm_term"]
+    if _meta.get("utm_content"):
+        _utm["utm_content"] = _meta["utm_content"]
+    if _meta.get("gclid"):
+        _utm["gclid"] = _meta["gclid"]
+    if _meta.get("fbclid"):
+        _utm["fbclid"] = _meta["fbclid"]
     if _meta.get("referrer"):
         _utm["http_referrer"] = _meta["referrer"]
     if _meta.get("google_analytics_client_id"):
@@ -303,6 +311,14 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             payload["_utmmedium"] = _ab_meta["utm_medium"]
         if _ab_meta.get("utm_campaign"):
             payload["_utmcampaign"] = _ab_meta["utm_campaign"]
+        if _ab_meta.get("utm_term"):
+            payload["utm_term"] = _ab_meta["utm_term"]
+        if _ab_meta.get("utm_content"):
+            payload["utm_content"] = _ab_meta["utm_content"]
+        if _ab_meta.get("gclid"):
+            payload["gclid"] = _ab_meta["gclid"]
+        if _ab_meta.get("fbclid"):
+            payload["fbclid"] = _ab_meta["fbclid"]
         if _ab_meta.get("referrer"):
             payload["http_referrer"] = _ab_meta["referrer"]
         if _ab_meta.get("google_analytics_client_id"):

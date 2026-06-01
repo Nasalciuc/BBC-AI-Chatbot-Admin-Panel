@@ -23,6 +23,13 @@ export function captureUtm(): void {
     if (pageUrl) extra.page_url = pageUrl
     if (document.referrer) extra.referrer = document.referrer
 
+    // Platform click IDs (Google/Facebook/Microsoft auto-tagging)
+    const clickIds = ['gclid', 'fbclid', 'msclkid', 'ttclid', 'kayak_click_id', 'kclid'] as const
+    for (const cid of clickIds) {
+      const val = params.get(cid)
+      if (val) extra[cid] = val
+    }
+
     // Google Analytics client ID from _ga cookie
     try {
       const gaCookie = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('_ga='))
@@ -34,10 +41,6 @@ export function captureUtm(): void {
         }
       }
     } catch { /* cookie access blocked */ }
-
-    // Kayak click ID from URL params
-    const kayakId = params.get('kayak_click_id') || params.get('kclid')
-    if (kayakId) extra.kayak_click_id = kayakId
 
     const data = { ...captured, ...extra }
     if (Object.keys(data).length > 0) {
@@ -57,6 +60,11 @@ export function getUtm(): UtmFields & {
   referrer?: string
   google_analytics_client_id?: string
   kayak_click_id?: string
+  gclid?: string
+  fbclid?: string
+  msclkid?: string
+  ttclid?: string
+  kclid?: string
 } {
   try {
     const raw = sessionStorage.getItem(UTM_KEY)
