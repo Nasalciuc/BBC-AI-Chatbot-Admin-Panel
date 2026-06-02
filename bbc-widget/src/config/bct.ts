@@ -18,6 +18,19 @@ const config: BrandConfig = {
   csEmail: 'cs@businessclass-tickets.com',
   websiteUrl: 'businessclass-tickets.com',
   closingMessage: 'Your flight request is confirmed! A travel specialist will contact you shortly. For immediate help, call +1 (888) 668-3009.',
+  colors: {
+    primary: '#800020',
+    primaryRgb: '128,0,32',
+    header: '#1B2B44',
+    headerText: '#FFFFFF',
+    userBubble: '#800020',
+    aiBubble: '#F5F0F2',
+    aiBubbleText: '#1A1A1A',
+    inputBorder: '#800020',
+    sendButton: '#800020',
+    sendButtonText: '#FFFFFF',
+    link: '#800020',
+  },
 }
 
 export default config

@@ -80,7 +80,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       zIndex: 2147483000, overflow: 'hidden',
     }}>
       <div style={{
-        background: brand.headerColor, color: '#fff', padding: '16px 20px',
+        background: 'var(--bbc-header)', color: 'var(--bbc-header-text)', padding: '16px 20px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -101,7 +101,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
           </div>
         </div>
         <button onClick={onBack} aria-label="Close" style={{
-          background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff',
+          background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
           width: 28, height: 28, borderRadius: '50%', cursor: 'pointer', fontSize: 14,
         }}>✕</button>
       </div>
@@ -212,7 +212,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
         {error && <p style={{ color: '#ef4444', fontSize: 12, margin: 0 }}>{error}</p>}
         <button type="submit" style={{
           width: '100%', padding: '12px', borderRadius: 12,
-          background: '#800020', color: '#fff', border: 'none',
+          background: 'var(--bbc-send-btn)', color: 'var(--bbc-send-btn-text)', border: 'none',
           fontWeight: 600, fontSize: 14, cursor: 'pointer',
         }}>
           Start Chat →
