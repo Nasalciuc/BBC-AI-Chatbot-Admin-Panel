@@ -6,6 +6,7 @@ const config: BrandConfig = {
   brandColorRgb: '128,0,32',
   headerColor: '#0B1829',
   logoUrl: 'https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png',
+  floatingLogoUrl: 'https://bbc-admin-panel-eight.vercel.app/images/favicon.png',
   logoAlt: 'BCT',
   formTitle: 'Business Class Tickets',
   formSubtitle: 'Please enter your details to get started',
