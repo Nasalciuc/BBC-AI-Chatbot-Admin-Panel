@@ -64,29 +64,25 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
           width: 60,
           height: 60,
           borderRadius: '50%',
-          background: 'var(--bbc-primary)',
-          border: 'none',
-          boxShadow: '0 4px 20px rgba(var(--bbc-primary-rgb), 0.35)',
+          background: 'var(--bbc-header)',
+          border: '2px solid var(--bbc-primary)',
+          boxShadow: '0 4px 20px rgba(var(--bbc-primary-rgb), 0.25)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: 8,
+          padding: 0,
           flexShrink: 0,
           animation: showAttention ? 'bbc-bounce 0.7s ease 2' : 'none',
         }}
       >
         <img
-          src={brand.floatingLogoUrl ?? brand.logoUrl}
-          alt={brand.logoAlt}
-          width={32}
-          height={32}
+          src={brand.logoUrl}
+          alt=""
+          width={30}
+          height={30}
           draggable={false}
-          style={{
-            display: 'block',
-            pointerEvents: 'none',
-            objectFit: 'contain',
-          }}
+          style={{ display: 'block', pointerEvents: 'none' }}
         />
       </button>
     </div>
