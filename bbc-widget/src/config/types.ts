@@ -17,4 +17,18 @@ export interface BrandConfig {
   csEmail?: string
   websiteUrl: string
   closingMessage: string
+  // ── Theme colors ──
+  colors: {
+    primary: string
+    primaryRgb: string
+    header: string
+    headerText: string
+    userBubble: string
+    aiBubble: string
+    aiBubbleText: string
+    inputBorder: string
+    sendButton: string
+    sendButtonText: string
+    link: string
+  }
 }

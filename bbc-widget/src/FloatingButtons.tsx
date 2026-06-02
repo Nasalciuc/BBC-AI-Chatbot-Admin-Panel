@@ -64,9 +64,9 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
           width: 60,
           height: 60,
           borderRadius: '50%',
-          background: '#0B1829',
-          border: '2px solid #800020',
-          boxShadow: '0 4px 20px rgba(128,0,32,0.25)',
+          background: 'var(--bbc-header)',
+          border: '2px solid var(--bbc-primary)',
+          boxShadow: '0 4px 20px rgba(var(--bbc-primary-rgb), 0.25)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
@@ -77,7 +77,7 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
         }}
       >
         <img
-          src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+          src={brand.logoUrl}
           alt=""
           width={30}
           height={30}

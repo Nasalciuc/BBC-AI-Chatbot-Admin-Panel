@@ -407,26 +407,26 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       zIndex: 2147483000, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     }}>
       <div style={{
-        background: brand.headerColor, color: '#fff', padding: '14px 18px',
+        background: 'var(--bbc-header)', color: 'var(--bbc-header-text)', padding: '14px 18px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
-            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
-            alt="BCT"
+            src={brand.logoUrl}
+            alt={brand.logoAlt}
             width={24}
             height={24}
             style={{ borderRadius: 5, objectFit: 'contain' }}
           />
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>BCT Travel Concierge</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{brand.chatTitle}</div>
             <div style={{ fontSize: 11, opacity: 0.6, marginTop: 1 }}>
               {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? brand.chatSubtitle : 'Booking Support'}
             </div>
           </div>
         </div>
         <button onClick={() => { notifySessionClose('minimized', true); onClose() }} aria-label="Close chat" style={{
-          background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff',
+          background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
           width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', fontSize: 13,
         }}>✕</button>
       </div>
@@ -440,10 +440,10 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             <div style={{
               padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
               ...(msg.role === 'user'
-                ? { background: '#0B1829', color: '#fff', borderBottomRightRadius: 4 }
+                ? { background: 'var(--bbc-user-bubble)', color: 'var(--bbc-header-text)', borderBottomRightRadius: 4 }
                 : msg.role === 'system'
                   ? { background: '#fef3c7', color: '#92400e', fontSize: 12, fontStyle: 'italic' }
-                  : { background: '#f3f4f6', color: '#1f2937', borderBottomLeftRadius: 4 }
+                  : { background: 'var(--bbc-ai-bubble)', color: 'var(--bbc-ai-bubble-text)', borderBottomLeftRadius: 4 }
               ),
             }}>
               {msg.content}
@@ -460,7 +460,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
             <div style={{
               padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
-              background: '#f3f4f6', color: '#1f2937', borderBottomLeftRadius: 4,
+              background: 'var(--bbc-ai-bubble)', color: 'var(--bbc-ai-bubble-text)', borderBottomLeftRadius: 4,
             }}>
               {streamingText}
             </div>
@@ -486,9 +486,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
                 padding: '6px 12px',
                 borderRadius: 16,
                 fontSize: 12,
-                border: `1.5px solid ${brand.brandColor}`,
+                border: '1.5px solid var(--bbc-primary)',
                 background: '#fff',
-                color: '#0B1829',
+                color: 'var(--bbc-header)',
                 cursor: 'pointer',
                 fontWeight: 500,
               }}
@@ -524,8 +524,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           disabled={!input.trim() || sending}
           style={{
             padding: '10px 16px', borderRadius: 10,
-            background: !input.trim() || sending ? '#d1d5db' : brand.brandColor,
-            color: '#fff', border: 'none', cursor: !input.trim() || sending ? 'default' : 'pointer',
+            background: !input.trim() || sending ? '#d1d5db' : 'var(--bbc-send-btn)',
+            color: 'var(--bbc-send-btn-text)', border: 'none', cursor: !input.trim() || sending ? 'default' : 'pointer',
             fontWeight: 600, fontSize: 13, flexShrink: 0,
           }}
         >
