@@ -15,6 +15,7 @@ SITE_CONFIGS: dict[str, dict[str, str]] = {
         "contact_email": "info@buybusinessclass.com",
         "hq_address": "US headquarters: 180 North Stetson Avenue, Chicago, IL 60601",
         "website": "buybusinessclass.com",
+        "crm_url": "https://webapi.buybusinessclass.com",
         "closing_message": (
             "Your flight request is confirmed! A travel consultant will contact you shortly. "
             "For immediate help, call +1 (888) 322-7999."
@@ -26,6 +27,7 @@ SITE_CONFIGS: dict[str, dict[str, str]] = {
         "contact_email": "info@businessclass-tickets.com",
         "hq_address": "US headquarters: 180 North Stetson Avenue, Chicago, IL 60601",
         "website": "businessclass-tickets.com",
+        "crm_url": "https://webapi.businessclass-tickets.com",
         "closing_message": (
             "Your flight request is confirmed! A travel specialist will contact you shortly. "
             "For immediate help, call +1 (888) 668-3009."

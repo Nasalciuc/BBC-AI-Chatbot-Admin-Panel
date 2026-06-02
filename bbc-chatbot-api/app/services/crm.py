@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 CRM_CHATBOT_ENDPOINT = "/requests/chatbot"
 CRM_TIMEOUT = 10
 
+
+def _resolve_crm_base(site_id: str | None = None) -> str:
+    """Resolve CRM base URL per site. Falls back to settings.crm_api_url (BBC)."""
+    from app.ai.prompts import get_brand_vars
+    return get_brand_vars(site_id).get("crm_url") or settings.crm_api_url
+
 # Shared HTTP client for CRM — avoids TLS handshake per call
 _crm_client: Optional[httpx.AsyncClient] = None
 
@@ -204,7 +210,10 @@ async def submit_to_crm(
         return CRMResult(success=False, error="CRM not configured")
 
     payload = build_crm_payload(lead, visitor, conv_metadata=conv_metadata, suid=suid)
-    endpoint = f"{settings.crm_api_url.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
+    _site = (conv_metadata or {}).get("site")
+    _crm_base = _resolve_crm_base(_site)
+    endpoint = f"{_crm_base.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
+    logger.info(f"[{conversation_id}] CRM endpoint: {endpoint} (site={_site or 'default'})")
 
     try:
         client = _get_crm_client()
@@ -329,8 +338,11 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         if _ab_suid:
             payload["suid"] = _ab_suid
 
-        endpoint = f"{settings.crm_api_url.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
+        _ab_site = _ab_meta.get("site")
+        _crm_base = _resolve_crm_base(_ab_site)
+        endpoint = f"{_crm_base.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
         cid = conv.get("id", "?")
+        logger.info(f"[cron][{cid}] CRM endpoint: {endpoint} (site={_ab_site or 'default'})")
         logger.info(f"[CRM-ABANDONED] conv={cid} {origin}->{dest} {dep_date}")
 
         client = _get_crm_client()
