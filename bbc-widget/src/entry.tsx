@@ -12,7 +12,7 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
 
   // Read API URL from script data-api attribute
   const script = document.currentScript as HTMLScriptElement | null
-    || document.querySelector('script[src*="bbc-widget"]') as HTMLScriptElement | null
+    || document.querySelector('script[src*="-widget"]') as HTMLScriptElement | null
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
 
