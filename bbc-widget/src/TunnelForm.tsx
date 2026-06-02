@@ -85,15 +85,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
-            src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
-            alt="BCT"
+            src={brand.logoUrl}
+            alt={brand.logoAlt}
             width={28}
             height={28}
             style={{ borderRadius: 6, objectFit: 'contain' }}
           />
           <div>
             <div style={{ fontWeight: 600, fontSize: 15 }}>
-              {tunnel === 'sales' ? 'Business Class Tickets' : 'Support'}
+              {tunnel === 'sales' ? brand.formTitle : 'Support'}
             </div>
             <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
               {tunnel === 'sales' ? brand.formSubtitle : "We'll look into your booking"}

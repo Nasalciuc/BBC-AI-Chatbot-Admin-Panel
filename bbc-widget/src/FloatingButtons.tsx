@@ -1,3 +1,5 @@
+import brand from './config'
+
 interface Props {
   onSelect: (tunnel: 'sales' | 'support') => void
   showAttention?: boolean
@@ -75,7 +77,7 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
         }}
       >
         <img
-          src="https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png"
+          src={brand.logoUrl}
           alt=""
           width={30}
           height={30}
