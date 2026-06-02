@@ -4,8 +4,6 @@ export interface BrandConfig {
   brandColorRgb: string
   headerColor: string
   logoUrl: string
-  /** Logo for FAB on brand-color circle (higher contrast than header logo) */
-  floatingLogoUrl?: string
   logoAlt: string
   formTitle: string
   formSubtitle: string
