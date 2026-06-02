@@ -4,6 +4,7 @@ import { TunnelForm } from './TunnelForm'
 import { ChatWindow } from './ChatWindow'
 import { getVisitorId } from './api'
 import { getUtm } from './utm'
+import brand from './config'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -114,6 +115,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
       const bookingId = localStorage.getItem('bbc_conv_booking_id')
       return {
         ...getUtm(),
+        site: brand.id,
         ...(bookingId ? { booking_id: bookingId } : {}),
       }
     } catch { return null }
@@ -315,6 +317,7 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     const vis = { name: data.name, email: data.email, phone: data.phone, country_code: data.country_code }
     const meta = {
       ...getUtm(),
+      site: brand.id,
       ...(data.booking_id ? { booking_id: data.booking_id } : {}),
     }
 

@@ -12,6 +12,10 @@ const config: BrandConfig = {
   chatTitle: 'BBC Travel Concierge',
   chatSubtitle: 'Business Class Experts',
   ctaSubmit: 'Start Chat \u2192',
+  contactPhone: '+1 (888) 322-7999',
+  contactEmail: 'info@buybusinessclass.com',
+  websiteUrl: 'buybusinessclass.com',
+  closingMessage: 'Your flight request is confirmed! A travel consultant will contact you shortly. For immediate help, call +1 (888) 322-7999.',
 }
 
 export default config

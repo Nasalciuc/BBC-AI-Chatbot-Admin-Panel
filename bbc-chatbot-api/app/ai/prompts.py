@@ -7,6 +7,37 @@ from app.models.chat import VisitorInfo
 from app.models.lead import get_missing_fields, get_lead_tier
 from app.models.kb import KBResult
 
+# ─── Site-specific brand configuration ─────────────────────────────
+SITE_CONFIGS: dict[str, dict[str, str]] = {
+    "bbc": {
+        "brand_name": "Buy Business Class",
+        "contact_phone": "+1 (888) 322-7999",
+        "contact_email": "info@buybusinessclass.com",
+        "hq_address": "US headquarters: 180 North Stetson Avenue, Chicago, IL 60601",
+        "website": "buybusinessclass.com",
+        "closing_message": (
+            "Your flight request is confirmed! A travel consultant will contact you shortly. "
+            "For immediate help, call +1 (888) 322-7999."
+        ),
+    },
+    "bct": {
+        "brand_name": "Business Class Tickets",
+        "contact_phone": "+1 (888) 668-3009",
+        "contact_email": "info@businessclass-tickets.com",
+        "hq_address": "US headquarters: 180 North Stetson Avenue, Chicago, IL 60601",
+        "website": "businessclass-tickets.com",
+        "closing_message": (
+            "Your flight request is confirmed! A travel specialist will contact you shortly. "
+            "For immediate help, call +1 (888) 668-3009."
+        ),
+    },
+}
+
+
+def get_brand_vars(site_id: str | None = None) -> dict[str, str]:
+    """Get brand variables for a site. Defaults to BBC if unknown."""
+    return SITE_CONFIGS.get(site_id or "bbc", SITE_CONFIGS["bbc"])
+
 # ── KB content sanitization (prevent indirect injection via poisoned entries) ──
 _KB_POISON_PATTERNS = [
     _re.compile(r"ignore\s+(all\s+)?previous", _re.I),
@@ -257,17 +288,16 @@ def build_conversational_prompt(
     kb_results: Optional[list[KBResult]] = None,
     history: Optional[list[dict]] = None,
     entities: Optional[dict] = None,
+    metadata: dict | None = None,
 ) -> tuple[str, str]:
     """Assemble system prompt split into static (cacheable) and dynamic sections."""
     sections: list[str] = []
 
-    # Brand substitution
-    brand_vars = {
-        "brand_name": "Buy Business Class",   # TODO: from site/tunnel config
-        "contact_phone": "+1 (888) 322-7999",
-        "contact_email": "info@buybusinessclass.com",
-        "hq_address": "US headquarters: 180 North Stetson Avenue, Chicago, IL 60601",
-    }
+    # Brand substitution (widget sends metadata.site; generator passes entities.site)
+    _site = metadata.get("site") if metadata else None
+    if not _site and entities:
+        _site = entities.get("site")
+    brand_vars = get_brand_vars(_site)
 
     # 1. Common rules (with brand)
     sections.append(COMMON_RULES.strip().format(**brand_vars))

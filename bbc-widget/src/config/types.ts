@@ -10,4 +10,11 @@ export interface BrandConfig {
   chatTitle: string
   chatSubtitle: string
   ctaSubmit: string
+  // ── Site-specific contact info ──
+  contactPhone: string
+  contactEmail: string
+  csPhone?: string
+  csEmail?: string
+  websiteUrl: string
+  closingMessage: string
 }
