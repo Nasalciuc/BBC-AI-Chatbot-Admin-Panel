@@ -293,6 +293,9 @@ async def _pipeline(
             _event_loop,
         )
 
+    if metadata and metadata.get("site"):
+        entities["site"] = metadata["site"]
+
     _gen_fn = functools.partial(
         generate_response,
         intent=intent,
@@ -522,7 +525,12 @@ async def _pipeline(
             "visitor_phone": getattr(visitor, "phone", None),
         }
         if not _gmf(_fl or {}, _cc):
-            validated_text = settings.post_crm_closing_message
+            from app.ai.prompts import get_brand_vars
+
+            _site_closing = get_brand_vars(
+                metadata.get("site") if metadata else None
+            ).get("closing_message")
+            validated_text = _site_closing or settings.post_crm_closing_message
             logger.info(f"[{cid}] CRM closing replaces AI response")
 
     ai_msg = await conversation_service.add_message(

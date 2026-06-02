@@ -372,7 +372,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       const errMsg: Message = {
         id: `err-${Date.now()}`,
         role: 'system',
-        content: 'Something went wrong. Please try again or call +1 (888) 322-7999 for immediate help.',
+        content: `Something went wrong. Please try again or call ${brand.contactPhone} for immediate help.`,
         created_at: new Date().toISOString(),
       }
       setMessages(prev => [...prev, errMsg])
@@ -486,7 +486,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
                 padding: '6px 12px',
                 borderRadius: 16,
                 fontSize: 12,
-                border: '1.5px solid #800020',
+                border: `1.5px solid ${brand.brandColor}`,
                 background: '#fff',
                 color: '#0B1829',
                 cursor: 'pointer',
@@ -524,7 +524,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           disabled={!input.trim() || sending}
           style={{
             padding: '10px 16px', borderRadius: 10,
-            background: !input.trim() || sending ? '#d1d5db' : '#800020',
+            background: !input.trim() || sending ? '#d1d5db' : brand.brandColor,
             color: '#fff', border: 'none', cursor: !input.trim() || sending ? 'default' : 'pointer',
             fontWeight: 600, fontSize: 13, flexShrink: 0,
           }}
