@@ -21,7 +21,7 @@ const config: BrandConfig = {
   colors: {
     primary: '#800020',
     primaryRgb: '128,0,32',
-    header: '#1B2B44',
+    header: '#0B1829',
     headerText: '#FFFFFF',
     userBubble: '#800020',
     aiBubble: '#F5F0F2',
