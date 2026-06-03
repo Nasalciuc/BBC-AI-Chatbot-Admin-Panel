@@ -251,7 +251,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
 @router.post("/set-password")
 async def set_password(req: SetPasswordRequest, _rate: None = Depends(check_rate_limit)):
     """One-time invite token activation.
-    Token is valid only if unused and not expired (30m by default)."""
+    Token is valid only if unused and not expired (invite_link_expiry_minutes)."""
     token_row = await db.consume_valid_invite_token(req.token, purpose="set_password")
     if not token_row:
         raise HTTPException(400, "Invite link expired or invalid")

@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"
     admin_panel_url: str = "https://chat.buybusinessclass.com"
-    invite_link_expiry_minutes: int = 30
+    invite_link_expiry_minutes: int = 1440
     invite_link_path: str = "/set-password"
 
     @computed_field  # type: ignore[prop-decorator]
