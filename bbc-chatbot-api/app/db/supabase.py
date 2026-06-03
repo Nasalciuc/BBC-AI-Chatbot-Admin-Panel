@@ -1649,16 +1649,7 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     for conv in result.data:
         cid = conv["id"]
         try:
-            lead_res = await _run_sync(lambda cid=cid: (
-                db.table("leads")
-                .select("id, created_in_crm")
-                .eq("conversation_id", cid)
-                .limit(1)
-                .execute()
-            ))
-            if lead_res.data and lead_res.data[0].get("created_in_crm"):
-                continue
-
+            # CRM=true convs now handled by cron close-only path
             msg_res = await _run_sync(lambda cid=cid: (
                 db.table("messages")
                 .select("created_at")

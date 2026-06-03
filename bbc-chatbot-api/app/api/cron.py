@@ -51,7 +51,28 @@ async def process_abandoned_conversations(request: Request):
 
             lead = await get_or_create_lead(cid)
             if lead and lead.get("created_in_crm"):
-                results.append({"id": cid, "status": "skipped", "reason": "already_in_crm"})
+                # Close-only: CRM done but conv still active (zombie)
+                _meta = conv.get("metadata") or {}
+                _site = _meta.get("site")
+                from app.ai.prompts import get_brand_vars
+
+                _closing = get_brand_vars(_site).get("closing_message") or settings.post_crm_closing_message
+                _recent = await db.get_recent_messages(cid, limit=3)
+                _has_closing = any(
+                    "confirmed" in (m.get("content") or "").lower()
+                    for m in _recent
+                    if m.get("role") == "ai"
+                )
+                if not _has_closing:
+                    await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
+                await db.update_conversation(cid, {
+                    "status": "closed",
+                    "closed_at": datetime.now(timezone.utc).isoformat(),
+                    "mode": "ai",
+                    "assigned_agent_id": None,
+                })
+                logger.info(f"[cron][{cid}] Closed existing CRM lead ({name})")
+                results.append({"id": cid, "status": "closed_existing_crm", "name": name})
                 continue
 
             if not lead:
@@ -80,5 +101,7 @@ async def process_abandoned_conversations(request: Request):
             logger.error(f"[cron][{cid}] Error: {e}")
             results.append({"id": cid, "status": "error", "error": str(e)})
 
-    success_count = sum(1 for r in results if r["status"] == "success")
+    success_count = sum(
+        1 for r in results if r["status"] in ("success", "closed_existing_crm")
+    )
     return {"processed": len(results), "success": success_count, "results": results}
