@@ -179,7 +179,7 @@ def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, su
     if suid:
         _utm["suid"] = suid
 
-    return {
+    payload = {
         "trip_type": trip_type,
         "cabin_class": cabin_class,
         "client": {
@@ -197,6 +197,10 @@ def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, su
         "sms": False,
         **_utm,
     }
+    # BCT CRM requires recaptchaToken (any non-empty string accepted)
+    if (conv_metadata or {}).get("site") == "bct":
+        payload["recaptchaToken"] = "chatbot"
+    return payload
 
 
 async def submit_to_crm(
@@ -337,6 +341,10 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         _ab_suid = conv.get("visitor_id")
         if _ab_suid:
             payload["suid"] = _ab_suid
+
+        # BCT CRM requires recaptchaToken
+        if _ab_meta.get("site") == "bct":
+            payload["recaptchaToken"] = "chatbot"
 
         _ab_site = _ab_meta.get("site")
         _crm_base = _resolve_crm_base(_ab_site)
