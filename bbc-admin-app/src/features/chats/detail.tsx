@@ -659,6 +659,20 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
           )}
 
+          {(() => {
+            const site = conv?.metadata?.site as string | undefined
+            return site ? (
+              <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-500">Source</span>
+                  <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                    site === 'bbc' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                  }`}>{site.toUpperCase()}</span>
+                </div>
+              </div>
+            ) : null
+          })()}
+
           {/* Contact Card */}
           <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
             <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
