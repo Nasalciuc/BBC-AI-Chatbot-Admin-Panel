@@ -245,6 +245,35 @@ async def chat(
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
 
+    # Response cache check (Sprint 3)
+    from app.services.response_cache import get_cached, set_cached
+    from app.pipeline.intent import detect_intent
+
+    _cache_site = (_meta or {}).get("site", "bbc")
+    _cached_response = get_cached(clean_message, site=_cache_site, tunnel=req.tunnel)
+    if _cached_response and req.conversation_id:
+        await conversation_service.add_message(
+            conversation_id=req.conversation_id,
+            role="user",
+            content=clean_message,
+        )
+        await conversation_service.add_message(
+            conversation_id=req.conversation_id,
+            role="ai",
+            content=_cached_response,
+            model_used="cache",
+            cost=0.0,
+        )
+        logger.info(f"[{req.conversation_id}] Cache HIT — skipped pipeline")
+        return ChatResponse(
+            conversation_id=req.conversation_id,
+            message=_cached_response,
+            streaming=False,
+            type="ai",
+            model_used="cache",
+            cost=0.0,
+        )
+
     response = await process_message(
         conversation_id=req.conversation_id,
         message=clean_message,
@@ -253,6 +282,17 @@ async def chat(
         metadata=_meta or None,
         visitor_id=req.visitor_id,
     )
+
+    # Cache store for FAQ/greeting (Sprint 3) — skip streaming (message empty until SSE ends)
+    _result_intent = detect_intent(clean_message, _meta).value
+    if response.message and not response.streaming and _result_intent:
+        set_cached(
+            clean_message,
+            response.message,
+            _result_intent,
+            site=_cache_site,
+            tunnel=req.tunnel,
+        )
 
     return response
 

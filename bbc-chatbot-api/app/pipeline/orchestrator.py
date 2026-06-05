@@ -20,6 +20,20 @@ from app.realtime.manager import manager
 
 logger = logging.getLogger(__name__)
 
+# Background tasks that don't block the response
+_background_tasks: set = set()  # prevent garbage collection
+
+
+def _fire_and_forget(coro):
+    """Run coroutine in background without blocking pipeline."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(lambda t: (
+        _background_tasks.discard(t),
+        t.exception() and logger.warning(f"[bg] task failed: {t.exception()}"),
+    ))
+    return task
+
 
 async def process_message(
     conversation_id: Optional[str],
@@ -119,8 +133,11 @@ async def _pipeline(
     except Exception:
         pass
 
-    # Fetch history early — needed by Steps 3.5, 3.6, and 6
-    history = await db.get_recent_messages(cid, limit=10)
+    # Fetch history + lead row in parallel (independent DB calls)
+    history, _ = await asyncio.gather(
+        db.get_recent_messages(cid, limit=10),
+        lead_service.get_or_create_lead(cid),
+    )
     logger.info(f"[{cid}] [PERF] setup: {(time.perf_counter() - pipeline_start) * 1000:.0f}ms")
     t_section = time.perf_counter()
 
@@ -515,16 +532,17 @@ async def _pipeline(
         )
 
     # ── STEP 7.5: CRM closing replaces AI response (one message, not two) ──
+    _fl_crm: Optional[dict] = None
     if _crm_submitted_this_turn:
         from app.models.lead import get_missing_fields as _gmf
 
-        _fl = await lead_service.get_or_create_lead(cid)
+        _fl_crm = await lead_service.get_or_create_lead(cid)
         _cc = {
             "visitor_name": getattr(visitor, "name", None),
             "visitor_email": getattr(visitor, "email", None),
             "visitor_phone": getattr(visitor, "phone", None),
         }
-        if not _gmf(_fl or {}, _cc):
+        if not _gmf(_fl_crm or {}, _cc):
             from app.ai.prompts import get_brand_vars
 
             _site_closing = get_brand_vars(
@@ -552,13 +570,12 @@ async def _pipeline(
         try:
             from app.models.lead import get_missing_fields as _gmf2
 
-            _fl2 = await lead_service.get_or_create_lead(cid)
             _cc2 = {
                 "visitor_name": getattr(visitor, "name", None),
                 "visitor_email": getattr(visitor, "email", None),
                 "visitor_phone": getattr(visitor, "phone", None),
             }
-            if not _gmf2(_fl2 or {}, _cc2):
+            if not _gmf2(_fl_crm or {}, _cc2):
                 await db.update_conversation(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
@@ -572,7 +589,7 @@ async def _pipeline(
     # Record pipeline run (non-blocking, non-fatal)
     latency_ms = int((time.perf_counter() - pipeline_start) * 1000)
     if ai_msg_id:
-        await db.create_pipeline_run({
+        _fire_and_forget(db.create_pipeline_run({
             "message_id": ai_msg_id,
             "conversation_id": cid,
             "step_name": "orchestrator_v1",
@@ -586,30 +603,37 @@ async def _pipeline(
             "had_fallback": gen.model_used == "template" and intent not in (
                 Intent.GREETING, Intent.CLOSING, Intent.TALK_TO_AGENT
             ),
-        })
+        }))
 
     # ── Auto-summarize every 5 messages (after latency measurement) ──
-    try:
-        total_msgs = len(history) + 2
-        if total_msgs >= 5 and total_msgs % 5 == 0:
-            recent = await db.get_recent_messages(cid, limit=10)
-            if recent:
-                msg_text = "\n".join([
-                    f"{'Customer' if m.get('role')=='user' else 'Agent'}: {m.get('content','')}"
-                    for m in recent[-10:]
-                ])
-                summary_prompt = (
-                    "Summarize this business class flight booking conversation in "
-                    "exactly 2 sentences. Focus on: route, dates, passenger count, "
-                    "budget, and current status (browsing/interested/ready to book)."
-                )
-                from app.ai.claude import call_haiku as _summarize
-                summary_text, sum_cost = await asyncio.to_thread(_summarize, summary_prompt, msg_text)
-                if summary_text:
-                    await db.update_conversation(cid, {"summary": summary_text})
-                    logger.info(f"[{cid}] Summary updated ({total_msgs} msgs, cost=${sum_cost:.4f})")
-    except Exception as e:
-        logger.warning(f"[{cid}] Summary failed (non-fatal): {e}")
+    async def _run_summary():
+        try:
+            total_msgs = len(history) + 2
+            if total_msgs >= 5 and total_msgs % 5 == 0:
+                recent = await db.get_recent_messages(cid, limit=10)
+                if recent:
+                    msg_text = "\n".join([
+                        f"{'Customer' if m.get('role')=='user' else 'Agent'}: {m.get('content','')}"
+                        for m in recent[-10:]
+                    ])
+                    summary_prompt = (
+                        "Summarize this business class flight booking conversation in "
+                        "exactly 2 sentences. Focus on: route, dates, passenger count, "
+                        "budget, and current status (browsing/interested/ready to book)."
+                    )
+                    from app.ai.claude import call_haiku as _summarize
+                    summary_text, sum_cost = await asyncio.to_thread(
+                        _summarize, summary_prompt, msg_text
+                    )
+                    if summary_text:
+                        await db.update_conversation(cid, {"summary": summary_text})
+                        logger.info(
+                            f"[{cid}] Summary updated ({total_msgs} msgs, cost=${sum_cost:.4f})"
+                        )
+        except Exception as e:
+            logger.warning(f"[{cid}] Summary failed (non-fatal): {e}")
+
+    _fire_and_forget(_run_summary())
 
     resp_type = "template" if gen.model_used == "template" else "ai"
     logger.info(f"[{cid}] [PERF] deliver: {(time.perf_counter() - t_section) * 1000:.0f}ms")
