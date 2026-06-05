@@ -293,12 +293,52 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
     setMessages(prev => [...prev, optimisticMsg])
 
     try {
+      // Sprint 2: Pre-create conv for SSE streaming on first message
+      let activeConvId = convId
+      if (!activeConvId) {
+        try {
+          const initRes = await apiFetch(`${apiUrl}/api/chat/init`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tunnel,
+              visitor: {
+                name: visitor.name || null,
+                email: visitor.email || null,
+                phone: visitor.phone || null,
+                country_code: visitor.country_code || null,
+              },
+              metadata: metadata || {},
+              visitor_id: getVisitorId(),
+            }),
+          })
+          if (initRes.ok) {
+            const initData = await initRes.json()
+            const newConvId = initData.conversation_id as string
+            activeConvId = newConvId
+            setConvId(newConvId)
+            apiFetch(`${apiUrl}/api/chat/session/${newConvId}/open`, { method: 'POST' }).catch(() => {})
+            try { localStorage.setItem('bbc_conv_id', newConvId) } catch {}
+            try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
+            // Wait for SSE useEffect to fire and connect
+            await new Promise<void>((resolve) => {
+              const check = setInterval(() => {
+                clearInterval(check)
+                resolve()
+              }, 400)
+            })
+          }
+        } catch (e) {
+          console.warn('[bbc-widget] /init failed, falling back to direct POST', e)
+        }
+      }
+
       const res = await apiFetch(`${apiUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text,
-          conversation_id: convId,
+          conversation_id: activeConvId || convId,
           tunnel,
           visitor: {
             name: visitor.name || null,
@@ -343,14 +383,10 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.streaming) {
-        // Only enable streaming mode if SSE is already connected (existing conv).
-        // New conversations: SSE connects AFTER POST response → stream_end would be lost.
-        if (convId) {
+        if (activeConvId || convId) {
           setIsStreaming(true)
           isStreamingRef.current = true
         }
-        // New conv (no convId yet): skip streaming → finally does setSending(false)
-        // AI message arrives via catchUpPoll after SSE connects
       } else if (data.message && data.type !== 'queued') {
         const aiMsg: Message = {
           id: `ai-${Date.now()}`,
