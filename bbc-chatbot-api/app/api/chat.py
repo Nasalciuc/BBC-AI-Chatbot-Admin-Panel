@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from config.settings import settings
-from app.models.chat import ChatRequest, ChatResponse
+from app.models.chat import ChatRequest, ChatResponse, VisitorInfo
 from app.security.input_sanitizer import sanitize_message, is_suspicious
 from app.security.rate_limiter import check_rate_limit
 from app.pipeline.orchestrator import process_message
@@ -22,7 +22,7 @@ from app.db import supabase as db
 from app.realtime.manager import manager
 from app.services import conversation_service, lead_service
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.deps.ownership import require_visitor_ownership
 
@@ -34,6 +34,58 @@ class TypingBody(BaseModel):
 
 
 router = APIRouter()
+
+
+# --- Init endpoint: pre-create conversation for SSE pre-connect ---
+
+class ChatInitRequest(BaseModel):
+    tunnel: str = Field(default="sales", pattern="^(sales|support)$")
+    visitor: VisitorInfo = Field(default_factory=VisitorInfo)
+    metadata: Optional[dict] = None
+    visitor_id: Optional[str] = None
+
+
+class ChatInitResponse(BaseModel):
+    conversation_id: str
+
+
+@router.post("/chat/init", response_model=ChatInitResponse)
+async def chat_init(
+    payload: ChatInitRequest,
+    request: Request,
+    _rate: None = Depends(check_rate_limit),
+):
+    """Create conversation instantly for SSE pre-connect. No pipeline."""
+    _meta = dict(payload.metadata or {})
+    _client_ip = (
+        request.headers.get("cf-connecting-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "")
+    )
+    if _client_ip:
+        _meta.setdefault("client_ip", _client_ip)
+    _ua = request.headers.get("user-agent")
+    if _ua:
+        _meta.setdefault("user_agent", _ua)
+    _referer = request.headers.get("referer") or request.headers.get("referrer")
+    if _referer:
+        _meta.setdefault("referrer", _referer)
+    if payload.visitor_id:
+        _meta.setdefault("visitor_id", payload.visitor_id)
+
+    conv = await conversation_service.get_or_create_conversation(
+        conversation_id=None,
+        tunnel=payload.tunnel,
+        visitor=payload.visitor,
+        visitor_id=payload.visitor_id,
+        metadata=_meta or None,
+    )
+    if not conv or "id" not in conv:
+        raise HTTPException(status_code=500, detail="Failed to create conversation")
+
+    conv_id = conv["id"]
+    logger.info(f"[init] Conv {conv_id} created/found for SSE pre-connect")
+    return ChatInitResponse(conversation_id=conv_id)
 
 
 @router.post("/chat", response_model=ChatResponse)
