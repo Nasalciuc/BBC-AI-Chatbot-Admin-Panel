@@ -311,15 +311,18 @@ def stream_haiku_with_tools(
             final = stream.get_final_message()
 
         # Log prompt cache stats
-        if hasattr(final, 'usage') and final.usage:
-            _u = final.usage
-            _cache_create = getattr(_u, 'cache_creation_input_tokens', 0) or 0
-            _cache_read = getattr(_u, 'cache_read_input_tokens', 0) or 0
-            if _cache_create or _cache_read:
-                logger.info(
-                    f"[CACHE] create={_cache_create} read={_cache_read} "
-                    f"input={getattr(_u, 'input_tokens', 0)}"
-                )
+        try:
+            _usage = getattr(final, 'usage', None)
+            if _usage:
+                _cc = getattr(_usage, 'cache_creation_input_tokens', 0) or 0
+                _cr = getattr(_usage, 'cache_read_input_tokens', 0) or 0
+                if _cc or _cr:
+                    logger.info(
+                        f"[CACHE] create={_cc} read={_cr} "
+                        f"input={getattr(_usage, 'input_tokens', 0)}"
+                    )
+        except Exception:
+            pass  # Non-critical logging
 
         elapsed = round(time.time() - start, 3)
         cost = _estimate_cost(
@@ -381,6 +384,20 @@ def stream_sonnet(
                     on_chunk(text_chunk)
 
             final = stream.get_final_message()
+
+        # Log prompt cache stats
+        try:
+            _usage = getattr(final, 'usage', None)
+            if _usage:
+                _cc = getattr(_usage, 'cache_creation_input_tokens', 0) or 0
+                _cr = getattr(_usage, 'cache_read_input_tokens', 0) or 0
+                if _cc or _cr:
+                    logger.info(
+                        f"[CACHE] create={_cc} read={_cr} "
+                        f"input={getattr(_usage, 'input_tokens', 0)}"
+                    )
+        except Exception:
+            pass  # Non-critical logging
 
         cost = _estimate_cost(model, final.usage.input_tokens, final.usage.output_tokens)
         logger.info(
