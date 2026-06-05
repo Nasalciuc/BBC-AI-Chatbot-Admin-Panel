@@ -194,29 +194,6 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
         from { opacity: 0; transform: translateY(6px); }
         to   { opacity: 1; transform: translateY(0); }
       }
-      @keyframes bbc-thinking-dot {
-        0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-        40% { opacity: 1; transform: scale(1); }
-      }
-      .bbc-thinking-bubble {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        padding: 12px 16px;
-        background: #f0f0f0;
-        border-radius: 12px;
-        width: fit-content;
-        margin: 4px 0;
-      }
-      .bbc-thinking-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #999;
-        animation: bbc-thinking-dot 1.4s infinite;
-      }
-      .bbc-thinking-dot:nth-child(2) { animation-delay: 0.2s; }
-      .bbc-thinking-dot:nth-child(3) { animation-delay: 0.4s; }
     `
     document.head.appendChild(style)
     // Nu facem cleanup — keyframes rămân pe tot parcursul sesiunii

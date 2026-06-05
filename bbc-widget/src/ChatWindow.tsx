@@ -406,6 +406,12 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
       boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
       zIndex: 2147483000, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     }}>
+      <style>{`
+        @keyframes bbcDot {
+          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+          40% { opacity: 1; transform: scale(1); }
+        }
+      `}</style>
       <div style={{
         background: 'var(--bbc-header)', color: 'var(--bbc-header-text)', padding: '14px 18px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
@@ -457,11 +463,33 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
           </div>
         ))}
         {sending && !streamingText && !isStreaming && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 4 }}>
-            <div className="bbc-thinking-bubble">
-              <span className="bbc-thinking-dot" />
-              <span className="bbc-thinking-dot" />
-              <span className="bbc-thinking-dot" />
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 4, paddingLeft: 8 }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '12px 16px',
+              background: '#f0f0f0',
+              borderRadius: 12,
+              width: 'fit-content',
+            }}>
+              {[0, 1, 2].map(i => (
+                <span
+                  key={i}
+                  ref={el => { if (el) {
+                    el.style.animation = 'none'
+                    el.offsetHeight // reflow
+                    el.style.animation = `bbcDot 1.4s ${i * 0.2}s infinite`
+                  }}}
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: '#999',
+                    display: 'inline-block',
+                  }}
+                />
+              ))}
             </div>
           </div>
         )}
