@@ -64,7 +64,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   // Scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length, streamingText])
+  }, [messages.length, streamingText, sending])
 
   // Send first greeting — SKIP if restored session
   useEffect(() => {
@@ -456,6 +456,15 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             </div>
           </div>
         ))}
+        {sending && !streamingText && !isStreaming && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 4 }}>
+            <div className="bbc-thinking-bubble">
+              <span className="bbc-thinking-dot" />
+              <span className="bbc-thinking-dot" />
+              <span className="bbc-thinking-dot" />
+            </div>
+          </div>
+        )}
         {streamingText && (
           <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
             <div style={{
