@@ -310,6 +310,17 @@ def stream_haiku_with_tools(
 
             final = stream.get_final_message()
 
+        # Log prompt cache stats
+        if hasattr(final, 'usage') and final.usage:
+            _u = final.usage
+            _cache_create = getattr(_u, 'cache_creation_input_tokens', 0) or 0
+            _cache_read = getattr(_u, 'cache_read_input_tokens', 0) or 0
+            if _cache_create or _cache_read:
+                logger.info(
+                    f"[CACHE] create={_cache_create} read={_cache_read} "
+                    f"input={getattr(_u, 'input_tokens', 0)}"
+                )
+
         elapsed = round(time.time() - start, 3)
         cost = _estimate_cost(
             model, final.usage.input_tokens, final.usage.output_tokens
