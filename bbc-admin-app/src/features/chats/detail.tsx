@@ -674,80 +674,76 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           })()}
 
           {/* Acquisition Details Card */}
-          {conv?.metadata && (conv.metadata.utm_source || conv.metadata.gclid || conv.metadata.fbclid || conv.metadata.referrer || conv.metadata.page_url) && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
-                <Globe className="w-3.5 h-3.5" />
-                Acquisition Details
+          {conv?.metadata && (() => {
+            const m = conv.metadata as Record<string, string>
+            if (!m.utm_source && !m.gclid && !m.fbclid && !m.referrer && !m.page_url) return null
+            return (
+              <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+                  <Globe className="w-3.5 h-3.5" />
+                  Acquisition Details
+                </div>
+                <div className="space-y-1.5 text-xs">
+                  {m.utm_source && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Source</span>
+                      <span className="text-gray-700 font-medium">{m.utm_source}</span>
+                    </div>
+                  )}
+                  {m.utm_medium && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Medium</span>
+                      <span className="text-gray-700 font-medium">{m.utm_medium}</span>
+                    </div>
+                  )}
+                  {m.utm_campaign && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Campaign</span>
+                      <span className="text-gray-700 truncate max-w-[160px]" title={m.utm_campaign}>{m.utm_campaign}</span>
+                    </div>
+                  )}
+                  {m.utm_term && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Keyword</span>
+                      <span className="text-gray-700 truncate max-w-[160px]" title={m.utm_term}>{m.utm_term}</span>
+                    </div>
+                  )}
+                  {m.gclid && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Google Ads</span>
+                      <span className="text-green-600 font-medium">✓ gclid</span>
+                    </div>
+                  )}
+                  {m.fbclid && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Facebook Ads</span>
+                      <span className="text-blue-600 font-medium">✓ fbclid</span>
+                    </div>
+                  )}
+                  {m.referrer && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Referrer</span>
+                      <span className="text-gray-700 truncate max-w-[160px]">
+                        {(() => { try { return new URL(m.referrer).hostname } catch { return m.referrer } })()}
+                      </span>
+                    </div>
+                  )}
+                  {m.page_url && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Landing</span>
+                      <span className="text-gray-700 truncate max-w-[160px]">{m.page_url.replace(/^https?:\/\/[^/]+/, '') || '/'}</span>
+                    </div>
+                  )}
+                  {m.google_analytics_client_id && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">GA Client</span>
+                      <span className="text-gray-700 truncate max-w-[120px]">{m.google_analytics_client_id}</span>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="space-y-1.5 text-xs">
-                {conv.metadata.utm_source && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Source</span>
-                    <span className="text-gray-700 font-medium">{conv.metadata.utm_source as string}</span>
-                  </div>
-                )}
-                {conv.metadata.utm_medium && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Medium</span>
-                    <span className="text-gray-700 font-medium">{conv.metadata.utm_medium as string}</span>
-                  </div>
-                )}
-                {conv.metadata.utm_campaign && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Campaign</span>
-                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.utm_campaign as string}>
-                      {conv.metadata.utm_campaign as string}
-                    </span>
-                  </div>
-                )}
-                {conv.metadata.utm_term && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Keyword</span>
-                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.utm_term as string}>
-                      {conv.metadata.utm_term as string}
-                    </span>
-                  </div>
-                )}
-                {conv.metadata.gclid && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Google Ads</span>
-                    <span className="text-green-600 font-medium">✓ gclid</span>
-                  </div>
-                )}
-                {conv.metadata.fbclid && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Facebook Ads</span>
-                    <span className="text-blue-600 font-medium">✓ fbclid</span>
-                  </div>
-                )}
-                {conv.metadata.referrer && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Referrer</span>
-                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.referrer as string}>
-                      {(() => { try { return new URL(conv.metadata.referrer as string).hostname } catch { return conv.metadata.referrer as string } })()}
-                    </span>
-                  </div>
-                )}
-                {conv.metadata.page_url && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Landing</span>
-                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.page_url as string}>
-                      {(conv.metadata.page_url as string).replace(/^https?:\/\/[^/]+/, '') || '/'}
-                    </span>
-                  </div>
-                )}
-                {conv.metadata.google_analytics_client_id && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">GA Client</span>
-                    <span className="text-gray-700 truncate max-w-[120px]" title={conv.metadata.google_analytics_client_id as string}>
-                      {conv.metadata.google_analytics_client_id as string}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+            )
+          })()}
 
           {/* Contact Card */}
           <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
