@@ -256,6 +256,13 @@ async def claim_conversation(
         tunnel=conv.get("tunnel", "sales"),
         emit_messages=False,
     )
+
+    # Reset loop guards — agent chose this conv actively
+    _meta = dict((conv.get("metadata") or {}))
+    _meta.pop("agent_assign_count", None)
+    _meta.pop("agent_cooldown_until", None)
+    await db.update_conversation(conversation_id, {"metadata": _meta})
+
     return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": user.get("id")}}
 
 

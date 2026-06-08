@@ -188,15 +188,29 @@ async def get_handoff_response(
 
 async def fall_back_to_ai(conversation_id: str) -> None:
     """Revert a human-mode conversation back to AI.
-    Clears agent assignment, sets mode='ai', and emits a system message."""
+    Clears agent assignment, sets mode='ai', and emits a system message.
+    Sets a 15-min cooldown + increments agent_assign_count to prevent
+    infinite reassign loops."""
+    # Fetch current metadata to merge loop-guard fields
+    _conv = await db.get_conversation_simple(conversation_id)
+    _meta = dict((_conv or {}).get("metadata") or {})
+    _assign_count = int(_meta.get("agent_assign_count", 0))
+    _cooldown = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    _meta["agent_cooldown_until"] = _cooldown
+    _meta["agent_assign_count"] = _assign_count  # preserved; incremented at assign time
+
     await db.update_conversation(conversation_id, {
         "mode": "ai",
         "assigned_agent_id": None,
+        "metadata": _meta,
     })
     msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
     if msg:
         await manager.push(conversation_id, msg)
-    logger.info(f"[handoff] Conv {conversation_id}: agent offline → fell back to AI")
+    logger.info(
+        f"[handoff] Conv {conversation_id}: agent offline → fell back to AI "
+        f"(assign_count={_assign_count}, cooldown=15min)"
+    )
 
 
 # ── H3: Unified handoff to agent ─────────────────────────────
