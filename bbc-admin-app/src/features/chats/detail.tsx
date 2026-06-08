@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
-  Plane, Calendar, Users, FileText, TrendingUp, Clock,
+  Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe,
 } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
@@ -671,6 +671,78 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </div>
               </div>
             ) : null
+          })()}
+
+          {/* Acquisition Details Card */}
+          {conv?.metadata && (() => {
+            const m = conv.metadata as Record<string, string>
+            if (!m.utm_source && !m.gclid && !m.fbclid && !m.referrer && !m.page_url) return null
+            return (
+              <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+                  <Globe className="w-3.5 h-3.5" />
+                  Acquisition Details
+                </div>
+                <div className="space-y-1.5 text-xs">
+                  {m.utm_source && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Source</span>
+                      <span className="text-gray-700 font-medium">{m.utm_source}</span>
+                    </div>
+                  )}
+                  {m.utm_medium && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Medium</span>
+                      <span className="text-gray-700 font-medium">{m.utm_medium}</span>
+                    </div>
+                  )}
+                  {m.utm_campaign && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Campaign</span>
+                      <span className="text-gray-700 truncate max-w-[160px]" title={m.utm_campaign}>{m.utm_campaign}</span>
+                    </div>
+                  )}
+                  {m.utm_term && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Keyword</span>
+                      <span className="text-gray-700 truncate max-w-[160px]" title={m.utm_term}>{m.utm_term}</span>
+                    </div>
+                  )}
+                  {m.gclid && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Google Ads</span>
+                      <span className="text-green-600 font-medium">✓ gclid</span>
+                    </div>
+                  )}
+                  {m.fbclid && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Facebook Ads</span>
+                      <span className="text-blue-600 font-medium">✓ fbclid</span>
+                    </div>
+                  )}
+                  {m.referrer && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Referrer</span>
+                      <span className="text-gray-700 truncate max-w-[160px]">
+                        {(() => { try { return new URL(m.referrer).hostname } catch { return m.referrer } })()}
+                      </span>
+                    </div>
+                  )}
+                  {m.page_url && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Landing</span>
+                      <span className="text-gray-700 truncate max-w-[160px]">{m.page_url.replace(/^https?:\/\/[^/]+/, '') || '/'}</span>
+                    </div>
+                  )}
+                  {m.google_analytics_client_id && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">GA Client</span>
+                      <span className="text-gray-700 truncate max-w-[120px]">{m.google_analytics_client_id}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
           })()}
 
           {/* Contact Card */}
