@@ -73,6 +73,30 @@ async def _assign_pending_conversations(
             if _recent_fallback_system_message(last_sys):
                 continue
 
+            # Anti-loop guard: skip if max auto-assigns reached or cooldown active
+            from datetime import datetime, timezone
+            _conv_meta = (conv_data or {}).get("metadata") or {}
+            _assign_count = int(_conv_meta.get("agent_assign_count", 0))
+            if _assign_count >= 3:
+                logger.info(
+                    f"[heartbeat] Skip conv {conv_id} — max auto-assigns reached "
+                    f"({_assign_count}). Manual claim required."
+                )
+                continue
+
+            _cooldown_str = _conv_meta.get("agent_cooldown_until")
+            if _cooldown_str:
+                try:
+                    _cooldown_until = datetime.fromisoformat(_cooldown_str)
+                    if datetime.now(timezone.utc) < _cooldown_until:
+                        logger.info(
+                            f"[heartbeat] Skip conv {conv_id} — cooldown active "
+                            f"until {_cooldown_str}"
+                        )
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
             # Use handoff service for the assignment (mode + agent_id),
             # but skip its system messages — heartbeat uses different templates.
             from app.services.handoff import perform_handoff_to_agent, _safe_system_msg
@@ -83,6 +107,12 @@ async def _assign_pending_conversations(
                 tunnel=t,
                 emit_messages=False,
             )
+
+            # Increment assignment counter (clear cooldown — now active)
+            _new_count = _assign_count + 1
+            _updated_meta = {**_conv_meta, "agent_assign_count": _new_count}
+            _updated_meta.pop("agent_cooldown_until", None)
+            await db.update_conversation(conv_id, {"metadata": _updated_meta})
 
             # Heartbeat-specific system messages (different wording from initial routing)
             from app.realtime.manager import manager
@@ -105,7 +135,7 @@ async def _assign_pending_conversations(
 
             logger.info(
                 f"[heartbeat-assign] Conv {conv_id} → {user_id} "
-                f"({agent_name}), SSE pushed"
+                f"({agent_name}), SSE pushed, assign_count={_new_count}"
             )
             return 1
     return 0
