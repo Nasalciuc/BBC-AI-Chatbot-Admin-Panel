@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
-  Plane, Calendar, Users, FileText, TrendingUp, Clock,
+  Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe,
 } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
 import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
@@ -672,6 +672,82 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               </div>
             ) : null
           })()}
+
+          {/* Acquisition Details Card */}
+          {conv?.metadata && (conv.metadata.utm_source || conv.metadata.gclid || conv.metadata.fbclid || conv.metadata.referrer || conv.metadata.page_url) && (
+            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+                <Globe className="w-3.5 h-3.5" />
+                Acquisition Details
+              </div>
+              <div className="space-y-1.5 text-xs">
+                {conv.metadata.utm_source && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Source</span>
+                    <span className="text-gray-700 font-medium">{conv.metadata.utm_source as string}</span>
+                  </div>
+                )}
+                {conv.metadata.utm_medium && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Medium</span>
+                    <span className="text-gray-700 font-medium">{conv.metadata.utm_medium as string}</span>
+                  </div>
+                )}
+                {conv.metadata.utm_campaign && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Campaign</span>
+                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.utm_campaign as string}>
+                      {conv.metadata.utm_campaign as string}
+                    </span>
+                  </div>
+                )}
+                {conv.metadata.utm_term && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Keyword</span>
+                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.utm_term as string}>
+                      {conv.metadata.utm_term as string}
+                    </span>
+                  </div>
+                )}
+                {conv.metadata.gclid && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Google Ads</span>
+                    <span className="text-green-600 font-medium">✓ gclid</span>
+                  </div>
+                )}
+                {conv.metadata.fbclid && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Facebook Ads</span>
+                    <span className="text-blue-600 font-medium">✓ fbclid</span>
+                  </div>
+                )}
+                {conv.metadata.referrer && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Referrer</span>
+                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.referrer as string}>
+                      {(() => { try { return new URL(conv.metadata.referrer as string).hostname } catch { return conv.metadata.referrer as string } })()}
+                    </span>
+                  </div>
+                )}
+                {conv.metadata.page_url && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Landing</span>
+                    <span className="text-gray-700 truncate max-w-[160px]" title={conv.metadata.page_url as string}>
+                      {(conv.metadata.page_url as string).replace(/^https?:\/\/[^/]+/, '') || '/'}
+                    </span>
+                  </div>
+                )}
+                {conv.metadata.google_analytics_client_id && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">GA Client</span>
+                    <span className="text-gray-700 truncate max-w-[120px]" title={conv.metadata.google_analytics_client_id as string}>
+                      {conv.metadata.google_analytics_client_id as string}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Contact Card */}
           <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
