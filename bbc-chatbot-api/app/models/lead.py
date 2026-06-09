@@ -14,7 +14,7 @@ def get_lead_tier(score: int) -> str:
     return "bronze"
 
 
-def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None) -> list[str]:
+def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for_crm: bool = False) -> list[str]:
     """Return list of travel fields the AI should collect next.
 
     Contact info (name/email/phone) checked via conv_dict (from visitor form).
@@ -50,13 +50,16 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None) -> lis
     # Priority: travel data first (contact usually from form)
     if not has_route:
         missing.append("route (origin and destination)")
-    if not has_departure:
-        missing.append("departure date")
-    if has_departure and not has_return_or_oneway:
-        missing.append("return date or one-way confirmation")
-    # Passengers required for pipeline CRM (cron abandoned bypasses this gate)
-    if not has_passengers:
-        missing.append("number of travelers (adults, children, infants)")
+    if not for_crm:
+        # Strict mode: AI prompts need all fields for collection
+        if not has_departure:
+            missing.append("departure date")
+        if has_departure and not has_return_or_oneway:
+            missing.append("return date or one-way confirmation")
+        if not has_passengers:
+            missing.append("number of travelers (adults, children, infants)")
+    # CRM mode (for_crm=True): route + contact is sufficient
+    # departure/passengers/trip_type → defaults in build_crm_payload
     # Contact info — only if NOT provided via form
     if not has_name:
         missing.append("name")
