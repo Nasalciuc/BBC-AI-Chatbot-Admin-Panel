@@ -87,11 +87,10 @@ def format_date_iso(date_str) -> str:
 
 
 def check_crm_ready(lead: dict, visitor) -> bool:
-    """Check if we have ALL required fields for CRM submission.
+    """Check if we have enough fields for CRM submission.
 
-    Uses get_missing_fields as single source of truth — same logic
-    that drives the AI's "Still needed" display in VISITOR CONTEXT.
-    CRM submits ONLY when the AI has nothing left to collect.
+    Uses get_missing_fields(for_crm=True): route + contact only.
+    AI prompts use strict mode (for_crm=False) and keep collecting dates/pax.
     """
     from app.models.lead import get_missing_fields
 
@@ -101,7 +100,7 @@ def check_crm_ready(lead: dict, visitor) -> bool:
         "visitor_phone": getattr(visitor, "phone", None),
     }
 
-    missing = get_missing_fields(lead, conv)
+    missing = get_missing_fields(lead, conv, for_crm=True)
     return len(missing) == 0
 
 
@@ -109,7 +108,11 @@ def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, su
     """Build CRM API request body from lead + visitor data."""
     origin = (lead.get("origin_code") or "").upper()
     dest = (lead.get("destination_code") or "").upper()
-    departure = format_date_iso(lead.get("departure_date"))
+    _dep = lead.get("departure_date")
+    if not _dep:
+        _dep = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+        logger.info(f"CRM payload: departure_date defaulted to {_dep} (+30d)")
+    departure = format_date_iso(_dep)
     return_date = lead.get("return_date")
 
     trip_type = lead.get("trip_type") or ("round_trip" if return_date else "one_way")

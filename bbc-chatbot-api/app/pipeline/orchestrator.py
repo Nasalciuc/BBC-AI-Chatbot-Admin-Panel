@@ -472,6 +472,7 @@ async def _pipeline(
                         "visitor_email": getattr(visitor, "email", None),
                         "visitor_phone": getattr(visitor, "phone", None),
                     },
+                    for_crm=True,
                 )
                 logger.warning(f"[{cid}] CRM skip: missing={_miss}")
             else:
@@ -542,7 +543,7 @@ async def _pipeline(
             "visitor_email": getattr(visitor, "email", None),
             "visitor_phone": getattr(visitor, "phone", None),
         }
-        if not _gmf(_fl_crm or {}, _cc):
+        if not _gmf(_fl_crm or {}, _cc, for_crm=True):
             from app.ai.prompts import get_brand_vars
 
             _site_closing = get_brand_vars(
@@ -575,7 +576,7 @@ async def _pipeline(
                 "visitor_email": getattr(visitor, "email", None),
                 "visitor_phone": getattr(visitor, "phone", None),
             }
-            if not _gmf2(_fl_crm or {}, _cc2):
+            if not _gmf2(_fl_crm or {}, _cc2, for_crm=True):
                 await db.update_conversation(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
