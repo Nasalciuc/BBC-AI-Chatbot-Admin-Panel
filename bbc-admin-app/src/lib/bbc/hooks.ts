@@ -28,7 +28,7 @@ function getPermissions(role: UserRole): Permissions {
       }
     case 'sales':
       return {
-        canViewLeads: true, canEditLeads: false, canViewAllConversations: false,
+        canViewLeads: false, canEditLeads: false, canViewAllConversations: false,
         canReadMessages: true, canReassignConversations: false,
         canViewUsers: false, canEditUsers: false, canEditKB: false, canViewKB: true,
         canProposeKBChanges: true, canViewIntegrations: false, canEditSettings: false,
