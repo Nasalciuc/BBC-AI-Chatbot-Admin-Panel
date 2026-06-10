@@ -32,6 +32,8 @@ async def list_leads(
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
+    if user.get("role") not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Leads access restricted to admin/owner")
     try:
         tunnel = _enforce_tunnel(user, tunnel)
 
