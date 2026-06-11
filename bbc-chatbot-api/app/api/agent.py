@@ -1,6 +1,6 @@
 """Agent presence — heartbeat endpoint."""
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -26,6 +26,42 @@ def _recent_fallback_system_message(last_sys: dict | None) -> bool:
         return False
 
 
+async def _enforce_response_deadline() -> int:
+    """Fall back conversations where the assigned agent never sent a message within
+    agent_silent_timeout_seconds of assignment (checked via agent_assigned_at metadata).
+
+    Covers agents who ARE online but simply never engaged — the stale-heartbeat pass
+    only catches agents who went offline. 73% zero-response rate (30d audit Jun 2026).
+
+    Returns number of conversations fallen back."""
+    from config.settings import settings
+    from app.services.handoff import fall_back_to_ai
+
+    convs = await db.get_active_human_conversations()
+    count = 0
+    now = datetime.now(timezone.utc)
+    deadline = timedelta(seconds=settings.agent_silent_timeout_seconds)
+    for conv in convs:
+        meta = conv.get("metadata") or {}
+        assigned_at_raw = meta.get("agent_assigned_at")
+        if not assigned_at_raw:
+            continue  # pre-PR3 assignment: stale cleanup covers it
+        try:
+            assigned_at = datetime.fromisoformat(
+                assigned_at_raw.replace("Z", "+00:00")
+                if isinstance(assigned_at_raw, str) else assigned_at_raw
+            )
+        except (ValueError, TypeError):
+            continue
+        if now - assigned_at < deadline:
+            continue  # still within deadline
+        if await db.has_agent_message_since(conv["id"], assigned_at_raw):
+            continue  # agent engaged — stale cleanup owns this conv now
+        await fall_back_to_ai(conv["id"])
+        count += 1
+    return count
+
+
 async def _cleanup_stale_conversations() -> int:
     """Revert conversations from offline agents back to AI mode.
     Called on every heartbeat — each online agent helps clean up."""
@@ -40,8 +76,11 @@ async def _cleanup_stale_conversations() -> int:
             continue
         await fall_back_to_ai(conv_id)
         count += 1
-    return count
 
+    # Second pass: agents who are ONLINE but never engaged within the deadline.
+    # (Stale pass only catches offline agents; this catches silent-but-online ones.)
+    count += await _enforce_response_deadline()
+    return count
 
 
 async def _assign_pending_conversations(
@@ -50,15 +89,15 @@ async def _assign_pending_conversations(
     agent_name: str = "A specialist",
 ) -> int:
     """If agent is idle (0 active convs), auto-assign oldest unassigned AI conv.
-    Sends system messages + SSE push to notify widget of the handoff."""
+    Silent reservation: visitor sees nothing until the agent actually speaks."""
     from config.settings import settings
     count = await db.get_agent_active_count(user_id)
     if count >= settings.max_concurrent_chats:
         return 0
     tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
     for t in tunnels:
-        conv = await db.get_oldest_unassigned_conversation(t)
-        if conv:
+        candidates = await db.get_oldest_unassigned_conversations(t)
+        for conv in candidates:
             conv_id = conv["id"]
 
             conv_data = await db.get_conversation(conv_id)
@@ -73,9 +112,20 @@ async def _assign_pending_conversations(
             if _recent_fallback_system_message(last_sys):
                 continue
 
+            _conv_meta = (conv_data or {}).get("metadata") or {}
+
+            # 1.2 — Presence predicate: skip if visitor left the page.
+            # Candidate list (limit 5) prevents a dead conv from blocking the queue.
+            if _conv_meta.get("widget_presence") == "left":
+                continue
+
+            # 1.4 — Sticky ownership: return conv only to its owner.
+            _sticky = _conv_meta.get("sticky_agent_id")
+            if _sticky and _sticky != user_id:
+                continue
+
             # Anti-loop guard: skip if max auto-assigns reached or cooldown active
             from datetime import datetime, timezone
-            _conv_meta = (conv_data or {}).get("metadata") or {}
             _assign_count = int(_conv_meta.get("agent_assign_count", 0))
             if _assign_count >= 3:
                 logger.info(
@@ -97,36 +147,23 @@ async def _assign_pending_conversations(
                 except (ValueError, TypeError):
                     pass
 
-            # Use handoff service for the assignment (mode + agent_id),
-            # but skip its system messages — heartbeat uses different templates.
-            from app.services.handoff import perform_handoff_to_agent, _safe_system_msg
+            # 1.3 — Silent reservation: perform_handoff sets announce_pending=True.
+            # "X has joined" fires only when the agent sends their first real message.
+            from app.services.handoff import perform_handoff_to_agent
+            _new_count = _assign_count + 1
             await perform_handoff_to_agent(
                 conversation_id=conv_id,
                 agent_id=user_id,
                 agent_name=agent_name,
                 tunnel=t,
                 emit_messages=False,
+                handoff_reason="auto_assign",
+                _extra_meta={"agent_assign_count": _new_count},
             )
-
-            # Increment assignment counter (clear cooldown — now active)
-            _new_count = _assign_count + 1
-            _updated_meta = {**_conv_meta, "agent_assign_count": _new_count}
-            _updated_meta.pop("agent_cooldown_until", None)
-            await db.update_conversation(conv_id, {"metadata": _updated_meta})
-
-            # Heartbeat-specific system message (join notification only — no welcome prompt)
-            from app.realtime.manager import manager
-
-            joined = settings.heartbeat_joined_template.format(agent_name=agent_name)
-            row1 = await _safe_system_msg(conv_id, joined, cooldown_seconds=60)
-
-            # Push to SSE stream — no-op if widget not currently connected
-            if row1:
-                await manager.push(conv_id, row1)
 
             logger.info(
                 f"[heartbeat-assign] Conv {conv_id} → {user_id} "
-                f"({agent_name}), SSE pushed, assign_count={_new_count}"
+                f"({agent_name}), silent reservation, assign_count={_new_count}"
             )
             return 1
     return 0

@@ -366,6 +366,7 @@ async def _pipeline(
                     agent_name=route_result.get("agent_name", "A specialist"),
                     tunnel=tunnel,
                     emit_messages=True,
+                    handoff_reason="visitor_request",
                 )
                 gen = GeneratedResponse(
                     text=(
