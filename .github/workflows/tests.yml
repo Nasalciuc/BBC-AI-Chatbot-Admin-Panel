@@ -1,0 +1,30 @@
+name: Backend Tests
+on:
+  pull_request:
+    paths:
+      - "bbc-chatbot-api/**"
+  push:
+    branches:
+      - master
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: bbc-chatbot-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest
+        env:
+          SUPABASE_URL: "https://dummy.supabase.co"
+          SUPABASE_KEY: "dummy-key-for-ci"
+          ANTHROPIC_API_KEY: ""
+          JWT_SECRET: "ci-dummy-secret"
