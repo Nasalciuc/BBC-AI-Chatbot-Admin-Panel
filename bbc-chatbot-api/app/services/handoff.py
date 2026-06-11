@@ -88,8 +88,7 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
 
 
 _FALLBACK_MSG = (
-    "Your specialist is no longer available. "
-    "I'll continue assisting you — how can I help?"
+    "Sorry for the wait — I'm here and we can pick up right where we left off."
 )
 
 
@@ -125,7 +124,6 @@ async def _handoff_phrase_recently_sent(conversation_id: str, lookback: int = 8)
             "specialist",
             "reach out",
             "contact you",
-            "no longer available",
             "connect you",
             "one moment",
         )

@@ -15,7 +15,7 @@ _HANDOFF_COOLDOWN_SECONDS = 120
 
 def _recent_fallback_system_message(last_sys: dict | None) -> bool:
     """True if the last system message is a recent specialist-unavailable fallback."""
-    if not last_sys or "no longer available" not in (last_sys.get("content") or ""):
+    if not last_sys or "right where we left off" not in (last_sys.get("content") or ""):
         return False
     try:
         msg_time = datetime.fromisoformat(last_sys["created_at"].replace("Z", "+00:00"))
@@ -114,24 +114,15 @@ async def _assign_pending_conversations(
             _updated_meta.pop("agent_cooldown_until", None)
             await db.update_conversation(conv_id, {"metadata": _updated_meta})
 
-            # Heartbeat-specific system messages (different wording from initial routing)
+            # Heartbeat-specific system message (join notification only — no welcome prompt)
             from app.realtime.manager import manager
 
             joined = settings.heartbeat_joined_template.format(agent_name=agent_name)
-            welcome = (
-                settings.heartbeat_welcome_sales
-                if conv.get("tunnel") == "sales"
-                else settings.heartbeat_welcome_support
-            )
-
             row1 = await _safe_system_msg(conv_id, joined, cooldown_seconds=60)
-            row2 = await _safe_system_msg(conv_id, welcome, cooldown_seconds=60)
 
             # Push to SSE stream — no-op if widget not currently connected
             if row1:
                 await manager.push(conv_id, row1)
-            if row2:
-                await manager.push(conv_id, row2)
 
             logger.info(
                 f"[heartbeat-assign] Conv {conv_id} → {user_id} "
