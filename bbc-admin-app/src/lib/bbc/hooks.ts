@@ -4,7 +4,7 @@
 import { useMemo } from 'react'
 import type { UserRole, Permissions } from './types'
 
-function getPermissions(role: UserRole): Permissions {
+export function getPermissions(role: UserRole): Permissions {
   switch (role) {
     case 'owner':
     case 'admin':

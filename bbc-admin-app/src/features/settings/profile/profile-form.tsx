@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { updateUser } from '@/lib/api'
+import { updateSelf } from '@/lib/api'
 import { BBCAvatar } from '@/components/bbc-avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -52,22 +52,26 @@ export function ProfileForm() {
   const avatarUrl = form.watch('avatar_url')
 
   const onSubmit = async (values: ProfileFormValues) => {
-    if (!auth.user?.accountNo) {
+    if (!auth.user) {
       toast.error('No user session — please log in again')
       return
     }
     try {
-      await updateUser(auth.user.accountNo, {
+      const response = await updateSelf({
         name: values.name,
-        ...(values.phone ? { phone: values.phone } : {}),
-        avatar_url: values.avatar_url || null,
+        phone: values.phone ?? '',
+        avatar_url: values.avatar_url ?? '',
       })
-      // Update local auth store so header reflects change immediately
+      auth.setAccessToken(response.token)
       auth.setUser({
-        ...auth.user,
-        name: values.name,
-        phone: values.phone || auth.user.phone,
-        avatar_url: values.avatar_url || null,
+        accountNo: response.user.id,
+        email: response.user.email,
+        name: response.user.name || '',
+        role: response.user.role || auth.user.role,
+        tunnelScope: response.user.tunnel_scope || auth.user.tunnelScope,
+        exp: Date.now() + 24 * 60 * 60 * 1000,
+        avatar_url: response.user.avatar_url ?? null,
+        phone: response.user.phone ?? '',
       })
       toast.success('Profile saved')
     } catch (err) {

@@ -36,6 +36,7 @@ export const Route = createFileRoute('/_authenticated')({
         tunnelScope: (claims.tunnel_scope as string) || '',
         exp: typeof claims.exp === 'number' ? claims.exp * 1000 : Date.now() + 86400000,
         avatar_url: (claims.avatar_url as string) || null,
+        phone: (claims.phone as string) || '',
       })
     }
   },

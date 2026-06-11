@@ -60,6 +60,8 @@ export function UserAuthForm({
         role: user.role || 'sales',
         tunnelScope: user.tunnel_scope || '',
         exp: Date.now() + 24 * 60 * 60 * 1000,
+        avatar_url: user.avatar_url ?? null,
+        phone: user.phone ?? '',
       })
       auth.setAccessToken(token)
       toast.success(`Welcome back, ${user.name || user.email}!`)
