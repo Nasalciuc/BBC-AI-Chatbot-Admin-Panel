@@ -198,8 +198,11 @@ async def send_agent_message(
     user: dict = Depends(get_current_user),
 ):
     """Agent sends a message in a conversation. Auto-sets mode to 'human'."""
-    if user.get("role") in ("supervisor", "qa"):
-        raise HTTPException(status_code=403, detail="Supervisors cannot send messages")
+    # SECURITY: role from DB, not JWT. Only hands-on roles may speak as agent.
+    _sender_db = await db.get_user_by_id(user.get("id"))
+    _role_db = (_sender_db or {}).get("role") or ""
+    if _role_db not in db._HANDS_ON_ROLES:
+        raise HTTPException(status_code=403, detail="Your role cannot send agent messages")
 
     # 1. Verify conversation exists and agent has tunnel access
     conv = await db.get_conversation(conversation_id)
@@ -243,6 +246,15 @@ async def claim_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
+
+    # SECURITY: role from DB, not JWT. Claim ⟺ can write (supervisor/qa = read-only).
+    _claimer_db = await db.get_user_by_id(user.get("id"))
+    _claimer_role = (_claimer_db or {}).get("role") or ""
+    if _claimer_role not in db._HANDS_ON_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Your role cannot claim conversations",
+        )
 
     # Check if already assigned to someone else
     current_agent = conv.get("assigned_agent_id")
