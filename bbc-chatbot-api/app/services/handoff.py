@@ -68,8 +68,11 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
     last_agent_msg = await db.get_last_agent_message_time(conversation_id)
     if last_agent_msg is None:
         # Agent was assigned but never sent a message.
-        # Check if the conversation was assigned more than silent_timeout ago.
-        conv_updated = conv.get("updated_at")
+        # Prefer agent_assigned_at (cycle start) — updated_at moves on ANY
+        # conversation update, so an active visitor kept "refreshing" the
+        # agent's deadline forever (divergence F5).
+        _meta_check = conv.get("metadata") or {}
+        conv_updated = _meta_check.get("agent_assigned_at") or conv.get("updated_at")
         if conv_updated:
             try:
                 updated_dt = datetime.fromisoformat(
@@ -170,6 +173,7 @@ async def get_handoff_response(
             agent_name=route.get("agent_name", "A specialist"),
             tunnel=tunnel,
             emit_messages=True,
+            handoff_reason="visitor_request",
         )
         return (
             "I'm connecting you with a specialist now. They'll have all the details "
@@ -186,28 +190,37 @@ async def get_handoff_response(
 
 async def fall_back_to_ai(conversation_id: str) -> None:
     """Revert a human-mode conversation back to AI.
-    Clears agent assignment, sets mode='ai', and emits a system message.
-    Sets a 15-min cooldown + increments agent_assign_count to prevent
-    infinite reassign loops."""
-    # Fetch current metadata to merge loop-guard fields
+    Clears agent assignment, sets mode='ai', emits a system message unless
+    the reservation was silent (announce_pending=True), and sets a 15-min
+    cooldown to prevent infinite reassign loops."""
     _conv = await db.get_conversation_simple(conversation_id)
     _meta = dict((_conv or {}).get("metadata") or {})
+    _was_unannounced = bool(_meta.get("announce_pending"))
     _assign_count = int(_meta.get("agent_assign_count", 0))
     _cooldown = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
     _meta["agent_cooldown_until"] = _cooldown
     _meta["agent_assign_count"] = _assign_count  # preserved; incremented at assign time
+    _meta.pop("announce_pending", None)
+    _meta.pop("agent_assigned_at", None)
 
     await db.update_conversation(conversation_id, {
         "mode": "ai",
         "assigned_agent_id": None,
         "metadata": _meta,
     })
-    msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
-    if msg:
-        await manager.push(conversation_id, msg)
+    # V4: emit fallback message ⟺ a promise was made this cycle —
+    # either the announce ("X has joined") OR the queued-message promise
+    # ("One moment please, connecting you with a specialist...").
+    _promised_recently = await _handoff_phrase_recently_sent(conversation_id)
+    _silent = _was_unannounced and not _promised_recently
+    if not _silent:
+        msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
+        if msg:
+            await manager.push(conversation_id, msg)
+    # else: silent reservation expired — visitor never knew; AI continues seamlessly.
     logger.info(
         f"[handoff] Conv {conversation_id}: agent offline → fell back to AI "
-        f"(assign_count={_assign_count}, cooldown=15min)"
+        f"(assign_count={_assign_count}, cooldown=15min, silent={_was_unannounced})"
     )
 
 
@@ -219,15 +232,49 @@ async def perform_handoff_to_agent(
     agent_name: str = "A specialist",
     tunnel: str = "sales",
     emit_messages: bool = True,
+    handoff_reason: str = "manual",
+    _extra_meta: dict | None = None,
+    _pop_meta_keys: list | None = None,
 ) -> dict:
     """Assign conversation to an agent and emit system messages.
 
-    Returns dict with the 3 system message rows (or empty dict if
-    emit_messages=False — used by claim/reassign which have their own UX).
+    handoff_reason values:
+      'auto_assign'     — heartbeat or on-close auto-pick; silent reservation
+                          (announce fires on agent's first real message).
+      'manual_claim'    — operator took/sent message; announce from claim UX.
+      'visitor_request' — visitor asked for agent; immediate system messages.
+      'manual'          — generic/admin action (default).
+
+    Returns dict with the system message rows (or empty dict if
+    emit_messages=False).
     """
+    # Merge metadata: preserve guard fields, add tracking fields.
+    _conv_cur = await db.get_conversation_simple(conversation_id)
+    _meta = dict((_conv_cur or {}).get("metadata") or {})
+    # agent_assigned_at marks the START of an assignment CYCLE.
+    # Write it ONLY when the assigned agent CHANGES — never refresh on
+    # re-handoff to the same agent (F1: refreshing evicted engaged agents).
+    _is_new_cycle = (_conv_cur or {}).get("assigned_agent_id") != agent_id
+    if _is_new_cycle:
+        _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
+        _meta["handoff_reason"] = handoff_reason
+        if handoff_reason == "auto_assign":
+            _meta["announce_pending"] = True
+            _meta.pop("agent_cooldown_until", None)
+        else:
+            _meta.pop("announce_pending", None)
+    # _is_new_cycle False → leave agent_assigned_at / handoff_reason /
+    # announce_pending exactly as they are.
+    if _extra_meta:
+        _meta.update(_extra_meta)
+    if _pop_meta_keys:
+        for _k in _pop_meta_keys:
+            _meta.pop(_k, None)
+
     await db.update_conversation(conversation_id, {
         "mode": "human",
         "assigned_agent_id": agent_id,
+        "metadata": _meta,
     })
 
     if not emit_messages:

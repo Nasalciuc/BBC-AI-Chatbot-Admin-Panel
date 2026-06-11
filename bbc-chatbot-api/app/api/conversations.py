@@ -210,29 +210,69 @@ async def send_agent_message(
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
 
-    # 2. Sanitize agent message (same rules as visitor messages)
+    _conv_meta = dict(conv.get("metadata") or {})
+    _user_id = user.get("id")
+    _already_mine = (
+        conv.get("mode") == "human"
+        and conv.get("assigned_agent_id") == _user_id
+    )
+
+    # F1 FIX: perform_handoff ONLY when this is a NEW assignment (admin
+    # jumping into an AI conv, or takeover). Re-calling it per message
+    # refreshed agent_assigned_at and made the response deadline evict
+    # ENGAGED agents waiting on slow visitors.
+    if not _already_mine:
+        from app.services.handoff import perform_handoff_to_agent
+        await perform_handoff_to_agent(
+            conversation_id=conversation_id,
+            agent_id=_user_id,
+            tunnel=conv.get("tunnel", "sales"),
+            emit_messages=False,
+            handoff_reason="manual_claim",
+        )
+        conv = await db.get_conversation(conversation_id) or conv
+        _conv_meta = dict(conv.get("metadata") or {})
+
+    # Announce-on-engage: first real agent message in a silent reservation.
+    _was_announce_pending = (
+        bool(_conv_meta.get("announce_pending"))
+        and conv.get("assigned_agent_id") == _user_id
+    )
+    if _was_announce_pending:
+        from config.settings import settings as _s
+        _agent_name = (_sender_db or {}).get("name") or user.get("name") or "A specialist"
+        _announce_row = await add_message(
+            conversation_id,
+            "system",
+            _s.heartbeat_joined_template.format(agent_name=_agent_name),
+        )
+        if _announce_row:
+            await manager.push(conversation_id, _announce_row)
+
     clean_content = sanitize_message(body.content)
+    msg = await add_message(conversation_id=conversation_id, role="agent", content=clean_content)
 
-    # 3. Save message with role='agent'
-    msg = await add_message(
-        conversation_id=conversation_id,
-        role="agent",
-        content=clean_content,
-    )
+    # ENGAGEMENT — one-shot write (status + metadata together; metadata
+    # update is REPLACE semantics, never write it twice in a row):
+    #   - engaged_agent_id: the agent who speaks OWNS the conversation
+    #   - announce_pending cleared (consumed above)
+    #   - needs_agent → active: the human the client waited for is HERE
+    _engage_update: dict = {}
+    _meta_changed = False
+    if _conv_meta.get("engaged_agent_id") != _user_id:
+        _conv_meta["engaged_agent_id"] = _user_id
+        _meta_changed = True
+    if _conv_meta.pop("announce_pending", None) is not None:
+        _meta_changed = True
+    if _meta_changed:
+        _engage_update["metadata"] = _conv_meta
+    if conv.get("status") == "needs_agent":
+        _engage_update["status"] = "active"
+    if _engage_update:
+        await db.update_conversation(conversation_id, _engage_update)
 
-    # 4. Auto-set mode to 'human' and assign this agent
-    from app.services.handoff import perform_handoff_to_agent
-    await perform_handoff_to_agent(
-        conversation_id=conversation_id,
-        agent_id=user.get("id"),
-        tunnel=conv.get("tunnel", "sales"),
-        emit_messages=False,
-    )
-
-    # Push to active SSE connection — no-op if widget is using polling fallback
     if msg:
         await manager.push(conversation_id, msg)
-
     return {"success": True, "data": msg}
 
 
@@ -262,18 +302,16 @@ async def claim_conversation(
         raise HTTPException(status_code=409, detail="Conversation already taken by another agent")
 
     from app.services.handoff import perform_handoff_to_agent
+    # Reset loop guards — agent chose this conv actively.
+    # Single metadata write via perform_handoff (reads + merges + writes).
     await perform_handoff_to_agent(
         conversation_id=conversation_id,
         agent_id=user.get("id"),
         tunnel=conv.get("tunnel", "sales"),
         emit_messages=False,
+        handoff_reason="manual_claim",
+        _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
     )
-
-    # Reset loop guards — agent chose this conv actively
-    _meta = dict((conv.get("metadata") or {}))
-    _meta.pop("agent_assign_count", None)
-    _meta.pop("agent_cooldown_until", None)
-    await db.update_conversation(conversation_id, {"metadata": _meta})
 
     return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": user.get("id")}}
 
@@ -306,10 +344,16 @@ async def close_conversation(
         tunnel_scope = user.get("tunnel_scope", "sales")
         tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
 
+        from app.services.handoff import perform_handoff_to_agent
         for t in tunnels:
-            next_conv = await db.get_oldest_unassigned_conversation(t)
-            if next_conv:
-                from app.services.handoff import perform_handoff_to_agent
+            candidates = await db.get_oldest_unassigned_conversations(t)
+            for next_conv in candidates:
+                _nc_meta = (next_conv.get("metadata") or {})
+                if _nc_meta.get("widget_presence") == "left":
+                    continue
+                _sticky = _nc_meta.get("engaged_agent_id")
+                if _sticky and _sticky != agent_id:
+                    continue
                 agent_name = user.get("name") or user.get("email", "A specialist")
                 await perform_handoff_to_agent(
                     conversation_id=next_conv["id"],
@@ -317,10 +361,13 @@ async def close_conversation(
                     agent_name=agent_name,
                     tunnel=t,
                     emit_messages=False,
+                    handoff_reason="auto_assign",
                 )
                 next_conv_id = next_conv["id"]
                 logger.info(f"[auto-assign] Conv {next_conv['id']} → {agent_id} (on close)")
                 break  # 1:1 rule — assign only 1
+            if next_conv_id:
+                break
 
     return {
         "success": True,
@@ -369,14 +416,13 @@ async def reassign_conversation(
         agent_id=body.agent_id,
         tunnel=conv.get("tunnel", "sales"),
         emit_messages=False,
-    )
-    await db.update_conversation(conversation_id, {
-        "metadata": {
-            **(conv.get("metadata") or {}),
+        handoff_reason="manual_claim",
+        _extra_meta={
             "reassigned_by": user.get("id"),
             "reassigned_at": datetime.now(timezone.utc).isoformat(),
+            "engaged_agent_id": body.agent_id,
         },
-    })
+    )
 
     agent_name = target_agent.get("name") or target_agent.get("email", "a specialist")
     requester_name = user.get("name") or user.get("email", "supervisor")

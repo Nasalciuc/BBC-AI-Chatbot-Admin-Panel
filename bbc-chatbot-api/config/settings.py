@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     # Agent Presence & Routing
     max_concurrent_chats: int = 1
     agent_timeout_seconds: int = 600
-    agent_silent_timeout_seconds: int = 300
+    agent_silent_timeout_seconds: int = 480  # p75 of time-to-first-agent-message, 30d audit (Jun 2026)
 
     # System messages shown during routing flow
     connecting_message: str = "Connecting you with a specialist now\u2026"

@@ -105,3 +105,22 @@ async def process_abandoned_conversations(request: Request):
         1 for r in results if r["status"] in ("success", "closed_existing_crm")
     )
     return {"processed": len(results), "success": success_count, "results": results}
+
+
+@router.post("/cron/agent-response-sweep")
+async def agent_response_sweep(request: Request):
+    """Backstop sweep: fall back conversations whose assigned agent sent zero messages
+    within the response deadline. Covers the window when no agents are online
+    (heartbeats don't run → stale cleanup doesn't run → conversations pile up).
+    Auth: same Bearer CRON_SECRET as abandoned-crm."""
+    if not settings.cron_secret or not settings.cron_secret.strip():
+        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
+
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {settings.cron_secret}":
+        raise HTTPException(status_code=401, detail="Invalid cron token")
+
+    from app.api.agent import _enforce_response_deadline
+    swept = await _enforce_response_deadline()
+    logger.info(f"[cron][agent-response-sweep] swept={swept}")
+    return {"success": True, "swept": swept}

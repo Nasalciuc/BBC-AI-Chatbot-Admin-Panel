@@ -1441,26 +1441,69 @@ async def increment_chats_served(agent: dict) -> None:
         logger.warning(f"increment_chats_served error (non-blocking): {e}")
 
 
-async def get_oldest_unassigned_conversation(tunnel: str) -> dict | None:
-    """Get oldest active AI conversation with no assigned agent.
-    Includes needs_agent status to prioritize explicit agent requests."""
+async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> list:
+    """Get up to `limit` oldest conversations explicitly WAITING for a human
+    (status=needs_agent) with no assigned agent.
+
+    Only conversations explicitly WAITING for a human (status=needs_agent).
+    Active AI conversations are never grabbed — mid-collection is protected
+    (M2: AI reaches CRM in p75=4.6 min); the manual-claim button is the
+    human override."""
     try:
         db_client = get_client()
         res = await _run_sync(
             lambda: db_client.table("conversations")
-            .select("id, tunnel, mode, status, created_at")
-            .in_("status", ["active", "needs_agent"])
+            .select("id, tunnel, mode, status, created_at, metadata")
+            .eq("status", "needs_agent")
             .eq("mode", "ai")
             .is_("assigned_agent_id", "null")
             .eq("tunnel", tunnel)
             .order("created_at", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_oldest_unassigned_conversations error: {e}")
+        return []
+
+
+async def get_active_human_conversations() -> list:
+    """Active conversations in human mode with an assigned agent.
+    Used by response-deadline sweep (small set: max_concurrent=1 per agent)."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, assigned_agent_id, metadata")
+            .eq("status", "active")
+            .eq("mode", "human")
+            .not_.is_("assigned_agent_id", "null")
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_active_human_conversations error: {e}")
+        return []
+
+
+async def has_agent_message_since(conversation_id: str, since_iso: str) -> bool:
+    """True if any role='agent' message exists after the given ISO timestamp."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("messages")
+            .select("id")
+            .eq("conversation_id", conversation_id)
+            .eq("role", "agent")
+            .gt("created_at", since_iso)
             .limit(1)
             .execute()
         )
-        return res.data[0] if res.data else None
+        return bool(res.data)
     except Exception as e:
-        logger.error(f"get_oldest_unassigned_conversation error: {e}")
-        return None
+        logger.error(f"has_agent_message_since error: {e}")
+        return False
 
 
 # ════════════════════════════════════════════════════════════════
