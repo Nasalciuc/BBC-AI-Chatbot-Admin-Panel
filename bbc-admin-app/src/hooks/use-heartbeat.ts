@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@/lib/api'
+import { useReadyStore } from '@/stores/ready-store'
 
 // Heartbeat cadence — 5s keeps pickup latency low for auto-assigned
 // conversations (each heartbeat triggers _assign_pending_conversations
@@ -25,6 +26,7 @@ const HEARTBEAT_INTERVAL_MS = 5_000
  */
 export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
   const active = useRef(true)
+  const setReady = useReadyStore((s) => s.setReady)
 
   useEffect(() => {
     active.current = true
@@ -32,7 +34,10 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
     const ping = async () => {
       if (!active.current || document.visibilityState !== 'visible') return
       try {
-        await apiFetch('/api/agent/heartbeat', { method: 'POST' })
+        const res = await apiFetch<{ is_ready?: boolean }>('/api/agent/heartbeat', { method: 'POST' })
+        if (typeof res?.is_ready === 'boolean') {
+          setReady(res.is_ready)
+        }
       } catch {
         // Heartbeat failure is non-fatal — agent won't appear online
       }

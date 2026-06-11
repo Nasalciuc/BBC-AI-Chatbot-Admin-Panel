@@ -145,28 +145,33 @@ async def _assign_pending_conversations(
 async def heartbeat(user: dict = Depends(get_current_user)):
     """Agent pings every 30s to signal online presence.
     Also cleans up conversations from offline agents.
-    Management roles (owner/admin/dev) update presence but do NOT auto-receive conversations."""
+    Only operator roles (sales/support, per DB) auto-receive conversations."""
     user_id = user.get("id")
     if not user_id:
         return {"success": False, "error": "No user ID in token"}
     await db.update_user_last_seen(user_id)
     cleaned = await _cleanup_stale_conversations()
-    role = user.get("role", "")
     assigned = 0
-    if role not in db._MANAGEMENT_ROLES:
-        agent_name = user.get("name") or user.get("email", "A specialist")
-        # Re-fetch readiness from DB because JWT payload can be stale.
-        user_db = await db.get_user_by_id(user_id)
-        is_ready = user_db.get("is_ready", True) if user_db else True
-        if is_ready:
-            assigned = await _assign_pending_conversations(
-                user_id,
-                user.get("tunnel_scope", "sales"),
-                agent_name,
-            )
-        else:
-            assigned = 0
-    return {"success": True, "cleaned": cleaned, "assigned": assigned}
+    # SECURITY: role, readiness AND tunnel_scope all from DB, never from JWT.
+    # A stale token (e.g. admin still carrying an old sales token) was
+    # receiving auto-assigns in production. Fail closed on any miss.
+    user_db = await db.get_user_by_id(user_id)
+    role_db = (user_db or {}).get("role") or ""
+    is_ready = bool((user_db or {}).get("is_ready", False))
+    if user_db and role_db in db._OPERATOR_ROLES and is_ready:
+        agent_name = user_db.get("name") or user_db.get("email") or "A specialist"
+        assigned = await _assign_pending_conversations(
+            user_id,
+            user_db.get("tunnel_scope") or "sales",
+            agent_name,
+        )
+    return {
+        "success": True,
+        "cleaned": cleaned,
+        "assigned": assigned,
+        "is_ready": is_ready,
+        "role": role_db,
+    }
 
 
 @router.get("/agent/status")

@@ -1297,10 +1297,18 @@ async def update_user_last_seen(user_id: str) -> None:
 # If adding a new role, decide: does this role HANDLE chats? If NO → add here.
 _MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor", "qa")
 
+# Roles that actively HANDLE visitor conversations — auto-assign ALLOWLIST.
+# A new role added tomorrow does NOT receive chats until explicitly listed here.
+_OPERATOR_ROLES = ("sales", "support")
+
+# Roles allowed to manually claim a conversation AND send agent messages.
+# Rule: you can claim ⟺ you can write. supervisor/qa observe only.
+_HANDS_ON_ROLES = _OPERATOR_ROLES + ("owner", "admin", "dev")
+
 
 async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
     """Get agents online (heartbeat within timeout) matching tunnel scope.
-    Excludes management roles (owner/admin/dev) — they are not operators."""
+    Only operator roles (sales/support) receive conversations."""
     try:
         db_client = get_client()
         from datetime import datetime, timezone, timedelta
@@ -1313,7 +1321,7 @@ async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
                 .eq("is_active", True)
                 .gt("last_seen_at", cutoff)
                 .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
-                .not_.in_("role", list(_MANAGEMENT_ROLES))
+                .in_("role", list(_OPERATOR_ROLES))
                 .eq("is_ready", True)
                 .execute()
             )
