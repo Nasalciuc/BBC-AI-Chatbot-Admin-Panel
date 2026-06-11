@@ -138,11 +138,27 @@ async def chat(
             # Fall through: if assigned agent exists, message is queued for human mode.
 
     # ── POST-CRM: template response + re-close (no handoff) ──
+    # Intercept ONLY when collection is COMPLETE. created_in_crm means
+    # "submitted early so the consultant can call" — NOT "done talking".
+    # If route/dates/pax are still missing, fall through to the pipeline
+    # so the bot keeps collecting (real data lands in Supabase + admin
+    # panel; the CRM record was created with defaults by design).
     if req.conversation_id:
         _lead = await lead_service.get_or_create_lead(req.conversation_id)
         if _lead and _lead.get("created_in_crm"):
+            from app.models.lead import get_missing_fields as _gmf_postcrm
+            _conv_row = await db.get_conversation_simple(req.conversation_id) or {}
+            _contact_ctx = {
+                "visitor_name": _conv_row.get("visitor_name")
+                    or getattr(req.visitor, "name", None),
+                "visitor_email": _conv_row.get("visitor_email")
+                    or getattr(req.visitor, "email", None),
+                "visitor_phone": _conv_row.get("visitor_phone")
+                    or getattr(req.visitor, "phone", None),
+            }
+            _still_collecting = bool(_gmf_postcrm(_lead, _contact_ctx))
             _post_crm_mode = await db.get_conversation_mode(req.conversation_id)
-            if _post_crm_mode == "ai":
+            if _post_crm_mode == "ai" and not _still_collecting:
                 # Save user message
                 await conversation_service.add_message(
                     conversation_id=req.conversation_id,
