@@ -263,6 +263,33 @@ export async function updateUser(
   })
 }
 
+export interface SelfUpdatePayload {
+  name?: string
+  phone?: string
+  avatar_url?: string
+}
+
+export interface SelfUpdateResponse {
+  user: {
+    id: string
+    email: string
+    name?: string
+    phone?: string
+    avatar_url?: string | null
+    role?: string
+    tunnel_scope?: string
+  }
+  token: string
+}
+
+export async function updateSelf(payload: SelfUpdatePayload): Promise<SelfUpdateResponse> {
+  return apiFetch<SelfUpdateResponse>('/api/auth/me', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function deactivateUser(id: string): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return updateUser(id, { is_active: false })
 }

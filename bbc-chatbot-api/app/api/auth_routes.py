@@ -19,6 +19,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
+def _issue_jwt(user: dict) -> str:
+    """Build JWT with the same claims as login."""
+    if not settings.jwt_secret:
+        raise HTTPException(500, "JWT not configured")
+    payload = {
+        "sub": user["id"],
+        "email": user["email"],
+        "name": user.get("name", ""),
+        "role": user.get("role", "sales"),
+        "tunnel_scope": user.get("tunnel_scope", "sales"),
+        "avatar_url": user.get("avatar_url") or None,
+        "phone": user.get("phone") or None,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -61,20 +78,7 @@ async def login(req: LoginRequest, _rate: None = Depends(check_rate_limit)):
     if not user.get("is_active", True):
         raise HTTPException(403, "Account disabled — contact admin")
 
-    # Generate JWT
-    if not settings.jwt_secret:
-        raise HTTPException(500, "JWT not configured")
-
-    payload = {
-        "sub": user["id"],
-        "email": user["email"],
-        "name": user.get("name", ""),
-        "role": user.get("role", "sales"),
-        "tunnel_scope": user.get("tunnel_scope", "sales"),
-        "avatar_url": user.get("avatar_url") or None,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
-    }
-    token = jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+    token = _issue_jwt(user)
 
     logger.info(f"Login OK | email={user['email']} role={user.get('role')}")
 
@@ -270,3 +274,63 @@ async def set_password(req: SetPasswordRequest, _rate: None = Depends(check_rate
         raise HTTPException(500, "Failed to set password")
 
     return {"success": True, "data": {"user_id": user_id}}
+
+
+class SelfUpdateRequest(BaseModel):
+    name: str | None = None
+    phone: str | None = None
+    avatar_url: str | None = None
+    # SECURITY: role / tunnel_scope / is_active / email intentionally ABSENT.
+
+
+@router.patch("/me")
+async def update_own_profile(
+    payload: SelfUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Self-service profile update — any authenticated role.
+
+    Whitelisted fields only. Re-issues JWT so claims reflect changes on refresh.
+    """
+    updates: dict = {}
+
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name or len(name) > 100:
+            raise HTTPException(status_code=422, detail="Invalid name")
+        updates["name"] = name
+
+    if payload.phone is not None:
+        phone = payload.phone.strip()
+        if len(phone) > 30:
+            raise HTTPException(status_code=422, detail="Invalid phone")
+        updates["phone"] = phone
+
+    if payload.avatar_url is not None:
+        url = payload.avatar_url.strip()
+        if url and (len(url) > 500 or not url.startswith(("http://", "https://"))):
+            raise HTTPException(status_code=422, detail="Invalid avatar URL")
+        updates["avatar_url"] = url or None
+
+    if not updates:
+        raise HTTPException(status_code=422, detail="No fields to update")
+
+    user_id = current_user["id"]
+    updated = await db.update_user(user_id, updates)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Update failed")
+
+    token = _issue_jwt(updated)
+
+    return {
+        "user": {
+            "id": updated["id"],
+            "email": updated["email"],
+            "name": updated.get("name"),
+            "phone": updated.get("phone"),
+            "avatar_url": updated.get("avatar_url"),
+            "role": updated.get("role"),
+            "tunnel_scope": updated.get("tunnel_scope"),
+        },
+        "token": token,
+    }
