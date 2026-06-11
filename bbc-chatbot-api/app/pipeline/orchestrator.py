@@ -543,14 +543,25 @@ async def _pipeline(
             "visitor_email": getattr(visitor, "email", None),
             "visitor_phone": getattr(visitor, "phone", None),
         }
-        if not _gmf(_fl_crm or {}, _cc, for_crm=True):
+        # STRICT gate: closing replaces the AI reply ONLY when collection
+        # is COMPLETE (route + dates + pax + contact). The submit gate
+        # (check_crm_ready with the for_crm flag) is intentionally looser
+        # — we submit early so the consultant can call — but "submitted"
+        # is NOT "done talking". Premature-close incident: 10 Jun 2026,
+        # bot replaced its own "I'll need your travel dates" with
+        # "confirmed!". Pinned by test_crm_closing_strict_gate.
+        if not _gmf(_fl_crm or {}, _cc):
             from app.ai.prompts import get_brand_vars
 
             _site_closing = get_brand_vars(
                 metadata.get("site") if metadata else None
             ).get("closing_message")
             validated_text = _site_closing or settings.post_crm_closing_message
-            logger.info(f"[{cid}] CRM closing replaces AI response")
+            # Provenance: the visitor receives a TEMPLATE, not the model's
+            # text — record it as such (admin showed "haiku" on templates).
+            gen.model_used = "template"
+            gen.cost = 0.0
+            logger.info(f"[{cid}] CRM closing replaces AI response (collection complete)")
 
     ai_msg = await conversation_service.add_message(
         conversation_id=cid,
@@ -576,7 +587,8 @@ async def _pipeline(
                 "visitor_email": getattr(visitor, "email", None),
                 "visitor_phone": getattr(visitor, "phone", None),
             }
-            if not _gmf2(_fl_crm or {}, _cc2, for_crm=True):
+            # STRICT — close only when collection is complete (see 7.5).
+            if not _gmf2(_fl_crm or {}, _cc2):
                 await db.update_conversation(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
