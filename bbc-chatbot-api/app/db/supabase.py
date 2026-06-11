@@ -1442,14 +1442,19 @@ async def increment_chats_served(agent: dict) -> None:
 
 
 async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> list:
-    """Get up to `limit` oldest active AI conversations with no assigned agent.
-    Returns a list so callers can skip dead/sticky convs without blocking the queue."""
+    """Get up to `limit` oldest conversations explicitly WAITING for a human
+    (status=needs_agent) with no assigned agent.
+
+    Only conversations explicitly WAITING for a human (status=needs_agent).
+    Active AI conversations are never grabbed — mid-collection is protected
+    (M2: AI reaches CRM in p75=4.6 min); the manual-claim button is the
+    human override."""
     try:
         db_client = get_client()
         res = await _run_sync(
             lambda: db_client.table("conversations")
             .select("id, tunnel, mode, status, created_at, metadata")
-            .in_("status", ["active", "needs_agent"])
+            .eq("status", "needs_agent")
             .eq("mode", "ai")
             .is_("assigned_agent_id", "null")
             .eq("tunnel", tunnel)

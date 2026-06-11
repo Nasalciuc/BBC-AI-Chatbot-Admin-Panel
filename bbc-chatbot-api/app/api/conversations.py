@@ -212,10 +212,28 @@ async def send_agent_message(
 
     _conv_meta = dict(conv.get("metadata") or {})
     _user_id = user.get("id")
+    _already_mine = (
+        conv.get("mode") == "human"
+        and conv.get("assigned_agent_id") == _user_id
+    )
 
-    # 2. Announce-on-engage (1.3): if this was a silent reservation, emit
-    #    "X has joined" NOW — right before the agent's first real message.
-    #    The visitor meets the agent only when they actually show up.
+    # F1 FIX: perform_handoff ONLY when this is a NEW assignment (admin
+    # jumping into an AI conv, or takeover). Re-calling it per message
+    # refreshed agent_assigned_at and made the response deadline evict
+    # ENGAGED agents waiting on slow visitors.
+    if not _already_mine:
+        from app.services.handoff import perform_handoff_to_agent
+        await perform_handoff_to_agent(
+            conversation_id=conversation_id,
+            agent_id=_user_id,
+            tunnel=conv.get("tunnel", "sales"),
+            emit_messages=False,
+            handoff_reason="manual_claim",
+        )
+        conv = await db.get_conversation(conversation_id) or conv
+        _conv_meta = dict(conv.get("metadata") or {})
+
+    # Announce-on-engage: first real agent message in a silent reservation.
     _was_announce_pending = (
         bool(_conv_meta.get("announce_pending"))
         and conv.get("assigned_agent_id") == _user_id
@@ -231,34 +249,30 @@ async def send_agent_message(
         if _announce_row:
             await manager.push(conversation_id, _announce_row)
 
-    # 3. Sanitize agent message (same rules as visitor messages)
     clean_content = sanitize_message(body.content)
+    msg = await add_message(conversation_id=conversation_id, role="agent", content=clean_content)
 
-    # 4. Save message with role='agent'
-    msg = await add_message(
-        conversation_id=conversation_id,
-        role="agent",
-        content=clean_content,
-    )
+    # ENGAGEMENT — one-shot write (status + metadata together; metadata
+    # update is REPLACE semantics, never write it twice in a row):
+    #   - engaged_agent_id: the agent who speaks OWNS the conversation
+    #   - announce_pending cleared (consumed above)
+    #   - needs_agent → active: the human the client waited for is HERE
+    _engage_update: dict = {}
+    _meta_changed = False
+    if _conv_meta.get("engaged_agent_id") != _user_id:
+        _conv_meta["engaged_agent_id"] = _user_id
+        _meta_changed = True
+    if _conv_meta.pop("announce_pending", None) is not None:
+        _meta_changed = True
+    if _meta_changed:
+        _engage_update["metadata"] = _conv_meta
+    if conv.get("status") == "needs_agent":
+        _engage_update["status"] = "active"
+    if _engage_update:
+        await db.update_conversation(conversation_id, _engage_update)
 
-    # 5. Auto-set mode to 'human' and assign this agent.
-    #    Pass sticky ownership + announce cleanup via _extra_meta so
-    #    perform_handoff writes everything in one shot.
-    from app.services.handoff import perform_handoff_to_agent
-    await perform_handoff_to_agent(
-        conversation_id=conversation_id,
-        agent_id=_user_id,
-        tunnel=conv.get("tunnel", "sales"),
-        emit_messages=False,
-        handoff_reason="manual_claim",
-        _extra_meta={"sticky_agent_id": _user_id},
-    )
-    # perform_handoff pops announce_pending (manual_claim branch) and sets sticky.
-
-    # 6. Push to active SSE connection — no-op if widget is using polling fallback
     if msg:
         await manager.push(conversation_id, msg)
-
     return {"success": True, "data": msg}
 
 
@@ -337,7 +351,7 @@ async def close_conversation(
                 _nc_meta = (next_conv.get("metadata") or {})
                 if _nc_meta.get("widget_presence") == "left":
                     continue
-                _sticky = _nc_meta.get("sticky_agent_id")
+                _sticky = _nc_meta.get("engaged_agent_id")
                 if _sticky and _sticky != agent_id:
                     continue
                 agent_name = user.get("name") or user.get("email", "A specialist")
@@ -406,7 +420,7 @@ async def reassign_conversation(
         _extra_meta={
             "reassigned_by": user.get("id"),
             "reassigned_at": datetime.now(timezone.utc).isoformat(),
-            "sticky_agent_id": body.agent_id,
+            "engaged_agent_id": body.agent_id,
         },
     )
 

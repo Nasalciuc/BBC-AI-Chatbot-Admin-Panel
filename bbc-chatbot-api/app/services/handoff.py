@@ -68,8 +68,11 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
     last_agent_msg = await db.get_last_agent_message_time(conversation_id)
     if last_agent_msg is None:
         # Agent was assigned but never sent a message.
-        # Check if the conversation was assigned more than silent_timeout ago.
-        conv_updated = conv.get("updated_at")
+        # Prefer agent_assigned_at (cycle start) — updated_at moves on ANY
+        # conversation update, so an active visitor kept "refreshing" the
+        # agent's deadline forever (divergence F5).
+        _meta_check = conv.get("metadata") or {}
+        conv_updated = _meta_check.get("agent_assigned_at") or conv.get("updated_at")
         if conv_updated:
             try:
                 updated_dt = datetime.fromisoformat(
@@ -205,8 +208,12 @@ async def fall_back_to_ai(conversation_id: str) -> None:
         "assigned_agent_id": None,
         "metadata": _meta,
     })
-    if not _was_unannounced:
-        # Visitor knew an agent was coming — tell them the agent is gone.
+    # V4: emit fallback message ⟺ a promise was made this cycle —
+    # either the announce ("X has joined") OR the queued-message promise
+    # ("One moment please, connecting you with a specialist...").
+    _promised_recently = await _handoff_phrase_recently_sent(conversation_id)
+    _silent = _was_unannounced and not _promised_recently
+    if not _silent:
         msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
         if msg:
             await manager.push(conversation_id, msg)
@@ -244,13 +251,20 @@ async def perform_handoff_to_agent(
     # Merge metadata: preserve guard fields, add tracking fields.
     _conv_cur = await db.get_conversation_simple(conversation_id)
     _meta = dict((_conv_cur or {}).get("metadata") or {})
-    _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
-    _meta["handoff_reason"] = handoff_reason
-    if handoff_reason == "auto_assign":
-        _meta["announce_pending"] = True
-        _meta.pop("agent_cooldown_until", None)
-    else:
-        _meta.pop("announce_pending", None)
+    # agent_assigned_at marks the START of an assignment CYCLE.
+    # Write it ONLY when the assigned agent CHANGES — never refresh on
+    # re-handoff to the same agent (F1: refreshing evicted engaged agents).
+    _is_new_cycle = (_conv_cur or {}).get("assigned_agent_id") != agent_id
+    if _is_new_cycle:
+        _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
+        _meta["handoff_reason"] = handoff_reason
+        if handoff_reason == "auto_assign":
+            _meta["announce_pending"] = True
+            _meta.pop("agent_cooldown_until", None)
+        else:
+            _meta.pop("announce_pending", None)
+    # _is_new_cycle False → leave agent_assigned_at / handoff_reason /
+    # announce_pending exactly as they are.
     if _extra_meta:
         _meta.update(_extra_meta)
     if _pop_meta_keys:

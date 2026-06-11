@@ -108,10 +108,6 @@ async def _assign_pending_conversations(
             ):
                 continue
 
-            last_sys = await db.get_last_system_message(conv_id)
-            if _recent_fallback_system_message(last_sys):
-                continue
-
             _conv_meta = (conv_data or {}).get("metadata") or {}
 
             # 1.2 — Presence predicate: skip if visitor left the page.
@@ -119,8 +115,8 @@ async def _assign_pending_conversations(
             if _conv_meta.get("widget_presence") == "left":
                 continue
 
-            # 1.4 — Sticky ownership: return conv only to its owner.
-            _sticky = _conv_meta.get("sticky_agent_id")
+            # 1.4 — Engaged ownership: return conv only to its engaged agent.
+            _sticky = _conv_meta.get("engaged_agent_id")
             if _sticky and _sticky != user_id:
                 continue
 

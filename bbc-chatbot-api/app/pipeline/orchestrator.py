@@ -171,8 +171,9 @@ async def _pipeline(
                 kw in m.get("content", "").lower() for kw in agent_keywords
             )
         )
-        # Current message is the (agent_request_count + 1)th request
-        if agent_request_count >= 2:
+        # Current message is the (agent_request_count + 1)th request.
+        # Set needs_agent on the 2nd explicit request (count >= 1 = 1 prior).
+        if agent_request_count >= 1:
             try:
                 await db.update_conversation(cid, {"status": "needs_agent"})
                 logger.info(f"[{cid}] HANDOFF: {agent_request_count + 1} agent requests → status=needs_agent")
@@ -378,6 +379,15 @@ async def _pipeline(
                 if _saved_tool_entities:
                     gen.tool_entities = _saved_tool_entities
             elif gen.model_used != "template":
+                # Queue feeding (V2): the client asked for a human and none is
+                # available THIS second — mark the conversation as waiting so the
+                # FIRST operator who comes online receives it (silent reservation).
+                # AI keeps serving meanwhile (mode stays 'ai').
+                try:
+                    await db.update_conversation(cid, {"status": "needs_agent"})
+                    logger.info(f"[{cid}] No agent available → status=needs_agent (queued)")
+                except Exception as e:
+                    logger.warning(f"[{cid}] Failed to queue needs_agent: {e}")
                 no_agent = get_template("no_agent_available", tunnel, visitor)
                 gen = GeneratedResponse(
                     text=no_agent or (
