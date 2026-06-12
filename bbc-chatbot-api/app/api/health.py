@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from config.settings import settings
 from app.db.supabase import check_connection
+from app.services.scheduler import get_scheduler_health
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +16,10 @@ router = APIRouter()
 @router.get("/health")
 async def health() -> dict:
     """Return system health status and service availability."""
+    scheduler = get_scheduler_health()
+
     if not settings.debug:
-        return {"status": "ok"}
+        return {"status": "ok", "scheduler": scheduler}
 
     # Check Supabase connectivity
     db_ok = await check_connection()
@@ -45,4 +48,5 @@ async def health() -> dict:
         "status": status,
         "version": "1.0.0",
         "services": services,
+        "scheduler": scheduler,
     }

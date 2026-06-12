@@ -134,6 +134,9 @@ class Settings(BaseSettings):
     # Cron — abandoned conversations
     cron_secret: str = ""
     abandoned_timeout_minutes: int = 30
+    internal_scheduler_enabled: bool = True  # G3 kill-switch; see ADR-10
+    scheduler_interval_seconds: int = 300  # real 5-min cadence (GitHub Actions
+    # '*/5' measured at 1-2h due to schedule throttling on low-activity repos)
 
     # Postmark email
     postmark_token: str = ""

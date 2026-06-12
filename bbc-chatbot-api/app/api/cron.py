@@ -17,17 +17,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/cron/abandoned-crm")
-async def process_abandoned_conversations(request: Request):
+async def run_abandoned_crm() -> dict:
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
-
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
-
     abandoned = await db.get_abandoned_conversations(settings.abandoned_timeout_minutes)
     logger.info(f"[cron] Found {len(abandoned)} abandoned conversations")
 
@@ -107,6 +98,29 @@ async def process_abandoned_conversations(request: Request):
     return {"processed": len(results), "success": success_count, "results": results}
 
 
+async def run_agent_sweep() -> dict:
+    """Backstop sweep: fall back conversations past the agent response deadline."""
+    from app.api.agent import _enforce_response_deadline
+
+    swept = await _enforce_response_deadline()
+    logger.info(f"[cron][agent-response-sweep] swept={swept}")
+    return {"success": True, "swept": swept}
+
+
+@router.post("/cron/abandoned-crm")
+async def process_abandoned_conversations(request: Request):
+    """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
+
+    if not settings.cron_secret or not settings.cron_secret.strip():
+        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
+
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {settings.cron_secret}":
+        raise HTTPException(status_code=401, detail="Invalid cron token")
+
+    return await run_abandoned_crm()
+
+
 @router.post("/cron/agent-response-sweep")
 async def agent_response_sweep(request: Request):
     """Backstop sweep: fall back conversations whose assigned agent sent zero messages
@@ -120,7 +134,4 @@ async def agent_response_sweep(request: Request):
     if auth != f"Bearer {settings.cron_secret}":
         raise HTTPException(status_code=401, detail="Invalid cron token")
 
-    from app.api.agent import _enforce_response_deadline
-    swept = await _enforce_response_deadline()
-    logger.info(f"[cron][agent-response-sweep] swept={swept}")
-    return {"success": True, "swept": swept}
+    return await run_agent_sweep()

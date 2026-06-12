@@ -1,0 +1,89 @@
+"""Internal heartbeat — replaces reliance on GitHub Actions cadence.
+
+GitHub throttles scheduled workflows on low-activity repos: our
+'*/5 * * * *' ran every 1-2 HOURS in reality (measured 12 Jun).
+Consequences: abandoned conversations closed at 36-108 min instead of
+~35, and — worse — the #101 agent-response sweep (the 8-minute
+deadline's proactive half) released silently-waiting clients only when
+GitHub felt like it. The app now beats its own drum; Actions stays on
+as best-effort redundancy (jobs are idempotent). See ADR-10.
+
+Safe under the single-worker invariant (ADR-5): one process, one
+scheduler, no distributed coordination. If the app ever scales out,
+this migrates together with SSE/rate-limit, not separately.
+"""
+
+import asyncio
+import logging
+import random
+from datetime import datetime, timezone
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Canary: readable heartbeat per job (exposed via /health).
+last_runs: dict[str, dict] = {}
+
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def get_scheduler_health() -> dict[str, dict[str, Any]]:
+    """Per-job last_run_at and seconds_ago for /health canary."""
+    now = datetime.now(timezone.utc)
+    out: dict[str, dict[str, Any]] = {}
+    for job, v in last_runs.items():
+        raw_at = v.get("at", "")
+        try:
+            at = datetime.fromisoformat(raw_at.replace("Z", "+00:00"))
+            seconds_ago = int((now - at).total_seconds())
+        except (ValueError, TypeError):
+            seconds_ago = None
+        out[job] = {"last_run_at": raw_at, "seconds_ago": seconds_ago}
+    return out
+
+
+async def _run_forever(job_name: str, job_fn, interval_seconds: int):
+    # G5: small start jitter so Railway restarts don't sync with Actions
+    await asyncio.sleep(random.uniform(5, 15))
+    _locks.setdefault(job_name, asyncio.Lock())
+    while True:
+        try:
+            # G2: no internal overlap; overlap WITH Actions is covered
+            # by job idempotency (close-if-abandoned is a no-op twice)
+            async with _locks[job_name]:
+                result = await job_fn()
+            last_runs[job_name] = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "result": result,
+            }
+            logger.info(f"[scheduler:internal] {job_name}: {result}")
+        except Exception as e:
+            # G1: a job crash must never kill the loop — and never be
+            # silent (the RC6 lesson, learned four times this month)
+            logger.error(
+                f"[scheduler:internal] {job_name} failed: {e}",
+                exc_info=True,
+            )
+        await asyncio.sleep(interval_seconds)
+
+
+def start(app_state, settings) -> list[asyncio.Task]:
+    """Called from startup. Returns tasks so shutdown can cancel them."""
+    from app.api.cron import run_abandoned_crm, run_agent_sweep
+
+    jobs = [
+        ("abandoned_crm", run_abandoned_crm),
+        ("agent_sweep", run_agent_sweep),
+    ]
+    tasks = [
+        asyncio.create_task(
+            _run_forever(name, fn, settings.scheduler_interval_seconds),
+            name=f"scheduler_{name}",
+        )
+        for name, fn in jobs
+    ]
+    logger.info(
+        f"[scheduler:internal] started {len(tasks)} jobs @ "
+        f"{settings.scheduler_interval_seconds}s"
+    )
+    return tasks
