@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
+import { clearAssignmentBadge } from '@/lib/notify-assignment'
 import { NotificationBell } from '@/components/notification-bell'
 import { ReadyToggle } from '@/components/ready-toggle'
 import { Header } from '@/components/layout/header'
@@ -141,6 +142,14 @@ export function Chats() {
     }
     prevActiveRef.current = counts.my_active
   }, [counts.my_active])
+
+  // Clear title badge when operator opens or focuses the chats page
+  useEffect(() => {
+    clearAssignmentBadge()
+    const onFocus = () => clearAssignmentBadge()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
 
   // Refresh all data on claim/close
   const handleConversationChange = () => {
