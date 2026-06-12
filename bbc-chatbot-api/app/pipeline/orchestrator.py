@@ -35,6 +35,34 @@ def _fire_and_forget(coro):
     return task
 
 
+async def _persist_fallback_reply(cid: str, text: str, reason: str) -> None:
+    """Failure handlers MUST leave a trace the visitor and the admin can see.
+
+    A pipeline that answers over HTTP but writes nothing to the DB produced
+    the 12-Jun 'silent AI' incident: admin showed dead air, returning visitors
+    saw an empty thread. Never raises.
+    """
+    try:
+        row = await conversation_service.add_message(
+            conversation_id=cid,
+            role="ai",
+            content=text,
+            model_used="template_fallback",
+            cost=0.0,
+        )
+        if row:
+            logger.info(f"[{cid}] Fallback persisted ({reason})")
+        else:
+            logger.error(
+                f"[{cid}] Fallback NOT persisted ({reason}) — add_message returned None"
+            )
+    except Exception as e:
+        logger.error(
+            f"[{cid}] Fallback persistence failed ({reason}): {e}",
+            exc_info=True,
+        )
+
+
 async def process_message(
     conversation_id: Optional[str],
     message: str,
@@ -45,17 +73,33 @@ async def process_message(
 ) -> ChatResponse:
     """Run the 8-step pipeline. Always returns a response — never crashes."""
     conv = None
+    # Set after the AI message row is confirmed in DB; failure handlers
+    # persist a fallback ONLY if this is still False (no duplicate post-save).
+    _persist_state = {"ai_persisted": False}
     try:
         return await asyncio.wait_for(
-            _pipeline(conversation_id, message, tunnel, visitor, metadata, visitor_id=visitor_id),
+            _pipeline(
+                conversation_id,
+                message,
+                tunnel,
+                visitor,
+                metadata,
+                visitor_id=visitor_id,
+                _persist_state=_persist_state,
+            ),
             timeout=settings.pipeline_timeout,
         )
     except asyncio.TimeoutError:
-        logger.error(f"Pipeline timeout ({settings.pipeline_timeout}s)")
         cid = conversation_id or "unknown"
+        logger.error(
+            f"[{cid}] Pipeline timeout ({settings.pipeline_timeout}s)",
+            exc_info=True,
+        )
         fallback = get_template("ai_fallback", tunnel, visitor) or (
             "Let me connect you with a specialist right away."
         )
+        if not _persist_state["ai_persisted"]:
+            await _persist_fallback_reply(cid, fallback, "pipeline_timeout")
         return ChatResponse(
             conversation_id=cid,
             message=fallback,
@@ -63,11 +107,13 @@ async def process_message(
             model_used="template",
         )
     except Exception as e:
-        logger.error(f"Pipeline fatal error: {e}", exc_info=True)
         cid = conversation_id or "unknown"
+        logger.error(f"[{cid}] Pipeline fatal error: {e}", exc_info=True)
         fallback = get_template("ai_fallback", tunnel, visitor) or (
             "Let me connect you with a specialist right away."
         )
+        if not _persist_state["ai_persisted"]:
+            await _persist_fallback_reply(cid, fallback, "pipeline_fatal")
         return ChatResponse(
             conversation_id=cid,
             message=fallback,
@@ -83,6 +129,7 @@ async def _pipeline(
     visitor: VisitorInfo,
     metadata: Optional[dict],
     visitor_id: Optional[str] = None,
+    _persist_state: Optional[dict] = None,
 ) -> ChatResponse:
     """Internal pipeline implementation with 8 steps."""
     import time
@@ -130,8 +177,8 @@ async def _pipeline(
             logger.info(
                 f"[{cid}] Bad words detected — will skip templates, AI responds with empathy"
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[{cid}] moderation check failed: {e}")
 
     # Fetch history + lead row in parallel (independent DB calls)
     history, _ = await asyncio.gather(
@@ -387,7 +434,10 @@ async def _pipeline(
                     await db.update_conversation(cid, {"status": "needs_agent"})
                     logger.info(f"[{cid}] No agent available → status=needs_agent (queued)")
                 except Exception as e:
-                    logger.warning(f"[{cid}] Failed to queue needs_agent: {e}")
+                    logger.error(
+                        f"[{cid}] Failed to queue needs_agent: {e}",
+                        exc_info=True,
+                    )
                 no_agent = get_template("no_agent_available", tunnel, visitor)
                 gen = GeneratedResponse(
                     text=no_agent or (
@@ -399,7 +449,7 @@ async def _pipeline(
                 if _saved_tool_entities:
                     gen.tool_entities = _saved_tool_entities
         except Exception as e:
-            logger.warning(f"[{cid}] Handoff routing error: {e}")
+            logger.error(f"[{cid}] Handoff routing error: {e}", exc_info=True)
             gen = GeneratedResponse(
                 text="For immediate assistance, please call +1 (888) 322-7999.",
                 model_used="template",
@@ -581,6 +631,13 @@ async def _pipeline(
         model_used=gen.model_used,
         cost=gen.cost,
     )
+    if ai_msg:
+        if _persist_state is not None:
+            _persist_state["ai_persisted"] = True
+    else:
+        logger.error(
+            f"[{cid}] AI reply generated but NOT persisted (add_message returned None)"
+        )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
 
     if _is_streaming and ai_msg:
@@ -608,7 +665,7 @@ async def _pipeline(
                 })
                 logger.info(f"[{cid}] Conversation auto-closed post-CRM")
         except Exception as e:
-            logger.warning(f"[{cid}] Auto-close error: {e}")
+            logger.error(f"[{cid}] Auto-close error: {e}", exc_info=True)
 
     # Record pipeline run (non-blocking, non-fatal)
     latency_ms = int((time.perf_counter() - pipeline_start) * 1000)

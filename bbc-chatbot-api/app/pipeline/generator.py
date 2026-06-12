@@ -188,7 +188,10 @@ def generate_response(
                 else:
                     logger.warning("AI-first: Claude returned empty — falling through to templates")
             except Exception as e:
-                logger.error(f"AI-first error (falling through to templates): {e}")
+                logger.error(
+                    f"AI-first error intent={intent.value} (falling through to templates): {e}",
+                    exc_info=True,
+                )
 
     # ── TEMPLATE FALLBACK (original logic, unchanged) ────────
     # Templates below activate ONLY if:
