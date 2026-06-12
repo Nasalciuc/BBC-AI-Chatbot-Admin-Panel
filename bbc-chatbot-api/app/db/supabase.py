@@ -209,7 +209,10 @@ async def add_message(
         res = await _run_sync(lambda: db.table("messages").insert(payload).execute())
         return res.data[0] if res.data else None
     except Exception as e:
-        logger.error(f"add_message error: {e}")
+        logger.error(
+            f"add_message failed conv={conversation_id} role={role}: {e}",
+            exc_info=True,
+        )
         return None
 
 
