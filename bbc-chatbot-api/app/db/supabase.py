@@ -277,6 +277,7 @@ async def keyword_search_kb(keywords: list[str], tunnel: str = "sales", limit: i
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
+    status_in: Optional[list[str]] = None,
     search: Optional[str] = None,
     agent_id: Optional[str] = None,
     agent_id_is_null: bool = False,
@@ -289,7 +290,10 @@ async def get_conversations(
         def _query():
             q = db.table("conversations").select("*", count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
-            if status:  q = q.eq("status", status)
+            if status_in:
+                q = q.in_("status", status_in)
+            elif status:
+                q = q.eq("status", status)
             if agent_id:
                 q = q.eq("assigned_agent_id", agent_id)
             elif agent_id_is_null:
@@ -432,7 +436,21 @@ async def get_conversation_counts(
             res = await _run_sync(_q)
             return res.count or 0
 
-        my_active = await _count("me", "active")
+        # my_active includes reserved conversations (status=needs_agent,
+        # assigned to me): the silent reservation is silent for the CLIENT,
+        # not the operator — the agent must SEE it to answer within the
+        # deadline. Status flips to active at their first message (engagement).
+        async def _count_my_active() -> int:
+            def _q():
+                q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
+                if tunnel:
+                    q = q.eq("tunnel", tunnel)
+                q = q.eq("assigned_agent_id", agent_id).in_("status", ["active", "needs_agent"])
+                return q.limit(0).execute()
+            res = await _run_sync(_q)
+            return res.count or 0
+
+        my_active = await _count_my_active()
         queue_count = await _count("none", "active")
         my_closed = await _count("me", "closed")
 
