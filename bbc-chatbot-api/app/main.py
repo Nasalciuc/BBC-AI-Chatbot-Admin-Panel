@@ -79,7 +79,7 @@ app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         
 app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)
 
 
-# ── Startup ───────────────────────────────────────────────────
+# ── Startup / shutdown ────────────────────────────────────────
 @app.on_event("startup")
 async def startup() -> None:
     logger.info(f"{settings.app_name} starting — v1.0.0")
@@ -89,3 +89,16 @@ async def startup() -> None:
     logger.info(f"Qdrant: {'configured' if settings.qdrant_url else 'disabled'}")
     logger.info(f"Redis: {'configured' if settings.redis_url else 'disabled'}")
     logger.info(f"Budget: ${settings.daily_budget}/day, ${settings.per_conversation_budget}/conv")
+
+    if settings.internal_scheduler_enabled:
+        from app.services.scheduler import start as start_scheduler
+
+        app.state.scheduler_tasks = start_scheduler(app.state, settings)
+    else:
+        app.state.scheduler_tasks = []
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    for task in getattr(app.state, "scheduler_tasks", []):
+        task.cancel()
