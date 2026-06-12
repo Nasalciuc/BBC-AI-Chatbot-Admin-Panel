@@ -181,6 +181,13 @@ async def get_handoff_response(
             "handoff",
         )
 
+    # Queue feeding (V2): client asked for a human, none available now.
+    try:
+        await db.update_conversation(conversation_id, {"status": "needs_agent"})
+        logger.info(f"[{conversation_id}] No agent available → status=needs_agent (queued)")
+    except Exception as e:
+        logger.warning(f"[{conversation_id}] Failed to queue needs_agent: {e}")
+
     text = get_template("no_agent_available", tunnel, visitor)
     return (
         text or "All specialists are currently busy. Please call +1 (888) 322-7999.",

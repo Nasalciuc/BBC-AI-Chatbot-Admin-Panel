@@ -48,8 +48,18 @@ async def list_conversations(
             agent_id_is_null = True
         # "all" or None → no agent filter (owner/admin sees everything)
 
+        # my_active includes reserved conversations (status=needs_agent,
+        # assigned to me): the silent reservation is silent for the CLIENT,
+        # not the operator — the agent must SEE it to answer within the
+        # deadline. Status flips to active at their first message (engagement).
+        status_in = None
+        list_status = status
+        if assigned_to == "me" and status == "active":
+            status_in = ["active", "needs_agent"]
+            list_status = None
+
         rows, total = await db.get_conversations(
-            tunnel=tunnel, status=status, search=search,
+            tunnel=tunnel, status=list_status, status_in=status_in, search=search,
             agent_id=agent_id_filter, agent_id_is_null=agent_id_is_null,
             limit=limit, offset=offset,
         )
