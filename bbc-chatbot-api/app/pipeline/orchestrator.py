@@ -571,19 +571,27 @@ async def _pipeline(
                 )
                 logger.warning(f"[{cid}] CRM skip: missing={_miss}")
             else:
-                _conv_meta = (conv or {}).get("metadata") or {}
-                _client_ip = _conv_meta.get("client_ip")
-                _suid = visitor_id or _conv_meta.get("visitor_id")
-                _crm = await submit_to_crm(
-                    _lead_fresh, visitor, cid,
-                    conv_metadata=_conv_meta,
-                    client_ip=_client_ip,
-                    suid=_suid,
-                )
-                if _crm.success:
-                    await db.mark_lead_created_in_crm(_lead_fresh["id"])
-                    _crm_submitted_this_turn = True
-                    logger.info(f"[{cid}] CRM submitted via Claude — handoff after response")
+                _already_confirmed = _conv_meta.get("confirmed_at") or _confirmed_this_turn
+                if not _already_confirmed:
+                    logger.info(f"[{cid}] CRM skip: awaiting client confirmation")
+                else:
+                    if _confirmed_this_turn and not _conv_meta.get("confirmed_at"):
+                        _meta_upd = dict(_conv_meta)
+                        _meta_upd["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+                        await db.update_conversation(cid, {"metadata": _meta_upd})
+                        _conv_meta = _meta_upd
+                    _client_ip = _conv_meta.get("client_ip")
+                    _suid = visitor_id or _conv_meta.get("visitor_id")
+                    _crm = await submit_to_crm(
+                        _lead_fresh, visitor, cid,
+                        conv_metadata=_conv_meta,
+                        client_ip=_client_ip,
+                        suid=_suid,
+                    )
+                    if _crm.success:
+                        await db.mark_lead_created_in_crm(_lead_fresh["id"])
+                        _crm_submitted_this_turn = True
+                        logger.info(f"[{cid}] CRM submitted after client confirmation")
         except Exception as e:
             logger.error(f"CRM re-check error (non-blocking): {e}")
 
@@ -627,36 +635,47 @@ async def _pipeline(
             model_used="none",
         )
 
-    # ── STEP 7.5: CRM closing replaces AI response (one message, not two) ──
-    _fl_crm: Optional[dict] = None
-    if _crm_submitted_this_turn:
-        from app.models.lead import get_missing_fields as _gmf
+    # ── STEP 7.5: Summary → Confirm → CRM → Close ────────────
+    # STATE A: collection complete, summary not shown → show template
+    # STATE B: summary shown + confirmed + CRM submitted → closing
+    # STATE C: summary shown, not confirmed → normal AI response
+    from app.models.lead import get_missing_fields as _gmf
 
-        _fl_crm = await lead_service.get_or_create_lead(cid)
-        _cc = {
-            "visitor_name": getattr(visitor, "name", None),
-            "visitor_email": getattr(visitor, "email", None),
-            "visitor_phone": getattr(visitor, "phone", None),
-        }
-        # STRICT gate: closing replaces the AI reply ONLY when collection
-        # is COMPLETE (route + dates + pax + contact). The submit gate
-        # (check_crm_ready with the for_crm flag) is intentionally looser
-        # — we submit early so the consultant can call — but "submitted"
-        # is NOT "done talking". Premature-close incident: 10 Jun 2026,
-        # bot replaced its own "I'll need your travel dates" with
-        # "confirmed!". Pinned by test_crm_closing_strict_gate.
-        if not _gmf(_fl_crm or {}, _cc):
+    _fl_crm = await lead_service.get_or_create_lead(cid)
+    _cc = {
+        "visitor_name": getattr(visitor, "name", None),
+        "visitor_email": getattr(visitor, "email", None),
+        "visitor_phone": getattr(visitor, "phone", None),
+    }
+    _gmf_missing = _gmf(_fl_crm or {}, _cc)
+    _summary_shown = _conv_meta.get("summary_shown_at")
+    _is_confirmed = bool(_conv_meta.get("confirmed_at") or _confirmed_this_turn)
+
+    if not _gmf_missing:
+        if not _summary_shown:
+            from app.ai.templates import build_summary
+
+            _summary_text = build_summary(_fl_crm or {})
+            if _summary_text:
+                validated_text = _summary_text
+                _meta_upd = dict(_conv_meta)
+                _meta_upd["summary_shown_at"] = datetime.now(timezone.utc).isoformat()
+                await db.update_conversation(cid, {"metadata": _meta_upd})
+                _conv_meta = _meta_upd
+                gen.model_used = "template"
+                gen.cost = 0.0
+                logger.info(f"[{cid}] Step 7.5: Summary shown (awaiting confirmation)")
+
+        elif _is_confirmed and _crm_submitted_this_turn:
             from app.ai.prompts import get_brand_vars
 
             _site_closing = get_brand_vars(
                 metadata.get("site") if metadata else None
             ).get("closing_message")
             validated_text = _site_closing or settings.post_crm_closing_message
-            # Provenance: the visitor receives a TEMPLATE, not the model's
-            # text — record it as such (admin showed "haiku" on templates).
             gen.model_used = "template"
             gen.cost = 0.0
-            logger.info(f"[{cid}] CRM closing replaces AI response (collection complete)")
+            logger.info(f"[{cid}] Step 7.5: Confirmed → closing")
 
     ai_msg = await conversation_service.add_message(
         conversation_id=cid,
@@ -678,9 +697,8 @@ async def _pipeline(
         await manager.push_stream_end(cid, ai_msg)
 
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
-    # Closing already handled in Step 7.5 (replaces AI text).
-    # Only close conversation status here.
-    if _crm_submitted_this_turn:
+    # Close only after client confirmed summary and CRM was submitted.
+    if _crm_submitted_this_turn and _is_confirmed:
         try:
             from app.models.lead import get_missing_fields as _gmf2
 
@@ -689,7 +707,6 @@ async def _pipeline(
                 "visitor_email": getattr(visitor, "email", None),
                 "visitor_phone": getattr(visitor, "phone", None),
             }
-            # STRICT — close only when collection is complete (see 7.5).
             if not _gmf2(_fl_crm or {}, _cc2):
                 await db.update_conversation(cid, {
                     "status": "closed",

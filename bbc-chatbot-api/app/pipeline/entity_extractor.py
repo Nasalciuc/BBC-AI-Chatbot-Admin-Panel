@@ -146,7 +146,8 @@ NAME_PATTERNS = [
 
 PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us|adults?)', re.I)
 # Leading digit followed by punctuation (catches "2. Both over 65", "3, all adults")
-PAX_LEADING_RE = re.compile(r'^\s*(\d{1,2})\s*[.,;:\-!)\]]', re.I)
+# Hyphen excluded when followed by digit (avoids "2-3 options" false positive).
+PAX_LEADING_RE = re.compile(r'^\s*(\d{1,2})\s*(?:[.,;:!)\]]|\-(?!\d))', re.I)
 CHILD_RE = re.compile(r'(\d+)\s*(?:child(?:ren)?|kids?|minors?)', re.I)
 INFANT_RE = re.compile(r'(\d+)\s*(?:infants?|babies|baby)', re.I)
 FAMILY_RE = re.compile(r'\bfamily\s+of\s+(\d+)\b', re.I)
