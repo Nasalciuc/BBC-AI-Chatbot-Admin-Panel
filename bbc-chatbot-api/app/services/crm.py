@@ -89,8 +89,10 @@ def format_date_iso(date_str) -> str:
 def check_crm_ready(lead: dict, visitor) -> bool:
     """Check if we have enough fields for CRM submission.
 
-    Uses get_missing_fields(for_crm=True): route + contact only.
-    AI prompts use strict mode (for_crm=False) and keep collecting dates/pax.
+    Uses get_missing_fields(for_crm=True): route + contact + passengers +
+    departure_date. AI prompts use strict mode (for_crm=False) and keep
+    collecting dates/pax. Defaults in build_crm_payload are for abandoned
+    cron path only.
     """
     from app.models.lead import get_missing_fields
 

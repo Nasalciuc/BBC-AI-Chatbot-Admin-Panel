@@ -31,10 +31,12 @@ def _lead_complete() -> dict:
     }
 
 
-def test_submit_gate_passes_on_route_plus_contact():
-    """Early submit is INTENDED — for_crm=True needs route+contact only."""
+def test_submit_gate_blocks_without_passengers_and_departure():
+    """CRM submit now requires passengers + departure, not just route+contact."""
     missing = get_missing_fields(_lead_route_only(), CONTACT_FULL, for_crm=True)
-    assert missing == []
+    joined = " ".join(missing).lower()
+    assert "passenger" in joined or "traveler" in joined
+    assert "departure" in joined
 
 
 def test_strict_gate_blocks_closing_without_dates_and_pax():
