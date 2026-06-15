@@ -192,8 +192,23 @@ async def _pipeline(
     # V1: always AI mode. V3 will check agent availability here.
 
     # ── STEP 3: INTENT DETECTION ─────────────────────────────
-    intent = detect_intent(message, metadata)
+    _user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
+    intent = detect_intent(message, metadata, user_msg_count=_user_msg_count)
     logger.info(f"[{cid}] Intent: {intent.value}")
+
+    # Confirm override: if summary was shown and client confirms,
+    # treat as CONFIRMED regardless of original intent classification.
+    _conv_meta = (conv or {}).get("metadata") or {}
+    if _conv_meta.get("summary_shown_at") and not _conv_meta.get("confirmed_at"):
+        _confirm_words = {
+            "yes", "correct", "looks good", "confirm", "that's right",
+            "da", "yep", "yeah", "ok", "okay", "sure", "perfect",
+            "great", "absolutely", "that works", "sounds good",
+        }
+        if message.strip().lower().rstrip(".!") in _confirm_words:
+            intent = Intent.CONFIRMED
+            logger.info(f"[{cid}] Intent override → CONFIRMED (summary was shown)")
+    _confirmed_this_turn = intent == Intent.CONFIRMED
 
     # ── STEP 3.6: MULTI-TURN PROBE DETECTION ─────────────────
     _probe_keywords = [
