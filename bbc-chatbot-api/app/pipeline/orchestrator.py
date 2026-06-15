@@ -530,6 +530,25 @@ async def _pipeline(
             await lead_service.update_lead_from_entities(cid, entities)
             logger.info(f"[{cid}] Claude extraction merged: {list(_te.keys())}")
 
+    # ── STEP 6.1.5: RECONCILE FROM AI RESPONSE TEXT ───────────
+    # Claude often verbalizes entities correctly even when regex missed
+    # the user message. Parse gen.text and fill NULL lead fields.
+    if gen and gen.text:
+        _ai_recon = extract_entities(gen.text)
+        _recon_updates: dict = {}
+        if _ai_recon.passengers and not entities.get("passengers"):
+            _recon_updates["passengers"] = _ai_recon.passengers
+            entities["passengers"] = _ai_recon.passengers
+        if _ai_recon.departure_date and not entities.get("departure_date"):
+            _recon_updates["departure_date"] = _ai_recon.departure_date
+            entities["departure_date"] = _ai_recon.departure_date
+        if _ai_recon.return_date and not entities.get("return_date"):
+            _recon_updates["return_date"] = _ai_recon.return_date
+            entities["return_date"] = _ai_recon.return_date
+        if _recon_updates:
+            await lead_service.update_lead_from_entities(cid, _recon_updates)
+            logger.info(f"[{cid}] Reconciled from AI text: {list(_recon_updates.keys())}")
+
     # ── STEP 6.2: CRM SUBMIT (single point — after merge) ─────
     if tunnel == "sales" and settings.crm_api_url:
         try:
