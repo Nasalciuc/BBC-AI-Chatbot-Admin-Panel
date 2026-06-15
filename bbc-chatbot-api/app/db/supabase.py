@@ -1424,7 +1424,7 @@ async def get_all_agents_status(timeout_seconds: int = 120) -> list:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
         res = await _run_sync(
             lambda: db_client.table("users")
-            .select("id, name, email, role, tunnel_scope, is_active, last_seen_at")
+            .select("id, name, email, role, tunnel_scope, is_active, last_seen_at, is_ready")
             .in_("role", ["sales", "support", "admin", "owner"])
             .execute()
         )
@@ -1798,3 +1798,197 @@ async def ensure_lead_for_conversation(conversation_id: str) -> dict | None:
             return existing.data[0] if existing.data else None
         except Exception:
             return None
+
+
+# ════════════════════════════════════════════════════════════════
+# AGENT TRACKING (presence + activity)
+# ════════════════════════════════════════════════════════════════
+
+
+async def get_presence_day(user_id: str, day: str) -> dict | None:
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("agent_presence_daily")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("day", day)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.warning(f"get_presence_day error: {e}")
+        return None
+
+
+async def upsert_presence_day(user_id: str, day: str, d: dict) -> None:
+    try:
+        db_client = get_client()
+        existing = await get_presence_day(user_id, day)
+        if existing:
+            await _run_sync(
+                lambda: db_client.table("agent_presence_daily")
+                .update(d)
+                .eq("user_id", user_id)
+                .eq("day", day)
+                .execute()
+            )
+        else:
+            await _run_sync(
+                lambda: db_client.table("agent_presence_daily")
+                .insert({"user_id": user_id, "day": day, **d})
+                .execute()
+            )
+    except Exception as e:
+        logger.warning(f"upsert_presence_day error: {e}")
+
+
+async def insert_ready_log(user_id: str, is_ready: bool) -> None:
+    try:
+        db_client = get_client()
+        await _run_sync(
+            lambda: db_client.table("agent_ready_log")
+            .insert({"user_id": user_id, "is_ready": is_ready})
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(f"insert_ready_log error: {e}")
+
+
+async def insert_activity_log(
+    uid: str,
+    cid: str,
+    action: str,
+    reason: str | None = None,
+    resp_s: int | None = None,
+) -> None:
+    try:
+        db_client = get_client()
+        row: dict = {"user_id": uid, "conversation_id": cid, "action": action}
+        if reason:
+            row["handoff_reason"] = reason
+        if resp_s is not None:
+            row["response_seconds"] = resp_s
+        await _run_sync(
+            lambda: db_client.table("agent_activity_log").insert(row).execute()
+        )
+    except Exception as e:
+        logger.warning(f"insert_activity_log error: {e}")
+
+
+async def count_agent_messages_since(conversation_id: str, since_iso: str) -> int:
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("messages")
+            .select("id", count="exact")  # type: ignore[arg-type]
+            .eq("conversation_id", conversation_id)
+            .eq("role", "agent")
+            .gt("created_at", since_iso)
+            .execute()
+        )
+        return res.count or 0
+    except Exception as e:
+        logger.warning(f"count_agent_messages_since error: {e}")
+        return 0
+
+
+async def get_agent_ops_status(timeout_seconds: int = 600) -> list:
+    from datetime import datetime, timezone
+
+    agents = await get_all_agents_status(timeout_seconds=timeout_seconds)
+    today = datetime.now(timezone.utc).date().isoformat()
+    today_start = f"{today}T00:00:00+00:00"
+    now = datetime.now(timezone.utc)
+    db_client = get_client()
+
+    for a in agents:
+        aid = a["id"]
+        user_row = await get_user_by_id(aid)
+        a["is_ready"] = bool((user_row or {}).get("is_ready", False))
+
+        if a.get("last_seen_at"):
+            try:
+                at = datetime.fromisoformat(
+                    a["last_seen_at"].replace("Z", "+00:00")
+                )
+                a["last_seen_seconds_ago"] = int((now - at).total_seconds())
+            except (ValueError, TypeError):
+                a["last_seen_seconds_ago"] = None
+        else:
+            a["last_seen_seconds_ago"] = None
+
+        p = await get_presence_day(aid, today)
+        a["today_minutes_online"] = p["minutes_online"] if p else 0
+        a["today_first_seen"] = p["first_seen_at"] if p else None
+
+        acts_res = await _run_sync(
+            lambda uid=aid: db_client.table("agent_activity_log")
+            .select("action,response_seconds")
+            .eq("user_id", uid)
+            .gte("happened_at", today_start)
+            .execute()
+        )
+        acts = acts_res.data or []
+        assigned = [r for r in acts if r["action"] == "assigned"]
+        responded = [r for r in acts if r["action"] == "first_response"]
+        a["today_chats_assigned"] = len(assigned)
+        a["today_chats_responded"] = len(responded)
+        resps = [r["response_seconds"] for r in responded if r.get("response_seconds")]
+        a["today_avg_response_seconds"] = (
+            round(sum(resps) / len(resps)) if resps else None
+        )
+        a["active_chats_now"] = await get_agent_active_count(aid)
+
+        rl_res = await _run_sync(
+            lambda uid=aid: db_client.table("agent_ready_log")
+            .select("is_ready,changed_at")
+            .eq("user_id", uid)
+            .order("changed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rl = rl_res.data[0] if rl_res.data else None
+        a["ready_since"] = (
+            rl["changed_at"] if rl and rl.get("is_ready") else None
+        )
+
+    return agents
+
+
+async def get_agent_history(user_id: str, days: int = 7) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    db_client = get_client()
+    fr = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    fr_ts = f"{fr}T00:00:00+00:00"
+
+    pres_res = await _run_sync(
+        lambda: db_client.table("agent_presence_daily")
+        .select("*")
+        .eq("user_id", user_id)
+        .gte("day", fr)
+        .order("day", desc=True)
+        .execute()
+    )
+    ready_res = await _run_sync(
+        lambda: db_client.table("agent_ready_log")
+        .select("*")
+        .eq("user_id", user_id)
+        .gte("changed_at", fr_ts)
+        .order("changed_at")
+        .execute()
+    )
+    acts_res = await _run_sync(
+        lambda: db_client.table("agent_activity_log")
+        .select("*")
+        .eq("user_id", user_id)
+        .gte("happened_at", fr_ts)
+        .order("happened_at")
+        .execute()
+    )
+    return {
+        "presence": pres_res.data or [],
+        "ready_log": ready_res.data or [],
+        "activity": acts_res.data or [],
+    }

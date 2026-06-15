@@ -262,6 +262,24 @@ async def send_agent_message(
     clean_content = sanitize_message(body.content)
     msg = await add_message(conversation_id=conversation_id, role="agent", content=clean_content)
 
+    _at = (conv.get("metadata") or {}).get("agent_assigned_at")
+    if _at and await db.count_agent_messages_since(conversation_id, _at) == 1:
+        from app.services.presence import log_activity
+        from app.pipeline.orchestrator import _fire_and_forget
+        _rs = None
+        try:
+            from datetime import datetime, timezone
+            _assigned = datetime.fromisoformat(_at.replace("Z", "+00:00"))
+            _rs = int((datetime.now(timezone.utc) - _assigned).total_seconds())
+        except (ValueError, TypeError):
+            pass
+        _fire_and_forget(
+            log_activity(
+                db, _user_id, conversation_id, "first_response",
+                response_seconds=_rs,
+            )
+        )
+
     # ENGAGEMENT — one-shot write (status + metadata together; metadata
     # update is REPLACE semantics, never write it twice in a row):
     #   - engaged_agent_id: the agent who speaks OWNS the conversation
@@ -344,6 +362,11 @@ async def close_conversation(
         "status": "closed",
         "closed_at": datetime.now(timezone.utc).isoformat(),
     })
+    from app.services.presence import log_activity
+    from app.pipeline.orchestrator import _fire_and_forget
+    _fire_and_forget(
+        log_activity(db, user.get("id"), conversation_id, "closed")
+    )
 
     # Auto-assign: freed operator picks up oldest unassigned AI conv.
     # Management roles (owner/admin/dev) do NOT auto-receive conversations.
