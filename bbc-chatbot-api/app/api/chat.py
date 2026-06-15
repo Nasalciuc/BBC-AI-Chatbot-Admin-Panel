@@ -21,6 +21,8 @@ from app.pipeline.orchestrator import process_message
 from app.db import supabase as db
 from app.realtime.manager import manager
 from app.services import conversation_service, lead_service
+from app.services.routing import route_conversation
+from app.services.handoff import perform_handoff_to_agent
 
 from pydantic import BaseModel, Field
 
@@ -237,10 +239,59 @@ async def chat(
                     model_used="none",
                 )
 
-    # 3.5. New conversations always start with AI.
-    # Agent handoff only via [HANDOFF_REQUESTED] in the pipeline (or explicit needs_agent).
-    # Auto-routing on first message removed — stale heartbeats caused phantom agents
-    # and "Connecting you with a specialist..." with no AI follow-up.
+    # ── First-message routing: operator-first, AI fallback ──
+    # Visitor writes → is an operator free right now?
+    #   YES → handoff immediately (live-chat from message 1)
+    #   NO  → fall-through to AI pipeline (collect → CRM → closed)
+    # Restored from #70 (disabled in #61 due to phantom agents);
+    # now safe: 8-min deadline (#101), notifications (#102),
+    # persist-fallback (#103), internal scheduler (#104).
+    # Gate: first user message on a fresh AI conversation.
+    if req.conversation_id:
+        _conv_check = await db.get_conversation(req.conversation_id)
+        if (
+            _conv_check
+            and _conv_check.get("mode") == "ai"
+            and not _conv_check.get("assigned_agent_id")
+        ):
+            _msg_count = await db.count_messages(req.conversation_id)
+            if _msg_count == 0:  # first user message — not yet saved
+                _route = await route_conversation(
+                    req.tunnel,
+                    visitor=req.visitor,
+                    visitor_id=req.visitor_id,
+                )
+                if _route and _route.get("agent_id"):
+                    await conversation_service.add_message(
+                        conversation_id=req.conversation_id,
+                        role="user",
+                        content=clean_message,
+                    )
+                    await perform_handoff_to_agent(
+                        conversation_id=req.conversation_id,
+                        agent_id=_route["agent_id"],
+                        agent_name=_route.get("agent_name", "A specialist"),
+                        tunnel=req.tunnel,
+                        emit_messages=True,
+                        handoff_reason="first_message",
+                    )
+                    logger.info(
+                        f"[{req.conversation_id}] First-message routing → "
+                        f"{_route.get('agent_name')} (operator-first)"
+                    )
+                    return ChatResponse(
+                        conversation_id=req.conversation_id,
+                        message=(
+                            f"{_route.get('agent_name', 'A specialist')} "
+                            f"has joined the conversation."
+                        ),
+                        type="welcome",
+                        model_used="none",
+                    )
+                logger.info(
+                    f"[{req.conversation_id}] First-message routing → "
+                    f"no operator, AI pipeline"
+                )
 
     # 4. AI mode or new conversation → run pipeline
     # Enrich metadata with client IP + User-Agent
