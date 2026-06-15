@@ -218,6 +218,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         "tunnel_scope": req.tunnel_scope,
         "password_hash": None,
         "is_active": True,
+        "is_ready": False,
         **({"phone": req.phone} if req.phone else {}),
     })
 

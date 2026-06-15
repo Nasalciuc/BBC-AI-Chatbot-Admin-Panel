@@ -198,15 +198,14 @@ async def get_handoff_response(
 async def fall_back_to_ai(conversation_id: str) -> None:
     """Revert a human-mode conversation back to AI.
     Clears agent assignment, sets mode='ai', emits a system message unless
-    the reservation was silent (announce_pending=True), and sets a 15-min
-    cooldown to prevent infinite reassign loops."""
+    the reservation was silent (announce_pending=True), and clears loop
+    guards (GO-08) so the conversation can be re-assigned."""
     _conv = await db.get_conversation_simple(conversation_id)
     _meta = dict((_conv or {}).get("metadata") or {})
     _was_unannounced = bool(_meta.get("announce_pending"))
-    _assign_count = int(_meta.get("agent_assign_count", 0))
-    _cooldown = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-    _meta["agent_cooldown_until"] = _cooldown
-    _meta["agent_assign_count"] = _assign_count  # preserved; incremented at assign time
+    # GO-08: reset loop guards so the conversation can be re-assigned.
+    _meta.pop("agent_assign_count", None)
+    _meta.pop("agent_cooldown_until", None)
     _meta.pop("announce_pending", None)
     _meta.pop("agent_assigned_at", None)
 
@@ -227,7 +226,7 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     # else: silent reservation expired — visitor never knew; AI continues seamlessly.
     logger.info(
         f"[handoff] Conv {conversation_id}: agent offline → fell back to AI "
-        f"(assign_count={_assign_count}, cooldown=15min, silent={_was_unannounced})"
+        f"(loop guards cleared, silent={_was_unannounced})"
     )
 
 
@@ -250,6 +249,7 @@ async def perform_handoff_to_agent(
                           (announce fires on agent's first real message).
       'manual_claim'    — operator took/sent message; announce from claim UX.
       'visitor_request' — visitor asked for agent; immediate system messages.
+      'first_message'   — operator-first routing on visitor's first message.
       'manual'          — generic/admin action (default).
 
     Returns dict with the system message rows (or empty dict if
