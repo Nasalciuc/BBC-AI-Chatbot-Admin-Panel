@@ -2,10 +2,12 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.db import supabase as db
+from app.pipeline.orchestrator import _fire_and_forget
 from app.security.auth import get_current_user
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -174,6 +176,8 @@ async def heartbeat(user: dict = Depends(get_current_user)):
     if not user_id:
         return {"success": False, "error": "No user ID in token"}
     await db.update_user_last_seen(user_id)
+    from app.services.presence import record_presence_tick
+    _fire_and_forget(record_presence_tick(user_id, db))
     cleaned = await _cleanup_stale_conversations()
     assigned = 0
     # SECURITY: role, readiness AND tunnel_scope all from DB, never from JWT.
@@ -230,6 +234,32 @@ async def set_ready_status(
         }
 
     await db.update_user(user_id, {"is_ready": body.is_ready})
+    from app.services.presence import log_ready_change
+    _fire_and_forget(log_ready_change(db, user_id, body.is_ready))
     status_str = "ready" if body.is_ready else "not_ready"
     logger.info(f"[agent-status] {user.get('email')} -> {status_str}")
     return {"success": True, "is_ready": body.is_ready}
+
+
+@router.get("/agents/ops-status")
+async def agents_ops_status(user: dict = Depends(get_current_user)):
+    if user.get("role", "") not in ("owner", "admin", "dev", "supervisor"):
+        raise HTTPException(403, "Management access required")
+    data = await db.get_agent_ops_status(settings.agent_timeout_seconds)
+    return {"success": True, "data": data}
+
+
+@router.get("/agents/{agent_id}/history")
+async def agent_history(
+    agent_id: str,
+    days: int = 7,
+    user: dict = Depends(get_current_user),
+):
+    role = user.get("role", "")
+    uid = user.get("id", "")
+    if role in ("sales", "support") and uid != agent_id:
+        raise HTTPException(403, "Can only view own history")
+    if role not in ("owner", "admin", "dev", "supervisor", "sales", "support"):
+        raise HTTPException(403)
+    data = await db.get_agent_history(agent_id, min(days, 30))
+    return {"success": True, "data": data}
