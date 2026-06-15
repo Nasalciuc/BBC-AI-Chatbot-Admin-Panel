@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     # Welcome messages per tunnel
     welcome_message_sales: str = "Where would you like to fly? I\u2019ll find you the best business class options."
     welcome_message_support: str = "What can I help you with today?"
+    # Template for lead confirmation summary. Populated from lead dict,
+    # shown to client BEFORE CRM submit. Client must reply "yes" to confirm.
+    summary_template: str = (
+        "Let me confirm your request:\n\n"
+        "✈ {origin_code} → {destination_code}\n"
+        "📅 {departure}{return_clause}\n"
+        "👥 {passengers} passenger(s)\n"
+        "💺 {cabin_class} class\n\n"
+        "Is everything correct? Reply YES to confirm."
+    )
     post_crm_closing_message: str = (
         "Your flight request is confirmed! A travel consultant "
         "will contact you shortly. For immediate help, "

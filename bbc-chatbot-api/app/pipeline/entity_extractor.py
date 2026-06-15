@@ -145,6 +145,9 @@ NAME_PATTERNS = [
 ]
 
 PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us|adults?)', re.I)
+# Leading digit followed by punctuation (catches "2. Both over 65", "3, all adults")
+# Hyphen excluded when followed by digit (avoids "2-3 options" false positive).
+PAX_LEADING_RE = re.compile(r'^\s*(\d{1,2})\s*(?:[.,;:!)\]]|\-(?!\d))', re.I)
 CHILD_RE = re.compile(r'(\d+)\s*(?:child(?:ren)?|kids?|minors?)', re.I)
 INFANT_RE = re.compile(r'(\d+)\s*(?:infants?|babies|baby)', re.I)
 FAMILY_RE = re.compile(r'\bfamily\s+of\s+(\d+)\b', re.I)
@@ -494,6 +497,14 @@ def extract_entities(message: str) -> ExtractedEntities:
     # Cap passengers at 9 (CRM API max)
     if entities.passengers and entities.passengers > 9:
         entities.passengers = 9
+
+    # Leading digit + punctuation: "2. Both over 65", "3, all adults"
+    if not entities.passengers:
+        _lead_match = PAX_LEADING_RE.match(text)
+        if _lead_match:
+            _val = int(_lead_match.group(1))
+            if 1 <= _val <= 9:
+                entities.passengers = _val
 
     # Standalone single digit (1-9) — likely answering "how many passengers?"
     if not entities.passengers:

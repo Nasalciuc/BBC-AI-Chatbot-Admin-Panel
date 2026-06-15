@@ -257,3 +257,39 @@ def get_template(
     except KeyError:
         # Missing placeholder — return raw template rather than crash
         return text
+
+
+# ── Lead confirmation summary (3-gate flow) ───────────────────
+
+_REQUIRED_SUMMARY_FIELDS = (
+    "origin_code",
+    "destination_code",
+    "departure_date",
+    "passengers",
+    "cabin_class",
+)
+
+
+def build_summary(lead: dict) -> str | None:
+    """Build confirmation summary from lead, or None if incomplete."""
+    from config.settings import settings
+
+    if any(not lead.get(f) for f in _REQUIRED_SUMMARY_FIELDS):
+        return None
+
+    departure = lead["departure_date"]
+    if lead.get("return_date"):
+        return_clause = f" — {lead['return_date']} (round trip)"
+    elif lead.get("trip_type") == "one_way":
+        return_clause = " (one-way)"
+    else:
+        return_clause = ""
+
+    return settings.summary_template.format(
+        origin_code=lead["origin_code"],
+        destination_code=lead["destination_code"],
+        departure=departure,
+        return_clause=return_clause,
+        passengers=lead["passengers"],
+        cabin_class=lead.get("cabin_class", "business"),
+    )

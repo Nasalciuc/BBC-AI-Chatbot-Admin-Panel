@@ -159,6 +159,11 @@ async def chat(
                     or getattr(req.visitor, "phone", None),
             }
             _still_collecting = bool(_gmf_postcrm(_lead, _contact_ctx))
+            # Don't close with template if client hasn't confirmed summary.
+            # Abandoned cron may submit CRM without confirmation; client
+            # returning with "yes" should go through pipeline, not template.
+            if not _still_collecting and not (_conv_row.get("metadata") or {}).get("confirmed_at"):
+                _still_collecting = True
             _post_crm_mode = await db.get_conversation_mode(req.conversation_id)
             if _post_crm_mode == "ai" and not _still_collecting:
                 # Save user message

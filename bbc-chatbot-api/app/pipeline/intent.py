@@ -19,6 +19,7 @@ class Intent(str, Enum):
     GENERAL_QUESTION = "general_question"
     GREETING = "greeting"
     CLOSING = "closing"
+    CONFIRMED = "confirmed"
     TALK_TO_AGENT = "talk_to_agent"
     # Support V2
     SEAT_SELECTION = "seat_selection"
@@ -48,10 +49,8 @@ INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.TRAVEL_INSURANCE, re.compile(r"(insurance|coverage|protect|insured)", re.I)),
     (Intent.PAYMENT_METHODS, re.compile(r"(payment|pay|credit\s*card|wire|transfer|install|invoice)", re.I)),
     (Intent.RECEIPT_REQUEST, re.compile(r"(receipt|invoice|confirmation|proof\s*of)", re.I)),
-    # ── Speed: catch common short replies without LLM ──
-    (Intent.NEW_BOOKING, re.compile(r"^(ok|okay|yes|yeah|yep|sure|sounds?\s*good|that\s*works|perfect|great|got\s*it|alright|absolutely|definitely|cool|nice|yup)\s*[.!]?$", re.I)),
+    # Affirmative/digit NEW_BOOKING patterns moved to detect_intent (user_msg_count guard)
     (Intent.GENERAL_QUESTION, re.compile(r"^(no|nope|not\s*really|nah|no\s*thanks?)\s*[.!]?$", re.I)),
-    (Intent.NEW_BOOKING, re.compile(r"^\d{1,2}\s*$")),
     (Intent.NEW_BOOKING, re.compile(r"^[A-Z]{3}\s*(to|[-\u2013\u2192])\s*[A-Z]{3}", re.I)),
     (Intent.NEW_BOOKING, re.compile(r"(book|booking|fly(?!\s*direct)|flying|flight|tickets?|travel|trips?|help|want|need)\b", re.I)),
     (Intent.ROUTE_INFO, re.compile(r"(route|airline|nonstop|direct|duration|how\s+long)", re.I)),
@@ -72,7 +71,7 @@ def _parse_claude_intent(raw: str) -> Intent:
     return _INTENT_MAP.get(cleaned, Intent.GENERAL_QUESTION)
 
 
-def detect_intent(message: str, metadata: Optional[dict] = None) -> Intent:
+def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count: int = 0) -> Intent:
     """Detect visitor intent from message text.
 
     1. Check metadata.quick_reply_intent (instant, free)
@@ -94,6 +93,20 @@ def detect_intent(message: str, metadata: Optional[dict] = None) -> Intent:
         if pattern.search(lower):
             logger.debug(f"Intent from regex: {intent.value}")
             return intent
+
+    # Context-aware: digits and affirmatives are NEW_BOOKING only on the
+    # first user message; mid-collection they fall through to GENERAL.
+    if user_msg_count <= 1:
+        if re.match(
+            r"^(ok|okay|yes|yeah|yep|sure|sounds?\s*good|that\s*works|perfect|great|got\s*it|alright|absolutely|definitely|cool|nice|yup)\s*[.!]?$",
+            message,
+            re.I,
+        ):
+            logger.debug("Intent from context-aware affirmative: new_booking")
+            return Intent.NEW_BOOKING
+        if re.match(r"^\d{1,2}\s*$", message):
+            logger.debug("Intent from context-aware digit: new_booking")
+            return Intent.NEW_BOOKING
 
     # 2.5. Short messages — skip expensive LLM classify
     word_count = len(message.split())
