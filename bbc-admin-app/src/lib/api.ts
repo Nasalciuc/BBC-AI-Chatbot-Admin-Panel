@@ -112,6 +112,12 @@ export async function getConversation(id: string): Promise<Conversation> {
   return res.data
 }
 
+export async function getOperatorHistory(conversationId: string) {
+  return apiFetch<{ source: string; events: Array<{ action: string; agent_name?: string; happened_at: string; handoff_reason?: string; response_seconds?: number }>; summary: string }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/operator-history`
+  )
+}
+
 export async function updateConversation(
   id: string,
   data: Partial<Conversation>,

@@ -12,6 +12,7 @@ import { ReassignPanel } from '@/components/reassign-panel'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
+import { OperatorHistory, OperatorBadge } from './operator-history'
 
 interface Props {
   conversationId: string
@@ -335,6 +336,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-400">
               <span>{allMessages.length} messages</span>
               <span>${conv.ai_cost_total.toFixed(4)} AI cost</span>
+              {isAdmin && <OperatorBadge conversationId={conversationId} />}
               <button onClick={copyId} className="flex items-center gap-0.5 hover:text-gray-200 transition">
                 {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 {conversationId.slice(0, 8)}...
@@ -779,6 +781,13 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               )}
             </div>
           </div>
+
+          {/* Operator History — admin only */}
+          {isAdmin && (
+            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+              <OperatorHistory conversationId={conversationId} />
+            </div>
+          )}
 
           {/* Notes Card */}
           {lead?.notes && lead.notes.trim() !== '' && (
