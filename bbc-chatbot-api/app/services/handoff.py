@@ -214,6 +214,11 @@ async def fall_back_to_ai(conversation_id: str) -> None:
         "assigned_agent_id": None,
         "metadata": _meta,
     })
+    from app.services.presence import log_activity
+    from app.pipeline.orchestrator import _fire_and_forget
+    _agent = (_conv or {}).get("assigned_agent_id") or ""
+    if _agent:
+        _fire_and_forget(log_activity(db, _agent, conversation_id, "deadline_fired"))
     # V4: emit fallback message ⟺ a promise was made this cycle —
     # either the announce ("X has joined") OR the queued-message promise
     # ("One moment please, connecting you with a specialist...").
@@ -283,6 +288,15 @@ async def perform_handoff_to_agent(
         "assigned_agent_id": agent_id,
         "metadata": _meta,
     })
+    if _is_new_cycle:
+        from app.services.presence import log_activity
+        from app.pipeline.orchestrator import _fire_and_forget
+        _fire_and_forget(
+            log_activity(
+                db, agent_id, conversation_id, "assigned",
+                handoff_reason=handoff_reason,
+            )
+        )
 
     if not emit_messages:
         return {}

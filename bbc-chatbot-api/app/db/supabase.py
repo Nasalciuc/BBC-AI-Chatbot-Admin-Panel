@@ -1424,7 +1424,7 @@ async def get_all_agents_status(timeout_seconds: int = 120) -> list:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
         res = await _run_sync(
             lambda: db_client.table("users")
-            .select("id, name, email, role, tunnel_scope, is_active, last_seen_at")
+            .select("id, name, email, role, tunnel_scope, is_active, last_seen_at, is_ready")
             .in_("role", ["sales", "support", "admin", "owner"])
             .execute()
         )

@@ -58,8 +58,14 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for
             missing.append("return date or one-way confirmation")
         if not has_passengers:
             missing.append("number of travelers (adults, children, infants)")
-    # CRM mode (for_crm=True): route + contact is sufficient
-    # departure/passengers/trip_type → defaults in build_crm_payload
+    # CRM mode (for_crm=True): route + contact + passengers + departure
+    # required. Defaults in build_crm_payload remain as safety net for
+    # abandoned cron path only. Normal CRM submit blocked without real data.
+    if for_crm:
+        if not has_passengers:
+            missing.append("number of travelers (how many passengers?)")
+        if not has_departure:
+            missing.append("departure date")
     # Contact info — only if NOT provided via form
     if not has_name:
         missing.append("name")
