@@ -26,11 +26,6 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
     <SearchProvider>
       <LayoutProvider>
         <SidebarProvider defaultOpen={defaultOpen}>
-          {'Notification' in window && Notification.permission === 'denied' && (
-            <div className="bg-yellow-900/30 border-b border-yellow-700/50 px-4 py-1.5 text-xs text-yellow-400 text-center">
-              ⚠️ Browser notifications blocked — click 🔒 in URL bar → Notifications → Allow to receive chat alerts.
-            </div>
-          )}
           <SkipToMain />
           <AppSidebar />
           <SidebarInset
