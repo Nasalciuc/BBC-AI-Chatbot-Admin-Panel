@@ -94,6 +94,40 @@ export function requestNotifyPermission(): void {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {})
   }
+
+  // Unlock audio autoplay on first user interaction (click/tap/keypress).
+  // Chrome blocks Audio.play() without prior gesture — this invisibly
+  // unblocks it on the first click ANYWHERE on the page.
+  if (!_audioUnlocked) {
+    const _unlock = () => {
+      _audioUnlocked = true
+      try {
+        // Pre-load ring audio so it's ready for instant playback
+        if (!_ringAudio) {
+          _ringAudio = new Audio('/notification.wav')
+          _ringAudio.loop = true
+        }
+        // Touch play+pause to satisfy autoplay policy
+        _ringAudio.volume = 0
+        _ringAudio.play()
+          .then(() => {
+            _ringAudio!.pause()
+            _ringAudio!.currentTime = 0
+            _ringAudio!.volume = 1
+          })
+          .catch(() => {})
+        // Also unlock AudioContext for beep fallback
+        if (!_beepCtx) _beepCtx = new AudioContext()
+        if (_beepCtx.state === 'suspended') _beepCtx.resume()
+      } catch {
+        // Audio not available
+      }
+      document.removeEventListener('click', _unlock)
+      document.removeEventListener('keydown', _unlock)
+    }
+    document.addEventListener('click', _unlock, { once: false })
+    document.addEventListener('keydown', _unlock, { once: false })
+  }
 }
 
 /** Same visibility rule as ReadyToggle — hands-on operators only. */
