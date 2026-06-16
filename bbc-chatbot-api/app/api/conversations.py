@@ -1,5 +1,6 @@
 """Admin API — conversations CRUD."""
 import logging
+import re as _re
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -471,3 +472,82 @@ async def reassign_conversation(
     )
 
     return {"success": True, "assigned_to": body.agent_id}
+
+
+# ── Operator History ──
+
+
+def _parse_operator_events(messages: list[dict]) -> list[dict]:
+    """Parse system messages for operator history (pre-activity_log fallback)."""
+    events = []
+    for m in messages:
+        c, ts = m.get("content", ""), m.get("created_at", "")
+        _assisted = _re.search(r"being assisted by (.+?)\.", c)
+        if _assisted:
+            events.append({
+                "action": "assigned",
+                "agent_name": _assisted.group(1),
+                "happened_at": ts,
+            })
+        if "connecting you" in c.lower():
+            events.append({"action": "connecting", "happened_at": ts})
+        if "sorry for the wait" in c.lower() or "right where we left off" in c.lower():
+            events.append({"action": "deadline_fired", "happened_at": ts})
+        _joined = _re.search(r"(.+?) has joined", c)
+        if _joined and "connecting" not in c.lower():
+            events.append({
+                "action": "agent_joined",
+                "agent_name": _joined.group(1),
+                "happened_at": ts,
+            })
+    return events
+
+
+@router.get("/conversations/{conversation_id}/operator-history")
+async def get_operator_history(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Operator assignment history — timeline per conversation."""
+    role = user.get("role", "")
+    if role not in ("owner", "admin", "dev", "supervisor", "sales", "support"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    events = await db.get_activity_for_conversation(conversation_id)
+    if events:
+        _a = next((e for e in events if e["action"] == "assigned"), None)
+        _r = next((e for e in events if e["action"] == "first_response"), None)
+        _d = next((e for e in events if e["action"] == "deadline_fired"), None)
+        if _a and _r:
+            summary = (
+                f"👤 {_a.get('agent_name', '?')} → ✅ "
+                f"{_r.get('response_seconds', '?')}s"
+            )
+        elif _a and _d:
+            summary = f"👤 {_a.get('agent_name', '?')} → ❌ timeout"
+        elif _a:
+            summary = f"👤 {_a.get('agent_name', '?')} → ⏳ active"
+        else:
+            summary = "🤖 AI handled"
+        return {"source": "activity_log", "events": events, "summary": summary}
+
+    msgs = await db.get_system_messages_for_conversation(conversation_id)
+    if msgs:
+        parsed = _parse_operator_events(msgs)
+        if parsed:
+            _a = next((e for e in parsed if e["action"] == "assigned"), None)
+            _d = next((e for e in parsed if e["action"] == "deadline_fired"), None)
+            if _a and _d:
+                summary = f"👤 {_a['agent_name']} → ❌ timeout"
+            elif _a:
+                summary = f"👤 {_a['agent_name']}"
+            else:
+                summary = "🤖 AI handled"
+            return {"source": "messages", "events": parsed, "summary": summary}
+
+    return {"source": "none", "events": [], "summary": "🤖 AI handled"}
