@@ -265,7 +265,7 @@ async def perform_handoff_to_agent(
     if _is_new_cycle:
         _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
         _meta["handoff_reason"] = handoff_reason
-        if handoff_reason == "auto_assign":
+        if handoff_reason in ("auto_assign", "first_message"):
             _meta["announce_pending"] = True
             _meta.pop("agent_cooldown_until", None)
         else:

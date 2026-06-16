@@ -1798,3 +1798,52 @@ async def ensure_lead_for_conversation(conversation_id: str) -> dict | None:
             return existing.data[0] if existing.data else None
         except Exception:
             return None
+
+
+async def reset_stale_ready_users(timeout_seconds: int = 600) -> list[dict]:
+    """Reset is_ready for operators whose heartbeat stopped (tab closed, etc.)."""
+    try:
+        db_client = get_client()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+        ).isoformat()
+
+        def _select():
+            return (
+                db_client.table("users")
+                .select("id, name")
+                .eq("is_ready", True)
+                .lt("last_seen_at", cutoff)
+                .execute()
+            )
+
+        res = await _run_sync(_select)
+        stale = res.data or []
+        for u in stale:
+            uid = u["id"]
+
+            def _reset(user_id=uid):
+                return (
+                    db_client.table("users")
+                    .update({"is_ready": False})
+                    .eq("id", user_id)
+                    .execute()
+                )
+
+            await _run_sync(_reset)
+            try:
+
+                def _audit(user_id=uid):
+                    return (
+                        db_client.table("agent_ready_log")
+                        .insert({"user_id": user_id, "is_ready": False})
+                        .execute()
+                    )
+
+                await _run_sync(_audit)
+            except Exception:
+                pass  # table may not exist on older deployments
+        return stale
+    except Exception as e:
+        logger.error(f"reset_stale_ready_users error: {e}")
+        return []

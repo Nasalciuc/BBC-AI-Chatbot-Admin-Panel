@@ -40,7 +40,8 @@ async def _enforce_response_deadline() -> int:
     convs = await db.get_active_human_conversations()
     count = 0
     now = datetime.now(timezone.utc)
-    deadline = timedelta(seconds=settings.agent_silent_timeout_seconds)
+    deadline_first = timedelta(seconds=settings.agent_first_response_timeout_seconds)
+    deadline_engaged = timedelta(seconds=settings.agent_silent_timeout_seconds)
     for conv in convs:
         meta = conv.get("metadata") or {}
         assigned_at_raw = meta.get("agent_assigned_at")
@@ -53,10 +54,12 @@ async def _enforce_response_deadline() -> int:
             )
         except (ValueError, TypeError):
             continue
-        if now - assigned_at < deadline:
-            continue  # still within deadline
-        if await db.has_agent_message_since(conv["id"], assigned_at_raw):
-            continue  # agent engaged — stale cleanup owns this conv now
+        _has_responded = await db.has_agent_message_since(conv["id"], assigned_at_raw)
+        _timeout = deadline_engaged if _has_responded else deadline_first
+        if now - assigned_at < _timeout:
+            continue
+        if _has_responded:
+            continue  # engaged agent → stale cleanup handles offline/silence
         await fall_back_to_ai(conv["id"])
         count += 1
     return count
@@ -176,6 +179,7 @@ async def heartbeat(user: dict = Depends(get_current_user)):
     await db.update_user_last_seen(user_id)
     cleaned = await _cleanup_stale_conversations()
     assigned = 0
+    active_assigned = 0
     # SECURITY: role, readiness AND tunnel_scope all from DB, never from JWT.
     # A stale token (e.g. admin still carrying an old sales token) was
     # receiving auto-assigns in production. Fail closed on any miss.
@@ -189,10 +193,12 @@ async def heartbeat(user: dict = Depends(get_current_user)):
             user_db.get("tunnel_scope") or "sales",
             agent_name,
         )
+        active_assigned = await db.get_agent_active_count(user_id)
     return {
         "success": True,
         "cleaned": cleaned,
         "assigned": assigned,
+        "active_assigned": active_assigned,
         "is_ready": is_ready,
         "role": role_db,
     }

@@ -583,8 +583,14 @@ async def _pipeline(
 
     # Guard: if an agent claimed this conversation while the pipeline was running,
     # discard the AI response — never let AI and human work in parallel.
+    # Exception: silent reservation (announce_pending) — AI serves the visitor
+    # until the operator sends their first message or 30s timeout fires.
     current_mode = await db.get_conversation_mode(cid)
-    if current_mode == "human":
+    _fresh_guard = await db.get_conversation_simple(cid) or {}
+    _silent_reservation = bool(
+        (_fresh_guard.get("metadata") or {}).get("announce_pending")
+    )
+    if current_mode == "human" and not _silent_reservation:
         logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
         return ChatResponse(
             conversation_id=cid,
