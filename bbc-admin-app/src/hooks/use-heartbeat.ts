@@ -33,42 +33,71 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
   useEffect(() => {
     active.current = true
 
+    const processResponse = (res: HeartbeatResponse) => {
+      if (typeof res?.is_ready === 'boolean') {
+        setReady(res.is_ready)
+      }
+      if (
+        canReceiveAssignNotifications(role) &&
+        typeof res?.active_assigned === 'number'
+      ) {
+        const activeCount = res.active_assigned
+        if (assignedInitialized.current) {
+          if (activeCount > prevActiveAssigned.current) {
+            notifyAssignment()
+          } else if (
+            activeCount === 0 &&
+            prevActiveAssigned.current > 0 &&
+            isAssignmentAlertActive()
+          ) {
+            stopAssignmentAlerts()
+          }
+        }
+        prevActiveAssigned.current = activeCount
+        assignedInitialized.current = true
+      } else if (
+        canReceiveAssignNotifications(role) &&
+        typeof res?.assigned === 'number'
+      ) {
+        if (assignedInitialized.current && res.assigned > 0) {
+          notifyAssignment()
+        }
+        assignedInitialized.current = true
+      }
+    }
+
+    const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+    const token = useAuthStore.getState().auth.accessToken
+
+    let worker: Worker | null = null
+    try {
+      worker = new Worker('/heartbeat-worker.js')
+    } catch {
+      // Worker not supported — fall back to setInterval below
+    }
+
+    if (worker && token) {
+      worker.postMessage({ type: 'start', apiBase, token })
+
+      worker.onmessage = (e: MessageEvent) => {
+        if (!active.current || e.data.type !== 'heartbeat') return
+        processResponse(e.data.data as HeartbeatResponse)
+      }
+
+      return () => {
+        active.current = false
+        worker?.postMessage({ type: 'stop' })
+        worker?.terminate()
+      }
+    }
+
     const ping = async () => {
       if (!active.current) return
       try {
         const res = await apiFetch<HeartbeatResponse>('/api/agent/heartbeat', {
           method: 'POST',
         })
-        if (typeof res?.is_ready === 'boolean') {
-          setReady(res.is_ready)
-        }
-        if (
-          canReceiveAssignNotifications(role) &&
-          typeof res?.active_assigned === 'number'
-        ) {
-          const activeCount = res.active_assigned
-          if (assignedInitialized.current) {
-            if (activeCount > prevActiveAssigned.current) {
-              notifyAssignment()
-            } else if (
-              activeCount === 0 &&
-              prevActiveAssigned.current > 0 &&
-              isAssignmentAlertActive()
-            ) {
-              stopAssignmentAlerts()
-            }
-          }
-          prevActiveAssigned.current = activeCount
-          assignedInitialized.current = true
-        } else if (
-          canReceiveAssignNotifications(role) &&
-          typeof res?.assigned === 'number'
-        ) {
-          if (assignedInitialized.current && res.assigned > 0) {
-            notifyAssignment()
-          }
-          assignedInitialized.current = true
-        }
+        processResponse(res)
       } catch {
         // Heartbeat failure is non-fatal
       }
