@@ -77,7 +77,8 @@ export function requestNotifyPermission(): void {
 /** Same visibility rule as ReadyToggle — hands-on operators only. */
 export function canReceiveAssignNotifications(role: string | undefined): boolean {
   if (!role) return false
-  return !['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
+  // Only QA excluded — management needs to hear assignments for oversight
+  return !['qa'].includes(role)
 }
 
 export function clearAssignmentBadge(): void {
