@@ -303,7 +303,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     <div className="h-full flex min-w-0 overflow-hidden bg-white">
 
       {/* LEFT COLUMN: Chat (header + messages + input) */}
-      <div className="flex min-w-[16rem] flex-1 basis-0 flex-col">
+      <div className="flex min-w-0 flex-1 basis-0 flex-col">
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 bg-[#0B1829]">
@@ -563,7 +563,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
       {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
       {(isAdmin || role === 'qa' || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
-      <div className="hidden h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-gray-200 bg-gray-50 lg:block">
+      <div className="hidden h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-gray-200 bg-gray-50 xl:block">
         <div className="p-4 space-y-4">
 
           {/* AI Summary Card */}
