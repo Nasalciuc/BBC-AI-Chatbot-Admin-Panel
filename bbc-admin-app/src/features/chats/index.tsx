@@ -170,7 +170,7 @@ export function Chats() {
           <div
             data-panel="left"
             className="flex flex-col border-r border-gray-200 bg-white"
-            style={selectedId ? { width: leftWidth, minWidth: 280, maxWidth: 600, flexShrink: 0 } : { flex: 1 }}
+            style={selectedId ? { width: leftWidth, minWidth: 280, maxWidth: 480, flexShrink: 0 } : { flex: 1 }}
           >
             {/* Tabs */}
             <div className="flex border-b border-gray-200">
@@ -284,7 +284,7 @@ export function Chats() {
 
           {/* Right panel — detail */}
           {selectedId ? (
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 min-w-0 overflow-hidden">
               <ConversationDetail
                 conversationId={selectedId}
                 onClose={() => setSelectedId(null)}
