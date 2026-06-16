@@ -6,7 +6,26 @@
 let _ringAudio: HTMLAudioElement | null = null
 let _flashInterval: ReturnType<typeof setInterval> | null = null
 let _alertsActive = false
+let _audioUnlocked = false
+let _beepCtx: AudioContext | null = null
 const _baseTitle = 'BBC Admin Panel'
+
+function _playFallbackBeep(): void {
+  try {
+    if (!_beepCtx) _beepCtx = new AudioContext()
+    if (_beepCtx.state === 'suspended') _beepCtx.resume()
+    const osc = _beepCtx.createOscillator()
+    const gain = _beepCtx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 800
+    gain.gain.value = 0.3
+    osc.connect(gain).connect(_beepCtx.destination)
+    osc.start()
+    osc.stop(_beepCtx.currentTime + 0.2)
+  } catch {
+    // AudioContext not available
+  }
+}
 
 export function notifyAssignment(info?: { name?: string }): void {
   _alertsActive = true
@@ -18,7 +37,10 @@ export function notifyAssignment(info?: { name?: string }): void {
       _ringAudio.loop = true
     }
     _ringAudio.currentTime = 0
-    _ringAudio.play().catch(() => {})
+    _ringAudio.play().catch(() => {
+      // Fallback: programmatic beep if wav fails (404, autoplay, codec)
+      _playFallbackBeep()
+    })
   } catch {
     /* no audio */
   }
