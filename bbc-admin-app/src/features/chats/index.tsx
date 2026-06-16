@@ -136,13 +136,15 @@ export function Chats() {
 
   // Sound handled globally by notify-assignment.ts (loop ring via heartbeat)
 
-  // Stop ring/flash when operator opens or focuses the chats page
+  // Stop ring/flash only when operator has no active assignments
   useEffect(() => {
-    stopAssignmentAlerts()
-    const onFocus = () => stopAssignmentAlerts()
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [])
+    const checkAndStop = () => {
+      if (!counts?.my_active) stopAssignmentAlerts()
+    }
+    checkAndStop()
+    window.addEventListener('focus', checkAndStop)
+    return () => window.removeEventListener('focus', checkAndStop)
+  }, [counts?.my_active])
 
   // Refresh all data on claim/close
   const handleConversationChange = () => {
