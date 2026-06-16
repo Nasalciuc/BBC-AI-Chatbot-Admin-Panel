@@ -1,27 +1,41 @@
-// Single place for "you got a chat" signals: sound + browser
-// notification + title badge. Heartbeat is the trigger (every 5s,
-// any page) — the chat calls the operator, not the other way around.
+// Single place for "you got a chat" signals: looping ring + title flash +
+// browser notification. Heartbeat is the trigger (every 5s, any page).
 
-let titleBadged = false
-const baseTitle = typeof document !== 'undefined' ? document.title : ''
+let _ringAudio: HTMLAudioElement | null = null
+let _flashInterval: ReturnType<typeof setInterval> | null = null
+const _baseTitle = 'BBC Admin Panel'
+let _alertsActive = false
 
 export function notifyAssignment(info?: { name?: string }) {
-  // 1. Sound — reuse the existing asset (same as /chats):
+  _alertsActive = true
+
+  // 1. Ring continuously until operator opens the conversation or timeout.
   try {
-    new Audio('/notification.wav').play().catch(() => {})
+    if (!_ringAudio) {
+      _ringAudio = new Audio('/notification.wav')
+      _ringAudio.loop = true
+    }
+    _ringAudio.play().catch(() => {})
   } catch {
     // Autoplay policy or missing asset — non-fatal
   }
-  // 2. Title badge:
-  if (!titleBadged) {
-    document.title = `🔴 New chat — ${baseTitle}`
-    titleBadged = true
+
+  // 2. Flash title until operator focuses the conversation.
+  if (!_flashInterval) {
+    _flashInterval = setInterval(() => {
+      document.title =
+        document.title === _baseTitle
+          ? '🔔 NEW CHAT! — BBC Admin Panel'
+          : _baseTitle
+    }, 800)
   }
-  // 3. Browser notification (if permitted):
+
+  // 3. Browser notification (if permitted).
   if ('Notification' in window && Notification.permission === 'granted') {
-    const n = new Notification('New chat assigned', {
-      body: info?.name ? `Visitor: ${info.name}` : 'A client is waiting for you',
+    const n = new Notification('🔔 NEW CHAT — respond in 30 seconds!', {
+      body: info?.name ? `Client: ${info.name}` : 'A client is waiting!',
       tag: 'bbc-assign',
+      requireInteraction: true,
     })
     n.onclick = () => {
       window.focus()
@@ -31,11 +45,26 @@ export function notifyAssignment(info?: { name?: string }) {
   }
 }
 
-export function clearAssignmentBadge() {
-  if (titleBadged) {
-    document.title = baseTitle
-    titleBadged = false
+export function stopAssignmentAlerts() {
+  _alertsActive = false
+  if (_ringAudio) {
+    _ringAudio.pause()
+    _ringAudio.currentTime = 0
   }
+  if (_flashInterval) {
+    clearInterval(_flashInterval)
+    _flashInterval = null
+  }
+  document.title = _baseTitle
+}
+
+/** @deprecated Use stopAssignmentAlerts */
+export function clearAssignmentBadge() {
+  stopAssignmentAlerts()
+}
+
+export function isAssignmentAlertActive(): boolean {
+  return _alertsActive
 }
 
 export function requestNotifyPermission() {

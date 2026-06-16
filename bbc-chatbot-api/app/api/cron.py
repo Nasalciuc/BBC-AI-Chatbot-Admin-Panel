@@ -107,6 +107,15 @@ async def run_agent_sweep() -> dict:
     return {"success": True, "swept": swept}
 
 
+async def run_cleanup_stale_ready() -> dict:
+    """Auto-reset is_ready for operators who disconnected without toggling off."""
+    stale = await db.reset_stale_ready_users(settings.agent_timeout_seconds)
+    names = [u.get("name") or u["id"] for u in stale]
+    if names:
+        logger.info(f"[cron] Auto-reset is_ready: {names}")
+    return {"reset": len(stale), "names": names}
+
+
 @router.post("/cron/abandoned-crm")
 async def process_abandoned_conversations(request: Request):
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""

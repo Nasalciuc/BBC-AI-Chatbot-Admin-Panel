@@ -72,28 +72,62 @@ async def test_first_message_routes_to_available_agent(_fresh_ai_conv):
             return_value={},
         ) as handoff_mock,
         patch(
-            "app.api.chat.conversation_service.add_message",
-            new_callable=AsyncMock,
-            return_value={"id": "msg-1"},
-        ) as add_msg,
-        patch(
             "app.api.chat.process_message",
             new_callable=AsyncMock,
             return_value=pipeline_resp,
         ) as pipeline_mock,
+        patch("app.services.response_cache.get_cached", return_value=None),
+        patch("app.services.response_cache.set_cached"),
+        patch(
+            "app.pipeline.intent.detect_intent",
+            return_value=MagicMock(value="greeting"),
+        ),
     ):
         resp = await _call_chat()
 
     route_mock.assert_awaited_once()
     handoff_mock.assert_awaited_once()
     assert handoff_mock.await_args.kwargs["handoff_reason"] == "first_message"
-    assert handoff_mock.await_args.kwargs["emit_messages"] is True
-    pipeline_mock.assert_not_awaited()
-    add_msg.assert_awaited_once()
-    assert add_msg.await_args.kwargs["role"] == "user"
-    assert add_msg.await_args.kwargs["content"] == "Hello"
-    assert resp.type == "welcome"
-    assert "Emma" in resp.message
+    assert handoff_mock.await_args.kwargs["emit_messages"] is False
+    pipeline_mock.assert_awaited_once()
+    assert resp.type == "ai"
+    assert resp.message == pipeline_resp.message
+
+
+@pytest.mark.asyncio
+async def test_first_message_saves_user_via_pipeline(_fresh_ai_conv):
+    pipeline_resp = ChatResponse(
+        conversation_id=_CONV_ID,
+        message="Hi! Where would you like to fly?",
+        type="ai",
+        model_used="haiku",
+    )
+    with (
+        patch("app.api.chat.db.count_messages", new_callable=AsyncMock, return_value=0),
+        patch("app.api.chat.db.get_conversation", new_callable=AsyncMock, return_value=_fresh_ai_conv),
+        patch("app.api.chat.db.get_conversation_mode", new_callable=AsyncMock, return_value="ai"),
+        patch("app.api.chat.lead_service.get_or_create_lead", new_callable=AsyncMock, return_value=None),
+        patch(
+            "app.api.chat.route_conversation",
+            new_callable=AsyncMock,
+            return_value={"agent_id": _AGENT_ID, "agent_name": "Emma", "mode": "human"},
+        ),
+        patch("app.api.chat.perform_handoff_to_agent", new_callable=AsyncMock, return_value={}),
+        patch(
+            "app.api.chat.process_message",
+            new_callable=AsyncMock,
+            return_value=pipeline_resp,
+        ) as pipeline_mock,
+        patch("app.services.response_cache.get_cached", return_value=None),
+        patch("app.services.response_cache.set_cached"),
+        patch(
+            "app.pipeline.intent.detect_intent",
+            return_value=MagicMock(value="greeting"),
+        ),
+    ):
+        await _call_chat()
+
+    pipeline_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -201,16 +235,21 @@ async def test_first_message_gate_requires_ai_mode():
 
 
 @pytest.mark.asyncio
-async def test_first_message_saves_user_before_handoff(_fresh_ai_conv):
+async def test_first_message_handoff_before_pipeline(_fresh_ai_conv):
     call_order: list[str] = []
-
-    async def _add_msg(**kwargs):
-        call_order.append("add_message")
-        return {"id": "msg-1"}
 
     async def _handoff(**kwargs):
         call_order.append("perform_handoff")
         return {}
+
+    async def _pipeline(**kwargs):
+        call_order.append("process_message")
+        return ChatResponse(
+            conversation_id=_CONV_ID,
+            message="Hi!",
+            type="ai",
+            model_used="haiku",
+        )
 
     with (
         patch("app.api.chat.db.count_messages", new_callable=AsyncMock, return_value=0),
@@ -222,13 +261,18 @@ async def test_first_message_saves_user_before_handoff(_fresh_ai_conv):
             new_callable=AsyncMock,
             return_value={"agent_id": _AGENT_ID, "agent_name": "Emma", "mode": "human"},
         ),
-        patch("app.api.chat.conversation_service.add_message", side_effect=_add_msg),
         patch("app.api.chat.perform_handoff_to_agent", side_effect=_handoff),
-        patch("app.api.chat.process_message", new_callable=AsyncMock),
+        patch("app.api.chat.process_message", side_effect=_pipeline),
+        patch("app.services.response_cache.get_cached", return_value=None),
+        patch("app.services.response_cache.set_cached"),
+        patch(
+            "app.pipeline.intent.detect_intent",
+            return_value=MagicMock(value="greeting"),
+        ),
     ):
         await _call_chat()
 
-    assert call_order == ["add_message", "perform_handoff"]
+    assert call_order == ["perform_handoff", "process_message"]
 
 
 def test_is_ready_default_false():

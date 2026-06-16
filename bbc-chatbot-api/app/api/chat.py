@@ -267,36 +267,24 @@ async def chat(
                     visitor_id=req.visitor_id,
                 )
                 if _route and _route.get("agent_id"):
-                    await conversation_service.add_message(
-                        conversation_id=req.conversation_id,
-                        role="user",
-                        content=clean_message,
-                    )
                     await perform_handoff_to_agent(
                         conversation_id=req.conversation_id,
                         agent_id=_route["agent_id"],
                         agent_name=_route.get("agent_name", "A specialist"),
                         tunnel=req.tunnel,
-                        emit_messages=True,
+                        emit_messages=False,
                         handoff_reason="first_message",
                     )
                     logger.info(
+                        f"[{req.conversation_id}] First-message silent handoff → "
+                        f"{_route.get('agent_name')} (30s to respond, AI pipeline continues)"
+                    )
+                    # Fall through — pipeline saves user message and generates AI greeting.
+                else:
+                    logger.info(
                         f"[{req.conversation_id}] First-message routing → "
-                        f"{_route.get('agent_name')} (operator-first)"
+                        f"no operator, AI pipeline"
                     )
-                    return ChatResponse(
-                        conversation_id=req.conversation_id,
-                        message=(
-                            f"{_route.get('agent_name', 'A specialist')} "
-                            f"has joined the conversation."
-                        ),
-                        type="welcome",
-                        model_used="none",
-                    )
-                logger.info(
-                    f"[{req.conversation_id}] First-message routing → "
-                    f"no operator, AI pipeline"
-                )
 
     # 4. AI mode or new conversation → run pipeline
     # Enrich metadata with client IP + User-Agent

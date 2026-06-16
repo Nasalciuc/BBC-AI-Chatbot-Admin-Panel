@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     max_concurrent_chats: int = 1
     agent_timeout_seconds: int = 600
     agent_silent_timeout_seconds: int = 480  # p75 of time-to-first-agent-message, 30d audit (Jun 2026)
+    # First-response timeout: operator has 30s to send first message after assignment.
+    # If silent → AI takes over instantly. The 480s silent timeout above is for
+    # operators who HAVE responded but then went silent mid-conversation.
+    agent_first_response_timeout_seconds: int = 30
 
     # System messages shown during routing flow
     connecting_message: str = "Connecting you with a specialist now\u2026"

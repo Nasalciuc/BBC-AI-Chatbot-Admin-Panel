@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
 import type { Conversation } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
-import { clearAssignmentBadge } from '@/lib/notify-assignment'
+import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { NotificationBell } from '@/components/notification-bell'
 import { ReadyToggle } from '@/components/ready-toggle'
 import { Header } from '@/components/layout/header'
@@ -134,19 +134,12 @@ export function Chats() {
     refetchInterval: 10_000,
   })
 
-  // Notification sound when my_active grows (new conversation assigned)
-  const prevActiveRef = useRef(-1)
-  useEffect(() => {
-    if (prevActiveRef.current >= 0 && counts.my_active > prevActiveRef.current) {
-      new Audio('/notification.wav').play().catch(() => {})
-    }
-    prevActiveRef.current = counts.my_active
-  }, [counts.my_active])
+  // Sound handled globally by notify-assignment.ts (loop ring via heartbeat)
 
-  // Clear title badge when operator opens or focuses the chats page
+  // Stop ring/flash when operator opens or focuses the chats page
   useEffect(() => {
-    clearAssignmentBadge()
-    const onFocus = () => clearAssignmentBadge()
+    stopAssignmentAlerts()
+    const onFocus = () => stopAssignmentAlerts()
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [])
@@ -232,7 +225,10 @@ export function Chats() {
                 </div>
               ) : conversations.map(conv => (
                 <button key={conv.id}
-                  onClick={() => setSelectedId(conv.id === selectedId ? null : conv.id)}
+                  onClick={() => {
+                    stopAssignmentAlerts()
+                    setSelectedId(conv.id === selectedId ? null : conv.id)
+                  }}
                   className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
