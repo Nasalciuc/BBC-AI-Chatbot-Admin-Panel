@@ -86,5 +86,5 @@ export function OperatorBadge({ conversationId }: { conversationId: string }) {
     staleTime: 30_000,
   })
   if (!data?.summary) return null
-  return <span className="text-xs text-gray-400 ml-2">{data.summary}</span>
+  return <span className="ml-2 max-w-[10rem] truncate text-xs text-gray-400">{data.summary}</span>
 }

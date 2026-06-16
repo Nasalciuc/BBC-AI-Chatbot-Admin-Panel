@@ -300,10 +300,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   return (
-    <div className="h-full flex bg-white">
+    <div className="h-full flex min-w-0 overflow-hidden bg-white">
 
       {/* LEFT COLUMN: Chat (header + messages + input) */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex min-w-[16rem] flex-1 basis-0 flex-col">
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 bg-[#0B1829]">
@@ -333,10 +333,14 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-400">
-              <span>{allMessages.length} messages</span>
-              <span>${conv.ai_cost_total.toFixed(4)} AI cost</span>
-              {isAdmin && <OperatorBadge conversationId={conversationId} />}
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-gray-400">
+              <span className="shrink-0">{allMessages.length} messages</span>
+              <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
+              {isAdmin && (
+                <span className="min-w-0 max-w-full truncate">
+                  <OperatorBadge conversationId={conversationId} />
+                </span>
+              )}
               <button onClick={copyId} className="flex items-center gap-0.5 hover:text-gray-200 transition">
                 {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 {conversationId.slice(0, 8)}...
@@ -382,7 +386,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         </div>
 
         {/* Input + Actions + Status */}
-        <div className="border-t border-gray-200 bg-white">
+        <div className="shrink-0 border-t border-gray-200 bg-white">
           {/* Typing preview — shown when client is composing a message */}
           {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl">
@@ -540,8 +544,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           )}
 
           {/* Status bar */}
-          <div className="px-4 py-2 flex items-center justify-between text-xs text-gray-400 border-t border-gray-50">
-            <span>
+          <div className="px-4 py-2 flex min-w-0 items-center justify-between gap-2 text-xs text-gray-400 border-t border-gray-50">
+            <span className="min-w-0 truncate">
               Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-gray-500'}`}>{conv.status}</span>
               {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-gray-600'}`}>{conv.mode}</span>
               {' · '}Client:
@@ -552,14 +556,14 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               {conv.mode === 'ai' && conv.status === 'active' && <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>}
               {conv.mode === 'human' && conv.status === 'active' && <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>}
             </span>
-            <span>{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
+            <span className="shrink-0">{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
           </div>
         </div>
       </div>
 
       {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
       {(isAdmin || role === 'qa' || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
-      <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto shrink-0 hidden lg:block">
+      <div className="hidden h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-gray-200 bg-gray-50 lg:block">
         <div className="p-4 space-y-4">
 
           {/* AI Summary Card */}
