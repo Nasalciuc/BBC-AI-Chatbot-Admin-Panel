@@ -1,26 +1,29 @@
-// Single place for "you got a chat" signals: looping ring + title flash +
-// browser notification. Heartbeat is the trigger (every 5s, any page).
+/**
+ * Persistent assignment alerts — rings like a phone until operator
+ * opens conversation or 30s timeout fires (AI takes over).
+ */
 
 let _ringAudio: HTMLAudioElement | null = null
 let _flashInterval: ReturnType<typeof setInterval> | null = null
-const _baseTitle = 'BBC Admin Panel'
 let _alertsActive = false
+const _baseTitle = 'BBC Admin Panel'
 
-export function notifyAssignment(info?: { name?: string }) {
+export function notifyAssignment(info?: { name?: string }): void {
   _alertsActive = true
 
-  // 1. Ring continuously until operator opens the conversation or timeout.
+  // 1. Sound LOOP
   try {
     if (!_ringAudio) {
       _ringAudio = new Audio('/notification.wav')
       _ringAudio.loop = true
     }
+    _ringAudio.currentTime = 0
     _ringAudio.play().catch(() => {})
   } catch {
-    // Autoplay policy or missing asset — non-fatal
+    /* no audio */
   }
 
-  // 2. Flash title until operator focuses the conversation.
+  // 2. Title FLASH every 800ms
   if (!_flashInterval) {
     _flashInterval = setInterval(() => {
       document.title =
@@ -30,22 +33,25 @@ export function notifyAssignment(info?: { name?: string }) {
     }, 800)
   }
 
-  // 3. Browser notification (if permitted).
+  // 3. Browser notification
   if ('Notification' in window && Notification.permission === 'granted') {
-    const n = new Notification('🔔 NEW CHAT — respond in 30 seconds!', {
-      body: info?.name ? `Client: ${info.name}` : 'A client is waiting!',
-      tag: 'bbc-assign',
-      requireInteraction: true,
-    })
-    n.onclick = () => {
-      window.focus()
-      window.location.assign('/chats')
-      n.close()
+    try {
+      const n = new Notification('🔔 NEW CHAT — respond in 30 seconds!', {
+        body: info?.name ? `Client: ${info.name}` : 'A client is waiting!',
+        tag: 'bbc-assign',
+        requireInteraction: true,
+      })
+      n.onclick = () => {
+        window.focus()
+        n.close()
+      }
+    } catch {
+      /* */
     }
   }
 }
 
-export function stopAssignmentAlerts() {
+export function stopAssignmentAlerts(): void {
   _alertsActive = false
   if (_ringAudio) {
     _ringAudio.pause()
@@ -58,16 +64,11 @@ export function stopAssignmentAlerts() {
   document.title = _baseTitle
 }
 
-/** @deprecated Use stopAssignmentAlerts */
-export function clearAssignmentBadge() {
-  stopAssignmentAlerts()
-}
-
 export function isAssignmentAlertActive(): boolean {
   return _alertsActive
 }
 
-export function requestNotifyPermission() {
+export function requestNotifyPermission(): void {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {})
   }
@@ -77,4 +78,8 @@ export function requestNotifyPermission() {
 export function canReceiveAssignNotifications(role: string | undefined): boolean {
   if (!role) return false
   return !['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
+}
+
+export function clearAssignmentBadge(): void {
+  stopAssignmentAlerts()
 }
