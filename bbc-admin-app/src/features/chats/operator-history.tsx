@@ -28,7 +28,7 @@ const ICONS: Record<string, { Icon: typeof User; color: string; label: string }>
 }
 
 export function OperatorHistory({ conversationId }: { conversationId: string }) {
-  const { data } = useQuery({
+  const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
     queryKey: ['op-history', conversationId],
     queryFn: () => getOperatorHistory(conversationId),
     staleTime: 30_000,
@@ -80,7 +80,7 @@ export function OperatorHistory({ conversationId }: { conversationId: string }) 
 }
 
 export function OperatorBadge({ conversationId }: { conversationId: string }) {
-  const { data } = useQuery({
+  const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
     queryKey: ['op-history', conversationId],
     queryFn: () => getOperatorHistory(conversationId),
     staleTime: 30_000,
