@@ -300,7 +300,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   return (
-    <div className="h-full flex min-w-0 overflow-hidden bg-white">
+    <div className="h-full flex min-w-0 overflow-hidden bg-white text-gray-900">
 
       {/* LEFT COLUMN: Chat (header + messages + input) */}
       <div className="flex min-w-0 flex-1 basis-0 flex-col">
@@ -443,7 +443,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </div>
                 <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
                   placeholder="Type a reply as agent..." rows={1} disabled={sending}
-                  className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-gray-400 disabled:opacity-50" />
+                  className="flex-1 resize-none rounded-xl border border-gray-200 bg-white text-gray-900 px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-gray-400 disabled:opacity-50" />
                 <button onClick={handleSend} disabled={!input.trim() || sending}
                   className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0B1829] text-white text-sm font-medium hover:bg-[#0B1829]/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0">
                   <Send className="w-4 h-4" />{sending ? '...' : 'Send'}

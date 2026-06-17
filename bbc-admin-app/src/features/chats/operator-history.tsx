@@ -61,7 +61,7 @@ export function OperatorHistory({ conversationId }: { conversationId: string }) 
               <div>
                 <span className="text-gray-500">{cfg.label}</span>
                 {ev.agent_name && (
-                  <span className="text-gray-800 font-medium ml-1">{ev.agent_name}</span>
+                  <span className="text-gray-900 font-medium ml-1">{ev.agent_name}</span>
                 )}
                 <span className="text-gray-400 ml-1.5">{fmt(ev.happened_at)}</span>
                 {ev.response_seconds != null && (
