@@ -23,7 +23,7 @@ type HeartbeatResponse = {
  * Sends POST /api/agent/heartbeat every `intervalMs` milliseconds.
  * Runs in AuthenticatedLayout — active on ALL admin pages.
  */
-export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
+export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversationId?: string | null) {
   const active = useRef(true)
   const setReady = useReadyStore((s) => s.setReady)
   const role = useAuthStore((s) => s.auth.user?.role)
@@ -77,7 +77,7 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
     }
 
     if (worker && token) {
-      worker.postMessage({ type: 'start', apiBase, token })
+      worker.postMessage({ type: 'start', apiBase, token, viewingConversationId: viewingConversationId || null })
 
       worker.onmessage = (e: MessageEvent) => {
         if (!active.current || e.data.type !== 'heartbeat') return
@@ -96,6 +96,8 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
       try {
         const res = await apiFetch<HeartbeatResponse>('/api/agent/heartbeat', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ viewing_conversation_id: viewingConversationId || null }),
         })
         processResponse(res)
       } catch {
@@ -110,5 +112,5 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS) {
       active.current = false
       clearInterval(id)
     }
-  }, [intervalMs, role, setReady])
+  }, [intervalMs, role, setReady, viewingConversationId])
 }

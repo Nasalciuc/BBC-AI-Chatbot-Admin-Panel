@@ -4,9 +4,13 @@ interface ReadyState {
   /** null = not yet synced from server (first heartbeat pending) */
   isReady: boolean | null
   setReady: (value: boolean) => void
+  viewingConversationId: string | null
+  setViewingConversationId: (id: string | null) => void
 }
 
 export const useReadyStore = create<ReadyState>()((set) => ({
   isReady: null,
   setReady: (value) => set({ isReady: value }),
+  viewingConversationId: null,
+  setViewingConversationId: (viewingConversationId) => set({ viewingConversationId }),
 }))

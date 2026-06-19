@@ -12,6 +12,7 @@ import { ConnectionBanner } from '@/components/connection-banner'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { useAuthStore } from '@/stores/auth-store'
+import { useReadyStore } from '@/stores/ready-store'
 import ConversationDetail from './detail'
 
 const TUNNEL_STYLES: Record<string, string> = {
@@ -64,6 +65,11 @@ export function Chats() {
   const [tunnelFilter, setTunnel] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
   const [highlightId] = useState<string | null>(urlHighlight)
+  const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
+
+  useEffect(() => {
+    setViewingConversationId(selectedId)
+  }, [selectedId, setViewingConversationId])
 
   // Stale conversation IDs for red highlight
   const { data: notifData } = useQuery({
