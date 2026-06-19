@@ -15,6 +15,10 @@ router = APIRouter()
 _HANDOFF_COOLDOWN_SECONDS = 120
 
 
+class HeartbeatBody(BaseModel):
+    viewing_conversation_id: str | None = None
+
+
 def _recent_fallback_system_message(last_sys: dict | None) -> bool:
     """True if the last system message is a recent specialist-unavailable fallback."""
     if not last_sys or "right where we left off" not in (last_sys.get("content") or ""):
@@ -28,7 +32,10 @@ def _recent_fallback_system_message(last_sys: dict | None) -> bool:
         return False
 
 
-async def _enforce_response_deadline() -> int:
+async def _enforce_response_deadline(
+    viewing_conversation_id: str | None = None,
+    viewing_user_id: str | None = None,
+) -> int:
     """Fall back conversations where the assigned agent never sent a message within
     agent_silent_timeout_seconds of assignment (checked via agent_assigned_at metadata).
 
@@ -58,6 +65,16 @@ async def _enforce_response_deadline() -> int:
             continue
         _has_responded = await db.has_agent_message_since(conv["id"], assigned_at_raw)
         _timeout = deadline_engaged if _has_responded else deadline_first
+
+        # Extend timeout to 120s if this operator is VIEWING this conversation
+        if (
+            not _has_responded
+            and viewing_conversation_id
+            and conv["id"] == viewing_conversation_id
+            and conv.get("assigned_agent_id") == viewing_user_id
+        ):
+            _timeout = timedelta(seconds=120)
+
         if now - assigned_at < _timeout:
             continue
         if _has_responded:
@@ -67,7 +84,10 @@ async def _enforce_response_deadline() -> int:
     return count
 
 
-async def _cleanup_stale_conversations() -> int:
+async def _cleanup_stale_conversations(
+    viewing_conversation_id: str | None = None,
+    viewing_user_id: str | None = None,
+) -> int:
     """Revert conversations from offline agents back to AI mode.
     Called on every heartbeat — each online agent helps clean up."""
     from config.settings import settings
@@ -84,7 +104,10 @@ async def _cleanup_stale_conversations() -> int:
 
     # Second pass: agents who are ONLINE but never engaged within the deadline.
     # (Stale pass only catches offline agents; this catches silent-but-online ones.)
-    count += await _enforce_response_deadline()
+    count += await _enforce_response_deadline(
+        viewing_conversation_id=viewing_conversation_id,
+        viewing_user_id=viewing_user_id,
+    )
     return count
 
 
@@ -171,7 +194,7 @@ async def _assign_pending_conversations(
 
 
 @router.post("/agent/heartbeat")
-async def heartbeat(user: dict = Depends(get_current_user)):
+async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(get_current_user)):
     """Agent pings every 30s to signal online presence.
     Also cleans up conversations from offline agents.
     Only operator roles (sales/support, per DB) auto-receive conversations."""
@@ -181,7 +204,10 @@ async def heartbeat(user: dict = Depends(get_current_user)):
     await db.update_user_last_seen(user_id)
     from app.services.presence import record_presence_tick
     _fire_and_forget(record_presence_tick(user_id, db))
-    cleaned = await _cleanup_stale_conversations()
+    cleaned = await _cleanup_stale_conversations(
+        viewing_conversation_id=body.viewing_conversation_id,
+        viewing_user_id=user_id,
+    )
     assigned = 0
     active_assigned = 0
     # SECURITY: role, readiness AND tunnel_scope all from DB, never from JWT.

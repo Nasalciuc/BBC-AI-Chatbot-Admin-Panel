@@ -9,6 +9,7 @@
 let _interval = null
 let _apiBase = ''
 let _token = ''
+let _viewingConversationId = null
 const HEARTBEAT_MS = 5000
 
 self.onmessage = function (e) {
@@ -16,6 +17,7 @@ self.onmessage = function (e) {
   if (msg.type === 'start') {
     _apiBase = msg.apiBase || ''
     _token = msg.token || ''
+    _viewingConversationId = msg.viewingConversationId || null
     if (_interval) clearInterval(_interval)
     _interval = setInterval(doHeartbeat, HEARTBEAT_MS)
     doHeartbeat() // immediate first ping
@@ -24,6 +26,8 @@ self.onmessage = function (e) {
     _interval = null
   } else if (msg.type === 'updateToken') {
     _token = msg.token || ''
+  } else if (msg.type === 'updateViewing') {
+    _viewingConversationId = msg.viewingConversationId || null
   }
 }
 
@@ -36,6 +40,7 @@ async function doHeartbeat() {
         'Content-Type': 'application/json',
         Authorization: 'Bearer ' + _token,
       },
+      body: JSON.stringify({ viewing_conversation_id: _viewingConversationId }),
     })
     if (res.ok) {
       const data = await res.json()

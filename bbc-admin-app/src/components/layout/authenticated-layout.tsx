@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { useHeartbeat } from '@/hooks/use-heartbeat'
+import { useReadyStore } from '@/stores/ready-store'
 import { getCookie } from '@/lib/cookies'
 import { requestNotifyPermission } from '@/lib/notify-assignment'
 import { cn } from '@/lib/utils'
@@ -15,7 +16,8 @@ type AuthenticatedLayoutProps = {
 }
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
-  useHeartbeat()
+  const viewingConversationId = useReadyStore((s) => s.viewingConversationId)
+  useHeartbeat(undefined, viewingConversationId)
 
   useEffect(() => {
     requestNotifyPermission()
