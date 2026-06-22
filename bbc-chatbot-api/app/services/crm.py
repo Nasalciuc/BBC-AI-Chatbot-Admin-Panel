@@ -106,10 +106,20 @@ def check_crm_ready(lead: dict, visitor) -> bool:
     return len(missing) == 0
 
 
-def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, suid: str | None = None) -> dict:
+def build_crm_payload(
+    lead: dict,
+    visitor,
+    conv_metadata: dict | None = None,
+    suid: str | None = None,
+    allow_defaults: bool = False,
+) -> dict:
     """Build CRM API request body from lead + visitor data."""
     origin = (lead.get("origin_code") or "").upper()
+    if allow_defaults and not origin:
+        origin = "AAA"
     dest = (lead.get("destination_code") or "").upper()
+    if allow_defaults and not dest:
+        dest = "AAA"
     _dep = lead.get("departure_date")
     if not _dep:
         _dep = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
@@ -130,9 +140,10 @@ def build_crm_payload(lead: dict, visitor, conv_metadata: dict | None = None, su
 
     pax = lead.get("passengers")
     if not pax:
-        logger.warning(
-            "CRM payload: passengers is None (check_crm_ready should have blocked)"
-        )
+        if not allow_defaults:
+            logger.warning(
+                "CRM payload: passengers is None (check_crm_ready should have blocked)"
+            )
         pax = 1
     if isinstance(pax, str):
         try:
@@ -264,99 +275,34 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
 
     try:
         lead = lead or {}
-        origin = (lead.get("origin_code") or "AAA").upper()[:3]
-        dest = (lead.get("destination_code") or "AAA").upper()[:3]
-        dep_date = lead.get("departure_date")
-        ret_date = lead.get("return_date")
-        cabin = lead.get("cabin_class") or "business"
-        pax = lead.get("passengers") or 1
-        if isinstance(pax, str):
-            try:
-                pax = int(pax)
-            except ValueError:
-                pax = 1
-        pax = max(1, min(9, int(pax)))
-        _children = int(lead.get("children_count") or lead.get("_children_count") or 0)
-        _infants = int(lead.get("infant_count") or lead.get("_infant_count") or 0)
-        _adults = max(1, pax - _children - _infants)
-        trip_type = "round_trip" if ret_date else "one_way"
-
-        if not dep_date:
-            dep_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
-        else:
-            dep_date = format_date_iso(dep_date)
-
         phone = format_phone_international(conv.get("visitor_phone", ""))
         if not phone:
             return CRMResult(success=False, error="Phone invalid")
 
-        flights = [{"from": origin, "to": dest, "date": str(dep_date)}]
-        if trip_type == "round_trip" and ret_date:
-            flights.append({
-                "from": dest,
-                "to": origin,
-                "date": format_date_iso(ret_date),
-            })
+        from types import SimpleNamespace
+        _v = SimpleNamespace(
+            name=conv.get("visitor_name") or "",
+            email=conv.get("visitor_email") or "",
+            phone=conv.get("visitor_phone") or "",
+        )
+        payload = build_crm_payload(
+            lead,
+            _v,
+            conv_metadata=conv.get("metadata"),
+            suid=conv.get("visitor_id"),
+            allow_defaults=True,
+        )
 
-        cabin_map = {
-            "business": "business",
-            "first": "first",
-            "premium_economy": "premium_economy",
-        }
-        payload = {
-            "trip_type": trip_type,
-            "cabin_class": cabin_map.get(str(cabin).lower(), "business"),
-            "coupon": "",
-            "client": {
-                "name": (conv.get("visitor_name") or "Customer").strip(),
-                "email": (conv.get("visitor_email") or "").lower().strip(),
-                "phone": phone,
-            },
-            "passengers": {
-                "adult": min(9, _adults),
-                "child": min(9, _children),
-                "infant": min(9, _infants),
-            },
-            "flights": flights,
-            "sms": False,
-        }
-
-        # UTM from conversation metadata
         _ab_meta = conv.get("metadata") or {}
-        if _ab_meta.get("utm_source"):
-            payload["_utmsource"] = _ab_meta["utm_source"]
-        if _ab_meta.get("utm_medium"):
-            payload["_utmmedium"] = _ab_meta["utm_medium"]
-        if _ab_meta.get("utm_campaign"):
-            payload["_utmcampaign"] = _ab_meta["utm_campaign"]
-        if _ab_meta.get("utm_term"):
-            payload["utm_term"] = _ab_meta["utm_term"]
-        if _ab_meta.get("utm_content"):
-            payload["utm_content"] = _ab_meta["utm_content"]
-        if _ab_meta.get("gclid"):
-            payload["gclid"] = _ab_meta["gclid"]
-        if _ab_meta.get("fbclid"):
-            payload["fbclid"] = _ab_meta["fbclid"]
-        if _ab_meta.get("referrer"):
-            payload["http_referrer"] = _ab_meta["referrer"]
-        if _ab_meta.get("google_analytics_client_id"):
-            payload["google_analytics_client_id"] = _ab_meta["google_analytics_client_id"]
-        if _ab_meta.get("kayak_click_id"):
-            payload["kayak_click_id"] = _ab_meta["kayak_click_id"]
-        _ab_suid = conv.get("visitor_id")
-        if _ab_suid:
-            payload["suid"] = _ab_suid
-
-        # BCT CRM requires recaptchaToken
-        if _ab_meta.get("site") == "bct":
-            payload["recaptchaToken"] = "chatbot"
-
         _ab_site = _ab_meta.get("site")
         _crm_base = _resolve_crm_base(_ab_site)
         endpoint = f"{_crm_base.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
         cid = conv.get("id", "?")
         logger.info(f"[cron][{cid}] CRM endpoint: {endpoint} (site={_ab_site or 'default'})")
-        logger.info(f"[CRM-ABANDONED] conv={cid} {origin}->{dest} {dep_date}")
+        _fl0 = (payload.get("flights") or [{}])[0]
+        logger.info(
+            f"[CRM-ABANDONED] conv={cid} {_fl0.get('from', '?')}->{_fl0.get('to', '?')} {_fl0.get('date', '?')}"
+        )
 
         client = _get_crm_client()
         resp = await client.post(
