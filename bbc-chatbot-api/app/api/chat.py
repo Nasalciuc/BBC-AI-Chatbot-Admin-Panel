@@ -196,8 +196,7 @@ async def chat(
                 await conversation_service.add_message(
                     conversation_id=req.conversation_id,
                     role="user",
-                    content=clean_message,
-                )
+                    content=clean_me,)
 
                 if has_closing_been_sent(_meta):
                     # Post-sale: closing already sent — discriminate message type
