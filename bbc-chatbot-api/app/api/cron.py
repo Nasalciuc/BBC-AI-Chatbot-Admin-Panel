@@ -45,14 +45,18 @@ async def run_abandoned_crm() -> dict:
                 # Close-only: CRM done but conv still active (zombie)
                 _meta = conv.get("metadata") or {}
                 _site = _meta.get("site")
-                from app.ai.prompts import get_brand_vars
-
-                _closing = get_brand_vars(_site).get("closing_message") or settings.post_crm_closing_message
                 # Check flag instead of fragile string match
                 _conv_meta = conv.get("metadata") or {}
-                from app.services.closing import has_closing_been_sent
+                from app.services.closing import (
+                    has_closing_been_sent,
+                    claim_closing_sent,
+                    compute_closing_text,
+                )
                 if not has_closing_been_sent(_conv_meta):
-                    await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
+                    _claimed = await claim_closing_sent(cid)
+                    if _claimed:
+                        _closing = compute_closing_text(_site)
+                        await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
                 await db.update_conversation(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
