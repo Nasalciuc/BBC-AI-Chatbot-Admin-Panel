@@ -673,15 +673,21 @@ async def _pipeline(
                 logger.info(f"[{cid}] Step 7.5: Summary shown (awaiting confirmation)")
 
         elif _is_confirmed and _crm_submitted_this_turn:
-            from app.ai.prompts import get_brand_vars
+            from app.services.closing import compute_closing_text, claim_closing_sent
 
-            _site_closing = get_brand_vars(
-                metadata.get("site") if metadata else None
-            ).get("closing_message")
-            validated_text = _site_closing or settings.post_crm_closing_message
-            gen.model_used = "template"
-            gen.cost = 0.0
-            logger.info(f"[{cid}] Step 7.5: Confirmed → closing")
+            _claimed = await claim_closing_sent(cid)
+            if _claimed:
+                validated_text = compute_closing_text(
+                    metadata.get("site") if metadata else None
+                )
+                gen.model_used = "template"
+                gen.cost = 0.0
+                logger.info(f"[{cid}] Step 7.5: Confirmed → closing (claimed)")
+            else:
+                validated_text = "You're all set! Our consultant will reach out shortly."
+                gen.model_used = "template"
+                gen.cost = 0.0
+                logger.info(f"[{cid}] Step 7.5: Closing already sent → ack only")
 
     ai_msg = await conversation_service.add_message(
         conversation_id=cid,
