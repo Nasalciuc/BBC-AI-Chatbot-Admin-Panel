@@ -178,6 +178,9 @@ async def chat(
                 _still_collecting = True
             _post_crm_mode = await db.get_conversation_mode(req.conversation_id)
             if _post_crm_mode == "ai" and not _still_collecting:
+                from app.services.closing import compute_closing_text, has_closing_been_sent, claim_closing_sent
+                _meta = dict(_conv_row.get("metadata") or {})
+
                 # Save user message
                 await conversation_service.add_message(
                     conversation_id=req.conversation_id,
@@ -194,13 +197,9 @@ async def chat(
                         (_conv_row.get("metadata") or {}).get("site")
                     )
                 await conversation_service.add_message(
-                    conversation_id=req.conversation_id,
-                    role="ai",
-                    content=_post_crm_msg,
-                    model_used="template",
-                    cost=0.0,
+                    req.conversation_id, "ai", _msg,
+                    model_used="template", cost=0.0,
                 )
-                # Re-close conversation (client reopened it by writing)
                 await db.update_conversation(req.conversation_id, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
@@ -210,9 +209,7 @@ async def chat(
                 logger.info(f"[{req.conversation_id}] Post-CRM: template + re-close (no handoff)")
                 return ChatResponse(
                     conversation_id=req.conversation_id,
-                    message=_post_crm_msg,
-                    type="template",
-                    model_used="template",
+                    message=_msg, type="closing", model_used="template",
                 )
 
     # 3. If existing conversation in 'human' mode
