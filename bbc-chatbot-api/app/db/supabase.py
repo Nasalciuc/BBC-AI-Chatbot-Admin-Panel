@@ -2102,3 +2102,33 @@ async def get_system_messages_for_conversation(conversation_id: str) -> list[dic
         return res.data or []
     except Exception:
         return []
+
+
+async def get_stale_presence_left_conversations(timeout_minutes: int = 5) -> list[dict]:
+    """Conversations where client left website >timeout_minutes ago."""
+    try:
+        db_client = get_client()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+        ).isoformat()
+
+        def _q():
+            return (
+                db_client.table("conversations")
+                .select("id, visitor_name, metadata")
+                .eq("status", "active")
+                .execute()
+            )
+
+        res = await _run_sync(_q)
+        stale = []
+        for c in (res.data or []):
+            meta = c.get("metadata") or {}
+            if meta.get("widget_presence") == "left":
+                _at = meta.get("widget_last_event_at")
+                if _at and _at < cutoff:
+                    stale.append(c)
+        return stale
+    except Exception as e:
+        logger.warning(f"get_stale_presence_left: {e}")
+        return []

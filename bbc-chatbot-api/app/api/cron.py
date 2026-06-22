@@ -116,6 +116,21 @@ async def run_cleanup_stale_ready() -> dict:
     return {"reset": len(stale), "names": names}
 
 
+async def run_close_stale_presence() -> dict:
+    """Auto-close conversations where client left website >5 min ago."""
+    stale = await db.get_stale_presence_left_conversations(timeout_minutes=5)
+    closed = 0
+    for conv in stale:
+        cid = conv["id"]
+        try:
+            await db.update_conversation(cid, {"status": "closed"})
+            logger.info(f"[cron] Auto-closed {cid} ({conv.get('visitor_name','?')}): client left >5min")
+            closed += 1
+        except Exception as e:
+            logger.error(f"[cron] Failed to close {cid}: {e}")
+    return {"closed": closed}
+
+
 @router.post("/cron/abandoned-crm")
 async def process_abandoned_conversations(request: Request):
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
