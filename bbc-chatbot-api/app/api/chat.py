@@ -187,43 +187,15 @@ async def chat(
                     role="user",
                     content=clean_message,
                 )
-
-                if has_closing_been_sent(_meta):
-                    # Post-sale: closing already sent — discriminate message type
-                    _msg_lower = clean_message.strip().lower().rstrip(".!,")
-                    _polite = _msg_lower in (
-                        "thank you", "thanks", "ok", "great", "perfect",
-                        "yes", "bye", "goodbye", "awesome", "sounds good",
-                        "appreciate it", "thx", "ty",
-                    )
-                    if _polite:
-                        _ack = "You're welcome! Our team will be in touch shortly."
-                    else:
-                        _ack = (
-                            "Noted — we'll include that in your request. "
-                            "For any changes, please call "
-                            + compute_closing_text(_meta.get("site")).split("call ")[-1].rstrip(".")
-                            + "."
-                        )
-                    await conversation_service.add_message(
-                        req.conversation_id, "ai", _ack,
-                        model_used="template", cost=0.0,
-                    )
-                    await db.update_conversation(req.conversation_id, {
-                        "status": "closed",
-                        "closed_at": datetime.now(timezone.utc).isoformat(),
-                        "mode": "ai",
-                        "assigned_agent_id": None,
-                    })
-                    return ChatResponse(
-                        conversation_id=req.conversation_id,
-                        message=_ack, type="post_sale", model_used="template",
-                    )
-
-                # First post-CRM closing (PR-A claim handles dedup)
+                # Respond with closing template — no handoff, no routing
+                from app.services.closing import compute_closing_text, claim_closing_sent
                 _claimed = await claim_closing_sent(req.conversation_id)
-                _closing = compute_closing_text(_meta.get("site"))
-                _msg = _closing if _claimed else "You're all set! Our consultant will reach out shortly."
+                if not _claimed:
+                    _post_crm_msg = "Thank you! Our consultant will reach out shortly."
+                else:
+                    _post_crm_msg = compute_closing_text(
+                        (_conv_row.get("metadata") or {}).get("site")
+                    )
                 await conversation_service.add_message(
                     req.conversation_id, "ai", _msg,
                     model_used="template", cost=0.0,
