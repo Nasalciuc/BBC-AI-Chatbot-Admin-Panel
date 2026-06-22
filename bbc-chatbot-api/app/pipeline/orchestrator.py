@@ -180,11 +180,8 @@ async def _pipeline(
     except Exception as e:
         logger.warning(f"[{cid}] moderation check failed: {e}")
 
-    # Fetch history + lead row in parallel (independent DB calls)
-    history, _ = await asyncio.gather(
-        db.get_recent_messages(cid, limit=10),
-        lead_service.get_or_create_lead(cid),
-    )
+    # Fetch history (lead fetched later when needed — L359+)
+    history = await db.get_recent_messages(cid, limit=10)
     logger.info(f"[{cid}] [PERF] setup: {(time.perf_counter() - pipeline_start) * 1000:.0f}ms")
     t_section = time.perf_counter()
 
@@ -199,6 +196,11 @@ async def _pipeline(
     # Confirm override: if summary was shown and client confirms,
     # treat as CONFIRMED regardless of original intent classification.
     _conv_meta = (conv or {}).get("metadata") or {}
+    # Brand-resolved phone for handoff messages (BCT uses 668-3009, not 322-7999)
+    from app.ai.prompts import get_brand_vars as _get_brand
+    _brand_phone = _get_brand(
+        (metadata or {}).get("site") or _conv_meta.get("site")
+    ).get("contact_phone", "+1 (888) 322-7999")
     if _conv_meta.get("summary_shown_at") and not _conv_meta.get("confirmed_at"):
         _confirm_words = {
             "yes", "correct", "looks good", "confirm", "that's right",
@@ -408,7 +410,7 @@ async def _pipeline(
                 gen = GeneratedResponse(
                     text=(
                         "I understand you'd like to speak with someone. "
-                        "You can reach us directly at +1 (888) 322-7999 — available 24/7."
+                        f"You can reach us directly at {_brand_phone} — available 24/7."
                     ),
                     model_used="template",
                 )
@@ -457,7 +459,7 @@ async def _pipeline(
                 gen = GeneratedResponse(
                     text=no_agent or (
                         "All specialists are currently busy. "
-                        "Please call +1 (888) 322-7999."
+                        f"Please call {_brand_phone}."
                     ),
                     model_used="template",
                 )
@@ -466,7 +468,7 @@ async def _pipeline(
         except Exception as e:
             logger.error(f"[{cid}] Handoff routing error: {e}", exc_info=True)
             gen = GeneratedResponse(
-                text="For immediate assistance, please call +1 (888) 322-7999.",
+                text=f"For immediate assistance, please call {_brand_phone}.",
                 model_used="template",
             )
             if _saved_tool_entities:
