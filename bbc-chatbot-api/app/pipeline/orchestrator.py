@@ -721,7 +721,7 @@ async def _pipeline(
             }
             if not _gmf2(_fl_crm or {}, _cc2):
                 await db.update_conversation(cid, {
-                    "status": "closed",
+                    "status": "completed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                     "mode": "ai",
                     "assigned_agent_id": None,

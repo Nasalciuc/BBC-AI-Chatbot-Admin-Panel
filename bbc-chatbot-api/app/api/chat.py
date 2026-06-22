@@ -130,7 +130,18 @@ async def chat(
     # 2.5. Reopen closed conversation if client writes again within session window
     if req.conversation_id:
         conv_info = await db.get_conversation_simple(req.conversation_id)
-        if conv_info and conv_info.get('status') == 'closed':
+        if conv_info and conv_info.get('status') in ('closed', 'completed'):
+            # 'completed' = post-CRM, never reopen
+            if conv_info.get('status') == 'completed':
+                _ack = "Thank you! Our consultant will reach out shortly."
+                await conversation_service.add_message(
+                    req.conversation_id, "ai", _ack,
+                    model_used="template", cost=0.0,
+                )
+                return ChatResponse(
+                    conversation_id=req.conversation_id,
+                    message=_ack, type="post_sale", model_used="template",
+                )
             _meta = dict(conv_info.get("metadata") or {})
             # Don't reopen post-sale conversations — send polite ack instead
             if _meta.get("closing_sent_at"):
@@ -210,7 +221,7 @@ async def chat(
                         model_used="template", cost=0.0,
                     )
                     await db.update_conversation(req.conversation_id, {
-                        "status": "closed",
+                        "status": "completed",
                         "closed_at": datetime.now(timezone.utc).isoformat(),
                         "mode": "ai",
                         "assigned_agent_id": None,
@@ -229,7 +240,7 @@ async def chat(
                     model_used="template", cost=0.0,
                 )
                 await db.update_conversation(req.conversation_id, {
-                    "status": "closed",
+                    "status": "completed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                     "mode": "ai",
                     "assigned_agent_id": None,
