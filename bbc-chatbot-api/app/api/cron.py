@@ -48,13 +48,10 @@ async def run_abandoned_crm() -> dict:
                 from app.ai.prompts import get_brand_vars
 
                 _closing = get_brand_vars(_site).get("closing_message") or settings.post_crm_closing_message
-                _recent = await db.get_recent_messages(cid, limit=3)
-                _has_closing = any(
-                    "confirmed" in (m.get("content") or "").lower()
-                    for m in _recent
-                    if m.get("role") == "ai"
-                )
-                if not _has_closing:
+                # Check flag instead of fragile string match
+                _conv_meta = conv.get("metadata") or {}
+                from app.services.closing import has_closing_been_sent
+                if not has_closing_been_sent(_conv_meta):
                     await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
                 await db.update_conversation(cid, {
                     "status": "closed",
