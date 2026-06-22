@@ -12,7 +12,7 @@ router = APIRouter()
 def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
     """Force tunnel filter for sales/support roles."""
     role = user.get("role", "sales")
-    if role in ("owner", "admin", "dev", "qa"):
+    if role in ("owner", "admin", "dev", "supervisor", "qa"):
         return tunnel
     scope = user.get("tunnel_scope", role)
     if tunnel and tunnel != scope:
@@ -32,7 +32,7 @@ async def list_leads(
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
-    if user.get("role") not in ("owner", "admin"):
+    if user.get("role") not in ("owner", "admin", "supervisor"):
         raise HTTPException(status_code=403, detail="Leads access restricted to admin/owner")
     try:
         tunnel = _enforce_tunnel(user, tunnel)
