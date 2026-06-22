@@ -131,6 +131,18 @@ async def chat(
     if req.conversation_id:
         conv_info = await db.get_conversation_simple(req.conversation_id)
         if conv_info and conv_info.get('status') == 'closed':
+            _meta = dict(conv_info.get("metadata") or {})
+            # Don't reopen post-sale conversations — send polite ack instead
+            if _meta.get("closing_sent_at"):
+                _ack = "Thank you! Our consultant will reach out shortly."
+                await conversation_service.add_message(
+                    req.conversation_id, "ai", _ack,
+                    model_used="template", cost=0.0,
+                )
+                return ChatResponse(
+                    conversation_id=req.conversation_id,
+                    message=_ack, type="post_sale", model_used="template",
+                )
             logger.info(f"[reopen] Conv {req.conversation_id} closed — client wrote again, reopening")
             reopen_mode = "human" if conv_info.get("assigned_agent_id") else "ai"
             await db.update_conversation(req.conversation_id, {
@@ -173,7 +185,14 @@ async def chat(
                     content=clean_message,
                 )
                 # Respond with closing template — no handoff, no routing
-                _post_crm_msg = settings.post_crm_closing_message
+                from app.services.closing import compute_closing_text, claim_closing_sent
+                _claimed = await claim_closing_sent(req.conversation_id)
+                if not _claimed:
+                    _post_crm_msg = "Thank you! Our consultant will reach out shortly."
+                else:
+                    _post_crm_msg = compute_closing_text(
+                        (_conv_row.get("metadata") or {}).get("site")
+                    )
                 await conversation_service.add_message(
                     conversation_id=req.conversation_id,
                     role="ai",
