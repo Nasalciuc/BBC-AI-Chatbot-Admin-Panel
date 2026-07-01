@@ -8,7 +8,7 @@ const config: BrandConfig = {
   logoUrl: 'https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png',
   logoAlt: 'BBC',
   formTitle: 'Buy Business Class',
-  formSubtitle: 'Please enter your details to get started',
+  formSubtitle: "Please enter your details and let's chat",
   chatTitle: 'BBC Travel Concierge',
   chatSubtitle: 'Business Class Experts',
   ctaSubmit: 'Start Chat \u2192',
