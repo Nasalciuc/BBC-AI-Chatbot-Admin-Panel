@@ -309,7 +309,8 @@ async def get_conversations(
                 )
             return q.range(offset, offset + limit - 1).execute()
         res = await _run_sync(_query)
-        return res.data or [], res.count or 0
+        rows = await enrich_conversations_agent_info(res.data or [])
+        return rows, res.count or 0
     except Exception as e:
         logger.error(f"get_conversations error: {e}")
         return [], 0
@@ -411,6 +412,7 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
         )
         result["messages"] = msgs.data or []
         result["lead"] = lead_res.data[0] if lead_res.data else None
+        await enrich_conversations_agent_info([result])
         return result
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
@@ -824,6 +826,75 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_user_by_id error: {e}")
         return None
+
+
+def _user_display_name(user: Optional[dict]) -> Optional[str]:
+    if not user:
+        return None
+    return user.get("name") or user.get("email")
+
+
+async def get_users_by_ids(user_ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch users by id — one query for list enrichment."""
+    unique = list({uid for uid in user_ids if uid})
+    if not unique:
+        return {}
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("users").select("id, name, email").in_("id", unique).execute()
+        )
+        return {row["id"]: row for row in (res.data or [])}
+    except Exception as e:
+        logger.error(f"get_users_by_ids error: {e}")
+        return {}
+
+
+def _compute_agent_state(
+    assigned_id: Optional[str],
+    engaged_id: Optional[str],
+    mode: str,
+) -> str:
+    if assigned_id:
+        return "active"
+    if engaged_id and mode == "ai":
+        return "fallback"
+    return "ai_only"
+
+
+def _enrich_row_agent_fields(row: dict, users: dict[str, dict]) -> None:
+    assigned_id = row.get("assigned_agent_id")
+    meta = row.get("metadata") or {}
+    engaged_id = meta.get("engaged_agent_id")
+    if assigned_id:
+        row["assigned_agent_name"] = _user_display_name(users.get(assigned_id))
+        row["engaged_agent_name"] = None
+    elif engaged_id:
+        row["assigned_agent_name"] = None
+        row["engaged_agent_name"] = _user_display_name(users.get(engaged_id))
+    else:
+        row["assigned_agent_name"] = None
+        row["engaged_agent_name"] = None
+    row["agent_state"] = _compute_agent_state(
+        assigned_id, engaged_id, row.get("mode") or "ai"
+    )
+
+
+async def enrich_conversations_agent_info(rows: list[dict]) -> list[dict]:
+    """Add assigned_agent_name, engaged_agent_name, agent_state to conversation rows."""
+    if not rows:
+        return rows
+    agent_ids: set[str] = set()
+    for row in rows:
+        if row.get("assigned_agent_id"):
+            agent_ids.add(row["assigned_agent_id"])
+        eid = (row.get("metadata") or {}).get("engaged_agent_id")
+        if eid:
+            agent_ids.add(eid)
+    users = await get_users_by_ids(list(agent_ids))
+    for row in rows:
+        _enrich_row_agent_fields(row, users)
+    return rows
 
 
 async def create_user(payload: dict) -> Optional[dict]:
