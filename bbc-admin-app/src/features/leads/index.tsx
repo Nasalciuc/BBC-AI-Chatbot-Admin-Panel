@@ -10,6 +10,8 @@ import { ThemeSwitch } from '@/components/theme-switch'
 import { LeadDetailDrawer } from './components/lead-detail-drawer'
 import { ExportLeadsButton } from './components/export-leads-button'
 import { useAuthStore } from '@/stores/auth-store'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
 
 const TIER_STYLES: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
@@ -48,6 +50,7 @@ type LeadTab = 'my_leads' | 'all_leads'
 
 export function Leads() {
   const user = useAuthStore((s) => s.auth.user)
+  const permissions = usePermissions((user?.role ?? 'sales') as UserRole)
   const isAdmin = ['owner', 'admin', 'dev', 'qa'].includes(user?.role || '')
 
   const [activeTab, setActiveTab] = useState<LeadTab>(isAdmin ? 'all_leads' : 'my_leads')
@@ -223,7 +226,7 @@ export function Leads() {
                       </td>
                       <td className="px-4 py-3 text-gray-600 text-xs">{lead.departure_date ?? <span className="text-gray-300">—</span>}</td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                        <select value={lead.status} disabled={updatingId === lead.id}
+                        <select value={lead.status} disabled={updatingId === lead.id || !permissions.canEditLeads}
                           onChange={e => handleStatusUpdate(lead.id, e.target.value)}
                           className="text-xs border border-gray-200 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A54E] disabled:opacity-50">
                           <option value="new">New</option><option value="contacted">Contacted</option>

@@ -23,7 +23,7 @@ export const Route = createFileRoute('/_authenticated/leads/')({
       }
     }
 
-    if (!role || !['owner', 'admin'].includes(role)) {
+    if (!role || !['owner', 'admin', 'qa'].includes(role)) {
       throw redirect({ to: '/chats' })
     }
   },
