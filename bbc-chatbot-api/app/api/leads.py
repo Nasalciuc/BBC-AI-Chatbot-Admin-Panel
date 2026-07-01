@@ -32,7 +32,7 @@ async def list_leads(
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
-    if user.get("role") not in ("owner", "admin", "supervisor"):
+    if user.get("role") not in ("owner", "admin", "supervisor", "qa"):
         raise HTTPException(status_code=403, detail="Leads access restricted to admin/owner")
     try:
         tunnel = _enforce_tunnel(user, tunnel)
@@ -66,7 +66,9 @@ async def list_leads(
 
 
 @router.get("/leads/{lead_id}", response_model=LeadFull)
-async def get_lead(lead_id: str):
+async def get_lead(lead_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("owner", "admin", "supervisor", "qa"):
+        raise HTTPException(status_code=403, detail="Not authorized")
     lead = await db.get_lead_full(lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
@@ -74,7 +76,13 @@ async def get_lead(lead_id: str):
 
 
 @router.patch("/leads/{lead_id}/status")
-async def update_lead_status(lead_id: str, body: LeadStatusUpdate):
+async def update_lead_status(
+    lead_id: str,
+    body: LeadStatusUpdate,
+    user: dict = Depends(get_current_user),
+):
+    if user.get("role") not in ("owner", "admin", "supervisor"):
+        raise HTTPException(status_code=403, detail="Not authorized")
     valid = {"new", "contacted", "qualified", "converted", "lost"}
     if body.status not in valid:
         raise HTTPException(400, f"Invalid status. Must be one of: {valid}")
