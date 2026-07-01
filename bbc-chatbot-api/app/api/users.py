@@ -21,7 +21,7 @@ CAN_LIST_USERS = PRIVILEGED | {"supervisor"}
 async def list_users(
     role:   Optional[str] = Query(None, pattern="^(owner|admin|sales|support|supervisor)$"),
     search: Optional[str] = Query(None, max_length=100),
-    limit:  int = Query(50, ge=1, le=200),
+    limit:  int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):

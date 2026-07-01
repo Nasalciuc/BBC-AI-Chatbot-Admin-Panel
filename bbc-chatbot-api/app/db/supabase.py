@@ -779,7 +779,7 @@ async def delete_kb_entry(entry_id: str) -> bool:
 async def get_users(
     role: Optional[str] = None,
     search: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 100,
     offset: int = 0,
 ) -> tuple[list, int]:
     """List users with filters. Returns (rows, total_count)."""

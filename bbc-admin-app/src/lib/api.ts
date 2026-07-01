@@ -240,7 +240,7 @@ export function deleteKBEntry(id: string): Promise<void> {
 export function getUsers(
   params: Record<string, string> = {},
 ): Promise<{ success: boolean; data: Record<string, unknown>[]; count: number }> {
-  const qs = new URLSearchParams(params).toString()
+  const qs = new URLSearchParams({ limit: '100', ...params }).toString()
   return apiFetch(`/api/admin/users?${qs}`)
 }
 
