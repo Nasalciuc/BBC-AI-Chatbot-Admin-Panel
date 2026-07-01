@@ -1011,7 +1011,10 @@ async def get_today_cost() -> float:
 # ADMIN — DASHBOARD STATS
 # ════════════════════════════════════════════════════════════════
 
-async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
+async def get_dashboard_stats(
+    tunnel_filter: Optional[str] = None,
+    agent_filter: Optional[str] = None,
+) -> dict:
     """Dashboard statistics — all fields expected by frontend DashboardStats interface.
     Fetches bulk data via parallel _run_sync calls, then processes in Python.
     If tunnel_filter is set, only rows matching that tunnel are included.
@@ -1022,17 +1025,29 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
         # ── Parallel fetch: conversations, leads, pipeline_runs, messages count ──
         # NOTE: Supabase default limit = 1000 rows; use .limit(10000) to fetch all
         convos_q = db.table("conversations").select(
-            "id, tunnel, status, visitor_name, created_at, closed_at"
+            "id, tunnel, status, visitor_name, created_at, closed_at, assigned_agent_id"
         ).limit(10000)
         if tunnel_filter:
             convos_q = convos_q.eq("tunnel", tunnel_filter)
+        if agent_filter:
+            convos_q = convos_q.eq("assigned_agent_id", agent_filter)
 
-        if tunnel_filter:
-            leads_future = _run_sync(lambda: db.table("leads").select(
-                "id, score, tier, status, origin_code, destination_code, "
-                "route_display, created_at, conversation_id, "
-                "conversations!inner(tunnel)"
-            ).eq("conversations.tunnel", tunnel_filter).limit(10000).execute())
+        if tunnel_filter or agent_filter:
+            join_fields = "tunnel, assigned_agent_id" if agent_filter else "tunnel"
+
+            def _fetch_leads():
+                q = db.table("leads").select(
+                    "id, score, tier, status, origin_code, destination_code, "
+                    "route_display, created_at, conversation_id, "
+                    f"conversations!inner({join_fields})"
+                )
+                if tunnel_filter:
+                    q = q.eq("conversations.tunnel", tunnel_filter)
+                if agent_filter:
+                    q = q.eq("conversations.assigned_agent_id", agent_filter)
+                return q.limit(10000).execute()
+
+            leads_future = _run_sync(_fetch_leads)
         else:
             leads_future = _run_sync(lambda: db.table("leads").select(
                 "id, score, tier, status, origin_code, destination_code, "
@@ -1055,7 +1070,7 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
 
         all_convos = convos.data or []
         all_leads = leads_res.data or []
-        if tunnel_filter:
+        if tunnel_filter or agent_filter:
             for lead in all_leads:
                 lead.pop("conversations", None)
         all_runs = pipeline_res.data or []
@@ -1237,7 +1252,7 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             {"name": "Lost", "count": leads_lost, "color": "#ef4444"},
         ]
 
-        return {
+        result = {
             "conversations_today": conversations_today,
             "conversations_yesterday": conversations_yesterday,
             "conversations_week": conversations_week,
@@ -1272,6 +1287,22 @@ async def get_dashboard_stats(tunnel_filter: Optional[str] = None) -> dict:
             "leads_sparkline_7d": leads_sparkline_7d,
             "funnel": funnel,
         }
+
+        # Agent-scoped view: hide financial + team-level metrics
+        if agent_filter is not None:
+            result["cost_today"] = None
+            result["cost_week"] = None
+            result["cost_month"] = None
+            result["cost_avg_30d"] = None
+            result["cost_vs_budget_percent"] = None
+            result["daily_budget"] = None
+            result["top_routes"] = []
+            result["messages_total_month"] = None
+            result["conversations_trend_v2"] = None
+            result["latency_median_ms"] = None
+            result["fallback_rate_percent"] = None
+
+        return result
     except Exception as e:
         logger.error(f"get_dashboard_stats error: {e}")
         return {
