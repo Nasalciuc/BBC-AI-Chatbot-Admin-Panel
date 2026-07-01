@@ -265,7 +265,13 @@ export function Chats() {
                       <div className="flex items-center gap-2 mt-1">
                         <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[conv.tunnel] ?? ''}`}>{conv.tunnel}</span>
                         <span className="text-[10px] text-gray-400">{conv.message_count} msgs</span>
-                        {conv.mode === 'ai' && <span className="text-[10px] text-amber-500">● AI</span>}
+                        {conv.agent_state === 'active' && conv.assigned_agent_name ? (
+                          <span className="text-[10px] text-green-600">● {conv.assigned_agent_name}</span>
+                        ) : conv.agent_state === 'fallback' && conv.engaged_agent_name ? (
+                          <span className="text-[10px] text-amber-600">● {conv.engaged_agent_name} → AI</span>
+                        ) : conv.mode === 'ai' ? (
+                          <span className="text-[10px] text-amber-500">● AI</span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1 shrink-0">

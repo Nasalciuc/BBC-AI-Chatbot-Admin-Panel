@@ -553,8 +553,18 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <span className={`inline-block h-2 w-2 rounded-full ${clientPresence.dot}`} />
                 {clientPresence.label}
               </span>
-              {conv.mode === 'ai' && conv.status === 'active' && <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>}
-              {conv.mode === 'human' && conv.status === 'active' && <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>}
+              {conv.agent_state === 'active' && conv.assigned_agent_name && conv.status === 'active' && (
+                <span className="ml-2 text-green-600 text-[10px]">● {conv.assigned_agent_name}</span>
+              )}
+              {conv.agent_state === 'fallback' && conv.engaged_agent_name && (
+                <span className="ml-2 text-amber-600 text-[10px]">● {conv.engaged_agent_name} → AI</span>
+              )}
+              {conv.agent_state === 'ai_only' && conv.mode === 'ai' && conv.status === 'active' && (
+                <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>
+              )}
+              {conv.mode === 'human' && conv.status === 'active' && conv.agent_state !== 'active' && (
+                <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>
+              )}
             </span>
             <span className="shrink-0">{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
           </div>
