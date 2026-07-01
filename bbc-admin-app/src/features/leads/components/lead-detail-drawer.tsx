@@ -18,8 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { OperatorHistory } from '@/features/chats/operator-history'
-import { getLeadFull, getConversation, updateLeadStatus } from '@/lib/api'
+import { getLeadFull, getConversation, updateLeadStatus, reviewLead } from '@/lib/api'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import type { Message } from '@/lib/types'
@@ -66,6 +65,8 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
   const queryClient = useQueryClient()
   const user = useAuthStore((s) => s.auth.user)
   const permissions = usePermissions((user?.role ?? 'sales') as UserRole)
+  const role = user?.role ?? 'sales'
+  const canReview = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
 
   const { data: lead, isLoading: leadLoading, isError: leadError } = useQuery({
     queryKey: ['lead', leadId],
@@ -87,6 +88,16 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
       toast.success('Status updated')
     },
     onError: () => toast.error('Failed to update status'),
+  })
+
+  const reviewMutation = useMutation({
+    mutationFn: (reviewed: boolean) => reviewLead(leadId!, reviewed),
+    onSuccess: (_data, reviewed) => {
+      queryClient.invalidateQueries({ queryKey: ['leads'] })
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] })
+      toast.success(reviewed ? 'Marked as reviewed' : 'Review cleared')
+    },
+    onError: () => toast.error('Failed to update review status'),
   })
 
   const messages: Message[] = conversation?.messages ?? []
@@ -210,10 +221,26 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
                 </Select>
               </div>
 
-              {/* Operator History */}
-              {lead.conversation_id && (
+              {/* QA Review */}
+              {canReview && (
                 <div className="px-6 py-4">
-                  <OperatorHistory conversationId={lead.conversation_id} />
+                  <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
+                    <span className="text-sm font-medium text-foreground">
+                      {lead.reviewed_by_qa ? 'Reviewed' : 'Not Reviewed'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={reviewMutation.isPending}
+                      onClick={() => reviewMutation.mutate(!lead.reviewed_by_qa)}
+                      className={
+                        lead.reviewed_by_qa
+                          ? 'rounded bg-green-600 px-3 py-1 text-xs text-white disabled:opacity-50'
+                          : 'rounded border border-gray-200 px-3 py-1 text-xs hover:bg-gray-50 disabled:opacity-50'
+                      }
+                    >
+                      {lead.reviewed_by_qa ? '✓ Reviewed' : 'Mark as Reviewed'}
+                    </button>
+                  </div>
                 </div>
               )}
 

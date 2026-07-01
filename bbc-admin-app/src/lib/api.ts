@@ -184,6 +184,18 @@ export async function updateLeadStatus(
   return res as Lead
 }
 
+export async function reviewLead(
+  leadId: string,
+  reviewed: boolean,
+  qaNotes?: string,
+) {
+  return apiFetch<{ success: boolean; reviewed: boolean }>(`/api/leads/${encodeURIComponent(leadId)}/review`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewed, qa_notes: qaNotes }),
+  })
+}
+
 export async function updateLead(
   id: string,
   data: Partial<Lead>,

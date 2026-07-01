@@ -88,16 +88,25 @@ class LeadListItem(BaseModel):
     visitor_name: Optional[str] = None
     visitor_email: Optional[str] = None
     visitor_phone: Optional[str] = None
+    reviewed_by_qa: bool = False
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
 
 
 class LeadFull(LeadListItem):
     route_segments: List[RouteSegmentItem] = []
     status_history: List[dict] = []
+    qa_notes: Optional[str] = None
 
 
 class LeadStatusUpdate(BaseModel):
     status: str
     notes: Optional[str] = None
+
+
+class LeadReviewUpdate(BaseModel):
+    reviewed: bool
+    qa_notes: Optional[str] = None
 
 
 # ── Users ────────────────────────────────────────────────────

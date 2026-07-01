@@ -1,9 +1,9 @@
 """Admin API — leads CRUD."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.db import supabase as db
-from app.models.admin import LeadFull, LeadStatusUpdate
+from app.models.admin import LeadFull, LeadReviewUpdate, LeadStatusUpdate
 from app.security.auth import get_current_user
 
 router = APIRouter()
@@ -28,6 +28,7 @@ async def list_leads(
     search: Optional[str] = Query(None, max_length=100),
     include_drafts: bool = Query(False, description="Include leads not yet marked as Create Lead by an agent"),
     assigned_to: Optional[str] = Query(None, pattern="^(me|all|none)$"),
+    reviewed: Optional[str] = Query(None, pattern="^(true|false)$"),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
@@ -57,10 +58,22 @@ async def list_leads(
             search=search,
             assigned_to=agent_filter,
             include_drafts=include_drafts,
+            reviewed_filter=reviewed,
             limit=limit,
             offset=offset,
         )
-        return {"success": True, "data": rows, "count": total}
+        response: dict = {"success": True, "data": rows, "count": total}
+        if user.get("role") in ("owner", "admin", "supervisor", "qa"):
+            reviewed_n, total_n = await db.get_leads_review_counts(
+                status=status,
+                tier=tier,
+                tunnel=tunnel,
+                search=search,
+                assigned_to=agent_filter,
+                include_drafts=include_drafts,
+            )
+            response["review_stats"] = {"reviewed": reviewed_n, "total": total_n}
+        return response
     except Exception as e:
         return {"success": False, "data": [], "count": 0, "error": str(e)}
 
@@ -94,6 +107,29 @@ async def update_lead_status(
     if not result:
         raise HTTPException(404, "Lead not found")
     return result
+
+
+@router.patch("/leads/{lead_id}/review")
+async def update_lead_review(
+    lead_id: str,
+    body: LeadReviewUpdate,
+    user: dict = Depends(get_current_user),
+):
+    if user.get("role") not in ("owner", "admin", "supervisor", "qa"):
+        raise HTTPException(status_code=403, detail="Not authorized to review leads")
+
+    update_data: dict = {
+        "reviewed_by_qa": body.reviewed,
+        "reviewed_at": datetime.now(timezone.utc).isoformat() if body.reviewed else None,
+        "reviewed_by": user.get("id") if body.reviewed else None,
+    }
+    if body.qa_notes is not None:
+        update_data["qa_notes"] = body.qa_notes
+
+    result = await db.update_lead(lead_id, update_data)
+    if not result:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"success": True, "reviewed": body.reviewed, "data": result}
 
 
 @router.patch("/leads/{lead_id}")
