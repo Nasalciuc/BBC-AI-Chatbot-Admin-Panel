@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { OperatorHistory } from '@/features/chats/operator-history'
 import { getLeadFull, getConversation, updateLeadStatus } from '@/lib/api'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
@@ -208,6 +209,13 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
                   </SelectContent>
                 </Select>
               </div>
+
+              {/* Operator History */}
+              {lead.conversation_id && (
+                <div className="px-6 py-4">
+                  <OperatorHistory conversationId={lead.conversation_id} />
+                </div>
+              )}
 
               {/* F. Conversation */}
               <div className="px-6 py-4">
