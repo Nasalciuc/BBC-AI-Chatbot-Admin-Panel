@@ -510,7 +510,7 @@ async def get_operator_history(
 ):
     """Operator assignment history — timeline per conversation."""
     role = user.get("role", "")
-    if role not in ("owner", "admin", "dev", "supervisor", "sales", "support"):
+    if role not in ("owner", "admin", "dev", "supervisor", "qa", "sales", "support"):
         raise HTTPException(status_code=403, detail="Access denied")
 
     conv = await db.get_conversation(conversation_id)

@@ -38,6 +38,7 @@ const TIER_COLORS: Record<string, string> = {
 export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
   const role = (useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole)
   const isAdmin = ['owner', 'admin', 'dev'].includes(role)
+  const canViewHistory = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const permissions = usePermissions(role)
   const [copied, setCopied]           = useState(false)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
@@ -336,7 +337,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-gray-400">
               <span className="shrink-0">{allMessages.length} messages</span>
               <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
-              {isAdmin && (
+              {canViewHistory && (
                 <span className="min-w-0 max-w-full truncate">
                   <OperatorBadge conversationId={conversationId} />
                 </span>
@@ -796,8 +797,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
           </div>
 
-          {/* Operator History — admin only */}
-          {isAdmin && (
+          {/* Operator History — QA / supervisor / admin */}
+          {canViewHistory && (
             <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
               <OperatorHistory conversationId={conversationId} />
             </div>

@@ -1,6 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { getOperatorHistory } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 import { User, MessageSquare, AlertTriangle, Bot, Lock, Clock } from 'lucide-react'
+
+const HISTORY_ROLES = ['owner', 'admin', 'dev', 'supervisor', 'qa'] as const
+
+function useCanViewHistory(): boolean {
+  const roleRaw = useAuthStore((s) => s.auth.user?.role)
+  const role = Array.isArray(roleRaw) ? roleRaw[0] : (roleRaw ?? '')
+  return (HISTORY_ROLES as readonly string[]).includes(role)
+}
 
 interface OpEvent {
   action: string
@@ -28,11 +37,15 @@ const ICONS: Record<string, { Icon: typeof User; color: string; label: string }>
 }
 
 export function OperatorHistory({ conversationId }: { conversationId: string }) {
+  const canViewHistory = useCanViewHistory()
   const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
     queryKey: ['op-history', conversationId],
     queryFn: () => getOperatorHistory(conversationId),
     staleTime: 30_000,
+    enabled: canViewHistory,
   })
+
+  if (!canViewHistory) return null
 
   if (!data?.events?.length) {
     return (
@@ -80,11 +93,13 @@ export function OperatorHistory({ conversationId }: { conversationId: string }) 
 }
 
 export function OperatorBadge({ conversationId }: { conversationId: string }) {
+  const canViewHistory = useCanViewHistory()
   const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
     queryKey: ['op-history', conversationId],
     queryFn: () => getOperatorHistory(conversationId),
     staleTime: 30_000,
+    enabled: canViewHistory,
   })
-  if (!data?.summary) return null
+  if (!canViewHistory || !data?.summary) return null
   return <span className="ml-2 max-w-[10rem] truncate text-xs text-gray-400">{data.summary}</span>
 }
