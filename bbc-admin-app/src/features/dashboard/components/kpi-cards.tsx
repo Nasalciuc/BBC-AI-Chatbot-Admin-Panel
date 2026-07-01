@@ -35,7 +35,9 @@ type KpiCardsProps = Pick<
   | 'cost_today'
   | 'cost_avg_30d'
   | 'daily_budget'
->
+> & {
+  showCost?: boolean
+}
 
 export function KpiCards(props: KpiCardsProps) {
   const {
@@ -51,7 +53,12 @@ export function KpiCards(props: KpiCardsProps) {
     cost_today = 0,
     cost_avg_30d = 0,
     daily_budget = 50,
+    showCost = true,
   } = props
+
+  const costToday = cost_today ?? 0
+  const costAvg30d = cost_avg_30d ?? 0
+  const dailyBudget = daily_budget ?? 50
 
   const pctChange =
     conversations_yesterday > 0
@@ -63,9 +70,9 @@ export function KpiCards(props: KpiCardsProps) {
       : '0.0'
   const pctNum = parseFloat(pctChange)
 
-  const costPct = daily_budget > 0 ? (cost_today / daily_budget) * 100 : 0
-  const costOverBudget = cost_today > daily_budget
-  const costAboveAvg = cost_today > cost_avg_30d * 1.5
+  const costPct = dailyBudget > 0 ? (costToday / dailyBudget) * 100 : 0
+  const costOverBudget = costToday > dailyBudget
+  const costAboveAvg = costToday > costAvg30d * 1.5
 
   const sparkData = leads_sparkline_7d.map((v) => ({ v }))
   const todayLeads =
@@ -197,7 +204,7 @@ export function KpiCards(props: KpiCardsProps) {
         </CardContent>
       </Card>
 
-      {/* Card 4 — AI Cost Today */}
+      {showCost && (
       <Card
         className={`border-l-4 border-l-emerald-500 hover:shadow-md transition-all duration-200 ${costOverBudget ? 'bg-red-50' : ''}`}
       >
@@ -211,7 +218,7 @@ export function KpiCards(props: KpiCardsProps) {
                 AI Cost Today
               </p>
               <p className="mt-1 text-3xl font-bold">
-                ${cost_today.toFixed(2)}
+                ${costToday.toFixed(2)}
               </p>
               <div className="mt-1.5">
                 {costOverBudget ? (
@@ -220,11 +227,11 @@ export function KpiCards(props: KpiCardsProps) {
                   </span>
                 ) : costAboveAvg ? (
                   <span className="text-xs text-red-600">
-                    vs ${cost_avg_30d.toFixed(2)} daily avg ⚠ Above average
+                    vs ${costAvg30d.toFixed(2)} daily avg ⚠ Above average
                   </span>
                 ) : (
                   <span className="text-xs text-muted-foreground">
-                    vs ${cost_avg_30d.toFixed(2)} daily avg
+                    vs ${costAvg30d.toFixed(2)} daily avg
                   </span>
                 )}
               </div>
@@ -244,6 +251,7 @@ export function KpiCards(props: KpiCardsProps) {
           </div>
         </CardContent>
       </Card>
+      )}
     </div>
   )
 }
