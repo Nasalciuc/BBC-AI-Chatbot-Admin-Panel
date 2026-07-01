@@ -118,9 +118,9 @@ export interface DashboardStats {
   leads_gold:   number
   leads_silver: number
   leads_bronze: number
-  cost_today: number
-  cost_week:  number
-  cost_month: number
+  cost_today: number | null
+  cost_week:  number | null
+  cost_month: number | null
   top_routes:          Array<{ route: string; count: number }>
   conversations_trend: Array<{ date: string; count: number }>
   leads_trend:         Array<{ date: string; count: number }>
@@ -129,15 +129,15 @@ export interface DashboardStats {
   conversations_yesterday: number
   leads_uncalled:          number
   leads_sla_breach:        number
-  cost_avg_30d:            number
-  daily_budget:            number
-  latency_median_ms:       number
-  fallback_rate_percent:   number
-  cost_vs_budget_percent:  number
+  cost_avg_30d:            number | null
+  daily_budget:            number | null
+  latency_median_ms:       number | null
+  fallback_rate_percent:   number | null
+  cost_vs_budget_percent:  number | null
   avg_duration_minutes:    number
-  messages_total_month:    number
+  messages_total_month:    number | null
 
-  conversations_trend_v2: Array<{ date: string; sales: number; support: number }>
+  conversations_trend_v2: Array<{ date: string; sales: number; support: number }> | null
 
   hot_leads: Array<{
     id: string
