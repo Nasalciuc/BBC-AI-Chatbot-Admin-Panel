@@ -67,12 +67,17 @@ export interface Lead {
   visitor_name: string | null
   visitor_email: string | null
   visitor_phone: string | null
+  reviewed_by_qa?: boolean
+  reviewed_at?: string | null
+  reviewed_by?: string | null
+  qa_notes?: string | null
 }
 
 export interface LeadsResponse {
   success: boolean
   data: Lead[]
   count: number
+  review_stats?: { reviewed: number; total: number }
 }
 
 // ── Knowledge Base ────────────────────────────────────────────

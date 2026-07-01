@@ -92,7 +92,11 @@ async def test_list_leads_pagination():
     body = r.json()
     assert body["success"] is True
     assert body["count"] == 50
-    mock_db.assert_called_once_with(status=None, tier=None, tunnel=None, search=None, limit=5, offset=0)
+    mock_db.assert_called_once_with(
+        status=None, tier=None, tunnel=None, search=None,
+        assigned_to="all", include_drafts=False, reviewed_filter=None,
+        limit=5, offset=0,
+    )
 
 
 @pytest.mark.asyncio
@@ -105,7 +109,11 @@ async def test_list_leads_filter_status():
     body = r.json()
     assert body["success"] is True
     assert all(lead["status"] == "new" for lead in body["data"])
-    mock_db.assert_called_once_with(status="new", tier=None, tunnel=None, search=None, limit=50, offset=0)
+    mock_db.assert_called_once_with(
+        status="new", tier=None, tunnel=None, search=None,
+        assigned_to="all", include_drafts=False, reviewed_filter=None,
+        limit=50, offset=0,
+    )
 
 
 @pytest.mark.asyncio
@@ -118,7 +126,11 @@ async def test_list_leads_filter_tier():
     body = r.json()
     assert body["success"] is True
     assert all(lead["tier"] == "gold" for lead in body["data"])
-    mock_db.assert_called_once_with(status=None, tier="gold", tunnel=None, search=None, limit=50, offset=0)
+    mock_db.assert_called_once_with(
+        status=None, tier="gold", tunnel=None, search=None,
+        assigned_to="all", include_drafts=False, reviewed_filter=None,
+        limit=50, offset=0,
+    )
 
 
 @pytest.mark.asyncio
@@ -131,7 +143,11 @@ async def test_list_leads_search():
     body = r.json()
     assert body["success"] is True
     assert body["data"][0]["visitor_name"] == "John Smith"
-    mock_db.assert_called_once_with(status=None, tier=None, tunnel=None, search="john", limit=50, offset=0)
+    mock_db.assert_called_once_with(
+        status=None, tier=None, tunnel=None, search="john",
+        assigned_to="all", include_drafts=False, reviewed_filter=None,
+        limit=50, offset=0,
+    )
 
 
 @pytest.mark.asyncio

@@ -547,6 +547,7 @@ async def get_leads(
     limit: int = 50,
     offset: int = 0,
     include_drafts: bool = False,
+    reviewed_filter: Optional[str] = None,
 ) -> tuple[list, int]:
     """List leads with JOIN on conversations for contact details. Returns (rows, total_count)."""
     try:
@@ -555,12 +556,20 @@ async def get_leads(
             q = db.table("leads").select(
                 "*, conversations!inner(visitor_name, visitor_email, visitor_phone, tunnel, assigned_agent_id)",
                 count="exact"  # type: ignore[arg-type]
-            ).order("score", desc=True)
+            )
+            if reviewed_filter == "false":
+                q = q.order("created_at", desc=False)
+            else:
+                q = q.order("score", desc=True)
             if not include_drafts:
                 q = q.eq("created_in_crm", True)
             if status:  q = q.eq("status", status)
             if tier:    q = q.eq("tier", tier)
             if tunnel:  q = q.eq("conversations.tunnel", tunnel)
+            if reviewed_filter == "true":
+                q = q.eq("reviewed_by_qa", True)
+            elif reviewed_filter == "false":
+                q = q.eq("reviewed_by_qa", False)
             if search:
                 q = q.or_(
                     f"conversations.visitor_name.ilike.%{search}%,"
@@ -587,6 +596,80 @@ async def get_leads(
     except Exception as e:
         logger.error(f"get_leads error: {e}")
         return [], 0
+
+
+def _apply_leads_list_filters(
+    q,
+    *,
+    status: Optional[str] = None,
+    tier: Optional[str] = None,
+    tunnel: Optional[str] = None,
+    search: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    include_drafts: bool = False,
+    reviewed_filter: Optional[str] = None,
+):
+    if not include_drafts:
+        q = q.eq("created_in_crm", True)
+    if status:
+        q = q.eq("status", status)
+    if tier:
+        q = q.eq("tier", tier)
+    if tunnel:
+        q = q.eq("conversations.tunnel", tunnel)
+    if reviewed_filter == "true":
+        q = q.eq("reviewed_by_qa", True)
+    elif reviewed_filter == "false":
+        q = q.eq("reviewed_by_qa", False)
+    if search:
+        q = q.or_(
+            f"conversations.visitor_name.ilike.%{search}%,"
+            f"conversations.visitor_email.ilike.%{search}%,"
+            f"origin_code.ilike.%{search}%,"
+            f"destination_code.ilike.%{search}%"
+        )
+    if assigned_to == "none":
+        q = q.is_("conversations.assigned_agent_id", "null")
+    elif assigned_to and assigned_to != "all":
+        q = q.eq("conversations.assigned_agent_id", assigned_to)
+    return q
+
+
+async def get_leads_review_counts(
+    status: Optional[str] = None,
+    tier: Optional[str] = None,
+    tunnel: Optional[str] = None,
+    search: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    include_drafts: bool = False,
+) -> tuple[int, int]:
+    """Return (reviewed_count, total_count) for QA progress bar."""
+    try:
+        db = get_client()
+
+        def _count(reviewed_only: Optional[bool]) -> int:
+            q = db.table("leads").select(
+                "id, conversations!inner(tunnel, assigned_agent_id, visitor_name, visitor_email)",
+                count="exact",  # type: ignore[arg-type]
+            )
+            q = _apply_leads_list_filters(
+                q,
+                status=status,
+                tier=tier,
+                tunnel=tunnel,
+                search=search,
+                assigned_to=assigned_to,
+                include_drafts=include_drafts,
+                reviewed_filter="true" if reviewed_only else None,
+            )
+            return q.limit(0).execute()
+
+        total_res = await _run_sync(lambda: _count(None))
+        reviewed_res = await _run_sync(lambda: _count(True))
+        return reviewed_res.count or 0, total_res.count or 0
+    except Exception as e:
+        logger.error(f"get_leads_review_counts error: {e}")
+        return 0, 0
 
 
 async def get_lead_full(lead_id: str) -> Optional[dict]:

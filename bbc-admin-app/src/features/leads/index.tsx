@@ -52,14 +52,18 @@ export function Leads() {
   const user = useAuthStore((s) => s.auth.user)
   const permissions = usePermissions((user?.role ?? 'sales') as UserRole)
   const isAdmin = ['owner', 'admin', 'dev', 'qa'].includes(user?.role || '')
+  const canReview = ['owner', 'admin', 'supervisor', 'qa'].includes(user?.role || '')
 
   const [activeTab, setActiveTab] = useState<LeadTab>(isAdmin ? 'all_leads' : 'my_leads')
   const [leads, setLeads]           = useState<Lead[]>([])
   const [total, setTotal]           = useState(0)
+  const [reviewedCount, setReviewedCount] = useState(0)
+  const [totalCount, setTotalCount] = useState(0)
   const [loading, setLoading]       = useState(true)
   const [search, setSearch]         = useState('')
   const [statusFilter, setStatus]   = useState('')
   const [tierFilter, setTier]       = useState('')
+  const [reviewFilter, setReviewFilter] = useState('all')
   const [offset, setOffset]         = useState(0)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
@@ -72,13 +76,18 @@ export function Leads() {
       if (search)       params.search = search
       if (statusFilter) params.status = statusFilter
       if (tierFilter)   params.tier = tierFilter
+      if (reviewFilter !== 'all') params.reviewed = reviewFilter
       const json = await getLeads(params)
       setLeads(json.data); setTotal(json.count)
+      if (json.review_stats) {
+        setReviewedCount(json.review_stats.reviewed)
+        setTotalCount(json.review_stats.total)
+      }
     } catch (err) {
       console.error('[leads] API error:', err)
       setLeads([]); setTotal(0)
     } finally { setLoading(false) }
-  }, [search, statusFilter, tierFilter, offset, activeTab])
+  }, [search, statusFilter, tierFilter, reviewFilter, offset, activeTab])
 
   useEffect(() => { fetchLeads() }, [fetchLeads])
 
@@ -151,6 +160,13 @@ export function Leads() {
             )}
           </div>
 
+          {canReview && (
+            <div className="text-sm text-muted-foreground">
+              {reviewedCount}/{totalCount} reviewed
+              ({totalCount > 0 ? Math.round((reviewedCount / totalCount) * 100) : 0}%)
+            </div>
+          )}
+
           {/* Filters */}
           <div className="flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px]">
@@ -178,6 +194,20 @@ export function Leads() {
               </select>
               <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             </div>
+            {canReview && (
+              <div className="relative">
+                <select
+                  value={reviewFilter}
+                  onChange={(e) => { setReviewFilter(e.target.value); setOffset(0) }}
+                  className="pl-3 pr-8 py-2 text-sm border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40"
+                >
+                  <option value="all">All Reviews</option>
+                  <option value="false">Unreviewed</option>
+                  <option value="true">Reviewed</option>
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              </div>
+            )}
           </div>
 
           {/* Table */}
