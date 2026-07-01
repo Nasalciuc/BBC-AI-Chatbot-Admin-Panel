@@ -13,7 +13,14 @@ async def get_stats(user: dict = Depends(get_current_user)):
     """Full dashboard statistics. Falls back to 0 for any failed query."""
     role = user.get("role", "sales")
     tunnel_filter: Optional[str] = None
+    agent_filter: Optional[str] = None
     if role not in ("owner", "admin", "dev", "qa"):
         tunnel_filter = user.get("tunnel_scope", role)
-    stats = await db.get_dashboard_stats(tunnel_filter=tunnel_filter)
+    # Sales/support see ONLY their own assigned data (not team-wide)
+    if role in ("sales", "support"):
+        agent_filter = user.get("id")
+    stats = await db.get_dashboard_stats(
+        tunnel_filter=tunnel_filter,
+        agent_filter=agent_filter,
+    )
     return DashboardStats(**stats)
