@@ -33,6 +33,7 @@ async def list_conversations(
     status: Optional[str] = Query(None, pattern="^(active|pending|closed)$"),
     assigned_to: Optional[str] = Query(None, pattern="^(me|none|all)$"),
     search: Optional[str] = Query(None, max_length=100),
+    handled_by: Optional[str] = Query(None, pattern="^(human|ai|fallback)$"),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
@@ -64,6 +65,14 @@ async def list_conversations(
             agent_id=agent_id_filter, agent_id_is_null=agent_id_is_null,
             limit=limit, offset=offset,
         )
+        if handled_by == "human":
+            rows = [c for c in rows if c.get("agent_state") == "active"]
+        elif handled_by == "fallback":
+            rows = [c for c in rows if c.get("agent_state") == "fallback"]
+        elif handled_by == "ai":
+            rows = [c for c in rows if c.get("agent_state") == "ai_only"]
+        if handled_by:
+            total = len(rows)
         return {"success": True, "data": rows, "count": total}
     except HTTPException:
         # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.

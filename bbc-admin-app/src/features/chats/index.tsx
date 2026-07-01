@@ -53,6 +53,7 @@ export function Chats() {
   const isManager = ['owner', 'admin', 'dev', 'qa', 'supervisor'].includes(role)
   // My Active hidden for admin/supervisor/qa — they oversee the queue, don't claim conversations
   const hideMyActive = ['admin', 'supervisor', 'qa'].includes(role)
+  const canFilterHandled = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
   const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
     (t) => !(hideMyActive && t.key === 'my_active')
   )
@@ -63,6 +64,7 @@ export function Chats() {
   const [activeTab, setActiveTab] = useState<TabKey>(hideMyActive ? 'all_active' : 'my_active')
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
+  const [handledByFilter, setHandledByFilter] = useState('all')
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
   const [highlightId] = useState<string | null>(urlHighlight)
   const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
@@ -118,10 +120,11 @@ export function Chats() {
   const listParams: Record<string, string> = { ...tab.params, limit: '50' }
   if (debouncedSearch) listParams.search = debouncedSearch
   if (tunnelFilter) listParams.tunnel = tunnelFilter
+  if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
 
   const { data: convResponse, isLoading } = useQuery({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
-    queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter],
+    queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter],
     queryFn: () => getConversations(listParams),
     refetchInterval: 5_000, // Bug 3: agents need near-realtime assignment visibility
   })
@@ -218,6 +221,18 @@ export function Chats() {
                 <option value="sales">Sales</option>
                 <option value="support">Support</option>
               </select>
+              {canFilterHandled && (
+                <select
+                  value={handledByFilter}
+                  onChange={(e) => setHandledByFilter(e.target.value)}
+                  className="w-full pl-3 pr-7 py-1.5 text-xs border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none"
+                >
+                  <option value="all">All handling</option>
+                  <option value="ai">AI only</option>
+                  <option value="human">Human</option>
+                  <option value="fallback">Fallback</option>
+                </select>
+              )}
             </div>
 
             {/* Conversation list */}
