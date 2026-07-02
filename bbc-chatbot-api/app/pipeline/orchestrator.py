@@ -465,6 +465,29 @@ async def _pipeline(
                 )
                 if _saved_tool_entities:
                     gen.tool_entities = _saved_tool_entities
+
+                # Alert super@ when no agents are available (fire-and-forget, throttled)
+                _presence = _conv_meta.get("widget_presence")
+                if _presence != "left":
+
+                    async def _send_super_alert():
+                        from app.services.closing import claim_super_alert
+                        from app.services.email import send_super_alert_email
+
+                        claimed = await claim_super_alert(
+                            cid, settings.super_alert_cooldown_minutes
+                        )
+                        if claimed:
+                            await send_super_alert_email(
+                                conversation_id=cid,
+                                visitor_name=visitor.name if visitor else None,
+                                visitor_phone=visitor.phone if visitor else None,
+                                visitor_email=visitor.email if visitor else None,
+                                tunnel=tunnel,
+                                last_message=message,
+                            )
+
+                    _fire_and_forget(_send_super_alert())
         except Exception as e:
             logger.error(f"[{cid}] Handoff routing error: {e}", exc_info=True)
             gen = GeneratedResponse(

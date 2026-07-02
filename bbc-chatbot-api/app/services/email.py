@@ -154,3 +154,73 @@ async def send_invite_email(to_email: str, name: str, invite_url: str, expires_m
     except Exception as e:
         logger.error(f"send_invite_email error: {e}")
         return False
+
+
+async def send_super_alert_email(
+    *,
+    conversation_id: str,
+    visitor_name: str | None,
+    visitor_phone: str | None,
+    visitor_email: str | None,
+    tunnel: str,
+    last_message: str,
+) -> bool:
+    """Alert super@ when a client is chatting but no agents are available.
+    Fire-and-forget safe: returns False on any failure, never raises."""
+    if not settings.postmark_token:
+        logger.warning("POSTMARK_TOKEN not set — skipping super alert email")
+        return False
+
+    name = visitor_name or "Anonymous visitor"
+    contact_lines = []
+    if visitor_phone:
+        contact_lines.append(f"Phone: {visitor_phone}")
+    if visitor_email:
+        contact_lines.append(f"Email: {visitor_email}")
+    contact_html = "<br>".join(contact_lines) if contact_lines else "No contact captured"
+    contact_text = "\n".join(contact_lines) if contact_lines else "No contact captured"
+
+    chat_link = f"{settings.admin_panel_url.rstrip('/')}/chats?highlight={conversation_id}"
+    safe_message = (last_message or "")[:500]
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(
+                "https://api.postmarkapp.com/email",
+                headers={
+                    "X-Postmark-Server-Token": settings.postmark_token,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "From": settings.email_from,
+                    "To": settings.super_alert_email,
+                    "Subject": f"New chat needs attention — no agents online ({tunnel})",
+                    "MessageStream": "outbound",
+                    "HtmlBody": (
+                        "<h2>A client is chatting with no agents available</h2>"
+                        f"<p><strong>Client:</strong> {name}</p>"
+                        f"<p>{contact_html}</p>"
+                        f"<p><strong>Tunnel:</strong> {tunnel}</p>"
+                        f'<p><strong>Latest message:</strong> "{safe_message}"</p>'
+                        f'<p><a href="{chat_link}">Open conversation in admin panel</a></p>'
+                    ),
+                    "TextBody": (
+                        "A client is chatting with no agents available.\n\n"
+                        f"Client: {name}\n{contact_text}\n"
+                        f"Tunnel: {tunnel}\n"
+                        f'Latest message: "{safe_message}"\n\n'
+                        f"Open: {chat_link}"
+                    ),
+                },
+            )
+            if res.status_code == 200:
+                logger.info(
+                    f"Super alert email sent for conv {conversation_id} → "
+                    f"{settings.super_alert_email}"
+                )
+                return True
+            logger.error(f"Super alert email failed: {res.status_code} {res.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Super alert email exception: {e}")
+        return False
