@@ -40,6 +40,35 @@ async def claim_closing_sent(conversation_id: str) -> bool:
         return False
 
 
+async def claim_super_alert(conversation_id: str, cooldown_minutes: int) -> bool:
+    """Returns True if this caller should send the super alert (claims it).
+    Read-then-write like claim_closing_sent — accepts ~50ms race window.
+    Prevents repeated alerts within cooldown for the same conversation."""
+    try:
+        conv = await db.get_conversation_simple(conversation_id)
+        if not conv:
+            return False
+        meta = dict((conv or {}).get("metadata") or {})
+        last = meta.get("super_notified_at")
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(
+                    last.replace("Z", "+00:00") if isinstance(last, str) else last
+                )
+                if (datetime.now(timezone.utc) - last_dt).total_seconds() < cooldown_minutes * 60:
+                    logger.info(f"[{conversation_id}] super_notified_at within cooldown — skip")
+                    return False
+            except (ValueError, TypeError):
+                pass
+        meta["super_notified_at"] = datetime.now(timezone.utc).isoformat()
+        await db.update_conversation(conversation_id, {"metadata": meta})
+        logger.info(f"[{conversation_id}] super_notified_at claimed — sending alert")
+        return True
+    except Exception as e:
+        logger.error(f"[{conversation_id}] claim_super_alert FAILED: {e}")
+        return False
+
+
 def has_closing_been_sent(metadata: dict | None) -> bool:
     """Check if closing was already sent (for guards without DB call)."""
     return bool((metadata or {}).get("closing_sent_at"))

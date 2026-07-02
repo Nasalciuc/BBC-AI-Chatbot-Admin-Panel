@@ -156,6 +156,8 @@ class Settings(BaseSettings):
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"
     admin_panel_url: str = "https://chat.buybusinessclass.com"
+    super_alert_email: str = "super@buybusinessclass.com"
+    super_alert_cooldown_minutes: int = 1440  # 1 email/conv/24h (Postmark limit)
     invite_link_expiry_minutes: int = 1440
     invite_link_path: str = "/set-password"
 
