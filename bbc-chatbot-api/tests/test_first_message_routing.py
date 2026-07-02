@@ -172,6 +172,131 @@ async def test_first_message_no_agent_falls_through_pipeline(_fresh_ai_conv):
     assert resp.type == "ai"
 
 
+def _capture_fire_and_forget(store: dict):
+    """Replace _fire_and_forget: capture the coro so the test can await it."""
+    def _capture(coro):
+        store["coro"] = coro
+        return None
+    return _capture
+
+
+@pytest.mark.asyncio
+async def test_first_message_no_agents_logged_in_alerts_super(_fresh_ai_conv):
+    """Management rule: client chats + 0 agents logged in → email super@."""
+    pipeline_resp = ChatResponse(
+        conversation_id=_CONV_ID, message="Hi!", type="ai", model_used="haiku",
+    )
+    captured: dict = {}
+    with (
+        patch("app.api.chat.db.count_messages", new_callable=AsyncMock, return_value=0),
+        patch("app.api.chat.db.get_conversation", new_callable=AsyncMock, return_value=_fresh_ai_conv),
+        patch("app.api.chat.db.get_conversation_mode", new_callable=AsyncMock, return_value="ai"),
+        patch("app.api.chat.lead_service.get_or_create_lead", new_callable=AsyncMock, return_value=None),
+        patch(
+            "app.api.chat.route_conversation",
+            new_callable=AsyncMock,
+            return_value={"agent_id": None, "mode": "ai", "agent_name": None},
+        ),
+        patch("app.api.chat._fire_and_forget", side_effect=_capture_fire_and_forget(captured)),
+        patch("app.api.chat.db.get_available_agents", new_callable=AsyncMock, return_value=[]),
+        patch(
+            "app.services.closing.claim_super_alert",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as claim_mock,
+        patch(
+            "app.services.email.send_super_alert_email",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_mock,
+        patch("app.api.chat.process_message", new_callable=AsyncMock, return_value=pipeline_resp),
+        patch("app.services.response_cache.get_cached", return_value=None),
+        patch("app.services.response_cache.set_cached"),
+        patch("app.pipeline.intent.detect_intent", return_value=MagicMock(value="greeting")),
+    ):
+        await _call_chat()
+        assert "coro" in captured, "super alert task was not scheduled"
+        await captured["coro"]
+
+    claim_mock.assert_awaited_once()
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args.kwargs["conversation_id"] == _CONV_ID
+    assert send_mock.await_args.kwargs["tunnel"] == "sales"
+
+
+@pytest.mark.asyncio
+async def test_first_message_agents_busy_no_super_alert(_fresh_ai_conv):
+    """Agents logged in but busy → chat visible in panel, no super email."""
+    pipeline_resp = ChatResponse(
+        conversation_id=_CONV_ID, message="Hi!", type="ai", model_used="haiku",
+    )
+    captured: dict = {}
+    with (
+        patch("app.api.chat.db.count_messages", new_callable=AsyncMock, return_value=0),
+        patch("app.api.chat.db.get_conversation", new_callable=AsyncMock, return_value=_fresh_ai_conv),
+        patch("app.api.chat.db.get_conversation_mode", new_callable=AsyncMock, return_value="ai"),
+        patch("app.api.chat.lead_service.get_or_create_lead", new_callable=AsyncMock, return_value=None),
+        patch(
+            "app.api.chat.route_conversation",
+            new_callable=AsyncMock,
+            return_value={"agent_id": None, "mode": "ai", "agent_name": None},
+        ),
+        patch("app.api.chat._fire_and_forget", side_effect=_capture_fire_and_forget(captured)),
+        patch(
+            "app.api.chat.db.get_available_agents",
+            new_callable=AsyncMock,
+            return_value=[{"id": _AGENT_ID, "name": "Emma"}],
+        ),
+        patch(
+            "app.services.closing.claim_super_alert",
+            new_callable=AsyncMock,
+        ) as claim_mock,
+        patch(
+            "app.services.email.send_super_alert_email",
+            new_callable=AsyncMock,
+        ) as send_mock,
+        patch("app.api.chat.process_message", new_callable=AsyncMock, return_value=pipeline_resp),
+        patch("app.services.response_cache.get_cached", return_value=None),
+        patch("app.services.response_cache.set_cached"),
+        patch("app.pipeline.intent.detect_intent", return_value=MagicMock(value="greeting")),
+    ):
+        await _call_chat()
+        assert "coro" in captured
+        await captured["coro"]
+
+    claim_mock.assert_not_awaited()
+    send_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_message_agent_assigned_no_super_alert(_fresh_ai_conv):
+    """Operator takes the chat → no super alert scheduled at all."""
+    pipeline_resp = ChatResponse(
+        conversation_id=_CONV_ID, message="Hi!", type="ai", model_used="haiku",
+    )
+    captured: dict = {}
+    with (
+        patch("app.api.chat.db.count_messages", new_callable=AsyncMock, return_value=0),
+        patch("app.api.chat.db.get_conversation", new_callable=AsyncMock, return_value=_fresh_ai_conv),
+        patch("app.api.chat.db.get_conversation_mode", new_callable=AsyncMock, return_value="ai"),
+        patch("app.api.chat.lead_service.get_or_create_lead", new_callable=AsyncMock, return_value=None),
+        patch(
+            "app.api.chat.route_conversation",
+            new_callable=AsyncMock,
+            return_value={"agent_id": _AGENT_ID, "agent_name": "Emma", "mode": "human"},
+        ),
+        patch("app.api.chat.perform_handoff_to_agent", new_callable=AsyncMock, return_value={}),
+        patch("app.api.chat._fire_and_forget", side_effect=_capture_fire_and_forget(captured)),
+        patch("app.api.chat.process_message", new_callable=AsyncMock, return_value=pipeline_resp),
+        patch("app.services.response_cache.get_cached", return_value=None),
+        patch("app.services.response_cache.set_cached"),
+        patch("app.pipeline.intent.detect_intent", return_value=MagicMock(value="greeting")),
+    ):
+        await _call_chat()
+
+    assert "coro" not in captured
+
+
 @pytest.mark.asyncio
 async def test_first_message_gate_requires_zero_messages(_fresh_ai_conv):
     with (

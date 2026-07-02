@@ -17,7 +17,7 @@ from config.settings import settings
 from app.models.chat import ChatRequest, ChatResponse, VisitorInfo
 from app.security.input_sanitizer import sanitize_message, is_suspicious
 from app.security.rate_limiter import check_rate_limit
-from app.pipeline.orchestrator import process_message
+from app.pipeline.orchestrator import process_message, _fire_and_forget
 from app.db import supabase as db
 from app.realtime.manager import manager
 from app.services import conversation_service, lead_service
@@ -339,6 +339,40 @@ async def chat(
                         f"[{req.conversation_id}] First-message routing → "
                         f"no operator, AI pipeline"
                     )
+                    # Management rule (Tyke, 02-Jul): email super@ whenever a
+                    # client starts chatting and NO agents are logged in —
+                    # not only on explicit handoff. Distinct from "all busy":
+                    # busy agents are logged in and see the chat, so no email.
+                    # Fire-and-forget + 24h throttle (claim_super_alert).
+                    _cid_alert = req.conversation_id
+                    _tunnel_alert = req.tunnel
+                    _visitor_alert = req.visitor
+                    _first_msg_alert = clean_message
+
+                    async def _send_first_message_super_alert():
+                        from app.services.closing import claim_super_alert
+                        from app.services.email import send_super_alert_email
+
+                        online = await db.get_available_agents(
+                            tunnel=_tunnel_alert,
+                            timeout_seconds=settings.agent_timeout_seconds,
+                        )
+                        if online:
+                            return  # agents logged in (just busy) — no alert
+                        claimed = await claim_super_alert(
+                            _cid_alert, settings.super_alert_cooldown_minutes
+                        )
+                        if claimed:
+                            await send_super_alert_email(
+                                conversation_id=_cid_alert,
+                                visitor_name=getattr(_visitor_alert, "name", None),
+                                visitor_phone=getattr(_visitor_alert, "phone", None),
+                                visitor_email=getattr(_visitor_alert, "email", None),
+                                tunnel=_tunnel_alert,
+                                last_message=_first_msg_alert,
+                            )
+
+                    _fire_and_forget(_send_first_message_super_alert())
 
     # 4. AI mode or new conversation → run pipeline
     # Enrich metadata with client IP + User-Agent
