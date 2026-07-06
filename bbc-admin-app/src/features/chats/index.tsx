@@ -117,7 +117,9 @@ export function Chats() {
 
   // Conversation list — cached per tab, polls every 30s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
-  const listParams: Record<string, string> = { ...tab.params, limit: '50' }
+  // QA/admin audit the full queue → 200 (API max, le=200); operators keep 50
+  const listLimit = ['qa', 'admin'].includes(role) ? '200' : '50'
+  const listParams: Record<string, string> = { ...tab.params, limit: listLimit }
   if (debouncedSearch) listParams.search = debouncedSearch
   if (tunnelFilter) listParams.tunnel = tunnelFilter
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
