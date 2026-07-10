@@ -233,6 +233,21 @@ async def fall_back_to_ai(conversation_id: str) -> None:
         f"[handoff] Conv {conversation_id}: agent offline → fell back to AI "
         f"(loop guards cleared, silent={_was_unannounced})"
     )
+    # FIX-C: backstop — if the visitor's last message was never answered (it arrived
+    # while in human mode and no AI reply followed), re-run the pipeline now so they
+    # get a response instead of silence. Covers every fallback path, not just FIX-A.
+    try:
+        _last_msgs = await db.get_recent_messages(conversation_id, limit=1)
+        _last = _last_msgs[-1] if _last_msgs else None
+        if _last and _last.get("role") == "user" and _last.get("created_at"):
+            _has_reply_after = await db.has_ai_or_agent_message_since(
+                conversation_id, _last["created_at"]
+            )
+            if not _has_reply_after:
+                from app.pipeline.orchestrator import reprocess_last_user_message
+                _fire_and_forget(reprocess_last_user_message(conversation_id))
+    except Exception as _e:
+        logger.warning(f"[handoff] FIX-C reprocess skipped for {conversation_id}: {_e}")
 
 
 # ── H3: Unified handoff to agent ─────────────────────────────

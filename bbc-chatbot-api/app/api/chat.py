@@ -256,7 +256,19 @@ async def chat(
         if mode == "human":
             # H1: Check if assigned agent is effectively offline before queuing
             from app.services.handoff import is_agent_effectively_offline, fall_back_to_ai
-            if await is_agent_effectively_offline(req.conversation_id):
+            # FIX-A: Silent reservation (announce_pending) — the operator was auto-assigned
+            # but has NOT engaged yet. The orchestrator is designed to let AI keep serving
+            # until the operator sends their first real message. Do NOT queue here (that
+            # returned an ephemeral "One moment…" and skipped the pipeline, killing the
+            # visitor's message). Fall through to the AI pipeline; if the operator engages
+            # mid-flight, the orchestrator's mode=='human' guard discards the AI response.
+            _conv_res = await db.get_conversation_simple(req.conversation_id)
+            _is_silent_reservation = bool(
+                ((_conv_res or {}).get("metadata") or {}).get("announce_pending")
+            )
+            if _is_silent_reservation:
+                pass  # fall through to the AI pipeline below (Step 3.5+)
+            elif await is_agent_effectively_offline(req.conversation_id):
                 logger.info(
                     f"[H1] Conv {req.conversation_id}: agent offline in human mode "
                     f"→ falling back to AI"

@@ -70,8 +70,12 @@ async def process_message(
     visitor: VisitorInfo,
     metadata: Optional[dict] = None,
     visitor_id: Optional[str] = None,
+    skip_user_save: bool = False,
 ) -> ChatResponse:
-    """Run the 8-step pipeline. Always returns a response — never crashes."""
+    """Run the 8-step pipeline. Always returns a response — never crashes.
+
+    skip_user_save=True (FIX-C reprocess path): the visitor message is already
+    persisted in the DB — do not insert it again."""
     conv = None
     # Set after the AI message row is confirmed in DB; failure handlers
     # persist a fallback ONLY if this is still False (no duplicate post-save).
@@ -86,6 +90,7 @@ async def process_message(
                 metadata,
                 visitor_id=visitor_id,
                 _persist_state=_persist_state,
+                skip_user_save=skip_user_save,
             ),
             timeout=settings.pipeline_timeout,
         )
@@ -122,6 +127,55 @@ async def process_message(
         )
 
 
+async def reprocess_last_user_message(conversation_id: str) -> None:
+    """FIX-C backstop: re-run the pipeline on the last user message when it
+    never got a reply (it arrived while the conversation was in human mode and
+    the operator never engaged, then fall_back_to_ai fired).
+
+    The visitor message is already persisted — the pipeline runs with
+    skip_user_save=True. There is no HTTP response to carry the reply, so a
+    non-streaming AI reply is pushed over SSE; streaming replies were already
+    delivered chunk-by-chunk + push_stream_end by the pipeline itself."""
+    try:
+        conv = await db.get_conversation(conversation_id)
+        if not conv:
+            return
+        if (conv.get("mode") or "ai") != "ai":
+            return  # operator (re)claimed meanwhile — never talk over a human
+        msgs = await db.get_recent_messages(conversation_id, limit=1)
+        last = msgs[-1] if msgs else None
+        if not last or last.get("role") != "user":
+            return
+        _last_ts = last.get("created_at")
+        visitor = VisitorInfo(
+            name=conv.get("visitor_name"),
+            email=conv.get("visitor_email"),
+            phone=conv.get("visitor_phone"),
+        )
+        logger.info(
+            f"[{conversation_id}] FIX-C: reprocessing unanswered visitor message"
+        )
+        resp = await process_message(
+            conversation_id=conversation_id,
+            message=last.get("content") or "",
+            tunnel=conv.get("tunnel") or "sales",
+            visitor=visitor,
+            metadata=None,  # conv metadata already persisted; site resolves from it
+            visitor_id=conv.get("visitor_id"),
+            skip_user_save=True,
+        )
+        if resp and not resp.streaming and _last_ts:
+            _new = await db.get_messages_after(conversation_id, after=_last_ts)
+            for _m in _new:
+                if _m.get("role") == "ai":
+                    await manager.push(conversation_id, _m)
+    except Exception as e:
+        logger.error(
+            f"[{conversation_id}] reprocess_last_user_message failed: {e}",
+            exc_info=True,
+        )
+
+
 async def _pipeline(
     conversation_id: Optional[str],
     message: str,
@@ -130,6 +184,7 @@ async def _pipeline(
     metadata: Optional[dict],
     visitor_id: Optional[str] = None,
     _persist_state: Optional[dict] = None,
+    skip_user_save: bool = False,
 ) -> ChatResponse:
     """Internal pipeline implementation with 8 steps."""
     import time
@@ -152,11 +207,16 @@ async def _pipeline(
     cid = conv["id"]
     logger.info(f"[{cid}] Pipeline start | tunnel={tunnel}")
 
-    # Save user message immediately (never lose data)
-    user_msg = await conversation_service.add_message(
-        conversation_id=cid, role="user", content=message
-    )
-    user_msg_id = user_msg["id"] if user_msg and isinstance(user_msg, dict) else None
+    # Save user message immediately (never lose data).
+    # FIX-C reprocess: the message is already in the DB — skip the insert.
+    if skip_user_save:
+        user_msg = None
+        user_msg_id = None
+    else:
+        user_msg = await conversation_service.add_message(
+            conversation_id=cid, role="user", content=message
+        )
+        user_msg_id = user_msg["id"] if user_msg and isinstance(user_msg, dict) else None
 
     # Step 2.5: Content moderation (non-blocking)
     try:
