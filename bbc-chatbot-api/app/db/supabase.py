@@ -1712,6 +1712,28 @@ async def has_agent_message_since(conversation_id: str, since_iso: str) -> bool:
         return False
 
 
+async def has_ai_or_agent_message_since(conversation_id: str, since_iso: str) -> bool:
+    """True if any role in ('ai','agent') message exists after the given ISO
+    timestamp. Used by FIX-C (fall_back_to_ai backstop) to detect a visitor
+    message that never got a reply. Errors return True — fail SAFE: never
+    double-answer on a DB hiccup."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("messages")
+            .select("id")
+            .eq("conversation_id", conversation_id)
+            .in_("role", ["ai", "agent"])
+            .gt("created_at", since_iso)
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"has_ai_or_agent_message_since error: {e}")
+        return True
+
+
 # ════════════════════════════════════════════════════════════════
 # TASKS
 # ════════════════════════════════════════════════════════════════

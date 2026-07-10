@@ -16,7 +16,8 @@ from config.settings import settings
 
 
 _CONV_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-_ASSIGNED_AT = (datetime.now(timezone.utc) - timedelta(seconds=35)).isoformat()
+# Past the FIX-B first-response deadline (90s) but under the 480s engaged timeout.
+_ASSIGNED_AT = (datetime.now(timezone.utc) - timedelta(seconds=95)).isoformat()
 
 
 def _conv_no_agent_msg():
@@ -137,5 +138,7 @@ async def test_fresh_user_not_reset():
     assert result == []
 
 
-def test_first_response_setting_is_30():
-    assert settings.agent_first_response_timeout_seconds == 30
+def test_first_response_setting_is_90():
+    # FIX-B: 30s was impossible for humans (p75≈480s per 30d audit).
+    # With FIX-A, AI serves the visitor during this window anyway.
+    assert settings.agent_first_response_timeout_seconds == 90
