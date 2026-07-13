@@ -20,6 +20,10 @@ export default function WidgetEmbed() {
     const script = document.createElement('script')
     script.src = '/widget/bbc-widget.js'
     script.setAttribute('data-api', API_URL)
+    // CRM iframe: /widget-embed?embedded=1 → open panel, no bubble
+    if (new URLSearchParams(window.location.search).get('embedded') === '1') {
+      script.setAttribute('data-mode', 'embedded')
+    }
     script.async = true
     document.body.appendChild(script)
 

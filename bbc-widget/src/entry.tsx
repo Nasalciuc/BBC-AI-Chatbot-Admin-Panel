@@ -16,6 +16,17 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
 
+  // CRM/embedded mode: no floating bubble, panel open by default, fills the
+  // iframe. Opt-in via script attr (data-mode="embedded" / data-embedded="1")
+  // or page URL (?embedded=1). Never persisted to storage. OFF → site widget
+  // behaves exactly as today.
+  const embedded = script?.getAttribute('data-mode') === 'embedded'
+    || script?.getAttribute('data-embedded') === '1'
+    || (() => {
+      try { return new URLSearchParams(location.search).get('embedded') === '1' }
+      catch { return false }
+    })()
+
   // Inject minimal CSS reset for widget elements
   const style = document.createElement('style')
   style.textContent = `
@@ -40,6 +51,15 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     document.body.appendChild(root)
 
     const s = root.style
+    if (embedded) {
+      // The iframe IS the widget's home — fill its viewport. position:fixed
+      // + inset 0 works regardless of body height (html/body default to auto).
+      s.position = 'fixed'
+      s.top = '0'
+      s.left = '0'
+      s.width = '100%'
+      s.height = '100%'
+    }
     s.setProperty('--bbc-primary', brand.colors.primary)
     s.setProperty('--bbc-primary-rgb', brand.colors.primaryRgb)
     s.setProperty('--bbc-header', brand.colors.header)
@@ -52,7 +72,7 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     s.setProperty('--bbc-send-btn-text', brand.colors.sendButtonText)
     s.setProperty('--bbc-link', brand.colors.link)
 
-    render(<Widget apiUrl={apiUrl} />, root)
+    render(<Widget apiUrl={apiUrl} embedded={embedded} />, root)
   }
   init()
 }

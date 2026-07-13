@@ -1,13 +1,21 @@
 """Auth — protects all admin /api/* endpoints.
 /health remains public for Railway healthcheck.
-/api/chat is public (customer widget).
+/api/chat is public (customer widget). /api/cron uses CRON_SECRET (not this).
 
-Accepts BOTH auth schemes:
-  1. Basic Auth: Authorization: Basic base64(user:pass) — checked against API_USER/API_PASS
-  2. Bearer Token: Authorization: Bearer <jwt> — V1 accepts any non-empty token,
-     V2 will validate JWT against Supabase.
+Auth contract (hardened for a CRM-embedded, shared-team session):
+  1. Bearer JWT (the ONLY real user path): Authorization: Bearer <jwt>, signed
+     with JWT_SECRET (HS256). Role + tunnel_scope come from the token claims —
+     never defaulted to owner. This is what /api/auth/login issues.
+  2. Basic Auth (ops escape hatch): Authorization: Basic base64(user:pass),
+     checked against API_USER/API_PASS. Returns owner. Independent of JWT_SECRET.
+  3. Debug bypass: ONLY when debug=True AND jwt_secret is empty — explicit,
+     logged, never silent. Never happens in production (debug=False there).
 
-If API_USER and API_PASS are both empty, auth is DISABLED (dev mode).
+Production requires JWT_SECRET. The Bearer path fails CLOSED (500) if it is
+missing, so a misconfigured server can never silently accept unverified tokens.
+Removed (were unsafe): silent allow-all when API_USER/API_PASS empty; "any
+Bearer == API_PASS → owner"; the `if jwt_secret:` conditional that let JWT
+decode be skipped.
 """
 
 import base64
@@ -22,18 +30,23 @@ logger = logging.getLogger(__name__)
 
 
 def get_current_user(request: Request) -> dict:
-    """Extract and verify credentials from Authorization header.
+    """Extract and verify credentials from the Authorization header.
 
-    Returns a user dict: {id, role, name}.
+    Returns a user dict: {id, email, role, name, tunnel_scope, phone}.
+    Raises 401 when auth is missing/invalid, 500 when the server is
+    misconfigured (no JWT_SECRET in production).
     """
-    # Dev mode: no auth configured → allow everything
-    if not settings.api_user or not settings.api_pass:
-        return {"id": "dev", "role": "owner", "name": "dev"}
+    # Explicit dev bypass — ONLY when opted in (debug + no secret). Never silent.
+    if settings.debug and not settings.jwt_secret:
+        logger.warning(
+            "AUTH DEV BYPASS active (debug=True, no jwt_secret). NEVER in production."
+        )
+        return {"id": "dev", "role": "owner", "name": "dev", "tunnel_scope": "all"}
 
     auth = request.headers.get("Authorization", "")
 
-    # ── Basic Auth ────────────────────────────────────────────
-    if auth.startswith("Basic "):
+    # ── Basic Auth (ops escape hatch — independent of JWT_SECRET) ──
+    if auth.startswith("Basic ") and settings.api_user and settings.api_pass:
         try:
             decoded = base64.b64decode(auth[6:]).decode("utf-8")
             user, pwd = decoded.split(":", 1)
@@ -61,10 +74,21 @@ def get_current_user(request: Request) -> dict:
                 headers={"WWW-Authenticate": "Basic"},
             )
 
-        return {"id": "admin", "role": "owner", "name": user}
+        return {"id": "admin", "role": "owner", "name": user, "tunnel_scope": "all"}
 
-    # ── Bearer Token ──────────────────────────────────────────
+    # ── Bearer JWT (the only accepted token path) ──────────────
     if auth.startswith("Bearer "):
+        # Fail closed: JWT is the only real path — a missing secret must never
+        # silently accept unverified tokens.
+        if not settings.jwt_secret:
+            logger.error(
+                "jwt_secret not configured in non-debug mode — refusing admin request"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Server auth misconfigured",
+            )
+
         token = auth[7:].strip()
         if not token:
             raise HTTPException(
@@ -73,40 +97,33 @@ def get_current_user(request: Request) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # V1.5: Try JWT decode first
-        if settings.jwt_secret:
-            try:
-                payload = _jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-                return {
-                    "id": payload.get("sub", "unknown"),
-                    "email": payload.get("email", ""),
-                    "role": payload.get("role", "sales"),
-                    "name": payload.get("name", ""),
-                    "tunnel_scope": payload.get("tunnel_scope", "sales"),
-                    "phone": payload.get("phone", ""),
-                }
-            except _jwt.ExpiredSignatureError:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token expired — please login again",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            except _jwt.InvalidTokenError:
-                pass  # Fall through to API_PASS check below
+        try:
+            payload = _jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        except _jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired — please login again",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except _jwt.InvalidTokenError:
+            logger.warning(f"Invalid Bearer token | path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
-        # Fallback: Bearer token = API_PASS (backward compatible)
-        if settings.api_pass and secrets.compare_digest(token, settings.api_pass):
-            return {"id": "admin", "role": "owner", "name": "admin"}
+        return {
+            "id": payload.get("sub", "unknown"),
+            "email": payload.get("email", ""),
+            "role": payload.get("role", "sales"),
+            "name": payload.get("name", ""),
+            "tunnel_scope": payload.get("tunnel_scope", "sales"),
+            "phone": payload.get("phone", ""),
+        }
 
-        logger.warning(f"Invalid Bearer token | path={request.url.path}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # ── No auth header ────────────────────────────────────────
-    logger.warning(f"No Authorization header | path={request.url.path}")
+    # ── No / unsupported auth header ───────────────────────────
+    logger.warning(f"No/invalid Authorization | path={request.url.path}")
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required",
