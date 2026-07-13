@@ -47,7 +47,7 @@ function clearWidgetStorage() {
   try { localStorage.removeItem('bbc_conv_booking_id') } catch {}
 }
 
-export function Widget({ apiUrl }: { apiUrl: string }) {
+export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?: boolean }) {
   // Restore from sessionStorage (survives page navigation within same tab)
   const saved = safeGet('bbc_widget')
   const restored = saved ? (() => { try { return JSON.parse(saved) } catch { return null } })() : null
@@ -121,8 +121,12 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     } catch { return null }
   })()
 
+  // Embedded (CRM iframe): no bubble step — mount straight on the form
+  // (or chat when a session restores). Site mode: unchanged.
   const [step, setStep] = useState<Step>(
-    restored?.step === 'chat' || (hasOptimisticSession && savedVisitor) ? 'chat' : 'buttons'
+    restored?.step === 'chat' || (hasOptimisticSession && savedVisitor)
+      ? 'chat'
+      : embedded ? 'form' : 'buttons'
   )
   const [tunnel, setTunnel] = useState<'sales' | 'support'>(
     restored?.tunnel || (hasOptimisticSession ? savedTunnel : 'sales')
@@ -165,8 +169,9 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
           // No active conversation — clear cache and fall back
           try { localStorage.removeItem('bbc_conv_id') } catch {}
           try { localStorage.removeItem('bbc_conv_ts') } catch {}
-          // Only fall back if user hasn't navigated away from chat already
-          setStep(prev => prev === 'chat' ? 'buttons' : prev)
+          // Only fall back if user hasn't navigated away from chat already.
+          // Embedded: there is no bubble to fall back to — show the form.
+          setStep(prev => prev === 'chat' ? (embedded ? 'form' : 'buttons') : prev)
         }
       })
       .catch(() => {
@@ -349,11 +354,13 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
   }
 
   const handleBack = () => {
+    if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
     setStep('buttons')
     clearWidgetStorage()
   }
 
   const handleCloseChat = () => {
+    if (embedded) return  // panel is always open inside the CRM iframe
     setStep('buttons')
     // Keep localStorage intact (visitor_id, conv_id, visitor_key) — "X → reopen"
     // will use the optimistic path to restore the session. Only clear sessionStorage.
@@ -364,8 +371,9 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
     autoOpenedRef.current = false
   }
 
-  // Escape key closes form/chat
+  // Escape key closes form/chat (site mode only — embedded panel stays open)
   useEffect(() => {
+    if (embedded) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
         setStep('buttons')
@@ -381,24 +389,25 @@ export function Widget({ apiUrl }: { apiUrl: string }) {
 
   return (
     <>
-      {step === 'buttons' && (
+      {step === 'buttons' && !embedded && (
         <FloatingButtons
           onSelect={handleTunnelSelect}
           showAttention={showAttention}
         />
       )}
       {step === 'form' && (
-        <div style={{ animation: 'bbc-fadein 0.3s ease' }}>
+        <div style={embedded ? { width: '100%', height: '100%' } : { animation: 'bbc-fadein 0.3s ease' }}>
           <TunnelForm
             tunnel={tunnel}
             onSubmit={handleFormSubmit}
             onBack={handleBack}
             onInteraction={handleFormInteraction}
+            embedded={embedded}
           />
         </div>
       )}
       {step === 'chat' && (
-        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} />
+        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} />
       )}
     </>
   )

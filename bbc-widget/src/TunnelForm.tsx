@@ -7,9 +7,11 @@ interface Props {
   onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => void
   onBack: () => void
   onInteraction?: () => void
+  /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
+  embedded?: boolean
 }
 
-export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
+export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded = false }: Props) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('+')
   const [detectedCountry, setDetectedCountry] = useState<Country>(COUNTRIES[0])
@@ -72,7 +74,11 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
   }
 
   return (
-    <div style={{
+    <div style={embedded ? {
+      // CRM iframe mode: the panel IS the page — fill it, no floating-card chrome.
+      width: '100%', minHeight: '100%',
+      background: '#fff', overflow: 'hidden',
+    } : {
       position: 'fixed', bottom: 24, right: 24, width: 360,
       maxWidth: 'calc(100vw - 16px)',
       background: '#fff', borderRadius: 16,
@@ -100,10 +106,12 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction }: Props) {
             </div>
           </div>
         </div>
-        <button onClick={onBack} aria-label="Close" style={{
-          background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
-          width: 28, height: 28, borderRadius: '50%', cursor: 'pointer', fontSize: 14,
-        }}>✕</button>
+        {!embedded && (
+          <button onClick={onBack} aria-label="Close" style={{
+            background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
+            width: 28, height: 28, borderRadius: '50%', cursor: 'pointer', fontSize: 14,
+          }}>✕</button>
+        )}
       </div>
 
       <form onSubmit={handleSubmit} style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>

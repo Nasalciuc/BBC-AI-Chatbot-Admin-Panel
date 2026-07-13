@@ -152,8 +152,13 @@ async def test_list_leads_search():
 
 @pytest.mark.asyncio
 async def test_list_leads_401():
-    """No auth header returns 401."""
-    with patch("config.settings.settings.api_user", "admin"), \
+    """No auth header returns 401.
+
+    debug=False so the hardened dev-bypass (debug + no jwt_secret) is inactive —
+    this exercises the real production contract: no auth → 401.
+    """
+    with patch("config.settings.settings.debug", False), \
+         patch("config.settings.settings.api_user", "admin"), \
          patch("config.settings.settings.api_pass", "secret"), \
          patch("app.db.supabase.get_leads", new_callable=AsyncMock, return_value=([], 0)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

@@ -15,6 +15,8 @@ interface Props {
   metadata?: { booking_id?: string }
   onClose: () => void
   apiUrl: string
+  /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
+  embedded?: boolean
 }
 
 /** Read cached conv_id from localStorage. Widget.tsx has already verified
@@ -23,7 +25,7 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
-export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props) {
+export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedded = false }: Props) {
   const savedConvId = getCachedConvId()
 
   const [messages, setMessages] = useState<Message[]>([])
@@ -435,7 +437,12 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
   }
 
   return (
-    <div style={{
+    <div style={embedded ? {
+      // CRM iframe mode: fill the container — no floating-card chrome.
+      width: '100%', height: '100%',
+      background: '#fff',
+      display: 'flex', flexDirection: 'column', overflow: 'hidden',
+    } : {
       position: 'fixed', bottom: 24, right: 24, width: 380, height: 520,
       maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100dvh - 16px)',
       background: '#fff', borderRadius: 16,
@@ -467,10 +474,12 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl }: Props
             </div>
           </div>
         </div>
-        <button onClick={() => { notifySessionClose('minimized', true); onClose() }} aria-label="Close chat" style={{
-          background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
-          width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', fontSize: 13,
-        }}>✕</button>
+        {!embedded && (
+          <button onClick={() => { notifySessionClose('minimized', true); onClose() }} aria-label="Close chat" style={{
+            background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
+            width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', fontSize: 13,
+          }}>✕</button>
+        )}
       </div>
 
       <div role="log" aria-live="polite" style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>

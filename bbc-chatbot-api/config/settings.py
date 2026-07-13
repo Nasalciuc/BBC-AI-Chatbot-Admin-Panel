@@ -80,7 +80,9 @@ class Settings(BaseSettings):
     api_pass: str = ""
 
     # JWT
-    jwt_secret: str = ""  # REQUIRED in production for auth
+    # REQUIRED in production; the Bearer path in auth.py fails closed (500) if
+    # empty and debug=False. Do NOT hard-crash on import — Railway needs /health.
+    jwt_secret: str = ""
     jwt_expiry_hours: int = 24
 
     # Budget

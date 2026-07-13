@@ -20,6 +20,7 @@ build/
 
 # IDE / Tools
 .claude/
+.cursor/mcp.env
 .vscode/settings.json
 .idea/
 *.swp
