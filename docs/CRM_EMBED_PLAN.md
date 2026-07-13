@@ -66,16 +66,15 @@ CRM page (crm.buybusinessclass.com)        iframe: panel (chat.buybusinessclass.
 Security requirements (all satisfied by the hardened auth):
 - The injected token MUST be a valid JWT (HS256, our `JWT_SECRET`) — the removed
   "any Bearer == API_PASS" fallback means a bogus token is rejected.
-- The panel MUST validate `event.origin` against the confirmed CRM origin before
-  accepting the token (implement at wiring time).
+- The panel validates `event.origin` (BBC domains + `VITE_CRM_ORIGINS`) before
+  accepting the token — see `crm-embed-auth.ts`.
 - CORS must include the CRM origin (Railway env).
 
-Pros: works cross-domain, no proxy. Cons: token-bridge code + origin checks; JWT
-must be shared/minted by the CRM.
+Pros: works cross-domain, no proxy. Cons: CRM must mint/share JWT with our secret.
 
 ---
 
-## Option B — implemented receiver
+## Option B — receiver (shipped)
 
 Panel listens for `postMessage` (`bbc-admin-app/src/lib/crm-embed-auth.ts`).
 Allowed origins: `https://buybusinessclass.com`, `https://*.buybusinessclass.com`,
