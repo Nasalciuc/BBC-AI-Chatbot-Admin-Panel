@@ -66,20 +66,58 @@ CRM page (crm.buybusinessclass.com)        iframe: panel (chat.buybusinessclass.
 Security requirements (all satisfied by the hardened auth):
 - The injected token MUST be a valid JWT (HS256, our `JWT_SECRET`) — the removed
   "any Bearer == API_PASS" fallback means a bogus token is rejected.
-- The panel MUST validate `event.origin` against the confirmed CRM origin before
-  accepting the token (implement at wiring time).
+- The panel validates `event.origin` (BBC domains + `VITE_CRM_ORIGINS`) before
+  accepting the token — see `crm-embed-auth.ts`.
 - CORS must include the CRM origin (Railway env).
 
-Pros: works cross-domain, no proxy. Cons: token-bridge code + origin checks; JWT
-must be shared/minted by the CRM.
+Pros: works cross-domain, no proxy. Cons: CRM must mint/share JWT with our secret.
 
 ---
 
-## Decision checklist (Monday, no new code except Option B wiring)
+## Option B — receiver (shipped)
+
+Panel listens for `postMessage` (`bbc-admin-app/src/lib/crm-embed-auth.ts`).
+Allowed origins: `https://buybusinessclass.com`, `https://*.buybusinessclass.com`,
+`localhost`, plus extras from `VITE_CRM_ORIGINS`.
+
+### Dan — widget (visitor chat in CRM)
+
+```html
+<iframe
+  src="https://chat.buybusinessclass.com/widget-embed?embedded=1"
+  width="420" height="640"
+  style="border:none;border-radius:12px;"></iframe>
+```
+
+### Dan — operator panel in CRM (full admin app)
+
+```html
+<iframe
+  id="bbc-ops"
+  src="https://chat.buybusinessclass.com/"
+  width="100%" height="100%"
+  style="border:none;"></iframe>
+<script>
+  // After CRM login: mint/fetch a JWT with OUR JWT_SECRET
+  // claims: sub, email, name, role, tunnel_scope, exp (same as /api/auth/login)
+  const iframe = document.getElementById('bbc-ops')
+  iframe.addEventListener('load', () => {
+    iframe.contentWindow.postMessage(
+      { type: 'bbc-auth', token: CRM_ISSUED_JWT },
+      'https://chat.buybusinessclass.com'
+    )
+  })
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'bbc-auth-ack') console.log('BBC auth', e.data.ok)
+  })
+</script>
+```
+
+## Decision checklist
 
 - [ ] Confirm exact CRM origin (e.g. `crm.buybusinessclass.com`).
-- [ ] Can the CRM reverse-proxy? → **Option A**. Else → **Option B**.
-- [ ] Set `JWT_SECRET` on Railway (enables hardened auth) — shared with CRM if Option B.
+- [ ] Can the CRM reverse-proxy? → **Option A**. Else → **Option B** (receiver ready).
+- [ ] Set `JWT_SECRET` on Railway — shared with CRM if Option B.
 - [ ] Add CRM origin to `CORS_ORIGINS` (Railway env).
 - [ ] Optionally tighten `vercel.json` frame-ancestors to the exact CRM origin.
-- [ ] Option B only: implement postMessage receiver + `event.origin` allowlist in the panel.
+- [x] Option B: postMessage receiver + origin allowlist in the panel.

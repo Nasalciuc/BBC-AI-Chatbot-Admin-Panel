@@ -9,6 +9,7 @@ import {
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { installCrmEmbedAuth } from '@/lib/crm-embed-auth'
 import { handleServerError } from '@/lib/handle-server-error'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
@@ -84,6 +85,14 @@ declare module '@tanstack/react-router' {
     router: typeof router
   }
 }
+
+// CRM iframe SSO: parent posts { type: 'bbc-auth', token } → cookie + user
+installCrmEmbedAuth(() => {
+  const path = router.history.location.pathname
+  if (path === '/sign-in' || path.startsWith('/sign-in')) {
+    router.navigate({ to: '/', replace: true })
+  }
+})
 
 // Render the app
 const rootElement = document.getElementById('root')!
