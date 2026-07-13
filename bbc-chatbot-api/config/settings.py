@@ -12,6 +12,8 @@ REQUIRED_CORS_ORIGINS: tuple[str, ...] = (
     "https://buybusinessclass.com",
     "https://www.buybusinessclass.com",
     "https://crm.buybusinessclass.com",
+    "https://crm.test",
+    "http://crm.test",
 )
 
 _DEFAULT_CORS_ORIGINS: tuple[str, ...] = (
