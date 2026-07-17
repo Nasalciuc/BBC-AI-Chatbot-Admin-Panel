@@ -97,7 +97,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] })
       toast.success(reviewed ? 'Marked as reviewed' : 'Review cleared')
     },
-    onError: () => toast.error('Failed to update review status'),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Failed to update review status'),
   })
 
   const messages: Message[] = conversation?.messages ?? []
