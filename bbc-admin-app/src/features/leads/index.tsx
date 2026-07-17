@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Search, Filter, Phone, Mail, Plane, ChevronDown, RefreshCw } from 'lucide-react'
+import { Search, Filter, Phone, Mail, Plane, ChevronDown, RefreshCw, Check, X } from 'lucide-react'
+import { toast } from 'sonner'
 import type { Lead } from '@/lib/types'
-import { getLeads, updateLeadStatus } from '@/lib/api'
+import { getLeads, updateLeadStatus, reviewLead } from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ConnectionBanner } from '@/components/connection-banner'
@@ -66,6 +67,7 @@ export function Leads() {
   const [reviewFilter, setReviewFilter] = useState('all')
   const [offset, setOffset]         = useState(0)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+  const [pendingId, setPendingId] = useState<string | null>(null)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const LIMIT = 50
 
@@ -104,7 +106,31 @@ export function Leads() {
     }
   }
 
+  const toggleReview = async (lead: Lead) => {
+    if (pendingId) return
+    setPendingId(lead.id)
+    try {
+      await reviewLead(lead.id, !lead.reviewed_by_qa)
+      await fetchLeads()
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to update review status'
+      toast.error(message || 'Failed to update review status')
+    } finally {
+      setPendingId(null)
+    }
+  }
+
   const sortedLeads = [...(leads || [])].sort((a, b) => (b.score || 0) - (a.score || 0))
+  const tableHeaders = [
+    'Score',
+    ...(canReview ? ['Reviewed'] : []),
+    'Contact',
+    'Route',
+    'Tier',
+    'Status',
+    'Departure',
+    'Action',
+  ]
 
   return (
     <>
@@ -222,7 +248,7 @@ export function Leads() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50">
-                    {['Score', 'Contact', 'Route', 'Tier', 'Status', 'Departure', 'Action'].map(h => (
+                    {tableHeaders.map(h => (
                       <th key={h} className="text-left px-4 py-3 font-medium text-gray-500 text-xs uppercase tracking-wide">{h}</th>
                     ))}
                   </tr>
@@ -231,6 +257,24 @@ export function Leads() {
                   {sortedLeads.map(lead => (
                     <tr key={lead.id} className="hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setSelectedLeadId(lead.id)}>
                       <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
+                      {canReview && (
+                        <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            disabled={pendingId === lead.id}
+                            onClick={() => toggleReview(lead)}
+                            className="inline-flex items-center justify-center p-1 rounded hover:bg-gray-100 disabled:opacity-50"
+                            aria-label={lead.reviewed_by_qa ? 'Mark as unreviewed' : 'Mark as reviewed'}
+                            title={lead.reviewed_by_qa ? 'Reviewed — click to clear' : 'Not reviewed — click to mark'}
+                          >
+                            {lead.reviewed_by_qa ? (
+                              <Check className="w-4 h-4 text-green-600" aria-hidden />
+                            ) : (
+                              <X className="w-4 h-4 text-red-600" aria-hidden />
+                            )}
+                          </button>
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         <div className="font-medium text-gray-900">
                           {lead.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous</span>}
