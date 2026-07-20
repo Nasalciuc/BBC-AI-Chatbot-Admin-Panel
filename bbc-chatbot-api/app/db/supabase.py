@@ -298,7 +298,13 @@ async def get_conversations(
             elif status:
                 q = q.eq("status", status)
             if agent_id:
-                q = q.eq("assigned_agent_id", agent_id)
+                # Assigned OR engaged: after AI fallback assigned_agent_id is
+                # nulled but metadata.engaged_agent_id is preserved. PostgREST
+                # ANDs chained filters, so tunnel/status stay AND-ed with this OR.
+                q = q.or_(
+                    f"assigned_agent_id.eq.{agent_id},"
+                    f"metadata->>engaged_agent_id.eq.{agent_id}"
+                )
             elif agent_id_is_null:
                 q = q.is_("assigned_agent_id", "null")
             if search:
