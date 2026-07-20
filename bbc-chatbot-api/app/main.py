@@ -13,6 +13,7 @@ from app.api.leads import router as leads_router
 from app.api.kb import router as kb_router
 from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
+from app.api.teams import router as teams_router
 from app.api.agent import router as agent_router
 from app.api.tasks import router as tasks_router
 from app.api.notifications import router as notifications_router
@@ -74,6 +75,7 @@ app.include_router(leads_router,         prefix="/api", tags=["leads"],         
 app.include_router(kb_router,            prefix="/api", tags=["kb"],            dependencies=admin_deps)
 app.include_router(dashboard_router,     prefix="/api", tags=["dashboard"],     dependencies=admin_deps)
 app.include_router(users_router,         prefix="/api", tags=["users"],         dependencies=admin_deps)
+app.include_router(teams_router,         prefix="/api", tags=["teams"],         dependencies=admin_deps)
 app.include_router(agent_router,         prefix="/api", tags=["agent"],         dependencies=admin_deps)
 app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         dependencies=admin_deps)
 app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)

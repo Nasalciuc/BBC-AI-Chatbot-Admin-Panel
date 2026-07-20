@@ -299,11 +299,22 @@ async def perform_handoff_to_agent(
         for _k in _pop_meta_keys:
             _meta.pop(_k, None)
 
-    await db.update_conversation(conversation_id, {
+    # Phase 2 (frozen history): stamp the conversation with the assigned
+    # operator's CURRENT team_id, so it stays with the team that handled it
+    # even if the operator later changes teams. Only stamp when the operator
+    # actually has a team — never overwrite a previously-stamped team with
+    # NULL. (AI fallback nulls assigned_agent_id but leaves team_id intact.)
+    _update: dict = {
         "mode": "human",
         "assigned_agent_id": agent_id,
         "metadata": _meta,
-    })
+    }
+    _operator = await db.get_user_by_id(agent_id)
+    _operator_team_id = (_operator or {}).get("team_id")
+    if _operator_team_id:
+        _update["team_id"] = _operator_team_id
+
+    await db.update_conversation(conversation_id, _update)
     if _is_new_cycle:
         from app.services.presence import log_activity
         from app.pipeline.orchestrator import _fire_and_forget
