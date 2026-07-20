@@ -284,15 +284,24 @@ async def get_conversations(
     search: Optional[str] = None,
     agent_id: Optional[str] = None,
     agent_id_is_null: bool = False,
+    team_ids: Optional[list[str]] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list, int]:
-    """List conversations with filters. Returns (rows, total_count)."""
+    """List conversations with filters. Returns (rows, total_count).
+
+    team_ids (Phase 2): when a non-empty list is passed, restrict to
+    conversations whose frozen team_id is in that set. PostgREST ANDs
+    separate filter calls, so this composes with tunnel/status/agent/search
+    (a team-scoped caller cannot widen results via other query params).
+    """
     try:
         db = get_client()
         def _query():
             q = db.table("conversations").select("*", count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
+            if team_ids:
+                q = q.in_("team_id", team_ids)
             if status_in:
                 q = q.in_("status", status_in)
             elif status:
@@ -328,7 +337,7 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         db = get_client()
         res = await _run_sync(
             lambda: db.table("conversations")
-            .select("id, tunnel, status, mode, assigned_agent_id, visitor_id, metadata, updated_at")
+            .select("id, tunnel, status, mode, assigned_agent_id, team_id, visitor_id, metadata, updated_at")
             .eq("id", conv_id)
             .single()
             .execute()
@@ -554,8 +563,13 @@ async def get_leads(
     offset: int = 0,
     include_drafts: bool = False,
     reviewed_filter: Optional[str] = None,
+    team_ids: Optional[list[str]] = None,
 ) -> tuple[list, int]:
-    """List leads with JOIN on conversations for contact details. Returns (rows, total_count)."""
+    """List leads with JOIN on conversations for contact details. Returns (rows, total_count).
+
+    team_ids (Phase 2): non-empty ⇒ restrict to leads whose frozen team_id is
+    in that set (supervisor scoping). ANDs with all other filters.
+    """
     try:
         db = get_client()
         def _query():
@@ -569,6 +583,8 @@ async def get_leads(
                 q = q.order("score", desc=True)
             if not include_drafts:
                 q = q.eq("created_in_crm", True)
+            if team_ids:
+                q = q.in_("team_id", team_ids)
             if status:  q = q.eq("status", status)
             if tier:    q = q.eq("tier", tier)
             if tunnel:  q = q.eq("conversations.tunnel", tunnel)
@@ -614,9 +630,12 @@ def _apply_leads_list_filters(
     assigned_to: Optional[str] = None,
     include_drafts: bool = False,
     reviewed_filter: Optional[str] = None,
+    team_ids: Optional[list[str]] = None,
 ):
     if not include_drafts:
         q = q.eq("created_in_crm", True)
+    if team_ids:
+        q = q.in_("team_id", team_ids)
     if status:
         q = q.eq("status", status)
     if tier:
@@ -648,6 +667,7 @@ async def get_leads_review_counts(
     search: Optional[str] = None,
     assigned_to: Optional[str] = None,
     include_drafts: bool = False,
+    team_ids: Optional[list[str]] = None,
 ) -> tuple[int, int]:
     """Return (reviewed_count, total_count) for QA progress bar."""
     try:
@@ -667,6 +687,7 @@ async def get_leads_review_counts(
                 assigned_to=assigned_to,
                 include_drafts=include_drafts,
                 reviewed_filter="true" if reviewed_only else None,
+                team_ids=team_ids,
             )
             return q.limit(0).execute()
 
@@ -872,15 +893,29 @@ async def get_users(
     search: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
+    team_ids: Optional[list[str]] = None,
+    include_self_id: Optional[str] = None,
 ) -> tuple[list, int]:
-    """List users with filters. Returns (rows, total_count)."""
+    """List users with filters. Returns (rows, total_count).
+
+    team_ids (Phase 2): non-empty ⇒ restrict to members whose team_id is in
+    that set (supervisor/PM scoping), OR the caller themselves
+    (include_self_id) so a supervisor without a team_id still sees their own
+    row. ANDs with role/search.
+    """
     db = get_client()
     def _query():
         q = db.table("users").select(
-            "id,email,name,role,tunnel_scope,avatar_url,is_active,last_seen_at,phone,created_at,updated_at",
+            "id,email,name,role,tunnel_scope,avatar_url,is_active,last_seen_at,phone,team_id,created_at,updated_at",
             count="exact",  # type: ignore[arg-type]
         ).order("created_at", desc=True)
         if role:    q = q.eq("role", role)
+        if team_ids:
+            _in = ",".join(team_ids)
+            if include_self_id:
+                q = q.or_(f"team_id.in.({_in}),id.eq.{include_self_id}")
+            else:
+                q = q.in_("team_id", team_ids)
         if search:
             q = q.or_(
                 f"name.ilike.%{search}%,"
@@ -1041,6 +1076,173 @@ async def get_user_access_audit(target_user_id: str, limit: int = 50) -> list:
     except Exception as e:
         logger.error(f"get_user_access_audit error: {e}")
         return []
+
+
+# ════════════════════════════════════════════════════════════════
+# TEAMS (Phase 1 — model + admin CRUD; no team filtering yet)
+# ════════════════════════════════════════════════════════════════
+
+async def create_team(payload: dict) -> Optional[dict]:
+    """Insert a team row. Caller sets name/created_by/etc. Returns row or None."""
+    try:
+        db = get_client()
+        data = dict(payload)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        data.setdefault("created_at", now_iso)
+        data["updated_at"] = now_iso
+        res = await _run_sync(lambda: db.table("teams").insert(data).execute())
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"create_team error: {e}")
+        return None
+
+
+async def update_team(team_id: str, payload: dict) -> Optional[dict]:
+    """Patch a team row. Always stamps updated_at from Python. Returns row or None."""
+    try:
+        db = get_client()
+        data = dict(payload)
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        res = await _run_sync(
+            lambda: db.table("teams").update(data).eq("id", team_id).execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"update_team error: {e}")
+        return None
+
+
+async def get_teams(
+    is_active: Optional[bool] = None,
+    pm_id: Optional[str] = None,
+    supervisor_id: Optional[str] = None,
+) -> list:
+    """List teams, optionally filtered by active flag / pm / supervisor."""
+    try:
+        db = get_client()
+
+        def _q():
+            q = db.table("teams").select("*").order("created_at", desc=True)
+            if is_active is not None:
+                q = q.eq("is_active", is_active)
+            if pm_id:
+                q = q.eq("pm_id", pm_id)
+            if supervisor_id:
+                q = q.eq("supervisor_id", supervisor_id)
+            return q.execute()
+
+        res = await _run_sync(_q)
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_teams error: {e}")
+        return []
+
+
+async def get_team(team_id: str) -> Optional[dict]:
+    """Fetch a single team by id."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("teams").select("*").eq("id", team_id).single().execute()
+        )
+        return res.data if res.data else None
+    except Exception as e:
+        logger.error(f"get_team error: {e}")
+        return None
+
+
+# ── Phase 2: team-scope resolution (fail-closed) ─────────────────
+# All three log-and-return-[] on error. Combined with the API layer's
+# "no team_ids ⇒ empty result" rule, a DB error yields "see nothing",
+# never "see everything".
+
+async def get_team_ids_for_supervisor(user_id: str) -> list[str]:
+    """Active team ids supervised by this user (teams.supervisor_id = user_id)."""
+    if not user_id:
+        return []
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("teams")
+            .select("id")
+            .eq("supervisor_id", user_id)
+            .eq("is_active", True)
+            .execute()
+        )
+        return [r["id"] for r in (res.data or []) if r.get("id")]
+    except Exception as e:
+        logger.error(f"get_team_ids_for_supervisor error: {e}")
+        return []
+
+
+async def get_team_ids_for_pm(user_id: str) -> list[str]:
+    """Active team ids managed by this project_manager (teams.pm_id = user_id)."""
+    if not user_id:
+        return []
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("teams")
+            .select("id")
+            .eq("pm_id", user_id)
+            .eq("is_active", True)
+            .execute()
+        )
+        return [r["id"] for r in (res.data or []) if r.get("id")]
+    except Exception as e:
+        logger.error(f"get_team_ids_for_pm error: {e}")
+        return []
+
+
+async def get_operator_ids_for_teams(team_ids: list[str]) -> list[str]:
+    """User ids whose team_id is in the given set (team members)."""
+    if not team_ids:
+        return []
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("users")
+            .select("id")
+            .in_("team_id", team_ids)
+            .execute()
+        )
+        return [r["id"] for r in (res.data or []) if r.get("id")]
+    except Exception as e:
+        logger.error(f"get_operator_ids_for_teams error: {e}")
+        return []
+
+
+async def set_user_team(user_id: str, team_id: Optional[str]) -> Optional[dict]:
+    """Assign (or clear, when team_id is None) a user's team membership."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("users")
+            .update({"team_id": team_id})
+            .eq("id", user_id)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"set_user_team error: {e}")
+        return None
+
+
+async def count_team_members(team_id: str) -> int:
+    """Count users whose team_id references this team."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("users")
+            .select("id", count="exact")  # type: ignore[arg-type]
+            .eq("team_id", team_id)
+            .limit(0)
+            .execute()
+        )
+        return res.count or 0
+    except Exception as e:
+        logger.error(f"count_team_members error: {e}")
+        return 0
 
 
 async def create_invite_token(payload: dict) -> Optional[dict]:
@@ -1507,7 +1709,7 @@ async def update_user_last_seen(user_id: str) -> None:
 # Roles excluded from chat distribution (auto-assignment, sticky routing, stale cleanup).
 # These users manage/observe but never handle visitor conversations directly.
 # If adding a new role, decide: does this role HANDLE chats? If NO → add here.
-_MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor", "qa")
+_MANAGEMENT_ROLES = ("owner", "admin", "dev", "supervisor", "qa", "project_manager")
 
 # Roles that actively HANDLE visitor conversations — auto-assign ALLOWLIST.
 # A new role added tomorrow does NOT receive chats until explicitly listed here.
@@ -1992,9 +2194,27 @@ async def ensure_lead_for_conversation(conversation_id: str) -> dict | None:
         if existing.data:
             return existing.data[0]
 
-        result = await _run_sync(lambda conv_id=conversation_id: (
+        # Phase 2 (frozen history): stamp the lead with the conversation's
+        # team_id at creation so it stays with the team that handled it.
+        _team_id = None
+        try:
+            _cres = await _run_sync(lambda conv_id=conversation_id: (
+                db.table("conversations")
+                .select("team_id")
+                .eq("id", conv_id)
+                .single()
+                .execute()
+            ))
+            _team_id = (_cres.data or {}).get("team_id")
+        except Exception:
+            _team_id = None
+
+        _insert = {"conversation_id": conversation_id}
+        if _team_id:
+            _insert["team_id"] = _team_id
+        result = await _run_sync(lambda payload=_insert: (
             db.table("leads")
-            .insert({"conversation_id": conv_id})
+            .insert(payload)
             .execute()
         ))
         return result.data[0] if result.data else None

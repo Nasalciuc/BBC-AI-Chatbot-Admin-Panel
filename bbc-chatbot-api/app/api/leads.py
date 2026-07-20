@@ -33,6 +33,8 @@ async def list_leads(
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
+    # project_manager is intentionally NOT in this list — PM has no leads
+    # access (Phase 1 trap), so it 403s here regardless of team scoping.
     if user.get("role") not in ("owner", "admin", "supervisor", "qa"):
         raise HTTPException(status_code=403, detail="Leads access restricted to admin/owner")
     try:
@@ -40,6 +42,18 @@ async def list_leads(
 
         user_role = user.get("role", "")
         user_id = user.get("id", "")
+
+        # Phase 2: a supervisor sees only leads frozen to their own team(s).
+        # Fail closed — a supervisor with no team sees an empty list.
+        team_ids: Optional[list[str]] = None
+        if user_role == "supervisor":
+            team_ids = await db.get_team_ids_for_supervisor(user_id)
+            if not team_ids:
+                return {
+                    "success": True, "data": [], "count": 0,
+                    "review_stats": {"reviewed": 0, "total": 0},
+                }
+
         if user_role == "qa":
             agent_filter = "all"
         elif user_role in ("sales", "support"):
@@ -51,6 +65,11 @@ async def list_leads(
         else:
             agent_filter = "all"
 
+        # team_ids is only ever set for a supervisor; for everyone else it
+        # stays None and is omitted from the call so the DB signature is
+        # byte-for-byte the pre-Phase-2 call (no regression for owner/admin/qa).
+        _team_kw = {"team_ids": team_ids} if team_ids is not None else {}
+
         rows, total = await db.get_leads(
             status=status,
             tier=tier,
@@ -61,6 +80,7 @@ async def list_leads(
             reviewed_filter=reviewed,
             limit=limit,
             offset=offset,
+            **_team_kw,
         )
         response: dict = {"success": True, "data": rows, "count": total}
         if user.get("role") in ("owner", "admin", "supervisor", "qa"):
@@ -71,6 +91,7 @@ async def list_leads(
                 search=search,
                 assigned_to=agent_filter,
                 include_drafts=include_drafts,
+                **_team_kw,
             )
             response["review_stats"] = {"reviewed": reviewed_n, "total": total_n}
         return response

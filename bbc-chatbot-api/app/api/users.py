@@ -9,12 +9,13 @@ from app.security.auth import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_ROLES = {"owner", "admin", "dev", "sales", "support", "supervisor", "qa"}
+VALID_ROLES = {"owner", "admin", "dev", "sales", "support", "supervisor", "qa", "project_manager"}
 VALID_TUNNELS = {"sales", "support", "all"}
 PRIVILEGED = {"owner", "admin", "dev"}
 # Roles that can read user list (extends PRIVILEGED for reassign dropdown).
 # Write operations (update, invite, delete) remain restricted to PRIVILEGED only.
-CAN_LIST_USERS = PRIVILEGED | {"supervisor"}
+# project_manager needs to see its teams' operators (still cannot write users).
+CAN_LIST_USERS = PRIVILEGED | {"supervisor", "project_manager"}
 
 
 @router.get("/admin/users")
@@ -28,7 +29,26 @@ async def list_users(
     if user.get("role") not in CAN_LIST_USERS:
         raise HTTPException(status_code=403, detail="Only owner/admin can list users")
     try:
-        rows, total = await db.get_users(role=role, search=search, limit=limit, offset=offset)
+        # Phase 2: supervisor/PM see only members of their own team(s), plus
+        # themselves. Fail closed — no team ⇒ only their own row.
+        actor_role = user.get("role", "")
+        actor_id = user.get("id", "")
+        team_ids: Optional[list[str]] = None
+        include_self_id: Optional[str] = None
+        if actor_role == "supervisor":
+            team_ids = await db.get_team_ids_for_supervisor(actor_id)
+            include_self_id = actor_id
+        elif actor_role == "project_manager":
+            team_ids = await db.get_team_ids_for_pm(actor_id)
+            include_self_id = actor_id
+        if team_ids is not None and not team_ids:
+            # scoped but owns no team → only self visible
+            team_ids = ["00000000-0000-0000-0000-000000000000"]
+
+        rows, total = await db.get_users(
+            role=role, search=search, limit=limit, offset=offset,
+            team_ids=team_ids, include_self_id=include_self_id,
+        )
         return {"success": True, "data": rows, "count": total}
     except Exception as e:
         logger.error(f"list_users error: {e}")
@@ -42,12 +62,29 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
         raise HTTPException(status_code=403, detail="Only owner/admin can modify access rights")
 
     payload = body.model_dump(exclude_none=True)
+
+    # team_id is intentionally nullable: `null` = move user to the unassigned
+    # pool. exclude_none would drop that, so re-add it whenever the client
+    # explicitly sent the field (even as null).
+    team_id_set = "team_id" in body.model_fields_set
+    if team_id_set:
+        payload["team_id"] = body.team_id
+
     if not payload:
         raise HTTPException(400, "No valid fields to update")
     if "role" in payload and payload["role"] not in VALID_ROLES:
         raise HTTPException(400, f"Invalid role. Must be one of: {VALID_ROLES}")
     if "tunnel_scope" in payload and payload["tunnel_scope"] not in VALID_TUNNELS:
         raise HTTPException(400, f"Invalid tunnel_scope. Must be one of: {VALID_TUNNELS}")
+
+    # Validate team assignment: null clears it; a value must reference an
+    # existing, active team.
+    if team_id_set and body.team_id is not None:
+        team = await db.get_team(body.team_id)
+        if not team:
+            raise HTTPException(400, "Team not found")
+        if not team.get("is_active", False):
+            raise HTTPException(400, "Cannot assign user to an inactive team")
 
     existing = await db.get_user_by_id(user_id)
     if not existing:

@@ -19,12 +19,27 @@ router = APIRouter()
 def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
     """Force tunnel filter for sales/support roles."""
     role = user.get("role", "sales")
-    if role in ("owner", "admin", "dev", "supervisor", "qa"):
-        return tunnel  # privileged users can filter freely
+    if role in ("owner", "admin", "dev", "supervisor", "qa", "project_manager"):
+        return tunnel  # privileged/oversight roles filter tunnel freely (team scoping applied separately — Phase 2)
     scope = user.get("tunnel_scope", role)
     if tunnel and tunnel != scope:
         raise HTTPException(status_code=403, detail="Access denied to this tunnel")
     return scope
+
+
+async def _resolve_team_scope(user: dict) -> Optional[list[str]]:
+    """Phase 2 team scoping. Returns:
+      - None  → caller is NOT team-scoped (owner/admin/dev/qa/sales/support) — unchanged behavior.
+      - []    → caller IS team-scoped (supervisor/PM) but owns no active team — FAIL CLOSED (see nothing).
+      - [ids] → caller is team-scoped to these active team ids.
+    """
+    role = user.get("role", "")
+    uid = user.get("id", "")
+    if role == "supervisor":
+        return await db.get_team_ids_for_supervisor(uid)
+    if role == "project_manager":
+        return await db.get_team_ids_for_pm(uid)
+    return None
 
 
 @router.get("/conversations")
@@ -40,6 +55,12 @@ async def list_conversations(
 ):
     try:
         tunnel = _enforce_tunnel(user, tunnel)
+
+        # Phase 2 team scoping (supervisor/PM): restrict to their team(s).
+        # Fail closed — a scoped caller with no team sees an empty list.
+        team_ids = await _resolve_team_scope(user)
+        if team_ids is not None and len(team_ids) == 0:
+            return {"success": True, "data": [], "count": 0}
 
         # Resolve assigned_to into an agent_id filter
         agent_id_filter: Optional[str] = None
@@ -63,6 +84,7 @@ async def list_conversations(
         rows, total = await db.get_conversations(
             tunnel=tunnel, status=list_status, status_in=status_in, search=search,
             agent_id=agent_id_filter, agent_id_is_null=agent_id_is_null,
+            team_ids=team_ids,
             limit=limit, offset=offset,
         )
         if handled_by == "human":
@@ -143,15 +165,19 @@ async def get_conversation_messages(
     user: dict = Depends(get_current_user),
 ):
     """Get messages, optionally only those after a timestamp (incremental polling)."""
-    # Supervisors can manage queues but cannot access message content.
-    if user.get("role") == "supervisor":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Supervisors cannot access message content. "
-                "Use /conversations for metadata only."
-            ),
-        )
+    # Phase 2: supervisor/PM may read message content ONLY for conversations
+    # handled by their own team(s). This narrows the Phase-1 supervisor read
+    # flip from "whole tunnel" down to "own team". Fail closed.
+    role = user.get("role")
+    if role in ("supervisor", "project_manager"):
+        team_ids = await _resolve_team_scope(user)
+        conv = await db.get_conversation_simple(conversation_id)
+        conv_team = (conv or {}).get("team_id")
+        if not team_ids or conv_team not in team_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only read messages for conversations handled by your team.",
+            )
     msgs = await db.get_messages_after(conversation_id, after)
     return {"success": True, "data": msgs}
 
@@ -167,10 +193,14 @@ async def get_conversation(
             return {"success": False, "data": None, "count": 0, "error": "Not found"}
         _enforce_tunnel(user, conv.get("tunnel"))
 
-        # Supervisors can see metadata only, never message content.
-        if user.get("role") == "supervisor":
-            conv = dict(conv)
-            conv["messages"] = []
+        # Phase 2: supervisor/PM see message content ONLY for their own team's
+        # conversations; otherwise metadata-only (messages blanked). Fail closed.
+        if user.get("role") in ("supervisor", "project_manager"):
+            team_ids = await _resolve_team_scope(user)
+            conv_team = conv.get("team_id")
+            if not team_ids or conv_team not in team_ids:
+                conv = dict(conv)
+                conv["messages"] = []
 
         return {"success": True, "data": conv, "count": 1}
     except HTTPException:

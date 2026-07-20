@@ -117,6 +117,9 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     phone: Optional[str] = None
     avatar_url: Optional[str] = None
+    # Nullable: null moves the user to the unassigned pool. The endpoint uses
+    # model_fields_set to distinguish "not sent" from an explicit null.
+    team_id: Optional[str] = None
 
 
 # ── KB ────────────────────────────────────────────────────────
