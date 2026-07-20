@@ -128,7 +128,7 @@ export interface MetricEvent {
 
 // ── RBAC Types (NEW — for V1 demo) ──────────────────────────────
 
-export type UserRole = 'owner' | 'admin' | 'dev' | 'qa' | 'sales' | 'support' | 'supervisor'
+export type UserRole = 'owner' | 'admin' | 'dev' | 'qa' | 'sales' | 'support' | 'supervisor' | 'project_manager'
 export type Tunnel = 'sales' | 'support' | 'all'
 
 export interface BBCUser {
@@ -139,6 +139,23 @@ export interface BBCUser {
   tunnel: Tunnel
   initials: string
   avatarColor: string
+  team_id?: string | null
+}
+
+// Teams (Phase 1: model only — no team-based filtering yet). Mirrors the
+// backend public.teams table.
+export interface Team {
+  id: string
+  name: string
+  shift_name?: string | null
+  shift_start?: string | null
+  shift_end?: string | null
+  supervisor_id?: string | null
+  pm_id?: string | null
+  is_active: boolean
+  created_by?: string | null
+  created_at: string
+  updated_at?: string | null
 }
 
 export interface Permissions {
@@ -157,5 +174,7 @@ export interface Permissions {
   canViewAllSettings: boolean
   canViewDashboardGlobal: boolean
   canAssignTasks: boolean
+  canViewTeams: boolean
+  canManageTeams: boolean
   visibleTunnels: Tunnel[]
 }
