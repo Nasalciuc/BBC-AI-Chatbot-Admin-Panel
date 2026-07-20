@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
-  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks,
+  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound,
 } from 'lucide-react'
 import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
@@ -31,12 +31,17 @@ export function getSidebarData(
             : []),
         ],
       },
-      ...(permissions.canViewUsers || permissions.canViewKB || permissions.canAssignTasks
+      ...(permissions.canViewUsers || permissions.canViewKB || permissions.canAssignTasks || permissions.canManageTeams
         ? [{
             title: 'Management',
             items: [
               ...(permissions.canViewUsers
                 ? [{ title: 'Users', url: '/users' as const, icon: Users }]
+                : []),
+              // Management-only page (create/edit teams, assign people). PM/supervisor
+              // read-only view can be added later; gated on canManageTeams for now.
+              ...(permissions.canManageTeams
+                ? [{ title: 'Teams', url: '/teams' as const, icon: UsersRound }]
                 : []),
               ...(permissions.canViewKB
                 ? [{ title: 'Knowledge Base', url: '/knowledge-base' as const, icon: BookOpen }]

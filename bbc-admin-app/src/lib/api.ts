@@ -29,6 +29,7 @@ import type {
   TasksResponse,
   UserAccessAuditItem,
 } from './types'
+import type { Team } from './bbc/types'
 import { getCookie } from './cookies'
 
 // ── Config ────────────────────────────────────────────────────
@@ -310,6 +311,62 @@ export async function updateSelf(payload: SelfUpdatePayload): Promise<SelfUpdate
 
 export async function deactivateUser(id: string): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return updateUser(id, { is_active: false })
+}
+
+// ── Teams (Phase 3 UI — consumes Phase 1 CRUD endpoints) ──────
+export interface TeamCreatePayload {
+  name: string
+  shift_name?: string | null
+  shift_start?: string | null
+  shift_end?: string | null
+  supervisor_id?: string | null
+  pm_id?: string | null
+}
+
+export type TeamUpdatePayload = Partial<TeamCreatePayload> & { is_active?: boolean }
+
+export async function getTeams(params: { is_active?: boolean } = {}): Promise<Team[]> {
+  const qs = new URLSearchParams()
+  if (params.is_active !== undefined) qs.set('is_active', String(params.is_active))
+  const q = qs.toString()
+  const res = await apiFetch<{ success: boolean; data: Team[]; count: number }>(
+    `/api/admin/teams${q ? `?${q}` : ''}`,
+  )
+  return res.data ?? []
+}
+
+export async function createTeam(body: TeamCreatePayload): Promise<Team> {
+  const res = await apiFetch<{ success: boolean; data: Team }>('/api/admin/teams', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return res.data
+}
+
+export async function updateTeam(id: string, body: TeamUpdatePayload): Promise<Team> {
+  const res = await apiFetch<{ success: boolean; data: Team }>(
+    `/api/admin/teams/${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+  return res.data
+}
+
+export async function deleteTeam(id: string): Promise<void> {
+  await apiFetch(`/api/admin/teams/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** Assign (teamId) or unassign (null) an operator's team. */
+export async function assignUserToTeam(userId: string, teamId: string | null): Promise<void> {
+  await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ team_id: teamId }),
+  })
 }
 
 export function getUserAccessHistory(
