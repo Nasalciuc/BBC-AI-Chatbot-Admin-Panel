@@ -224,18 +224,41 @@ _DATE_RANGE_DASH = re.compile(
 )
 
 
-def _resolve_year(month: int) -> int:
-    """If month is in the past relative to today, assume next year."""
+def _resolve_year(month: int, day: int) -> int:
+    """Year for the NEXT occurrence of (month, day) relative to today.
+    Compares (month, day) — not month alone — so e.g. today's month but an
+    earlier day still resolves to next year."""
     today = date.today()
-    return today.year + 1 if month < today.month else today.year
+    return today.year + 1 if (month, day) < (today.month, today.day) else today.year
+
+
+def _coerce_future_iso(month: int, day: int, explicit_year: int | None) -> str | None:
+    """YYYY-MM-DD that is today or later, or None if unsalvageable.
+
+    - inferred year (explicit_year None): next occurrence of (month, day)
+    - explicit year >= today.year but already past: bump to next occurrence
+    - explicit year < today.year (2+ yrs old / clearly stale): None (don't guess)
+    - invalid calendar date (e.g. Feb 30): None
+    """
+    today = date.today()
+    try:
+        if explicit_year is not None:
+            if explicit_year < today.year:
+                return None
+            d = date(explicit_year, month, day)
+            if d < today:
+                d = date(_resolve_year(month, day), month, day)
+        else:
+            d = date(_resolve_year(month, day), month, day)
+        return d.isoformat() if d >= today else None
+    except (ValueError, OverflowError):
+        return None
 
 
 def _make_date(month: int, day: int, year: int | None = None) -> str | None:
-    """Create YYYY-MM-DD string. Returns None if date is invalid (e.g. Feb 30)."""
-    try:
-        return date(year or _resolve_year(month), month, day).isoformat()
-    except (ValueError, OverflowError):
-        return None
+    """Create a future-safe YYYY-MM-DD string, or None if invalid/unsalvageable.
+    Delegates to _coerce_future_iso so past dates never reach a lead."""
+    return _coerce_future_iso(month, day, year)
 
 
 def _extract_dates(text: str) -> tuple[str | None, str | None]:
@@ -306,6 +329,10 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
         for match in matches[:2]:
             m_val, d_val = int(match.group("m")), int(match.group("d"))
             y_val = int(match.group("y")) if match.group("y") else None
+            # DD/MM (European): first number can't be a month → swap. Ambiguous
+            # both-<=12 case stays MM/DD (unchanged).
+            if m_val > 12 and d_val <= 12:
+                m_val, d_val = d_val, m_val
             if 1 <= m_val <= 12 and 1 <= d_val <= 31:
                 d = _make_date(m_val, d_val, y_val)
                 if d:

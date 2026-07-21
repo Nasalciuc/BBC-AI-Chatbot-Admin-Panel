@@ -1,9 +1,33 @@
 """Lead service — creation and updates. Score calculated EXCLUSIVELY in Python."""
 import asyncio
 import logging
+from datetime import date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_future_date(iso_str: Optional[str]) -> Optional[str]:
+    """Final gate for BOTH extraction paths (regex + Claude tool): a lead date
+    must be today or later. Past dates are corrected forward to the next
+    occurrence; stale/unsalvageable dates return None. Never raises — a dropped
+    date must NOT block lead creation (route/pax/contact still form; AI re-asks).
+    """
+    if not iso_str:
+        return None
+    try:
+        d = date.fromisoformat(iso_str)
+    except (ValueError, TypeError):
+        return None
+    if d >= date.today():
+        return iso_str
+    # Past date — correct to the next occurrence of (month, day).
+    from app.pipeline.entity_extractor import _resolve_year
+    try:
+        corrected = date(_resolve_year(d.month, d.day), d.month, d.day)
+        return corrected.isoformat() if corrected >= date.today() else None
+    except (ValueError, OverflowError):
+        return None
 
 
 def _calculate_score(lead: dict, conv: Optional[dict] = None) -> int:
@@ -102,9 +126,13 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         if entities.get("cabin_class"):
             lead_payload["cabin_class"] = entities["cabin_class"]
         if entities.get("departure_date"):
-            lead_payload["departure_date"] = entities["departure_date"]
+            _dep = _validate_future_date(entities["departure_date"])
+            if _dep:
+                lead_payload["departure_date"] = _dep
         if entities.get("return_date"):
-            lead_payload["return_date"] = entities["return_date"]
+            _ret = _validate_future_date(entities["return_date"])
+            if _ret:
+                lead_payload["return_date"] = _ret
         if entities.get("trip_type"):
             lead_payload["trip_type"] = entities["trip_type"]
         if entities.get("_children_count"):
