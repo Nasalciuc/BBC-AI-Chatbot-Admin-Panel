@@ -10,6 +10,7 @@ import {
   SidebarRail,
 } from '@/components/ui/sidebar'
 import { getSidebarData } from './data/sidebar-data'
+import { AppTitle } from './app-title'
 import { NavGroup } from './nav-group'
 import { NavUser } from './nav-user'
 import { TeamSwitcher } from './team-switcher'
@@ -23,7 +24,8 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible={collapsible} variant={variant}>
       <SidebarHeader>
-        <TeamSwitcher teams={data.teams} />
+        {/* Team switcher only for team-aware roles; others keep the brand title. */}
+        {permissions.canViewTeams ? <TeamSwitcher /> : <AppTitle />}
       </SidebarHeader>
       <SidebarContent>
         {data.navGroups.map((props) => (

@@ -2,7 +2,6 @@ import {
   LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
   Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound,
 } from 'lucide-react'
-import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
 import type { Permissions } from '@/lib/bbc/types'
 
@@ -17,9 +16,10 @@ export function getSidebarData(
       email: userEmail || '',
       avatar: '/avatars/01.png',
     },
-    teams: [
-      { name: 'BuyBusinessClass', logo: Logo, plan: 'Admin Panel' },
-    ],
+    // Deprecated: the header no longer uses a hardcoded team. TeamSwitcher now
+    // loads real teams from the API (see components/layout/team-switcher.tsx).
+    // Kept empty to satisfy the SidebarData type without a hardcoded brand entry.
+    teams: [],
     navGroups: [
       {
         title: 'Main',
