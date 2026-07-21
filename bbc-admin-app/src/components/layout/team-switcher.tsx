@@ -1,12 +1,14 @@
+import { useState } from 'react'
 import { ChevronsUpDown, Plus, Check, UsersRound } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
-import { getTeams } from '@/lib/api'
+import { getTeams, getUsers } from '@/lib/api'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { Team, UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
 import { useTeamStore } from '@/stores/team-store'
 import { Logo } from '@/assets/logo'
+import { TeamDialog } from '@/features/teams/components/team-dialog'
+import type { TeamUser } from '@/features/teams/data/types'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,10 +40,10 @@ function formatShift(team: Team): string | null {
  */
 export function TeamSwitcher() {
   const { isMobile } = useSidebar()
-  const navigate = useNavigate()
   const role = (useAuthStore((s) => s.auth.user?.role) ?? 'sales') as UserRole
   const permissions = usePermissions(role)
   const { activeTeamId, setActiveTeam } = useTeamStore()
+  const [createOpen, setCreateOpen] = useState(false)
 
   // Shares the ['teams'] cache with the Teams management page (no duplicate fetch).
   const { data: teams = [], isLoading } = useQuery({
@@ -49,13 +51,29 @@ export function TeamSwitcher() {
     queryFn: () => getTeams(),
   })
 
+  // Supervisor / PM option lists for the inline create dialog. Only fetched
+  // for roles that can create teams; shares the page's ['teams-users'] cache.
+  const { data: teamUsers = [] } = useQuery({
+    queryKey: ['teams-users'],
+    queryFn: async () => {
+      const res = await getUsers()
+      if (!res.success) throw new Error('Failed to load users')
+      return (res.data ?? []) as unknown as TeamUser[]
+    },
+    enabled: permissions.canManageTeams,
+  })
+  const supervisors = teamUsers.filter((u) => u.role === 'supervisor')
+  const projectManagers = teamUsers.filter((u) => u.role === 'project_manager')
+
   const activeTeam = activeTeamId
     ? (teams.find((t) => t.id === activeTeamId) ?? null)
     : null
 
-  // While loading, or when the user has no teams (e.g. a supervisor not yet
-  // assigned), show the static brand entry — never an empty/flickering dropdown.
-  if (isLoading || teams.length === 0) {
+  // While loading, or when the user has no teams AND cannot create any (e.g. a
+  // supervisor not yet assigned), show the static brand entry — never an
+  // empty/flickering dropdown. Managers with 0 teams still get the dropdown so
+  // they can create the first team from the header.
+  if (isLoading || (teams.length === 0 && !permissions.canManageTeams)) {
     return (
       <SidebarMenu>
         <SidebarMenuItem>
@@ -149,7 +167,7 @@ export function TeamSwitcher() {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className='gap-2 p-2'
-                  onClick={() => navigate({ to: '/teams' })}
+                  onClick={() => setCreateOpen(true)}
                 >
                   <div className='flex size-6 items-center justify-center rounded-md border bg-background'>
                     <Plus className='size-4' />
@@ -161,6 +179,17 @@ export function TeamSwitcher() {
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
+
+      {/* Inline create dialog — reuses the Teams page dialog; it invalidates
+          ['teams'] and closes itself on success, so the dropdown refreshes. */}
+      {permissions.canManageTeams && (
+        <TeamDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          supervisors={supervisors}
+          projectManagers={projectManagers}
+        />
+      )}
     </SidebarMenu>
   )
 }
