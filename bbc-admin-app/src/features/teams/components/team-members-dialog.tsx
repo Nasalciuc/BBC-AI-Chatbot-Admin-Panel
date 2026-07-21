@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { Check, ChevronsUpDown, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
 import type { Team } from '@/lib/bbc/types'
 import { assignUserToTeam } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -14,12 +15,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { type TeamUser, apiErrorMessage } from '../data/types'
 
 const OPERATOR_ROLES = ['sales', 'support']
@@ -35,6 +42,7 @@ export function TeamMembersDialog({ open, onOpenChange, team, users }: Props) {
   const queryClient = useQueryClient()
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [addValue, setAddValue] = useState<string>('')
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   const members = useMemo(
     () => users.filter((u) => u.team_id === team.id),
@@ -49,6 +57,11 @@ export function TeamMembersDialog({ open, onOpenChange, team, users }: Props) {
       ),
     [users, team.id],
   )
+
+  const selectedLabel = useMemo(() => {
+    const u = eligible.find((o) => o.id === addValue)
+    return u ? `${u.name || u.email || u.id} (${u.role})` : null
+  }, [eligible, addValue])
 
   const refresh = () =>
     Promise.all([
@@ -97,30 +110,62 @@ export function TeamMembersDialog({ open, onOpenChange, team, users }: Props) {
 
         <div className='space-y-4'>
           <div className='flex items-end gap-2'>
-            <div className='flex-1'>
+            <div className='min-w-0 flex-1'>
               <label className='mb-1 block text-sm font-medium'>Add operator</label>
-              <Select value={addValue} onValueChange={setAddValue}>
-                <SelectTrigger>
-                  <SelectValue placeholder='Select an operator' />
-                </SelectTrigger>
-                <SelectContent>
-                  {eligible.length === 0 ? (
-                    <SelectItem value='__empty__' disabled>
-                      No eligible operators
-                    </SelectItem>
-                  ) : (
-                    eligible.map((u) => (
-                      <SelectItem key={u.id} value={u.id}>
-                        {(u.name || u.email || u.id) + ` (${u.role})`}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
+              <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant='outline'
+                    role='combobox'
+                    aria-expanded={pickerOpen}
+                    disabled={eligible.length === 0}
+                    className='w-full justify-between font-normal'
+                  >
+                    <span className='truncate'>
+                      {selectedLabel ??
+                        (eligible.length === 0
+                          ? 'No eligible operators'
+                          : 'Select an operator')}
+                    </span>
+                    <ChevronsUpDown className='ms-2 h-4 w-4 shrink-0 opacity-50' />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className='w-(--radix-popover-trigger-width) p-0' align='start'>
+                  <Command>
+                    <CommandInput placeholder='Search operators…' />
+                    <CommandList>
+                      <CommandEmpty>No operator found.</CommandEmpty>
+                      <CommandGroup>
+                        {eligible.map((u) => {
+                          const label = `${u.name || u.email || u.id} (${u.role})`
+                          return (
+                            <CommandItem
+                              key={u.id}
+                              value={label}
+                              onSelect={() => {
+                                setAddValue(u.id)
+                                setPickerOpen(false)
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  'me-2 h-4 w-4',
+                                  addValue === u.id ? 'opacity-100' : 'opacity-0',
+                                )}
+                              />
+                              {label}
+                            </CommandItem>
+                          )
+                        })}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
             <Button
               onClick={() => add(addValue)}
-              disabled={!addValue || addValue === '__empty__' || pendingId === addValue}
+              disabled={!addValue || pendingId === addValue}
             >
               Add
             </Button>
