@@ -1,6 +1,7 @@
 """Tests for entity extraction V1 — regex-based."""
 
 import pytest
+from freezegun import freeze_time
 from app.pipeline.entity_extractor import extract_entities, extract_kb_keywords
 
 
@@ -146,43 +147,51 @@ class TestKBKeywords:
         assert kw[0] == "jfk" or kw[1] == "lhr"
 
 
+@freeze_time("2026-07-20")
 class TestDateExtraction:
-    """Test date extraction from chat messages."""
+    """Test date extraction from chat messages. Frozen at 2026-07-20 so
+    assertions stay stable across real-world time (and prove the future gate)."""
 
     def test_month_day(self):
+        # March 15 already passed in 2026 → next occurrence 2027.
         e = extract_entities("I want to fly March 15")
-        assert e.departure_date is not None
-        assert e.departure_date.endswith("-03-15")
+        assert e.departure_date == "2027-03-15"
 
     def test_month_abbreviated(self):
         e = extract_entities("Departing Mar 20")
-        assert e.departure_date is not None
-        assert e.departure_date.endswith("-03-20")
+        assert e.departure_date == "2027-03-20"
 
     def test_day_month_inverted(self):
         e = extract_entities("Leaving on 15th March")
-        assert e.departure_date is not None
-        assert e.departure_date.endswith("-03-15")
+        assert e.departure_date == "2027-03-15"
 
     def test_numeric_with_year(self):
+        # Explicit past year 2026 (March already passed) → corrected forward.
         e = extract_entities("Flying 3/15/2026")
-        assert e.departure_date == "2026-03-15"
+        assert e.departure_date == "2027-03-15"
 
     def test_numeric_no_year(self):
         e = extract_entities("Travel on 3/15")
-        assert e.departure_date is not None
-        assert e.departure_date.endswith("-03-15")
+        assert e.departure_date == "2027-03-15"
 
     def test_range_dash(self):
         e = extract_entities("March 15-22 business class")
-        assert e.departure_date is not None
-        assert e.departure_date.endswith("-03-15")
-        assert e.return_date is not None
-        assert e.return_date.endswith("-03-22")
+        assert e.departure_date == "2027-03-15"
+        assert e.return_date == "2027-03-22"
 
     def test_month_day_with_year(self):
+        # June 10, 2026 already passed → corrected to next occurrence 2027.
         e = extract_entities("June 10, 2026")
-        assert e.departure_date == "2026-06-10"
+        assert e.departure_date == "2027-06-10"
+
+    def test_future_month_same_year(self):
+        # August 15 is still ahead of Jul 20 → stays 2026.
+        e = extract_entities("Flying August 15, 2026")
+        assert e.departure_date == "2026-08-15"
+
+    def test_future_month_no_year(self):
+        e = extract_entities("Departing December 10")
+        assert e.departure_date == "2026-12-10"
 
     def test_no_dates(self):
         e = extract_entities("I need a flight to London")
@@ -190,16 +199,26 @@ class TestDateExtraction:
         assert e.return_date is None
 
     def test_ordinal(self):
+        # April 3 already passed → 2027.
         e = extract_entities("Departing on the 3rd of April")
-        assert e.departure_date is not None
-        assert e.departure_date.endswith("-04-03")
+        assert e.departure_date == "2027-04-03"
+
+    def test_numeric_ddmm_first_gt_12(self):
+        # 15/03/2026 — first number 15 can't be a month → DD/MM → 15 March.
+        e = extract_entities("Flying 15/03/2026")
+        assert e.departure_date == "2027-03-15"
+
+    def test_numeric_mmdd_ambiguous_unchanged(self):
+        # 09/05 — both <= 12 → stays MM/DD (September 5), future in 2026.
+        e = extract_entities("Travel on 09/05")
+        assert e.departure_date == "2026-09-05"
 
     def test_combined_with_route(self):
         e = extract_entities("JFK to LHR March 15-22 business class for 2 passengers")
         assert e.origin_code == "JFK"
         assert e.destination_code == "LHR"
-        assert e.departure_date is not None
-        assert e.return_date is not None
+        assert e.departure_date == "2027-03-15"
+        assert e.return_date == "2027-03-22"
         assert e.cabin_class == "business"
         assert e.passengers == 2
 

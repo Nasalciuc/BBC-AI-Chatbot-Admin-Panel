@@ -158,7 +158,10 @@ TRAVEL_TOOL = {
         "'last time I flew to London' — ignore past trips, extract only CURRENT request.\n"
         "5. TRIP TYPE: oneway/ow/single=one_way. roundtrip/rt/return=round_trip. "
         "If return date exists, use round_trip even if they said one way.\n"
-        "6. DATES: Convert to YYYY-MM-DD. 'june 15'=2026-06-15. If too vague like 'next month', omit."
+        "6. DATES: Convert to YYYY-MM-DD. 'june 15'=2026-06-15. If too vague like 'next month', omit. "
+        "Dates must be today or in the future — never return a past date; resolve a past-looking date "
+        "to its next future occurrence. For numeric dates like 09/05 assume MM/DD unless the first "
+        "number is > 12 (then DD/MM)."
     ),
     "input_schema": {
         "type": "object",
@@ -179,11 +182,11 @@ TRAVEL_TOOL = {
             },
             "departure_date": {
                 "type": "string",
-                "description": "Departure date in YYYY-MM-DD format.",
+                "description": "Departure date in YYYY-MM-DD format. Must be today or later — never a past date.",
             },
             "return_date": {
                 "type": "string",
-                "description": "Return date in YYYY-MM-DD format. Omit if one-way.",
+                "description": "Return date in YYYY-MM-DD format. Must be today or later. Omit if one-way.",
             },
             "trip_type": {
                 "type": "string",

@@ -1,6 +1,7 @@
 """System prompts for Claude — classifier + conversational."""
 
 import re as _re
+from datetime import date
 from typing import Optional
 
 from app.models.chat import VisitorInfo
@@ -307,8 +308,14 @@ def build_conversational_prompt(
     else:
         sections.append(SALES_INSTRUCTIONS.strip().format(**brand_vars))
 
-    # 3. Visitor context
-    visitor_lines: list[str] = ["[VISITOR CONTEXT]"]
+    # 3. Visitor context (DYNAMIC — must not go into the cached static block)
+    _today = date.today()
+    visitor_lines: list[str] = [
+        "[VISITOR CONTEXT]",
+        f"Today is {_today:%A, %B %d, %Y} ({_today.isoformat()}). "
+        f"All travel dates must be today or later; resolve relative dates against today. "
+        f"If a customer gives a date that already passed, assume the next occurrence.",
+    ]
     if visitor.name:
         visitor_lines.append(f"Name: {visitor.name}")
     if visitor.email:
