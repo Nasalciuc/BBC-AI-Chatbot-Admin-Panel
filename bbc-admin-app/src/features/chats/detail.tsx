@@ -313,7 +313,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               <h2 className="text-base font-semibold text-white truncate">
                 {conv.status === 'closed'
                   ? <span className="text-gray-400 italic">Closed conversation</span>
-                  : (conv.visitor_name ?? 'Anonymous Visitor')
+                  : (role === 'supervisor'
+                      ? 'Anonymous Visitor'  // QA: no customer-identifying text in the header
+                      : (conv.visitor_name ?? 'Anonymous Visitor'))
                 }
               </h2>
               <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-medium ${
@@ -322,13 +324,14 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 {conv.tunnel}
               </span>
             </div>
+            {/* QA supervisors see NO personal data in the header. */}
             <div className="flex items-center gap-4 mt-1.5">
-              {conv.visitor_phone && (
+              {role !== 'supervisor' && conv.visitor_phone && (
                 <span className="flex items-center gap-1 text-xs text-gray-300">
                   <Phone className="w-3 h-3" />{conv.visitor_phone}
                 </span>
               )}
-              {conv.visitor_email && (
+              {role !== 'supervisor' && conv.visitor_email && (
                 <span className="flex items-center gap-1 text-xs text-gray-400">
                   <Mail className="w-3 h-3" />{conv.visitor_email}
                 </span>
@@ -336,7 +339,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-gray-400">
               <span className="shrink-0">{allMessages.length} messages</span>
-              <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
+              {role !== 'supervisor' && (
+                <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
+              )}
               {canViewHistory && (
                 <span className="min-w-0 max-w-full truncate">
                   <OperatorBadge conversationId={conversationId} />
@@ -824,7 +829,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <div className="space-y-1 text-xs text-gray-500">
               <p>Started: <span className="text-gray-700">{new Date(conv.created_at).toLocaleString()}</span></p>
               <p>Messages: <span className="text-gray-700">{allMessages.length}</span></p>
-              <p>AI cost: <span className="text-gray-700">${conv.ai_cost_total.toFixed(4)}</span></p>
+              {role !== 'supervisor' && (
+                <p>AI cost: <span className="text-gray-700">${conv.ai_cost_total.toFixed(4)}</span></p>
+              )}
               {conv.assigned_agent_id && (
                 <p>Agent: <span className="text-gray-700">{conv.assigned_agent_name ?? conv.assigned_agent_id?.slice(0, 8) ?? 'Unassigned'}</span></p>
               )}
