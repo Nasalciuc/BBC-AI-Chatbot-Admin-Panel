@@ -248,16 +248,16 @@ async def test_supervisor_users_scoped_to_team_plus_self():
 
 
 @pytest.mark.asyncio
-async def test_pm_users_scoped_to_managed_teams():
-    with (
-        patch("app.db.supabase.get_team_ids_for_pm", new_callable=AsyncMock, return_value=["beta"]),
-        patch("app.db.supabase.get_users", new_callable=AsyncMock, return_value=([], 0)) as gu,
-    ):
+async def test_pm_users_not_scoped_for_staffing():
+    # PM now manages teams, so they list the full operator pool (team_ids None),
+    # like owner/admin — needed to add/move operators. (Supersedes the earlier
+    # Phase-2 PM user-scoping.)
+    with patch("app.db.supabase.get_users", new_callable=AsyncMock, return_value=([], 0)) as gu:
         _as("project_manager", PM)
         async with _client() as c:
             r = await c.get("/api/admin/users")
     assert r.status_code == 200
-    assert gu.await_args.kwargs.get("team_ids") == ["beta"]
+    assert gu.await_args.kwargs.get("team_ids") is None
 
 
 # ── 9. Regression: privileged/operator roles unchanged ───────────────

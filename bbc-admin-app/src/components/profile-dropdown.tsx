@@ -1,6 +1,13 @@
+import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import useDialogState from '@/hooks/use-dialog-state'
 import { useAuthStore } from '@/stores/auth-store'
+import { usePermissions } from '@/lib/bbc/hooks'
+import type { UserRole } from '@/lib/bbc/types'
+import { getUsers } from '@/lib/api'
+import type { TeamUser } from '@/features/teams/data/types'
+import { TeamDialog } from '@/features/teams/components/team-dialog'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,7 +24,10 @@ import { SignOutDialog } from '@/components/sign-out-dialog'
 
 export function ProfileDropdown() {
   const [open, setOpen] = useDialogState()
+  const [createTeamOpen, setCreateTeamOpen] = useState(false)
   const { auth } = useAuthStore()
+  const role = (auth.user?.role ?? 'sales') as UserRole
+  const permissions = usePermissions(role)
   const userName = auth.user?.name || auth.user?.email || 'User'
   const userEmail = auth.user?.email || ''
   const initials = userName
@@ -26,6 +36,19 @@ export function ProfileDropdown() {
     .join('')
     .toUpperCase()
     .slice(0, 2)
+
+  // Supervisor / PM option lists for the create dialog (only for team managers).
+  const { data: teamUsers = [] } = useQuery({
+    queryKey: ['teams-users'],
+    queryFn: async () => {
+      const res = await getUsers()
+      if (!res.success) throw new Error('Failed to load users')
+      return (res.data ?? []) as unknown as TeamUser[]
+    },
+    enabled: permissions.canManageTeams,
+  })
+  const supervisors = teamUsers.filter((u) => u.role === 'supervisor')
+  const projectManagers = teamUsers.filter((u) => u.role === 'project_manager')
 
   return (
     <>
@@ -67,7 +90,11 @@ export function ProfileDropdown() {
                 <DropdownMenuShortcut>⌘S</DropdownMenuShortcut>
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem>New Team</DropdownMenuItem>
+            {permissions.canManageTeams && (
+              <DropdownMenuItem onSelect={() => setCreateTeamOpen(true)}>
+                New Team
+              </DropdownMenuItem>
+            )}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant='destructive' onClick={() => setOpen(true)}>
@@ -80,6 +107,15 @@ export function ProfileDropdown() {
       </DropdownMenu>
 
       <SignOutDialog open={!!open} onOpenChange={setOpen} />
+
+      {permissions.canManageTeams && (
+        <TeamDialog
+          open={createTeamOpen}
+          onOpenChange={setCreateTeamOpen}
+          supervisors={supervisors}
+          projectManagers={projectManagers}
+        />
+      )}
     </>
   )
 }
