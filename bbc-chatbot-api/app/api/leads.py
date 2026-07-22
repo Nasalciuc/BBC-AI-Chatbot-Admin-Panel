@@ -82,6 +82,10 @@ async def list_leads(
             offset=offset,
             **_team_kw,
         )
+        # Supervisors (QA) never receive raw customer PII.
+        if user_role == "supervisor":
+            from app.security.pii import mask_visitor_row
+            rows = [mask_visitor_row(dict(r)) for r in rows]
         response: dict = {"success": True, "data": rows, "count": total}
         if user.get("role") in ("owner", "admin", "supervisor", "qa"):
             reviewed_n, total_n = await db.get_leads_review_counts(
@@ -106,6 +110,10 @@ async def get_lead(lead_id: str, user: dict = Depends(get_current_user)):
     lead = await db.get_lead_full(lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
+    # Supervisors (QA) never receive raw customer PII.
+    if user.get("role") == "supervisor":
+        from app.security.pii import mask_visitor_row
+        lead = mask_visitor_row(dict(lead))
     return lead
 
 

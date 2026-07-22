@@ -95,6 +95,10 @@ async def list_conversations(
             rows = [c for c in rows if c.get("agent_state") == "ai_only"]
         if handled_by:
             total = len(rows)
+        # Supervisors (QA) never receive raw customer PII or marketing metadata.
+        if user.get("role") == "supervisor":
+            from app.security.pii import mask_visitor_row
+            rows = [mask_visitor_row(dict(c)) for c in rows]
         return {"success": True, "data": rows, "count": total}
     except HTTPException:
         # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.
@@ -201,6 +205,12 @@ async def get_conversation(
             if not team_ids or conv_team not in team_ids:
                 conv = dict(conv)
                 conv["messages"] = []
+
+        # Supervisors (QA) never receive raw customer PII or marketing metadata,
+        # even within their own team.
+        if user.get("role") == "supervisor":
+            from app.security.pii import mask_visitor_row
+            conv = mask_visitor_row(dict(conv))
 
         return {"success": True, "data": conv, "count": 1}
     except HTTPException:
