@@ -1,12 +1,13 @@
 """Auth endpoints — login + invite."""
 
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from config.settings import settings
@@ -81,6 +82,57 @@ async def login(req: LoginRequest, _rate: None = Depends(check_rate_limit)):
     token = _issue_jwt(user)
 
     logger.info(f"Login OK | email={user['email']} role={user.get('role')}")
+
+    return LoginResponse(
+        token=token,
+        user={
+            "id": user["id"],
+            "email": user["email"],
+            "name": user.get("name", ""),
+            "role": user.get("role", "sales"),
+            "tunnel_scope": user.get("tunnel_scope", "sales"),
+            "phone": user.get("phone", ""),
+            "avatar_url": user.get("avatar_url") or None,
+        },
+    )
+
+
+class CrmBridgeRequest(BaseModel):
+    email: str
+
+
+@router.post("/crm-bridge", response_model=LoginResponse)
+async def crm_bridge_login(
+    req: CrmBridgeRequest,
+    request: Request,
+    _rate: None = Depends(check_rate_limit),
+):
+    """Server-to-server ONLY. The CRM's backend calls this after ITS OWN login,
+    vouching that `email` is an authenticated operator. No password. Never call
+    this from a browser — CRM_BRIDGE_SECRET must never reach client-side code.
+
+    Gated by CRM_BRIDGE_SECRET (a dedicated secret, never JWT_SECRET), compared in
+    constant time. Every call is logged — this path bypasses the password."""
+    if not settings.crm_bridge_secret or not settings.crm_bridge_secret.strip():
+        raise HTTPException(503, "CRM bridge not configured")
+
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.crm_bridge_secret}"
+    if not secrets.compare_digest(auth_header, expected):
+        logger.warning("CRM bridge: invalid bridge token")
+        raise HTTPException(401, "Invalid bridge token")
+
+    email = req.email.lower().strip()
+    user = await db.get_user_by_email(email)
+    if not user:
+        logger.warning(f"CRM bridge: unknown email attempted: {email}")
+        raise HTTPException(401, "Invalid request")  # generic — don't leak existence
+    if not user.get("is_active", True):
+        logger.warning(f"CRM bridge: inactive account attempted: {email}")
+        raise HTTPException(403, "Account disabled — contact admin")
+
+    token = _issue_jwt(user)
+    logger.info(f"CRM bridge login | email={user['email']} role={user.get('role')}")
 
     return LoginResponse(
         token=token,

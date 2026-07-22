@@ -150,6 +150,10 @@ class Settings(BaseSettings):
 
     # Cron — abandoned conversations
     cron_secret: str = ""
+
+    # CRM_BRIDGE_SECRET: server-to-server secret for the CRM SSO bridge endpoint.
+    # NEVER the same value as JWT_SECRET. Empty = bridge disabled (503).
+    crm_bridge_secret: str = ""
     abandoned_timeout_minutes: int = 30
     internal_scheduler_enabled: bool = True  # G3 kill-switch; see ADR-10
     scheduler_interval_seconds: int = 300  # real 5-min cadence (GitHub Actions
