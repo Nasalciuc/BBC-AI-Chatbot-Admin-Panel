@@ -100,11 +100,96 @@ async def test_create_team_privileged_ok():
 
 @pytest.mark.asyncio
 async def test_create_team_forbidden_for_non_privileged():
-    for role in ("project_manager", "supervisor", "sales", "qa"):
+    # PM can now create teams (see test below); supervisor/sales/qa cannot.
+    for role in ("supervisor", "sales", "qa"):
         _as(role)
         async with _client() as c:
             r = await c.post("/api/admin/teams", json={"name": "Alpha"})
         assert r.status_code == 403, f"{role} must not create teams"
+
+
+@pytest.mark.asyncio
+async def test_project_manager_can_create_team_owns_it():
+    """PM creates a team; pm_id is forced to the creating PM (they own it)."""
+    pm_user = {"id": "pm-1", "role": "project_manager"}
+    captured = {}
+
+    async def _fake_create(payload):
+        captured.update(payload)
+        return {"id": "t-9", **payload, "is_active": True}
+
+    with (
+        patch("app.db.supabase.get_user_by_id", new_callable=AsyncMock, return_value=pm_user),
+        patch("app.db.supabase.get_teams", new_callable=AsyncMock, return_value=[]),
+        patch("app.db.supabase.create_team", side_effect=_fake_create),
+    ):
+        _as("project_manager", "pm-1")
+        async with _client() as c:
+            r = await c.post("/api/admin/teams", json={"name": "Alpha", "pm_id": "someone-else"})
+    assert r.status_code == 200
+    # pm_id forced to the creator, ignoring the body value
+    assert captured.get("pm_id") == "pm-1"
+
+
+@pytest.mark.asyncio
+async def test_pm_can_update_own_team_but_not_others():
+    own = {"id": "t-own", "pm_id": "pm-1", "is_active": True, "name": "Mine"}
+    other = {"id": "t-other", "pm_id": "pm-2", "is_active": True, "name": "Theirs"}
+    with (
+        patch("app.db.supabase.get_team", new_callable=AsyncMock, side_effect=lambda tid: own if tid == "t-own" else other),
+        patch("app.db.supabase.update_team", new_callable=AsyncMock, return_value={"id": "t-own", "name": "Renamed"}),
+    ):
+        _as("project_manager", "pm-1")
+        async with _client() as c:
+            ok = await c.patch("/api/admin/teams/t-own", json={"name": "Renamed"})
+            forbidden = await c.patch("/api/admin/teams/t-other", json={"name": "Hijack"})
+    assert ok.status_code == 200
+    assert forbidden.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pm_can_delete_own_team_only():
+    own = {"id": "t-own", "pm_id": "pm-1", "is_active": True, "name": "Mine"}
+    other = {"id": "t-other", "pm_id": "pm-2", "is_active": True, "name": "Theirs"}
+    with (
+        patch("app.db.supabase.get_team", new_callable=AsyncMock, side_effect=lambda tid: own if tid == "t-own" else other),
+        patch("app.db.supabase.count_team_members", new_callable=AsyncMock, return_value=0),
+        patch("app.db.supabase.update_team", new_callable=AsyncMock, return_value={"id": "t-own", "is_active": False}),
+    ):
+        _as("project_manager", "pm-1")
+        async with _client() as c:
+            ok = await c.delete("/api/admin/teams/t-own")
+            forbidden = await c.delete("/api/admin/teams/t-other")
+    assert ok.status_code == 200
+    assert forbidden.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pm_can_assign_operator_to_own_team_only():
+    with (
+        patch("app.db.supabase.get_team_ids_for_pm", new_callable=AsyncMock, return_value=["t-own"]),
+        patch("app.db.supabase.get_team", new_callable=AsyncMock, return_value={"id": "t-own", "is_active": True}),
+        patch("app.db.supabase.get_user_by_id", new_callable=AsyncMock,
+              return_value={"id": "op-1", "role": "sales", "team_id": None}),
+        patch("app.db.supabase.update_user", new_callable=AsyncMock,
+              return_value={"id": "op-1", "team_id": "t-own"}),
+        patch("app.db.supabase.create_user_access_audit", new_callable=AsyncMock, return_value=None),
+    ):
+        _as("project_manager", "pm-1")
+        async with _client() as c:
+            ok = await c.patch("/api/admin/users/op-1", json={"team_id": "t-own"})
+            forbidden = await c.patch("/api/admin/users/op-1", json={"team_id": "t-not-mine"})
+    assert ok.status_code == 200
+    assert forbidden.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pm_cannot_change_user_role():
+    """PM may only touch team_id — never role/tunnel/is_active."""
+    _as("project_manager", "pm-1")
+    async with _client() as c:
+        r = await c.patch("/api/admin/users/op-1", json={"role": "admin"})
+    assert r.status_code == 403
 
 
 # ── 5. List scoping by role ──────────────────────────────────────────

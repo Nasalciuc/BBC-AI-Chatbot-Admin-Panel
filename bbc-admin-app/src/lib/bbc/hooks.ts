@@ -63,14 +63,16 @@ export function getPermissions(role: UserRole): Permissions {
     case 'project_manager':
       // PM oversees several teams: observes chats (reads messages) but never
       // writes; explicitly CANNOT view leads (owner decision — backend 403s
-      // PM on /api/leads, so the UI mirrors that). Team scoping is Phase 2.
+      // PM on /api/leads, so the UI mirrors that).
+      // PM fully manages THEIR OWN teams (create/edit/assign/deactivate) —
+      // backend enforces per-team ownership; owner/admin still see every team.
       return {
         canViewLeads: false, canEditLeads: false, canViewAllConversations: true,
         canReadMessages: true, canReassignConversations: false,
         canViewUsers: true, canEditUsers: false, canEditKB: false, canViewKB: false,
         canProposeKBChanges: false, canViewIntegrations: false, canEditSettings: false,
         canViewAllSettings: false, canViewDashboardGlobal: true, canAssignTasks: false,
-        canViewTeams: true, canManageTeams: false,
+        canViewTeams: true, canManageTeams: true,
         visibleTunnels: ['all'],
       }
     default:

@@ -29,17 +29,16 @@ async def list_users(
     if user.get("role") not in CAN_LIST_USERS:
         raise HTTPException(status_code=403, detail="Only owner/admin can list users")
     try:
-        # Phase 2: supervisor/PM see only members of their own team(s), plus
-        # themselves. Fail closed — no team ⇒ only their own row.
+        # supervisor sees only members of their own team(s), plus themselves.
+        # project_manager needs the full operator pool to STAFF their teams
+        # (add/move operators), so PMs list all users like owner/admin.
+        # Fail closed for supervisor — no team ⇒ only their own row.
         actor_role = user.get("role", "")
         actor_id = user.get("id", "")
         team_ids: Optional[list[str]] = None
         include_self_id: Optional[str] = None
         if actor_role == "supervisor":
             team_ids = await db.get_team_ids_for_supervisor(actor_id)
-            include_self_id = actor_id
-        elif actor_role == "project_manager":
-            team_ids = await db.get_team_ids_for_pm(actor_id)
             include_self_id = actor_id
         if team_ids is not None and not team_ids:
             # scoped but owns no team → only self visible
@@ -58,8 +57,6 @@ async def list_users(
 @router.patch("/admin/users/{user_id}")
 async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_current_user)):
     actor_role = user.get("role", "sales")
-    if actor_role not in PRIVILEGED:
-        raise HTTPException(status_code=403, detail="Only owner/admin can modify access rights")
 
     payload = body.model_dump(exclude_none=True)
 
@@ -69,6 +66,25 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
     team_id_set = "team_id" in body.model_fields_set
     if team_id_set:
         payload["team_id"] = body.team_id
+
+    # A project_manager may ONLY (re)assign team membership, and only for teams
+    # they own — never role/tunnel/is_active. owner/admin can edit anything.
+    if actor_role not in PRIVILEGED:
+        pm_team_only = (
+            actor_role == "project_manager"
+            and team_id_set
+            and set(payload.keys()) == {"team_id"}
+        )
+        if not pm_team_only:
+            raise HTTPException(status_code=403, detail="Only owner/admin can modify access rights")
+        pm_team_ids = await db.get_team_ids_for_pm(user.get("id"))
+        if body.team_id is not None:
+            if body.team_id not in pm_team_ids:
+                raise HTTPException(403, "You can only assign operators to your own team")
+        else:
+            _target = await db.get_user_by_id(user_id)
+            if not _target or _target.get("team_id") not in pm_team_ids:
+                raise HTTPException(403, "You can only remove operators from your own team")
 
     if not payload:
         raise HTTPException(400, "No valid fields to update")

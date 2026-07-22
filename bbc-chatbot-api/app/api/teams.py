@@ -12,6 +12,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 PRIVILEGED = {"owner", "admin", "dev"}
+# project_manager can also create + manage teams, but only the ones they own
+# (teams.pm_id == their id). owner/admin/dev manage every team.
+CAN_CREATE_TEAMS = PRIVILEGED | {"project_manager"}
+
+
+def _can_manage_team(user: dict, team: dict) -> bool:
+    """True if this user may edit/delete this specific team."""
+    role = user.get("role", "")
+    if role in PRIVILEGED:
+        return True
+    if role == "project_manager":
+        return bool(team) and team.get("pm_id") == user.get("id")
+    return False
 
 
 async def _validate_supervisor(supervisor_id: Optional[str]) -> None:
@@ -62,12 +75,19 @@ async def list_teams(
 
 @router.post("/admin/teams")
 async def create_team(body: TeamCreate, user: dict = Depends(get_current_user)):
-    if user.get("role") not in PRIVILEGED:
-        raise HTTPException(403, "Only owner/admin can create teams")
+    role = user.get("role")
+    if role not in CAN_CREATE_TEAMS:
+        raise HTTPException(403, "Only owner/admin or a project manager can create teams")
 
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(400, "Team name is required")
+
+    # A project_manager always owns the teams they create — they cannot assign
+    # a different PM (owner/admin can). This also makes the new team visible to
+    # the creator, since PMs see only teams where pm_id == their id.
+    if role == "project_manager":
+        body.pm_id = user.get("id")
 
     await _validate_supervisor(body.supervisor_id)
     await _validate_pm(body.pm_id)
@@ -90,14 +110,17 @@ async def create_team(body: TeamCreate, user: dict = Depends(get_current_user)):
 
 @router.patch("/admin/teams/{team_id}")
 async def update_team(team_id: str, body: TeamUpdate, user: dict = Depends(get_current_user)):
-    if user.get("role") not in PRIVILEGED:
-        raise HTTPException(403, "Only owner/admin can modify teams")
-
     existing = await db.get_team(team_id)
     if not existing:
         raise HTTPException(404, "Team not found")
+    if not _can_manage_team(user, existing):
+        raise HTTPException(403, "You can only modify your own teams")
 
     fields = body.model_dump(exclude_unset=True)
+    # A project_manager cannot reassign a team to a different PM (would lock
+    # themselves out). owner/admin can. Silently drop the field for PMs.
+    if user.get("role") == "project_manager":
+        fields.pop("pm_id", None)
     if "name" in fields:
         name = (body.name or "").strip()
         if not name:
@@ -124,12 +147,11 @@ async def update_team(team_id: str, body: TeamUpdate, user: dict = Depends(get_c
 
 @router.delete("/admin/teams/{team_id}")
 async def delete_team(team_id: str, user: dict = Depends(get_current_user)):
-    if user.get("role") not in PRIVILEGED:
-        raise HTTPException(403, "Only owner/admin can delete teams")
-
     existing = await db.get_team(team_id)
     if not existing:
         raise HTTPException(404, "Team not found")
+    if not _can_manage_team(user, existing):
+        raise HTTPException(403, "You can only delete your own teams")
 
     # Soft delete. Refuse if members still reference it — admin must reassign
     # them first (keeps membership consistent; reversible by reactivating).
