@@ -150,6 +150,12 @@ class Settings(BaseSettings):
 
     # Cron — abandoned conversations
     cron_secret: str = ""
+
+    # CHAT_SSO_SECRET: shared with the CRM team, used ONLY to verify CRM-signed
+    # login JWTs (docs/chatbot-sso.md). Distinct from JWT_SECRET (our own
+    # session-signing secret). CRM signs, we verify → both sides use the SAME value.
+    # Empty = CRM SSO disabled (503).
+    chat_sso_secret: str = ""
     abandoned_timeout_minutes: int = 30
     internal_scheduler_enabled: bool = True  # G3 kill-switch; see ADR-10
     scheduler_interval_seconds: int = 300  # real 5-min cadence (GitHub Actions

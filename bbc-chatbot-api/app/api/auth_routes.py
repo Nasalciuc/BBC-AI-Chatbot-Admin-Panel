@@ -96,6 +96,75 @@ async def login(req: LoginRequest, _rate: None = Depends(check_rate_limit)):
     )
 
 
+class CrmExchangeRequest(BaseModel):
+    token: str
+
+
+@router.post("/sso/crm-exchange", response_model=LoginResponse)
+async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_rate_limit)):
+    """Verify a short-lived JWT signed by the CRM (docs/chatbot-sso.md) and, if it
+    maps to a known active BBC user (by email), issue our own normal session JWT.
+
+    role/tunnel_scope ALWAYS come from OUR users table — never trusted from the CRM
+    token (they send none today; even if added later, ignored). Fails closed."""
+    if not settings.chat_sso_secret or not settings.chat_sso_secret.strip():
+        raise HTTPException(503, "CRM SSO not configured")
+
+    try:
+        payload = jwt.decode(
+            req.token,
+            settings.chat_sso_secret,
+            algorithms=["HS256"],
+            options={"require": ["exp", "iat"]},
+        )
+    except jwt.ExpiredSignatureError:
+        logger.warning("CRM SSO exchange: token expired")
+        raise HTTPException(401, "SSO token expired — please reload from the CRM")
+    except jwt.InvalidTokenError:
+        # Covers bad signature, malformed, and ImmatureSignatureError (nbf in future).
+        logger.warning("CRM SSO exchange: invalid token")
+        raise HTTPException(401, "Invalid SSO token")
+
+    if payload.get("iss") != "crm":
+        logger.warning(f"CRM SSO exchange: bad issuer {payload.get('iss')!r}")
+        raise HTTPException(401, "Invalid SSO token issuer")
+
+    email = payload.get("email")
+    if not email:
+        # Expected until the CRM team adds `email` to their payload (they've confirmed
+        # it's a one-line change). Fail closed with a clear, actionable message.
+        logger.warning("CRM SSO exchange: token has no email claim yet — cannot map to a BBC user")
+        raise HTTPException(
+            400,
+            "SSO token is missing the 'email' claim. The CRM integration needs to include "
+            "the user's email in the JWT payload before auto-login can work.",
+        )
+
+    user = await db.get_user_by_email(email.lower().strip())
+    if not user:
+        logger.warning(f"CRM SSO exchange: unknown email {email}")
+        raise HTTPException(401, "No matching BBC account for this user")
+    if not user.get("is_active", True):
+        logger.warning(f"CRM SSO exchange: inactive account {email}")
+        raise HTTPException(403, "Account disabled — contact admin")
+
+    token = _issue_jwt(user)  # role/tunnel_scope from OUR db, not the CRM payload
+    logger.info(f"CRM SSO exchange login | email={user['email']} role={user.get('role')}")
+
+    return LoginResponse(
+        token=token,
+        user={
+            "id": user["id"],
+            "email": user["email"],
+            "name": user.get("name", ""),
+            "role": user.get("role", "sales"),
+            "tunnel_scope": user.get("tunnel_scope", "sales"),
+            "phone": user.get("phone", ""),
+            "avatar_url": user.get("avatar_url") or None,
+        },
+    )
+
+
 @router.post("/invite")
 async def invite_user(req: InviteRequest, current_user: dict = Depends(get_current_user)):
     """Create new user with temporary password. Owner/admin only."""
