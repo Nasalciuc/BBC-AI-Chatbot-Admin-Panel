@@ -1,19 +1,23 @@
 /**
- * CRM iframe SSO (Option B) — accept a JWT from the parent CRM via postMessage.
+ * CRM SSO — two entry points into the panel session:
  *
- * Parent contract:
- *   iframe.contentWindow.postMessage(
- *     { type: 'bbc-auth', token: '<jwt>' },
- *     'https://chat.buybusinessclass.com'  // panel origin
- *   )
+ * 1. URL token (docs/chatbot-sso.md — the mechanism the CRM team built):
+ *    the CRM opens `https://chat.buybusinessclass.com/?token=<crm-signed-jwt>`.
+ *    `tryCrmUrlTokenLogin()` exchanges that CRM token at
+ *    `POST /api/auth/sso/crm-exchange` for OUR session JWT, logs in, then strips
+ *    `?token=` from the URL so it doesn't linger in history/bookmarks.
  *
- * Token must be a JWT signed with our JWT_SECRET (same claims as /api/auth/login).
- * Origins must be BBC-owned (or listed in VITE_CRM_ORIGINS).
+ * 2. postMessage (kept for a possible future same-domain/iframe handshake):
+ *    parent posts { type: 'bbc-auth', token: '<our jwt>' } into the iframe.
+ *    Token must be a JWT signed with our JWT_SECRET (same claims as /api/auth/login).
+ *    Origins must be BBC-owned (or listed in VITE_CRM_ORIGINS).
  */
 import { useAuthStore } from '@/stores/auth-store'
 
 const MSG_TYPE = 'bbc-auth'
 const ACK_TYPE = 'bbc-auth-ack'
+
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
 function parseJwtPayload(token: string): Record<string, unknown> | null {
   try {
@@ -67,7 +71,65 @@ function applyToken(token: string): boolean {
 }
 
 /**
+ * URL-token SSO (docs/chatbot-sso.md). Reads `?token=` from the current URL,
+ * exchanges the CRM-signed JWT for OUR session JWT via the backend, logs in, and
+ * strips the token from the URL. Returns true on success, false otherwise (no
+ * token, exchange failed, or bad response) so the caller can fall back to the
+ * normal manual-login flow. Never throws.
+ */
+export async function tryCrmUrlTokenLogin(): Promise<boolean> {
+  let token: string | null = null
+  try {
+    token = new URLSearchParams(window.location.search).get('token')
+  } catch {
+    return false
+  }
+  if (!token) return false
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/sso/crm-exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.warn('CRM SSO exchange failed:', res.status)
+      stripTokenFromUrl()
+      return false
+    }
+    const data = await res.json()
+    // data.token is OUR issued JWT (same claims as /api/auth/login) — reuse the
+    // exact same store-application path as the postMessage receiver.
+    const ok = typeof data?.token === 'string' && applyToken(data.token)
+    stripTokenFromUrl()
+    return ok
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('CRM SSO exchange error:', e)
+    stripTokenFromUrl()
+    return false
+  }
+}
+
+function stripTokenFromUrl(): void {
+  try {
+    const url = new URL(window.location.href)
+    if (!url.searchParams.has('token')) return
+    url.searchParams.delete('token')
+    window.history.replaceState({}, '', url.toString())
+  } catch {
+    /* non-browser / opaque — ignore */
+  }
+}
+
+/**
  * Install once at app boot. Safe if panel is not in an iframe (messages ignored).
+ *
+ * Also attempts URL-token SSO immediately (the CRM team's ?token= flow); on
+ * success it invokes `onAuthed` just like the postMessage path. This keeps the
+ * bootstrap wiring in one place — callers only need to call installCrmEmbedAuth().
  */
 export function installCrmEmbedAuth(onAuthed?: () => void): () => void {
   const handler = (event: MessageEvent) => {
@@ -89,5 +151,11 @@ export function installCrmEmbedAuth(onAuthed?: () => void): () => void {
   }
 
   window.addEventListener('message', handler)
+
+  // Fire-and-forget URL-token exchange (CRM ?token= flow). Non-blocking.
+  void tryCrmUrlTokenLogin().then((ok) => {
+    if (ok) onAuthed?.()
+  })
+
   return () => window.removeEventListener('message', handler)
 }
