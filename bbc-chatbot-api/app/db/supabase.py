@@ -2565,3 +2565,123 @@ async def get_stale_presence_left_conversations(timeout_minutes: int = 5) -> lis
     except Exception as e:
         logger.warning(f"get_stale_presence_left: {e}")
         return []
+
+
+# ── Blocklist (abuse) — see migrations/022_blocklist.sql ──────────────
+# Values are stored ALREADY NORMALIZED by app/services/blocklist.py
+# (phone = digits only, email = lowercased, ip = trimmed). Callers must
+# normalize on both write and read or matching will silently fail.
+
+
+async def blocklist_has_active(kind: str, value: str) -> bool:
+    """True if (kind, value) has a non-expired blocklist entry.
+
+    Fails CLOSED-as-open: on DB error we return False so a blocklist outage
+    cannot lock every visitor out of the chat.
+    """
+    if not value:
+        return False
+    try:
+        db_client = get_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _q():
+            return (
+                db_client.table("blocklist")
+                .select("id, expires_at")
+                .eq("kind", kind)
+                .eq("value", value)
+                .limit(50)
+                .execute()
+            )
+
+        res = await _run_sync(_q)
+        for row in (res.data or []):
+            exp = row.get("expires_at")
+            if exp is None or str(exp) > now_iso:
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"blocklist_has_active({kind}) error: {e}")
+        return False
+
+
+async def blocklist_upsert(
+    kind: str,
+    value: str,
+    *,
+    reason: str | None = None,
+    blocked_by: str | None = None,
+    conversation_id: str | None = None,
+    expires_at: str | None = None,
+) -> bool:
+    """Insert or refresh one blocklist entry. Returns True on success."""
+    if not value:
+        return False
+    try:
+        db_client = get_client()
+        payload = {
+            "kind": kind,
+            "value": value,
+            "reason": reason,
+            "blocked_by": blocked_by,
+            "conversation_id": conversation_id,
+            "expires_at": expires_at,
+        }
+
+        def _q():
+            return (
+                db_client.table("blocklist")
+                .upsert(payload, on_conflict="kind,value")
+                .execute()
+            )
+
+        res = await _run_sync(_q)
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"blocklist_upsert({kind}) error: {e}")
+        return False
+
+
+async def blocklist_delete(kind: str, value: str) -> bool:
+    """Remove one blocklist entry (unblock). Returns True if a row was deleted."""
+    if not value:
+        return False
+    try:
+        db_client = get_client()
+
+        def _q():
+            return (
+                db_client.table("blocklist")
+                .delete()
+                .eq("kind", kind)
+                .eq("value", value)
+                .execute()
+            )
+
+        res = await _run_sync(_q)
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"blocklist_delete({kind}) error: {e}")
+        return False
+
+
+async def blocklist_list(limit: int = 200) -> list[dict]:
+    """All blocklist entries, newest first (admin management view)."""
+    try:
+        db_client = get_client()
+
+        def _q():
+            return (
+                db_client.table("blocklist")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+        res = await _run_sync(_q)
+        return res.data or []
+    except Exception as e:
+        logger.error(f"blocklist_list error: {e}")
+        return []

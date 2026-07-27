@@ -27,6 +27,7 @@ from app.services.handoff import perform_handoff_to_agent
 from pydantic import BaseModel, Field
 
 from app.deps.ownership import require_visitor_ownership
+from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,15 @@ async def chat_init(
     if payload.visitor_id:
         _meta.setdefault("visitor_id", payload.visitor_id)
 
+    # Blocklist — identity chokepoint. Only phone/email refuse; a blocked IP
+    # alone never does (shared IPs would catch innocent visitors).
+    if await is_blocked(
+        phone=getattr(payload.visitor, "phone", None),
+        email=getattr(payload.visitor, "email", None),
+    ):
+        logger.warning("[init] Blocked visitor refused")
+        raise HTTPException(status_code=403, detail=BLOCK_REFUSAL)
+
     conv = await conversation_service.get_or_create_conversation(
         conversation_id=None,
         tunnel=payload.tunnel,
@@ -118,6 +128,15 @@ async def chat(
     if is_suspicious(req.message):
         logger.warning(f"Suspicious message detected (conv={req.conversation_id})")
 
+    # 1.5. Blocklist — identity chokepoint on the contact the widget sends.
+    # Phone/email only; a blocked IP alone never refuses (shared IPs).
+    if await is_blocked(
+        phone=getattr(req.visitor, "phone", None),
+        email=getattr(req.visitor, "email", None),
+    ):
+        logger.warning(f"[chat] Blocked visitor refused (conv={req.conversation_id})")
+        raise HTTPException(status_code=403, detail=BLOCK_REFUSAL)
+
     # 2. Check message count limit
     if req.conversation_id:
         count = await db.count_messages(req.conversation_id)
@@ -130,6 +149,17 @@ async def chat(
     # 2.5. Reopen closed conversation if client writes again within session window
     if req.conversation_id:
         conv_info = await db.get_conversation_simple(req.conversation_id)
+        # Blocklist — contact already stored on the conversation (the visitor
+        # submitted it earlier and may now send messages with an empty visitor
+        # payload). Reuses the row already fetched above: no extra roundtrip.
+        if conv_info and await is_blocked(
+            phone=conv_info.get("visitor_phone"),
+            email=conv_info.get("visitor_email"),
+        ):
+            logger.warning(
+                f"[chat] Blocked visitor refused (stored contact, conv={req.conversation_id})"
+            )
+            raise HTTPException(status_code=403, detail=BLOCK_REFUSAL)
         if conv_info and conv_info.get('status') in ('closed', 'completed'):
             # 'completed' = post-CRM, never reopen
             if conv_info.get('status') == 'completed':

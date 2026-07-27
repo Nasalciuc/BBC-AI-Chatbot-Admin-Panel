@@ -158,6 +158,28 @@ export async function reassignConversation(
   })
 }
 
+// ── Blocklist (abuse) ─────────────────────────────────────────
+// Blocks the visitor's phone + email and records their IP. Only phone/email
+// refuse future visitors — a shared IP never blocks on its own (backend policy).
+export async function blockConversationVisitor(
+  conversationId: string,
+  reason?: string,
+): Promise<{ success: boolean; blocked: string[] }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/block`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason ?? null }),
+  })
+}
+
+export async function unblockConversationVisitor(
+  conversationId: string,
+): Promise<{ success: boolean; unblocked: string[] }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/unblock`, {
+    method: 'POST',
+  })
+}
+
 // ── Leads ─────────────────────────────────────────────────────
 export function getLeads(
   params: Record<string, string> = {},

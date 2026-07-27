@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     crm_api_url: str = "https://webapi.buybusinessclass.com"
     crm_api_token: str = ""
 
+    # Abuse blocklist — IP entries expire (shared IPs go stale); phone/email are
+    # permanent by default. IP never blocks on its own (see services/blocklist.py).
+    blocklist_ip_ttl_days: int = 30
+
     # Cron — abandoned conversations
     cron_secret: str = ""
 
