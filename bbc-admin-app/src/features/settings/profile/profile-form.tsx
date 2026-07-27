@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { updateSelf } from '@/lib/api'
+import { updateSelf, uploadAvatar } from '@/lib/api'
 import { BBCAvatar } from '@/components/bbc-avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,6 +17,9 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+
+const MAX_AVATAR_BYTES = 2_000_000
+const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 const profileFormSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters.').max(100),
@@ -37,6 +40,8 @@ type ProfileFormValues = z.infer<typeof profileFormSchema>
 export function ProfileForm() {
   const { auth } = useAuthStore()
   const [showUrlInput, setShowUrlInput] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const form = useForm<ProfileFormValues>({
     resolver: zodResolver(profileFormSchema),
@@ -79,6 +84,42 @@ export function ProfileForm() {
     }
   }
 
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    // Allow re-selecting the same file later
+    e.target.value = ''
+    if (!f || !auth.user) return
+
+    if (!ALLOWED_TYPES.has(f.type)) {
+      toast.error('Unsupported image type — use JPEG, PNG or WEBP (or paste a URL)')
+      return
+    }
+    if (f.size > MAX_AVATAR_BYTES) {
+      toast.error('Image too large (max 2MB) — or paste a URL instead')
+      return
+    }
+
+    setUploading(true)
+    try {
+      const res = await uploadAvatar(f)
+      auth.setAccessToken(res.token)
+      auth.setUser({
+        ...auth.user,
+        avatar_url: res.avatar_url,
+      })
+      form.setValue('avatar_url', res.avatar_url, { shouldDirty: false })
+      toast.success('Photo updated')
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : 'Upload failed — you can paste a URL instead',
+      )
+    } finally {
+      setUploading(false)
+    }
+  }
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
@@ -91,8 +132,36 @@ export function ProfileForm() {
             url={avatarUrl || auth.user?.avatar_url}
             size={80}
             editable
-            onClick={() => setShowUrlInput(v => !v)}
+            onClick={() => !uploading && fileInputRef.current?.click()}
           />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={onFile}
+            disabled={uploading}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={uploading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {uploading ? 'Uploading…' : 'Upload photo'}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={uploading}
+              onClick={() => setShowUrlInput(v => !v)}
+            >
+              {showUrlInput ? 'Hide URL' : 'Paste URL instead'}
+            </Button>
+          </div>
           {showUrlInput && (
             <FormField
               control={form.control}
@@ -108,7 +177,7 @@ export function ProfileForm() {
                     />
                   </FormControl>
                   <FormDescription>
-                    Paste a direct link to your profile photo.
+                    Fallback: paste a direct link if upload is unavailable.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -161,7 +230,7 @@ export function ProfileForm() {
           )}
         />
 
-        <Button type="submit" disabled={form.formState.isSubmitting}>
+        <Button type="submit" disabled={form.formState.isSubmitting || uploading}>
           {form.formState.isSubmitting ? 'Saving...' : 'Save profile'}
         </Button>
 
