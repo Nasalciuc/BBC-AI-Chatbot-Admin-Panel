@@ -191,46 +191,43 @@ async def get_conversation(
     conversation_id: str,
     user: dict = Depends(get_current_user),
 ):
+    # A failed fetch is NOT a missing conversation. This used to return HTTP 200
+    # with {data: null} for both cases, and since the client only treats non-2xx
+    # as an error, every transient Supabase blip told the operator the
+    # conversation had been deleted. Now: absent row → 404, fetch failure → 502,
+    # so the panel's retry path recovers instead of lying. See Bug 5 forensic
+    # (17.04.2026) for the earlier half of this fix.
     try:
-        conv = await db.get_conversation(conversation_id)
-        if not conv:
-            return {"success": False, "data": None, "count": 0, "error": "Not found"}
-        _enforce_tunnel(user, conv.get("tunnel"))
-
-        # Phase 2: supervisor/PM see message content ONLY for their own team's
-        # conversations; otherwise metadata-only (messages blanked). Fail closed.
-        if user.get("role") in ("supervisor", "project_manager"):
-            team_ids = await _resolve_team_scope(user)
-            conv_team = conv.get("team_id")
-            if not team_ids or conv_team not in team_ids:
-                conv = dict(conv)
-                conv["messages"] = []
-
-        # Supervisors (QA) never receive raw customer PII or marketing metadata,
-        # even within their own team.
-        if user.get("role") == "supervisor":
-            from app.security.pii import mask_visitor_row
-            conv = mask_visitor_row(dict(conv))
-
-        return {"success": True, "data": conv, "count": 1}
-    except HTTPException:
-        # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.
-        # Letting it propagate returns proper HTTP status codes to the client.
-        # Previously this was caught by `except Exception` below and returned
-        # HTTP 200 with {data: null}, which the frontend rendered as
-        # "Conversation not found" — hiding legitimate auth errors. See Bug 5
-        # forensic (17.04.2026).
-        raise
+        conv = await db.get_conversation(conversation_id, raise_on_error=True)
     except Exception as e:
-        # Any OTHER exception (Supabase errors, unexpected bugs) is still
-        # converted to a JSON error envelope for backwards compatibility,
-        # but logged so we can measure frequency. The frontend now checks
-        # isError and differentiates this from a real 404.
         logger.error(
-            f"get_conversation({conversation_id}) unexpected error: {e}",
+            f"get_conversation({conversation_id}) fetch failed: {e}",
             exc_info=True,
         )
-        return {"success": False, "data": None, "count": 0, "error": str(e)}
+        raise HTTPException(status_code=502, detail="Failed to load conversation") from e
+
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # _enforce_tunnel signals 403 via HTTPException — it must propagate untouched.
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    # Phase 2: supervisor/PM see message content ONLY for their own team's
+    # conversations; otherwise metadata-only (messages blanked). Fail closed.
+    if user.get("role") in ("supervisor", "project_manager"):
+        team_ids = await _resolve_team_scope(user)
+        conv_team = conv.get("team_id")
+        if not team_ids or conv_team not in team_ids:
+            conv = dict(conv)
+            conv["messages"] = []
+
+    # Supervisors (QA) never receive raw customer PII or marketing metadata,
+    # even within their own team.
+    if user.get("role") == "supervisor":
+        from app.security.pii import mask_visitor_row
+        conv = mask_visitor_row(dict(conv))
+
+    return {"success": True, "data": conv, "count": 1}
 
 
 @router.patch("/conversations/{conversation_id}")

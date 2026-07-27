@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch, getConversations } from '@/lib/api'
 import {
   canReceiveAssignNotifications,
@@ -9,6 +10,18 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
 const HEARTBEAT_INTERVAL_MS = 5_000
+
+/**
+ * The chats page already polls this exact set every 5s for its "My Active" tab,
+ * so the attention check shares its React Query key and params instead of
+ * issuing a second identical request. Whichever fires first fills the cache and
+ * the other reads it — one full-list fetch per interval instead of two.
+ *
+ * MUST stay in sync with the list's queryKey in features/chats/index.tsx
+ * (['conversations', tab, search, tunnel, handledBy]) and its params.
+ */
+export const ATTENTION_QUERY_KEY = ['conversations', 'my_active', '', '', 'all']
+const ATTENTION_PARAMS = { assigned_to: 'me', status: 'active', limit: '50' }
 
 type HeartbeatResponse = {
   is_ready?: boolean
@@ -33,6 +46,7 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
   const active = useRef(true)
   const setReady = useReadyStore((s) => s.setReady)
   const role = useAuthStore((s) => s.auth.user?.role)
+  const queryClient = useQueryClient()
 
   /** Conversations the operator has opened — never ring for these again. */
   const attended = useRef<Set<string>>(new Set())
@@ -84,10 +98,12 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     const refreshAttention = async () => {
       if (!active.current) return
       try {
-        const res = await getConversations({
-          assigned_to: 'me',
-          status: 'active',
-          limit: '50',
+        // Reads the chats list's cache when it's fresh; fetches itself
+        // otherwise (other pages, other tabs) so the alert still works there.
+        const res = await queryClient.fetchQuery({
+          queryKey: ATTENTION_QUERY_KEY,
+          queryFn: () => getConversations(ATTENTION_PARAMS),
+          staleTime: Math.max(0, intervalMs - 500),
         })
         if (!active.current) return
         const mine = res?.data ?? []
@@ -162,5 +178,5 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
         worker.terminate()
       }
     }
-  }, [intervalMs, role, setReady, viewingConversationId])
+  }, [intervalMs, role, setReady, viewingConversationId, queryClient])
 }

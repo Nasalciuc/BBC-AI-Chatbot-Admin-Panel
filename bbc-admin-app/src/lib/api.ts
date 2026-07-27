@@ -108,9 +108,20 @@ export function getConversations(
   return apiFetch<ConversationsResponse>(`/api/conversations?${qs}`)
 }
 
-export async function getConversation(id: string): Promise<Conversation> {
-  const res = await apiFetch<{ success: boolean; data: Conversation }>(`/api/conversations/${encodeURIComponent(id)}`)
-  return res.data
+/**
+ * A conversation that genuinely no longer exists resolves to null — the caller
+ * renders "not found" for that, which is true. Every other failure keeps
+ * throwing so React Query's retry runs and the UI offers a retry instead of
+ * claiming the conversation was deleted.
+ */
+export async function getConversation(id: string): Promise<Conversation | null> {
+  try {
+    const res = await apiFetch<{ success: boolean; data: Conversation }>(`/api/conversations/${encodeURIComponent(id)}`)
+    return res.data ?? null
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
 }
 
 export async function getOperatorHistory(conversationId: string) {
