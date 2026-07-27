@@ -88,10 +88,10 @@ function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSav
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+      <div className="bg-card rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 bg-[#0B1829]">
           <h3 className="text-base font-semibold text-white">{isEdit ? 'Edit KB Article' : 'New KB Article'}</h3>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-300 hover:text-white transition">
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-card/10 text-muted-foreground hover:text-white transition">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -100,14 +100,14 @@ function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSav
           {/* Tunnel toggle — create only */}
           {!isEdit && (
             <div>
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tunnel</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tunnel</label>
               <div className="flex gap-2 mt-1.5">
                 {(['sales', 'support'] as const).map(t => (
                   <button key={t} onClick={() => setTunnel(t)}
                     className={`flex-1 py-2 rounded-lg text-sm font-medium border transition capitalize ${
                       tunnel === t
                         ? t === 'sales' ? 'bg-blue-600 border-blue-600 text-white' : 'bg-purple-600 border-purple-600 text-white'
-                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
                     }`}>{t}
                   </button>
                 ))}
@@ -116,9 +116,9 @@ function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSav
           )}
 
           <div>
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Category</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Category</label>
             <select value={categoryId} onChange={e => setCategoryId(e.target.value)}
-              className="w-full mt-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
+              className="w-full mt-1.5 px-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
               <option value="">Select category...</option>
               {categories
                 .filter(c => !isEdit ? c.tunnel === tunnel : true)
@@ -127,22 +127,22 @@ function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSav
           </div>
 
           <div>
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Title</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</label>
             <input type="text" value={title} onChange={e => setTitle(e.target.value)}
               placeholder="e.g. NYC to London Business Class"
-              className="w-full mt-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
+              className="w-full mt-1.5 px-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Content</label>
-              <span className={`text-xs ${charWarn ? 'text-orange-500 font-medium' : 'text-gray-400'}`}>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Content</label>
+              <span className={`text-xs ${charWarn ? 'text-orange-500 font-medium' : 'text-muted-foreground'}`}>
                 {charCount}/500 {charWarn && '— keep under 500 for best AI performance'}
               </span>
             </div>
             <textarea value={content} onChange={e => setContent(e.target.value)} rows={5}
               placeholder="Article content used as AI context. Recommended: 200–500 characters."
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40 resize-none" />
+              className="w-full px-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40 resize-none" />
           </div>
 
           {error && (
@@ -152,8 +152,8 @@ function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSav
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition">Cancel</button>
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border bg-muted">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition">Cancel</button>
           <button onClick={handleSave} disabled={saving}
             className="flex items-center gap-2 px-5 py-2 text-sm font-medium text-white bg-[#0B1829] rounded-lg hover:bg-[#0B1829]/90 transition disabled:opacity-50">
             <Save className="w-4 h-4" />{saving ? 'Saving...' : isEdit ? 'Save Changes' : 'Create Article'}
@@ -245,16 +245,16 @@ export function KnowledgeBase() {
         </div>
       </Header>
       <Main fixed>
-        <div className="flex h-full overflow-hidden rounded-lg border border-gray-200">
+        <div className="flex h-full overflow-hidden rounded-lg border border-border">
           {/* Sidebar */}
-          <div className="w-64 border-r border-gray-200 bg-white flex flex-col shrink-0">
-            <div className="px-4 py-4 border-b border-gray-100">
+          <div className="w-64 border-r border-border bg-card flex flex-col shrink-0">
+            <div className="px-4 py-4 border-b border-border">
               <h1 className="text-lg font-bold text-[#0B1829]">Knowledge Base</h1>
-              <p className="text-xs text-gray-400 mt-0.5">{entries.length} articles</p>
-              <div className="flex mt-3 bg-gray-100 rounded-lg p-0.5">
+              <p className="text-xs text-muted-foreground mt-0.5">{entries.length} articles</p>
+              <div className="flex mt-3 bg-muted rounded-lg p-0.5">
                 {(['all', 'sales', 'support'] as const).map(t => (
                   <button key={t} onClick={() => { setTunnelFilter(t); setSelectedCat(null) }}
-                    className={`flex-1 py-1 text-xs font-medium rounded-md capitalize transition ${tunnelFilter === t ? 'bg-white text-[#0B1829] shadow-sm' : 'text-gray-500'}`}>
+                    className={`flex-1 py-1 text-xs font-medium rounded-md capitalize transition ${tunnelFilter === t ? 'bg-card text-[#0B1829] shadow-sm' : 'text-muted-foreground'}`}>
                     {t}
                   </button>
                 ))}
@@ -264,22 +264,22 @@ export function KnowledgeBase() {
             <div className="flex-1 overflow-y-auto py-2">
               {/* All articles */}
               <button onClick={() => setSelectedCat(null)}
-                className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-gray-50 transition ${!selectedCat ? 'bg-[#0B1829]/5 font-medium text-[#0B1829] border-l-2 border-[#C9A54E]' : 'text-gray-600'}`}>
+                className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-accent transition ${!selectedCat ? 'bg-[#0B1829]/5 font-medium text-[#0B1829] border-l-2 border-[#C9A54E]' : 'text-muted-foreground'}`}>
                 <span className="w-4 h-4 flex items-center justify-center text-xs">📋</span>
                 All Articles
-                <span className="ml-auto text-xs text-gray-400">{visibleEntries.length}</span>
+                <span className="ml-auto text-xs text-muted-foreground">{visibleEntries.length}</span>
               </button>
 
               {loading ? (
-                <div className="px-4 py-3 text-xs text-gray-400">Loading...</div>
+                <div className="px-4 py-3 text-xs text-muted-foreground">Loading...</div>
               ) : filteredCats.map(cat => (
                 <button key={cat.id} onClick={() => setSelectedCat(cat)}
-                  className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-gray-50 transition ${selectedCat?.id === cat.id ? 'bg-[#0B1829]/5 font-medium text-[#0B1829] border-l-2 border-[#C9A54E]' : 'text-gray-600'}`}>
+                  className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-accent transition ${selectedCat?.id === cat.id ? 'bg-[#0B1829]/5 font-medium text-[#0B1829] border-l-2 border-[#C9A54E]' : 'text-muted-foreground'}`}>
                   <span className={`w-5 h-5 rounded flex items-center justify-center ${cat.tunnel === 'sales' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'}`}>
                     <CategoryIcon name={cat.icon} />
                   </span>
                   <span className="flex-1 text-left truncate">{cat.name}</span>
-                  <span className="text-xs text-gray-400 shrink-0">{cat.entry_count}</span>
+                  <span className="text-xs text-muted-foreground shrink-0">{cat.entry_count}</span>
                 </button>
               ))}
             </div>
@@ -287,13 +287,13 @@ export function KnowledgeBase() {
 
           {/* Main area */}
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-white">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card">
               <div>
                 <span className="text-sm font-medium text-[#0B1829]">{selectedCat ? selectedCat.name : 'All Articles'}</span>
-                <span className="ml-2 text-xs text-gray-400">{visibleEntries.length} articles</span>
+                <span className="ml-2 text-xs text-muted-foreground">{visibleEntries.length} articles</span>
               </div>
               <div className="flex gap-2">
-                <button onClick={fetchAll} className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition">
+                <button onClick={fetchAll} className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition">
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                 </button>
                 {canEdit && (
@@ -307,9 +307,9 @@ export function KnowledgeBase() {
 
             <div className="flex-1 overflow-y-auto p-5">
               {loading ? (
-                <div className="text-center text-gray-400 text-sm py-12">Loading articles...</div>
+                <div className="text-center text-muted-foreground text-sm py-12">Loading articles...</div>
               ) : visibleEntries.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-gray-300">
+                <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                   <ClipboardList className="w-10 h-10 mb-2 opacity-30" />
                   <p className="text-sm">No articles in this category</p>
                   {canEdit && (
@@ -322,14 +322,14 @@ export function KnowledgeBase() {
                 <div className="space-y-3">
                   {visibleEntries.map(entry => (
                     <div key={entry.id}
-                      className={`bg-white rounded-xl border p-4 shadow-sm transition ${entry.is_active ? 'border-gray-100' : 'border-gray-200 opacity-60'}`}>
+                      className={`bg-card rounded-xl border p-4 shadow-sm transition ${entry.is_active ? 'border-border' : 'border-border opacity-60'}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="text-sm font-semibold text-[#0B1829]">{entry.title}</h3>
                             <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[entry.tunnel]}`}>{entry.tunnel}</span>
                             {!entry.is_active && (
-                              <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] bg-gray-100 text-gray-500">inactive</span>
+                              <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] bg-muted text-muted-foreground">inactive</span>
                             )}
                             {isStale(entry.updated_at) && (
                               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-600 border border-amber-200">
@@ -337,8 +337,8 @@ export function KnowledgeBase() {
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-gray-500 mt-1.5 leading-relaxed line-clamp-2">{entry.content}</p>
-                          <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-400">
+                          <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed line-clamp-2">{entry.content}</p>
+                          <div className="flex items-center gap-3 mt-2 text-[10px] text-muted-foreground">
                             <span>{entry.content.length} chars</span>
                             <span>{entry.view_count} uses</span>
                             <span>updated {timeAgo(entry.updated_at)}</span>
@@ -347,15 +347,15 @@ export function KnowledgeBase() {
                         {canEdit && (
                         <div className="flex items-center gap-1 shrink-0">
                           <button onClick={() => toggleActive(entry)} title={entry.is_active ? 'Deactivate' : 'Activate'}
-                            className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition">
+                            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition">
                             {entry.is_active ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
                           </button>
                           <button onClick={() => openEdit(entry)}
-                            className="p-2 rounded-lg text-gray-400 hover:text-[#0B1829] hover:bg-gray-100 transition">
+                            className="p-2 rounded-lg text-muted-foreground hover:text-[#0B1829] hover:bg-accent transition">
                             <Edit2 className="w-4 h-4" />
                           </button>
                           <button onClick={() => handleDelete(entry.id)} disabled={deletingId === entry.id}
-                            className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition disabled:opacity-40">
+                            className="p-2 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 transition disabled:opacity-40">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>

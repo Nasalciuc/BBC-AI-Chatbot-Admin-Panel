@@ -31,12 +31,12 @@ interface Props {
 
 const TIER_STYLES: Record<string, string> = {
   gold: 'bg-yellow-100 text-yellow-800',
-  silver: 'bg-gray-100 text-gray-700',
+  silver: 'bg-muted text-foreground',
   bronze: 'bg-orange-50 text-orange-700',
 }
 
 const MODEL_STYLES: Record<string, { label: string; cls: string }> = {
-  template: { label: 'template · $0', cls: 'bg-gray-100 text-gray-500' },
+  template: { label: 'template · $0', cls: 'bg-muted text-muted-foreground' },
   haiku: { label: 'haiku', cls: 'bg-blue-50 text-blue-600' },
   sonnet: { label: 'sonnet', cls: 'bg-purple-50 text-purple-600' },
 }
@@ -224,7 +224,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
               {/* QA Review */}
               {canReview && (
                 <div className="px-6 py-4">
-                  <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
+                  <div className="flex items-center justify-between rounded-lg border border-border p-3">
                     <span className="text-sm font-medium text-foreground">
                       {lead.reviewed_by_qa ? 'Reviewed' : 'Not Reviewed'}
                     </span>
@@ -235,7 +235,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
                       className={
                         lead.reviewed_by_qa
                           ? 'rounded bg-green-600 px-3 py-1 text-xs text-white disabled:opacity-50'
-                          : 'rounded border border-gray-200 px-3 py-1 text-xs hover:bg-gray-50 disabled:opacity-50'
+                          : 'rounded border border-border px-3 py-1 text-xs hover:bg-accent disabled:opacity-50'
                       }
                     >
                       {lead.reviewed_by_qa ? '✓ Reviewed' : 'Mark as Reviewed'}
@@ -262,7 +262,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
                     {messages.map((msg) => {
                       const role = ROLE_CONFIG[msg.role] ?? ROLE_CONFIG.user
                       const model = msg.model_used
-                        ? MODEL_STYLES[msg.model_used] ?? { label: msg.model_used, cls: 'bg-gray-100 text-gray-500' }
+                        ? MODEL_STYLES[msg.model_used] ?? { label: msg.model_used, cls: 'bg-muted text-muted-foreground' }
                         : null
                       return (
                         <div key={msg.id} className="group">

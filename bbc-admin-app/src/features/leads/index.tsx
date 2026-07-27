@@ -16,7 +16,7 @@ import type { UserRole } from '@/lib/bbc/types'
 
 const TIER_STYLES: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
-  silver: 'bg-gray-100 text-gray-700 border border-gray-300',
+  silver: 'bg-muted text-foreground border border-border',
   bronze: 'bg-orange-50 text-orange-700 border border-orange-300',
 }
 const STATUS_STYLES: Record<string, string> = {
@@ -28,7 +28,7 @@ const STATUS_STYLES: Record<string, string> = {
 }
 
 function ScoreBadge({ score }: { score: number }) {
-  const color = score >= 80 ? 'text-yellow-700 bg-yellow-50' : score >= 50 ? 'text-gray-600 bg-gray-50' : 'text-orange-600 bg-orange-50'
+  const color = score >= 80 ? 'text-yellow-700 bg-yellow-50' : score >= 50 ? 'text-muted-foreground bg-muted' : 'text-orange-600 bg-orange-50'
   return (
     <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-bold text-sm ${color}`}>
       {score}
@@ -37,14 +37,14 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 function RouteDisplay({ lead }: { lead: Lead }) {
-  if (lead.route_display) return <span className="text-sm font-medium text-gray-900">{lead.route_display}</span>
+  if (lead.route_display) return <span className="text-sm font-medium text-foreground">{lead.route_display}</span>
   if (lead.origin_code && lead.destination_code)
     return (
-      <span className="text-sm font-medium text-gray-900 flex items-center gap-1">
-        {lead.origin_code}<Plane className="w-3 h-3 text-gray-400" />{lead.destination_code}
+      <span className="text-sm font-medium text-foreground flex items-center gap-1">
+        {lead.origin_code}<Plane className="w-3 h-3 text-muted-foreground" />{lead.destination_code}
       </span>
     )
-  return <span className="text-sm text-gray-400 italic">No route</span>
+  return <span className="text-sm text-muted-foreground italic">No route</span>
 }
 
 type LeadTab = 'my_leads' | 'all_leads'
@@ -147,12 +147,12 @@ export function Leads() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-[#0B1829]">Leads</h1>
-              <p className="text-sm text-gray-500 mt-0.5">{total} total</p>
+              <p className="text-sm text-muted-foreground mt-0.5">{total} total</p>
             </div>
             <div className="flex items-center gap-2">
               <ExportLeadsButton leads={sortedLeads} />
               <button onClick={fetchLeads}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-[#0B1829] bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-[#0B1829] bg-card border border-border rounded-lg hover:bg-accent transition">
                 <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Refresh
               </button>
             </div>
@@ -166,7 +166,7 @@ export function Leads() {
               className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                 activeTab === 'my_leads'
                   ? 'bg-[#0B1829] text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  : 'bg-muted text-muted-foreground hover:bg-accent'
               }`}
             >
               My Leads
@@ -178,7 +178,7 @@ export function Leads() {
                 className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                   activeTab === 'all_leads'
                     ? 'bg-[#0B1829] text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    : 'bg-muted text-muted-foreground hover:bg-accent'
                 }`}
               >
                 All Leads
@@ -196,66 +196,66 @@ export function Leads() {
           {/* Filters */}
           <div className="flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input type="text" placeholder="Search name, email, route..." value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40 focus:border-[#C9A54E]" />
+                className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40 focus:border-[#C9A54E]" />
             </div>
             <div className="relative">
-              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <select value={statusFilter} onChange={e => { setStatus(e.target.value); setOffset(0) }}
-                className="pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
+                className="pl-9 pr-8 py-2 text-sm rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
                 <option value="">All Status</option>
                 <option value="new">New</option><option value="contacted">Contacted</option>
                 <option value="qualified">Qualified</option><option value="converted">Converted</option>
                 <option value="lost">Lost</option>
               </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             </div>
             <div className="relative">
               <select value={tierFilter} onChange={e => { setTier(e.target.value); setOffset(0) }}
-                className="pl-3 pr-8 py-2 text-sm border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
+                className="pl-3 pr-8 py-2 text-sm rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
                 <option value="">All Tiers</option>
                 <option value="gold">Gold</option><option value="silver">Silver</option><option value="bronze">Bronze</option>
               </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             </div>
             {canReview && (
               <div className="relative">
                 <select
                   value={reviewFilter}
                   onChange={(e) => { setReviewFilter(e.target.value); setOffset(0) }}
-                  className="pl-3 pr-8 py-2 text-sm border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40"
+                  className="pl-3 pr-8 py-2 text-sm rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40"
                 >
                   <option value="all">All Reviews</option>
                   <option value="false">Unreviewed</option>
                   <option value="true">Reviewed</option>
                 </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
               </div>
             )}
           </div>
 
           {/* Table */}
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+          <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
             {loading ? (
-              <div className="flex items-center justify-center h-48 text-gray-400 text-sm">Loading leads...</div>
+              <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">Loading leads...</div>
             ) : leads.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-48 text-gray-400">
+              <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
                 <Plane className="w-8 h-8 mb-2 opacity-30" /><p className="text-sm">No leads found</p>
               </div>
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-gray-100 bg-gray-50">
+                  <tr className="border-b border-border bg-muted">
                     {tableHeaders.map(h => (
-                      <th key={h} className="text-left px-4 py-3 font-medium text-gray-500 text-xs uppercase tracking-wide">{h}</th>
+                      <th key={h} className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wide">{h}</th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody className="divide-y divide-border">
                   {sortedLeads.map(lead => (
-                    <tr key={lead.id} className="hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setSelectedLeadId(lead.id)}>
+                    <tr key={lead.id} className="hover:bg-accent transition-colors cursor-pointer" onClick={() => setSelectedLeadId(lead.id)}>
                       <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
                       {canReview && (
                         <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
@@ -263,7 +263,7 @@ export function Leads() {
                             type="button"
                             disabled={pendingId === lead.id}
                             onClick={() => toggleReview(lead)}
-                            className="inline-flex items-center justify-center p-1 rounded hover:bg-gray-100 disabled:opacity-50"
+                            className="inline-flex items-center justify-center p-1 rounded hover:bg-accent disabled:opacity-50"
                             aria-label={lead.reviewed_by_qa ? 'Mark as unreviewed' : 'Mark as reviewed'}
                             title={lead.reviewed_by_qa ? 'Reviewed — click to clear' : 'Not reviewed — click to mark'}
                           >
@@ -276,15 +276,15 @@ export function Leads() {
                         </td>
                       )}
                       <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900">
-                          {lead.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous</span>}
+                        <div className="font-medium text-foreground">
+                          {lead.visitor_name ?? <span className="text-muted-foreground italic text-xs">Anonymous</span>}
                         </div>
-                        {lead.visitor_phone && <div className="flex items-center gap-1 text-xs text-gray-500 mt-0.5"><Phone className="w-3 h-3" />{lead.visitor_phone}</div>}
-                        {lead.visitor_email && <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5"><Mail className="w-3 h-3" />{lead.visitor_email}</div>}
+                        {lead.visitor_phone && <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5"><Phone className="w-3 h-3" />{lead.visitor_phone}</div>}
+                        {lead.visitor_email && <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5"><Mail className="w-3 h-3" />{lead.visitor_email}</div>}
                       </td>
                       <td className="px-4 py-3">
                         <RouteDisplay lead={lead} />
-                        <div className="text-xs text-gray-400 mt-0.5 capitalize">
+                        <div className="text-xs text-muted-foreground mt-0.5 capitalize">
                           {(lead.trip_type || 'round_trip').replace('_', '-')}{lead.passengers ? ` · ${lead.passengers} pax` : ''}
                         </div>
                       </td>
@@ -298,11 +298,11 @@ export function Leads() {
                           {lead.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 text-xs">{lead.departure_date ?? <span className="text-gray-300">—</span>}</td>
+                      <td className="px-4 py-3 text-muted-foreground text-xs">{lead.departure_date ?? <span className="text-muted-foreground">—</span>}</td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <select value={lead.status} disabled={updatingId === lead.id || !permissions.canEditLeads}
                           onChange={e => handleStatusUpdate(lead.id, e.target.value)}
-                          className="text-xs border border-gray-200 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A54E] disabled:opacity-50">
+                          className="text-xs rounded-md px-2 py-1 border border-input bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-[#C9A54E] disabled:opacity-50">
                           <option value="new">New</option><option value="contacted">Contacted</option>
                           <option value="qualified">Qualified</option><option value="converted">Converted</option>
                           <option value="lost">Lost</option>
@@ -317,13 +317,13 @@ export function Leads() {
 
           {/* Pagination */}
           {total > LIMIT && (
-            <div className="flex items-center justify-between text-sm text-gray-500">
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>Showing {offset + 1}–{Math.min(offset + LIMIT, total)} of {total}</span>
               <div className="flex gap-2">
                 <button onClick={() => setOffset(Math.max(0, offset - LIMIT))} disabled={offset === 0}
-                  className="px-3 py-1.5 border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Previous</button>
+                  className="px-3 py-1.5 border border-border rounded-lg disabled:opacity-40 hover:bg-accent">Previous</button>
                 <button onClick={() => setOffset(offset + LIMIT)} disabled={offset + LIMIT >= total}
-                  className="px-3 py-1.5 border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Next</button>
+                  className="px-3 py-1.5 border border-border rounded-lg disabled:opacity-40 hover:bg-accent">Next</button>
               </div>
             </div>
           )}
