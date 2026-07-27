@@ -7,6 +7,20 @@ interface Message {
   role: 'user' | 'ai' | 'agent' | 'system'
   content: string
   created_at: string
+  /** Operator identity — present on role='agent' messages only. */
+  agent_name?: string | null
+  agent_avatar_url?: string | null
+}
+
+const CONSULTANT_LABEL = 'Consultant'
+
+function agentInitials(name: string): string {
+  return name
+    .split(' ')
+    .map(w => w[0] || '')
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
 }
 
 interface Props {
@@ -42,6 +56,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSentRef = useRef<number>(0)
   const closeSentRef = useRef(false)
+  /** Operator-typing state, polled from the backend (name only, never the draft). */
+  const [agentTyping, setAgentTyping] = useState<{ is_typing: boolean; name: string }>({
+    is_typing: false,
+    name: '',
+  })
+  /** Operator photos that failed to load → show initials instead of a broken image. */
+  const [brokenAvatars, setBrokenAvatars] = useState<Record<string, boolean>>({})
 
   // Safety net: force-unlock sending after 15s (protects against any stuck state)
   useEffect(() => {
@@ -229,6 +250,48 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       window.removeEventListener('beforeunload', handlePageLeave)
     }
   }, [convId, apiUrl])
+
+  // Operator → visitor typing indicator. The backend key has a short TTL, so a
+  // stopped operator stops the indicator on its own; the poll only reads.
+  useEffect(() => {
+    if (!convId) return
+    let cancelled = false
+
+    const poll = async () => {
+      if (document.visibilityState !== 'visible') return
+      try {
+        const res = await fetch(`${apiUrl}/api/chat/agent-typing/${convId}`, {
+          headers: { 'X-Visitor-Id': getVisitorId() || '' },
+        })
+        if (!res.ok || cancelled) return
+        const json = await res.json()
+        if (cancelled) return
+        const data = json?.data
+        setAgentTyping({
+          is_typing: Boolean(data?.is_typing),
+          name: data?.name || '',
+        })
+      } catch { /* non-fatal */ }
+    }
+
+    poll()
+    const id = setInterval(poll, 1000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [convId, apiUrl])
+
+  // An arrived operator message means they finished typing — drop the indicator
+  // immediately instead of waiting for the next poll.
+  const lastMessageId = messages.length ? messages[messages.length - 1].id : ''
+  useEffect(() => {
+    if (!messages.length) return
+    if (messages[messages.length - 1].role === 'agent') {
+      setAgentTyping({ is_typing: false, name: '' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastMessageId])
 
   // Send typing event to server.
   //
@@ -483,30 +546,90 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       </div>
 
       <div role="log" aria-live="polite" style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {messages.filter(m => m.role !== 'system' || m.content).map(msg => (
+        {messages.filter(m => m.role !== 'system' || m.content).map(msg => {
+          const isOperator = msg.role === 'agent'
+          const operatorName = (msg.agent_name || '').trim() || CONSULTANT_LABEL
+          return (
           <div key={msg.id} style={{
             alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
             maxWidth: '80%',
           }}>
-            <div style={{
-              padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
-              ...(msg.role === 'user'
-                ? { background: 'var(--bbc-user-bubble)', color: 'var(--bbc-header-text)', borderBottomRightRadius: 4 }
-                : msg.role === 'system'
-                  ? { background: '#fef3c7', color: '#92400e', fontSize: 12, fontStyle: 'italic' }
-                  : { background: 'var(--bbc-ai-bubble)', color: 'var(--bbc-ai-bubble-text)', borderBottomLeftRadius: 4 }
-              ),
-            }}>
-              {msg.content}
+            {isOperator && (
+              <div style={{ fontSize: 11, marginBottom: 3, marginLeft: 34, lineHeight: 1.3 }}>
+                <span style={{ fontWeight: 600, color: 'var(--bbc-header)' }}>{operatorName}</span>
+                <span style={{ color: '#9ca3af' }}> · {CONSULTANT_LABEL}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+              {isOperator && (
+                msg.agent_avatar_url && !brokenAvatars[msg.id]
+                  ? <img
+                      src={msg.agent_avatar_url}
+                      alt={operatorName}
+                      style={{
+                        width: 28, height: 28, borderRadius: '50%', objectFit: 'cover',
+                        flexShrink: 0, background: '#e5e7eb',
+                      }}
+                      onError={() => setBrokenAvatars(prev => ({ ...prev, [msg.id]: true }))}
+                    />
+                  : <div style={{
+                      width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                      background: 'var(--bbc-header)', color: 'var(--bbc-header-text)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 11, fontWeight: 600,
+                    }}>
+                      {agentInitials(operatorName)}
+                    </div>
+              )}
+              <div style={{
+                padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
+                ...(msg.role === 'user'
+                  ? { background: 'var(--bbc-user-bubble)', color: 'var(--bbc-header-text)', borderBottomRightRadius: 4 }
+                  : msg.role === 'system'
+                    ? { background: '#fef3c7', color: '#92400e', fontSize: 12, fontStyle: 'italic' }
+                    : { background: 'var(--bbc-ai-bubble)', color: 'var(--bbc-ai-bubble-text)', borderBottomLeftRadius: 4 }
+                ),
+              }}>
+                {msg.content}
+              </div>
             </div>
             <div style={{
               fontSize: 10, color: '#9ca3af', marginTop: 2,
               textAlign: msg.role === 'user' ? 'right' : 'left',
+              marginLeft: isOperator ? 34 : 0,
             }}>
               {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
           </div>
-        ))}
+          )
+        })}
+        {agentTyping.is_typing && (
+          <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
+            <div style={{ fontSize: 11, marginBottom: 3, color: '#9ca3af', lineHeight: 1.3 }}>
+              {(agentTyping.name || CONSULTANT_LABEL)} is typing…
+            </div>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '12px 16px', background: 'var(--bbc-ai-bubble)',
+              borderRadius: 14, borderBottomLeftRadius: 4, width: 'fit-content',
+            }}>
+              {[0, 1, 2].map(i => (
+                <span
+                  key={i}
+                  ref={el => { if (el) {
+                    el.style.animation = 'none'
+                    el.offsetHeight // reflow
+                    el.style.animation = `bbcDot 1.4s ${i * 0.2}s infinite`
+                  }}}
+                  style={{
+                    width: 6, height: 6, borderRadius: '50%',
+                    background: '#999', display: 'inline-block',
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
         {sending && !streamingText && !isStreaming && (
           <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 4, paddingLeft: 8 }}>
             <div style={{

@@ -625,10 +625,51 @@ async def public_get_messages(
         return {"success": False, "data": [], "error": "invalid conversation_id"}
     try:
         msgs = await db.get_messages_after(conversation_id, after)
-        return {"success": True, "data": msgs}
+        return {"success": True, "data": await _with_agent_identity(conversation_id, msgs)}
     except Exception as e:
         logger.error(f"public_get_messages error: {e}")
         return {"success": False, "data": [], "error": str(e)}
+
+
+async def _with_agent_identity(conversation_id: str, msgs: list) -> list:
+    """Attach the operator's name + avatar to operator messages.
+
+    The messages table stores no identity columns, so live SSE pushes carry it
+    and this read path re-attaches it — that's what makes the photo and name
+    survive a widget reload. Only role='agent' rows are touched; AI and system
+    messages stay exactly as they are. One lookup per batch, and only when the
+    batch actually contains an operator message (incremental polls usually
+    return nothing).
+    """
+    if not any((m.get("role") == "agent") for m in msgs):
+        return msgs
+    identity = await db.get_conversation_agent_identity(conversation_id)
+    if not identity:
+        return msgs
+    for m in msgs:
+        if m.get("role") == "agent":
+            m["agent_name"] = identity.get("name") or "Consultant"
+            m["agent_avatar_url"] = identity.get("avatar_url")
+    return msgs
+
+
+@router.get("/chat/agent-typing/{conversation_id}")
+async def public_get_agent_typing(
+    conversation_id: str,
+    _owner: None = Depends(require_visitor_ownership),
+):
+    """Widget polls this to show "<operator> is typing…".
+
+    No operator login required (the conversation id plus visitor ownership is
+    the guard, same as the other widget endpoints). Returns the operator's name
+    only — the draft text never leaves the admin panel.
+    """
+    from app.realtime.typing_indicator import typing_manager
+    state = await typing_manager.get_agent_typing(conversation_id)
+    return {
+        "success": True,
+        "data": state or {"is_typing": False, "name": ""},
+    }
 
 
 @router.get("/chat/stream/{conversation_id}")

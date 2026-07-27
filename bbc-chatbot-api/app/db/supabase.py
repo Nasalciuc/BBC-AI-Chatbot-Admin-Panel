@@ -952,6 +952,31 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
         return None
 
 
+async def get_conversation_agent_identity(conversation_id: str) -> Optional[dict]:
+    """Display identity of the operator on this conversation: {name, avatar_url}.
+
+    Used to label operator messages in the widget. Falls back to the engaged
+    operator when the conversation has already been handed back to the AI
+    (assigned_agent_id cleared but metadata.engaged_agent_id survives).
+    Returns None when no operator has ever handled the conversation.
+    """
+    conv = await get_conversation_simple(conversation_id)
+    if not conv:
+        return None
+    agent_id = conv.get("assigned_agent_id") or (
+        (conv.get("metadata") or {}).get("engaged_agent_id")
+    )
+    if not agent_id:
+        return None
+    agent = await get_user_by_id(agent_id)
+    if not agent:
+        return None
+    return {
+        "name": agent.get("name") or "Consultant",
+        "avatar_url": agent.get("avatar_url"),
+    }
+
+
 def _user_display_name(user: Optional[dict]) -> Optional[str]:
     if not user:
         return None

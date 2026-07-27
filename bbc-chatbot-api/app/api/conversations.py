@@ -359,8 +359,64 @@ async def send_agent_message(
         await db.update_conversation(conversation_id, _engage_update)
 
     if msg:
+        # Personalization: the visitor should see a real person, not an
+        # anonymous bot. Identity is attached to operator messages only —
+        # never to AI or system rows.
+        msg["agent_name"] = (_sender_db or {}).get("name") or "Consultant"
+        msg["agent_avatar_url"] = (_sender_db or {}).get("avatar_url")
         await manager.push(conversation_id, msg)
+
+    # The reply is out — the operator is no longer typing.
+    from app.realtime.typing_indicator import typing_manager
+    await typing_manager.clear_agent_typing(conversation_id)
+
     return {"success": True, "data": msg}
+
+
+class AgentTypingBody(BaseModel):
+    text: str = ""
+
+
+@router.post("/conversations/{conversation_id}/agent-typing")
+async def set_agent_typing_status(
+    conversation_id: str,
+    body: AgentTypingBody,
+    user: dict = Depends(get_current_user),
+):
+    """Operator reports they are typing a reply; the widget shows it live.
+
+    Mirrors the client→operator endpoint's convention: text present = typing,
+    empty text = cleared. Only the operator's NAME reaches the visitor.
+    """
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    from app.realtime.typing_indicator import typing_manager
+    if body.text.strip():
+        sender = await db.get_user_by_id(user.get("id"))
+        name = (sender or {}).get("name") or "Consultant"
+        await typing_manager.set_agent_typing(conversation_id, name)
+    else:
+        await typing_manager.clear_agent_typing(conversation_id)
+    return {"success": True}
+
+
+@router.delete("/conversations/{conversation_id}/agent-typing")
+async def clear_agent_typing_status(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Operator stopped typing (sent, cleared the box, or left the conversation)."""
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+
+    from app.realtime.typing_indicator import typing_manager
+    await typing_manager.clear_agent_typing(conversation_id)
+    return {"success": True}
 
 
 @router.post("/conversations/{conversation_id}/claim")
