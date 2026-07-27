@@ -69,7 +69,7 @@ export default function SetPasswordPage() {
     <div className='min-h-screen flex items-center justify-center bg-[#0B1829]'>
       <div className='bg-white rounded-xl p-8 max-w-md w-full mx-4'>
         <div className='text-center mb-6'>
-          <h1 className='text-2xl font-bold text-[#0B1829]'>Set Your Password</h1>
+          <h1 className='text-2xl font-bold text-foreground'>Set Your Password</h1>
           <p className='text-gray-500 text-sm mt-1'>
             Welcome to BBC Admin Panel. Set a secure password to continue.
           </p>

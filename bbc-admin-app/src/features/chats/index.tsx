@@ -189,7 +189,7 @@ export function Chats() {
                   onClick={() => { setActiveTab(tab.key); setSelectedId(null) }}
                   className={`flex-1 flex items-center justify-center gap-2 px-3 py-3 text-xs font-medium transition-colors border-b-2 ${
                     activeTab === tab.key
-                      ? 'border-[#C9A54E] text-[#0B1829]'
+                      ? 'border-[#C9A54E] text-foreground'
                       : 'border-transparent text-muted-foreground hover:text-foreground'
                   }`}
                 >

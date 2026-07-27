@@ -146,13 +146,13 @@ export function Leads() {
           {/* Header */}
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-[#0B1829]">Leads</h1>
+              <h1 className="text-2xl font-bold text-foreground">Leads</h1>
               <p className="text-sm text-muted-foreground mt-0.5">{total} total</p>
             </div>
             <div className="flex items-center gap-2">
               <ExportLeadsButton leads={sortedLeads} />
               <button onClick={fetchLeads}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-[#0B1829] bg-card border border-border rounded-lg hover:bg-accent transition">
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-foreground bg-card border border-border rounded-lg hover:bg-accent transition">
                 <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Refresh
               </button>
             </div>

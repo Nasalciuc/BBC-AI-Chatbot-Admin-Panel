@@ -463,7 +463,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   <button
                     type="button"
                     onClick={() => setShowEmojiPicker(v => !v)}
-                    className="h-full px-3 rounded-xl border border-border text-muted-foreground hover:text-[#0B1829] hover:border-border transition-all"
+                    className="h-full px-3 rounded-xl border border-border text-muted-foreground hover:text-foreground hover:border-border transition-all"
                     aria-label="Insert emoji"
                     title="Insert emoji"
                   >
