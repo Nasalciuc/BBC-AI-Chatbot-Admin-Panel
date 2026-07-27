@@ -122,6 +122,11 @@ export function Chats() {
   if (tunnelFilter) listParams.tunnel = tunnelFilter
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
 
+  // On the default My Active view this key equals ATTENTION_QUERY_KEY in
+  // use-heartbeat.ts, so the heartbeat's attention check reuses this cache
+  // instead of fetching the same list a second time every 5s. Changing the key
+  // shape or the params below without updating that constant reintroduces the
+  // duplicate request.
   const { data: convResponse, isLoading } = useQuery({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter],

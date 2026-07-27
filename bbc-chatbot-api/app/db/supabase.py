@@ -277,6 +277,19 @@ async def keyword_search_kb(keywords: list[str], tunnel: str = "sales", limit: i
 # ADMIN — CONVERSATIONS
 # ════════════════════════════════════════════════════════════════
 
+# Columns the conversations LIST actually renders. `metadata` is deliberately
+# absent: it averages 816 bytes per row (~two thirds of a full row) and the list
+# never displays any of it. Selecting these columns instead of "*" takes a
+# 50-row page from 61.9 kB to 5.2 kB. The one metadata key the list logic needs
+# (engaged_agent_id, for agent_state and the "→ AI" label) is lifted out via a
+# jsonb path. The conversation DETAIL endpoint still returns everything.
+_LIST_COLUMNS = (
+    "id,tunnel,status,mode,visitor_name,message_count,updated_at,"
+    "has_flagged_content,flagged_reason,assigned_agent_id,"
+    "engaged_agent_id:metadata->>engaged_agent_id"
+)
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -298,7 +311,7 @@ async def get_conversations(
     try:
         db = get_client()
         def _query():
-            q = db.table("conversations").select("*", count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
+            q = db.table("conversations").select(_LIST_COLUMNS, count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
             if team_ids:
                 q = q.in_("team_id", team_ids)
@@ -324,7 +337,12 @@ async def get_conversations(
                 )
             return q.range(offset, offset + limit - 1).execute()
         res = await _run_sync(_query)
-        rows = await enrich_conversations_agent_info(res.data or [])
+        rows = res.data or []
+        # Put the lifted key back under `metadata` so the agent-info enrichment
+        # and the panel keep the row shape they already expect.
+        for row in rows:
+            row["metadata"] = {"engaged_agent_id": row.pop("engaged_agent_id", None)}
+        rows = await enrich_conversations_agent_info(rows)
         return rows, res.count or 0
     except Exception as e:
         logger.error(f"get_conversations error: {e}")
@@ -389,17 +407,33 @@ async def get_last_agent_for_visitor(
         logger.error(f"get_last_agent_for_visitor error: {e}")
         return None
 
-async def get_conversation(conversation_id: str) -> Optional[dict]:
+async def get_conversation(
+    conversation_id: str,
+    *,
+    raise_on_error: bool = False,
+) -> Optional[dict]:
     """One conversation + all its messages + associated lead.
-    Messages and lead queries run in PARALLEL (don't depend on each other)."""
+    Messages and lead queries run in PARALLEL (don't depend on each other).
+
+    raise_on_error=True separates "this row does not exist" (returns None) from
+    "the fetch failed" (raises). Collapsing both into None made a transient
+    Supabase blip surface in the panel as "Conversation not found", i.e. told
+    the operator a live conversation had been deleted. Callers that genuinely
+    only care whether a row is usable keep the lenient default.
+    """
     try:
         import asyncio
         db_client = get_client()
+        # limit(1) rather than single(): a missing row is an ordinary empty
+        # result here, not an exception, which is what lets a real absence be
+        # told apart from a failure.
         conv = await _run_sync(
-            lambda: db_client.table("conversations").select("*, assigned_agent:users!conversations_assigned_agent_id_fkey(name, email)").eq("id", conversation_id).single().execute()
+            lambda: db_client.table("conversations").select("*, assigned_agent:users!conversations_assigned_agent_id_fkey(name, email)").eq("id", conversation_id).limit(1).execute()
         )
-        if not conv.data:
+        conv_rows = conv.data or []
+        if not conv_rows:
             return None
+        conv_row = conv_rows[0]
 
         # Run msgs + lead in PARALLEL — both only need conversation_id
         msgs_future = _run_sync(
@@ -418,7 +452,7 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
         )
         msgs, lead_res = await asyncio.gather(msgs_future, lead_future)
 
-        result = dict(conv.data)
+        result = dict(conv_row)
         # Flatten nested agent data into top-level field
         agent_data = result.pop("assigned_agent", None)
         result["assigned_agent_name"] = (
@@ -431,6 +465,8 @@ async def get_conversation(conversation_id: str) -> Optional[dict]:
         return result
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
+        if raise_on_error:
+            raise
         return None
 
 
