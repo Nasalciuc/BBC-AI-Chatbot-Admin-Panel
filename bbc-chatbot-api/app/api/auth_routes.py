@@ -6,13 +6,14 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from config.settings import settings
 from app.db import supabase as db
 from app.security.auth import get_current_user
 from app.security.rate_limiter import check_rate_limit
+from app.services.storage import upload_avatar
 
 logger = logging.getLogger(__name__)
 
@@ -404,3 +405,45 @@ async def update_own_profile(
         },
         "token": token,
     }
+
+
+@router.post("/me/avatar")
+async def upload_own_avatar(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a profile photo (any authenticated role).
+
+    Stores the image in Supabase Storage (`avatars` bucket), saves the public
+    URL on the user, and re-issues the JWT so claims stay in sync with `/me`.
+    """
+    # Early reject when size is known and over the limit (still re-check after
+    # read — clients can lie about Content-Length).
+    known_size = getattr(file, "size", None)
+    if known_size is not None and known_size > settings.avatar_max_bytes:
+        raise HTTPException(status_code=422, detail="Image too large (max 2MB)")
+
+    data = await file.read(settings.avatar_max_bytes + 1)
+    if len(data) > settings.avatar_max_bytes:
+        raise HTTPException(status_code=422, detail="Image too large (max 2MB)")
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+
+    try:
+        url = await upload_avatar(
+            data=data,
+            content_type=file.content_type or "",
+            user_id=current_user["id"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeError as e:
+        # Bucket missing / Storage hiccup — FE keeps the URL fallback.
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    updated = await db.update_user(current_user["id"], {"avatar_url": url})
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to save avatar")
+
+    token = _issue_jwt(updated)
+    return {"avatar_url": url, "token": token}

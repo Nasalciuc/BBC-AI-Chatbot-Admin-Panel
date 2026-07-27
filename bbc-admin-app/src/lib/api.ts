@@ -331,6 +331,16 @@ export async function updateSelf(payload: SelfUpdatePayload): Promise<SelfUpdate
   })
 }
 
+/** Upload a profile photo (multipart). Do NOT set Content-Type — browser sets boundary. */
+export async function uploadAvatar(
+  file: File,
+): Promise<{ avatar_url: string; token: string }> {
+  const fd = new FormData()
+  fd.append('file', file)
+  // Longer timeout — image upload can exceed the default 8s.
+  return apiFetch('/api/auth/me/avatar', { method: 'POST', body: fd }, 30_000)
+}
+
 export async function deactivateUser(id: string): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return updateUser(id, { is_active: false })
 }

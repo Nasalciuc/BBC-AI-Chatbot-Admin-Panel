@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     jwt_expiry_hours: int = 24
 
+    # Profile avatar uploads (Supabase Storage bucket — see AVATAR_STORAGE_SETUP.md)
+    avatar_bucket: str = "avatars"
+    avatar_max_bytes: int = 2_000_000  # 2MB
+
     # Budget
     daily_budget: float = 50.0
     per_conversation_budget: float = 0.50
