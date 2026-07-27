@@ -108,8 +108,14 @@ class Settings(BaseSettings):
 
     # Agent Presence & Routing
     max_concurrent_chats: int = 1
+    # Two DIFFERENT clocks — do not conflate them:
+    #   agent_timeout_seconds        → presence: last_seen_at (heartbeat, or an
+    #                                  agent message, which also refreshes it).
+    #   agent_silent_timeout_seconds → engagement: assigned but hasn't spoken,
+    #                                  and how fresh an agent message must be to
+    #                                  count as presence on its own.
     agent_timeout_seconds: int = 600
-    agent_silent_timeout_seconds: int = 480  # p75 of time-to-first-agent-message, 30d audit (Jun 2026)
+    agent_silent_timeout_seconds: int = 900  # was 480; an operator READING a long thread before replying must not be reverted
     # First-response timeout: operator must send first message after assignment.
     # If silent → AI takes over instantly. The 480s silent timeout above is for
     # operators who HAVE responded but then went silent mid-conversation.

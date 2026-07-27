@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, getConversations } from '@/lib/api'
 import {
   canReceiveAssignNotifications,
-  isAssignmentAlertActive,
   notifyAssignment,
   stopAssignmentAlerts,
 } from '@/lib/notify-assignment'
@@ -22,13 +21,28 @@ type HeartbeatResponse = {
 /**
  * Sends POST /api/agent/heartbeat every `intervalMs` milliseconds.
  * Runs in AuthenticatedLayout — active on ALL admin pages.
+ *
+ * Also drives the assignment alert. The alert rings for conversations that
+ * NEED ATTENTION — newly arrived, or someone wrote in one the operator never
+ * opened — and keeps ringing until every one of them has been opened. The
+ * heartbeat response only carries counts, so the attention set is derived from
+ * the operator's own active conversations instead: a count going up cannot
+ * tell an arriving client apart from a re-assignment of a chat already handled.
  */
 export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversationId?: string | null) {
   const active = useRef(true)
   const setReady = useReadyStore((s) => s.setReady)
   const role = useAuthStore((s) => s.auth.user?.role)
-  const assignedInitialized = useRef(false)
-  const prevActiveAssigned = useRef(0)
+
+  /** Conversations the operator has opened — never ring for these again. */
+  const attended = useRef<Set<string>>(new Set())
+  /** Last seen message_count per conversation, to detect new incoming messages. */
+  const seenCounts = useRef<Map<string, number>>(new Map())
+  const baselineTaken = useRef(false)
+  /** Kept in a ref so the polling loop always reads the current selection. */
+  const viewingRef = useRef<string | null>(viewingConversationId ?? null)
+
+  viewingRef.current = viewingConversationId ?? null
 
   useEffect(() => {
     active.current = true
@@ -36,33 +50,6 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     const processResponse = (res: HeartbeatResponse) => {
       if (typeof res?.is_ready === 'boolean') {
         setReady(res.is_ready)
-      }
-      if (
-        canReceiveAssignNotifications(role) &&
-        typeof res?.active_assigned === 'number'
-      ) {
-        const activeCount = res.active_assigned
-        if (assignedInitialized.current) {
-          if (activeCount > prevActiveAssigned.current) {
-            notifyAssignment()
-          } else if (
-            activeCount === 0 &&
-            prevActiveAssigned.current > 0 &&
-            isAssignmentAlertActive()
-          ) {
-            stopAssignmentAlerts()
-          }
-        }
-        prevActiveAssigned.current = activeCount
-        assignedInitialized.current = true
-      } else if (
-        canReceiveAssignNotifications(role) &&
-        typeof res?.assigned === 'number'
-      ) {
-        if (assignedInitialized.current && res.assigned > 0) {
-          notifyAssignment()
-        }
-        assignedInitialized.current = true
       }
     }
 
@@ -74,21 +61,6 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       worker = new Worker('/heartbeat-worker.js')
     } catch {
       // Worker not supported — fall back to setInterval below
-    }
-
-    if (worker && token) {
-      worker.postMessage({ type: 'start', apiBase, token, viewingConversationId: viewingConversationId || null })
-
-      worker.onmessage = (e: MessageEvent) => {
-        if (!active.current || e.data.type !== 'heartbeat') return
-        processResponse(e.data.data as HeartbeatResponse)
-      }
-
-      return () => {
-        active.current = false
-        worker?.postMessage({ type: 'stop' })
-        worker?.terminate()
-      }
     }
 
     const ping = async () => {
@@ -105,12 +77,90 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       }
     }
 
-    ping()
-    const id = setInterval(ping, intervalMs)
+    /**
+     * Recompute which of the operator's conversations still need attention and
+     * start/stop the alert accordingly.
+     */
+    const refreshAttention = async () => {
+      if (!active.current) return
+      try {
+        const res = await getConversations({
+          assigned_to: 'me',
+          status: 'active',
+          limit: '50',
+        })
+        if (!active.current) return
+        const mine = res?.data ?? []
+        const viewing = viewingRef.current
+        const needsAttention = new Set<string>()
+
+        for (const conv of mine) {
+          const prevCount = seenCounts.current.get(conv.id)
+          const count = conv.message_count ?? 0
+
+          // Whatever is open right now counts as handled.
+          if (conv.id === viewing) attended.current.add(conv.id)
+
+          if (!baselineTaken.current) {
+            // First pass after mount: everything already on screen is the
+            // baseline, so logging in never sets the alert off.
+            attended.current.add(conv.id)
+          } else if (!attended.current.has(conv.id)) {
+            const isNewArrival = prevCount === undefined
+            const gotNewMessage = prevCount !== undefined && count > prevCount
+            if (isNewArrival || gotNewMessage) needsAttention.add(conv.id)
+          }
+
+          seenCounts.current.set(conv.id, count)
+        }
+
+        // Drop message counts for conversations that left the list, but KEEP
+        // them in `attended`: a chat that was handled and later re-assigned
+        // must not ring again on its own.
+        const liveIds = new Set(mine.map((c) => c.id))
+        for (const id of seenCounts.current.keys()) {
+          if (!liveIds.has(id)) seenCounts.current.delete(id)
+        }
+
+        baselineTaken.current = true
+
+        if (needsAttention.size > 0) {
+          notifyAssignment()
+        } else {
+          stopAssignmentAlerts()
+        }
+      } catch {
+        // Never let the alert loop break the heartbeat
+      }
+    }
+
+    const alertsEnabled = canReceiveAssignNotifications(role)
+
+    if (worker && token) {
+      worker.postMessage({ type: 'start', apiBase, token, viewingConversationId: viewingConversationId || null })
+
+      worker.onmessage = (e: MessageEvent) => {
+        if (!active.current || e.data.type !== 'heartbeat') return
+        processResponse(e.data.data as HeartbeatResponse)
+      }
+    } else {
+      ping()
+    }
+
+    const ids: ReturnType<typeof setInterval>[] = []
+    if (!worker || !token) ids.push(setInterval(ping, intervalMs))
+    if (alertsEnabled) {
+      refreshAttention()
+      ids.push(setInterval(refreshAttention, intervalMs))
+    }
 
     return () => {
       active.current = false
-      clearInterval(id)
+      ids.forEach(clearInterval)
+      if (worker) {
+        worker.postMessage({ type: 'stop' })
+        worker.terminate()
+      }
     }
   }, [intervalMs, role, setReady, viewingConversationId])
 }

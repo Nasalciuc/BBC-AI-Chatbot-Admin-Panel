@@ -312,6 +312,15 @@ async def send_agent_message(
     clean_content = sanitize_message(body.content)
     msg = await add_message(conversation_id=conversation_id, role="agent", content=clean_content)
 
+    # PRESENCE: a sent reply is the strongest proof the operator is here —
+    # stronger than the 5s heartbeat, which can lapse (token refresh, network
+    # blip, sleeping worker) and then hand an actively-writing operator's
+    # conversation back to the AI. Never let a presence write block the send.
+    try:
+        await db.update_user_last_seen(_user_id)
+    except Exception as e:
+        logger.warning(f"last_seen update after agent message failed (non-fatal): {e}")
+
     _at = (conv.get("metadata") or {}).get("agent_assigned_at")
     if _at and await db.count_agent_messages_since(conversation_id, _at) == 1:
         from app.services.presence import log_activity
