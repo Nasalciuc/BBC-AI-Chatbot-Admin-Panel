@@ -601,7 +601,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 return (
                   <button
                     onClick={handleMarkLeadCreated}
-                    className="w-full py-2 rounded-lg border border-[#C9A54E] bg-[#C9A54E]/10 text-[#0B1829] text-xs font-semibold hover:bg-[#C9A54E]/20 transition-all"
+                    className="w-full py-2 rounded-lg bg-[#C9A54E] text-white text-xs font-semibold hover:bg-[#C9A54E]/90 transition-all"
                   >
                     Create Lead
                   </button>
