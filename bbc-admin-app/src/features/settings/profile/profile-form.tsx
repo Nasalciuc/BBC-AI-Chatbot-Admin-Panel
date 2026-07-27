@@ -103,6 +103,7 @@ export function ProfileForm() {
                     <Input
                       placeholder="https://example.com/photo.jpg"
                       autoFocus
+                      className="bg-background text-foreground border-input"
                       {...field}
                     />
                   </FormControl>
@@ -132,7 +133,7 @@ export function ProfileForm() {
               <FormControl>
                 <Input
                   placeholder="First Last"
-                  className="col-span-4"
+                  className="col-span-4 bg-background text-foreground border-input"
                   {...field}
                 />
               </FormControl>
@@ -151,7 +152,7 @@ export function ProfileForm() {
               <FormControl>
                 <Input
                   placeholder="+1234567890"
-                  className="col-span-4"
+                  className="col-span-4 bg-background text-foreground border-input"
                   {...field}
                 />
               </FormControl>

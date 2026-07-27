@@ -126,7 +126,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
             {/* A. Header */}
             <SheetHeader className="border-b px-6 py-4">
               <div className="flex items-center justify-between">
-                <SheetTitle className="text-lg font-semibold text-[#0B1829]">
+                <SheetTitle className="text-lg font-semibold text-foreground">
                   {lead.visitor_name ?? 'Anonymous'}
                 </SheetTitle>
                 <div className="flex items-center gap-2">
@@ -145,7 +145,7 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
               {(lead.origin_code || lead.destination_code) && (
                 <div className="px-6 py-4">
                   <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">Route</h3>
-                  <div className="flex items-center gap-2 text-[#0B1829] font-medium">
+                  <div className="flex items-center gap-2 text-foreground font-medium">
                     <span className="text-lg">{lead.origin_code ?? '—'}</span>
                     <Plane className="w-4 h-4 text-muted-foreground" />
                     <span className="text-lg">{lead.destination_code ?? '—'}</span>
