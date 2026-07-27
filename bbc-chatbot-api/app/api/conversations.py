@@ -523,6 +523,82 @@ async def reassign_conversation(
     return {"success": True, "assigned_to": body.agent_id}
 
 
+# ── Blocklist (abuse) ──
+# Roles allowed to block/unblock. Deliberately NOT the same set as reassign:
+# supervisors and PMs moderate abuse, sales/support/qa do not.
+_BLOCK_ROLES = ("owner", "admin", "dev", "supervisor", "project_manager")
+
+
+class BlockRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/conversations/{conversation_id}/block")
+async def block_conversation_visitor(
+    conversation_id: str,
+    body: BlockRequest | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """Block this visitor's phone + email (and record their IP) in one action.
+
+    Only phone/email actually refuse future visitors; the IP row is recorded for
+    audit and expires (see app/services/blocklist.py).
+    """
+    if user.get("role") not in _BLOCK_ROLES:
+        raise HTTPException(403, "Not allowed to block visitors")
+
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+
+    from app.services.blocklist import block_from_conversation
+
+    blocked = await block_from_conversation(
+        conv,
+        blocked_by_id=user.get("id"),
+        reason=(body.reason if body else None),
+    )
+    if not blocked:
+        raise HTTPException(400, "Nothing to block — no phone, email or IP on this conversation")
+
+    logger.warning(
+        f"[blocklist] BLOCK conv={conversation_id} kinds={blocked} "
+        f"by={user.get('email')} (role={user.get('role')})"
+    )
+    return {"success": True, "blocked": blocked}
+
+
+@router.post("/conversations/{conversation_id}/unblock")
+async def unblock_conversation_visitor(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Remove this conversation's phone / email / IP from the blocklist."""
+    if user.get("role") not in _BLOCK_ROLES:
+        raise HTTPException(403, "Not allowed to unblock visitors")
+
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+
+    from app.services.blocklist import unblock_from_conversation
+
+    removed = await unblock_from_conversation(conv)
+    logger.warning(
+        f"[blocklist] UNBLOCK conv={conversation_id} kinds={removed} "
+        f"by={user.get('email')} (role={user.get('role')})"
+    )
+    return {"success": True, "unblocked": removed}
+
+
+@router.get("/blocklist")
+async def list_blocklist(user: dict = Depends(get_current_user)):
+    """Current blocklist entries (management view)."""
+    if user.get("role") not in _BLOCK_ROLES:
+        raise HTTPException(403, "Not allowed to view the blocklist")
+    return {"success": True, "data": await db.blocklist_list()}
+
+
 # ── Operator History ──
 
 

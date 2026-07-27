@@ -5,7 +5,12 @@ import {
   Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe,
 } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
-import { getConversation, sendAgentMessage, apiFetch } from '@/lib/api'
+import {
+  getConversation,
+  sendAgentMessage,
+  apiFetch,
+  blockConversationVisitor,
+} from '@/lib/api'
 import type { ApiError } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ReassignPanel } from '@/components/reassign-panel'
@@ -40,8 +45,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const isAdmin = ['owner', 'admin', 'dev'].includes(role)
   const canViewHistory = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const permissions = usePermissions(role)
+  const canBlockVisitor = ['owner', 'admin', 'dev', 'supervisor', 'project_manager'].includes(role)
   const [copied, setCopied]           = useState(false)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
+  const [blockDialogOpen, setBlockDialogOpen] = useState(false)
+  const [blocking, setBlocking] = useState(false)
+  const [blockResult, setBlockResult] = useState<string | null>(null)
   const [input, setInput]             = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
@@ -205,6 +214,24 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       onConversationChange?.()
     } catch (_err) {
       // close failed silently
+    }
+  }
+
+  // Block visitor — records phone + email + IP; only phone/email refuse future chats
+  const handleBlockConfirm = async () => {
+    if (blocking) return
+    setBlocking(true)
+    setBlockResult(null)
+    try {
+      const res = await blockConversationVisitor(conversationId)
+      const kinds = res.blocked?.length ? res.blocked.join(', ') : 'nothing'
+      setBlockResult(`Blocked: ${kinds}`)
+      setBlockDialogOpen(false)
+    } catch (err) {
+      const msg = (err as ApiError)?.message ?? 'Failed to block visitor.'
+      setBlockResult(msg)
+    } finally {
+      setBlocking(false)
     }
   }
 
@@ -545,6 +572,31 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 confirmText="Close"
                 destructive
                 handleConfirm={handleCloseConfirm}
+              />
+            </div>
+          )}
+
+          {/* Block visitor — moderation action, privileged roles only */}
+          {canBlockVisitor && (
+            <div className="px-4 pb-2">
+              <button
+                onClick={() => setBlockDialogOpen(true)}
+                disabled={blocking}
+                className="w-full py-2 rounded-lg border border-red-200 text-red-500 text-xs hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                {blocking ? 'Blocking…' : 'Block Visitor'}
+              </button>
+              {blockResult && (
+                <p className="mt-1 text-[10px] text-gray-500 text-center">{blockResult}</p>
+              )}
+              <ConfirmDialog
+                open={blockDialogOpen}
+                onOpenChange={setBlockDialogOpen}
+                title="Block this visitor?"
+                desc="Block this visitor's IP, phone and email? They will no longer be able to chat or create leads. Note: a shared IP alone never blocks anyone — only the phone and email do."
+                confirmText="Block"
+                destructive
+                handleConfirm={handleBlockConfirm}
               />
             </div>
           )}
