@@ -27,20 +27,30 @@ function _playFallbackBeep(): void {
   }
 }
 
+/**
+ * Start (or keep) the alert. Safe to call repeatedly — the caller re-asserts
+ * "work is still unattended" on every poll, so an already-playing ring is left
+ * alone instead of being restarted from the top.
+ */
 export function notifyAssignment(info?: { name?: string }): void {
+  const alreadyAlerting = _alertsActive
   _alertsActive = true
 
-  // 1. Sound LOOP
+  // 1. Sound LOOP — one Audio instance, never stacked
   try {
     if (!_ringAudio) {
       _ringAudio = new Audio('/notification.wav')
       _ringAudio.loop = true
     }
-    _ringAudio.currentTime = 0
-    _ringAudio.play().catch(() => {
-      // Fallback: programmatic beep if wav fails (404, autoplay, codec)
-      _playFallbackBeep()
-    })
+    // The autoplay-unlock path plays muted; make sure a real ring is audible.
+    _ringAudio.volume = 1
+    if (_ringAudio.paused) {
+      _ringAudio.currentTime = 0
+      _ringAudio.play().catch(() => {
+        // Fallback: programmatic beep if wav fails (404, autoplay, codec)
+        _playFallbackBeep()
+      })
+    }
   } catch {
     /* no audio */
   }
@@ -55,8 +65,8 @@ export function notifyAssignment(info?: { name?: string }): void {
     }, 800)
   }
 
-  // 3. Browser notification
-  if ('Notification' in window && Notification.permission === 'granted') {
+  // 3. Browser notification — once per alert, not once per poll
+  if (!alreadyAlerting && 'Notification' in window && Notification.permission === 'granted') {
     try {
       const n = new Notification('🔔 NEW CHAT — respond in 30 seconds!', {
         body: info?.name ? `Client: ${info.name}` : 'A client is waiting!',

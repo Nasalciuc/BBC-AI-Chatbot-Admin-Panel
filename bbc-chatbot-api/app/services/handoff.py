@@ -30,8 +30,12 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
 
     Returns True if:
       - No agent assigned, OR
-      - Agent's last_seen_at is older than agent_timeout_seconds, OR
-      - Agent hasn't sent a message in agent_silent_timeout_seconds
+      - Agent's last_seen_at is older than agent_timeout_seconds AND they have
+        not sent a message within agent_silent_timeout_seconds, OR
+      - Agent was assigned but never spoke within agent_silent_timeout_seconds
+
+    A recent agent message counts as presence on its own: an operator who is
+    replying is demonstrably here even if their heartbeat lapsed.
     """
     conv = await db.get_conversation_simple(conversation_id)
     if not conv:
@@ -47,25 +51,35 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
         return True
 
     last_seen = agent.get("last_seen_at")
-    if not last_seen:
-        return True
 
     # Parse last_seen (ISO format from Supabase)
-    try:
-        if isinstance(last_seen, str):
-            # Handle both Z suffix and +00:00
-            last_seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
-        else:
-            last_seen_dt = last_seen
-    except (ValueError, TypeError):
-        return True
+    last_seen_dt = None
+    if last_seen:
+        try:
+            if isinstance(last_seen, str):
+                # Handle both Z suffix and +00:00
+                last_seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+            else:
+                last_seen_dt = last_seen
+        except (ValueError, TypeError):
+            last_seen_dt = None
+
+    last_agent_msg = await db.get_last_agent_message_time(conversation_id)
+    if last_agent_msg is not None and last_agent_msg.tzinfo is None:
+        last_agent_msg = last_agent_msg.replace(tzinfo=timezone.utc)
 
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.agent_timeout_seconds)
-    if last_seen_dt < cutoff:
-        return True  # heartbeat expired
+    if last_seen_dt is None or last_seen_dt < cutoff:
+        # Heartbeat missing/expired. A message sent inside the silence window
+        # still proves presence — the operator is typing, not gone.
+        msg_cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=settings.agent_silent_timeout_seconds
+        )
+        if last_agent_msg is not None and last_agent_msg >= msg_cutoff:
+            return False
+        return True
 
     # Check agent_silent_timeout: has the agent actually responded?
-    last_agent_msg = await db.get_last_agent_message_time(conversation_id)
     if last_agent_msg is None:
         # Agent was assigned but never sent a message.
         # Prefer agent_assigned_at (cycle start) — updated_at moves on ANY
