@@ -4,8 +4,12 @@ Stores what the client is currently typing, per conversation.
 Uses Redis SETEX for automatic TTL — no manual cleanup needed.
 Works correctly with multiple Railway workers (shared state).
 
-Key format: bbc:typing:{conv_id}
-TTL: 5 minutes (safety fallback — see _TYPING_TTL comment)
+Two independent directions, two key namespaces:
+  client → operator : bbc:typing:{conv_id}        (text is shown to the operator)
+  operator → client : bbc:typing:agent:{conv_id}  (only a name, shown in the widget)
+
+TTL: 5 minutes for the client direction (see _TYPING_TTL), 10s for the operator
+direction (see _AGENT_TYPING_TTL).
 """
 import json
 import logging
@@ -23,6 +27,13 @@ _TYPING_TTL = 300  # 5 minutes — safety fallback for orphan state when
                    # indicator from disappearing during natural typing
                    # pauses (previously 10s caused the operator to lose
                    # visibility on what the client was writing).
+
+_AGENT_TYPING_TTL = 10  # Operator → visitor direction is deliberately SHORT.
+                        # The visitor sees a live "is typing…" claim, so a key
+                        # that outlives the actual typing tells the visitor a
+                        # lie. The admin panel refreshes it ~1/s while the
+                        # operator types, so 10s covers normal pauses and self-
+                        # heals if the operator closes the tab mid-sentence.
 
 
 class TypingManager:
@@ -84,6 +95,54 @@ class TypingManager:
             return {"is_typing": True, "text": parsed.get("text", "")}
         except Exception as e:
             logger.warning(f"[typing] get_typing error: {e}")
+            return None
+
+    # ── Operator → visitor direction (separate key, never mixed with above) ──
+
+    @staticmethod
+    def _agent_key(conv_id: str) -> str:
+        return f"bbc:typing:agent:{conv_id}"
+
+    async def set_agent_typing(self, conv_id: str, name: str = "") -> None:
+        """Record that the operator is typing. SETEX resets TTL on every call."""
+        r = self._get_client()
+        if not r:
+            return
+        try:
+            await r.setex(
+                self._agent_key(conv_id),
+                _AGENT_TYPING_TTL,
+                json.dumps({"name": name}),
+            )
+        except Exception as e:
+            logger.warning(f"[typing] set_agent_typing error: {e}")
+
+    async def clear_agent_typing(self, conv_id: str) -> None:
+        """Remove operator typing state (message sent or input cleared)."""
+        r = self._get_client()
+        if not r:
+            return
+        try:
+            await r.delete(self._agent_key(conv_id))
+        except Exception as e:
+            logger.warning(f"[typing] clear_agent_typing error: {e}")
+
+    async def get_agent_typing(self, conv_id: str) -> Optional[dict]:
+        """Operator typing state for the widget. None if not typing or expired.
+
+        Only the operator's name travels to the visitor — never the draft text.
+        """
+        r = self._get_client()
+        if not r:
+            return None
+        try:
+            data = await r.get(self._agent_key(conv_id))
+            if not data:
+                return None
+            parsed = json.loads(data)
+            return {"is_typing": True, "name": parsed.get("name", "")}
+        except Exception as e:
+            logger.warning(f"[typing] get_agent_typing error: {e}")
             return None
 
 

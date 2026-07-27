@@ -147,6 +147,21 @@ export async function sendAgentMessage(
   return res.data
 }
 
+/** Report that the operator is typing — the widget shows "<name> is typing…". */
+export function postAgentTyping(conversationId: string, text: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/agent-typing`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+}
+
+export function clearAgentTyping(conversationId: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/agent-typing`, {
+    method: 'DELETE',
+  })
+}
+
 export async function reassignConversation(
   conversationId: string,
   agentId: string,

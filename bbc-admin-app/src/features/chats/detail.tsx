@@ -10,6 +10,8 @@ import {
   sendAgentMessage,
   apiFetch,
   blockConversationVisitor,
+  postAgentTyping,
+  clearAgentTyping,
 } from '@/lib/api'
 import type { ApiError } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -58,6 +60,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [markLeadError, setMarkLeadError] = useState<string | null>(null)
   const bottomRef             = useRef<HTMLDivElement>(null)
   const taRef                 = useRef<HTMLTextAreaElement>(null)
+  const lastTypingSentRef     = useRef<number>(0)
   const MAX_TA_ROWS           = 6
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
@@ -186,9 +189,38 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
   useEffect(() => { autoGrow() }, [input])
 
+  /**
+   * Mirror of the widget's client→operator typing discipline, in the other
+   * direction: throttled while typing, cleared the moment the box is empty.
+   * The backend key is short-lived, so a silent operator stops the visitor's
+   * indicator on its own.
+   */
+  const reportTyping = (text: string) => {
+    if (!text.trim()) {
+      lastTypingSentRef.current = 0
+      clearAgentTyping(conversationId).catch(() => {})
+      return
+    }
+    const now = Date.now()
+    if (now - lastTypingSentRef.current > 1000) {
+      lastTypingSentRef.current = now
+      postAgentTyping(conversationId, text).catch(() => {})
+    }
+  }
+
+  // Leaving the conversation must not leave a stale "is typing…" behind.
+  useEffect(() => {
+    return () => {
+      lastTypingSentRef.current = 0
+      clearAgentTyping(conversationId).catch(() => {})
+    }
+  }, [conversationId])
+
   const handleSend = async () => {
     if (!input.trim() || sending) return
     setSending(true)
+    lastTypingSentRef.current = 0
+    clearAgentTyping(conversationId).catch(() => {})
     try {
       await sendAgentMessage(conversationId, input.trim())
       setInput('')
@@ -491,7 +523,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <textarea
                   ref={taRef}
                   value={input}
-                  onChange={(e) => { setInput(e.target.value); autoGrow() }}
+                  onChange={(e) => { setInput(e.target.value); autoGrow(); reportTyping(e.target.value) }}
                   onKeyDown={handleKeyDown}
                   placeholder="Type a reply as agent..."
                   rows={1}
