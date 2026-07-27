@@ -29,14 +29,14 @@ interface Props {
 
 const ROLE_STYLES: Record<string, { bubble: string; align: string; icon: React.ReactNode }> = {
   user:   { bubble: 'bg-[#0B1829] text-white rounded-2xl rounded-br-sm',                                      align: 'justify-end',    icon: <User className="w-4 h-4" /> },
-  ai:     { bubble: 'bg-[#C9A54E]/10 border border-[#C9A54E]/30 text-gray-800 rounded-2xl rounded-bl-sm',     align: 'justify-start',  icon: <Bot className="w-4 h-4 text-[#C9A54E]" /> },
-  agent:  { bubble: 'bg-gray-100 text-gray-800 rounded-2xl rounded-bl-sm',                                     align: 'justify-start',  icon: <Headphones className="w-4 h-4 text-gray-500" /> },
-  system: { bubble: 'bg-gray-50 text-gray-500 text-xs italic rounded-lg border border-dashed border-gray-200', align: 'justify-center', icon: <Info className="w-3 h-3" /> },
+  ai:     { bubble: 'bg-[#C9A54E]/10 border border-[#C9A54E]/30 text-foreground rounded-2xl rounded-bl-sm',     align: 'justify-start',  icon: <Bot className="w-4 h-4 text-[#C9A54E]" /> },
+  agent:  { bubble: 'bg-muted text-foreground rounded-2xl rounded-bl-sm',                                     align: 'justify-start',  icon: <Headphones className="w-4 h-4 text-muted-foreground" /> },
+  system: { bubble: 'bg-muted text-muted-foreground text-xs italic rounded-lg border border-dashed border-border', align: 'justify-center', icon: <Info className="w-3 h-3" /> },
 }
 
 const TIER_COLORS: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border-yellow-300',
-  silver: 'bg-gray-100 text-gray-700 border-gray-300',
+  silver: 'bg-muted text-muted-foreground border-border',
   bronze: 'bg-orange-100 text-orange-800 border-orange-300',
 }
 
@@ -57,6 +57,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [markingLead, setMarkingLead] = useState(false)
   const [markLeadError, setMarkLeadError] = useState<string | null>(null)
   const bottomRef             = useRef<HTMLDivElement>(null)
+  const taRef                 = useRef<HTMLTextAreaElement>(null)
+  const MAX_TA_ROWS           = 6
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
   const [accumMsgs, setAccumMsgs] = useState<Message[]>([])
@@ -172,6 +174,18 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
 
+  // Agent reply box: grow 1→6 rows, then scroll internally.
+  const autoGrow = () => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const lineHeight = parseInt(getComputedStyle(el).lineHeight || '20', 10)
+    const maxH = lineHeight * MAX_TA_ROWS
+    el.style.height = `${Math.min(el.scrollHeight, maxH)}px`
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+  }
+  useEffect(() => { autoGrow() }, [input])
+
   const handleSend = async () => {
     if (!input.trim() || sending) return
     setSending(true)
@@ -257,7 +271,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     setTimeout(() => setCopied(false), 1500)
   }
 
-  if (loading) return <div className="h-full flex items-center justify-center text-gray-400 text-sm">Loading...</div>
+  if (loading) return <div className="h-full flex items-center justify-center text-muted-foreground text-sm">Loading...</div>
 
   // Bug 5: differentiate "genuine not found" from "transient error".
   // The backend endpoint may return {success:false, data:null} with HTTP 200
@@ -266,9 +280,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     const status = (error as ApiError)?.status
     if (status === 403) {
       return (
-        <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center">
-          <p className="text-lg font-semibold text-gray-600 mb-2">Access restricted</p>
-          <p className="text-sm text-gray-400">
+        <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
+          <p className="text-lg font-semibold text-muted-foreground mb-2">Access restricted</p>
+          <p className="text-sm text-muted-foreground">
             This conversation belongs to a different tunnel or team.
           </p>
           <button onClick={onClose} className="mt-4 text-sm text-[#C9A54E] hover:underline">Back to chats</button>
@@ -276,9 +290,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       )
     }
     return (
-      <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center">
-        <p className="text-lg font-semibold text-gray-600 mb-2">Couldn't load conversation</p>
-        <p className="text-sm text-gray-400">
+      <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
+        <p className="text-lg font-semibold text-muted-foreground mb-2">Couldn't load conversation</p>
+        <p className="text-sm text-muted-foreground">
           Something went wrong loading this conversation. Please try again.
         </p>
         <button onClick={() => refetch()} className="mt-4 text-sm text-[#C9A54E] hover:underline">Retry</button>
@@ -287,9 +301,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   if (!conv) return (
-    <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center">
-      <p className="text-lg font-semibold text-gray-600 mb-2">Conversation not found</p>
-      <p className="text-sm text-gray-400">
+    <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
+      <p className="text-lg font-semibold text-muted-foreground mb-2">Conversation not found</p>
+      <p className="text-sm text-muted-foreground">
         It may have been deleted or moved. Return to the list to see your current chats.
       </p>
       <button onClick={onClose} className="mt-4 text-sm text-[#C9A54E] hover:underline">Back to chats</button>
@@ -300,13 +314,13 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
   if (!permissions.canReadMessages) {
     return (
-      <div className='h-full p-6 flex flex-col gap-4 bg-white'>
+      <div className='h-full p-6 flex flex-col gap-4 bg-card'>
         <div className='bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800'>
           ⚠️ You are viewing this conversation as a supervisor.
           Message content is not visible. You can reassign this conversation.
         </div>
 
-        <div className='space-y-2 text-sm text-gray-700'>
+        <div className='space-y-2 text-sm text-foreground'>
           <p><strong>Visitor:</strong> {conv.visitor_name ?? 'Anonymous'}</p>
           <p><strong>Tunnel:</strong> {conv.tunnel}</p>
           <p><strong>Status:</strong> {conv.status}</p>
@@ -328,7 +342,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   return (
-    <div className="h-full flex min-w-0 overflow-hidden bg-white text-gray-900">
+    <div className="h-full flex min-w-0 overflow-hidden bg-card text-foreground">
 
       {/* LEFT COLUMN: Chat (header + messages + input) */}
       <div className="flex min-w-0 flex-1 basis-0 flex-col">
@@ -339,7 +353,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <div className="flex items-center gap-2">
               <h2 className="text-base font-semibold text-white truncate">
                 {conv.status === 'closed'
-                  ? <span className="text-gray-400 italic">Closed conversation</span>
+                  ? <span className="text-muted-foreground italic">Closed conversation</span>
                   : (role === 'supervisor'
                       ? 'Anonymous Visitor'  // QA: no customer-identifying text in the header
                       : (conv.visitor_name ?? 'Anonymous Visitor'))
@@ -354,17 +368,17 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             {/* QA supervisors see NO personal data in the header. */}
             <div className="flex items-center gap-4 mt-1.5">
               {role !== 'supervisor' && conv.visitor_phone && (
-                <span className="flex items-center gap-1 text-xs text-gray-300">
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Phone className="w-3 h-3" />{conv.visitor_phone}
                 </span>
               )}
               {role !== 'supervisor' && conv.visitor_email && (
-                <span className="flex items-center gap-1 text-xs text-gray-400">
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Mail className="w-3 h-3" />{conv.visitor_email}
                 </span>
               )}
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-gray-400">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-muted-foreground">
               <span className="shrink-0">{allMessages.length} messages</span>
               {role !== 'supervisor' && (
                 <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
@@ -374,27 +388,27 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   <OperatorBadge conversationId={conversationId} />
                 </span>
               )}
-              <button onClick={copyId} className="flex items-center gap-0.5 hover:text-gray-200 transition">
+              <button onClick={copyId} className="flex items-center gap-0.5 hover:text-foreground transition">
                 {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 {conversationId.slice(0, 8)}...
               </button>
             </div>
           </div>
-          <button onClick={onClose} className="ml-3 p-1.5 rounded-lg hover:bg-white/10 text-gray-300 hover:text-white transition">
+          <button onClick={onClose} className="ml-3 p-1.5 rounded-lg hover:bg-card/10 text-muted-foreground hover:text-white transition">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-gray-50">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-muted">
           {allMessages.length === 0 ? (
-            <div className="text-center text-gray-400 text-sm py-8">No messages</div>
+            <div className="text-center text-muted-foreground text-sm py-8">No messages</div>
           ) : allMessages.map(msg => {
             const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system
             return (
               <div key={msg.id} className={`flex ${style.align} gap-2`}>
                 {msg.role !== 'user' && (
-                  <div className="w-7 h-7 rounded-full bg-white border border-gray-200 flex items-center justify-center shrink-0 mt-1 shadow-sm">
+                  <div className="w-7 h-7 rounded-full bg-card border border-border flex items-center justify-center shrink-0 mt-1 shadow-sm">
                     {style.icon}
                   </div>
                 )}
@@ -419,7 +433,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         </div>
 
         {/* Input + Actions + Status */}
-        <div className="shrink-0 border-t border-gray-200 bg-white">
+        <div className="shrink-0 border-t border-border bg-card">
           {/* Typing preview — shown when client is composing a message */}
           {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl">
@@ -434,7 +448,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </span>
               </div>
               {typingData.text && (
-                <p className="text-sm text-gray-600 italic leading-relaxed">
+                <p className="text-sm text-muted-foreground italic leading-relaxed">
                   &ldquo;{typingData.text}&rdquo;
                 </p>
               )}
@@ -449,22 +463,22 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   <button
                     type="button"
                     onClick={() => setShowEmojiPicker(v => !v)}
-                    className="h-full px-3 rounded-xl border border-gray-200 text-gray-600 hover:text-[#0B1829] hover:border-gray-300 transition-all"
+                    className="h-full px-3 rounded-xl border border-border text-muted-foreground hover:text-[#0B1829] hover:border-border transition-all"
                     aria-label="Insert emoji"
                     title="Insert emoji"
                   >
                     <Smile className="w-4 h-4" />
                   </button>
                   {showEmojiPicker && (
-                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg">
-                      <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-400">Quick emoji</p>
+                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-56 rounded-xl border border-border bg-card p-2 shadow-lg">
+                      <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Quick emoji</p>
                       <div className="grid grid-cols-5 gap-1">
                         {QUICK_EMOJIS.map((emoji) => (
                           <button
                             key={emoji}
                             type="button"
                             onClick={() => handleInsertEmoji(emoji)}
-                            className="rounded-md px-2 py-1.5 text-lg hover:bg-gray-100"
+                            className="rounded-md px-2 py-1.5 text-lg hover:bg-accent"
                             aria-label={`Insert ${emoji}`}
                           >
                             {emoji}
@@ -474,9 +488,16 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     </div>
                   )}
                 </div>
-                <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
-                  placeholder="Type a reply as agent..." rows={1} disabled={sending}
-                  className="flex-1 resize-none rounded-xl border border-gray-200 bg-white text-gray-900 px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-gray-400 disabled:opacity-50" />
+                <textarea
+                  ref={taRef}
+                  value={input}
+                  onChange={(e) => { setInput(e.target.value); autoGrow() }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type a reply as agent..."
+                  rows={1}
+                  disabled={sending}
+                  className="flex-1 resize-none rounded-xl border border-input bg-background text-foreground px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-muted-foreground disabled:opacity-50"
+                />
                 <button onClick={handleSend} disabled={!input.trim() || sending}
                   className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0B1829] text-white text-sm font-medium hover:bg-[#0B1829]/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0">
                   <Send className="w-4 h-4" />{sending ? '...' : 'Send'}
@@ -528,7 +549,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   return (
                     <button
                       disabled
-                      className="w-full py-2 rounded-lg border border-gray-300 bg-gray-50 text-gray-500 text-xs font-medium cursor-wait"
+                      className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-wait"
                     >
                       Creating...
                     </button>
@@ -539,7 +560,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     <button
                       disabled
                       title={`Missing: ${missing.join(', ')}`}
-                      className="w-full py-2 rounded-lg border border-gray-200 bg-gray-50 text-gray-400 text-xs font-medium cursor-not-allowed"
+                      className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-not-allowed"
                     >
                       Create Lead
                     </button>
@@ -561,7 +582,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           {activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="px-4 pb-2">
               <button onClick={() => setCloseDialogOpen(true)}
-                className="w-full py-2 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50 hover:text-red-500 transition-all">
+                className="w-full py-2 rounded-lg border border-border text-muted-foreground text-xs hover:bg-accent hover:text-red-500 transition-all">
                 Close Conversation
               </button>
               <ConfirmDialog
@@ -587,7 +608,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 {blocking ? 'Blocking…' : 'Block Visitor'}
               </button>
               {blockResult && (
-                <p className="mt-1 text-[10px] text-gray-500 text-center">{blockResult}</p>
+                <p className="mt-1 text-[10px] text-muted-foreground text-center">{blockResult}</p>
               )}
               <ConfirmDialog
                 open={blockDialogOpen}
@@ -602,10 +623,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           )}
 
           {/* Status bar */}
-          <div className="px-4 py-2 flex min-w-0 items-center justify-between gap-2 text-xs text-gray-400 border-t border-gray-50">
+          <div className="px-4 py-2 flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground border-t border-border">
             <span className="min-w-0 truncate">
-              Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-gray-500'}`}>{conv.status}</span>
-              {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-gray-600'}`}>{conv.mode}</span>
+              Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-muted-foreground'}`}>{conv.status}</span>
+              {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-muted-foreground'}`}>{conv.mode}</span>
               {' · '}Client:
               <span className={`ml-1 inline-flex items-center gap-1 font-medium ${clientPresence.text}`}>
                 <span className={`inline-block h-2 w-2 rounded-full ${clientPresence.dot}`} />
@@ -631,25 +652,25 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
       {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
       {(isAdmin || role === 'qa' || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
-      <div className="hidden h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-gray-200 bg-gray-50 xl:block">
+      <div className="hidden h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-muted xl:block">
         <div className="p-4 space-y-4">
 
           {/* AI Summary Card */}
           {conv.summary && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
                 <FileText className="w-3.5 h-3.5" />
                 AI Summary
               </div>
-              <p className="text-sm text-gray-700 leading-relaxed">{conv.summary}</p>
+              <p className="text-sm text-foreground leading-relaxed">{conv.summary}</p>
             </div>
           )}
 
           {/* Lead Score Card */}
           {lead && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
               <div className="flex items-center justify-between mb-2">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <TrendingUp className="w-3.5 h-3.5" />
                   Lead Score
                 </span>
@@ -658,51 +679,51 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all ${
-                      lead.score >= 80 ? 'bg-yellow-500' : lead.score >= 50 ? 'bg-gray-400' : 'bg-orange-400'
+                      lead.score >= 80 ? 'bg-yellow-500' : lead.score >= 50 ? 'bg-muted-foreground' : 'bg-orange-400'
                     }`}
                     style={{ width: `${lead.score}%` }}
                   />
                 </div>
-                <span className="text-sm font-bold text-gray-700">{lead.score}</span>
+                <span className="text-sm font-bold text-foreground">{lead.score}</span>
               </div>
-              <p className="text-[10px] text-gray-400 mt-1">
-                Status: <span className="font-medium text-gray-600">{lead.status}</span>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Status: <span className="font-medium text-muted-foreground">{lead.status}</span>
               </p>
             </div>
           )}
 
           {/* Route Card */}
           {lead && (lead.origin_code || lead.destination_code) && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
                 <Plane className="w-3.5 h-3.5" />
                 Route
               </div>
               {lead.route_display ? (
-                <p className="text-sm font-semibold text-gray-800">{lead.route_display}</p>
+                <p className="text-sm font-semibold text-foreground">{lead.route_display}</p>
               ) : (
-                <p className="text-sm text-gray-700">{lead.origin_code ?? '?'} → {lead.destination_code ?? '?'}</p>
+                <p className="text-sm text-foreground">{lead.origin_code ?? '?'} → {lead.destination_code ?? '?'}</p>
               )}
-              <div className="mt-2 space-y-1 text-xs text-gray-500">
+              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 {lead.trip_type && lead.trip_type !== 'round_trip' && (
-                  <p>Type: <span className="text-gray-700">{lead.trip_type.replace(/_/g, ' ')}</span></p>
+                  <p>Type: <span className="text-foreground">{lead.trip_type.replace(/_/g, ' ')}</span></p>
                 )}
-                <p>Class: <span className="text-gray-700 capitalize">{lead.cabin_class}</span></p>
+                <p>Class: <span className="text-foreground capitalize">{lead.cabin_class}</span></p>
               </div>
             </div>
           )}
 
           {/* Dates Card */}
           {lead && (lead.departure_date || lead.return_date) && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
                 <Calendar className="w-3.5 h-3.5" />
                 Dates
               </div>
-              <div className="space-y-1 text-sm text-gray-700">
+              <div className="space-y-1 text-sm text-foreground">
                 {lead.departure_date && (
                   <p>Depart: <span className="font-medium">
                     {new Date(lead.departure_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -722,12 +743,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
           {/* Passengers Card */}
           {lead?.passengers && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
                 <Users className="w-3.5 h-3.5" />
                 Passengers
               </div>
-              <p className="text-sm font-medium text-gray-700">
+              <p className="text-sm font-medium text-foreground">
                 {lead.passengers} {lead.passengers === 1 ? 'traveler' : 'travelers'}
               </p>
             </div>
@@ -736,9 +757,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           {(() => {
             const site = conv?.metadata?.site as string | undefined
             return site ? (
-              <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+              <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-500">Source</span>
+                  <span className="text-sm text-muted-foreground">Source</span>
                   <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
                     site === 'bbc' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
                   }`}>{site.toUpperCase()}</span>
@@ -752,66 +773,66 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             const m = conv.metadata as Record<string, string>
             if (!m.utm_source && !m.gclid && !m.fbclid && !m.referrer && !m.page_url) return null
             return (
-              <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+              <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
                   <Globe className="w-3.5 h-3.5" />
                   Acquisition Details
                 </div>
                 <div className="space-y-1.5 text-xs">
                   {m.utm_source && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Source</span>
-                      <span className="text-gray-700 font-medium">{m.utm_source}</span>
+                      <span className="text-muted-foreground">Source</span>
+                      <span className="text-foreground font-medium">{m.utm_source}</span>
                     </div>
                   )}
                   {m.utm_medium && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Medium</span>
-                      <span className="text-gray-700 font-medium">{m.utm_medium}</span>
+                      <span className="text-muted-foreground">Medium</span>
+                      <span className="text-foreground font-medium">{m.utm_medium}</span>
                     </div>
                   )}
                   {m.utm_campaign && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Campaign</span>
-                      <span className="text-gray-700 truncate max-w-[160px]" title={m.utm_campaign}>{m.utm_campaign}</span>
+                      <span className="text-muted-foreground">Campaign</span>
+                      <span className="text-foreground truncate max-w-[160px]" title={m.utm_campaign}>{m.utm_campaign}</span>
                     </div>
                   )}
                   {m.utm_term && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Keyword</span>
-                      <span className="text-gray-700 truncate max-w-[160px]" title={m.utm_term}>{m.utm_term}</span>
+                      <span className="text-muted-foreground">Keyword</span>
+                      <span className="text-foreground truncate max-w-[160px]" title={m.utm_term}>{m.utm_term}</span>
                     </div>
                   )}
                   {m.gclid && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Google Ads</span>
+                      <span className="text-muted-foreground">Google Ads</span>
                       <span className="text-green-600 font-medium">✓ gclid</span>
                     </div>
                   )}
                   {m.fbclid && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Facebook Ads</span>
+                      <span className="text-muted-foreground">Facebook Ads</span>
                       <span className="text-blue-600 font-medium">✓ fbclid</span>
                     </div>
                   )}
                   {m.referrer && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Referrer</span>
-                      <span className="text-gray-700 truncate max-w-[160px]">
+                      <span className="text-muted-foreground">Referrer</span>
+                      <span className="text-foreground truncate max-w-[160px]">
                         {(() => { try { return new URL(m.referrer).hostname } catch { return m.referrer } })()}
                       </span>
                     </div>
                   )}
                   {m.page_url && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Landing</span>
-                      <span className="text-gray-700 truncate max-w-[160px]">{m.page_url.replace(/^https?:\/\/[^/]+/, '') || '/'}</span>
+                      <span className="text-muted-foreground">Landing</span>
+                      <span className="text-foreground truncate max-w-[160px]">{m.page_url.replace(/^https?:\/\/[^/]+/, '') || '/'}</span>
                     </div>
                   )}
                   {m.google_analytics_client_id && (
                     <div className="flex justify-between">
-                      <span className="text-gray-400">GA Client</span>
-                      <span className="text-gray-700 truncate max-w-[120px]">{m.google_analytics_client_id}</span>
+                      <span className="text-muted-foreground">GA Client</span>
+                      <span className="text-foreground truncate max-w-[120px]">{m.google_analytics_client_id}</span>
                     </div>
                   )}
                 </div>
@@ -820,80 +841,80 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           })()}
 
           {/* Contact Card */}
-          <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+          <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
               <User className="w-3.5 h-3.5" />
               Contact
             </div>
             <div className="space-y-1.5 text-sm">
               {conv.visitor_name && (
-                <p className="flex items-center gap-2 text-gray-700">
-                  <User className="w-3 h-3 text-gray-400 shrink-0" />
+                <p className="flex items-center gap-2 text-foreground">
+                  <User className="w-3 h-3 text-muted-foreground shrink-0" />
                   {conv.visitor_name}
                 </p>
               )}
               {conv.visitor_phone && (
-                <p className="flex items-center gap-2 text-gray-700">
-                  <Phone className="w-3 h-3 text-gray-400 shrink-0" />
+                <p className="flex items-center gap-2 text-foreground">
+                  <Phone className="w-3 h-3 text-muted-foreground shrink-0" />
                   <a href={`tel:${conv.visitor_phone}`} className="text-[#C9A54E] hover:underline">
                     {conv.visitor_phone}
                   </a>
                 </p>
               )}
               {conv.visitor_email && (
-                <p className="flex items-center gap-2 text-gray-700">
-                  <Mail className="w-3 h-3 text-gray-400 shrink-0" />
+                <p className="flex items-center gap-2 text-foreground">
+                  <Mail className="w-3 h-3 text-muted-foreground shrink-0" />
                   <a href={`mailto:${conv.visitor_email}`} className="text-[#C9A54E] hover:underline text-xs break-all">
                     {conv.visitor_email}
                   </a>
                 </p>
               )}
               {!conv.visitor_name && !conv.visitor_phone && !conv.visitor_email && (
-                <p className="text-xs text-gray-400 italic">No contact info yet</p>
+                <p className="text-xs text-muted-foreground italic">No contact info yet</p>
               )}
             </div>
           </div>
 
           {/* Operator History — QA / supervisor / admin */}
           {canViewHistory && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
               <OperatorHistory conversationId={conversationId} />
             </div>
           )}
 
           {/* Notes Card */}
           {lead?.notes && lead.notes.trim() !== '' && (
-            <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
                 <FileText className="w-3.5 h-3.5" />
                 Notes
               </div>
-              <p className="text-sm text-gray-600 whitespace-pre-wrap">{lead.notes}</p>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{lead.notes}</p>
             </div>
           )}
 
           {/* Conversation Meta Card */}
-          <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 mb-2">
+          <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
               <Clock className="w-3.5 h-3.5" />
               Details
             </div>
-            <div className="space-y-1 text-xs text-gray-500">
-              <p>Started: <span className="text-gray-700">{new Date(conv.created_at).toLocaleString()}</span></p>
-              <p>Messages: <span className="text-gray-700">{allMessages.length}</span></p>
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p>Started: <span className="text-foreground">{new Date(conv.created_at).toLocaleString()}</span></p>
+              <p>Messages: <span className="text-foreground">{allMessages.length}</span></p>
               {role !== 'supervisor' && (
-                <p>AI cost: <span className="text-gray-700">${conv.ai_cost_total.toFixed(4)}</span></p>
+                <p>AI cost: <span className="text-foreground">${conv.ai_cost_total.toFixed(4)}</span></p>
               )}
               {conv.assigned_agent_id && (
-                <p>Agent: <span className="text-gray-700">{conv.assigned_agent_name ?? conv.assigned_agent_id?.slice(0, 8) ?? 'Unassigned'}</span></p>
+                <p>Agent: <span className="text-foreground">{conv.assigned_agent_name ?? conv.assigned_agent_id?.slice(0, 8) ?? 'Unassigned'}</span></p>
               )}
             </div>
           </div>
 
           {/* No Lead placeholder */}
           {!lead && (
-            <div className="bg-white rounded-xl p-3 border border-dashed border-gray-200">
-              <p className="text-xs text-gray-400 text-center italic">No lead data captured yet</p>
+            <div className="bg-card rounded-xl p-3 border border-dashed border-border">
+              <p className="text-xs text-muted-foreground text-center italic">No lead data captured yet</p>
             </div>
           )}
 

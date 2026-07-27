@@ -20,7 +20,7 @@ const TUNNEL_STYLES: Record<string, string> = {
   support: 'bg-purple-50 text-purple-700 border border-purple-200',
 }
 const STATUS_DOT: Record<string, string> = {
-  active: 'bg-green-400', pending: 'bg-yellow-400', closed: 'bg-gray-300',
+  active: 'bg-green-400', pending: 'bg-yellow-400', closed: 'bg-muted-foreground/50',
   needs_agent: 'bg-red-400',
 }
 
@@ -174,15 +174,15 @@ export function Chats() {
         </div>
       </Header>
       <Main fixed>
-        <div ref={containerRef} className="flex h-full overflow-hidden rounded-lg border border-gray-200">
+        <div ref={containerRef} className="flex h-full overflow-hidden rounded-lg border border-border">
           {/* Left panel — tabs + list */}
           <div
             data-panel="left"
-            className="flex flex-col border-r border-gray-200 bg-white"
+            className="flex flex-col border-r border-border bg-card"
             style={selectedId ? { width: leftWidth, minWidth: 280, maxWidth: 480, flexShrink: 0 } : { flex: 1 }}
           >
             {/* Tabs */}
-            <div className="flex border-b border-gray-200">
+            <div className="flex border-b border-border">
               {visibleTabs.map(tab => (
                 <button
                   key={tab.key}
@@ -190,7 +190,7 @@ export function Chats() {
                   className={`flex-1 flex items-center justify-center gap-2 px-3 py-3 text-xs font-medium transition-colors border-b-2 ${
                     activeTab === tab.key
                       ? 'border-[#C9A54E] text-[#0B1829]'
-                      : 'border-transparent text-gray-400 hover:text-gray-600'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
                   }`}
                 >
                   {tab.icon}
@@ -199,7 +199,7 @@ export function Chats() {
                     <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
                       tab.key === 'all_active' && counts[tab.key] > 0
                         ? 'bg-red-500 text-white animate-pulse'
-                        : 'bg-gray-100 text-gray-600'
+                        : 'bg-muted text-muted-foreground'
                     }`}>
                       {counts[tab.key]}
                     </span>
@@ -209,14 +209,14 @@ export function Chats() {
             </div>
 
             {/* Search + Tunnel filter */}
-            <div className="px-4 py-3 border-b border-gray-100 space-y-2">
+            <div className="px-4 py-3 border-b border-border space-y-2">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <input type="text" placeholder="Search visitor..." value={search} onChange={e => setSearch(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
+                  className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
               </div>
               <select value={tunnelFilter} onChange={e => setTunnel(e.target.value)}
-                className="w-full pl-3 pr-7 py-1.5 text-xs border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none capitalize">
+                className="w-full pl-3 pr-7 py-1.5 text-xs rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 capitalize">
                 <option value="">All Tunnels</option>
                 <option value="sales">Sales</option>
                 <option value="support">Support</option>
@@ -225,7 +225,7 @@ export function Chats() {
                 <select
                   value={handledByFilter}
                   onChange={(e) => setHandledByFilter(e.target.value)}
-                  className="w-full pl-3 pr-7 py-1.5 text-xs border border-gray-200 rounded-lg appearance-none bg-white focus:outline-none"
+                  className="w-full pl-3 pr-7 py-1.5 text-xs rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
                 >
                   <option value="all">All handling</option>
                   <option value="ai">AI only</option>
@@ -236,11 +236,11 @@ export function Chats() {
             </div>
 
             {/* Conversation list */}
-            <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
+            <div className="flex-1 overflow-y-auto divide-y divide-border">
               {isLoading ? (
-                <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading...</div>
+                <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">Loading...</div>
               ) : conversations.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-32 text-gray-400">
+                <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
                   <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
                   <p className="text-xs">
                     {activeTab === 'all_closed' || activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
@@ -252,19 +252,19 @@ export function Chats() {
                     stopAssignmentAlerts()
                     setSelectedId(conv.id === selectedId ? null : conv.id)
                   }}
-                  className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
+                  className={`w-full text-left px-4 py-3 hover:bg-accent transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status] ?? 'bg-gray-300'}`} />
-                        <span className="font-medium text-sm text-gray-900 truncate">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status] ?? 'bg-muted-foreground/50'}`} />
+                        <span className="font-medium text-sm text-foreground truncate">
                           {activeTab === 'my_closed' || activeTab === 'all_closed'
-                            ? <span className="text-gray-400 italic text-xs">Closed conversation</span>
+                            ? <span className="text-muted-foreground italic text-xs">Closed conversation</span>
                             : <span className='flex items-center gap-1'>
                                 {staleIds.has(conv.id) && (
                                   <AlertTriangle className='h-3 w-3 text-red-400 shrink-0' />
                                 )}
-                                {conv.visitor_name ?? <span className="text-gray-400 italic text-xs">Anonymous visitor</span>}
+                                {conv.visitor_name ?? <span className="text-muted-foreground italic text-xs">Anonymous visitor</span>}
                                 {conv.has_flagged_content && (
                                   <span
                                     title={conv.flagged_reason || 'Contains flagged content'}
@@ -279,7 +279,7 @@ export function Chats() {
                       </div>
                       <div className="flex items-center gap-2 mt-1">
                         <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[conv.tunnel] ?? ''}`}>{conv.tunnel}</span>
-                        <span className="text-[10px] text-gray-400">{conv.message_count} msgs</span>
+                        <span className="text-[10px] text-muted-foreground">{conv.message_count} msgs</span>
                         {conv.agent_state === 'active' && conv.assigned_agent_name ? (
                           <span className="text-[10px] text-green-600">● {conv.assigned_agent_name}</span>
                         ) : conv.agent_state === 'fallback' && conv.engaged_agent_name ? (
@@ -290,8 +290,8 @@ export function Chats() {
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1 shrink-0">
-                      <span className="text-[10px] text-gray-400 whitespace-nowrap">{timeAgo(conv.updated_at)}</span>
-                      <ChevronRight className={`w-3 h-3 text-gray-300 transition-transform ${selectedId === conv.id ? 'rotate-90' : ''}`} />
+                      <span className="text-[10px] text-muted-foreground whitespace-nowrap">{timeAgo(conv.updated_at)}</span>
+                      <ChevronRight className={`w-3 h-3 text-muted-foreground transition-transform ${selectedId === conv.id ? 'rotate-90' : ''}`} />
                     </div>
                   </div>
                 </button>
@@ -303,7 +303,7 @@ export function Chats() {
           {selectedId && (
             <div
               onMouseDown={startResize}
-              className="w-1.5 shrink-0 bg-gray-200 hover:bg-[#C9A54E]/60 active:bg-[#C9A54E] transition-colors"
+              className="w-1.5 shrink-0 bg-border hover:bg-[#C9A54E]/60 active:bg-[#C9A54E] transition-colors"
               style={{ cursor: 'col-resize' }}
               title="Drag to resize"
             />
@@ -320,7 +320,7 @@ export function Chats() {
               />
             </div>
           ) : (
-            <div className="flex-1 hidden md:flex flex-col items-center justify-center text-gray-300">
+            <div className="flex-1 hidden md:flex flex-col items-center justify-center text-muted-foreground">
               <MessageSquare className="w-12 h-12 mb-3 opacity-20" />
               <p className="text-sm">Select a conversation to view</p>
             </div>
