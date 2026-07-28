@@ -1,0 +1,19 @@
+-- Migration 025: AI-outcome tags (completed / abandoned / no_engagement) —
+-- data-shape confirmation only. No schema change.
+--
+-- PR "Correct the AI-conversation tags" splits the single #158 `inactive`
+-- tag into three cases (completed / abandoned / no_engagement). The one new
+-- signal it needs — "did the customer ever write a message?" — is already
+-- answered by migration 024's `last_user_message_at`:
+--
+--   MAX(created_at) FILTER (WHERE role = 'user')
+--
+-- FILTER-aggregates return NULL when zero rows match the filter, and 024's
+-- backfill/insert path (db.add_message → _touch_conversation_activity) only
+-- ever SETS this column on a role="user" message. So
+-- `last_user_message_at IS NULL` is already a reliable, indexed "the
+-- customer never engaged" signal — no `client_message_count` column needed.
+--
+-- Nothing to run. Kept as a numbered placeholder so 023/024/025 are applied
+-- together and this decision has a durable record at the point it was made.
+SELECT 1;

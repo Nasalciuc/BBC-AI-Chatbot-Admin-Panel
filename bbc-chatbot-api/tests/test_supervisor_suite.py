@@ -19,9 +19,29 @@ def _conv(**kwargs):
         "last_user_message_at": None,
         "last_agent_message_at": None,
         "last_reply_at": None,
+        "visitor_name": None,
+        "visitor_phone": None,
+        "visitor_email": None,
     }
     base.update(kwargs)
     return base
+
+
+# A lead dict that satisfies get_missing_fields(for_crm=True): route,
+# passengers, departure date. Contact comes from conv (visitor_* fields).
+COMPLETE_LEAD = {
+    "id": "lead-complete",
+    "conversation_id": "C1",
+    "origin_code": "JFK",
+    "destination_code": "LAX",
+    "departure_date": "2026-08-01",
+    "passengers": 2,
+}
+FULL_CONTACT = {
+    "visitor_name": "Ada Lovelace",
+    "visitor_phone": "+15551234567",
+    "visitor_email": "ada@example.com",
+}
 
 
 class TestDeriveConversationTag:
@@ -81,7 +101,8 @@ class TestDeriveConversationTag:
         )
         assert tag == "main_queue"
 
-    def test_inactive_customer_went_quiet(self):
+    def test_abandoned_customer_went_quiet(self):
+        """Renamed from #158's `inactive` — same condition, new name."""
         tag = derive_conversation_tag(
             _conv(
                 mode="human",
@@ -94,9 +115,9 @@ class TestDeriveConversationTag:
             quiet_minutes=30,
             now=NOW,
         )
-        assert tag == "inactive"
+        assert tag == "abandoned"
 
-    def test_inactive_not_when_customer_still_speaking(self):
+    def test_abandoned_not_when_customer_still_speaking(self):
         tag = derive_conversation_tag(
             _conv(
                 mode="human",
@@ -109,11 +130,11 @@ class TestDeriveConversationTag:
             quiet_minutes=30,
             now=NOW,
         )
-        # Customer spoke last recently while live with operator → Active, not Inactive
+        # Customer spoke last recently while live with operator → Active, not Abandoned
         assert tag == "active"
 
-    def test_fresh_ai_quiet_does_not_become_inactive(self):
-        """AI-only quiet chats stay Fresh — Inactive requires operator involvement."""
+    def test_fresh_ai_quiet_does_not_become_abandoned(self):
+        """AI-only quiet chats stay Fresh — Abandoned requires operator involvement."""
         tag = derive_conversation_tag(
             _conv(
                 last_user_message_at=(NOW - timedelta(hours=2)).isoformat(),
@@ -140,6 +161,93 @@ class TestDeriveConversationTag:
         assert tag == "active"
 
 
+class TestAiOutcomeTags:
+    """#159 — the three cases #158 conflated/missed: completed, abandoned
+    (renamed from inactive), no_engagement (new, GLOBAL)."""
+
+    def test_no_engagement_contact_left_zero_messages(self):
+        tag = derive_conversation_tag(
+            _conv(**FULL_CONTACT, last_user_message_at=None),
+            now=NOW,
+        )
+        assert tag == "no_engagement"
+
+    def test_no_engagement_requires_full_contact(self):
+        """Partial contact (e.g. only a name) is not enough — stays Fresh."""
+        tag = derive_conversation_tag(
+            _conv(visitor_name="Ada Lovelace", last_user_message_at=None),
+            now=NOW,
+        )
+        assert tag == "fresh"
+
+    def test_no_engagement_not_when_customer_wrote(self):
+        tag = derive_conversation_tag(
+            _conv(**FULL_CONTACT, last_user_message_at=(NOW - timedelta(minutes=1)).isoformat()),
+            now=NOW,
+        )
+        assert tag != "no_engagement"
+
+    def test_completed_full_data_captured(self):
+        tag = derive_conversation_tag(
+            _conv(**FULL_CONTACT, last_user_message_at=(NOW - timedelta(minutes=10)).isoformat()),
+            lead=COMPLETE_LEAD,
+            now=NOW,
+        )
+        assert tag == "completed"
+
+    def test_completed_outranks_abandoned(self):
+        """A fully-captured lead is `completed` even if the operator chat
+        also meets the quiet-window abandoned condition."""
+        tag = derive_conversation_tag(
+            _conv(
+                **FULL_CONTACT,
+                mode="human",
+                assigned_agent_id="agent-1",
+                metadata={"engaged_agent_id": "agent-1"},
+                last_user_message_at=(NOW - timedelta(minutes=45)).isoformat(),
+                last_agent_message_at=(NOW - timedelta(minutes=40)).isoformat(),
+                last_reply_at=(NOW - timedelta(minutes=40)).isoformat(),
+            ),
+            lead=COMPLETE_LEAD,
+            quiet_minutes=30,
+            now=NOW,
+        )
+        assert tag == "completed"
+
+    def test_completed_requires_customer_message(self):
+        """A lead can't be `completed` if the customer never wrote — that's
+        no_engagement's territory even if a lead row happens to exist."""
+        tag = derive_conversation_tag(
+            _conv(**FULL_CONTACT, last_user_message_at=None),
+            lead=COMPLETE_LEAD,
+            now=NOW,
+        )
+        assert tag == "no_engagement"
+
+    def test_abandoned_partial_data_not_completed(self):
+        incomplete_lead = {"id": "L2", "origin_code": "JFK"}  # no destination/dates/pax
+        tag = derive_conversation_tag(
+            _conv(
+                mode="human",
+                assigned_agent_id="agent-1",
+                metadata={"engaged_agent_id": "agent-1"},
+                last_user_message_at=(NOW - timedelta(minutes=45)).isoformat(),
+                last_agent_message_at=(NOW - timedelta(minutes=40)).isoformat(),
+                last_reply_at=(NOW - timedelta(minutes=40)).isoformat(),
+            ),
+            lead=incomplete_lead,
+            quiet_minutes=30,
+            now=NOW,
+        )
+        assert tag == "abandoned"
+
+    def test_operator_tags_unaffected_by_lead_param(self):
+        """fresh/active/main_queue derive exactly as in #158 when there's no
+        complete lead and no no_engagement condition."""
+        tag = derive_conversation_tag(_conv(mode="ai"), now=NOW)
+        assert tag == "fresh"
+
+
 class TestAttachDerivedTag:
     def test_request_id_from_lead(self):
         row = attach_derived_tag(
@@ -149,9 +257,9 @@ class TestAttachDerivedTag:
         assert row["tag"] == "fresh"
 
 
-class TestCrmInactiveBlock:
+class TestCrmOutcomeTagBlock:
     @pytest.mark.asyncio
-    async def test_inactive_returns_409(self):
+    async def test_abandoned_returns_409(self):
         from app.api.leads import mark_lead_created_in_crm
 
         now = datetime.now(timezone.utc)
@@ -166,7 +274,7 @@ class TestCrmInactiveBlock:
             last_agent_message_at=quiet_reply,
             last_reply_at=quiet_reply,
         )
-        assert derive_conversation_tag(conv) == "inactive"
+        assert derive_conversation_tag(conv, lead=lead) == "abandoned"
 
         with (
             patch("app.api.leads.db.get_lead_full", new=AsyncMock(return_value=lead)),
@@ -181,8 +289,28 @@ class TestCrmInactiveBlock:
             mark.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["fresh", "active", "main_queue"])
-    async def test_non_inactive_tags_allowed(self, kind):
+    async def test_no_engagement_returns_409(self):
+        from app.api.leads import mark_lead_created_in_crm
+
+        lead = {"id": "L1", "conversation_id": "C1"}
+        conv = _conv(**FULL_CONTACT, last_user_message_at=None)
+        assert derive_conversation_tag(conv, lead=lead) == "no_engagement"
+
+        with (
+            patch("app.api.leads.db.get_lead_full", new=AsyncMock(return_value=lead)),
+            patch("app.api.leads.db.get_conversation_simple", new=AsyncMock(return_value=conv)),
+            patch("app.api.leads.db.mark_lead_created_in_crm", new=AsyncMock()) as mark,
+        ):
+            from fastapi import HTTPException
+
+            with pytest.raises(HTTPException) as ei:
+                await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "u1"})
+            assert ei.value.status_code == 409
+            mark.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["fresh", "active", "main_queue", "completed"])
+    async def test_non_blocked_tags_allowed(self, kind):
         from app.api.leads import mark_lead_created_in_crm
 
         now = datetime.now(timezone.utc)
@@ -203,10 +331,14 @@ class TestCrmInactiveBlock:
                 last_user_message_at=(now - timedelta(minutes=5)).isoformat(),
                 last_reply_at=(now - timedelta(hours=1)).isoformat(),
             ),
+            "completed": dict(
+                **FULL_CONTACT,
+                last_user_message_at=(now - timedelta(minutes=10)).isoformat(),
+            ),
         }
-        lead = {"id": "L1", "conversation_id": "C1"}
+        lead = COMPLETE_LEAD if kind == "completed" else {"id": "L1", "conversation_id": "C1"}
         conv = _conv(**setups[kind])
-        assert derive_conversation_tag(conv) == kind
+        assert derive_conversation_tag(conv, lead=lead) == kind
         marked = {"id": "L1", "created_in_crm": True}
 
         with (
@@ -351,7 +483,7 @@ class TestAttentionEmail:
         assert kwargs["customer_name"] == "Returnee"
 
 
-class TestInactiveRoleGate:
+class TestAiOutcomeTagRoleGate:
     def test_list_route_has_tag_param(self):
         from app.api.conversations import list_conversations
         import inspect
@@ -360,20 +492,21 @@ class TestInactiveRoleGate:
         assert "tag" in sig.parameters
 
     @pytest.mark.asyncio
-    async def test_inactive_forbidden_for_sales(self):
+    @pytest.mark.parametrize("tag", ["abandoned", "completed", "no_engagement"])
+    async def test_outcome_tags_forbidden_for_sales(self, tag):
         from fastapi import HTTPException
         from app.api.conversations import list_conversations
 
         with pytest.raises(HTTPException) as ei:
             await list_conversations(
                 tunnel=None, status=None, assigned_to="all", search=None,
-                handled_by=None, tag="inactive", limit=50, offset=0,
+                handled_by=None, tag=tag, limit=50, offset=0,
                 user={"role": "sales", "id": "u1", "tunnel_scope": "sales"},
             )
         assert ei.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_inactive_allowed_for_supervisor(self):
+    async def test_abandoned_allowed_for_supervisor_team_scoped(self):
         from app.api.conversations import list_conversations
 
         with (
@@ -388,14 +521,68 @@ class TestInactiveRoleGate:
         ):
             res = await list_conversations(
                 tunnel=None, status=None, assigned_to="all", search=None,
-                handled_by=None, tag="inactive", limit=50, offset=0,
+                handled_by=None, tag="abandoned", limit=50, offset=0,
                 user={"role": "supervisor", "id": "s1"},
             )
         assert res["success"] is True
         kwargs = list_q.call_args.kwargs
-        assert kwargs["tag"] == "inactive"
+        assert kwargs["tag"] == "abandoned"
         assert kwargs["team_ids"] == ["team-1"]
         assert kwargs["quiet_before"] is not None
+        assert kwargs["no_engagement_only"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_engagement_is_global_even_for_team_scoped_supervisor(self):
+        """A supervisor scoped to team-1 still sees the GLOBAL no_engagement
+        pool — team_ids must be overridden to None, not ["team-1"]."""
+        from app.api.conversations import list_conversations
+
+        with (
+            patch(
+                "app.api.conversations.db.get_team_ids_for_supervisor",
+                new=AsyncMock(return_value=["team-1"]),
+            ),
+            patch(
+                "app.api.conversations.db.get_conversations",
+                new=AsyncMock(return_value=([], 0)),
+            ) as list_q,
+        ):
+            res = await list_conversations(
+                tunnel=None, status=None, assigned_to="all", search=None,
+                handled_by=None, tag="no_engagement", limit=50, offset=0,
+                user={"role": "supervisor", "id": "s1"},
+            )
+        assert res["success"] is True
+        kwargs = list_q.call_args.kwargs
+        assert kwargs["tag"] == "no_engagement"
+        assert kwargs["team_ids"] is None
+        # No N+1 / no full-table Python filter: the predicate must be pushed
+        # to the DB query.
+        assert kwargs["no_engagement_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_completed_stays_team_scoped(self):
+        from app.api.conversations import list_conversations
+
+        with (
+            patch(
+                "app.api.conversations.db.get_team_ids_for_supervisor",
+                new=AsyncMock(return_value=["team-1"]),
+            ),
+            patch(
+                "app.api.conversations.db.get_conversations",
+                new=AsyncMock(return_value=([], 0)),
+            ) as list_q,
+        ):
+            await list_conversations(
+                tunnel=None, status=None, assigned_to="all", search=None,
+                handled_by=None, tag="completed", limit=50, offset=0,
+                user={"role": "supervisor", "id": "s1"},
+            )
+        kwargs = list_q.call_args.kwargs
+        assert kwargs["tag"] == "completed"
+        assert kwargs["team_ids"] == ["team-1"]
+        assert kwargs["no_engagement_only"] is False
 
 
 class TestPreMigrationDegradation:

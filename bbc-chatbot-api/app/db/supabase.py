@@ -333,7 +333,8 @@ _LIST_COLUMNS_BASE = (
 # list down for everyone. See _supervisor_columns_available().
 _LIST_COLUMNS_SUPERVISOR = (
     ",created_at,chat_number,"
-    "last_user_message_at,last_agent_message_at,last_reply_at"
+    "last_user_message_at,last_agent_message_at,last_reply_at,"
+    "visitor_phone,visitor_email"
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
 
@@ -371,6 +372,7 @@ async def get_conversations(
     team_ids: Optional[list[str]] = None,
     tag: Optional[str] = None,
     quiet_before: Optional[str] = None,
+    no_engagement_only: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list, int]:
@@ -381,8 +383,15 @@ async def get_conversations(
     separate filter calls, so this composes with tunnel/status/agent/search
     (a team-scoped caller cannot widen results via other query params).
 
-    tag / quiet_before: supervisor Inactive section. quiet_before is an ISO
-    cutoff used as a DB pre-filter; `tag` is applied after derive_conversation_tag.
+    tag: supervisor outcome/state filter (fresh/active/main_queue/completed/
+    abandoned/no_engagement), applied after derive_conversation_tag.
+    quiet_before: ISO cutoff DB pre-filter for tag="abandoned".
+    no_engagement_only: DB pre-filter for tag="no_engagement" — pushes the
+    "customer never wrote, but left contact" predicate into the query
+    instead of loading every row and filtering in Python. This tag is
+    GLOBAL (no operator involved), so its caller passes team_ids=None even
+    for an otherwise team-scoped supervisor — this pre-filter is what keeps
+    that global scan cheap.
     """
     try:
         db = get_client()
@@ -420,10 +429,21 @@ async def get_conversations(
                 else:
                     q = q.or_(visitor_match)
             if quiet_before and with_supervisor_cols:
-                # Pre-filter for the Inactive section: customer silence older
+                # Pre-filter for the Abandoned chip: customer silence older
                 # than the cutoff. Final tag still comes from derive_*.
                 q = q.lt("last_user_message_at", quiet_before)
                 q = q.not_.is_("last_reply_at", "null")
+            if no_engagement_only and with_supervisor_cols:
+                # Pre-filter for the No engagement chip: customer never wrote
+                # (last_user_message_at IS NULL, see migration 025) but left
+                # contact info. DB-level so this GLOBAL, unscoped scan never
+                # loads the full conversations table just to filter in Python.
+                q = (
+                    q.is_("last_user_message_at", "null")
+                    .not_.is_("visitor_name", "null").neq("visitor_name", "")
+                    .not_.is_("visitor_phone", "null").neq("visitor_phone", "")
+                    .not_.is_("visitor_email", "null").neq("visitor_email", "")
+                )
             return q.range(offset, offset + limit - 1).execute()
 
         use_supervisor_cols = _supervisor_columns_available()
@@ -446,10 +466,15 @@ async def get_conversations(
             row["metadata"] = {"engaged_agent_id": row.pop("engaged_agent_id", None)}
         rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
+            lead_map = await _get_lead_completeness_inputs([r["id"] for r in rows])
             for row in rows:
-                attach_derived_tag(row)
+                attach_derived_tag(row, lead=lead_map.get(row["id"]))
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
+            if no_engagement_only:
+                # Already DB-filtered above — res.count is the true total,
+                # unlike the Python-filtered tags below (page-local count).
+                return rows, res.count or 0
             return rows, len(rows)
         return rows, res.count or 0
     except Exception as e:
@@ -457,9 +482,35 @@ async def get_conversations(
         return [], 0
 
 
+async def _get_lead_completeness_inputs(conversation_ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch just the travel fields needed for the `completed` tag.
+
+    One query for the WHOLE page (never per-row) — mirrors the pattern
+    enrich_conversations_agent_info already uses for agent lookups, so this
+    doesn't reintroduce the N+1 / payload-weight problems #156 fixed.
+    """
+    if not conversation_ids:
+        return {}
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("leads")
+            .select(
+                "conversation_id,origin_code,destination_code,"
+                "departure_date,return_date,trip_type,passengers"
+            )
+            .in_("conversation_id", conversation_ids)
+            .execute()
+        )
+        return {row["conversation_id"]: row for row in (res.data or []) if row.get("conversation_id")}
+    except Exception as e:
+        logger.error(f"_get_lead_completeness_inputs error: {e}")
+        return {}
+
+
 _SIMPLE_COLUMNS_BASE = (
     "id, tunnel, status, mode, assigned_agent_id, team_id, visitor_id, "
-    "metadata, updated_at, created_at, visitor_name"
+    "metadata, updated_at, created_at, visitor_name, visitor_phone, visitor_email"
 )
 _SIMPLE_COLUMNS = (
     _SIMPLE_COLUMNS_BASE
@@ -1223,19 +1274,51 @@ def _sticky_agent_id(conv: dict) -> Optional[str]:
     return meta.get("engaged_agent_id") or meta.get("sticky_agent_id") or None
 
 
+def _lead_is_complete(lead: Optional[dict], conv: dict) -> bool:
+    """CRM-ready per get_missing_fields(for_crm=True): route + passengers +
+    departure date + contact. Same bar the manual "Create Lead" button and
+    check_crm_ready use — `completed` means a real, submittable lead exists.
+    """
+    if not isinstance(lead, dict) or not lead:
+        return False
+    from app.models.lead import get_missing_fields
+
+    return len(get_missing_fields(lead, conv, for_crm=True)) == 0
+
+
 def derive_conversation_tag(
     conv: dict,
     *,
     quiet_minutes: Optional[int] = None,
     now: Optional[datetime] = None,
+    lead: Optional[dict] = None,
 ) -> str:
     """Auto-derived supervisor tag. Never stored; recomputed from state.
 
-    Precedence (agreed with Adam — NOT his original 5/15-minute wording):
-      1. Inactive  — customer went quiet (operator-owned chat)
-      2. Fresh     — no operator has spoken yet (AI may have)
-      3. Main Queue — returned to sticky operator (came back / needs them)
-      4. Active    — sticky operator, live with them
+    Two independent axes, per the "no Inactive tab" redesign: `status`
+    (active/closed) is the lifecycle STATE; this function returns the
+    OUTCOME/ownership tag, orthogonal to it. Six possible values:
+
+      AI/customer-outcome tags (#159 — this PR):
+        no_engagement — contact left, customer wrote ZERO messages. GLOBAL:
+                         no operator was ever involved, so callers must NOT
+                         team-scope this one (see get_conversations).
+        completed     — customer wrote AND the lead is CRM-ready (route +
+                         dates + contact). A good, complete lead.
+        abandoned     — (was "inactive" in #158) operator-owned chat, customer
+                         went quiet after we replied. Team-scoped like the
+                         tags below. Requires an operator (sticky/last_agent)
+                         so plain AI-abandoned chats aren't double-flagged —
+                         those already go through the abandoned-CRM cron.
+
+      Operator tags (#158 — unchanged):
+        fresh      — no operator has spoken yet (AI may have)
+        main_queue — returned to sticky operator (came back / needs them)
+        active     — sticky operator, live with them
+
+    Precedence: no_engagement and completed are checked first — they're
+    terminal outcomes that matter regardless of who's currently on the chat.
+    Then abandoned/fresh/main_queue/active, unchanged from #158.
     """
     from config.settings import settings as _settings
 
@@ -1249,9 +1332,25 @@ def derive_conversation_tag(
     last_reply = _parse_iso_dt(conv.get("last_reply_at"))
     assigned = conv.get("assigned_agent_id")
 
-    # Inactive: customer silence after our side replied. Requires an operator
-    # to have spoken (sticky/last_agent) so the Inactive section isn't flooded
-    # with every abandoned AI-only chat (those already go through abandoned-CRM).
+    has_customer_message = last_user is not None
+    has_full_contact = bool(
+        conv.get("visitor_name") and conv.get("visitor_phone") and conv.get("visitor_email")
+    )
+    lead = lead if lead is not None else conv.get("lead")
+
+    # no_engagement: contact present, customer NEVER wrote. No operator, no
+    # team — this is checked before anything operator-related.
+    if not has_customer_message and has_full_contact:
+        return "no_engagement"
+
+    # completed: a real, CRM-ready lead — outranks the live-state tags below
+    # (a finished good outcome is worth flagging even if still being chatted).
+    if has_customer_message and _lead_is_complete(lead, conv):
+        return "completed"
+
+    # abandoned: customer silence after our side replied. Requires an operator
+    # to have spoken (sticky/last_agent) so plain AI-abandoned chats aren't
+    # double-flagged (those already go through the abandoned-CRM cron).
     if (
         status != "closed"
         and (sticky or last_agent)
@@ -1260,7 +1359,7 @@ def derive_conversation_tag(
         and last_reply >= last_user
         and (now_dt - last_user).total_seconds() >= quiet * 60
     ):
-        return "inactive"
+        return "abandoned"
 
     if not sticky and not last_agent:
         return "fresh"
@@ -1279,12 +1378,14 @@ def derive_conversation_tag(
     return "active"
 
 
-def attach_derived_tag(row: dict, *, quiet_minutes: Optional[int] = None) -> dict:
+def attach_derived_tag(
+    row: dict, *, quiet_minutes: Optional[int] = None, lead: Optional[dict] = None
+) -> dict:
     """Mutate a conversation row with `tag` (and keep request_id if lead present)."""
-    row["tag"] = derive_conversation_tag(row, quiet_minutes=quiet_minutes)
-    lead = row.get("lead")
-    if isinstance(lead, dict) and lead.get("id"):
-        row["request_id"] = lead["id"]
+    row["tag"] = derive_conversation_tag(row, quiet_minutes=quiet_minutes, lead=lead)
+    row_lead = row.get("lead")
+    if isinstance(row_lead, dict) and row_lead.get("id"):
+        row["request_id"] = row_lead["id"]
     elif row.get("request_id") is None:
         row.setdefault("request_id", None)
     return row

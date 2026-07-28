@@ -9,7 +9,13 @@ export interface Message {
   created_at: string
 }
 
-export type ConversationTag = 'fresh' | 'active' | 'main_queue' | 'inactive'
+export type ConversationTag =
+  | 'fresh'
+  | 'active'
+  | 'main_queue'
+  | 'completed'
+  | 'abandoned'
+  | 'no_engagement'
 
 export interface Conversation {
   id: string
