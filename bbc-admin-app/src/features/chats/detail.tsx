@@ -24,7 +24,7 @@ import { OperatorHistory, OperatorBadge } from './operator-history'
 interface Props {
   conversationId: string
   onClose: () => void
-  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'inactive'
+  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
   onConversationChange?: () => void
   usingMock?: boolean
 }
