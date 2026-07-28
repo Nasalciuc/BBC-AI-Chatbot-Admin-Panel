@@ -49,7 +49,10 @@ async def list_conversations(
     assigned_to: Optional[str] = Query(None, pattern="^(me|none|all)$"),
     search: Optional[str] = Query(None, max_length=100),
     handled_by: Optional[str] = Query(None, pattern="^(human|ai|fallback)$"),
-    tag: Optional[str] = Query(None, pattern="^(fresh|active|main_queue|inactive)$"),
+    tag: Optional[str] = Query(
+        None,
+        pattern="^(fresh|active|main_queue|completed|abandoned|no_engagement)$",
+    ),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
@@ -63,14 +66,14 @@ async def list_conversations(
         if team_ids is not None and len(team_ids) == 0:
             return {"success": True, "data": [], "count": 0}
 
-        # Inactive section is supervisor/oversight only — agents stay on
-        # their own My Active / closed tabs.
-        if tag == "inactive":
+        # AI-outcome tags are supervisor/oversight only — a queue-health
+        # signal, not something an agent needs filtering their own queue.
+        if tag in ("completed", "abandoned", "no_engagement"):
             role = user.get("role", "")
             if role not in ("owner", "admin", "dev", "supervisor", "qa", "project_manager"):
                 raise HTTPException(
                     status_code=403,
-                    detail="Inactive section is restricted to supervisors and admins.",
+                    detail="This tag filter is restricted to supervisors and admins.",
                 )
 
         # Resolve assigned_to into an agent_id filter
@@ -93,22 +96,35 @@ async def list_conversations(
             list_status = None
 
         quiet_before = None
-        if tag == "inactive":
+        no_engagement_only = False
+        if tag == "abandoned":
             from datetime import datetime, timedelta, timezone
             from config.settings import settings
-            # Inactive section: open chats where the customer went quiet.
-            status_in = ["active", "needs_agent", "pending"]
-            list_status = None
+            # Abandoned chip: DB pre-filter narrows to "customer went quiet a
+            # while ago". Deliberately does NOT touch status/status_in — the
+            # chip layers over whatever state tab the caller picked (state
+            # and outcome are orthogonal). derive_conversation_tag itself
+            # never returns "abandoned" for a closed conversation, so
+            # "Abandoned" + "All Closed" is a valid combination that (by
+            # design) comes back empty rather than silently switching tabs.
             quiet_before = (
                 datetime.now(timezone.utc)
                 - timedelta(minutes=settings.inactive_quiet_minutes)
             ).isoformat()
+        elif tag == "no_engagement":
+            # GLOBAL: no operator was ever involved, so this has no team to
+            # scope by. Override even a team-scoped supervisor's team_ids —
+            # otherwise they'd silently see zero results (their team_id
+            # filter can never match a NULL-team row). Status is left as
+            # whatever tab the caller already selected (orthogonal to tag).
+            no_engagement_only = True
+            team_ids = None
 
         rows, total = await db.get_conversations(
             tunnel=tunnel, status=list_status, status_in=status_in, search=search,
             agent_id=agent_id_filter, agent_id_is_null=agent_id_is_null,
             team_ids=team_ids,
-            tag=tag, quiet_before=quiet_before,
+            tag=tag, quiet_before=quiet_before, no_engagement_only=no_engagement_only,
             limit=limit, offset=offset,
         )
         if handled_by == "human":

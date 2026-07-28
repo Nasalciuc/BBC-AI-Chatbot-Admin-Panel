@@ -184,7 +184,9 @@ async def send_attention_email(
         "fresh": "Fresh",
         "active": "Active",
         "main_queue": "Main Queue",
-        "inactive": "Inactive",
+        "completed": "Completed",
+        "abandoned": "Abandoned",
+        "no_engagement": "No engagement",
     }.get(tag, tag)
     name = (customer_name or "Anonymous").strip() or "Anonymous"
     created = created_at or "—"

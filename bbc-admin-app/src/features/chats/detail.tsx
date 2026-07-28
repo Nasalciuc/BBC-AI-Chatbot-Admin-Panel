@@ -24,7 +24,7 @@ import { OperatorHistory, OperatorBadge } from './operator-history'
 interface Props {
   conversationId: string
   onClose: () => void
-  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'inactive'
+  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
   onConversationChange?: () => void
   usingMock?: boolean
 }
@@ -33,7 +33,9 @@ const DETAIL_TAG_LABELS: Record<string, string> = {
   fresh: 'Fresh',
   active: 'Active',
   main_queue: 'Main Queue',
-  inactive: 'Inactive',
+  completed: 'Completed',
+  abandoned: 'Abandoned',
+  no_engagement: 'No engagement',
 }
 
 const ROLE_STYLES: Record<string, { bubble: string; align: string; icon: React.ReactNode }> = {
@@ -589,7 +591,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 if (!hasPhone) missing.push('phone')
                 const isCreated  = lead.created_in_crm === true
                 const hasAllData = missing.length === 0
-                const isInactive = conv.tag === 'inactive' || activeTab === 'inactive'
+                const isBlockedTag = conv.tag === 'abandoned' || conv.tag === 'no_engagement'
 
                 if (isCreated) {
                   return (
@@ -602,14 +604,17 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     </button>
                   )
                 }
-                if (isInactive) {
+                if (isBlockedTag) {
+                  const reason = conv.tag === 'no_engagement'
+                    ? 'Customer left contact but never wrote a message'
+                    : 'Customer went quiet before the conversation was completed'
                   return (
                     <button
                       disabled
-                      title="Customer went quiet — CRM submission blocked for Inactive chats"
+                      title={`${reason} — CRM submission blocked`}
                       className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-not-allowed"
                     >
-                      Create Lead (Inactive)
+                      Create Lead ({DETAIL_TAG_LABELS[conv.tag ?? ''] ?? 'Blocked'})
                     </button>
                   )
                 }

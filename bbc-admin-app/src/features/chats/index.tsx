@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useDeferredValue, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle, Moon } from 'lucide-react'
+import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
@@ -23,20 +23,35 @@ const STATUS_DOT: Record<string, string> = {
   active: 'bg-green-400', pending: 'bg-yellow-400', closed: 'bg-muted-foreground/50',
   needs_agent: 'bg-red-400',
 }
+// State (tab) and outcome (tag) are orthogonal axes — a tag chip layers on
+// top of whichever state tab is active (e.g. "Abandoned" chip + "All Closed"
+// tab is a valid, meaningful combination). See TAG_FILTERS below.
 const TAG_STYLES: Record<ConversationTag, string> = {
   fresh: 'bg-sky-50 text-sky-700 border border-sky-200',
-  active: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+  active: 'bg-green-50 text-green-700 border border-green-200',
   main_queue: 'bg-amber-50 text-amber-800 border border-amber-200',
-  inactive: 'bg-slate-100 text-slate-600 border border-slate-300',
+  completed: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+  abandoned: 'bg-slate-100 text-slate-600 border border-slate-300',
+  no_engagement: 'bg-orange-50 text-orange-700 border border-orange-200',
 }
 const TAG_LABELS: Record<ConversationTag, string> = {
   fresh: 'Fresh',
   active: 'Active',
   main_queue: 'Main Queue',
-  inactive: 'Inactive',
+  completed: 'Completed',
+  abandoned: 'Abandoned',
+  no_engagement: 'No engagement',
 }
+const TAG_FILTERS: { key: ConversationTag; label: string }[] = [
+  { key: 'fresh', label: 'Fresh' },
+  { key: 'active', label: 'Active' },
+  { key: 'main_queue', label: 'Main Queue' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'abandoned', label: 'Abandoned' },
+  { key: 'no_engagement', label: 'No engagement' },
+]
 
-type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'inactive'
+type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
 
 const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
@@ -46,7 +61,6 @@ const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: R
 const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
   { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
-  { key: 'inactive', label: 'Inactive', icon: <Moon className="w-4 h-4" />, params: { tag: 'inactive' } },
   { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
 ]
 
@@ -67,10 +81,11 @@ export function Chats() {
   // My Active hidden for admin/supervisor/qa — they oversee the queue, don't claim conversations
   const hideMyActive = ['admin', 'supervisor', 'qa'].includes(role)
   const canFilterHandled = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
-  // Inactive section: supervisors + admins (team-scoped on the backend for supervisors)
-  const canSeeInactive = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
+  // Outcome-tag chip bar: oversight roles only (team-scoped on the backend
+  // for supervisors; no_engagement is global regardless of role).
+  const canFilterTag = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
-    (t) => !(hideMyActive && t.key === 'my_active') && !(t.key === 'inactive' && !canSeeInactive)
+    (t) => !(hideMyActive && t.key === 'my_active')
   )
 
   // Highlight from URL param (click from bell dropdown)
@@ -80,6 +95,7 @@ export function Chats() {
   const [search, setSearch]       = useState('')
   const [tunnelFilter, setTunnel] = useState('')
   const [handledByFilter, setHandledByFilter] = useState('all')
+  const [tagFilter, setTagFilter] = useState<ConversationTag | 'all'>('all')
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
   const [highlightId] = useState<string | null>(urlHighlight)
   const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
@@ -136,6 +152,7 @@ export function Chats() {
   if (debouncedSearch) listParams.search = debouncedSearch
   if (tunnelFilter) listParams.tunnel = tunnelFilter
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
+  if (canFilterTag && tagFilter !== 'all') listParams.tag = tagFilter
 
   // On the default My Active view this key equals ATTENTION_QUERY_KEY in
   // use-heartbeat.ts, so the heartbeat's attention check reuses this cache
@@ -144,21 +161,21 @@ export function Chats() {
   // duplicate request.
   const { data: convResponse, isLoading } = useQuery({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
-    queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter],
+    queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter, tagFilter],
     queryFn: () => getConversations(listParams),
     refetchInterval: 5_000, // Bug 3: agents need near-realtime assignment visibility
   })
   const conversations: Conversation[] = convResponse?.data ?? []
 
   // Counts — 1 request for tab badges, polls every 10s
-  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, inactive: 0 } } = useQuery({
+  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
     queryKey: ['conversation-counts', tunnelFilter],
     queryFn: async () => {
       const qs = tunnelFilter ? `?tunnel=${tunnelFilter}` : ''
       const res = await apiFetch<{ success: boolean; data: Partial<Record<TabKey, number>> }>(
         `/api/conversations/counts${qs}`
       )
-      return { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, inactive: 0, ...res.data }
+      return { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, ...res.data }
     },
     refetchInterval: 10_000,
   })
@@ -253,6 +270,33 @@ export function Chats() {
                   <option value="fallback">Fallback</option>
                 </select>
               )}
+              {canFilterTag && (
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  <button
+                    onClick={() => setTagFilter('all')}
+                    className={`px-2 py-1 rounded-full text-[10px] font-medium border transition-colors ${
+                      tagFilter === 'all'
+                        ? 'bg-[#0B1829] text-white border-[#0B1829]'
+                        : 'bg-background text-muted-foreground border-input hover:text-foreground'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {TAG_FILTERS.map((t) => (
+                    <button
+                      key={t.key}
+                      onClick={() => setTagFilter(t.key)}
+                      className={`px-2 py-1 rounded-full text-[10px] font-medium border transition-colors ${
+                        tagFilter === t.key
+                          ? `${TAG_STYLES[t.key]} ring-1 ring-offset-1 ring-current`
+                          : 'bg-background text-muted-foreground border-input hover:text-foreground'
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Conversation list */}
@@ -263,8 +307,8 @@ export function Chats() {
                 <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
                   <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
                   <p className="text-xs">
-                    {activeTab === 'inactive'
-                      ? 'No inactive conversations'
+                    {tagFilter !== 'all'
+                      ? `No ${TAG_LABELS[tagFilter].toLowerCase()} conversations`
                       : activeTab === 'all_closed' || activeTab === 'my_closed'
                         ? 'No closed conversations'
                         : 'No active conversations'}
