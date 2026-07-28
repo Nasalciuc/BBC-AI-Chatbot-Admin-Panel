@@ -156,6 +156,83 @@ async def send_invite_email(to_email: str, name: str, invite_url: str, expires_m
         return False
 
 
+async def send_attention_email(
+    *,
+    tag: str,
+    chat_number: int | str | None,
+    created_at: str | None,
+    customer_name: str | None,
+    conversation_id: str,
+) -> bool:
+    """Supervisor attention email — four fields only, one per chat.
+
+    Fired for attention-worthy cases (returning customer / needs attention),
+    never for every AI-handled chat. Fire-and-forget safe.
+    """
+    if not settings.postmark_token:
+        logger.warning("POSTMARK_TOKEN not set — skipping attention email")
+        return False
+
+    to_addr = (settings.attention_email_to or settings.super_alert_email or "").strip()
+    if not to_addr:
+        logger.warning("No attention email recipient configured — skip")
+        return False
+
+    chat_link = f"{settings.admin_panel_url.rstrip('/')}/chats?highlight={conversation_id}"
+    number_label = f"#{chat_number}" if chat_number is not None else "—"
+    tag_label = {
+        "fresh": "Fresh",
+        "active": "Active",
+        "main_queue": "Main Queue",
+        "inactive": "Inactive",
+    }.get(tag, tag)
+    name = (customer_name or "Anonymous").strip() or "Anonymous"
+    created = created_at or "—"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(
+                "https://api.postmarkapp.com/email",
+                headers={
+                    "X-Postmark-Server-Token": settings.postmark_token,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "From": settings.email_from,
+                    "To": to_addr,
+                    "Subject": f"Chat {number_label} needs attention — {tag_label}",
+                    "MessageStream": "outbound",
+                    "HtmlBody": (
+                        "<h2>Chat needs attention</h2>"
+                        f"<p><strong>Tag:</strong> {tag_label}</p>"
+                        f"<p><strong>Chat number:</strong> {number_label}</p>"
+                        f"<p><strong>Created:</strong> {created}</p>"
+                        f"<p><strong>Customer:</strong> {name}</p>"
+                        f'<p><a href="{chat_link}">Open conversation in admin panel</a></p>'
+                    ),
+                    "TextBody": (
+                        "Chat needs attention.\n\n"
+                        f"Tag: {tag_label}\n"
+                        f"Chat number: {number_label}\n"
+                        f"Created: {created}\n"
+                        f"Customer: {name}\n\n"
+                        f"Open: {chat_link}\n"
+                    ),
+                },
+            )
+            if res.status_code == 200:
+                logger.info(
+                    f"Attention email sent for conv {conversation_id} "
+                    f"({number_label}) → {to_addr}"
+                )
+                return True
+            logger.error(f"Attention email failed: {res.status_code} {res.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Attention email exception: {e}")
+        return False
+
+
 async def send_super_alert_email(
     *,
     conversation_id: str,
