@@ -24,9 +24,16 @@ import { OperatorHistory, OperatorBadge } from './operator-history'
 interface Props {
   conversationId: string
   onClose: () => void
-  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
+  activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'inactive'
   onConversationChange?: () => void
   usingMock?: boolean
+}
+
+const DETAIL_TAG_LABELS: Record<string, string> = {
+  fresh: 'Fresh',
+  active: 'Active',
+  main_queue: 'Main Queue',
+  inactive: 'Inactive',
 }
 
 const ROLE_STYLES: Record<string, { bubble: string; align: string; icon: React.ReactNode }> = {
@@ -382,7 +389,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 bg-[#0B1829]">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {conv.chat_number != null && (
+                <span className="text-xs font-mono text-[#C9A54E] shrink-0">#{conv.chat_number}</span>
+              )}
               <h2 className="text-base font-semibold text-white truncate">
                 {conv.status === 'closed'
                   ? <span className="text-muted-foreground italic">Closed conversation</span>
@@ -396,6 +406,11 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               }`}>
                 {conv.tunnel}
               </span>
+              {conv.tag && (
+                <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-white/10 text-white/80">
+                  {DETAIL_TAG_LABELS[conv.tag] ?? conv.tag}
+                </span>
+              )}
             </div>
             {/* QA supervisors see NO personal data in the header. */}
             <div className="flex items-center gap-4 mt-1.5">
@@ -412,6 +427,15 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-muted-foreground">
               <span className="shrink-0">{allMessages.length} messages</span>
+              {(conv.request_id || lead?.id) && (
+                <a
+                  href={`/leads?highlight=${conv.request_id || lead?.id}`}
+                  className="shrink-0 text-[#C9A54E] hover:underline"
+                  title="Open request / lead"
+                >
+                  Request {(conv.request_id || lead?.id || '').slice(0, 8)}…
+                </a>
+              )}
               {role !== 'supervisor' && (
                 <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
               )}
@@ -565,6 +589,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 if (!hasPhone) missing.push('phone')
                 const isCreated  = lead.created_in_crm === true
                 const hasAllData = missing.length === 0
+                const isInactive = conv.tag === 'inactive' || activeTab === 'inactive'
 
                 if (isCreated) {
                   return (
@@ -574,6 +599,17 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     >
                       <Check className="w-3 h-3" />
                       Lead Created
+                    </button>
+                  )
+                }
+                if (isInactive) {
+                  return (
+                    <button
+                      disabled
+                      title="Customer went quiet — CRM submission blocked for Inactive chats"
+                      className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-not-allowed"
+                    >
+                      Create Lead (Inactive)
                     </button>
                   )
                 }

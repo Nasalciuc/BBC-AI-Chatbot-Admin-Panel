@@ -49,6 +49,7 @@ async def list_conversations(
     assigned_to: Optional[str] = Query(None, pattern="^(me|none|all)$"),
     search: Optional[str] = Query(None, max_length=100),
     handled_by: Optional[str] = Query(None, pattern="^(human|ai|fallback)$"),
+    tag: Optional[str] = Query(None, pattern="^(fresh|active|main_queue|inactive)$"),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
@@ -61,6 +62,16 @@ async def list_conversations(
         team_ids = await _resolve_team_scope(user)
         if team_ids is not None and len(team_ids) == 0:
             return {"success": True, "data": [], "count": 0}
+
+        # Inactive section is supervisor/oversight only — agents stay on
+        # their own My Active / closed tabs.
+        if tag == "inactive":
+            role = user.get("role", "")
+            if role not in ("owner", "admin", "dev", "supervisor", "qa", "project_manager"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Inactive section is restricted to supervisors and admins.",
+                )
 
         # Resolve assigned_to into an agent_id filter
         agent_id_filter: Optional[str] = None
@@ -81,10 +92,23 @@ async def list_conversations(
             status_in = ["active", "needs_agent"]
             list_status = None
 
+        quiet_before = None
+        if tag == "inactive":
+            from datetime import datetime, timedelta, timezone
+            from config.settings import settings
+            # Inactive section: open chats where the customer went quiet.
+            status_in = ["active", "needs_agent", "pending"]
+            list_status = None
+            quiet_before = (
+                datetime.now(timezone.utc)
+                - timedelta(minutes=settings.inactive_quiet_minutes)
+            ).isoformat()
+
         rows, total = await db.get_conversations(
             tunnel=tunnel, status=list_status, status_in=status_in, search=search,
             agent_id=agent_id_filter, agent_id_is_null=agent_id_is_null,
             team_ids=team_ids,
+            tag=tag, quiet_before=quiet_before,
             limit=limit, offset=offset,
         )
         if handled_by == "human":

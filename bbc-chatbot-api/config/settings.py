@@ -184,6 +184,13 @@ class Settings(BaseSettings):
     invite_link_expiry_minutes: int = 1440
     invite_link_path: str = "/set-password"
 
+    # Supervisor visibility suite — customer silence (Inactive tag) and
+    # attention emails. These are about the CUSTOMER going quiet / a chat
+    # needing a human, NOT the rejected 5-minute Fresh / 15-minute pool rules.
+    inactive_quiet_minutes: int = 30
+    attention_email_enabled: bool = True
+    attention_email_to: str = ""  # empty → falls back to super_alert_email
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def cors_origins(self) -> list[str]:

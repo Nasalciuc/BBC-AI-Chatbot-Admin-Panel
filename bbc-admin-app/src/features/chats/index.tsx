@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useDeferredValue, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
-import type { Conversation } from '@/lib/types'
+import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle, Moon } from 'lucide-react'
+import type { Conversation, ConversationTag } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { NotificationBell } from '@/components/notification-bell'
@@ -23,8 +23,20 @@ const STATUS_DOT: Record<string, string> = {
   active: 'bg-green-400', pending: 'bg-yellow-400', closed: 'bg-muted-foreground/50',
   needs_agent: 'bg-red-400',
 }
+const TAG_STYLES: Record<ConversationTag, string> = {
+  fresh: 'bg-sky-50 text-sky-700 border border-sky-200',
+  active: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+  main_queue: 'bg-amber-50 text-amber-800 border border-amber-200',
+  inactive: 'bg-slate-100 text-slate-600 border border-slate-300',
+}
+const TAG_LABELS: Record<ConversationTag, string> = {
+  fresh: 'Fresh',
+  active: 'Active',
+  main_queue: 'Main Queue',
+  inactive: 'Inactive',
+}
 
-type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
+type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'inactive'
 
 const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
@@ -34,6 +46,7 @@ const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: R
 const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
   { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
+  { key: 'inactive', label: 'Inactive', icon: <Moon className="w-4 h-4" />, params: { tag: 'inactive' } },
   { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
 ]
 
@@ -54,8 +67,10 @@ export function Chats() {
   // My Active hidden for admin/supervisor/qa — they oversee the queue, don't claim conversations
   const hideMyActive = ['admin', 'supervisor', 'qa'].includes(role)
   const canFilterHandled = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
+  // Inactive section: supervisors + admins (team-scoped on the backend for supervisors)
+  const canSeeInactive = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
-    (t) => !(hideMyActive && t.key === 'my_active')
+    (t) => !(hideMyActive && t.key === 'my_active') && !(t.key === 'inactive' && !canSeeInactive)
   )
 
   // Highlight from URL param (click from bell dropdown)
@@ -135,15 +150,15 @@ export function Chats() {
   })
   const conversations: Conversation[] = convResponse?.data ?? []
 
-  // Counts — 1 request for 3 numbers, polls every 10s
-  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
+  // Counts — 1 request for tab badges, polls every 10s
+  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, inactive: 0 } } = useQuery({
     queryKey: ['conversation-counts', tunnelFilter],
     queryFn: async () => {
       const qs = tunnelFilter ? `?tunnel=${tunnelFilter}` : ''
-      const res = await apiFetch<{ success: boolean; data: Record<TabKey, number> }>(
+      const res = await apiFetch<{ success: boolean; data: Partial<Record<TabKey, number>> }>(
         `/api/conversations/counts${qs}`
       )
-      return res.data
+      return { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, inactive: 0, ...res.data }
     },
     refetchInterval: 10_000,
   })
@@ -217,7 +232,7 @@ export function Chats() {
             <div className="px-4 py-3 border-b border-border space-y-2">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <input type="text" placeholder="Search visitor..." value={search} onChange={e => setSearch(e.target.value)}
+                <input type="text" placeholder="Search visitor or #1042..." value={search} onChange={e => setSearch(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
               </div>
               <select value={tunnelFilter} onChange={e => setTunnel(e.target.value)}
@@ -248,7 +263,11 @@ export function Chats() {
                 <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
                   <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
                   <p className="text-xs">
-                    {activeTab === 'all_closed' || activeTab === 'my_closed' ? 'No closed conversations' : 'No active conversations'}
+                    {activeTab === 'inactive'
+                      ? 'No inactive conversations'
+                      : activeTab === 'all_closed' || activeTab === 'my_closed'
+                        ? 'No closed conversations'
+                        : 'No active conversations'}
                   </p>
                 </div>
               ) : conversations.map(conv => (
@@ -262,6 +281,9 @@ export function Chats() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[conv.status] ?? 'bg-muted-foreground/50'}`} />
+                        {conv.chat_number != null && (
+                          <span className="text-[10px] font-mono text-muted-foreground shrink-0">#{conv.chat_number}</span>
+                        )}
                         <span className="font-medium text-sm text-foreground truncate">
                           {activeTab === 'my_closed' || activeTab === 'all_closed'
                             ? <span className="text-muted-foreground italic text-xs">Closed conversation</span>
@@ -282,7 +304,12 @@ export function Chats() {
                           }
                         </span>
                       </div>
-                      <div className="flex items-center gap-2 mt-1">
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        {conv.tag && (
+                          <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TAG_STYLES[conv.tag]}`}>
+                            {TAG_LABELS[conv.tag]}
+                          </span>
+                        )}
                         <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[conv.tunnel] ?? ''}`}>{conv.tunnel}</span>
                         <span className="text-[10px] text-muted-foreground">{conv.message_count} msgs</span>
                         {conv.agent_state === 'active' && conv.assigned_agent_name ? (

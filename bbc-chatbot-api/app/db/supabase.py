@@ -207,13 +207,52 @@ async def add_message(
         if model_used:
             payload["model_used"] = model_used
         res = await _run_sync(lambda: db.table("messages").insert(payload).execute())
-        return res.data[0] if res.data else None
+        row = res.data[0] if res.data else None
+        if row:
+            await _touch_conversation_activity(
+                conversation_id, role, row.get("created_at")
+            )
+        return row
     except Exception as e:
         logger.error(
             f"add_message failed conv={conversation_id} role={role}: {e}",
             exc_info=True,
         )
         return None
+
+
+# Which activity clock each speaker moves. 'system' is absent on purpose:
+# a system note is neither the customer speaking nor a reply to them.
+_ACTIVITY_CLOCKS: dict[str, tuple[str, ...]] = {
+    "user": ("last_user_message_at",),
+    "agent": ("last_agent_message_at", "last_reply_at"),
+    "ai": ("last_reply_at",),
+}
+
+
+async def _touch_conversation_activity(
+    conversation_id: str, role: str, created_at: Optional[str]
+) -> None:
+    """Keep the conversation's activity clocks current (migration 024).
+
+    Tag derivation needs to know who spoke last and when. Answering that from
+    `messages` would be one extra query per row on every 5-second list poll,
+    so the answer is cached on the conversation and refreshed here.
+
+    Never fatal: a message must not be lost because a denormalised timestamp
+    failed to write, and the columns may not exist yet if the code deploys
+    ahead of the migration.
+    """
+    fields = _ACTIVITY_CLOCKS.get(role)
+    if not fields or not _supervisor_columns_available():
+        return
+    stamp = created_at or datetime.now(timezone.utc).isoformat()
+    try:
+        await update_conversation(conversation_id, {f: stamp for f in fields})
+    except Exception as e:
+        logger.warning(
+            f"activity clocks not updated conv={conversation_id} role={role}: {e}"
+        )
 
 
 async def count_messages(conversation_id: str) -> int:
@@ -283,11 +322,43 @@ async def keyword_search_kb(keywords: list[str], tunnel: str = "sales", limit: i
 # 50-row page from 61.9 kB to 5.2 kB. The one metadata key the list logic needs
 # (engaged_agent_id, for agent_state and the "→ AI" label) is lifted out via a
 # jsonb path. The conversation DETAIL endpoint still returns everything.
-_LIST_COLUMNS = (
+_LIST_COLUMNS_BASE = (
     "id,tunnel,status,mode,visitor_name,message_count,updated_at,"
     "has_flagged_content,flagged_reason,assigned_agent_id,"
     "engaged_agent_id:metadata->>engaged_agent_id"
 )
+# Added by migrations 023/024 (chat number + activity clocks). Kept separate
+# because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
+# column that doesn't exist 400s the whole request, which would take the chats
+# list down for everyone. See _supervisor_columns_available().
+_LIST_COLUMNS_SUPERVISOR = (
+    ",created_at,chat_number,"
+    "last_user_message_at,last_agent_message_at,last_reply_at"
+)
+_LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
+
+# None = not probed yet, True = migrations applied, False = pre-migration DB.
+# A single failure downgrades the process to the legacy column set; the chats
+# list keeps working and tags simply stay absent until the migration runs and
+# the app restarts.
+_supervisor_columns_ok: Optional[bool] = None
+
+
+def _supervisor_columns_available() -> bool:
+    return _supervisor_columns_ok is not False
+
+
+def _downgrade_supervisor_columns(err: Exception) -> None:
+    global _supervisor_columns_ok
+    if _supervisor_columns_ok is False:
+        return
+    _supervisor_columns_ok = False
+    logger.error(
+        "conversations is missing the chat_number / activity-clock columns — "
+        "apply migrations 023_chat_number.sql and "
+        "024_conversation_activity_clocks.sql, then restart. Chat numbers and "
+        f"supervisor tags are disabled until then. ({err})"
+    )
 
 
 async def get_conversations(
@@ -298,6 +369,8 @@ async def get_conversations(
     agent_id: Optional[str] = None,
     agent_id_is_null: bool = False,
     team_ids: Optional[list[str]] = None,
+    tag: Optional[str] = None,
+    quiet_before: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list, int]:
@@ -307,11 +380,14 @@ async def get_conversations(
     conversations whose frozen team_id is in that set. PostgREST ANDs
     separate filter calls, so this composes with tunnel/status/agent/search
     (a team-scoped caller cannot widen results via other query params).
+
+    tag / quiet_before: supervisor Inactive section. quiet_before is an ISO
+    cutoff used as a DB pre-filter; `tag` is applied after derive_conversation_tag.
     """
     try:
         db = get_client()
-        def _query():
-            q = db.table("conversations").select(_LIST_COLUMNS, count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
+        def _query(columns: str, with_supervisor_cols: bool):
+            q = db.table("conversations").select(columns, count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
             if team_ids:
                 q = q.in_("team_id", team_ids)
@@ -330,38 +406,98 @@ async def get_conversations(
             elif agent_id_is_null:
                 q = q.is_("assigned_agent_id", "null")
             if search:
-                q = q.or_(
-                    f"visitor_name.ilike.%{search}%,"
-                    f"visitor_email.ilike.%{search}%,"
-                    f"visitor_phone.ilike.%{search}%"
+                stripped = search.strip()
+                # "#1042" / "1042" → exact chat_number match in addition to
+                # the usual visitor fields (supervisors search by number).
+                num_part = stripped[1:] if stripped.startswith("#") else stripped
+                visitor_match = (
+                    f"visitor_name.ilike.%{stripped}%,"
+                    f"visitor_email.ilike.%{stripped}%,"
+                    f"visitor_phone.ilike.%{stripped}%"
                 )
+                if num_part.isdigit() and with_supervisor_cols:
+                    q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
+                else:
+                    q = q.or_(visitor_match)
+            if quiet_before and with_supervisor_cols:
+                # Pre-filter for the Inactive section: customer silence older
+                # than the cutoff. Final tag still comes from derive_*.
+                q = q.lt("last_user_message_at", quiet_before)
+                q = q.not_.is_("last_reply_at", "null")
             return q.range(offset, offset + limit - 1).execute()
-        res = await _run_sync(_query)
+
+        use_supervisor_cols = _supervisor_columns_available()
+        try:
+            res = await _run_sync(
+                lambda: _query(
+                    _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
+                    use_supervisor_cols,
+                )
+            )
+        except Exception as e:
+            if not use_supervisor_cols:
+                raise
+            _downgrade_supervisor_columns(e)
+            res = await _run_sync(lambda: _query(_LIST_COLUMNS_BASE, False))
         rows = res.data or []
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
         for row in rows:
             row["metadata"] = {"engaged_agent_id": row.pop("engaged_agent_id", None)}
         rows = await enrich_conversations_agent_info(rows)
+        if _supervisor_columns_available():
+            for row in rows:
+                attach_derived_tag(row)
+        if tag:
+            rows = [r for r in rows if r.get("tag") == tag]
+            return rows, len(rows)
         return rows, res.count or 0
     except Exception as e:
         logger.error(f"get_conversations error: {e}")
         return [], 0
 
 
+_SIMPLE_COLUMNS_BASE = (
+    "id, tunnel, status, mode, assigned_agent_id, team_id, visitor_id, "
+    "metadata, updated_at, created_at, visitor_name"
+)
+_SIMPLE_COLUMNS = (
+    _SIMPLE_COLUMNS_BASE
+    + ", chat_number, last_user_message_at, last_agent_message_at, last_reply_at"
+)
+
+
 async def get_conversation_simple(conv_id: str) -> Optional[dict]:
-    """Get minimal conversation info — status and mode only. Fast check."""
-    try:
-        db = get_client()
-        res = await _run_sync(
-            lambda: db.table("conversations")
-            .select("id, tunnel, status, mode, assigned_agent_id, team_id, visitor_id, metadata, updated_at")
+    """Get minimal conversation info — status and mode only. Fast check.
+
+    Also carries the fields tag derivation needs, so callers that only have a
+    conversation id (the CRM-submit block) can derive without a full load.
+    """
+    db = get_client()
+
+    def _q(columns: str):
+        return (
+            db.table("conversations")
+            .select(columns)
             .eq("id", conv_id)
             .single()
             .execute()
         )
+
+    use_supervisor_cols = _supervisor_columns_available()
+    try:
+        res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS if use_supervisor_cols else _SIMPLE_COLUMNS_BASE))
         return res.data
     except Exception as e:
+        if use_supervisor_cols:
+            # Could be a missing column (pre-migration) or a genuinely absent
+            # row — retrying on the legacy set tells the two apart.
+            try:
+                res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS_BASE))
+                _downgrade_supervisor_columns(e)
+                return res.data
+            except Exception:
+                pass
         logger.error(f"get_conversation_simple error: {e}")
         return None
 
@@ -462,6 +598,7 @@ async def get_conversation(
         result["messages"] = msgs.data or []
         result["lead"] = lead_res.data[0] if lead_res.data else None
         await enrich_conversations_agent_info([result])
+        attach_derived_tag(result)
         return result
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
@@ -1063,6 +1200,94 @@ def _enrich_row_agent_fields(row: dict, users: dict[str, dict]) -> None:
     row["agent_state"] = _compute_agent_state(
         assigned_id, engaged_id, row.get("mode") or "ai"
     )
+
+
+def _parse_iso_dt(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _sticky_agent_id(conv: dict) -> Optional[str]:
+    """Operator who owns the chat from first spoken message.
+
+    Production stores this as metadata.engaged_agent_id. The design contract
+    calls it sticky_agent_id — accept either key so derivation stays honest.
+    """
+    meta = conv.get("metadata") or {}
+    return meta.get("engaged_agent_id") or meta.get("sticky_agent_id") or None
+
+
+def derive_conversation_tag(
+    conv: dict,
+    *,
+    quiet_minutes: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Auto-derived supervisor tag. Never stored; recomputed from state.
+
+    Precedence (agreed with Adam — NOT his original 5/15-minute wording):
+      1. Inactive  — customer went quiet (operator-owned chat)
+      2. Fresh     — no operator has spoken yet (AI may have)
+      3. Main Queue — returned to sticky operator (came back / needs them)
+      4. Active    — sticky operator, live with them
+    """
+    from config.settings import settings as _settings
+
+    quiet = quiet_minutes if quiet_minutes is not None else _settings.inactive_quiet_minutes
+    now_dt = now or datetime.now(timezone.utc)
+    status = conv.get("status") or "active"
+    mode = conv.get("mode") or "ai"
+    sticky = _sticky_agent_id(conv)
+    last_user = _parse_iso_dt(conv.get("last_user_message_at"))
+    last_agent = _parse_iso_dt(conv.get("last_agent_message_at"))
+    last_reply = _parse_iso_dt(conv.get("last_reply_at"))
+    assigned = conv.get("assigned_agent_id")
+
+    # Inactive: customer silence after our side replied. Requires an operator
+    # to have spoken (sticky/last_agent) so the Inactive section isn't flooded
+    # with every abandoned AI-only chat (those already go through abandoned-CRM).
+    if (
+        status != "closed"
+        and (sticky or last_agent)
+        and last_user
+        and last_reply
+        and last_reply >= last_user
+        and (now_dt - last_user).total_seconds() >= quiet * 60
+    ):
+        return "inactive"
+
+    if not sticky and not last_agent:
+        return "fresh"
+
+    # Main Queue: sticky exists, chat is back on their plate (not live human).
+    customer_returned = bool(
+        last_user and last_agent and last_user > last_agent
+    )
+    awaiting_sticky = (
+        status == "needs_agent"
+        or (mode == "ai" and sticky and (not assigned or customer_returned))
+    )
+    if awaiting_sticky:
+        return "main_queue"
+
+    return "active"
+
+
+def attach_derived_tag(row: dict, *, quiet_minutes: Optional[int] = None) -> dict:
+    """Mutate a conversation row with `tag` (and keep request_id if lead present)."""
+    row["tag"] = derive_conversation_tag(row, quiet_minutes=quiet_minutes)
+    lead = row.get("lead")
+    if isinstance(lead, dict) and lead.get("id"):
+        row["request_id"] = lead["id"]
+    elif row.get("request_id") is None:
+        row.setdefault("request_id", None)
+    return row
 
 
 async def enrich_conversations_agent_info(rows: list[dict]) -> list[dict]:
@@ -2626,6 +2851,64 @@ async def get_stale_presence_left_conversations(timeout_minutes: int = 5) -> lis
     except Exception as e:
         logger.warning(f"get_stale_presence_left: {e}")
         return []
+
+
+async def get_attention_email_candidates(limit: int = 100) -> list[dict]:
+    """Open chats that may need a one-shot attention email.
+
+    Candidates are status=needs_agent OR have a sticky agent with mode=ai
+    (returning / Main Queue shape). Caller still derives the tag and
+    enforces one-email-per-chat dedupe via metadata.attention_email_sent_at.
+    """
+    if not _supervisor_columns_available():
+        return []
+    try:
+        db_client = get_client()
+
+        def _q():
+            return (
+                db_client.table("conversations")
+                .select(
+                    "id, chat_number, created_at, visitor_name, status, mode, "
+                    "assigned_agent_id, metadata, last_user_message_at, "
+                    "last_agent_message_at, last_reply_at"
+                )
+                .in_("status", ["active", "needs_agent", "pending"])
+                .order("updated_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+        res = await _run_sync(_q)
+        out: list[dict] = []
+        for row in res.data or []:
+            meta = row.get("metadata") or {}
+            if meta.get("attention_email_sent_at"):
+                continue
+            sticky = meta.get("engaged_agent_id") or meta.get("sticky_agent_id")
+            if row.get("status") == "needs_agent" or sticky:
+                out.append(row)
+        return out
+    except Exception as e:
+        logger.warning(f"get_attention_email_candidates: {e}")
+        return []
+
+
+async def claim_attention_email(conversation_id: str) -> bool:
+    """One email per chat. Returns True only for the first successful claim."""
+    try:
+        conv = await get_conversation_simple(conversation_id)
+        if not conv:
+            return False
+        meta = dict(conv.get("metadata") or {})
+        if meta.get("attention_email_sent_at"):
+            return False
+        meta["attention_email_sent_at"] = datetime.now(timezone.utc).isoformat()
+        updated = await update_conversation(conversation_id, {"metadata": meta})
+        return bool(updated)
+    except Exception as e:
+        logger.error(f"[{conversation_id}] claim_attention_email FAILED: {e}")
+        return False
 
 
 # ── Blocklist (abuse) — see migrations/022_blocklist.sql ──────────────

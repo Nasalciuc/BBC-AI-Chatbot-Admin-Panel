@@ -132,6 +132,50 @@ async def run_close_stale_presence() -> dict:
     return {"closed": closed}
 
 
+async def run_attention_emails() -> dict:
+    """One-shot attention emails for returning / needs-attention chats.
+
+    Skips plain AI-handled Fresh chats. Deduped via claim_attention_email
+    so a chat emails at most once.
+    """
+    if not settings.attention_email_enabled:
+        return {"sent": 0, "skipped": 0, "disabled": True}
+
+    from app.services.email import send_attention_email
+
+    candidates = await db.get_attention_email_candidates()
+    sent = 0
+    skipped = 0
+    for conv in candidates:
+        tag = db.derive_conversation_tag(conv)
+        # Attention-worthy only: returning customer (Main Queue) or
+        # needs_agent. Never email every Fresh AI chat.
+        if tag not in ("main_queue",) and conv.get("status") != "needs_agent":
+            skipped += 1
+            continue
+        # needs_agent with Fresh sticky-less still deserves email
+        if tag == "fresh" and conv.get("status") != "needs_agent":
+            skipped += 1
+            continue
+        cid = conv["id"]
+        claimed = await db.claim_attention_email(cid)
+        if not claimed:
+            skipped += 1
+            continue
+        ok = await send_attention_email(
+            tag=tag if tag != "fresh" else "main_queue",
+            chat_number=conv.get("chat_number"),
+            created_at=conv.get("created_at"),
+            customer_name=conv.get("visitor_name"),
+            conversation_id=cid,
+        )
+        if ok:
+            sent += 1
+        else:
+            skipped += 1
+    return {"sent": sent, "skipped": skipped, "candidates": len(candidates)}
+
+
 @router.post("/cron/abandoned-crm")
 async def process_abandoned_conversations(request: Request):
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""

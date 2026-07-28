@@ -9,8 +9,13 @@ export interface Message {
   created_at: string
 }
 
+export type ConversationTag = 'fresh' | 'active' | 'main_queue' | 'inactive'
+
 export interface Conversation {
   id: string
+  chat_number?: number | null
+  tag?: ConversationTag | null
+  request_id?: string | null
   tunnel: 'sales' | 'support'
   mode: 'ai' | 'human' | 'waiting_for_agent'
   status: 'active' | 'pending' | 'closed' | 'needs_agent'

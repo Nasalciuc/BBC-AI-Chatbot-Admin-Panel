@@ -69,13 +69,20 @@ async def _run_forever(job_name: str, job_fn, interval_seconds: int):
 
 def start(app_state, settings) -> list[asyncio.Task]:
     """Called from startup. Returns tasks so shutdown can cancel them."""
-    from app.api.cron import run_abandoned_crm, run_agent_sweep, run_cleanup_stale_ready, run_close_stale_presence
+    from app.api.cron import (
+        run_abandoned_crm,
+        run_agent_sweep,
+        run_attention_emails,
+        run_cleanup_stale_ready,
+        run_close_stale_presence,
+    )
 
     jobs = [
         ("abandoned_crm", run_abandoned_crm),
         ("agent_sweep", run_agent_sweep),
         ("stale_ready", run_cleanup_stale_ready),
         ("stale_presence", run_close_stale_presence),
+        ("attention_emails", run_attention_emails),
     ]
     tasks = [
         asyncio.create_task(
