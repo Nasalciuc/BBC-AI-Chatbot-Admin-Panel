@@ -444,6 +444,15 @@ async def get_conversations(
                     .not_.is_("visitor_phone", "null").neq("visitor_phone", "")
                     .not_.is_("visitor_email", "null").neq("visitor_email", "")
                 )
+                if num_part.isdigit() and with_supervisor_cols:
+                    q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
+                else:
+                    q = q.or_(visitor_match)
+            if quiet_before and with_supervisor_cols:
+                # Pre-filter for the Inactive section: customer silence older
+                # than the cutoff. Final tag still comes from derive_*.
+                q = q.lt("last_user_message_at", quiet_before)
+                q = q.not_.is_("last_reply_at", "null")
             return q.range(offset, offset + limit - 1).execute()
 
         use_supervisor_cols = _supervisor_columns_available()

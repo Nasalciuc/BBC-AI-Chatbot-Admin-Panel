@@ -51,7 +51,7 @@ const TAG_FILTERS: { key: ConversationTag; label: string }[] = [
   { key: 'no_engagement', label: 'No engagement' },
 ]
 
-type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
+type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'inactive'
 
 const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
@@ -61,6 +61,7 @@ const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: R
 const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
   { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
+  { key: 'inactive', label: 'Inactive', icon: <Moon className="w-4 h-4" />, params: { tag: 'inactive' } },
   { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
 ]
 
@@ -85,7 +86,7 @@ export function Chats() {
   // for supervisors; no_engagement is global regardless of role).
   const canFilterTag = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
-    (t) => !(hideMyActive && t.key === 'my_active')
+    (t) => !(hideMyActive && t.key === 'my_active') && !(t.key === 'inactive' && !canSeeInactive)
   )
 
   // Highlight from URL param (click from bell dropdown)
