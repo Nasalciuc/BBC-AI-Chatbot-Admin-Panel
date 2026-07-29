@@ -188,7 +188,11 @@ async def _pipeline(
 ) -> ChatResponse:
     """Internal pipeline implementation with 8 steps."""
     import time
-    from app.pipeline.entity_extractor import extract_entities, extract_kb_keywords
+    from app.pipeline.entity_extractor import (
+        derive_persona,
+        extract_entities,
+        extract_kb_keywords,
+    )
 
     pipeline_start = time.perf_counter()
     _crm_submitted_this_turn = False
@@ -272,6 +276,18 @@ async def _pipeline(
             logger.info(f"[{cid}] Intent override → CONFIRMED (summary was shown)")
     _confirmed_this_turn = intent == Intent.CONFIRMED
 
+    # Merged view of where this visitor came from — widget metadata for this
+    # turn on top of what the conversation already knows.
+    _site_metadata = {**_conv_meta, **(metadata or {})}
+
+    # OPEN DOOR: the free-text answer that follows the summary is the client's
+    # must-have, not a new booking detail.
+    _open_door_reply: Optional[str] = None
+    if _conv_meta.get("summary_shown_at") and not _confirmed_this_turn:
+        _stripped = message.strip()
+        if 3 < len(_stripped) <= 200:
+            _open_door_reply = _stripped
+
     # ── STEP 3.6: MULTI-TURN PROBE DETECTION ─────────────────
     _probe_keywords = [
         "guidelines", "instructions", "system prompt", "your rules",
@@ -326,7 +342,30 @@ async def _pipeline(
         "trip_type": extracted.trip_type,
         "_children_count": extracted.children_count or 0,
         "_infant_count": extracted.infant_count or 0,
+        # Sales-methodology signals — merged into the lead's intent_signals and
+        # handed to the consultant; _metadata carries SITE CONTEXT to the prompt.
+        "occasion": extracted.occasion,
+        "booking_for": extracted.booking_for,
+        "date_flexible": extracted.date_flexible,
+        "airline_preference": extracted.airline_preference,
+        "airline_avoid": extracted.airline_avoid,
+        "nonstop_only": extracted.nonstop_only,
+        "budget_hint": extracted.budget_hint,
+        "price_seen": extracted.price_seen,
+        "best_call_time": extracted.best_call_time,
+        "must_haves": _open_door_reply,
+        "_metadata": _site_metadata,
     }
+
+    _persona, _persona_source = derive_persona(
+        occasion=extracted.occasion,
+        message_text=message,
+        utm_source=_site_metadata.get("utm_source"),
+        click_ids=_site_metadata,
+    )
+    if _persona:
+        entities["persona"] = _persona
+        entities["persona_source"] = _persona_source
 
     # IATA LLM fallback removed (PR1) — TRAVEL_TOOL in generate extracts
     # origin/destination as superset. Route captured via tool_entities merge
@@ -376,9 +415,12 @@ async def _pipeline(
             "cabin_class",
         ]
     )
-    if has_useful:
+    # Signals alone are worth a write when a lead already exists — the occasion
+    # usually arrives on a turn that carries no new travel field.
+    has_signals = any(entities.get(k) for k in lead_service.SIGNAL_KEYS)
+    if has_useful or has_signals:
         await lead_service.update_lead_from_entities(cid, entities)
-        logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and k != '_raw_message')}")
+        logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
 
     logger.info(f"[{cid}] [PERF] extraction: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()

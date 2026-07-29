@@ -106,6 +106,14 @@ def check_crm_ready(lead: dict, visitor) -> bool:
     return len(missing) == 0
 
 
+def _agent_on_file(conv_metadata: dict) -> bool:
+    """Does this client already have an operator attached? (commission splits)"""
+    return bool(
+        conv_metadata.get("engaged_agent_id")
+        or conv_metadata.get("sticky_agent_id")
+    )
+
+
 def build_crm_payload(
     lead: dict,
     visitor,
@@ -194,6 +202,19 @@ def build_crm_payload(
         _utm["kayak_click_id"] = _meta["kayak_click_id"]
     if suid:
         _utm["suid"] = suid
+
+    # What the chat learned about this client, for the consultant's call. Rides
+    # as a custom top-level key like utm_term/gclid do; the panel shows the same
+    # line on the lead regardless of how the CRM displays unknown keys.
+    from app.services.lead_service import build_chat_context_line
+
+    _signals = lead.get("intent_signals")
+    _signals = dict(_signals) if isinstance(_signals, dict) else {}
+    if _agent_on_file(_meta):
+        _signals["returning_client"] = True
+    _chat_context = build_chat_context_line(_signals)
+    if _chat_context:
+        _utm["chat_context"] = _chat_context
 
     payload = {
         "trip_type": trip_type,

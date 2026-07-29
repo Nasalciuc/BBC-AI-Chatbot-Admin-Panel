@@ -1,8 +1,11 @@
 """Lead service — creation and updates. Score calculated EXCLUSIVELY in Python."""
 import asyncio
 import logging
+import re
 from datetime import date
 from typing import Optional
+
+from app.pipeline.entity_extractor import DREAM_OUTCOMES
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,108 @@ async def get_or_create_lead(conversation_id: str) -> Optional[dict]:
         return None
 
 
+# ── Sales-methodology signals ─────────────────────────────────────
+# Read the client once, keep what they volunteer, hand it to the consultant.
+SIGNAL_KEYS = (
+    "occasion",
+    "persona",
+    "persona_source",
+    "dream_outcome",
+    "date_flexible",
+    "must_haves",
+    "booking_for",
+    "airline_preference",
+    "airline_avoid",
+    "nonstop_only",
+    "budget_hint",
+    "price_seen",
+    "best_call_time",
+    "returning_client",
+)
+
+_SIGNAL_LABELS: tuple[tuple[str, str], ...] = (
+    ("occasion", "Occasion={}"),
+    ("persona", "Type={}"),
+    ("booking_for", "Booking for={}"),
+    ("must_haves", "Must-have={}"),
+    ("airline_preference", "Prefers={}"),
+    ("airline_avoid", "Avoid={}"),
+    ("budget_hint", "Budget~{}"),
+    ("price_seen", "Seen: ~{}"),
+    ("best_call_time", "Call {}"),
+)
+
+_CONTACT_IN_TEXT_RE = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"|(?:\+?\d[\d\-.\s()]{7,}\d)"
+)
+
+
+def _mask_contact_details(text: str) -> str:
+    """Strip contact data a client typed into a free-text answer."""
+    return _CONTACT_IN_TEXT_RE.sub("[contact]", text)
+
+
+def signals_from_entities(entities: dict) -> dict:
+    """The methodology signals this turn carries — empty dict when none."""
+    signals: dict = {}
+    for key in SIGNAL_KEYS:
+        value = entities.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if isinstance(value, str):
+            value = value.strip()[:200]
+            if key == "must_haves":
+                value = _mask_contact_details(value)
+        signals[key] = value
+
+    persona = signals.get("persona")
+    if persona and "dream_outcome" not in signals:
+        outcome = DREAM_OUTCOMES.get(persona)
+        if outcome:
+            signals["dream_outcome"] = outcome
+    return signals
+
+
+def build_chat_context_line(signals: dict | None) -> Optional[str]:
+    """One human-readable line of what the chat learned, for notes and CRM."""
+    if not signals:
+        return None
+
+    parts: list[str] = []
+    for key, template in _SIGNAL_LABELS:
+        value = signals.get(key)
+        if value:
+            parts.append(template.format(value))
+
+    flexible = signals.get("date_flexible")
+    if flexible is True:
+        parts.append("Dates=flexible")
+    elif flexible is False:
+        parts.append("Dates=fixed")
+
+    if signals.get("nonstop_only"):
+        parts.append("Non-stop only")
+    if signals.get("returning_client"):
+        parts.append("Returning client — prior agent on file")
+
+    if not parts:
+        return None
+    return "Chat: " + " | ".join(parts)
+
+
+def _append_note(existing: Optional[str], line: str) -> Optional[str]:
+    """Add the context line to notes. Returns None when nothing changes.
+
+    Notes written by people are never touched. Only our own earlier "Chat:"
+    line is replaced, since each new one is a superset of the last.
+    """
+    current = (existing or "").strip()
+    kept = [ln for ln in current.splitlines() if not ln.strip().startswith("Chat: ")]
+    updated = "\n".join([*kept, line]).strip()
+    return updated if updated != current else None
+
+
 async def update_lead_from_entities(conversation_id: str, entities: dict) -> None:
     """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7."""
     try:
@@ -75,7 +180,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             .select(
                 "id,score,origin_code,destination_code,departure_date,"
                 "passengers,cabin_class,return_date,trip_type,"
-                "children_count,infant_count"
+                "children_count,infant_count,intent_signals,notes"
             )
             .eq("conversation_id", conversation_id)
             .limit(1)
@@ -141,6 +246,22 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lead_payload["infant_count"] = entities["_infant_count"]
         if entities.get("origin") and entities.get("destination"):
             lead_payload["route_display"] = f"{entities['origin']} → {entities['destination']}"
+
+        # Methodology signals ride the same UPDATE: merged into intent_signals
+        # so other keys survive, and written only when something changed.
+        signals = signals_from_entities(entities)
+        if signals:
+            existing_signals = lead_data.get("intent_signals")
+            if not isinstance(existing_signals, dict):
+                existing_signals = {}
+            merged_signals = {**existing_signals, **signals}
+            if merged_signals != existing_signals:
+                lead_payload["intent_signals"] = merged_signals
+                context_line = build_chat_context_line(merged_signals)
+                if context_line:
+                    notes = _append_note(lead_data.get("notes"), context_line)
+                    if notes is not None:
+                        lead_payload["notes"] = notes
 
         # RT 2-3: Update conv + lead in parallel (when both have data)
         tasks = []
