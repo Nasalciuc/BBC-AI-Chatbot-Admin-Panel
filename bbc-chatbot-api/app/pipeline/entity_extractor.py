@@ -30,6 +30,17 @@ class ExtractedEntities:
     trip_type: Optional[str] = None        # one_way, round_trip
     children_count: Optional[int] = None
     infant_count: Optional[int] = None
+    # Sales-methodology signals. The chat never asks for the volunteered ones —
+    # it keeps them when the client offers them, for the consultant's call.
+    occasion: Optional[str] = None         # business, celebration, family, medical, raw phrase
+    booking_for: Optional[str] = None      # boss, parents, wife… when booking for someone else
+    date_flexible: Optional[bool] = None
+    airline_preference: Optional[str] = None
+    airline_avoid: Optional[str] = None
+    nonstop_only: Optional[bool] = None
+    budget_hint: Optional[str] = None
+    price_seen: Optional[str] = None
+    best_call_time: Optional[str] = None
 
 
 # ── Patterns ──────────────────────────────────────────────────
@@ -389,6 +400,216 @@ STOPWORDS = frozenset({
 })
 
 
+# ── Sales-methodology signals ─────────────────────────────────
+# Keyword-first, no extra LLM call: these ride the same regex pass as the
+# travel fields.
+
+OCCASION_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("business", re.compile(
+        r"\b(business trip|business travel|work trip|for work|on business|"
+        r"meeting|conference|convention|summit|client visit)\b", re.I)),
+    ("celebration", re.compile(
+        r"\b(anniversary|honeymoon|wedding|birthday|celebration|celebrating|"
+        r"proposal|graduation|bucket list|dream trip|special getaway)\b", re.I)),
+    ("medical", re.compile(
+        r"\b(medical|surgery|treatment|hospital|clinic|doctor's appointment)\b", re.I)),
+    ("family", re.compile(
+        r"\b(visiting (?:my )?(?:parents|family|relatives|mother|father|mom|dad)|"
+        r"see (?:my )?family|family visit|my parents|my grandparents|relatives)\b", re.I)),
+]
+
+# "for my anniversary" / "it's our honeymoon" — a raw occasion we did not name.
+OCCASION_PHRASE_RE = re.compile(
+    r"\b(?:it'?s|for)\s+(?:our|my)\s+([a-z][\w' -]{2,38})", re.I
+)
+
+BOOKING_FOR_RE = re.compile(
+    r"\bfor\s+(?:my|our)\s+(boss|wife|husband|partner|parents|mother|father|mom|dad|"
+    r"son|daughter|brother|sister|friend|colleague|client|team|in-laws|"
+    r"grandmother|grandfather|grandparents)\b", re.I
+)
+
+# Frequent or price-first family travel reads value_driven, not needs_based.
+FREQUENT_TRAVEL_RE = re.compile(
+    r"\b(every few months|every month|every year|a few times a year|as usual|"
+    r"again|routine|regularly|cheapest|cheapest option|best price)\b", re.I
+)
+
+COMPARISON_SOURCES = {"kayak", "skyscanner", "momondo", "kiwi", "cheapflights", "expedia"}
+COMPARISON_CLICK_IDS = ("kayak_click_id", "kclid", "skyscanner_click_id")
+
+DATE_FLEXIBLE_RE = re.compile(
+    r"\b(flexible|some flexibility|a day or two|couple of days|few days either|"
+    r"open on dates|dates are open)\b", re.I
+)
+DATE_FIXED_RE = re.compile(
+    r"\b(fixed dates?|dates? are fixed|date is fixed|locked|exact dates?|"
+    r"must be|no flexibility|can'?t move)\b", re.I
+)
+
+NONSTOP_RE = re.compile(
+    r"\b(non[- ]?stop only|nonstop only|direct only|only direct|no layovers|"
+    r"no connections|direct flights? only|non[- ]?stop flights? only)\b", re.I
+)
+
+AIRLINES = [
+    "emirates", "qatar airways", "qatar", "etihad", "turkish airlines", "turkish",
+    "lufthansa", "swiss", "british airways", "air france", "klm", "iberia",
+    "virgin atlantic", "singapore airlines", "cathay pacific", "ana", "japan airlines",
+    "delta", "united", "american airlines", "jetblue", "alaska airlines",
+    "air canada", "qantas", "spirit", "frontier", "ryanair", "easyjet",
+    "ita airways", "aer lingus", "sas", "finnair", "austrian", "tap",
+]
+AIRLINE_AVOID_RE = re.compile(
+    r"\b(never|avoid|hate|not|no more|anything but|refuse|worst)\b", re.I
+)
+AIRLINE_LOVE_RE = re.compile(
+    r"\b(prefer|love|like|always fly|fly with|loyal|miles with|favou?rite)\b", re.I
+)
+
+BUDGET_RE = re.compile(
+    r"\b(?:budget|max|maximum|up to|no more than|around|about)\s*(?:is\s*)?"
+    r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?", re.I
+)
+PRICE_SEEN_RE = re.compile(
+    r"\b(?:saw|seen|found|quoted|quote of|priced at|listed at)\b[^.\n]{0,25}?"
+    r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?", re.I
+)
+CALL_TIME_RE = re.compile(
+    r"\b(?:call|reach|phone|ring)\s+me\s+((?:after|before|around|at|in the|during)"
+    r"\s+[\w:\. ]{1,20})", re.I
+)
+
+# Reverse of CITY_TO_CODE for the landing-page hint. Short keys ("la", "sf")
+# match too much inside a slug, so only real city names are used.
+_SLUG_CITIES: dict[str, str] = {
+    name: name.title() for name in CITY_TO_CODE if len(name) >= 4
+}
+
+
+def _normalize_amount(raw: str, k_suffix: Optional[str]) -> str:
+    """'3,200' → '$3,200'; '5' + 'k' → '$5,000'."""
+    value = raw.replace(",", "")
+    try:
+        number = float(value)
+    except ValueError:
+        return f"${raw}"
+    if k_suffix:
+        number *= 1000
+    if number.is_integer():
+        return f"${int(number):,}"
+    return f"${number:,.2f}"
+
+
+def _extract_occasion(text: str) -> Optional[str]:
+    for label, pattern in OCCASION_PATTERNS:
+        if pattern.search(text):
+            return label
+    m = OCCASION_PHRASE_RE.search(text)
+    if m:
+        phrase = m.group(1).strip().rstrip(".!,")
+        # "for my boss" is who travels, not why — BOOKING_FOR_RE owns that.
+        if phrase and not BOOKING_FOR_RE.search(m.group(0)) and len(phrase) <= 40:
+            return phrase
+    return None
+
+
+def _extract_airline_preferences(text: str) -> tuple[Optional[str], Optional[str]]:
+    """(preferred, avoided) airline names mentioned with a love/avoid verb."""
+    preferred: Optional[str] = None
+    avoided: Optional[str] = None
+    lowered = text.lower()
+    for airline in AIRLINES:
+        idx = lowered.find(airline)
+        if idx == -1:
+            continue
+        window = lowered[max(0, idx - 40):idx]
+        name = airline.title()
+        if AIRLINE_AVOID_RE.search(window):
+            avoided = avoided or name
+        elif AIRLINE_LOVE_RE.search(window):
+            preferred = preferred or name
+    return preferred, avoided
+
+
+def is_comparison_origin(
+    utm_source: Optional[str] = None, click_ids: Optional[dict] = None
+) -> bool:
+    """Did this visitor arrive from a fare-comparison site?"""
+    if utm_source and utm_source.strip().lower() in COMPARISON_SOURCES:
+        return True
+    if click_ids:
+        return any(click_ids.get(key) for key in COMPARISON_CLICK_IDS)
+    return False
+
+
+def derive_persona(
+    occasion: Optional[str] = None,
+    message_text: Optional[str] = None,
+    utm_source: Optional[str] = None,
+    click_ids: Optional[dict] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """(persona, persona_source) from the occasion, with a traffic-source prior.
+
+    The occasion always wins: a visitor who came from a comparison site but
+    tells us it is their honeymoon is an experience seeker, not a bargain
+    hunter.
+    """
+    if occasion:
+        key = occasion.strip().lower()
+        if key == "business":
+            return "time_is_money", "occasion"
+        if key == "celebration":
+            return "experience_seeker", "occasion"
+        if key == "medical":
+            return "needs_based", "occasion"
+        if key == "family":
+            if message_text and FREQUENT_TRAVEL_RE.search(message_text):
+                return "value_driven", "occasion_family_frequent"
+            return "needs_based", "occasion_family"
+
+    if is_comparison_origin(utm_source, click_ids):
+        return "value_driven", "utm_prior"
+
+    return None, None
+
+
+DREAM_OUTCOMES = {
+    "time_is_money": "rested",
+    "experience_seeker": "experience",
+    "needs_based": "comfort",
+    "value_driven": "deal",
+}
+
+
+def destination_from_path(page_path: Optional[str]) -> Optional[str]:
+    """City the landing page was about, or None. A hint only — never a lead field."""
+    if not page_path:
+        return None
+    slug = re.sub(r"[^a-z0-9]+", " ", page_path.lower()).strip()
+    if not slug:
+        return None
+
+    # A route slug like "jfk-lhr" names the destination last.
+    codes = [t.upper() for t in slug.split() if len(t) == 3 and t.upper() in AIRPORTS]
+    if codes:
+        code = codes[-1]
+        for name, mapped in CITY_TO_CODE.items():
+            if mapped == code and len(name) >= 4:
+                return name.title()
+        return code
+
+    padded = f" {slug} "
+    matches = [(padded.rfind(f" {name} "), name) for name in _SLUG_CITIES]
+    matches = [(pos, name) for pos, name in matches if pos != -1]
+    if matches:
+        # "new-york-to-dubai" names the destination last; the longer name wins
+        # a tie so a two-word city is not cut short.
+        _pos, name = max(matches, key=lambda match: (match[0], len(match[1])))
+        return _SLUG_CITIES[name]
+    return None
+
+
 def extract_entities(message: str) -> ExtractedEntities:
     """Extract structured entities from a visitor chat message."""
     entities = ExtractedEntities()
@@ -563,8 +784,40 @@ def extract_entities(message: str) -> ExtractedEntities:
     if entities.return_date and not entities.trip_type:
         entities.trip_type = "round_trip"
 
+    # 9. Sales-methodology signals — the occasion we ask for once, and the
+    # signals we never ask for but keep when volunteered.
+    entities.occasion = _extract_occasion(text)
+
+    bf = BOOKING_FOR_RE.search(text)
+    if bf:
+        entities.booking_for = bf.group(1).lower()[:20]
+
+    if DATE_FLEXIBLE_RE.search(text):
+        entities.date_flexible = True
+    elif DATE_FIXED_RE.search(text):
+        entities.date_flexible = False
+
+    if NONSTOP_RE.search(text):
+        entities.nonstop_only = True
+
+    entities.airline_preference, entities.airline_avoid = _extract_airline_preferences(text)
+
+    seen = PRICE_SEEN_RE.search(text)
+    if seen:
+        entities.price_seen = _normalize_amount(seen.group(1), seen.group(2))
+
+    budget = BUDGET_RE.search(text)
+    if budget and not (seen and seen.start() <= budget.start() <= seen.end()):
+        entities.budget_hint = _normalize_amount(budget.group(1), budget.group(2))
+
+    call_time = CALL_TIME_RE.search(text)
+    if call_time:
+        entities.best_call_time = call_time.group(1).strip().rstrip(".")[:40]
+
     found = [k for k in ["email", "phone", "name", "origin_code", "destination_code",
-                          "passengers", "cabin_class", "departure_date", "return_date", "trip_type"]
+                          "passengers", "cabin_class", "departure_date", "return_date", "trip_type",
+                          "occasion", "booking_for", "nonstop_only", "airline_preference",
+                          "airline_avoid", "budget_hint", "price_seen", "best_call_time"]
              if getattr(entities, k) is not None]
     if found:
         logger.info(f"Entities extracted: {', '.join(found)}")
