@@ -59,8 +59,12 @@ class Settings(BaseSettings):
 
     # Claude
     anthropic_api_key: str = ""  # Optional for dev — required only for AI pipeline
+    # Model tiers: haiku = utility (classification, extraction, support),
+    # sonnet = sales default, opus = premium turns. Env-overridable so a tier
+    # can be rolled back to an older model without a deploy.
     claude_haiku_model: str = "claude-haiku-4-5-20251001"
-    claude_sonnet_model: str = "claude-sonnet-4-20250514"
+    claude_sonnet_model: str = "claude-sonnet-4-6"
+    claude_opus_model: str = "claude-opus-4-8"
     claude_timeout: int = 15
 
     # Supabase

@@ -10,7 +10,17 @@ from app.models.lead import get_missing_fields
 from app.models.kb import KBResult
 from app.ai.templates import get_template
 from app.ai.prompts import build_conversational_prompt
-from app.ai.claude import call_haiku, call_haiku_with_tools, call_sonnet
+from app.ai.claude import (
+    call_haiku,
+    call_haiku_with_tools,
+    call_opus,
+    call_opus_with_tools,
+    call_sonnet,
+    call_sonnet_with_tools,
+    stream_haiku_with_tools,
+    stream_opus_with_tools,
+    stream_sonnet_with_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GeneratedResponse:
     text: str
-    model_used: str                       # "template", "haiku", "sonnet"
+    model_used: str                       # "template", "haiku", "sonnet", "opus"
     cost: float = 0.0
     route_card: Optional[RouteCard] = None
     tool_entities: Optional[dict] = None
@@ -91,6 +101,56 @@ def _build_route_card_from_kb(kb_result: KBResult) -> RouteCard | None:
     )
 
 
+# Turns where money and trust are decided — every client gets the best brain.
+PREMIUM_INTENTS = frozenset(
+    {Intent.PRICE_INQUIRY, Intent.TALK_TO_AGENT, Intent.BOOKING_CHANGE}
+)
+
+
+def _select_sales_model(intent: Intent, lead: Optional[dict]) -> tuple[str, str]:
+    """Pick the sales tier for this turn — ("opus" | "sonnet", reason).
+
+    Deterministic and recomputed per turn from state that already exists, so
+    it needs no storage. Lead tier, cabin and persona are lead state, which
+    makes the escalation sticky for the whole conversation of a high-value
+    client; the intent rule fires for anyone on a decisive turn.
+    """
+    if intent in PREMIUM_INTENTS:
+        return "opus", "intent"
+
+    if lead:
+        from app.models.lead import get_lead_tier
+
+        if get_lead_tier(lead.get("score") or 0) == "gold":
+            return "opus", "tier"
+        if (lead.get("cabin_class") or "").lower() == "first":
+            return "opus", "cabin"
+        signals = lead.get("intent_signals")
+        if isinstance(signals, dict) and signals.get("persona") == "experience_seeker":
+            return "opus", "persona"
+
+    return "sonnet", "default"
+
+
+def _tier_calls(model_choice: str):
+    """(call_with_tools, stream_with_tools, plain_call) for a tier.
+
+    Looked up at call time so the module-level names stay patchable in tests.
+    """
+    if model_choice == "opus":
+        return call_opus_with_tools, stream_opus_with_tools, call_opus
+    if model_choice == "sonnet":
+        return call_sonnet_with_tools, stream_sonnet_with_tools, call_sonnet
+    return call_haiku_with_tools, stream_haiku_with_tools, call_haiku
+
+
+def _generation_tier(intent: Intent, lead: Optional[dict], tunnel: str) -> tuple[str, str]:
+    """Tier + reason for a generation turn. SUPPORT never escalates."""
+    if tunnel != "sales":
+        return "haiku", "support_tunnel"
+    return _select_sales_model(intent, lead)
+
+
 def generate_response(
     intent: Intent,
     entities: dict,
@@ -112,10 +172,11 @@ def generate_response(
     4.5a. BAGGAGE / PRICE / BOOKING_CHANGE → intent-specific template ($0)
     4.5b. Smart routing: lead has data → ask missing fields in conversation
           order: route → dates → phone → email → name → handoff ($0)
-    5. Otherwise:
-       a. 5+ user messages OR BOOKING_CHANGE → Sonnet ($0.015)
-       b. Else → Haiku ($0.003)
-       c. If AI fails → fallback template ($0)
+    5. Otherwise, generate with the tier _select_sales_model picks:
+       a. Opus — gold lead, First cabin, experience_seeker, or a decisive intent
+       b. Sonnet — every other sales turn
+       c. Haiku — SUPPORT tunnel
+       d. If AI fails → fallback template ($0)
     """
     # Count only real user messages in history (exclude system/agent)
     user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
@@ -148,40 +209,30 @@ def generate_response(
                 _system = f"{_static}\n\n{_dynamic}"
                 _raw = entities.get("_raw_message", "")
                 _user_msgs = [m for m in (history or []) if m.get("role") == "user"]
-                _use_sonnet = intent == Intent.BOOKING_CHANGE
-                if _use_sonnet and len(_raw) > 1500:
-                    _use_sonnet = False
+                _tier, _reason = _generation_tier(intent, lead, tunnel)
+                _call_tools, _stream_tools, _plain_call = _tier_calls(_tier)
 
-                if _use_sonnet:
-                    if on_chunk:
-                        from app.ai.claude import stream_sonnet
-                        _ai_text, _ai_cost = stream_sonnet(
-                            (_static, _dynamic), _raw, on_chunk=on_chunk
-                        )
-                    else:
-                        _ai_text, _ai_cost = call_sonnet((_static, _dynamic), _raw)
-                    _tool_entities = None
+                if on_chunk:
+                    _ai_text, _ai_cost, _te = _stream_tools(
+                        (_static, _dynamic), _raw, on_chunk=on_chunk
+                    )
                 else:
-                    if on_chunk:
-                        from app.ai.claude import stream_haiku_with_tools
-                        _ai_text, _ai_cost, _te = stream_haiku_with_tools(
-                            (_static, _dynamic), _raw, on_chunk=on_chunk
-                        )
-                    else:
-                        _ai_text, _ai_cost, _te = call_haiku_with_tools((_static, _dynamic), _raw)
-                    _tool_entities = _te if _te else None
-                    if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
-                        # Tool call succeeded but no text — re-call without tools for natural response
-                        _ai_text, _fallback_cost = call_haiku((_static, _dynamic), _raw)
-                        _ai_cost += _fallback_cost
-                        if not _ai_text or not str(_ai_text).strip():
-                            _ai_text = "Let me find the best options for your trip!"
+                    _ai_text, _ai_cost, _te = _call_tools((_static, _dynamic), _raw)
+                _tool_entities = _te if _te else None
+                if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
+                    # Tool call succeeded but no text — re-call without tools for natural response
+                    _ai_text, _fallback_cost = _plain_call((_static, _dynamic), _raw)
+                    _ai_cost += _fallback_cost
+                    if not _ai_text or not str(_ai_text).strip():
+                        _ai_text = "Let me find the best options for your trip!"
 
                 if _ai_text:
-                    logger.info(f"AI-first response | model={'sonnet' if _use_sonnet else 'haiku'} | intent={intent.value}")
+                    logger.info(
+                        f"AI-first response | model={_tier} reason={_reason} | intent={intent.value}"
+                    )
                     return GeneratedResponse(
                         text=_ai_text,
-                        model_used="sonnet" if _use_sonnet else "haiku",
+                        model_used=_tier,
                         cost=_ai_cost,
                         tool_entities=_tool_entities,
                     )
@@ -430,50 +481,28 @@ def generate_response(
         entities=entities,
     )
     user_messages = [m for m in history if m.get("role") == "user"]
-    use_sonnet = intent == Intent.BOOKING_CHANGE
+    raw_message = entities.get("_raw_message", "")
+    tier, reason = _generation_tier(intent, lead, tunnel)
+    logger.info(f"Generating | model={tier} reason={reason} | intent={intent.value}")
+    call_tools, stream_tools, plain_call = _tier_calls(tier)
 
-    # Wallet protection: suspicious long messages force Haiku
-    if use_sonnet and len(entities.get("_raw_message", "")) > 1500:
-        logger.info(f"Wallet protection: long message ({len(entities['_raw_message'])} chars) → forcing Haiku")
-        use_sonnet = False
-
-    if use_sonnet:
-        # 5a. Sonnet for complex conversations
-        logger.info("Using Sonnet (complex conversation)")
-        if on_chunk:
-            from app.ai.claude import stream_sonnet
-            ai_text, ai_cost = stream_sonnet(
-                (_static, _dynamic), entities.get("_raw_message", ""), on_chunk=on_chunk
-            )
-        else:
-            ai_text, ai_cost = call_sonnet((_static, _dynamic), entities.get("_raw_message", ""))
-        if ai_text:
-            return GeneratedResponse(
-                text=ai_text, model_used="sonnet", cost=ai_cost, tool_entities=None
-            )
+    if on_chunk:
+        ai_text, ai_cost, _te = stream_tools(
+            (_static, _dynamic), raw_message, on_chunk=on_chunk
+        )
     else:
-        # 5b. Haiku for standard responses
-        logger.info("Using Haiku (standard response)")
-        if on_chunk:
-            from app.ai.claude import stream_haiku_with_tools
-            ai_text, ai_cost, _te = stream_haiku_with_tools(
-                (_static, _dynamic), entities.get("_raw_message", ""), on_chunk=on_chunk
-            )
-        else:
-            ai_text, ai_cost, _te = call_haiku_with_tools(
-                (_static, _dynamic), entities.get("_raw_message", "")
-            )
-        tool_entities = _te if _te else None
-        if (not ai_text or not str(ai_text).strip()) and tool_entities:
-            # Tool call succeeded but no text — re-call without tools for natural response
-            ai_text, _fallback_cost = call_haiku((_static, _dynamic), entities.get("_raw_message", ""))
-            ai_cost += _fallback_cost
-            if not ai_text or not str(ai_text).strip():
-                ai_text = "Let me find the best options for your trip!"
-        if ai_text:
-            return GeneratedResponse(
-                text=ai_text, model_used="haiku", cost=ai_cost, tool_entities=tool_entities
-            )
+        ai_text, ai_cost, _te = call_tools((_static, _dynamic), raw_message)
+    tool_entities = _te if _te else None
+    if (not ai_text or not str(ai_text).strip()) and tool_entities:
+        # Tool call succeeded but no text — re-call without tools for natural response
+        ai_text, _fallback_cost = plain_call((_static, _dynamic), raw_message)
+        ai_cost += _fallback_cost
+        if not ai_text or not str(ai_text).strip():
+            ai_text = "Let me find the best options for your trip!"
+    if ai_text:
+        return GeneratedResponse(
+            text=ai_text, model_used=tier, cost=ai_cost, tool_entities=tool_entities
+        )
 
     # 5c. Fallback
     logger.warning("AI generation failed — using fallback template")

@@ -1,4 +1,4 @@
-"""Claude API client — Haiku + Sonnet. No abstraction, no factory."""
+"""Claude API client — Haiku + Sonnet + Opus. No abstraction, no factory."""
 
 import logging
 import time
@@ -32,14 +32,48 @@ COSTS: dict[str, dict[str, float]] = {
         "input": 3.0 / 1_000_000,
         "output": 15.0 / 1_000_000,
     },
+    "claude-sonnet-4-6": {
+        "input": 3.0 / 1_000_000,
+        "output": 15.0 / 1_000_000,
+    },
+    "claude-opus-4-8": {
+        "input": 5.0 / 1_000_000,
+        "output": 25.0 / 1_000_000,
+    },
+}
+
+# Fallback rates per model family. Model ids are env-overridable, and an id
+# missing from COSTS used to record $0.00 silently — a wrong-by-a-cent
+# estimate beats an invisible spend.
+FAMILY_COSTS: dict[str, dict[str, float]] = {
+    "haiku": COSTS["claude-haiku-4-5-20251001"],
+    "sonnet": COSTS["claude-sonnet-4-6"],
+    "opus": COSTS["claude-opus-4-8"],
 }
 
 
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    rates = COSTS.get(model, {"input": 0, "output": 0})
+    rates = COSTS.get(model)
+    if rates is None:
+        rates = next(
+            (r for family, r in FAMILY_COSTS.items() if family in model), None
+        )
+        if rates is None:
+            logger.warning(f"No cost rates for model={model} — recording $0")
+            rates = {"input": 0.0, "output": 0.0}
+        else:
+            logger.warning(f"No exact cost entry for model={model} — using family rates")
     return round(
         input_tokens * rates["input"] + output_tokens * rates["output"], 6
     )
+
+
+# ── Per-tier response caps ────────────────────────────────────
+# Sales answers were clipping at 200 tokens; the premium tiers get room to
+# finish a thought.
+HAIKU_TOOL_MAX_TOKENS = 200
+SONNET_MAX_TOKENS = 400
+OPUS_MAX_TOKENS = 450
 
 
 def _build_system(system_prompt):
@@ -69,12 +103,23 @@ def call_haiku(system_prompt, user_message: str) -> tuple[Optional[str], float]:
 
 
 def call_sonnet(system_prompt, user_message: str) -> tuple[Optional[str], float]:
-    """Call Claude Sonnet (expensive, smarter). Returns (text, cost) — (None, 0) on failure."""
+    """Call Claude Sonnet (sales default). Returns (text, cost) — (None, 0) on failure."""
     return _call_model(
         model=settings.claude_sonnet_model,
         system_prompt=system_prompt,
         user_message=user_message,
-        max_tokens=200,
+        max_tokens=SONNET_MAX_TOKENS,
+        temperature=0.4,
+    )
+
+
+def call_opus(system_prompt, user_message: str) -> tuple[Optional[str], float]:
+    """Call Claude Opus (premium turns). Returns (text, cost) — (None, 0) on failure."""
+    return _call_model(
+        model=settings.claude_opus_model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        max_tokens=OPUS_MAX_TOKENS,
         temperature=0.4,
     )
 
@@ -201,20 +246,53 @@ TRAVEL_TOOL = {
 def call_haiku_with_tools(
     system_prompt, user_message: str
 ) -> tuple[Optional[str], float, dict]:
-    """Call Haiku with travel extraction tool. Returns (text, cost, entities).
+    """Call Haiku with travel extraction tool. Returns (text, cost, entities)."""
+    return _call_model_with_tools(
+        settings.claude_haiku_model, system_prompt, user_message,
+        max_tokens=HAIKU_TOOL_MAX_TOKENS, temperature=0.3,
+    )
+
+
+def call_sonnet_with_tools(
+    system_prompt, user_message: str
+) -> tuple[Optional[str], float, dict]:
+    """Call Sonnet with travel extraction tool. Returns (text, cost, entities)."""
+    return _call_model_with_tools(
+        settings.claude_sonnet_model, system_prompt, user_message,
+        max_tokens=SONNET_MAX_TOKENS, temperature=0.4,
+    )
+
+
+def call_opus_with_tools(
+    system_prompt, user_message: str
+) -> tuple[Optional[str], float, dict]:
+    """Call Opus with travel extraction tool. Returns (text, cost, entities)."""
+    return _call_model_with_tools(
+        settings.claude_opus_model, system_prompt, user_message,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.4,
+    )
+
+
+def _call_model_with_tools(
+    model: str,
+    system_prompt,
+    user_message: str,
+    max_tokens: int,
+    temperature: float,
+) -> tuple[Optional[str], float, dict]:
+    """Internal: one generation call carrying the travel extraction tool.
 
     entities contains keys Claude extracted (origin, destination, etc.).
     Empty dict if Claude did not call the tool or on failure.
     """
     start = time.time()
-    model = settings.claude_haiku_model
     logger.info(f"Claude+Tool START | model={model}")
 
     try:
         response = _get_client().messages.create(
             model=model,
-            max_tokens=200,
-            temperature=0.3,
+            max_tokens=max_tokens,
+            temperature=temperature,
             system=_build_system(system_prompt),
             messages=[{"role": "user", "content": user_message}],
             tools=[TRAVEL_TOOL],
@@ -248,8 +326,8 @@ def call_haiku_with_tools(
         try:
             response = _get_client().messages.create(
                 model=model,
-                max_tokens=200,
-                temperature=0.3,
+                max_tokens=max_tokens,
+                temperature=temperature,
                 system=_build_system(system_prompt),
                 messages=[{"role": "user", "content": user_message}],
                 tools=[TRAVEL_TOOL],
@@ -288,18 +366,57 @@ def stream_haiku_with_tools(
     user_message: str,
     on_chunk=None,
 ) -> tuple[Optional[str], float, dict]:
-    """Stream Haiku response with tool support. Calls on_chunk(text) per delta.
-    Returns same (text, cost, tool_entities) as call_haiku_with_tools.
+    """Stream Haiku with tool support. Calls on_chunk(text) per delta."""
+    return _stream_model_with_tools(
+        settings.claude_haiku_model, system_prompt, user_message,
+        max_tokens=HAIKU_TOOL_MAX_TOKENS, temperature=0.3, on_chunk=on_chunk,
+    )
+
+
+def stream_sonnet_with_tools(
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+) -> tuple[Optional[str], float, dict]:
+    """Stream Sonnet with tool support. Calls on_chunk(text) per delta."""
+    return _stream_model_with_tools(
+        settings.claude_sonnet_model, system_prompt, user_message,
+        max_tokens=SONNET_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+    )
+
+
+def stream_opus_with_tools(
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+) -> tuple[Optional[str], float, dict]:
+    """Stream Opus with tool support. Calls on_chunk(text) per delta."""
+    return _stream_model_with_tools(
+        settings.claude_opus_model, system_prompt, user_message,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+    )
+
+
+def _stream_model_with_tools(
+    model: str,
+    system_prompt,
+    user_message: str,
+    max_tokens: int,
+    temperature: float,
+    on_chunk=None,
+) -> tuple[Optional[str], float, dict]:
+    """Internal: streamed generation carrying the travel extraction tool.
+
+    Returns the same (text, cost, tool_entities) as _call_model_with_tools.
     """
     start = time.time()
-    model = settings.claude_haiku_model
     logger.info(f"Claude+Tool STREAM START | model={model}")
 
     try:
         with _get_client().messages.stream(
             model=model,
-            max_tokens=200,
-            temperature=0.3,
+            max_tokens=max_tokens,
+            temperature=temperature,
             system=_build_system(system_prompt),
             messages=[{"role": "user", "content": user_message}],
             tools=[TRAVEL_TOOL],
@@ -367,15 +484,41 @@ def stream_sonnet(
     on_chunk=None,
 ) -> tuple[Optional[str], float]:
     """Stream Sonnet response. Returns (text, cost)."""
+    return _stream_model(
+        settings.claude_sonnet_model, system_prompt, user_message,
+        max_tokens=SONNET_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+    )
+
+
+def stream_opus(
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+) -> tuple[Optional[str], float]:
+    """Stream Opus response. Returns (text, cost)."""
+    return _stream_model(
+        settings.claude_opus_model, system_prompt, user_message,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+    )
+
+
+def _stream_model(
+    model: str,
+    system_prompt,
+    user_message: str,
+    max_tokens: int,
+    temperature: float,
+    on_chunk=None,
+) -> tuple[Optional[str], float]:
+    """Internal: streamed generation without tools. Returns (text, cost)."""
     start = time.time()
-    model = settings.claude_sonnet_model
-    logger.info(f"Claude Sonnet STREAM START | model={model}")
+    logger.info(f"Claude STREAM START | model={model}")
 
     try:
         with _get_client().messages.stream(
             model=model,
-            max_tokens=200,
-            temperature=0.4,
+            max_tokens=max_tokens,
+            temperature=temperature,
             system=_build_system(system_prompt),
             messages=[{"role": "user", "content": user_message}],
             timeout=settings.claude_timeout,
@@ -404,11 +547,11 @@ def stream_sonnet(
 
         cost = _estimate_cost(model, final.usage.input_tokens, final.usage.output_tokens)
         logger.info(
-            f"Claude Sonnet STREAM SUCCESS | text={len(full_text)}ch cost=${cost:.6f} "
+            f"Claude STREAM SUCCESS | model={model} text={len(full_text)}ch cost=${cost:.6f} "
             f"time={round(time.time() - start, 3)}s"
         )
         return full_text, cost
 
     except Exception as e:
-        logger.error(f"Claude Sonnet STREAM error: {e}")
+        logger.error(f"Claude STREAM error: {e} | model={model}")
         return None, 0.0
