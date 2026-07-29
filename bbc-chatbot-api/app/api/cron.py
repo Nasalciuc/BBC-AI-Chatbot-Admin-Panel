@@ -204,3 +204,22 @@ async def agent_response_sweep(request: Request):
         raise HTTPException(status_code=401, detail="Invalid cron token")
 
     return await run_agent_sweep()
+
+
+@router.post("/cron/daily-learning")
+async def daily_learning(request: Request, bootstrap: bool = False):
+    """Analyze recent conversations and propose lessons for human approval.
+
+    Daily: the last 24h. `?bootstrap=true`: every closed conversation ever — run
+    once after deploy to seed the lesson list from history.
+    Auth: same Bearer CRON_SECRET as abandoned-crm."""
+    if not settings.cron_secret or not settings.cron_secret.strip():
+        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
+
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {settings.cron_secret}":
+        raise HTTPException(status_code=401, detail="Invalid cron token")
+
+    from app.services.learning import run_learning
+
+    return await run_learning(bootstrap=bootstrap)
