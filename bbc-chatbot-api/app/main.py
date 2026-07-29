@@ -17,6 +17,7 @@ from app.api.teams import router as teams_router
 from app.api.agent import router as agent_router
 from app.api.tasks import router as tasks_router
 from app.api.notifications import router as notifications_router
+from app.api.lessons import router as lessons_router
 from app.api.auth_routes import router as auth_router
 from app.api.cron import router as cron_router
 from app.security.auth import get_current_user
@@ -79,6 +80,7 @@ app.include_router(teams_router,         prefix="/api", tags=["teams"],         
 app.include_router(agent_router,         prefix="/api", tags=["agent"],         dependencies=admin_deps)
 app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         dependencies=admin_deps)
 app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)
+app.include_router(lessons_router,       prefix="/api", tags=["lessons"],       dependencies=admin_deps)
 
 
 # ── Startup / shutdown ────────────────────────────────────────

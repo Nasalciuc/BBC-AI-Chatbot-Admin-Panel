@@ -1,5 +1,6 @@
 """System prompts for Claude — classifier + conversational."""
 
+import logging
 import re as _re
 from datetime import date
 from typing import Optional
@@ -7,6 +8,8 @@ from typing import Optional
 from app.models.chat import VisitorInfo
 from app.models.lead import get_missing_fields, get_lead_tier
 from app.models.kb import KBResult
+
+_logger = logging.getLogger(__name__)
 
 # ─── Site-specific brand configuration ─────────────────────────────
 SITE_CONFIGS: dict[str, dict[str, str]] = {
@@ -525,6 +528,21 @@ def build_site_context(metadata: dict | None) -> Optional[str]:
     return "\n".join(["[SITE CONTEXT]"] + lines)
 
 
+def build_lessons_section() -> Optional[str]:
+    """Approved lessons from the daily learning loop, or None.
+
+    Only 'approved' lessons ever reach a client — the loop proposes, a human
+    decides. A DB hiccup must never cost us a reply, so this fails to None.
+    """
+    try:
+        from app.services.learning import approved_lessons, render_lessons_section
+
+        return render_lessons_section(approved_lessons())
+    except Exception as e:  # noqa: BLE001 — the prompt must survive anything here
+        _logger.warning(f"Lessons section skipped: {type(e).__name__}: {e}")
+        return None
+
+
 def _conversation_stage(message_count: int) -> str:
     if message_count < 4:
         return "early"
@@ -559,6 +577,13 @@ def build_conversational_prompt(
         sections.append(SUPPORT_INSTRUCTIONS.strip())
     else:
         sections.append(SALES_INSTRUCTIONS.strip().format(**brand_vars))
+
+    # 2b. What we learned from real outcomes. STATIC: it changes at most once a
+    # day, so it belongs inside the cacheable block, not with the visitor data.
+    lessons_section = build_lessons_section()
+    if lessons_section:
+        sections.append(lessons_section)
+    static_section_count = len(sections)
 
     # 3. Visitor context (DYNAMIC — must not go into the cached static block)
     _today = date.today()
@@ -672,8 +697,8 @@ def build_conversational_prompt(
             sections.append("\n".join(conv_lines))
 
     # Split static vs dynamic for prompt caching (PR3)
-    static_parts = sections[:2]   # COMMON_RULES + SALES/SUPPORT
-    dynamic_parts = sections[2:]  # visitor context + KB + history
+    static_parts = sections[:static_section_count]   # COMMON_RULES + SALES/SUPPORT + lessons
+    dynamic_parts = sections[static_section_count:]  # visitor context + KB + history
 
     static_prompt = "\n\n".join(static_parts)
     dynamic_prompt = "\n\n".join(dynamic_parts)

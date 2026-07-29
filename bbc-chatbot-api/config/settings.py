@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     per_conversation_budget: float = 0.50
     budget_alert_threshold: float = 0.70
 
+    # Daily learning loop
+    learning_run_budget: float = 5.0        # per daily run
+    learning_bootstrap_budget: float = 15.0  # the one-off historical run
+    learning_regression_alert_pct: float = 30.0  # abandoned share 7d vs prior 7d
+    lesson_staleness_days: int = 30         # approved but unreinforced → out of the prompt
+    lesson_injection_limit: int = 8
+    learning_runs_retention_days: int = 90
+
     # Rate Limiting
     rate_burst: int = 15
     rate_sustained_seconds: int = 3

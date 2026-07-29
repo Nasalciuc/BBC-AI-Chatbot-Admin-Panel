@@ -74,6 +74,8 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 HAIKU_TOOL_MAX_TOKENS = 200
 SONNET_MAX_TOKENS = 400
 OPUS_MAX_TOKENS = 450
+# Offline synthesis, not a chat reply — it returns JSON, not two sentences.
+LEARNING_MAX_TOKENS = 2500
 
 
 def _build_system(system_prompt):
@@ -121,6 +123,22 @@ def call_opus(system_prompt, user_message: str) -> tuple[Optional[str], float]:
         user_message=user_message,
         max_tokens=OPUS_MAX_TOKENS,
         temperature=0.4,
+    )
+
+
+def call_sonnet_learning(system_prompt, user_message: str) -> tuple[Optional[str], float]:
+    """Call Sonnet for offline pattern synthesis (the daily learning loop).
+
+    Separate from call_sonnet because synthesis needs room the chat caps deny,
+    and a colder temperature: this reads conversations, it does not talk to
+    clients.
+    """
+    return _call_model(
+        model=settings.claude_sonnet_model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        max_tokens=LEARNING_MAX_TOKENS,
+        temperature=0.2,
     )
 
 
