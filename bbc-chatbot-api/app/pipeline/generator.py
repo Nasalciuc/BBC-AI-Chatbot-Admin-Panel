@@ -151,6 +151,40 @@ def _generation_tier(intent: Intent, lead: Optional[dict], tunnel: str) -> tuple
     return _select_sales_model(intent, lead)
 
 
+def _run_tiered_generation(
+    intent: Intent,
+    lead: Optional[dict],
+    tunnel: str,
+    system_parts: tuple,
+    raw_message: str,
+    on_chunk=None,
+) -> tuple[Optional[str], float, Optional[dict], str, str]:
+    """One tiered generation turn. Returns (text, cost, tool_entities, tier, reason).
+
+    Shared by the AI-FIRST path and the step-5 fallback so streaming, tool-entity
+    normalization, empty-tool re-call, and the default recovery text stay identical.
+    """
+    tier, reason = _generation_tier(intent, lead, tunnel)
+    call_tools, stream_tools, plain_call = _tier_calls(tier)
+
+    if on_chunk:
+        ai_text, ai_cost, _te = stream_tools(
+            system_parts, raw_message, on_chunk=on_chunk
+        )
+    else:
+        ai_text, ai_cost, _te = call_tools(system_parts, raw_message)
+
+    tool_entities = _te if _te else None
+    if (not ai_text or not str(ai_text).strip()) and tool_entities:
+        # Tool call succeeded but no text — re-call without tools for natural response
+        ai_text, _fallback_cost = plain_call(system_parts, raw_message)
+        ai_cost += _fallback_cost
+        if not ai_text or not str(ai_text).strip():
+            ai_text = "Let me find the best options for your trip!"
+
+    return ai_text, ai_cost, tool_entities, tier, reason
+
+
 def generate_response(
     intent: Intent,
     entities: dict,
@@ -189,6 +223,8 @@ def generate_response(
     # ── AI-FIRST: All messages through Claude (templates = fallback only) ──
     # Skip AI-first for: TALK_TO_AGENT (handoff logic), CLOSING (simple goodbye)
     # skip_templates (bad words): force AI empathetic response, not scripted handoff
+    # Once AI-first has tried under this budget, step 5 must not re-bill the same turn.
+    _ai_first_attempted = False
     _template_only_intents = (
         {Intent.CLOSING}
         if skip_templates
@@ -206,26 +242,15 @@ def generate_response(
                     history=history if history else None,
                     entities=entities,
                 )
-                _system = f"{_static}\n\n{_dynamic}"
-                _raw = entities.get("_raw_message", "")
-                _user_msgs = [m for m in (history or []) if m.get("role") == "user"]
-                _tier, _reason = _generation_tier(intent, lead, tunnel)
-                _call_tools, _stream_tools, _plain_call = _tier_calls(_tier)
-
-                if on_chunk:
-                    _ai_text, _ai_cost, _te = _stream_tools(
-                        (_static, _dynamic), _raw, on_chunk=on_chunk
-                    )
-                else:
-                    _ai_text, _ai_cost, _te = _call_tools((_static, _dynamic), _raw)
-                _tool_entities = _te if _te else None
-                if (not _ai_text or not str(_ai_text).strip()) and _tool_entities:
-                    # Tool call succeeded but no text — re-call without tools for natural response
-                    _ai_text, _fallback_cost = _plain_call((_static, _dynamic), _raw)
-                    _ai_cost += _fallback_cost
-                    if not _ai_text or not str(_ai_text).strip():
-                        _ai_text = "Let me find the best options for your trip!"
-
+                _ai_first_attempted = True
+                _ai_text, _ai_cost, _tool_entities, _tier, _reason = _run_tiered_generation(
+                    intent,
+                    lead,
+                    tunnel,
+                    (_static, _dynamic),
+                    entities.get("_raw_message", ""),
+                    on_chunk=on_chunk,
+                )
                 if _ai_text:
                     logger.info(
                         f"AI-first response | model={_tier} reason={_reason} | intent={intent.value}"
@@ -236,8 +261,7 @@ def generate_response(
                         cost=_ai_cost,
                         tool_entities=_tool_entities,
                     )
-                else:
-                    logger.warning("AI-first: Claude returned empty — falling through to templates")
+                logger.warning("AI-first: Claude returned empty — falling through to templates")
             except Exception as e:
                 logger.error(
                     f"AI-first error intent={intent.value} (falling through to templates): {e}",
@@ -471,38 +495,30 @@ def generate_response(
         )
         return GeneratedResponse(text=text, model_used="template")
 
-    # 5. AI generation
-    _static, _dynamic = build_conversational_prompt(
-        tunnel=tunnel,
-        visitor=visitor,
-        lead=lead,
-        kb_results=kb_results if kb_results else None,
-        history=history if history else None,
-        entities=entities,
-    )
-    user_messages = [m for m in history if m.get("role") == "user"]
-    raw_message = entities.get("_raw_message", "")
-    tier, reason = _generation_tier(intent, lead, tunnel)
-    logger.info(f"Generating | model={tier} reason={reason} | intent={intent.value}")
-    call_tools, stream_tools, plain_call = _tier_calls(tier)
-
-    if on_chunk:
-        ai_text, ai_cost, _te = stream_tools(
-            (_static, _dynamic), raw_message, on_chunk=on_chunk
+    # 5. AI generation — only when AI-first was skipped (template-only intents).
+    # Re-running after an empty AI-first would double-bill the same budget snapshot.
+    if not _ai_first_attempted:
+        _static, _dynamic = build_conversational_prompt(
+            tunnel=tunnel,
+            visitor=visitor,
+            lead=lead,
+            kb_results=kb_results if kb_results else None,
+            history=history if history else None,
+            entities=entities,
         )
-    else:
-        ai_text, ai_cost, _te = call_tools((_static, _dynamic), raw_message)
-    tool_entities = _te if _te else None
-    if (not ai_text or not str(ai_text).strip()) and tool_entities:
-        # Tool call succeeded but no text — re-call without tools for natural response
-        ai_text, _fallback_cost = plain_call((_static, _dynamic), raw_message)
-        ai_cost += _fallback_cost
-        if not ai_text or not str(ai_text).strip():
-            ai_text = "Let me find the best options for your trip!"
-    if ai_text:
-        return GeneratedResponse(
-            text=ai_text, model_used=tier, cost=ai_cost, tool_entities=tool_entities
+        ai_text, ai_cost, tool_entities, tier, reason = _run_tiered_generation(
+            intent,
+            lead,
+            tunnel,
+            (_static, _dynamic),
+            entities.get("_raw_message", ""),
+            on_chunk=on_chunk,
         )
+        logger.info(f"Generating | model={tier} reason={reason} | intent={intent.value}")
+        if ai_text:
+            return GeneratedResponse(
+                text=ai_text, model_used=tier, cost=ai_cost, tool_entities=tool_entities
+            )
 
     # 5c. Fallback
     logger.warning("AI generation failed — using fallback template")

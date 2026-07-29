@@ -175,6 +175,14 @@ class TestAiFirstSiteRouting:
         assert res.model_used == "opus"
         assert m["call_opus_with_tools"].called
 
+    def test_empty_ai_first_does_not_recompute_in_step_5(self):
+        """Same budget snapshot — one empty Claude call, then templates, no second bill."""
+        with _TierHarness(text="") as m:
+            with patch.object(generator, "get_template", return_value=None):
+                res = _gen(Intent.NEW_BOOKING, lead=BRONZE)
+        assert m["call_sonnet_with_tools"].call_count == 1
+        assert res.model_used == "template"
+
 
 class TestFallbackSiteRouting:
     """Site 2 — the step-5 path, reached when no template matches."""
@@ -261,3 +269,90 @@ class TestCostRecording:
 
     def test_unknown_family_records_zero(self):
         assert claude._estimate_cost("some-other-model", 1_000_000, 1_000_000) == 0.0
+
+
+class _FakeUsage:
+    input_tokens = 10
+    output_tokens = 5
+    cache_creation_input_tokens = 0
+    cache_read_input_tokens = 0
+
+
+class _FakeFinal:
+    usage = _FakeUsage()
+
+
+class _FakeStream:
+    def __init__(self, chunks=("ok",)):
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        yield from self._chunks
+
+    def get_final_message(self):
+        return _FakeFinal()
+
+
+class TestStreamModelErrors:
+    """_stream_model mirrors _call_model's timeout / APIError contract."""
+
+    def test_timeout_retries_once_then_succeeds(self):
+        import anthropic
+
+        client = patch.object(claude, "_get_client").start()
+        try:
+            client.return_value.messages.stream.side_effect = [
+                anthropic.APITimeoutError(request=None),
+                _FakeStream(("recovered",)),
+            ]
+            text, cost = claude._stream_model(
+                "claude-sonnet-4-6", "sys", "msg", max_tokens=400, temperature=0.4
+            )
+            assert text == "recovered"
+            assert cost > 0
+            assert client.return_value.messages.stream.call_count == 2
+        finally:
+            patch.stopall()
+
+    def test_timeout_exhausted_returns_none(self):
+        import anthropic
+
+        client = patch.object(claude, "_get_client").start()
+        try:
+            client.return_value.messages.stream.side_effect = anthropic.APITimeoutError(
+                request=None
+            )
+            text, cost = claude._stream_model(
+                "claude-sonnet-4-6", "sys", "msg", max_tokens=400, temperature=0.4
+            )
+            assert text is None
+            assert cost == 0.0
+            assert client.return_value.messages.stream.call_count == 2
+        finally:
+            patch.stopall()
+
+    def test_api_error_returns_none_without_retry(self):
+        import anthropic
+
+        client = patch.object(claude, "_get_client").start()
+        try:
+            client.return_value.messages.stream.side_effect = anthropic.APIError(
+                message="boom",
+                request=None,
+                body=None,
+            )
+            text, cost = claude._stream_model(
+                "claude-sonnet-4-6", "sys", "msg", max_tokens=400, temperature=0.4
+            )
+            assert text is None
+            assert cost == 0.0
+            assert client.return_value.messages.stream.call_count == 1
+        finally:
+            patch.stopall()

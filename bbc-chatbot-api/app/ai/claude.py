@@ -510,48 +510,71 @@ def _stream_model(
     temperature: float,
     on_chunk=None,
 ) -> tuple[Optional[str], float]:
-    """Internal: streamed generation without tools. Returns (text, cost)."""
+    """Internal: streamed generation without tools. Returns (text, cost).
+
+    Mirrors _call_model: one retry on APITimeoutError, then the same
+    APIError / unexpected-error logging and (None, 0.0) contract.
+    """
     start = time.time()
     logger.info(f"Claude STREAM START | model={model}")
 
-    try:
-        with _get_client().messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=_build_system(system_prompt),
-            messages=[{"role": "user", "content": user_message}],
-            timeout=settings.claude_timeout,
-        ) as stream:
-            full_text = ""
-            for text_chunk in stream.text_stream:
-                full_text += text_chunk
-                if on_chunk and text_chunk:
-                    on_chunk(text_chunk)
-
-            final = stream.get_final_message()
-
-        # Log prompt cache stats
+    for attempt in range(2):
         try:
-            _usage = getattr(final, 'usage', None)
-            if _usage:
-                _cc = getattr(_usage, 'cache_creation_input_tokens', 0) or 0
-                _cr = getattr(_usage, 'cache_read_input_tokens', 0) or 0
-                if _cc or _cr:
-                    logger.info(
-                        f"[CACHE] create={_cc} read={_cr} "
-                        f"input={getattr(_usage, 'input_tokens', 0)}"
-                    )
-        except Exception:
-            pass  # Non-critical logging
+            with _get_client().messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=_build_system(system_prompt),
+                messages=[{"role": "user", "content": user_message}],
+                timeout=settings.claude_timeout,
+            ) as stream:
+                full_text = ""
+                for text_chunk in stream.text_stream:
+                    full_text += text_chunk
+                    if on_chunk and text_chunk:
+                        on_chunk(text_chunk)
 
-        cost = _estimate_cost(model, final.usage.input_tokens, final.usage.output_tokens)
-        logger.info(
-            f"Claude STREAM SUCCESS | model={model} text={len(full_text)}ch cost=${cost:.6f} "
-            f"time={round(time.time() - start, 3)}s"
-        )
-        return full_text, cost
+                final = stream.get_final_message()
 
-    except Exception as e:
-        logger.error(f"Claude STREAM error: {e} | model={model}")
-        return None, 0.0
+            # Log prompt cache stats
+            try:
+                _usage = getattr(final, 'usage', None)
+                if _usage:
+                    _cc = getattr(_usage, 'cache_creation_input_tokens', 0) or 0
+                    _cr = getattr(_usage, 'cache_read_input_tokens', 0) or 0
+                    if _cc or _cr:
+                        logger.info(
+                            f"[CACHE] create={_cc} read={_cr} "
+                            f"input={getattr(_usage, 'input_tokens', 0)}"
+                        )
+            except Exception:
+                pass  # Non-critical logging
+
+            cost = _estimate_cost(model, final.usage.input_tokens, final.usage.output_tokens)
+            logger.info(
+                f"Claude STREAM SUCCESS | model={model} text={len(full_text)}ch cost=${cost:.6f} "
+                f"time={round(time.time() - start, 3)}s"
+            )
+            return full_text, cost
+
+        except anthropic.APITimeoutError:
+            logger.error(
+                f"Claude STREAM timeout ({settings.claude_timeout}s) model={model} "
+                f"attempt={attempt + 1}/2"
+            )
+            if attempt == 0:
+                continue  # retry once
+            return None, 0.0
+        except anthropic.APIError as e:
+            logger.error(
+                f"Claude STREAM API error: {e} | model={model} "
+                f"| status={getattr(e, 'status_code', 'N/A')}"
+            )
+            return None, 0.0
+        except Exception as e:
+            logger.error(
+                f"Claude STREAM unexpected error: {type(e).__name__}: {e} | model={model}"
+            )
+            return None, 0.0
+
+    return None, 0.0
