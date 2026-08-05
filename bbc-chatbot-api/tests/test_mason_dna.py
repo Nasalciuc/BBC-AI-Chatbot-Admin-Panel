@@ -17,7 +17,11 @@ from app.db import supabase as db
 from app.models.chat import VisitorInfo
 from app.pipeline.entity_extractor import (
     derive_persona,
+    derive_t0_persona,
     destination_from_path,
+    diaspora_triangulation,
+    parse_landing_hints,
+    priors_from_keyword,
     extract_entities,
 )
 from app.pipeline.validator import validate_response
@@ -158,6 +162,99 @@ class TestDestinationFromPath:
         assert destination_from_path(path) == expected
 
 
+class TestParseLandingHints:
+    def test_country_india(self):
+        h = parse_landing_hints("/flight/country/india/410")
+        assert h["landing_kind"] == "country"
+        assert h["destination_country"] == "India"
+        assert "Delhi" in h["gateways"]
+
+    def test_new_zealand_slug(self):
+        h = parse_landing_hints("/flight/country/new-zealand/12")
+        assert h["destination_country"] == "New Zealand"
+
+    def test_amsterdam_under_country_is_city(self):
+        h = parse_landing_hints("/flight/country/amsterdam/8")
+        assert h["landing_kind"] == "city"
+        assert h["destination_city"] == "Amsterdam"
+        assert "destination_country" not in h
+
+    def test_oceania_region(self):
+        h = parse_landing_hints("/flight/region/oceania/693")
+        assert h["landing_kind"] == "region"
+        assert h["destination_region"] == "Oceania"
+        assert "Australia" in h["region_countries"]
+
+
+class TestPriorsFromKeyword:
+    @pytest.mark.parametrize(
+        "term,expect_dest,expect_persona",
+        [
+            ("cheap business class to india", "India", "value_driven"),
+            ("first class tokyo", "Tokyo", "experience_seeker"),
+            ("flights for my parents to manila", "Manila", "needs_based"),
+            ("1234567890", None, None),
+        ],
+    )
+    def test_keyword_table(self, term, expect_dest, expect_persona):
+        p = priors_from_keyword(term)
+        assert p.get("destination_hint") == expect_dest
+        assert p.get("persona_prior") == expect_persona
+
+
+class TestDeriveT0Persona:
+    def test_keyword_first_class_frame(self):
+        assert derive_t0_persona({"utm_term": "first class to paris"}) == (
+            "experience_seeker",
+            "keyword_first_class",
+            "frame",
+        )
+
+    def test_keyword_value_frame(self):
+        assert derive_t0_persona({"utm_term": "cheap deals india", "utm_source": "google"}) == (
+            "value_driven",
+            "keyword_value",
+            "frame",
+        )
+
+    def test_destination_alone_is_neutral(self):
+        assert derive_t0_persona(
+            {"page_url": "/flight/country/india/410", "utm_source": "google"}
+        ) == (None, None, "none")
+
+    def test_paid_social_alone_is_neutral(self):
+        assert derive_t0_persona({"utm_source": "fb", "fbclid": "x"}) == (None, None, "none")
+
+    def test_corporate_email_tint(self):
+        assert derive_t0_persona({}, visitor_email="alex@acme-corp.com") == (
+            "time_is_money",
+            "corporate_email",
+            "tint",
+        )
+
+    def test_diaspora_full_triangulation(self):
+        meta = {
+            "ip_country": "US",
+            "phone_country": "IN",
+            "page_url": "/flight/country/india/410",
+        }
+        assert derive_t0_persona(meta) == ("needs_based", "diaspora_prior", "frame")
+
+    def test_diaspora_partial_not_enough(self):
+        assert diaspora_triangulation(
+            ip_country="US", phone_country="IN", destination_country=None
+        ) is False
+        assert derive_t0_persona(
+            {"ip_country": "US", "phone_country": "IN"}
+        ) == (None, None, "none")
+
+    def test_occasion_still_wins(self):
+        assert derive_t0_persona(
+            {"utm_term": "cheap india", "utm_source": "kayak"},
+            occasion="celebration",
+        ) == ("experience_seeker", "occasion", "frame")
+
+
 class TestVolunteeredExtraction:
     def test_occasion_keywords(self):
         assert extract_entities("It's our anniversary").occasion == "celebration"
@@ -242,6 +339,58 @@ class TestSiteContext:
     def test_returning_visitor_line(self):
         block = build_site_context({"utm_source": "google", "returning_visitor": True})
         assert "Welcome back!" in block
+
+    def test_country_landing_refines_with_gateways(self):
+        block = build_site_context(
+            {
+                "utm_source": "google",
+                "utm_term": "cheap business class to india",
+                "page_url": "https://buybusinessclass.com/flight/country/india/410",
+            }
+        )
+        assert "country page for India" in block
+        assert "Delhi" in block
+        assert "Search keyword hint: cheap business class to india" in block
+        assert "value_driven" in block
+
+    def test_numeric_fb_ids_never_in_prompt(self):
+        block = build_site_context(
+            {
+                "utm_source": "fb",
+                "utm_campaign": "120212345678901234",
+                "utm_term": "9876543210",
+                "fbclid": "SECRET_FB",
+                "page_url": "https://buybusinessclass.com/",
+            }
+        )
+        assert "120212345678901234" not in (block or "")
+        assert "9876543210" not in (block or "")
+        assert "SECRET_FB" not in (block or "")
+        assert "Paid social" in block
+
+    def test_own_domain_referrer_skipped(self):
+        block = build_site_context(
+            {
+                "referrer": "https://buybusinessclass.com/deals",
+                "utm_source": "google",
+                "page_url": "/flight/country/japan/1",
+            }
+        )
+        assert "buybusinessclass.com" not in block.split("\n")[1]  # Came from line
+        assert "Came from: direct via google" in block or "via google" in block
+
+    def test_region_oceania_line(self):
+        block = build_site_context(
+            {"page_url": "/flight/region/oceania/693", "utm_source": "google"}
+        )
+        assert "region page for Oceania" in block
+        assert "Australia" in block
+
+    def test_hints_never_written_as_lead_fields(self):
+        """Landing/keyword helpers are hint-only — extract_entities ignores them."""
+        e = extract_entities("hi there")
+        assert e.destination_code is None
+        assert parse_landing_hints("/flight/country/india/410")["destination_country"] == "India"
 
 
 class TestChatContextLine:

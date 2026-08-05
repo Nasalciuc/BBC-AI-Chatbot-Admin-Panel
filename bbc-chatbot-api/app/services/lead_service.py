@@ -72,6 +72,7 @@ SIGNAL_KEYS = (
     "occasion",
     "persona",
     "persona_source",
+    "persona_confidence",
     "dream_outcome",
     "date_flexible",
     "must_haves",
