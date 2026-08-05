@@ -23,6 +23,43 @@ logger = logging.getLogger(__name__)
 # Background tasks that don't block the response
 _background_tasks: set = set()  # prevent garbage collection
 
+# OPEN DOOR — the free-text answer to "anything that would make this trip
+# perfect?" after the summary. A "no" is fine; a route restatement is NOT a
+# must-have (that was the Savannah→Auckland pollution).
+_OPEN_DOOR_NO = {
+    "no", "nope", "nothing", "none", "that's all", "thats all",
+    "all good", "no thanks", "nothing else",
+}
+
+
+def decide_open_door_reply(
+    message: str,
+    *,
+    pending: bool,
+    confirmed_this_turn: bool,
+    has_trip_entities: bool,
+) -> tuple[Optional[str], bool]:
+    """One-turn open-door window. Returns (must_haves|None, clear_pending).
+
+    The window is exactly one client turn after the summary is shown. A route
+    restatement or booking correction is never a must-have — the normal entity
+    flow already handles those. A graceful "no" clears the flag and stores nothing.
+    """
+    if not pending:
+        return None, False
+    # Window closes this turn regardless of what we capture.
+    if confirmed_this_turn:
+        return None, True
+    stripped = (message or "").strip()
+    lowered = stripped.lower().rstrip(".!")
+    if lowered in _OPEN_DOOR_NO:
+        return None, True
+    if has_trip_entities:
+        return None, True
+    if not (3 < len(stripped) <= 200):
+        return None, True
+    return stripped, True
+
 
 def _fire_and_forget(coro):
     """Run coroutine in background without blocking pipeline."""
@@ -280,14 +317,6 @@ async def _pipeline(
     # turn on top of what the conversation already knows.
     _site_metadata = {**_conv_meta, **(metadata or {})}
 
-    # OPEN DOOR: the free-text answer that follows the summary is the client's
-    # must-have, not a new booking detail.
-    _open_door_reply: Optional[str] = None
-    if _conv_meta.get("summary_shown_at") and not _confirmed_this_turn:
-        _stripped = message.strip()
-        if 3 < len(_stripped) <= 200:
-            _open_door_reply = _stripped
-
     # ── STEP 3.6: MULTI-TURN PROBE DETECTION ─────────────────
     _probe_keywords = [
         "guidelines", "instructions", "system prompt", "your rules",
@@ -325,6 +354,35 @@ async def _pipeline(
 
     # ── STEP 4: ENTITY EXTRACTION ────────────────────────────
     extracted = extract_entities(message)
+
+    # OPEN DOOR: one-turn window after the summary. Needs the extractor's
+    # trip fields so a route restatement is never stored as a must-have.
+    _has_trip = bool(
+        extracted.origin_code
+        or extracted.destination_code
+        or extracted.departure_date
+        or extracted.passengers
+    )
+    _open_door_reply, _clear_open_door = decide_open_door_reply(
+        message,
+        pending=bool(_conv_meta.get("open_door_pending")),
+        confirmed_this_turn=_confirmed_this_turn,
+        has_trip_entities=_has_trip,
+    )
+    if _clear_open_door:
+        _meta_upd = dict(_conv_meta)
+        _meta_upd["open_door_pending"] = False
+        try:
+            await db.update_conversation(cid, {"metadata": _meta_upd})
+            _conv_meta = _meta_upd
+            _site_metadata = {**_conv_meta, **(metadata or {})}
+        except Exception as e:
+            logger.warning(f"[{cid}] Failed to clear open_door_pending: {e}")
+        if _open_door_reply:
+            logger.info(f"[{cid}] Open-door must-have captured ({len(_open_door_reply)} chars)")
+        else:
+            logger.info(f"[{cid}] Open-door window closed (no must-have stored)")
+
     entities: dict = {
         "_raw_message": message,
         # name: ALWAYS from visitor form data — never extract from message text
@@ -793,6 +851,10 @@ async def _pipeline(
                 validated_text = _summary_text
                 _meta_upd = dict(_conv_meta)
                 _meta_upd["summary_shown_at"] = datetime.now(timezone.utc).isoformat()
+                # One-turn window for the open-door must-have. Cleared on the
+                # next client message whether they answer, say no, or correct
+                # the route — never left open forever (the Savannah bug).
+                _meta_upd["open_door_pending"] = True
                 await db.update_conversation(cid, {"metadata": _meta_upd})
                 _conv_meta = _meta_upd
                 gen.model_used = "template"
