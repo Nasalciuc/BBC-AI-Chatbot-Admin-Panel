@@ -199,7 +199,8 @@ def generate_response(
 ) -> GeneratedResponse:
     """Decision tree for response generation.
 
-    1. GREETING → template ($0)
+    1. GREETING — sales: live Sonnet/Opus (Mason DNA + SITE CONTEXT); support: template.
+       Sales falls back to welcome template if generation fails (never a blank greeting).
     2. CLOSING  → template ($0)
     3. TALK_TO_AGENT → template ($0)
     4. NEW_BOOKING / ROUTE_INFO + route KB data → route card + template ($0)
@@ -221,15 +222,18 @@ def generate_response(
         intent = Intent.GENERAL_QUESTION
 
     # ── AI-FIRST: All messages through Claude (templates = fallback only) ──
-    # Skip AI-first for: TALK_TO_AGENT (handoff logic), CLOSING (simple goodbye)
+    # Skip AI-first for: TALK_TO_AGENT (handoff logic), CLOSING (simple goodbye),
+    # and SUPPORT GREETING (canned welcome — sales GREETING stays live so Mason
+    # DNA + SITE CONTEXT shape the first impression).
     # skip_templates (bad words): force AI empathetic response, not scripted handoff
     # Once AI-first has tried under this budget, step 5 must not re-bill the same turn.
     _ai_first_attempted = False
-    _template_only_intents = (
-        {Intent.CLOSING}
-        if skip_templates
-        else {Intent.TALK_TO_AGENT, Intent.CLOSING}
-    )
+    if skip_templates:
+        _template_only_intents = {Intent.CLOSING}
+    else:
+        _template_only_intents = {Intent.TALK_TO_AGENT, Intent.CLOSING}
+        if tunnel == "support":
+            _template_only_intents = _template_only_intents | {Intent.GREETING}
     if intent not in _template_only_intents:
         # Budget check before AI call
         if budget_remaining is None or budget_remaining > 0:

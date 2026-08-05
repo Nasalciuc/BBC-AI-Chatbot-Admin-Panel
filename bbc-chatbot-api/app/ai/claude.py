@@ -111,7 +111,7 @@ def call_sonnet(system_prompt, user_message: str) -> tuple[Optional[str], float]
         system_prompt=system_prompt,
         user_message=user_message,
         max_tokens=SONNET_MAX_TOKENS,
-        temperature=0.4,
+        temperature=0.6,
     )
 
 
@@ -122,7 +122,7 @@ def call_opus(system_prompt, user_message: str) -> tuple[Optional[str], float]:
         system_prompt=system_prompt,
         user_message=user_message,
         max_tokens=OPUS_MAX_TOKENS,
-        temperature=0.4,
+        temperature=0.6,
     )
 
 
@@ -277,7 +277,7 @@ def call_sonnet_with_tools(
     """Call Sonnet with travel extraction tool. Returns (text, cost, entities)."""
     return _call_model_with_tools(
         settings.claude_sonnet_model, system_prompt, user_message,
-        max_tokens=SONNET_MAX_TOKENS, temperature=0.4,
+        max_tokens=SONNET_MAX_TOKENS, temperature=0.6,
     )
 
 
@@ -287,7 +287,7 @@ def call_opus_with_tools(
     """Call Opus with travel extraction tool. Returns (text, cost, entities)."""
     return _call_model_with_tools(
         settings.claude_opus_model, system_prompt, user_message,
-        max_tokens=OPUS_MAX_TOKENS, temperature=0.4,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.6,
     )
 
 
@@ -399,7 +399,7 @@ def stream_sonnet_with_tools(
     """Stream Sonnet with tool support. Calls on_chunk(text) per delta."""
     return _stream_model_with_tools(
         settings.claude_sonnet_model, system_prompt, user_message,
-        max_tokens=SONNET_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+        max_tokens=SONNET_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
     )
 
 
@@ -411,7 +411,7 @@ def stream_opus_with_tools(
     """Stream Opus with tool support. Calls on_chunk(text) per delta."""
     return _stream_model_with_tools(
         settings.claude_opus_model, system_prompt, user_message,
-        max_tokens=OPUS_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
     )
 
 
@@ -504,7 +504,7 @@ def stream_sonnet(
     """Stream Sonnet response. Returns (text, cost)."""
     return _stream_model(
         settings.claude_sonnet_model, system_prompt, user_message,
-        max_tokens=SONNET_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+        max_tokens=SONNET_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
     )
 
 
@@ -516,7 +516,7 @@ def stream_opus(
     """Stream Opus response. Returns (text, cost)."""
     return _stream_model(
         settings.claude_opus_model, system_prompt, user_message,
-        max_tokens=OPUS_MAX_TOKENS, temperature=0.4, on_chunk=on_chunk,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
     )
 
 

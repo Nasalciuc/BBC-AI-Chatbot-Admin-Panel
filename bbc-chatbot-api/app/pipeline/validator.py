@@ -41,14 +41,58 @@ MAX_LENGTH = 350
 EMPTY_FALLBACK = "How can I help you with business class travel today?"
 PRICE_REPLACEMENT = "contact our specialists for current pricing"
 
+# Sentence boundary: end punctuation, optional closing quote, then whitespace or EOS.
+_SENTENCE_START_RE = re.compile(r'[.!?]+["\']?\s+')
+
+
+def _sentence_span(text: str, index: int) -> tuple[int, int]:
+    """Return [start, end) of the sentence containing `index`."""
+    start = 0
+    for m in _SENTENCE_START_RE.finditer(text[:index]):
+        start = m.end()
+    end_m = re.search(r'[.!?]+["\']?', text[index:])
+    if end_m:
+        end = index + end_m.end()
+    else:
+        end = len(text)
+    return start, end
+
+
+def _replace_matching_sentences(
+    text: str, pattern: re.Pattern, replacement: str
+) -> str:
+    """Replace every sentence that contains a pattern match — never mid-sentence splice."""
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text
+
+    spans: list[tuple[int, int]] = []
+    for m in matches:
+        spans.append(_sentence_span(text, m.start()))
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    result = text
+    for s, e in reversed(merged):
+        left = result[:s].rstrip()
+        right = result[e:].lstrip()
+        pieces = [p for p in (left, replacement, right) if p]
+        result = " ".join(pieces)
+    return result
+
 
 def validate_response(text: str) -> str:
     """Validate and fix AI-generated response before delivery.
 
     Checks:
-    1. Exact prices → replace
-    2. Competitor names → replace with "other services"
-    3. Hallucination phrases → replace with specialist redirect
+    1. Exact prices → replace containing sentence
+    2. Competitor names → replace containing sentence
+    3. Hallucination phrases → replace containing sentence
     4. Length → truncate at sentence boundary
     5. Empty → fallback
     """
@@ -57,15 +101,17 @@ def validate_response(text: str) -> str:
 
     result = text.strip()
 
-    # 1. Replace exact prices that aren't qualified
-    result = _EXACT_PRICE_RE.sub(PRICE_REPLACEMENT, result)
+    # 1. Replace exact prices that aren't qualified (whole sentence)
+    result = _replace_matching_sentences(result, _EXACT_PRICE_RE, PRICE_REPLACEMENT)
 
-    # 2. Replace competitor names
-    result = _COMPETITOR_RE.sub("other services", result)
+    # 2. Replace competitor names (whole sentence)
+    result = _replace_matching_sentences(result, _COMPETITOR_RE, "other services")
 
-    # 3. Replace hallucination phrases
+    # 3. Replace hallucination phrases (whole sentence)
     if _HALLUCINATION_RE.search(result):
-        result = _HALLUCINATION_RE.sub(HALLUCINATION_REPLACEMENT, result)
+        result = _replace_matching_sentences(
+            result, _HALLUCINATION_RE, HALLUCINATION_REPLACEMENT
+        )
 
     # 4. Truncate at sentence boundary if too long
     if len(result) > MAX_LENGTH:
