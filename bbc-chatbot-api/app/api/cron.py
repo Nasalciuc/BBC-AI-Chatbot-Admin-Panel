@@ -207,11 +207,15 @@ async def agent_response_sweep(request: Request):
 
 
 @router.post("/cron/daily-learning")
-async def daily_learning(request: Request, bootstrap: bool = False):
+async def daily_learning(
+    request: Request, bootstrap: bool = False, force: bool = False
+):
     """Analyze recent conversations and propose lessons for human approval.
 
     Daily: the last 24h. `?bootstrap=true`: every closed conversation ever — run
     once after deploy to seed the lesson list from history.
+    `?force=true`: bypass the already-ran guard. Evidence-unsafe — chunks that
+    succeeded in a prior partial will be reinforced again. Rare, deliberate.
     Auth: same Bearer CRON_SECRET as abandoned-crm."""
     if not settings.cron_secret or not settings.cron_secret.strip():
         raise HTTPException(status_code=503, detail="Cron endpoint not configured")
@@ -222,4 +226,4 @@ async def daily_learning(request: Request, bootstrap: bool = False):
 
     from app.services.learning import run_learning
 
-    return await run_learning(bootstrap=bootstrap)
+    return await run_learning(bootstrap=bootstrap, force=force)

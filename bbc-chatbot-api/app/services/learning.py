@@ -40,6 +40,33 @@ LEAD_COLUMNS = (
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"\+?\d[\d\-.\s()]{7,}\d")
 
+# Lesson content caps — trim, don't reject. Flagged lessons still land as
+# proposed so a human decides; they just need an explicit second look.
+LESSON_TITLE_MAX = 80
+LESSON_CONTENT_MAX = 400
+
+# Patterns that suggest the lesson is trying to steer the model rather than
+# teach a measured sales outcome. Case-insensitive; any hit → needs_scrutiny.
+_SCRUTINY_PATTERNS = [
+    re.compile(p, re.I)
+    for p in (
+        r"\bignore\s+(all|previous)\b",
+        r"\bdisregard\b",
+        r"\bforget\s+(the|your)\b",
+        r"\balways\s+(share|reveal|send|include)\b",
+        r"\bnever\s+(mention|refuse)\b",
+        r"https?://",
+        r"\byou\s+must\b",
+        r"\byou\s+should\s+now\b",
+        r"\bfrom\s+now\s+on\b",
+    )
+]
+
+FORCE_RERUN_WARNING = (
+    "forced rerun — evidence counts may be double-applied for chunks that "
+    "succeeded in the prior partial run"
+)
+
 
 # ── PII masking ───────────────────────────────────────────────
 # Lessons are read by people and injected into prompts. No client data,
@@ -55,6 +82,26 @@ def mask_pii(text: Optional[str], names: tuple[Optional[str], ...] = ()) -> str:
         if name and len(name.strip()) >= 3:
             masked = re.sub(re.escape(name.strip()), "[name]", masked, flags=re.I)
     return masked
+
+
+def sanitize_lesson(title: str, content: str) -> tuple[str, str, bool]:
+    """Deterministic gate before a lesson is inserted.
+
+    Returns (title, content, needs_scrutiny). Caps trim; pattern/PII hits set
+    the flag. Flagged lessons are NOT dropped — the human decides — but the
+    PATCH endpoint refuses to approve them without acknowledge_scrutiny.
+    """
+    clean_title = (title or "").strip()[:LESSON_TITLE_MAX]
+    # Mask first so a residual email becomes [email] and still flags below
+    # if the raw form was present (belt and suspenders over card masking).
+    raw_content = (content or "").strip()
+    has_pii = bool(_EMAIL_RE.search(raw_content) or _PHONE_RE.search(raw_content))
+    clean_content = mask_pii(raw_content)[:LESSON_CONTENT_MAX]
+
+    needs_scrutiny = has_pii or any(
+        pat.search(clean_content) or pat.search(clean_title) for pat in _SCRUTINY_PATTERNS
+    )
+    return clean_title, clean_content, needs_scrutiny
 
 
 # ── Conversation cards (no LLM — cheap) ───────────────────────
@@ -315,6 +362,22 @@ async def get_lessons(status: Optional[str] = None) -> list[dict]:
     return res.data or []
 
 
+async def get_lesson(lesson_id: str) -> Optional[dict]:
+    client = db.get_client()
+
+    def _query():
+        return (
+            client.table("chatbot_lessons")
+            .select("*")
+            .eq("id", lesson_id)
+            .limit(1)
+            .execute()
+        )
+
+    res = await db._run_sync(_query)
+    return (res.data or [None])[0]
+
+
 async def set_lesson_status(lesson_id: str, status: str) -> Optional[dict]:
     client = db.get_client()
 
@@ -385,15 +448,20 @@ async def merge_lessons(
         if not title or not content:
             continue
 
+        title, content, needs_scrutiny = sanitize_lesson(title, content)
+        if not title or not content:
+            continue
+
         row = {
             "kind": kind,
-            "title": title[:200],
-            "content": mask_pii(content)[:4000],
+            "title": title,
+            "content": content,
             "evidence_count": max(1, int(entry.get("evidence_count") or 1)),
             "denominator": int(entry["denominator"]) if entry.get("denominator") else None,
             "dominant_segment": entry.get("dominant_segment"),
             "sample_cards": _sample_cards(cards_by_id, entry.get("cards")),
             "status": "proposed",
+            "needs_scrutiny": needs_scrutiny,
             "first_seen_run": today,
             "last_seen_run": today,
         }
@@ -411,21 +479,34 @@ async def merge_lessons(
 
 # ── Runs table ────────────────────────────────────────────────
 
-async def _run_exists_today(run_day: date) -> bool:
+async def _prior_run_today(run_day: date) -> Optional[dict]:
+    """Any run for today, any status. A partial must block re-run too —
+    otherwise evidence on the chunks that succeeded gets double-counted."""
     client = db.get_client()
 
     def _query():
         return (
             client.table("learning_runs")
-            .select("id")
+            .select("id,status")
             .eq("run_date", run_day.isoformat())
-            .eq("status", "ok")
+            .order("created_at", desc=True)
             .limit(1)
             .execute()
         )
 
     res = await db._run_sync(_query)
-    return bool(res.data)
+    return (res.data or [None])[0]
+
+
+async def _run_exists_today(run_day: date) -> bool:
+    """Back-compat wrapper — True when any prior run for today exists."""
+    return await _prior_run_today(run_day) is not None
+
+
+async def _approved_lesson_ids() -> list[str]:
+    """Sorted ids of currently approved lessons — the day's provenance snapshot."""
+    approved = await get_lessons(status="approved")
+    return sorted(str(lesson["id"]) for lesson in approved if lesson.get("id"))
 
 
 async def _save_run(payload: dict) -> None:
@@ -553,27 +634,39 @@ async def _send_regression_alert(summary: dict) -> bool:
 
 # ── The run ───────────────────────────────────────────────────
 
-async def run_learning(bootstrap: bool = False) -> dict:
-    """One pass of the loop. Never raises — a failed run is recorded, not thrown."""
+async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
+    """One pass of the loop. Never raises — a failed run is recorded, not thrown.
+
+    `force=True` bypasses the already-ran guard. Evidence-unsafe: chunks that
+    succeeded in a prior partial will be reinforced again. Documented, rare.
+    """
     run_day = date.today()
     budget = settings.learning_bootstrap_budget if bootstrap else settings.learning_run_budget
 
-    if not bootstrap and await _run_exists_today(run_day):
-        logger.info("Learning: already ran today — skipping")
-        return {"skipped": "already_ran", "run_date": run_day.isoformat()}
+    prior = await _prior_run_today(run_day)
+    if prior and not force:
+        logger.info(
+            f"Learning: already ran today (status={prior.get('status')}) — skipping"
+        )
+        return {
+            "skipped": "already_ran",
+            "prior_status": prior.get("status"),
+            "run_date": run_day.isoformat(),
+        }
 
     status = "ok"
     cost = 0.0
     new_lessons = reinforced = 0
     cards: list[dict] = []
     distribution: dict = {}
+    active_lesson_ids = await _approved_lesson_ids()
 
     try:
         cards = await collect_cards(bootstrap)
         distribution = tag_distribution(cards)
         logger.info(
             f"Learning: {len(cards)} conversations | bootstrap={bootstrap} | "
-            f"tags={distribution.get('tags')}"
+            f"force={force} | tags={distribution.get('tags')}"
         )
 
         chunk_findings: list[dict] = []
@@ -631,6 +724,7 @@ async def run_learning(bootstrap: bool = False) -> dict:
                 "bootstrap": bootstrap,
                 "conversations_analyzed": len(cards),
                 "tag_distribution": distribution or None,
+                "active_lesson_ids": active_lesson_ids,
                 "cost": round(cost, 4),
                 "status": "error",
                 "error": f"{type(e).__name__}: {e}"[:500],
@@ -644,6 +738,7 @@ async def run_learning(bootstrap: bool = False) -> dict:
             "bootstrap": bootstrap,
             "conversations_analyzed": len(cards),
             "tag_distribution": distribution,
+            "active_lesson_ids": active_lesson_ids,
             "new_lessons": new_lessons,
             "reinforced_lessons": reinforced,
             "cost": round(cost, 4),
@@ -659,18 +754,22 @@ async def run_learning(bootstrap: bool = False) -> dict:
     await _prune_runs()
     invalidate_lesson_cache()
 
-    return {
+    result = {
         "status": status,
         "bootstrap": bootstrap,
         "run_date": run_day.isoformat(),
         "conversations_analyzed": len(cards),
         "tag_distribution": distribution,
+        "active_lesson_ids": active_lesson_ids,
         "new_lessons": new_lessons,
         "reinforced_lessons": reinforced,
         "cost": round(cost, 4),
         "rolling_7d": summary,
         "regression_alert_sent": alerted,
     }
+    if force and prior:
+        result["warning"] = FORCE_RERUN_WARNING
+    return result
 
 
 # ── Prompt injection (sync — the generator runs in a worker thread) ──
