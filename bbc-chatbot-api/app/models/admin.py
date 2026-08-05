@@ -1,7 +1,7 @@
 """Pydantic models for all admin endpoints."""
 from datetime import date, datetime
-from typing import Optional, List
-from pydantic import BaseModel
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, Field
 
 
 # ── Conversations ─────────────────────────────────────────────
@@ -78,7 +78,10 @@ class LeadListItem(BaseModel):
     score: int
     tier: str
     status: str
-    intent_signals: List[str] = []
+    # Post-#161 this column holds a methodology-signals OBJECT. Legacy rows
+    # still carry '[]' until migration 027 normalizes them — accept both so
+    # GET /leads/{id} doesn't 500 on either shape.
+    intent_signals: Union[Dict[str, Any], List[str]] = Field(default_factory=dict)
     notes: str
     created_at: datetime
     updated_at: datetime
