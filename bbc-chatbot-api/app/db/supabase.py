@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 import statistics
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -338,28 +339,76 @@ _LIST_COLUMNS_SUPERVISOR = (
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
 
-# None = not probed yet, True = migrations applied, False = pre-migration DB.
-# A single failure downgrades the process to the legacy column set; the chats
-# list keeps working and tags simply stay absent until the migration runs and
-# the app restarts.
+# None = not probed yet, True = migrations applied, False = temporarily
+# downgraded after a real missing-column error. Transient network/HTTP errors
+# must NEVER flip this — that froze activity clocks process-wide and tagged
+# engaged clients as no_engagement (see conv #1140).
+SUPERVISOR_COLUMNS_RETRY_SECONDS = 60
 _supervisor_columns_ok: Optional[bool] = None
+_supervisor_columns_downgraded_at: Optional[float] = None  # time.time()
+
+_MISSING_COLUMN_RE = re.compile(r"column\s+.+\s+does\s+not\s+exist", re.I)
+
+
+def _is_missing_column_error(err: BaseException) -> bool:
+    """True only for a genuine Postgres/PostgREST missing-column failure.
+
+    Timeout, 503, connection reset, etc. are NOT missing columns — treating
+    them as such is what poisoned the tag clocks.
+    """
+    code = getattr(err, "code", None) or getattr(err, "pgcode", None)
+    if str(code) == "42703":
+        return True
+    if _MISSING_COLUMN_RE.search(str(err)):
+        return True
+    for arg in getattr(err, "args", ()) or ():
+        if isinstance(arg, dict):
+            if str(arg.get("code") or "") == "42703":
+                return True
+            if _MISSING_COLUMN_RE.search(str(arg.get("message") or "")):
+                return True
+    return False
 
 
 def _supervisor_columns_available() -> bool:
-    return _supervisor_columns_ok is not False
+    """Optimistic: True unless a real missing-column error is still in its TTL."""
+    if _supervisor_columns_ok is not False:
+        return True
+    if _supervisor_columns_downgraded_at is None:
+        return True
+    if time.time() - _supervisor_columns_downgraded_at >= SUPERVISOR_COLUMNS_RETRY_SECONDS:
+        # TTL expired — re-probe. A still-missing column will re-downgrade
+        # for another 60s; applying the migration heals without a redeploy.
+        return True
+    return False
 
 
 def _downgrade_supervisor_columns(err: Exception) -> None:
-    global _supervisor_columns_ok
-    if _supervisor_columns_ok is False:
+    """Flip the flag ONLY for a real missing-column error. Logs every flip."""
+    global _supervisor_columns_ok, _supervisor_columns_downgraded_at
+    if not _is_missing_column_error(err):
         return
     _supervisor_columns_ok = False
+    _supervisor_columns_downgraded_at = time.time()
     logger.error(
         "conversations is missing the chat_number / activity-clock columns — "
         "apply migrations 023_chat_number.sql and "
-        "024_conversation_activity_clocks.sql, then restart. Chat numbers and "
-        f"supervisor tags are disabled until then. ({err})"
+        "024_conversation_activity_clocks.sql. Supervisor columns disabled for "
+        f"{SUPERVISOR_COLUMNS_RETRY_SECONDS}s, then re-probed. ({err})"
     )
+
+
+def supervisor_columns_status() -> dict:
+    """Surface for /health — ops must see a freeze without reading logs."""
+    downgraded_at = None
+    if _supervisor_columns_downgraded_at is not None:
+        downgraded_at = datetime.fromtimestamp(
+            _supervisor_columns_downgraded_at, tz=timezone.utc
+        ).isoformat()
+    return {
+        "ok": _supervisor_columns_available(),
+        "downgraded_at": downgraded_at,
+    }
 
 
 async def get_conversations(
@@ -457,7 +506,16 @@ async def get_conversations(
         except Exception as e:
             if not use_supervisor_cols:
                 raise
-            _downgrade_supervisor_columns(e)
+            # Only a real missing-column error flips the flag. Transient
+            # network/HTTP failures fall through to the legacy retry without
+            # freezing activity clocks process-wide.
+            if _is_missing_column_error(e):
+                _downgrade_supervisor_columns(e)
+            else:
+                logger.error(
+                    "get_conversations: supervisor-columns query failed "
+                    f"(not a missing-column error — not downgrading): {e}"
+                )
             res = await _run_sync(lambda: _query(_LIST_COLUMNS_BASE, False))
         rows = res.data or []
         # Put the lifted key back under `metadata` so the agent-info enrichment
@@ -542,10 +600,17 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
     except Exception as e:
         if use_supervisor_cols:
             # Could be a missing column (pre-migration) or a genuinely absent
-            # row — retrying on the legacy set tells the two apart.
+            # row — retrying on the legacy set tells the two apart. Only a
+            # real missing-column error flips the process-wide flag.
             try:
                 res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS_BASE))
-                _downgrade_supervisor_columns(e)
+                if _is_missing_column_error(e):
+                    _downgrade_supervisor_columns(e)
+                else:
+                    logger.error(
+                        "get_conversation_simple: supervisor-columns query "
+                        f"failed (not a missing-column error — not downgrading): {e}"
+                    )
                 return res.data
             except Exception:
                 pass

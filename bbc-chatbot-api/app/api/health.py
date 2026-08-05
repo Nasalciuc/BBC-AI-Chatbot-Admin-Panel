@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter
 
 from config.settings import settings
-from app.db.supabase import check_connection
+from app.db.supabase import check_connection, supervisor_columns_status
 from app.services.scheduler import get_scheduler_health
 
 logger = logging.getLogger(__name__)
@@ -17,9 +17,16 @@ router = APIRouter()
 async def health() -> dict:
     """Return system health status and service availability."""
     scheduler = get_scheduler_health()
+    # Always surface: a sticky False here freezes activity clocks and poisons
+    # derived tags (false no_engagement). Ops must see it without log diving.
+    supervisor_columns = supervisor_columns_status()
 
     if not settings.debug:
-        return {"status": "ok", "scheduler": scheduler}
+        return {
+            "status": "ok",
+            "scheduler": scheduler,
+            "supervisor_columns": supervisor_columns,
+        }
 
     # Check Supabase connectivity
     db_ok = await check_connection()
@@ -49,4 +56,5 @@ async def health() -> dict:
         "version": "1.0.0",
         "services": services,
         "scheduler": scheduler,
+        "supervisor_columns": supervisor_columns,
     }
