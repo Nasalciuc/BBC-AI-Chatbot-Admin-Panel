@@ -189,7 +189,7 @@ async def _pipeline(
     """Internal pipeline implementation with 8 steps."""
     import time
     from app.pipeline.entity_extractor import (
-        derive_persona,
+        derive_t0_persona,
         extract_entities,
         extract_kb_keywords,
     )
@@ -279,6 +279,9 @@ async def _pipeline(
     # Merged view of where this visitor came from — widget metadata for this
     # turn on top of what the conversation already knows.
     _site_metadata = {**_conv_meta, **(metadata or {})}
+    if visitor and getattr(visitor, "country_code", None):
+        _site_metadata.setdefault("phone_country", visitor.country_code)
+        _site_metadata.setdefault("country_code", visitor.country_code)
 
     # OPEN DOOR: the free-text answer that follows the summary is the client's
     # must-have, not a new booking detail.
@@ -357,15 +360,42 @@ async def _pipeline(
         "_metadata": _site_metadata,
     }
 
-    _persona, _persona_source = derive_persona(
-        occasion=extracted.occasion,
+    # Prefer a persona already confirmed on the lead (history) over marketing priors.
+    _history_persona = None
+    _history_confidence = None
+    _occasion_for_persona = extracted.occasion
+    _prior_lead = None
+    try:
+        _prior_lead = await lead_service.get_or_create_lead(cid)
+        _prior_signals = (_prior_lead or {}).get("intent_signals")
+        if isinstance(_prior_signals, dict):
+            _history_persona = _prior_signals.get("persona")
+            _history_confidence = _prior_signals.get("persona_confidence")
+            if not _occasion_for_persona:
+                _occasion_for_persona = _prior_signals.get("occasion")
+    except Exception as _lead_peek_err:  # noqa: BLE001
+        logger.warning(f"[{cid}] Lead peek for persona history failed: {_lead_peek_err}")
+
+    _persona, _persona_source, _persona_confidence = derive_t0_persona(
+        _site_metadata,
+        occasion=_occasion_for_persona,
         message_text=message,
-        utm_source=_site_metadata.get("utm_source"),
-        click_ids=_site_metadata,
+        visitor_email=(visitor.email if visitor else None),
+        history_persona=(
+            _history_persona if _history_confidence == "frame" else None
+        ),
     )
     if _persona:
-        entities["persona"] = _persona
-        entities["persona_source"] = _persona_source
+        # Stamp SITE CONTEXT always; persist to the lead only at frame confidence
+        # so a soft tint cannot poison the next turn's history prior.
+        _site_metadata["_persona"] = _persona
+        _site_metadata["_persona_source"] = _persona_source
+        _site_metadata["_persona_confidence"] = _persona_confidence
+        entities["_metadata"] = _site_metadata
+        if _persona_confidence == "frame":
+            entities["persona"] = _persona
+            entities["persona_source"] = _persona_source
+            entities["persona_confidence"] = _persona_confidence
 
     # IATA LLM fallback removed (PR1) — TRAVEL_TOOL in generate extracts
     # origin/destination as superset. Route captured via tool_entities merge
@@ -459,10 +489,21 @@ async def _pipeline(
 
     # ── STEP 6: GENERATE RESPONSE ────────────────────────────
     # history already fetched at line 92 — reuse (saves ~400ms roundtrip)
-    lead, today_cost = await asyncio.gather(
-        lead_service.get_or_create_lead(cid),
-        db.get_today_cost(),
-    )
+    # Lead may already be loaded for persona history — avoid a second round-trip.
+    if _prior_lead is not None:
+        today_cost = await db.get_today_cost()
+        lead = _prior_lead
+        # Refresh after entity write so the prompt sees this turn's signals.
+        if has_useful or has_signals:
+            try:
+                lead = await lead_service.get_or_create_lead(cid)
+            except Exception as _lead_refresh_err:  # noqa: BLE001
+                logger.warning(f"[{cid}] Lead refresh failed: {_lead_refresh_err}")
+    else:
+        lead, today_cost = await asyncio.gather(
+            lead_service.get_or_create_lead(cid),
+            db.get_today_cost(),
+        )
     budget_remaining = settings.daily_budget - today_cost
 
     # Streaming callback (sync→async bridge for thread pool)

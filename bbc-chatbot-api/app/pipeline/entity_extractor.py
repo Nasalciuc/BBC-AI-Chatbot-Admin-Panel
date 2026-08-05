@@ -486,6 +486,110 @@ _SLUG_CITIES: dict[str, str] = {
     name: name.title() for name in CITY_TO_CODE if len(name) >= 4
 }
 
+# Country landing pages (/flight/country/india/410). Slug → display name.
+_SLUG_COUNTRIES: dict[str, str] = {
+    "india": "India",
+    "japan": "Japan",
+    "thailand": "Thailand",
+    "italy": "Italy",
+    "france": "France",
+    "spain": "Spain",
+    "greece": "Greece",
+    "uk": "UK",
+    "united-kingdom": "UK",
+    "germany": "Germany",
+    "australia": "Australia",
+    "new-zealand": "New Zealand",
+    "uae": "UAE",
+    "united-arab-emirates": "UAE",
+    "singapore": "Singapore",
+    "china": "China",
+    "vietnam": "Vietnam",
+    "philippines": "Philippines",
+    "brazil": "Brazil",
+    "argentina": "Argentina",
+    "south-africa": "South Africa",
+    "turkey": "Turkey",
+    "portugal": "Portugal",
+    "indonesia": "Indonesia",
+    "malaysia": "Malaysia",
+    "south-korea": "South Korea",
+    "korea": "South Korea",
+    "egypt": "Egypt",
+    "mexico": "Mexico",
+    "pakistan": "Pakistan",
+    "bangladesh": "Bangladesh",
+}
+
+# Country → gateway cities offered in the refinement opener.
+_COUNTRY_GATEWAYS: dict[str, list[str]] = {
+    "India": ["Delhi", "Mumbai", "Bangalore"],
+    "Japan": ["Tokyo", "Osaka"],
+    "Thailand": ["Bangkok", "Phuket"],
+    "Italy": ["Rome", "Milan"],
+    "France": ["Paris", "Nice"],
+    "Spain": ["Madrid", "Barcelona"],
+    "Greece": ["Athens", "Santorini"],
+    "UK": ["London", "Manchester"],
+    "Germany": ["Frankfurt", "Munich", "Berlin"],
+    "Australia": ["Sydney", "Melbourne"],
+    "New Zealand": ["Auckland", "Queenstown"],
+    "UAE": ["Dubai", "Abu Dhabi"],
+    "Singapore": ["Singapore"],
+    "China": ["Beijing", "Shanghai"],
+    "Vietnam": ["Ho Chi Minh City", "Hanoi"],
+    "Philippines": ["Manila", "Cebu"],
+    "Brazil": ["Sao Paulo", "Rio de Janeiro"],
+    "Argentina": ["Buenos Aires"],
+    "South Africa": ["Johannesburg", "Cape Town"],
+    "Turkey": ["Istanbul"],
+    "Portugal": ["Lisbon"],
+    "Indonesia": ["Jakarta", "Bali"],
+    "Malaysia": ["Kuala Lumpur"],
+    "South Korea": ["Seoul"],
+    "Egypt": ["Cairo"],
+    "Mexico": ["Mexico City", "Cancun"],
+    "Pakistan": ["Karachi", "Islamabad"],
+    "Bangladesh": ["Dhaka"],
+}
+
+# Region landing pages (/flight/region/oceania/693) → countries to offer first.
+_REGION_GATEWAYS: dict[str, list[str]] = {
+    "oceania": ["Australia", "New Zealand"],
+    "europe": ["UK", "France", "Italy"],
+    "asia": ["Japan", "Thailand", "India"],
+    "south-america": ["Brazil", "Argentina"],
+    "middle-east": ["UAE", "Turkey"],
+}
+
+# Diaspora corridors where phone-country == destination + IP differs → needs_based prior.
+_DIASPORA_CORRIDORS = {
+    "india", "philippines", "vietnam", "pakistan", "bangladesh", "mexico",
+}
+
+_FREE_MAIL = {
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com",
+    "aol.com", "mail.com", "protonmail.com", "live.com", "msn.com",
+}
+
+_VALUE_KW_RE = re.compile(
+    r"\b(cheap|cheapest|deal|deals|price|prices|low[- ]?cost)\b", re.I
+)
+_FIRST_CLASS_KW_RE = re.compile(r"\bfirst\s+class\b", re.I)
+_FAMILY_KW_RE = re.compile(
+    r"\b(for\s+parents|for\s+my\s+parents|family\s+visit|visiting\s+family)\b", re.I
+)
+_USA_CORRIDOR_RE = re.compile(r"^usa[-_]", re.I)
+_NUMERIC_ID_RE = re.compile(r"^\d+$")
+_MOBILE_UA_RE = re.compile(
+    r"Mobile|Android|iPhone|iPod|webOS|BlackBerry|IEMobile|Opera Mini", re.I
+)
+_OWN_DOMAINS = (
+    "buybusinessclass.com",
+    "buybusinesstravel.com",
+    "businessclass.com",
+)
+
 
 def _normalize_amount(raw: str, k_suffix: Optional[str]) -> str:
     """'3,200' → '$3,200'; '5' + 'k' → '$5,000'."""
@@ -535,12 +639,314 @@ def _extract_airline_preferences(text: str) -> tuple[Optional[str], Optional[str
 def is_comparison_origin(
     utm_source: Optional[str] = None, click_ids: Optional[dict] = None
 ) -> bool:
-    """Did this visitor arrive from a fare-comparison site?"""
-    if utm_source and utm_source.strip().lower() in COMPARISON_SOURCES:
+    """Did this visitor arrive from a fare-comparison site / kayak network?"""
+    source = (utm_source or "").strip().lower()
+    if source in COMPARISON_SOURCES:
         return True
     if click_ids:
-        return any(click_ids.get(key) for key in COMPARISON_CLICK_IDS)
+        if any(click_ids.get(key) for key in COMPARISON_CLICK_IDS):
+            return True
+        # R2: kayak click id with empty utm_source still counts.
+        if not source and (click_ids.get("kayak_click_id") or click_ids.get("kclid")):
+            return True
     return False
+
+
+def infer_paid_source(metadata: Optional[dict]) -> Optional[str]:
+    """Click-id fallback when utm_source is empty: gclid→google, fbclid→fb, msclkid→bing."""
+    if not metadata:
+        return None
+    if metadata.get("gclid"):
+        return "google"
+    if metadata.get("fbclid"):
+        return "fb"
+    if metadata.get("msclkid"):
+        return "bing"
+    if metadata.get("kayak_click_id") or metadata.get("kclid"):
+        return "kayak"
+    return None
+
+
+def is_numeric_utm(value: Optional[str]) -> bool:
+    """fb-style numeric campaign/term ids must never enter the prompt."""
+    return bool(value and _NUMERIC_ID_RE.match(str(value).strip()))
+
+
+def is_own_domain_referrer(referrer: Optional[str]) -> bool:
+    if not referrer:
+        return False
+    lowered = referrer.lower()
+    return any(domain in lowered for domain in _OWN_DOMAINS)
+
+
+def is_mobile_ua(user_agent: Optional[str]) -> bool:
+    return bool(user_agent and _MOBILE_UA_RE.search(user_agent))
+
+
+def is_paid_social(utm_source: Optional[str], metadata: Optional[dict] = None) -> bool:
+    source = (utm_source or "").strip().lower()
+    if source in ("fb", "facebook", "instagram", "ig"):
+        return True
+    if metadata and metadata.get("fbclid") and not source:
+        return True
+    medium = ((metadata or {}).get("utm_medium") or "").strip().lower()
+    return source in ("fb", "facebook") and medium in ("paid", "cpc", "cpm", "paidsocial")
+
+
+def priors_from_keyword(utm_term: Optional[str]) -> dict:
+    """Deterministic scan of the search keyword. Hint-only — never a lead field."""
+    if not utm_term or is_numeric_utm(utm_term):
+        return {}
+    text = utm_term.strip().lower()
+    if not text:
+        return {}
+    out: dict = {}
+
+    # Country / city / airport destination hint (longest country slug first).
+    padded = f" {re.sub(r'[^a-z0-9]+', ' ', text)} "
+    for slug in sorted(_SLUG_COUNTRIES, key=len, reverse=True):
+        key = slug.replace("-", " ")
+        if f" {key} " in padded:
+            out["destination_hint"] = _SLUG_COUNTRIES[slug]
+            break
+    if "destination_hint" not in out:
+        for name in sorted(_SLUG_CITIES, key=len, reverse=True):
+            if f" {name} " in padded:
+                out["destination_hint"] = _SLUG_CITIES[name]
+                break
+
+    if _FIRST_CLASS_KW_RE.search(text):
+        out["cabin_interest"] = "first"
+        out["persona_prior"] = "experience_seeker"
+        out["persona_source"] = "keyword_first_class"
+    elif _VALUE_KW_RE.search(text):
+        out["persona_prior"] = "value_driven"
+        out["persona_source"] = "keyword_value"
+    elif _FAMILY_KW_RE.search(text):
+        out["persona_prior"] = "needs_based"
+        out["persona_source"] = "keyword_family"
+        out["confidence"] = "tint"
+
+    return out
+
+
+def parse_landing_hints(page_path: Optional[str]) -> dict:
+    """Name-first landing parse. City beats country beats region (R1).
+
+    The URL type segment lies (amsterdam under /country/) — resolve the slug
+    NAME against maps regardless of path type. Hint-only.
+    """
+    if not page_path:
+        return {}
+    # Strip trailing numeric ids (/410, /8).
+    cleaned = re.sub(r"/\d+/?$", "", page_path.strip())
+    slug = re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
+    if not slug:
+        return {}
+
+    # Prefer the name after city|country|region when present.
+    m = re.search(r"\b(?:city|country|region)\s+(.+)$", slug)
+    name_part = (m.group(1) if m else slug).strip()
+    padded = f" {name_part} "
+
+    # City first (more specific) — amsterdam under /country/ resolves as city.
+    city_matches = [(padded.rfind(f" {name} "), name) for name in _SLUG_CITIES]
+    city_matches = [(pos, name) for pos, name in city_matches if pos != -1]
+    if city_matches:
+        _pos, name = max(city_matches, key=lambda item: (item[0], len(item[1])))
+        return {"destination_city": _SLUG_CITIES[name], "landing_kind": "city"}
+
+    # Airport codes in the slug.
+    codes = [t.upper() for t in name_part.split() if len(t) == 3 and t.upper() in AIRPORTS]
+    if codes:
+        code = codes[-1]
+        for name, mapped in CITY_TO_CODE.items():
+            if mapped == code and len(name) >= 4:
+                return {"destination_city": name.title(), "landing_kind": "city"}
+        return {"destination_city": code, "landing_kind": "city"}
+
+    # Country.
+    for slug_key in sorted(_SLUG_COUNTRIES, key=len, reverse=True):
+        key = slug_key.replace("-", " ")
+        if f" {key} " in padded or name_part == key:
+            country = _SLUG_COUNTRIES[slug_key]
+            return {
+                "destination_country": country,
+                "gateways": _COUNTRY_GATEWAYS.get(country, []),
+                "landing_kind": "country",
+            }
+
+    # Region.
+    for region, countries in _REGION_GATEWAYS.items():
+        key = region.replace("-", " ")
+        if f" {key} " in padded or name_part == key:
+            return {
+                "destination_region": region.replace("-", " ").title(),
+                "region_countries": countries,
+                "landing_kind": "region",
+            }
+
+    return {}
+
+
+def destination_from_path(page_path: Optional[str]) -> Optional[str]:
+    """City the landing page was about, or None. A hint only — never a lead field."""
+    hints = parse_landing_hints(page_path)
+    return hints.get("destination_city")
+
+
+def destination_country_from_path(page_path: Optional[str]) -> Optional[str]:
+    """Country the landing page was about, or None. Separate from the city hint."""
+    hints = parse_landing_hints(page_path)
+    return hints.get("destination_country")
+
+
+def campaign_origin_hint(utm_campaign: Optional[str]) -> Optional[str]:
+    """R6: campaign 'USA-{X}' → origin hint US."""
+    if not utm_campaign or is_numeric_utm(utm_campaign):
+        return None
+    if _USA_CORRIDOR_RE.search(utm_campaign.strip()):
+        return "US"
+    return None
+
+
+def diaspora_triangulation(
+    *,
+    ip_country: Optional[str],
+    phone_country: Optional[str],
+    destination_country: Optional[str],
+) -> bool:
+    """J2: phone ≠ IP AND destination == phone AND corridor in the known set."""
+    if not (ip_country and phone_country and destination_country):
+        return False
+    ip_c = ip_country.strip().upper()
+    phone_c = phone_country.strip().upper()
+    dest = destination_country.strip().lower()
+    if ip_c == phone_c:
+        return False
+    # Map common ISO / names loosely for the corridor check.
+    dest_slug = dest.replace(" ", "-")
+    phone_as_dest = {
+        "IN": "india", "PH": "philippines", "VN": "vietnam",
+        "PK": "pakistan", "BD": "bangladesh", "MX": "mexico",
+    }.get(phone_c)
+    if not phone_as_dest:
+        return False
+    if dest_slug != phone_as_dest and dest != phone_as_dest:
+        return False
+    return phone_as_dest in _DIASPORA_CORRIDORS
+
+
+def concordance_tier(metadata: Optional[dict], landing: Optional[dict] = None) -> str:
+    """R3: HIGH when campaign + keyword + landing agree; MEDIUM one signal; else NONE."""
+    meta = metadata or {}
+    landing = landing or parse_landing_hints(
+        meta.get("page_url") or meta.get("landing_page")
+    )
+    keyword = priors_from_keyword(meta.get("utm_term"))
+    campaign = (meta.get("utm_campaign") or "").strip().lower()
+
+    signals = 0
+    if landing.get("destination_country") or landing.get("destination_city") or landing.get("destination_region"):
+        signals += 1
+    if keyword.get("destination_hint"):
+        signals += 1
+    if campaign and not is_numeric_utm(campaign):
+        signals += 1
+
+    if signals >= 3:
+        # Check agreement when we have keyword + landing.
+        kw_dest = (keyword.get("destination_hint") or "").lower()
+        land_dest = (
+            landing.get("destination_country")
+            or landing.get("destination_city")
+            or landing.get("destination_region")
+            or ""
+        ).lower()
+        if kw_dest and land_dest and (kw_dest in land_dest or land_dest in kw_dest):
+            return "high"
+        if "oceania" in campaign and landing.get("landing_kind") == "region":
+            return "high"
+        return "medium"
+    if signals == 1:
+        return "medium"
+    if signals == 2:
+        return "medium"
+    return "none"
+
+
+def derive_t0_persona(
+    metadata: Optional[dict] = None,
+    *,
+    occasion: Optional[str] = None,
+    message_text: Optional[str] = None,
+    visitor_email: Optional[str] = None,
+    history_persona: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], str]:
+    """t0→type map. Returns (persona, persona_source, confidence).
+
+    confidence is 'frame' (full playbook) or 'tint' (one colored word) or 'none'.
+    Occasion ALWAYS overrides. Forbidden: destination alone, product keywords,
+    paid-social, device, time of day.
+    """
+    # LIVE occasion override — silent, always wins.
+    if occasion:
+        key = occasion.strip().lower()
+        if key == "business":
+            return "time_is_money", "occasion", "frame"
+        if key == "celebration":
+            return "experience_seeker", "occasion", "frame"
+        if key == "medical":
+            return "needs_based", "occasion", "frame"
+        if key == "family":
+            if message_text and FREQUENT_TRAVEL_RE.search(message_text):
+                return "value_driven", "occasion_family_frequent", "frame"
+            return "needs_based", "occasion_family", "frame"
+
+    # 1. Returning visitor with confirmed persona.
+    if history_persona in (
+        "time_is_money", "experience_seeker", "needs_based", "value_driven"
+    ):
+        return history_persona, "history", "frame"
+
+    meta = metadata or {}
+    source = (meta.get("utm_source") or "").strip().lower() or infer_paid_source(meta) or ""
+    keyword = priors_from_keyword(meta.get("utm_term"))
+    landing = parse_landing_hints(meta.get("page_url") or meta.get("landing_page"))
+
+    # 2. first class in keyword.
+    if keyword.get("persona_source") == "keyword_first_class":
+        return "experience_seeker", "keyword_first_class", "frame"
+
+    # 3. cheap|deal|price in keyword.
+    if keyword.get("persona_source") == "keyword_value":
+        return "value_driven", "keyword_value", "frame"
+
+    # 4. comparison network.
+    if is_comparison_origin(source or meta.get("utm_source"), meta):
+        return "value_driven", "utm_prior", "frame"
+
+    # 5. Full diaspora triangulation only (all three conditions).
+    dest_country = landing.get("destination_country") or keyword.get("destination_hint")
+    if diaspora_triangulation(
+        ip_country=meta.get("ip_country") or meta.get("origin_country_hint"),
+        phone_country=meta.get("phone_country") or meta.get("country_code"),
+        destination_country=dest_country,
+    ):
+        return "needs_based", "diaspora_prior", "frame"
+
+    # 6. Corporate email → tint only.
+    if visitor_email and "@" in visitor_email:
+        domain = visitor_email.rsplit("@", 1)[-1].lower()
+        if domain and domain not in _FREE_MAIL:
+            return "time_is_money", "corporate_email", "tint"
+
+    # 7. Family words in keyword → tint.
+    if keyword.get("persona_source") == "keyword_family":
+        return "needs_based", "keyword_family", "tint"
+
+    # 8. Everything else → neutral (including paid-social, device, destination alone).
+    return None, None, "none"
 
 
 def derive_persona(
@@ -548,30 +954,30 @@ def derive_persona(
     message_text: Optional[str] = None,
     utm_source: Optional[str] = None,
     click_ids: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+    visitor_email: Optional[str] = None,
+    history_persona: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """(persona, persona_source) from the occasion, with a traffic-source prior.
+    """(persona, persona_source). Occasion wins; else the t0 map.
 
-    The occasion always wins: a visitor who came from a comparison site but
-    tells us it is their honeymoon is an experience seeker, not a bargain
-    hunter.
+    Back-compat: callers that only pass utm_source/click_ids still work — we
+    assemble a minimal metadata dict for derive_t0_persona.
     """
-    if occasion:
-        key = occasion.strip().lower()
-        if key == "business":
-            return "time_is_money", "occasion"
-        if key == "celebration":
-            return "experience_seeker", "occasion"
-        if key == "medical":
-            return "needs_based", "occasion"
-        if key == "family":
-            if message_text and FREQUENT_TRAVEL_RE.search(message_text):
-                return "value_driven", "occasion_family_frequent"
-            return "needs_based", "occasion_family"
+    meta = dict(metadata or {})
+    if utm_source and "utm_source" not in meta:
+        meta["utm_source"] = utm_source
+    if click_ids:
+        for key, value in click_ids.items():
+            meta.setdefault(key, value)
 
-    if is_comparison_origin(utm_source, click_ids):
-        return "value_driven", "utm_prior"
-
-    return None, None
+    persona, source, _confidence = derive_t0_persona(
+        meta,
+        occasion=occasion,
+        message_text=message_text,
+        visitor_email=visitor_email,
+        history_persona=history_persona,
+    )
+    return persona, source
 
 
 DREAM_OUTCOMES = {
@@ -580,34 +986,6 @@ DREAM_OUTCOMES = {
     "needs_based": "comfort",
     "value_driven": "deal",
 }
-
-
-def destination_from_path(page_path: Optional[str]) -> Optional[str]:
-    """City the landing page was about, or None. A hint only — never a lead field."""
-    if not page_path:
-        return None
-    slug = re.sub(r"[^a-z0-9]+", " ", page_path.lower()).strip()
-    if not slug:
-        return None
-
-    # A route slug like "jfk-lhr" names the destination last.
-    codes = [t.upper() for t in slug.split() if len(t) == 3 and t.upper() in AIRPORTS]
-    if codes:
-        code = codes[-1]
-        for name, mapped in CITY_TO_CODE.items():
-            if mapped == code and len(name) >= 4:
-                return name.title()
-        return code
-
-    padded = f" {slug} "
-    matches = [(padded.rfind(f" {name} "), name) for name in _SLUG_CITIES]
-    matches = [(pos, name) for pos, name in matches if pos != -1]
-    if matches:
-        # "new-york-to-dubai" names the destination last; the longer name wins
-        # a tie so a two-word city is not cut short.
-        _pos, name = max(matches, key=lambda match: (match[0], len(match[1])))
-        return _SLUG_CITIES[name]
-    return None
 
 
 def extract_entities(message: str) -> ExtractedEntities:

@@ -352,6 +352,53 @@ mechanism, sounding offended by skepticism.
 CLOSE EMPHASIS: the deal, locked. "the best possible fare — that's exactly what your consultant
 locks in."
 
+OPENING FRAMES — use when SITE CONTEXT names a traveler-type prior with confidence "frame".
+Tint-only priors: color ONE word; do not run the full playbook until occasion confirms.
+Never invent a destination the SITE CONTEXT did not suggest. Visitor's stated route always wins.
+
+━━ FRAME: VALUE_DRIVEN ━━
+Open as a peer who knows they researched. Refine the hinted destination (city / gateway / region)
+instead of asking cold "where to?". No unsolicited savings pitch — the bragging test below.
+
+━━ FRAME: TIME_IS_MONEY ━━
+Brisk. Skip small talk. One short acknowledgment of the hinted route, then the single next gap
+(usually dates or origin). Zero fluff, zero luxury adjectives.
+
+━━ FRAME: EXPERIENCE_SEEKER ━━
+Warm, one brushstroke of cabin quality if first-class interest is in SITE CONTEXT; otherwise
+refine the destination. Celebrate only if they named an occasion — never invent one.
+
+━━ FRAME: NEEDS_BASED ━━
+Reassure that details get handled. If SITE CONTEXT marks a diaspora / family visit prior, open
+with comfort and certainty — not price, not luxury. Refine destination, then one care question
+only after route is clear.
+
+BRAGGING TEST — openings: if SITE CONTEXT already suggests a destination or paid intent, do NOT
+lead with "we save 30-60%" or credentials. Refine first. Savings/credentials only when they ask
+price or trust, or when CONTEXT has nothing to refine.
+
+OPENING FEW-SHOTS (greeting / first substantive turn — adapt, don't recite):
+
+SITE: paid Google + keyword "cheap business class to india" + landing /flight/country/india
+You: "Looking at India — usually Delhi, Mumbai, or Bangalore from the States. Which city are
+you aiming for?"
+
+SITE: landing /flight/country/amsterdam (city under a country URL) + google
+You: "Amsterdam's a strong business-class route right now. Where would you be flying from?"
+
+SITE: landing /flight/region/oceania + campaign USA-Asia style corridor
+You: "Oceania — Australia or New Zealand tend to be the first pick. Which are you leaning toward?"
+
+SITE: kayak / comparison origin, page business-class-to-london
+You: "You've been comparing public fares for London — happy to dig into private options there.
+Where are you flying from?"
+
+SITE: paid social (fb) only — no keyword, no destination landing
+You: "Happy to help with business class. Where are you looking to fly?"
+
+SITE: nothing useful (direct, own-site bounce)
+You: "Where are you flying, and roughly when?"
+
 VOLUNTEERED SIGNALS — never ask about these, but when the client offers one, acknowledge it with
 expertise (one clause, no follow-up probing — the consultant deepens it on the call) and it will be
 passed to their consultant:
@@ -451,6 +498,15 @@ _COMPARISON_HINT = (
     "prior until the occasion says otherwise. Never mention the comparison site by name."
 )
 
+_PAID_SOCIAL_HINT = (
+    "Paid social arrival — treat as cold unless a keyword or landing page names a "
+    "destination. Never mention Facebook/Instagram. Do not invent intent from the ad."
+)
+
+_PAID_SEARCH_HINT = (
+    "Paid search arrival — the keyword (if shown) is a hint only; refine, never assert."
+)
+
 
 def _referrer_domain(referrer: Optional[str]) -> Optional[str]:
     """Domain only — the full referring URL is not the AI's business."""
@@ -483,40 +539,159 @@ def _page_path(page_url: Optional[str]) -> Optional[str]:
 def build_site_context(metadata: dict | None) -> Optional[str]:
     """Where the visitor came from, as prompt lines. None when we know nothing.
 
-    Carries the referrer domain and page path only — never click-id values or
-    the GA client id.
+    Keyword, campaign, landing country/region, and soft priors — never click-id
+    values, GA client ids, or numeric fb-style campaign/term ids.
     """
     if not metadata:
         return None
 
-    from app.pipeline.entity_extractor import destination_from_path, is_comparison_origin
+    from app.pipeline.entity_extractor import (
+        campaign_origin_hint,
+        derive_t0_persona,
+        diaspora_triangulation,
+        infer_paid_source,
+        is_comparison_origin,
+        is_mobile_ua,
+        is_numeric_utm,
+        is_own_domain_referrer,
+        is_paid_social,
+        parse_landing_hints,
+        priors_from_keyword,
+    )
 
-    referrer = _referrer_domain(metadata.get("referrer"))
+    raw_referrer = metadata.get("referrer")
+    # Own-domain bounce is noise — drop referrer, keep UTMs / landing.
+    referrer = None if is_own_domain_referrer(raw_referrer) else _referrer_domain(raw_referrer)
     utm_source = (metadata.get("utm_source") or "").strip()
     utm_medium = (metadata.get("utm_medium") or "").strip()
+    paid_fallback = infer_paid_source(metadata) if not utm_source else None
+    source_label = utm_source or paid_fallback or ""
     page_path = _page_path(metadata.get("page_url") or metadata.get("landing_page"))
 
+    utm_term = (metadata.get("utm_term") or "").strip()
+    utm_campaign = (metadata.get("utm_campaign") or "").strip()
+    if is_numeric_utm(utm_term):
+        utm_term = ""
+    if is_numeric_utm(utm_campaign):
+        utm_campaign = ""
+
+    landing = parse_landing_hints(page_path)
+    keyword = priors_from_keyword(utm_term or metadata.get("utm_term"))
+
     lines: list[str] = []
-    if referrer or utm_source:
-        via = "/".join(part for part in (utm_source, utm_medium) if part)
+    if referrer or source_label:
+        via = "/".join(part for part in (source_label, utm_medium) if part)
         came_from = f"Came from: {referrer or 'direct'}"
         if via:
             came_from += f" via {via}"
         lines.append(came_from)
     if page_path:
         lines.append(f"Opened chat on page: {page_path}")
-    if not lines:
-        return None
+    if utm_term:
+        lines.append(f"Search keyword hint: {utm_term}")
+    if utm_campaign:
+        lines.append(f"Campaign hint: {utm_campaign}")
 
-    if is_comparison_origin(utm_source, metadata):
+    origin_hint = campaign_origin_hint(utm_campaign or metadata.get("utm_campaign"))
+    if origin_hint:
+        lines.append(
+            f"Campaign suggests origin region {origin_hint} — soft confirm if origin "
+            "is still unknown; never override what they say."
+        )
+
+    if is_paid_social(utm_source or source_label, metadata):
+        lines.append(_PAID_SOCIAL_HINT)
+    elif source_label in ("google", "bing", "yahoo", "adwords") or (
+        utm_medium in ("cpc", "ppc", "paid", "paidsearch") and source_label
+    ):
+        lines.append(_PAID_SEARCH_HINT)
+
+    if is_comparison_origin(utm_source or source_label, metadata):
         lines.append(_COMPARISON_HINT)
 
-    destination = destination_from_path(page_path)
-    if destination:
+    # Destination refinement: city beats country beats region (R1).
+    city = landing.get("destination_city")
+    country = landing.get("destination_country")
+    region = landing.get("destination_region")
+    kw_dest = keyword.get("destination_hint")
+
+    if city:
         lines.append(
-            f"The page they were reading suggests interest in {destination} — acknowledge "
+            f"The page they were reading suggests interest in {city} — acknowledge "
             "it naturally instead of asking cold. If they state a different route, theirs "
             "wins, silently."
+        )
+    elif country:
+        gateways = landing.get("gateways") or []
+        gateway_bit = (
+            f" Common gateways: {', '.join(gateways)}." if gateways else ""
+        )
+        lines.append(
+            f"Landing page is a country page for {country}.{gateway_bit} Refine the "
+            "city — do not ask destination as if unknown. Their stated city wins."
+        )
+    elif region:
+        countries = landing.get("region_countries") or []
+        offer = f" Offer first: {', '.join(countries)}." if countries else ""
+        lines.append(
+            f"Landing page is a region page for {region}.{offer} Ask which country "
+            "(or city) — never a fully cold destination question."
+        )
+    elif kw_dest:
+        lines.append(
+            f"Keyword suggests interest in {kw_dest} — refine naturally; theirs wins "
+            "if they name a different place."
+        )
+
+    # J1: IP / phone origin concordant with campaign origin corridor.
+    ip_country = (metadata.get("ip_country") or metadata.get("origin_country_hint") or "").strip()
+    phone_country = (
+        metadata.get("phone_country") or metadata.get("country_code") or ""
+    ).strip()
+    if origin_hint == "US" and (
+        ip_country.upper() in ("US", "USA", "UNITED STATES")
+        or phone_country.upper() in ("US", "USA")
+    ):
+        lines.append(
+            "Origin signals agree with a US corridor campaign — you may soft-assume "
+            "US origin when asking destination refinement only."
+        )
+
+    # J2: full diaspora triangulation.
+    dest_for_diaspora = country or kw_dest
+    if diaspora_triangulation(
+        ip_country=ip_country or None,
+        phone_country=phone_country or None,
+        destination_country=dest_for_diaspora,
+    ):
+        lines.append(
+            "Diaspora pattern (phone country matches destination, IP differs) — "
+            "NEEDS_BASED prior; open with care/certainty, not price."
+        )
+
+    # J4: mobile UA — shorter openings, one question.
+    if is_mobile_ua(metadata.get("user_agent")):
+        lines.append(
+            "Mobile browser — keep the opening to one short sentence and one question."
+        )
+
+    # Orchestrator may stamp the resolved persona so occasion/history win over
+    # a fresh marketing-only re-derive inside this helper.
+    if metadata.get("_persona"):
+        persona = metadata.get("_persona")
+        persona_source = metadata.get("_persona_source")
+        confidence = metadata.get("_persona_confidence") or "frame"
+    else:
+        persona, persona_source, confidence = derive_t0_persona(metadata)
+    if persona and confidence == "frame":
+        lines.append(
+            f"Traveler-type prior: {persona} (source={persona_source}, confidence=frame) — "
+            "use the matching OPENING FRAME and playbook."
+        )
+    elif persona and confidence == "tint":
+        lines.append(
+            f"Soft tint only: {persona} (source={persona_source}) — color one word; "
+            "do NOT run the full playbook until occasion confirms."
         )
 
     if metadata.get("returning_visitor"):
@@ -525,6 +700,8 @@ def build_site_context(metadata: dict | None) -> Optional[str]:
             "their past details."
         )
 
+    if not lines:
+        return None
     return "\n".join(["[SITE CONTEXT]"] + lines)
 
 

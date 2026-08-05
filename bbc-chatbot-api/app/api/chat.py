@@ -73,6 +73,10 @@ async def chat_init(
     _referer = request.headers.get("referer") or request.headers.get("referrer")
     if _referer:
         _meta.setdefault("referrer", _referer)
+    _cf_country = (request.headers.get("cf-ipcountry") or "").strip().upper()
+    if _cf_country and _cf_country not in ("XX", "T1"):
+        _meta.setdefault("ip_country", _cf_country)
+        _meta.setdefault("origin_country_hint", _cf_country)
     if payload.visitor_id:
         _meta.setdefault("visitor_id", payload.visitor_id)
 
@@ -432,6 +436,10 @@ async def chat(
     _referer = request.headers.get("referer") or request.headers.get("referrer")
     if _referer:
         _meta.setdefault("referrer", _referer)
+    _cf_country = (request.headers.get("cf-ipcountry") or "").strip().upper()
+    if _cf_country and _cf_country not in ("XX", "T1"):
+        _meta.setdefault("ip_country", _cf_country)
+        _meta.setdefault("origin_country_hint", _cf_country)
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
 
