@@ -599,10 +599,13 @@ class TestPreMigrationDegradation:
         import app.db.supabase as sb
 
         original = sb._supervisor_columns_ok
+        original_at = sb._supervisor_columns_downgraded_at
         try:
             sb._supervisor_columns_ok = None
+            sb._supervisor_columns_downgraded_at = None
             assert sb._supervisor_columns_available() is True
-            sb._downgrade_supervisor_columns(Exception("column does not exist"))
+            sb._downgrade_supervisor_columns(Exception("column chat_number does not exist"))
             assert sb._supervisor_columns_available() is False
         finally:
             sb._supervisor_columns_ok = original
+            sb._supervisor_columns_downgraded_at = original_at
