@@ -294,7 +294,11 @@ async def test_first_message_agent_assigned_no_super_alert(_fresh_ai_conv):
     ):
         await _call_chat()
 
-    assert "coro" not in captured
+    # Presence marking (message⇒online) legitimately rides _fire_and_forget on
+    # every message — only the super-alert coroutine must be absent here.
+    if "coro" in captured:
+        assert captured["coro"].__name__ != "_send_first_message_super_alert"
+        captured["coro"].close()
 
 
 @pytest.mark.asyncio

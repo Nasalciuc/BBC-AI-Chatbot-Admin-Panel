@@ -20,6 +20,7 @@ import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
 import { OperatorHistory, OperatorBadge } from './operator-history'
+import { describeClientPresence, presenceFromMetadata } from './presence'
 
 interface Props {
   conversationId: string
@@ -172,16 +173,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
   const clientPresence = useMemo(() => {
     const m = (presenceData ?? conv?.metadata ?? {}) as Record<string, unknown>
-    const widgetOpen = m.widget_open === true || m.widget_open === 'true'
-    const reason = String(m.widget_last_close_reason ?? m.widget_presence ?? '')
-
-    if (widgetOpen) {
-      return { label: 'Client is online', dot: 'bg-emerald-500', text: 'text-emerald-600' }
-    }
-    if (reason === 'left') {
-      return { label: 'Client left the website', dot: 'bg-red-500', text: 'text-red-600' }
-    }
-    return { label: 'Client minimized chat', dot: 'bg-amber-500', text: 'text-amber-600' }
+    const lastEventAt = typeof m.widget_last_event_at === 'string' ? m.widget_last_event_at : undefined
+    return describeClientPresence(presenceFromMetadata(m), lastEventAt, new Date())
   }, [presenceData, conv?.metadata])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
