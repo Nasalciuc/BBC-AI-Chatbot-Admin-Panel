@@ -686,6 +686,7 @@ async def _pipeline(
                                 visitor_email=visitor.email if visitor else None,
                                 tunnel=tunnel,
                                 last_message=message,
+                                chat_number=(conv or {}).get("chat_number"),
                             )
 
                     _fire_and_forget(_send_super_alert())
