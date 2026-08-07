@@ -14,7 +14,8 @@
     "format": "prettier --write .",
     "knip": "knip",
     "sync-widget": "node scripts/sync-widget.cjs",
-    "prebuild": "npm run sync-widget"
+    "prebuild": "npm run sync-widget",
+    "test": "node --experimental-strip-types --test tests/presence.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

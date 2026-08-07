@@ -89,15 +89,55 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length, streamingText, sending])
 
-  // Send first greeting — SKIP if restored session
+  // The AI greets FIRST: create the conversation and render the armed,
+  // personalized opening as the first bubble. No fake client message.
+  const startConversation = async () => {
+    try {
+      const res = await apiFetch(`${apiUrl}/api/chat/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tunnel,
+          visitor: {
+            name: visitor.name || null,
+            email: visitor.email || null,
+            phone: visitor.phone || null,
+            country_code: visitor.country_code || null,
+          },
+          metadata: metadata || {},
+          visitor_id: getVisitorId(),
+        }),
+      })
+      if (!res.ok) throw new Error('start failed')
+      const data = await res.json()
+      if (!data.conversation_id) return
+      setConvId(data.conversation_id)
+      apiFetch(`${apiUrl}/api/chat/session/${data.conversation_id}/open`, { method: 'POST' }).catch(() => {})
+      try { localStorage.setItem('bbc_conv_id', data.conversation_id) } catch {}
+      try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
+      if (data.message) {
+        const aiMsg: Message = {
+          id: `ai-${Date.now()}`,
+          role: 'ai',
+          content: data.message,
+          created_at: new Date().toISOString(),
+        }
+        setMessages(prev => [...prev, aiMsg])
+        // Checkpoint past the greeting so the next poll doesn't duplicate it
+        lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
+      }
+    } catch {
+      // Fail quiet — the client can still type; their first message flows
+      // through the normal send path and creates the conversation.
+    }
+  }
+
+  // AI opens on fresh sessions — SKIP if restored session
   useEffect(() => {
     if (initialized.current) return
     initialized.current = true
     if (savedConvId) return
-    sendMessage(tunnel === 'sales'
-      ? 'Hello, I\'m looking for business class flights.'
-      : 'Hello, I need help with my booking.'
-    )
+    startConversation()
   // eslint-disable-next-line
   }, [])
 
@@ -119,14 +159,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   // eslint-disable-next-line
   }, [])
 
-  // Send greeting after closed conversation was detected and cleared
+  // Re-open with an AI greeting after a closed conversation was detected and cleared
   useEffect(() => {
     if (!pendingGreeting || convId || sending) return
     setPendingGreeting(false)
-    sendMessage(tunnel === 'sales'
-      ? 'Hello, I\'m looking for business class flights.'
-      : 'Hello, I need help with my booking.'
-    )
+    startConversation()
   }, [pendingGreeting, convId, sending])
 
   // Real-time delivery: SSE primary + polling fallback (RxDB checkpoint pattern)
@@ -137,8 +174,15 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     closeSentRef.current = false
 
     const handlePageLeave = () => notifySessionClose('left', true)
+    // bfcache return (back button, mobile app-switch): pagehide fired 'left'
+    // on the way out — mark the client back and re-arm the close beacon.
+    const handlePageReturn = () => {
+      closeSentRef.current = false
+      apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
+    }
     window.addEventListener('pagehide', handlePageLeave)
     window.addEventListener('beforeunload', handlePageLeave)
+    window.addEventListener('pageshow', handlePageReturn)
 
     let source: EventSource | null = null
     let fallbackInterval: ReturnType<typeof setInterval> | null = null
@@ -248,6 +292,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
       window.removeEventListener('pagehide', handlePageLeave)
       window.removeEventListener('beforeunload', handlePageLeave)
+      window.removeEventListener('pageshow', handlePageReturn)
     }
   }, [convId, apiUrl])
 

@@ -104,6 +104,176 @@ async def chat_init(
     return ChatInitResponse(conversation_id=conv_id)
 
 
+# --- Start endpoint: the AI greets FIRST — no fake client message ---
+
+class ChatStartRequest(BaseModel):
+    tunnel: str = Field(default="sales", pattern="^(sales|support)$")
+    visitor: VisitorInfo = Field(default_factory=VisitorInfo)
+    metadata: Optional[dict] = None
+    visitor_id: Optional[str] = None
+
+
+class ChatStartResponse(BaseModel):
+    conversation_id: str
+    message: str
+
+
+def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id: Optional[str]) -> dict:
+    """Metadata enrichment shared with the first-message path: IP, UA,
+    referrer, CF country, visitor id — same spread, same precedence."""
+    _meta = dict(metadata or {})
+    _client_ip = (
+        request.headers.get("cf-connecting-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "")
+    )
+    if _client_ip:
+        _meta.setdefault("client_ip", _client_ip)
+    _ua = request.headers.get("user-agent")
+    if _ua:
+        _meta.setdefault("user_agent", _ua)
+    _referer = request.headers.get("referer") or request.headers.get("referrer")
+    if _referer:
+        _meta.setdefault("referrer", _referer)
+    _cf_country = (request.headers.get("cf-ipcountry") or "").strip().upper()
+    if _cf_country and _cf_country not in ("XX", "T1"):
+        _meta.setdefault("ip_country", _cf_country)
+        _meta.setdefault("origin_country_hint", _cf_country)
+    if visitor_id:
+        _meta.setdefault("visitor_id", visitor_id)
+    return _meta
+
+
+# Not persisted anywhere — the one-turn instruction that stands in for the
+# user turn the Anthropic API requires. The client never "said" anything.
+_GREETING_KICKOFF = (
+    "(SYSTEM: the visitor just opened the chat and has not written anything. "
+    "Open the conversation yourself: greet them personally using VISITOR "
+    "CONTEXT and SITE CONTEXT, then ask the one right first question.)"
+)
+
+
+async def _existing_opening(conversation_id: str) -> Optional[str]:
+    """First ai/agent message of a conversation, or None."""
+    try:
+        client = db.get_client()
+        res = await db._run_sync(
+            lambda: client.table("messages")
+            .select("content,role")
+            .eq("conversation_id", conversation_id)
+            .in_("role", ["ai", "agent"])
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0]["content"] if res.data else None
+    except Exception as e:
+        logger.warning(f"[start] existing-opening lookup failed: {e}")
+        return None
+
+
+@router.post("/chat/start", response_model=ChatStartResponse)
+async def chat_start(
+    payload: ChatStartRequest,
+    request: Request,
+    _rate: None = Depends(check_rate_limit),
+):
+    """Create the conversation and let the AI open it — personalized.
+
+    Replaces the widget's auto-sent canned client message. No role="user"
+    message is created, so last_user_message_at stays NULL until the client
+    actually types — no_engagement is finally derivable.
+    """
+    _meta = _widget_request_meta(request, payload.metadata, payload.visitor_id)
+
+    if await is_blocked(
+        phone=getattr(payload.visitor, "phone", None),
+        email=getattr(payload.visitor, "email", None),
+    ):
+        logger.warning("[start] Blocked visitor refused")
+        raise HTTPException(status_code=403, detail=BLOCK_REFUSAL)
+
+    conv = await conversation_service.get_or_create_conversation(
+        conversation_id=None,
+        tunnel=payload.tunnel,
+        visitor=payload.visitor,
+        visitor_id=payload.visitor_id,
+        metadata=_meta or None,
+    )
+    if not conv or "id" not in conv:
+        raise HTTPException(status_code=500, detail="Failed to create conversation")
+    conv_id = conv["id"]
+
+    # Idempotency: a second /start (double mount, tab restore race) reuses the
+    # visitor's active conversation (Path B above) — never re-greet it.
+    if await db.count_messages(conv_id) > 0:
+        opening = await _existing_opening(conv_id)
+        logger.info(f"[start] Conv {conv_id} already started — returning existing opening")
+        return ChatStartResponse(conversation_id=conv_id, message=opening or "")
+
+    # The #168 live-greeting path: full prompt (SITE CONTEXT + t0 persona/
+    # frames) on Sonnet for sales; generate_response falls back to the welcome
+    # template internally on any failure, and support greets by template.
+    from app.pipeline.generator import generate_response
+    from app.pipeline.intent import Intent
+
+    text, model_used, cost = None, "template", 0.0
+    try:
+        _entities = {
+            "_raw_message": _GREETING_KICKOFF,
+            "_metadata": _meta,
+            "site": _meta.get("site"),
+        }
+        gen = await asyncio.to_thread(
+            generate_response,
+            Intent.GREETING,
+            _entities,
+            [],
+            payload.visitor,
+            None,
+            [],
+            payload.tunnel,
+        )
+        if gen and gen.text and gen.text.strip():
+            text, model_used, cost = gen.text.strip(), gen.model_used, gen.cost
+    except Exception as e:
+        logger.error(f"[start] Greeting generation failed (conv={conv_id}): {e}")
+
+    if not text:
+        from app.ai.templates import get_template
+        text = get_template("welcome", payload.tunnel, payload.visitor) or (
+            "Welcome! Where are you looking to fly?"
+        )
+        model_used = "template"
+
+    await conversation_service.add_message(
+        conv_id, "ai", text, model_used=model_used, cost=cost,
+    )
+    logger.info(f"[start] Conv {conv_id} opened by AI ({model_used})")
+    return ChatStartResponse(conversation_id=conv_id, message=text)
+
+
+async def _mark_client_active(conversation_id: str) -> None:
+    """A client message IS presence — the panel must never show 'left' next
+    to messages actively arriving. Guarded: only writes when presence isn't
+    already online (conversations carry an updated_at trigger; unconditional
+    writes on every message would churn list sorting for nothing)."""
+    try:
+        conv = await db.get_conversation(conversation_id)
+        if not conv:
+            return
+        metadata = dict(conv.get("metadata") or {})
+        if metadata.get("widget_presence") == "online":
+            return
+        metadata["widget_open"] = True
+        metadata["widget_presence"] = "online"
+        metadata["widget_last_event"] = "message"
+        metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
+        await db.update_conversation(conversation_id, {"metadata": metadata})
+    except Exception as e:
+        logger.warning(f"[presence] message-implies-online failed conv={conversation_id}: {e}")
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     req: ChatRequest,
@@ -195,6 +365,10 @@ async def chat(
                 'mode': reopen_mode,
             })
             # Fall through: if assigned agent exists, message is queued for human mode.
+
+    # A client message IS presence (fire-and-forget; guarded write inside).
+    if req.conversation_id:
+        _fire_and_forget(_mark_client_active(req.conversation_id))
 
     # ── POST-CRM: template response + re-close (no handoff) ──
     # Intercept ONLY when collection is COMPLETE. created_in_crm means
@@ -480,6 +654,11 @@ async def chat(
         metadata=_meta or None,
         visitor_id=req.visitor_id,
     )
+
+    # Conversation created inside the pipeline (no id on the request) — the
+    # message that created it still implies presence.
+    if not req.conversation_id and response.conversation_id:
+        _fire_and_forget(_mark_client_active(response.conversation_id))
 
     # Cache store for FAQ/greeting (Sprint 3) — skip streaming (message empty until SSE ends)
     _result_intent = detect_intent(clean_message, _meta).value

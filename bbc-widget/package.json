@@ -7,7 +7,8 @@
     "build:bbc": "vite build --mode bbc",
     "build:bct": "vite build --mode bct",
     "build:all": "npm run build:bbc && npm run build:bct",
-    "dev": "vite"
+    "dev": "vite",
+    "test": "node --test tests/first-contact.test.mjs"
   },
   "dependencies": {
     "preact": "^10.25.0"
