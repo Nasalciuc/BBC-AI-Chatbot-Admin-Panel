@@ -11,58 +11,59 @@ from app.models.chat import VisitorInfo
 TEMPLATES: dict[str, list[str]] = {
     # ── SALES ──────────────────────────────────────────────────
     "welcome:sales": [
-        "Welcome, {name}! Where are you looking to fly in business class?",
-        "Hi {name}! Tell me your route and preferred dates, and I'll find options for you.",
+        "Welcome, {name}! Where are you dreaming of flying business class?",
+        "Hi {name} — you're in the right place. Where are you flying from and to?",
     ],
     "welcome:sales:anonymous": [
-        "Welcome! Where are you looking to fly in business class?",
-        "Hi! Tell me your route and preferred travel dates.",
+        "Welcome! Where are you dreaming of flying business class?",
+        "Hi — you're in the right place. Where are you flying from and to?",
     ],
     "route_card_response:sales": [
-        "Great choice! {route} typically runs {price_range} in business class, "
-        "with {airlines} offering service at about {duration}. "
-        "Shall I have a specialist find the best fare for your dates?",
+        "Private fares on {route} typically run well below public — "
+        "your consultant pulls the exact numbers. "
+        "When are you looking to travel?",
     ],
     "ask_name:sales": [
-        "I'd love to help you find the best fare! What's your name?",
-        "Sure thing! May I have your name so I can look into that?",
+        "Let's get this moving — what's your name?",
+        "And your name, so your consultant knows who to ask for?",
     ],
     "ask_email:sales": [
-        "What's the best e-mail to send your quote to, {name}?",
-        "Could I get your e-mail address so we can send over the options?",
+        "What's the best email for your options, {name}?",
+        "Where should the options land — best email to reach you?",
     ],
     "ask_phone:sales": [
-        "To get you the best available fare, what's the best number "
-        "for our specialist to reach you?",
+        "Your consultant calls with the hand-picked options — "
+        "what's the best number to reach you?",
     ],
     "ask_dates:sales": [
-        "When are you looking to travel? Even a few days of flexibility "
-        "can help us find significantly better fares.",
-        "What dates work best for you? Flexible dates often unlock the best deals.",
+        "When are you looking to travel? Even a day or two of flexibility "
+        "often unlocks better fares.",
+        "What dates work best for you? Flexible dates tend to open up "
+        "the strongest private fares.",
     ],
     "ask_passengers:sales": [
-        "How many passengers will be flying?",
+        "How many will be traveling?",
         "Will anyone else be joining you on this trip?",
     ],
     "confirm_route:sales": [
-        "Great — {origin} to {destination} in business class! "
+        "{origin} to {destination}, business class. "
         "When are you looking to travel?",
-        "{origin} to {destination} — excellent route! "
+        "{origin} to {destination} in business class. "
         "What dates work for you?",
     ],
     "specialist_handoff:sales": [
-        "Wonderful{name_suffix}! I have everything I need. One of our travel "
-        "specialists will reach out within 2 hours with the best options. "
+        "All set{name_suffix} — I have everything your consultant needs. "
+        "They'll reach out within 2 hours with hand-picked options. "
         "We'll contact you at {contact}.",
     ],
     "lead_captured:sales": [
-        "Perfect, {name}! One of our travel specialists will reach out "
+        "That's everything, {name} — your consultant will reach out "
         "within 2 hours with the best {route} options. "
         "We'll contact you at {contact}.",
     ],
     "closing:sales": [
-        "Thank you for choosing us{name_suffix}! We'll be in touch soon.",
-        "Thanks{name_suffix}! Our team is already working on your request.",
+        "Thanks{name_suffix} — your consultant takes it from here. Speak soon.",
+        "Your search is in expert hands{name_suffix}. We'll be in touch soon.",
     ],
     "ask_previous_contact:sales": [
         "Have you contacted us before about business class travel?",
@@ -135,25 +136,28 @@ TEMPLATES: dict[str, list[str]] = {
     # ── NEW TEMPLATES (V2) ─────────────────────────────────────
 
     "route_info_generic:sales": [
-        "I'd love to help with route information! Which cities are you flying between?",
+        "Happy to help with that — which cities are you flying between?",
     ],
     "general_question:sales": [
-        "Great question! Are you looking for information about routes, pricing, or the booking process?",
+        "Are you looking for routes, pricing, or how the booking works?",
     ],
     "other:sales": [
-        "I specialize in premium business class travel! Are you looking for flights, routes, or pricing?",
+        "Business class travel is what I do. Are you after flights, routes, or pricing?",
     ],
     "new_booking_no_route:sales": [
-        "Exciting — let's find you the perfect flight! Where are you departing from, and where would you like to go?",
+        "Let's find the right flight. Where are you flying from and to?",
     ],
     "returning_visitor:sales": [
-        "Welcome back, {name}! Ready to continue planning your trip?",
+        "Welcome back, {name} — ready to pick up where we left off?",
     ],
     "first_class_inquiry:sales": [
-        "We handle first class as well! First class typically runs 60-120% more than business. Want me to check availability for your route?",
+        "First class — you're doing this right. A few airlines fly their true "
+        "flagship cabins, and your consultant hunts for exactly those. "
+        "What route are you considering?",
     ],
     "corporate_inquiry:sales": [
-        "Groups of 4+ get additional 10-20% discounts plus a dedicated specialist with priority callback within 1 hour. What route is your team looking at?",
+        "Consider this handled — groups of 4+ get a dedicated specialist and "
+        "priority callback within 1 hour. What route is your team looking at?",
     ],
     "route_info_generic:support": [
         "I can look up route details for you! Could you share your booking reference?",

@@ -573,7 +573,8 @@ _FREE_MAIL = {
 }
 
 _VALUE_KW_RE = re.compile(
-    r"\b(cheap|cheapest|deal|deals|price|prices|low[- ]?cost)\b", re.I
+    r"\b(cheap|cheapest|deal|deals|discount|discounts|bargain|affordable|"
+    r"budget|save|savings|price|prices|low[- ]?cost)\b", re.I
 )
 _FIRST_CLASS_KW_RE = re.compile(r"\bfirst\s+class\b", re.I)
 _FAMILY_KW_RE = re.compile(
