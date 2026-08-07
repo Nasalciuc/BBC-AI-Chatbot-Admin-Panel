@@ -243,19 +243,27 @@ async def send_super_alert_email(
     visitor_email: str | None,
     tunnel: str,
     last_message: str,
+    chat_number: str | int | None = None,
 ) -> bool:
     """Alert super@ when a client is chatting but no agents are available.
     Fire-and-forget safe: returns False on any failure, never raises.
 
+    The subject is UNIQUE per chat (number, or short conv-id fallback) —
+    Gmail threads by subject, and a static subject collapsed alerts from
+    DIFFERENT chats into one ever-growing buried thread. The number also
+    leads the body so it shows in the Gmail list preview.
+
     No client PII in the body (owner request, 02-Jul): name/phone/email are
     accepted but intentionally NOT displayed — emails get forwarded. Full
-    client details stay in the admin panel behind the link."""
+    client details stay in the admin panel behind the link. The chat number
+    is not PII."""
     if not settings.postmark_token:
         logger.warning("POSTMARK_TOKEN not set — skipping super alert email")
         return False
 
     chat_link = f"{settings.admin_panel_url.rstrip('/')}/chats?highlight={conversation_id}"
     safe_message = (last_message or "")[:500]
+    num = f"#{chat_number}" if chat_number else f"({conversation_id[:8]})"
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -268,10 +276,11 @@ async def send_super_alert_email(
                 json={
                     "From": settings.email_from,
                     "To": settings.super_alert_email,
-                    "Subject": f"New chat needs attention — no agents online ({tunnel})",
+                    "Subject": f"Chat {num} waiting — no agents online ({tunnel})",
                     "MessageStream": "outbound",
                     "HtmlBody": (
                         "<h2>A client is chatting with no agents available</h2>"
+                        f"<p><strong>Chat:</strong> {num}</p>"
                         f"<p><strong>Tunnel:</strong> {tunnel}</p>"
                         f'<p><strong>Latest message:</strong> "{safe_message}"</p>'
                         f'<p><a href="{chat_link}">Open conversation in admin panel</a></p>'
@@ -279,6 +288,7 @@ async def send_super_alert_email(
                         "Client details are available in the admin panel.</p>"
                     ),
                     "TextBody": (
+                        f"Chat: {num}\n"
                         "A client is chatting with no agents available.\n\n"
                         f"Tunnel: {tunnel}\n"
                         f'Latest message: "{safe_message}"\n\n'
