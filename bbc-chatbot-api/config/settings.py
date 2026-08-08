@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     claude_sonnet_model: str = "claude-sonnet-4-6"
     claude_opus_model: str = "claude-opus-4-8"
     claude_timeout: int = 15
+    # Emergency fallback: on a non-timeout API error (overloaded/rate-limit)
+    # the call retries ONCE on this cheaper model. The collection never dies
+    # with the primary; /health.ai_fallback counts activations.
+    fallback_model: str = "claude-haiku-4-5-20251001"
 
     # Supabase
     supabase_url: str  # REQUIRED

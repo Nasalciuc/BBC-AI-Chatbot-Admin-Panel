@@ -22,6 +22,8 @@ async def health() -> dict:
     supervisor_columns = supervisor_columns_status()
     # Money-path counter: lead writes must never fail silently.
     from app.services.lead_service import LEAD_WRITE_HEALTH
+    # Provider fallback counter: primary-model failures must be visible.
+    from app.ai.claude import AI_FALLBACK_HEALTH
 
     if not settings.debug:
         return {
@@ -29,6 +31,7 @@ async def health() -> dict:
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
+            "ai_fallback": dict(AI_FALLBACK_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -61,4 +64,5 @@ async def health() -> dict:
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),
+        "ai_fallback": dict(AI_FALLBACK_HEALTH),
     }
