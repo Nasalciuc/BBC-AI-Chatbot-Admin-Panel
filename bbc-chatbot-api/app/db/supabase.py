@@ -596,7 +596,8 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
     use_supervisor_cols = _supervisor_columns_available()
     try:
         res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS if use_supervisor_cols else _SIMPLE_COLUMNS_BASE))
-        return res.data
+        from app.models.rows import observe_conversation_row
+        return observe_conversation_row(res.data)
     except Exception as e:
         if use_supervisor_cols:
             # Could be a missing column (pre-migration) or a genuinely absent
@@ -704,6 +705,8 @@ async def get_conversation(
         )
         msgs, lead_res = await asyncio.gather(msgs_future, lead_future)
 
+        from app.models.rows import observe_conversation_row, observe_lead_row
+
         result = dict(conv_row)
         # Flatten nested agent data into top-level field
         agent_data = result.pop("assigned_agent", None)
@@ -711,8 +714,11 @@ async def get_conversation(
             agent_data.get("name") or agent_data.get("email")
             if agent_data else None
         )
+        observe_conversation_row(conv_row)
         result["messages"] = msgs.data or []
-        result["lead"] = lead_res.data[0] if lead_res.data else None
+        result["lead"] = (
+            observe_lead_row(lead_res.data[0]) if lead_res.data else None
+        )
         await enrich_conversations_agent_info([result])
         attach_derived_tag(result)
         return result
@@ -1003,8 +1009,11 @@ async def get_lead_full(lead_id: str) -> Optional[dict]:
             lambda: db.table("route_segments").select("*")
             .eq("lead_id", lead_id).order("segment_order", desc=False).execute()
         )
+        from app.models.rows import observe_lead_row
+
         result = dict(lead_res.data)
         conv = result.pop("conversations", {}) or {}
+        observe_lead_row(result)
         result["visitor_name"]  = conv.get("visitor_name")
         result["visitor_email"] = conv.get("visitor_email")
         result["visitor_phone"] = conv.get("visitor_phone")
