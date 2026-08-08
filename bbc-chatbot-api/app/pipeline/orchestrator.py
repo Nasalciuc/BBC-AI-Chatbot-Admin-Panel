@@ -303,12 +303,43 @@ async def _pipeline(
         (metadata or {}).get("site") or _conv_meta.get("site")
     ).get("contact_phone", "+1 (888) 322-7999")
     if _conv_meta.get("summary_shown_at") and not _conv_meta.get("confirmed_at"):
+        _normalized = message.strip().lower().rstrip(".!")
+        # REJECTION comes FIRST — before the confirm listener and before any
+        # other post-summary listener. Conv "Costa": the client answered "no"
+        # to "Is everything correct?" and no branch existed to hear it.
+        _reject_words = {
+            "no", "nope", "not right", "not correct", "wrong",
+            "incorrect", "change",
+        }
+        if _normalized in _reject_words:
+            from app.ai.templates import get_template as _get_tpl
+
+            _correction_text = _get_tpl("summary_correction", tunnel, visitor) or (
+                "Thanks for catching that — what should I fix: "
+                "the route, the dates, or the passengers?"
+            )
+            await conversation_service.add_message(
+                conversation_id=cid,
+                role="ai",
+                content=_correction_text,
+                model_used="template",
+                cost=0.0,
+            )
+            if _persist_state is not None:
+                _persist_state["ai_persisted"] = True
+            logger.info(f"[{cid}] Summary REJECTED — asking what to correct")
+            return ChatResponse(
+                conversation_id=cid,
+                message=_correction_text,
+                type="template",
+                model_used="template",
+            )
         _confirm_words = {
             "yes", "correct", "looks good", "confirm", "that's right",
             "da", "yep", "yeah", "ok", "okay", "sure", "perfect",
             "great", "absolutely", "that works", "sounds good",
         }
-        if message.strip().lower().rstrip(".!") in _confirm_words:
+        if _normalized in _confirm_words:
             intent = Intent.CONFIRMED
             logger.info(f"[{cid}] Intent override → CONFIRMED (summary was shown)")
     _confirmed_this_turn = intent == Intent.CONFIRMED
@@ -401,6 +432,7 @@ async def _pipeline(
         "departure_date": extracted.departure_date,
         "return_date": extracted.return_date,
         "trip_type": extracted.trip_type,
+        "itinerary": extracted.itinerary,
         "_children_count": extracted.children_count or 0,
         "_infant_count": extracted.infant_count or 0,
         # Sales-methodology signals — merged into the lead's intent_signals and
@@ -757,24 +789,11 @@ async def _pipeline(
             await lead_service.update_lead_from_entities(cid, entities)
             logger.info(f"[{cid}] Claude extraction merged: {list(_te.keys())}")
 
-    # ── STEP 6.1.5: RECONCILE FROM AI RESPONSE TEXT ───────────
-    # Claude often verbalizes entities correctly even when regex missed
-    # the user message. Parse gen.text and fill NULL lead fields.
-    if gen and gen.text:
-        _ai_recon = extract_entities(gen.text)
-        _recon_updates: dict = {}
-        if _ai_recon.passengers and not entities.get("passengers"):
-            _recon_updates["passengers"] = _ai_recon.passengers
-            entities["passengers"] = _ai_recon.passengers
-        if _ai_recon.departure_date and not entities.get("departure_date"):
-            _recon_updates["departure_date"] = _ai_recon.departure_date
-            entities["departure_date"] = _ai_recon.departure_date
-        if _ai_recon.return_date and not entities.get("return_date"):
-            _recon_updates["return_date"] = _ai_recon.return_date
-            entities["return_date"] = _ai_recon.return_date
-        if _recon_updates:
-            await lead_service.update_lead_from_entities(cid, _recon_updates)
-            logger.info(f"[{cid}] Reconciled from AI text: {list(_recon_updates.keys())}")
+    # STEP 6.1.5 (RECONCILE FROM AI RESPONSE TEXT) is DELETED, permanently.
+    # Lead facts come from the CLIENT's messages only. The AI's own text is
+    # output, not evidence. Conv "Costa": the AI wrote "available 24/7",
+    # this step parsed it as July 24, invented departure_date 2027-07-24,
+    # the dates question got skipped, and a phantom itinerary shipped.
 
     # ── STEP 6.2: CRM SUBMIT (single point — after merge) ─────
     if tunnel == "sales" and settings.crm_api_url:
@@ -805,6 +824,10 @@ async def _pipeline(
                     if _confirmed_this_turn and not _conv_meta.get("confirmed_at"):
                         _meta_upd = dict(_conv_meta)
                         _meta_upd["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+                        # Open-door arms HERE (post-confirmation), one-turn
+                        # window as before — a summary "no" can no longer be
+                        # swallowed by the graceful-no list.
+                        _meta_upd["open_door_pending"] = True
                         await db.update_conversation(cid, {"metadata": _meta_upd})
                         _conv_meta = _meta_upd
                     _client_ip = _conv_meta.get("client_ip")
@@ -893,17 +916,16 @@ async def _pipeline(
                 validated_text = _summary_text
                 _meta_upd = dict(_conv_meta)
                 _meta_upd["summary_shown_at"] = datetime.now(timezone.utc).isoformat()
-                # One-turn window for the open-door must-have. Cleared on the
-                # next client message whether they answer, say no, or correct
-                # the route — never left open forever (the Savannah bug).
-                _meta_upd["open_door_pending"] = True
+                # Open-door arms on CONFIRMATION now, not here — a post-summary
+                # "no" must reach the rejection branch, never the graceful-no
+                # list of the open-door capture (the Costa collision).
                 await db.update_conversation(cid, {"metadata": _meta_upd})
                 _conv_meta = _meta_upd
                 gen.model_used = "template"
                 gen.cost = 0.0
                 logger.info(f"[{cid}] Step 7.5: Summary shown (awaiting confirmation)")
 
-        elif _is_confirmed and _crm_submitted_this_turn:
+        elif _conv_meta.get("confirmed_at") and _crm_submitted_this_turn:
             from app.services.closing import compute_closing_text, claim_closing_sent
 
             _claimed = await claim_closing_sent(cid)
