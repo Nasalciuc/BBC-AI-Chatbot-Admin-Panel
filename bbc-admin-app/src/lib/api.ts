@@ -305,6 +305,15 @@ export function getUsers(
   return apiFetch(`/api/admin/users?${qs}`)
 }
 
+export async function getLiveAgents(): Promise<import('./types').LiveAgent[]> {
+  const res = await apiFetch<{
+    success: boolean
+    data: import('./types').LiveAgent[]
+    count: number
+  }>('/api/admin/agents/live')
+  return res.data ?? []
+}
+
 export async function inviteUser(data: {
   name: string
   email: string

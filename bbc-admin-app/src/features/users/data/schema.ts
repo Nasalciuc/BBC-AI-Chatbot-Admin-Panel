@@ -25,6 +25,8 @@ const userSchema = z.object({
   role: userRoleSchema,
   tunnel_scope: z.string(),
   is_active: z.boolean(),
+  // Real relationship only — a team renders ONLY from users.team_id.
+  team_id: z.string().nullable().optional(),
   last_seen_at: z.string().nullable().optional(),
   avatar_url: z.string().nullable().optional(),
   created_at: z.coerce.date(),

@@ -1,14 +1,22 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Check, ChevronsUpDown } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { getUsers, reassignConversation } from '@/lib/api'
 
 type UserRow = {
@@ -26,6 +34,7 @@ interface Props {
 
 export function ReassignPanel({ conversationId, onReassigned }: Props) {
   const [selectedAgent, setSelectedAgent] = useState('')
+  const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const { data: users = [] } = useQuery({
@@ -36,6 +45,8 @@ export function ReassignPanel({ conversationId, onReassigned }: Props) {
       return rows.filter((u) => ['sales', 'support'].includes(u.role ?? '') && u.is_active)
     },
   })
+
+  const selected = users.find((u) => u.id === selectedAgent)
 
   const handleReassign = async () => {
     if (!conversationId || !selectedAgent) return
@@ -54,18 +65,53 @@ export function ReassignPanel({ conversationId, onReassigned }: Props) {
 
   return (
     <div className='flex gap-2 items-center'>
-      <Select value={selectedAgent} onValueChange={setSelectedAgent}>
-        <SelectTrigger className='w-56'>
-          <SelectValue placeholder='Select agent...' />
-        </SelectTrigger>
-        <SelectContent>
-          {users.map((u) => (
-            <SelectItem key={u.id} value={u.id}>
-              {u.name || u.email} ({u.role})
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      {/* Combobox: type-to-filter by name/email, full keyboard navigation. */}
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant='outline'
+            role='combobox'
+            aria-expanded={open}
+            className='w-56 justify-between font-normal'
+          >
+            {selected ? `${selected.name || selected.email} (${selected.role})` : 'Select agent...'}
+            <ChevronsUpDown className='ms-2 size-4 shrink-0 opacity-50' />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className='w-56 p-0' align='start'>
+          <Command>
+            <CommandInput placeholder='Search name or email...' />
+            <CommandList>
+              <CommandEmpty>No operator found.</CommandEmpty>
+              <CommandGroup>
+                {users.map((u) => (
+                  <CommandItem
+                    key={u.id}
+                    value={`${u.name ?? ''} ${u.email ?? ''}`}
+                    onSelect={() => {
+                      setSelectedAgent(u.id === selectedAgent ? '' : u.id)
+                      setOpen(false)
+                    }}
+                  >
+                    <Check
+                      className={cn(
+                        'me-2 size-4',
+                        selectedAgent === u.id ? 'opacity-100' : 'opacity-0',
+                      )}
+                    />
+                    <div className='grid leading-tight'>
+                      <span className='truncate'>{u.name || u.email}</span>
+                      <span className='truncate text-xs text-muted-foreground'>
+                        {u.email} · {u.role}
+                      </span>
+                    </div>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
       <Button
         onClick={handleReassign}
         disabled={!selectedAgent || loading}
