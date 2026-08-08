@@ -7,6 +7,7 @@ import { LongText } from '@/components/long-text'
 import { callTypes, roles } from '../data/data'
 import { type User } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
+import { TeamCell } from './team-cell'
 import { BBCAvatar } from '@/components/bbc-avatar'
 
 export const usersColumns: ColumnDef<User>[] = [
@@ -92,6 +93,14 @@ export const usersColumns: ColumnDef<User>[] = [
         {row.getValue('tunnel_scope')}
       </Badge>
     ),
+    enableSorting: false,
+  },
+  {
+    accessorKey: 'team_id',
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Team' />
+    ),
+    cell: ({ row }) => <TeamCell teamId={row.original.team_id} />,
     enableSorting: false,
   },
   {

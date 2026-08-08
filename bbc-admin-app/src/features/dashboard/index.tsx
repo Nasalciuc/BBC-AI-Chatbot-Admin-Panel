@@ -16,6 +16,7 @@ import { HotLeads } from './components/hot-leads'
 import { TopRoutes } from './components/top-routes'
 import { LeadFunnel } from './components/lead-funnel'
 import { AiHealthIndicator } from './components/ai-health-indicator'
+import { TeamLiveCard } from './components/team-live-card'
 
 export function Dashboard() {
   const role = useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole
@@ -78,6 +79,7 @@ export function Dashboard() {
               <div className='grid gap-6 md:grid-cols-2'>
                 <HotLeads hot_leads={stats.hot_leads} />
                 <div className='space-y-6'>
+                  <TeamLiveCard />
                   {canViewGlobal && <TopRoutes top_routes={stats.top_routes} />}
                   {canViewGlobal && (
                     <AiHealthIndicator

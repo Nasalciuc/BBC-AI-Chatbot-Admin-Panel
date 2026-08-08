@@ -18,6 +18,61 @@ PRIVILEGED = {"owner", "admin", "dev"}
 CAN_LIST_USERS = PRIVILEGED | {"supervisor", "project_manager"}
 
 
+@router.get("/admin/agents/live")
+async def get_live_agents(user: dict = Depends(get_current_user)):
+    """Who's live right now — every active operator/supervisor with their
+    ready/online state. Kills the "am I even in the queue?" emails: agents
+    and supervisors see the queue state instead of asking the owner."""
+    if user.get("role") not in CAN_LIST_USERS | {"sales", "support"}:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    try:
+        from datetime import datetime, timezone, timedelta
+        from config.settings import settings
+
+        client = db.get_client()
+
+        def _q():
+            return (
+                client.table("users")
+                .select("id,name,role,is_ready,last_seen_at")
+                .eq("is_active", True)
+                .in_("role", ["sales", "support", "supervisor"])
+                .order("name")
+                .execute()
+            )
+
+        res = await db._run_sync(_q)
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=settings.agent_timeout_seconds
+        )
+        data = []
+        for row in res.data or []:
+            last_seen = row.get("last_seen_at")
+            is_online = False
+            if last_seen:
+                try:
+                    is_online = (
+                        datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+                        > cutoff
+                    )
+                except ValueError:
+                    pass
+            data.append(
+                {
+                    "id": row["id"],
+                    "name": row.get("name"),
+                    "role": row.get("role"),
+                    "is_ready": bool(row.get("is_ready")),
+                    "is_online": is_online,
+                    "last_seen": last_seen,
+                }
+            )
+        return {"success": True, "data": data, "count": len(data)}
+    except Exception as e:
+        logger.error(f"get_live_agents error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load live agents")
+
+
 @router.get("/admin/users")
 async def list_users(
     role:   Optional[str] = Query(None, pattern="^(owner|admin|sales|support|supervisor)$"),

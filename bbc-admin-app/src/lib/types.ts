@@ -241,3 +241,13 @@ export interface UserAccessAuditItem {
   changed_by_email?: string | null
   created_at: string
 }
+
+/** /api/admin/agents/live — who's live right now (Team live card). */
+export interface LiveAgent {
+  id: string
+  name: string | null
+  role: 'sales' | 'support' | 'supervisor' | string
+  is_ready: boolean
+  is_online: boolean
+  last_seen: string | null
+}
