@@ -20,12 +20,15 @@ async def health() -> dict:
     # Always surface: a sticky False here freezes activity clocks and poisons
     # derived tags (false no_engagement). Ops must see it without log diving.
     supervisor_columns = supervisor_columns_status()
+    # Money-path counter: lead writes must never fail silently.
+    from app.services.lead_service import LEAD_WRITE_HEALTH
 
     if not settings.debug:
         return {
             "status": "ok",
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
+            "lead_writes": dict(LEAD_WRITE_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -57,4 +60,5 @@ async def health() -> dict:
         "services": services,
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
+        "lead_writes": dict(LEAD_WRITE_HEALTH),
     }

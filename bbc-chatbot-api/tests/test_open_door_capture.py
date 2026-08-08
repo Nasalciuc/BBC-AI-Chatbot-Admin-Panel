@@ -107,14 +107,28 @@ class TestDecideOpenDoorReply:
         assert extracted.passengers == 2
 
 
-class TestSummarySetsPendingFlag:
-    """The write site that opens the one-turn window (orchestrator step 7.5)."""
+class TestConfirmationSetsPendingFlag:
+    """The one-turn window now arms on CONFIRMATION, not at summary-shown —
+    a post-summary "no" must reach the rejection branch, never the
+    graceful-no list of this capture (the Costa collision). The window
+    mechanics (one turn, anti-route, graceful-no) are unchanged, one turn
+    later."""
 
-    def test_open_door_pending_literal_present_at_summary_write(self):
-        # Guard against the flag being renamed away from the summary write.
+    def test_open_door_pending_arms_at_confirmed_write_only(self):
         import inspect
         from app.pipeline import orchestrator as orch
 
         src = inspect.getsource(orch)
         assert 'open_door_pending"] = True' in src or "open_door_pending'] = True" in src
         assert "decide_open_door_reply" in src
+        # The arming write sits next to the confirmed_at write — and the
+        # summary-shown block must NOT arm it anymore.
+        _arm_idx = src.index('open_door_pending"] = True')
+        _confirm_idx = src.index('confirmed_at"] = ')
+        assert abs(_arm_idx - _confirm_idx) < 600, (
+            "open_door_pending must arm at the confirmed_at write site"
+        )
+        _summary_idx = src.index('summary_shown_at"] = ')
+        assert abs(_arm_idx - _summary_idx) > 600, (
+            "open_door_pending must NOT arm at the summary-shown write site"
+        )

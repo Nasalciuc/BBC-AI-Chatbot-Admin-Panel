@@ -8,6 +8,10 @@ from app.models.chat import VisitorInfo
 # ── Template registry ─────────────────────────────────────────
 # Keys follow the pattern: "{key}:{tunnel}" or "{key}:{tunnel}:anonymous"
 
+# One SLA everywhere the client hears it. CALL PRIMING in the prompt says
+# ~30 minutes; templates promising "2 hours" contradicted it.
+CONSULTANT_SLA_TEXT = "~30 minutes"
+
 TEMPLATES: dict[str, list[str]] = {
     # ── SALES ──────────────────────────────────────────────────
     "welcome:sales": [
@@ -53,13 +57,17 @@ TEMPLATES: dict[str, list[str]] = {
     ],
     "specialist_handoff:sales": [
         "All set{name_suffix} — I have everything your consultant needs. "
-        "They'll reach out within 2 hours with hand-picked options. "
+        f"They'll reach out within {CONSULTANT_SLA_TEXT} with hand-picked options. "
         "We'll contact you at {contact}.",
     ],
     "lead_captured:sales": [
         "That's everything, {name} — your consultant will reach out "
-        "within 2 hours with the best {route} options. "
+        f"within {CONSULTANT_SLA_TEXT} with the best {{route}} options. "
         "We'll contact you at {contact}.",
+    ],
+    "summary_correction:sales": [
+        "Thanks for catching that — what should I fix: "
+        "the route, the dates, or the passengers?",
     ],
     "closing:sales": [
         "Thanks{name_suffix} — your consultant takes it from here. Speak soon.",

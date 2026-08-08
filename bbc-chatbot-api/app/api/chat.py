@@ -204,6 +204,11 @@ async def chat_start(
         raise HTTPException(status_code=500, detail="Failed to create conversation")
     conv_id = conv["id"]
 
+    # Every completed form = a visible lead row IMMEDIATELY (contact seeds
+    # live on the conversation's top-level columns, written just above).
+    if payload.tunnel == "sales":
+        await lead_service.ensure_lead(conv_id, visitor=payload.visitor)
+
     # Idempotency: a second /start (double mount, tab restore race) reuses the
     # visitor's active conversation (Path B above) — never re-greet it.
     if await db.count_messages(conv_id) > 0:

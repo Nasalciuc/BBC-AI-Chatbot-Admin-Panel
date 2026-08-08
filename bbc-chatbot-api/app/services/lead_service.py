@@ -55,15 +55,84 @@ def _calculate_score(lead: dict, conv: Optional[dict] = None) -> int:
     return min(score, 100)
 
 
-async def get_or_create_lead(conversation_id: str) -> Optional[dict]:
+# Money-path observability: lead writes must never fail silently. Surfaced
+# in /health as lead_writes so ops sees breakage without log diving.
+LEAD_WRITE_HEALTH: dict = {"errors_since_boot": 0, "last_error_at": None}
+
+
+def _record_lead_write_error(conversation_id: str, context: str, exc: Exception) -> None:
+    from datetime import datetime, timezone
+
+    LEAD_WRITE_HEALTH["errors_since_boot"] += 1
+    LEAD_WRITE_HEALTH["last_error_at"] = datetime.now(timezone.utc).isoformat()
+    logger.error(
+        f"[{conversation_id}] LEAD WRITE FAILED ({context}): "
+        f"{type(exc).__name__}: {exc}",
+        exc_info=True,
+    )
+
+
+async def ensure_lead(conversation_id: str, visitor=None) -> Optional[dict]:
+    """SELECT the lead for this conversation; INSERT it if missing.
+
+    Does what the name says — every completed form becomes a visible lead row
+    immediately (contact lives on the TOP-LEVEL conversation columns, written
+    at conversation creation; the lead row carries the travel fields).
+    intent_signals starts as {} — the DB default is a legacy [] and every
+    merge downstream expects a dict.
+    """
     try:
         from app.db.supabase import get_client, _run_sync
         db_client = get_client()
-        res = await _run_sync(lambda: db_client.table("leads").select("*").eq("conversation_id", conversation_id).limit(1).execute())
-        return res.data[0] if res.data else None  # type: ignore[index]
-    except Exception as e:
-        logger.error(f"get_or_create_lead error: {e}")
+        res = await _run_sync(
+            lambda: db_client.table("leads")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]  # type: ignore[index]
+        # Leads are a SALES concept — never create rows for support chats.
+        conv_res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("tunnel")
+            .eq("id", conversation_id)
+            .limit(1)
+            .execute()
+        )
+        if conv_res.data and conv_res.data[0].get("tunnel") == "support":
+            return None
+        try:
+            ins = await _run_sync(
+                lambda: db_client.table("leads")
+                .insert({"conversation_id": conversation_id, "intent_signals": {}})
+                .execute()
+            )
+            if ins.data:
+                logger.info(f"[{conversation_id}] ensure_lead: created lead row")
+                return ins.data[0]  # type: ignore[index]
+        except Exception:
+            # Conflict (unique conversation_id, concurrent create) → re-SELECT.
+            res2 = await _run_sync(
+                lambda: db_client.table("leads")
+                .select("*")
+                .eq("conversation_id", conversation_id)
+                .limit(1)
+                .execute()
+            )
+            if res2.data:
+                return res2.data[0]  # type: ignore[index]
+            raise
         return None
+    except Exception as e:
+        _record_lead_write_error(conversation_id, "ensure_lead", e)
+        return None
+
+
+async def get_or_create_lead(conversation_id: str) -> Optional[dict]:
+    """Thin wrapper over ensure_lead — every call site gains real creation."""
+    return await ensure_lead(conversation_id)
 
 
 # ── Sales-methodology signals ─────────────────────────────────────
@@ -252,17 +321,34 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         # so other keys survive, and written only when something changed.
         signals = signals_from_entities(entities)
         if signals:
-            existing_signals = lead_data.get("intent_signals")
-            if not isinstance(existing_signals, dict):
-                existing_signals = {}
+            raw_existing = lead_data.get("intent_signals")
+            # 93% of lead rows carry legacy ARRAY-shaped intent_signals — a
+            # list must never raise, and non-empty legacy data is preserved.
+            existing_signals = (
+                raw_existing if isinstance(raw_existing, dict)
+                else ({} if not raw_existing else {"legacy": raw_existing})
+            )
             merged_signals = {**existing_signals, **signals}
-            if merged_signals != existing_signals:
+            if merged_signals != existing_signals or raw_existing != existing_signals:
                 lead_payload["intent_signals"] = merged_signals
                 context_line = build_chat_context_line(merged_signals)
                 if context_line:
                     notes = _append_note(lead_data.get("notes"), context_line)
                     if notes is not None:
                         lead_payload["notes"] = notes
+
+        # Multi-city: the full leg chain leads the notes, BEFORE the persona
+        # line — the consultant must see the real itinerary first (conv #1244).
+        if entities.get("itinerary"):
+            _itin_line = f"Itinerary: {entities['itinerary']}"
+            _current_notes = lead_payload.get("notes", lead_data.get("notes") or "")
+            _kept = [
+                ln for ln in _current_notes.splitlines()
+                if not ln.strip().startswith("Itinerary: ")
+            ]
+            _new_notes = "\n".join([_itin_line, *_kept]).strip()
+            if _new_notes != (lead_data.get("notes") or "").strip():
+                lead_payload["notes"] = _new_notes
 
         # RT 2-3: Update conv + lead in parallel (when both have data)
         tasks = []
@@ -310,9 +396,11 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             )
 
     except Exception as e:
-        logger.error(
-            f"[{conversation_id}] update_lead_from_entities FAILED: {type(e).__name__}: {e}"
-        )
+        # The chat reply stays alive, but the money path must SCREAM: full
+        # exception + which entities were in flight + a /health counter.
+        _entity_keys = sorted(k for k, v in (entities or {}).items() if v and not k.startswith("_"))
+        logger.error(f"[{conversation_id}] Entities in flight: {_entity_keys}")
+        _record_lead_write_error(conversation_id, "update_lead_from_entities", e)
         try:
             logger.error(f"[{conversation_id}] Lead payload was: {lead_payload}")
         except NameError:

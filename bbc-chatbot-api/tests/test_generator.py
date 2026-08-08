@@ -172,7 +172,12 @@ class TestBudgetGuard:
             history=[], tunnel="sales", budget_remaining=-5.0,
         )
         assert res.model_used == "template"
-        assert "specialist" in res.text.lower() or "connect" in res.text.lower()
+        # ai_fallback picks a random variant — accept any of them (one names
+        # specialists, the other points to the phone line; both are fallbacks).
+        from app.ai.templates import TEMPLATES as _T
+
+        _fallbacks = {t.format(name="", name_suffix="") for t in _T["ai_fallback"]}
+        assert res.text in _fallbacks or "specialist" in res.text.lower() or "connect" in res.text.lower()
 
     def test_budget_ok_proceeds(self):
         res = generate_response(

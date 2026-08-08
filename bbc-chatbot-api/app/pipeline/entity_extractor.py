@@ -34,6 +34,7 @@ class ExtractedEntities:
     # it keeps them when the client offers them, for the consultant's call.
     occasion: Optional[str] = None         # business, celebration, family, medical, raw phrase
     booking_for: Optional[str] = None      # boss, parents, wife… when booking for someone else
+    itinerary: Optional[str] = None        # full leg chain when >2 cities (multi-city)
     date_flexible: Optional[bool] = None
     airline_preference: Optional[str] = None
     airline_avoid: Optional[str] = None
@@ -156,6 +157,16 @@ NAME_PATTERNS = [
 ]
 
 PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us|adults?)', re.I)
+# Word-number passengers: "one" as a short answer, "two travelers", …
+# Conv #1244: the client confirmed "one" and passengers stayed NULL.
+WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+}
+PAX_WORD_RE = re.compile(
+    r'\b(one|two|three|four|five|six|seven|eight|nine)\s*'
+    r'(?:travell?ers?|passengers?|persons?|people|pax)?\b', re.I
+)
 # Leading digit followed by punctuation (catches "2. Both over 65", "3, all adults")
 # Hyphen excluded when followed by digit (avoids "2-3 options" false positive).
 PAX_LEADING_RE = re.compile(r'^\s*(\d{1,2})\s*(?:[.,;:!)\]]|\-(?!\d))', re.I)
@@ -338,6 +349,10 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
     if matches:
         dates = []
         for match in matches[:2]:
+            # "available 24/7" is an idiom, not a date — the European swap
+            # below would coerce it into July 24 (conv "Costa").
+            if re.fullmatch(r"24\s*/\s*7", match.group(0)):
+                continue
             m_val, d_val = int(match.group("m")), int(match.group("d"))
             y_val = int(match.group("y")) if match.group("y") else None
             # DD/MM (European): first number can't be a month → swap. Ambiguous
@@ -1013,7 +1028,23 @@ def extract_entities(message: str) -> ExtractedEntities:
 
     # 4. Airport codes (direct in message)
     codes = [c.group(1) for c in AIRPORT_RE.finditer(text) if c.group(1) in AIRPORTS]
-    if len(codes) >= 2:
+    _unique_codes = list(dict.fromkeys(codes))
+    if len(_unique_codes) > 2:
+        # Multi-city (conv #1244 "Ali": JFK→CMN→CAI→DEL→JFK became "JFK↔CMN
+        # round trip", middle legs lost). Route fields carry the FIRST leg;
+        # the full chain rides `itinerary` into the lead notes; return_date
+        # is never guessed from a middle leg.
+        entities.origin_code = codes[0]
+        entities.destination_code = codes[1]
+        entities.trip_type = "multi_city"
+        # Collapse consecutive repeats: "JFK CMN, CMN CAI, CAI DEL, DEL JFK"
+        # reads as the chain JFK→CMN→CAI→DEL→JFK.
+        _chain = [codes[0]]
+        for _c in codes[1:]:
+            if _c != _chain[-1]:
+                _chain.append(_c)
+        entities.itinerary = "→".join(_chain)
+    elif len(codes) >= 2:
         _from_iata = None
         _to_iata = None
         for code in codes:
@@ -1091,6 +1122,19 @@ def extract_entities(message: str) -> ExtractedEntities:
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
 
+    # Word numbers: "one" as a short answer, "two travelers" anywhere.
+    # Bare word-numbers only count in short answers, and never "one way".
+    if not entities.passengers:
+        wm = PAX_WORD_RE.search(text)
+        if wm:
+            _has_unit = bool(re.search(
+                r'travell?er|passenger|person|people|pax', wm.group(0), re.I
+            ))
+            _short_answer = len(text.split()) <= 3
+            _trip_phrase = re.search(r'\bone[\s-]?way\b', text, re.I)
+            if _has_unit or (_short_answer and not _trip_phrase):
+                entities.passengers = WORD_NUMBERS[wm.group(1).lower()]
+
     # Children/infants — add to adult count if both present
     child_m = CHILD_RE.search(text)
     infant_m = INFANT_RE.search(text)
@@ -1146,11 +1190,12 @@ def extract_entities(message: str) -> ExtractedEntities:
     if m:
         entities.cabin_class = CABIN_MAP.get(m.group(1).lower().strip(), "business")
 
-    # 7b. Trip type (one-way vs round-trip)
-    if ONE_WAY_RE.search(text):
-        entities.trip_type = "one_way"
-    elif ROUND_TRIP_RE.search(text):
-        entities.trip_type = "round_trip"
+    # 7b. Trip type (one-way vs round-trip) — never demote a detected multi-city
+    if entities.trip_type != "multi_city":
+        if ONE_WAY_RE.search(text):
+            entities.trip_type = "one_way"
+        elif ROUND_TRIP_RE.search(text):
+            entities.trip_type = "round_trip"
 
     # 8. Dates
     dep, ret = _extract_dates(text)
@@ -1158,6 +1203,12 @@ def extract_entities(message: str) -> ExtractedEntities:
         entities.departure_date = dep
     if ret:
         entities.return_date = ret
+
+    # Multi-city: the second date in the message is a MIDDLE-LEG date, not a
+    # return (conv #1244 mislabeled CMN→CAI's date as return_date). Leave NULL —
+    # the consultant confirms the real final leg on the call.
+    if entities.trip_type == "multi_city":
+        entities.return_date = None
 
     # Infer trip_type from return_date if not explicitly stated
     if entities.return_date and not entities.trip_type:
