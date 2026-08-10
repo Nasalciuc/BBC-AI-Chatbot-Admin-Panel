@@ -17,20 +17,22 @@ import { formatAge } from '@/lib/format-age'
 import { listRowDot } from './presence'
 import ConversationDetail from './detail'
 
+// Every status tint carries a dark: variant — light-only literals rendered
+// near-white-on-pastel in dark mode.
 const TUNNEL_STYLES: Record<string, string> = {
-  sales:   'bg-blue-50 text-blue-700 border border-blue-200',
-  support: 'bg-purple-50 text-purple-700 border border-purple-200',
+  sales:   'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800',
+  support: 'bg-purple-50 text-purple-700 border border-purple-200 dark:bg-purple-950 dark:text-purple-300 dark:border-purple-800',
 }
 // State (tab) and outcome (tag) are orthogonal axes — a tag chip layers on
 // top of whichever state tab is active (e.g. "Abandoned" chip + "All Closed"
 // tab is a valid, meaningful combination). See TAG_FILTERS below.
 const TAG_STYLES: Record<ConversationTag, string> = {
-  fresh: 'bg-sky-50 text-sky-700 border border-sky-200',
-  active: 'bg-green-50 text-green-700 border border-green-200',
-  main_queue: 'bg-amber-50 text-amber-800 border border-amber-200',
-  completed: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
-  abandoned: 'bg-slate-100 text-slate-600 border border-slate-300',
-  no_engagement: 'bg-orange-50 text-orange-700 border border-orange-200',
+  fresh: 'bg-sky-50 text-sky-700 border border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800',
+  active: 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950 dark:text-green-300 dark:border-green-800',
+  main_queue: 'bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-800',
+  completed: 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800',
+  abandoned: 'bg-slate-100 text-slate-600 border border-slate-300 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-700',
+  no_engagement: 'bg-orange-50 text-orange-700 border border-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-800',
 }
 const TAG_LABELS: Record<ConversationTag, string> = {
   fresh: 'Fresh',
@@ -328,9 +330,11 @@ export function Chats() {
                           <span className="text-[11px] font-mono text-muted-foreground shrink-0">#{conv.chat_number}</span>
                         )}
                         <span className="font-medium text-sm text-foreground truncate">
-                          {activeTab === 'my_closed' || activeTab === 'all_closed'
-                            ? <span className="text-muted-foreground italic text-xs">Closed conversation</span>
-                            : <span className='flex items-center gap-1'>
+                          {/* Names survive closing: 1292 identical "Closed
+                              conversation" rows made review scanning
+                              impossible — and gained no privacy (contact
+                              details render in the detail header anyway). */}
+                          {<span className='flex items-center gap-1'>
                                 {staleIds.has(conv.id) && (
                                   <AlertTriangle className='h-3 w-3 text-red-400 shrink-0' />
                                 )}
