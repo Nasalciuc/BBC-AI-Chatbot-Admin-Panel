@@ -91,6 +91,40 @@ class TestMutantRowsLogAndStillReturn:
         assert observe_lead_row("weird") == "weird"
 
 
+class TestObservationIsInfallible:
+    """The detail-load-500 hotfix: no input may ever raise out of observe."""
+
+    def test_observe_row_with_none_never_raises(self):
+        from app.models.rows import LEAD_ROW, observe_row
+
+        assert observe_row(LEAD_ROW, None, "lead") is None
+        assert observe_row(LEAD_ROW, 42, "lead") == 42
+
+    def test_adapter_misbehavior_never_breaks_the_read(self, caplog):
+        import logging
+        from unittest.mock import MagicMock
+        from app.models.rows import observe_row
+
+        broken_adapter = MagicMock()
+        broken_adapter.validate_python.side_effect = TypeError("adapter exploded")
+        row = {"id": "R1"}
+        with caplog.at_level(logging.WARNING):
+            out = observe_row(broken_adapter, row, "lead")
+        assert out is row
+        assert [r for r in caplog.records if "observation failed" in r.message]
+
+    def test_typed_dict_comes_from_typing_extensions(self):
+        # pydantic's TypeAdapter over typing.TypedDict RAISES at import on
+        # Python < 3.12 — Railway runs 3.11 while local dev runs 3.13, so
+        # only this source pin keeps the prod bomb from coming back.
+        import inspect
+        from app import models
+
+        src = inspect.getsource(__import__("app.models.rows", fromlist=["rows"]))
+        assert "from typing_extensions import TypedDict" in src
+        assert "from typing import Any, Optional\n" in src  # no typing.TypedDict
+
+
 class TestWiredIntoReadHelpers:
     def test_read_helpers_observe(self):
         import inspect
