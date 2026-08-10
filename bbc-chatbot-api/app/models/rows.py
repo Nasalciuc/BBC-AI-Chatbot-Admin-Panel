@@ -13,7 +13,14 @@ shape. Tightening to raise comes later, once the logs run quiet.
 """
 
 import logging
-from typing import Any, Optional, TypedDict
+from typing import Any, Optional
+
+# NOT typing.TypedDict: pydantic's TypeAdapter over typing.TypedDict RAISES
+# at import time on Python < 3.12 ("Please use typing_extensions.TypedDict").
+# Railway runs python:3.11 — typing.TypedDict here 500'd every conversation
+# read while local 3.13 test runs passed. typing_extensions ships with
+# pydantic, so this import is always available.
+from typing_extensions import TypedDict
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -77,18 +84,23 @@ LEAD_ROW = TypeAdapter(LeadRow)
 def observe_row(adapter: TypeAdapter, row: Any, kind: str) -> Any:
     """Validate a DB row against its contract — observe-first.
 
-    Always returns the row unchanged (raw dict); a mismatch logs at WARNING
-    with the row id so shape drift is visible without breaking production.
+    Always returns the row unchanged; a mismatch logs at WARNING with the
+    row id so shape drift is visible without breaking production. This
+    function must be INFALLIBLE: no input — None, non-dict, adapter
+    misbehavior — may ever raise out of an observation.
     """
     if not isinstance(row, dict):
         return row
     try:
         adapter.validate_python(row)
     except ValidationError as e:
+        row_id = row.get("id", "?") if isinstance(row, dict) else "?"
         logger.warning(
-            f"[rows] {kind} row {row.get('id', '?')} failed its contract "
+            f"[rows] {kind} row {row_id} failed its contract "
             f"({e.error_count()} issue(s)): {e.errors()[:3]}"
         )
+    except Exception as e:  # noqa: BLE001 — observation never breaks a read
+        logger.warning(f"[rows] {kind} observation failed: {type(e).__name__}: {e}")
     return row
 
 
