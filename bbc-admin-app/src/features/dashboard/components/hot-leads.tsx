@@ -24,11 +24,11 @@ const tierStyles: Record<
   'gold' | 'silver' | 'bronze',
   string
 > = {
-  gold: 'border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-100',
+  gold: 'border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-950',
   silver:
-    'border border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-100',
+    'border border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-900',
   bronze:
-    'border border-orange-300 bg-orange-100 text-orange-800 hover:bg-orange-100',
+    'border border-orange-300 bg-orange-100 text-orange-800 hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-950',
 }
 
 export function HotLeads({ hot_leads = [] }: HotLeadsProps) {
@@ -41,9 +41,9 @@ export function HotLeads({ hot_leads = [] }: HotLeadsProps) {
       </CardHeader>
       <CardContent>
         {leads.length === 0 ? (
-          <div className="rounded-lg bg-green-50 p-6 text-center">
+          <div className="rounded-lg bg-green-50 dark:bg-green-950/40 p-6 text-center">
             <span className="text-2xl">🎉</span>
-            <p className="mt-2 text-sm font-medium text-green-700">
+            <p className="mt-2 text-sm font-medium text-green-700 dark:text-green-300">
               All leads contacted!
             </p>
           </div>

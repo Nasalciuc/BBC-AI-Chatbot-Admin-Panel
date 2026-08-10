@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
@@ -46,10 +47,13 @@ const ROLE_STYLES: Record<string, { bubble: string; align: string; icon: React.R
   system: { bubble: 'bg-muted text-muted-foreground text-xs italic rounded-lg border border-dashed border-border', align: 'justify-center', icon: <Info className="w-3 h-3" /> },
 }
 
+// Every status tint carries a dark: variant — theme.css ships a full dark
+// palette, and light-only literals were rendering near-white-on-pastel in
+// dark mode across the app.
 const TIER_COLORS: Record<string, string> = {
-  gold:   'bg-yellow-100 text-yellow-800 border-yellow-300',
+  gold:   'bg-yellow-100 text-yellow-800 border-yellow-300 dark:bg-yellow-950 dark:text-yellow-300 dark:border-yellow-800',
   silver: 'bg-muted text-muted-foreground border-border',
-  bronze: 'bg-orange-100 text-orange-800 border-orange-300',
+  bronze: 'bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-800',
 }
 
 export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
@@ -66,6 +70,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [input, setInput]             = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
+  // Below xl the lead panel is an overlay toggled from the header — the
+  // product's reason-to-exist must not silently vanish on ordinary laptops.
+  const [showLeadPanel, setShowLeadPanel] = useState(false)
   const [markingLead, setMarkingLead] = useState(false)
   const [markLeadError, setMarkLeadError] = useState<string | null>(null)
   const bottomRef             = useRef<HTMLDivElement>(null)
@@ -229,7 +236,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       queryClient.invalidateQueries({ queryKey: ['messages-incremental', conversationId] })
     } catch (_err) {
-      // send failed silently — user can retry
+      // The trust-critical path: a reply to a LIVE customer must never
+      // vanish silently. Input is preserved (cleared only on success).
+      toast.error('Message NOT delivered — check your connection and press Send again.')
     } finally { setSending(false) }
   }
 
@@ -250,7 +259,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       await apiFetch(`/api/conversations/${conversationId}/claim`, { method: 'POST' })
       onConversationChange?.()
     } catch (_err) {
-      // claim failed silently
+      // Most common cause: another agent grabbed it first (claim race).
+      toast.error("Couldn't claim this conversation — it may have just been taken by another agent.")
+      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
     }
   }
 
@@ -259,9 +270,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     try {
       await apiFetch(`/api/conversations/${conversationId}/close`, { method: 'POST' })
       setCloseDialogOpen(false)
+      toast.success('Conversation closed.')
       onConversationChange?.()
     } catch (_err) {
-      // close failed silently
+      // Dialog stays open — a mute failure here left agents believing
+      // conversations were closed when they weren't.
+      toast.error("Couldn't close the conversation — try again.")
     }
   }
 
@@ -376,7 +390,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }
 
   return (
-    <div className="h-full flex min-w-0 overflow-hidden bg-card text-foreground">
+    <div className="relative h-full flex min-w-0 overflow-hidden bg-card text-foreground">
 
       {/* LEFT COLUMN: Chat (header + messages + input) */}
       <div className="flex min-w-0 flex-1 basis-0 flex-col">
@@ -389,12 +403,13 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <span className="text-xs font-mono text-[#C9A54E] shrink-0">#{conv.chat_number}</span>
               )}
               <h2 className="text-base font-semibold text-white truncate">
-                {conv.status === 'closed'
-                  ? <span className="text-muted-foreground italic">Closed conversation</span>
-                  : (role === 'supervisor'
-                      ? 'Anonymous Visitor'  // QA: no customer-identifying text in the header
-                      : (conv.visitor_name ?? 'Anonymous Visitor'))
-                }
+                {/* The visitor's NAME stays after closing — 1292 identical
+                    "Closed conversation" rows destroyed recognition while
+                    phone/email printed 20px lower anyway. Closed state lives
+                    in the status chips. QA supervisors stay anonymized. */}
+                {role === 'supervisor'
+                  ? 'Anonymous Visitor'  // QA: no customer-identifying text in the header
+                  : (conv.visitor_name ?? 'Anonymous Visitor')}
               </h2>
               <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${
                 conv.tunnel === 'sales' ? 'bg-blue-500/20 text-blue-200' : 'bg-purple-500/20 text-purple-200'
@@ -409,18 +424,20 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </div>
             {/* QA supervisors see NO personal data in the header. */}
             <div className="flex items-center gap-4 mt-1.5">
+              {/* white/70, never the muted token here: that oklch mid-gray
+                  lands ≈3.9:1 on the navy header — under WCAG AA for small text. */}
               {role !== 'supervisor' && conv.visitor_phone && (
-                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1 text-xs text-white/70">
                   <Phone className="w-3 h-3" />{conv.visitor_phone}
                 </span>
               )}
               {role !== 'supervisor' && conv.visitor_email && (
-                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1 text-xs text-white/70">
                   <Mail className="w-3 h-3" />{conv.visitor_email}
                 </span>
               )}
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-muted-foreground">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-white/70">
               <span className="shrink-0">{allMessages.length} messages</span>
               {(conv.request_id || lead?.id) && (
                 <a
@@ -439,15 +456,25 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   <OperatorBadge conversationId={conversationId} />
                 </span>
               )}
-              <button onClick={copyId} className="flex items-center gap-0.5 hover:text-foreground transition">
+              <button onClick={copyId} className="flex items-center gap-0.5 hover:text-white transition" aria-label="Copy conversation id">
                 {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 {conversationId.slice(0, 8)}...
               </button>
             </div>
           </div>
-          <button onClick={onClose} className="ml-3 p-1.5 rounded-lg hover:bg-card/10 text-muted-foreground hover:text-white transition">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="ml-3 flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => setShowLeadPanel((v) => !v)}
+              aria-expanded={showLeadPanel}
+              className="xl:hidden flex items-center gap-1 rounded-lg border border-white/20 px-2 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/10 hover:text-white transition"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Lead
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition" aria-label="Close conversation view">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Messages */}
@@ -487,9 +514,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         <div className="shrink-0 border-t border-border bg-card">
           {/* Typing preview — shown when client is composing a message */}
           {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
-            <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl">
+            <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 dark:bg-blue-950/50 dark:border-blue-900 rounded-xl">
               <div className="flex items-center gap-1.5 mb-1">
-                <span className="text-[11px] font-medium text-blue-500 uppercase tracking-wide">
+                <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 uppercase tracking-wide">
                   Client is composing
                 </span>
                 <span className="flex gap-0.5 items-center">
@@ -718,7 +745,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
       {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
       {(isAdmin || role === 'qa' || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
-      <div className="hidden h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-muted xl:block">
+      <div className={`${showLeadPanel ? 'absolute inset-y-0 right-0 z-30 block shadow-2xl' : 'hidden'} h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-muted xl:static xl:block xl:shadow-none`}>
         <div className="p-4 space-y-4">
 
           {/* AI Summary Card */}
@@ -827,7 +854,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Source</span>
                   <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                    site === 'bbc' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                    site === 'bbc'
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                      : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
                   }`}>{site.toUpperCase()}</span>
                 </div>
               </div>

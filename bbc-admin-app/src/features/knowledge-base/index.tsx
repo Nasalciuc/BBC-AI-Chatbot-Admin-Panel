@@ -31,8 +31,8 @@ function CategoryIcon({ name }: { name: string }) {
 }
 
 const TUNNEL_STYLES: Record<string, string> = {
-  sales:   'bg-blue-50 text-blue-700 border border-blue-200',
-  support: 'bg-purple-50 text-purple-700 border border-purple-200',
+  sales:   'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800',
+  support: 'bg-purple-50 text-purple-700 border border-purple-200 dark:bg-purple-950 dark:text-purple-300 dark:border-purple-800',
 }
 
 function timeAgo(iso: string): string {

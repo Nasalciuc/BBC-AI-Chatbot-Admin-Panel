@@ -83,7 +83,7 @@ export function KpiCards(props: KpiCardsProps) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       {/* Card 1 — Leads Uncalled */}
-      <Card className="border-l-4 border-l-red-500 hover:shadow-md transition-all duration-200">
+      <Card className="hover:shadow-md transition-all duration-200">
         <CardContent className="p-4">
           <div className="flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100">
@@ -117,7 +117,7 @@ export function KpiCards(props: KpiCardsProps) {
       </Card>
 
       {/* Card 2 — Conversations Today */}
-      <Card className="border-l-4 border-l-blue-500 hover:shadow-md transition-all duration-200">
+      <Card className="hover:shadow-md transition-all duration-200">
         <CardContent className="p-4">
           <div className="flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100">
@@ -153,7 +153,7 @@ export function KpiCards(props: KpiCardsProps) {
       </Card>
 
       {/* Card 3 — New Leads Today */}
-      <Card className="border-l-4 border-l-amber-500 hover:shadow-md transition-all duration-200">
+      <Card className="hover:shadow-md transition-all duration-200">
         <CardContent className="p-4">
           <div className="flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100">
@@ -206,7 +206,7 @@ export function KpiCards(props: KpiCardsProps) {
 
       {showCost && (
       <Card
-        className={`border-l-4 border-l-emerald-500 hover:shadow-md transition-all duration-200 ${costOverBudget ? 'bg-red-50' : ''}`}
+        className={`hover:shadow-md transition-all duration-200 ${costOverBudget ? 'bg-red-50 dark:bg-red-950/40' : ''}`}
       >
         <CardContent className="p-4">
           <div className="flex items-start gap-3">
