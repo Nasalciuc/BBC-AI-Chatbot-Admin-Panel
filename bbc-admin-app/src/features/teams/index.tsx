@@ -8,11 +8,8 @@ import { usePermissions } from '@/lib/bbc/hooks'
 import { getTeams, getUsers } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { ThemeSwitch } from '@/components/theme-switch'
-import { ConfigDrawer } from '@/components/config-drawer'
-import { ConnectionBanner } from '@/components/connection-banner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -93,10 +90,7 @@ export function Teams() {
     return (
       <>
         <Header fixed>
-          <div className='ms-auto flex items-center space-x-4'>
-            <ThemeSwitch />
-            <ProfileDropdown />
-          </div>
+          <HeaderActions />
         </Header>
         <Main>
           <div className='flex h-[60vh] flex-col items-center justify-center text-center'>
@@ -114,12 +108,7 @@ export function Teams() {
   return (
     <>
       <Header fixed>
-        <div className='ms-auto flex items-center space-x-4'>
-          <ConnectionBanner />
-          <ThemeSwitch />
-          <ConfigDrawer />
-          <ProfileDropdown />
-        </div>
+        <HeaderActions />
       </Header>
 
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
