@@ -8,8 +8,26 @@ import anthropic
 
 from config.settings import settings
 from app.ai.prompts import CLASSIFIER_PROMPT
+from app.models.extraction import salvage_tool_entities, validate_tool_entities
 
 logger = logging.getLogger(__name__)
+
+# ── Emergency provider fallback (surfaced in /health as ai_fallback) ──
+# The collection must never die with the primary model: on a non-timeout
+# API error (overloaded / rate-limit / 5xx) the call retries ONCE against
+# the cheaper fallback model. Generation quality degrades gracefully.
+AI_FALLBACK_HEALTH: dict = {"activations_since_boot": 0, "last_at": None}
+
+
+def _record_fallback(primary: str, exc: Exception) -> None:
+    from datetime import datetime, timezone
+
+    AI_FALLBACK_HEALTH["activations_since_boot"] += 1
+    AI_FALLBACK_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
+    logger.error(
+        f"AI FALLBACK ACTIVATED: {primary} → {settings.fallback_model} "
+        f"({type(exc).__name__}: {exc})"
+    )
 
 # ── Client singleton ──────────────────────────────────────────
 _client: anthropic.Anthropic | None = None
@@ -160,6 +178,7 @@ def _call_model(
     user_message: str,
     max_tokens: int,
     temperature: float,
+    _is_fallback: bool = False,
 ) -> tuple[Optional[str], float]:
     """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost)."""
     start = time.time()
@@ -191,10 +210,16 @@ def _call_model(
         except anthropic.APITimeoutError:
             logger.error(f"Claude timeout ({settings.claude_timeout}s) model={model} attempt={attempt + 1}/2")
             if attempt == 0:
-                continue  # retry once
+                continue  # retry once — timeouts never trigger the fallback model
             return None, 0.0
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e} | model={model} | status={getattr(e, 'status_code', 'N/A')}")
+            if not _is_fallback and model != settings.fallback_model:
+                _record_fallback(model, e)
+                return _call_model(
+                    settings.fallback_model, system_prompt, user_message,
+                    max_tokens, temperature, _is_fallback=True,
+                )
             return None, 0.0
         except Exception as e:
             logger.error(f"Claude unexpected error: {type(e).__name__}: {e} | model={model}")
@@ -291,16 +316,86 @@ def call_opus_with_tools(
     )
 
 
+def _parse_tool_response(response) -> tuple[str, dict]:
+    """(text, raw_tool_entities) from a messages response."""
+    text = ""
+    tool_entities: dict = {}
+    for block in response.content:
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            text = (getattr(block, "text", None) or "").strip()
+        elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
+            raw_in = getattr(block, "input", None) or {}
+            tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+    return text, tool_entities
+
+
+def _validate_with_reprompt(
+    model: str,
+    system_prompt,
+    user_message: str,
+    max_tokens: int,
+    temperature: float,
+    raw_entities: dict,
+) -> tuple[dict, float]:
+    """Typed gate on tool arguments. Returns (entities_to_use, extra_cost).
+
+    Valid → cleaned dict. Invalid → ONE re-prompt with the validation error
+    appended; a second failure drops the invalid fields (salvage) — the reply
+    must never crash over a bad tool argument.
+    """
+    if not raw_entities:
+        return {}, 0.0
+    validated, verr = validate_tool_entities(raw_entities)
+    if verr is None:
+        return validated, 0.0
+
+    logger.warning(f"Tool args failed validation — re-prompting once: {verr}")
+    try:
+        retry_message = (
+            f"{user_message}\n\n(SYSTEM: your save_travel_details arguments "
+            f"failed validation:\n{verr}\nCall the tool again with corrected "
+            f"arguments.)"
+        )
+        response = _get_client().messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=_build_system(system_prompt),
+            messages=[{"role": "user", "content": retry_message}],
+            tools=[TRAVEL_TOOL],
+            timeout=settings.claude_timeout,
+        )
+        extra_cost = _estimate_cost(
+            model, response.usage.input_tokens, response.usage.output_tokens
+        )
+        _text2, raw2 = _parse_tool_response(response)
+        if raw2:
+            validated2, verr2 = validate_tool_entities(raw2)
+            if verr2 is None:
+                logger.info("Tool args corrected on re-prompt")
+                return validated2, extra_cost
+        logger.error(
+            "Tool args still invalid after re-prompt — dropping invalid fields"
+        )
+        return salvage_tool_entities(raw_entities), extra_cost
+    except Exception as e:
+        logger.error(f"Validation re-prompt failed ({e}) — dropping invalid fields")
+        return salvage_tool_entities(raw_entities), 0.0
+
+
 def _call_model_with_tools(
     model: str,
     system_prompt,
     user_message: str,
     max_tokens: int,
     temperature: float,
+    _is_fallback: bool = False,
 ) -> tuple[Optional[str], float, dict]:
     """Internal: one generation call carrying the travel extraction tool.
 
-    entities contains keys Claude extracted (origin, destination, etc.).
+    entities contains keys Claude extracted (origin, destination, etc.),
+    validated through app.models.extraction (typed boundary).
     Empty dict if Claude did not call the tool or on failure.
     """
     start = time.time()
@@ -322,16 +417,12 @@ def _call_model_with_tools(
             model, response.usage.input_tokens, response.usage.output_tokens
         )
 
-        text = ""
-        tool_entities: dict = {}
-
-        for block in response.content:
-            btype = getattr(block, "type", None)
-            if btype == "text":
-                text = (getattr(block, "text", None) or "").strip()
-            elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
-                raw_in = getattr(block, "input", None) or {}
-                tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+        text, raw_entities = _parse_tool_response(response)
+        tool_entities, extra_cost = _validate_with_reprompt(
+            model, system_prompt, user_message, max_tokens, temperature,
+            raw_entities,
+        )
+        cost += extra_cost
 
         logger.info(
             f"Claude+Tool SUCCESS | text={len(text)}ch entities={list(tool_entities.keys())} "
@@ -355,15 +446,12 @@ def _call_model_with_tools(
             cost = _estimate_cost(
                 model, response.usage.input_tokens, response.usage.output_tokens
             )
-            text = ""
-            tool_entities: dict = {}
-            for block in response.content:
-                btype = getattr(block, "type", None)
-                if btype == "text":
-                    text = (getattr(block, "text", None) or "").strip()
-                elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
-                    raw_in = getattr(block, "input", None) or {}
-                    tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+            text, raw_entities = _parse_tool_response(response)
+            tool_entities, extra_cost = _validate_with_reprompt(
+                model, system_prompt, user_message, max_tokens, temperature,
+                raw_entities,
+            )
+            cost += extra_cost
             logger.info(f"Claude+Tool RETRY SUCCESS | time={elapsed}s")
             return text, cost, tool_entities
         except Exception as retry_err:
@@ -373,6 +461,12 @@ def _call_model_with_tools(
         logger.error(
             f"Claude+Tool API error: {e} | status={getattr(e, 'status_code', 'N/A')}"
         )
+        if not _is_fallback and model != settings.fallback_model:
+            _record_fallback(model, e)
+            return _call_model_with_tools(
+                settings.fallback_model, system_prompt, user_message,
+                max_tokens, temperature, _is_fallback=True,
+            )
         return None, 0.0, {}
     except Exception as e:
         logger.error(f"Claude+Tool error: {type(e).__name__}: {e}")
@@ -467,12 +561,26 @@ def _stream_model_with_tools(
             model, final.usage.input_tokens, final.usage.output_tokens
         )
 
-        tool_entities: dict = {}
+        raw_entities: dict = {}
         for block in final.content:
             btype = getattr(block, "type", None)
             if btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
                 raw_in = getattr(block, "input", None) or {}
-                tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+                raw_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+
+        # Typed boundary. No re-prompt on the streamed path — the reply text
+        # already reached the client chunk by chunk; invalid fields are
+        # salvaged/dropped instead.
+        tool_entities: dict = {}
+        if raw_entities:
+            validated, verr = validate_tool_entities(raw_entities)
+            if verr is None:
+                tool_entities = validated
+            else:
+                logger.warning(
+                    f"STREAM tool args failed validation — dropping invalid fields: {verr}"
+                )
+                tool_entities = salvage_tool_entities(raw_entities)
 
         if not full_text.strip():
             for block in final.content:
@@ -490,6 +598,17 @@ def _stream_model_with_tools(
         return None, 0.0, {}
     except anthropic.APIError as e:
         logger.error(f"Claude+Tool STREAM API error: {e}")
+        if model != settings.fallback_model:
+            # Provider fallback degrades to a non-streamed reply — the text
+            # arrives as one chunk instead of a stream, but the chat survives.
+            _record_fallback(model, e)
+            text, cost, entities = _call_model_with_tools(
+                settings.fallback_model, system_prompt, user_message,
+                max_tokens, temperature, _is_fallback=True,
+            )
+            if text and on_chunk:
+                on_chunk(text)
+            return text, cost, entities
         return None, 0.0, {}
     except Exception as e:
         logger.error(f"Claude+Tool STREAM unexpected error: {e}")
