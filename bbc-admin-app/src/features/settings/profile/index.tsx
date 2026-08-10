@@ -5,7 +5,7 @@ export function SettingsProfile() {
   return (
     <ContentSection
       title='Profile'
-      desc='This is how others will see you on the site.'
+      desc='Your name and photo, as teammates see them in the panel and clients see them in the chat widget.'
     >
       <ProfileForm />
     </ContentSection>

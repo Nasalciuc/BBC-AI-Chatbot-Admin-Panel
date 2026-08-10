@@ -27,22 +27,11 @@ export function SignIn() {
           <UserAuthForm redirectTo={redirect} />
         </CardContent>
         <CardFooter>
+          {/* No dead /terms and /privacy links — this is an internal ops
+              panel; access questions go to the administrator. */}
           <p className='px-8 text-center text-sm text-muted-foreground'>
-            By clicking sign in, you agree to our{' '}
-            <a
-              href='/terms'
-              className='underline underline-offset-4 hover:text-primary'
-            >
-              Terms of Service
-            </a>{' '}
-            and{' '}
-            <a
-              href='/privacy'
-              className='underline underline-offset-4 hover:text-primary'
-            >
-              Privacy Policy
-            </a>
-            .
+            Internal panel for the BuyBusinessClass team. Need access? Ask
+            your administrator.
           </p>
         </CardFooter>
       </Card>

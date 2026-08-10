@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
+import { toast } from 'sonner'
 import {
   Plane, DollarSign, ClipboardList, RefreshCw, Luggage,
   Plus, Edit2, Trash2, Eye, EyeOff, X, Save, AlertCircle,
+  LibraryBig, Search,
 } from 'lucide-react'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import type { KBCategory, KBEntry, KBEntryCreate } from '@/lib/types'
 import { useAuthStore } from '@/stores/auth-store'
 import { usePermissions } from '@/lib/bbc/hooks'
@@ -16,10 +19,8 @@ import {
   deleteKBEntry,
 } from '@/lib/api'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { ConnectionBanner } from '@/components/connection-banner'
-import { ThemeSwitch } from '@/components/theme-switch'
 
 // Map icon name strings to Lucide components
 const ICON_MAP: Record<string, React.ElementType> = {
@@ -59,6 +60,13 @@ interface ModalProps {
 
 function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSave, onClose }: ModalProps) {
   const isEdit = !!entry?.id
+
+  // Minimum dialog manners the bare div never had: Esc closes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
   const [title,      setTitle]      = useState(entry?.title      ?? '')
   const [content,    setContent]    = useState(entry?.content    ?? '')
   const [categoryId, setCategoryId] = useState(entry?.category_id ?? defaultCategoryId ?? '')
@@ -87,11 +95,20 @@ function EntryModal({ entry, categories, defaultCategoryId, defaultTunnel, onSav
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-card rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={isEdit ? 'Edit KB article' : 'New KB article'}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-card rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
+      >
         <div className="flex items-center justify-between px-6 py-4 bg-[#0B1829]">
           <h3 className="text-base font-semibold text-white">{isEdit ? 'Edit KB Article' : 'New KB Article'}</h3>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-card/10 text-muted-foreground hover:text-white transition">
+          <button onClick={onClose} aria-label="Close dialog" className="p-1.5 rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -174,6 +191,8 @@ export function KnowledgeBase() {
   const [editEntry,   setEditEntry]   = useState<Partial<KBEntry> | null>(null)
   const [modalOpen,   setModalOpen]   = useState(false)
   const [deletingId,  setDeletingId]  = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<KBEntry | null>(null)
+  const [search,      setSearch]      = useState('')
 
   const { auth } = useAuthStore()
   const permissions = usePermissions((auth.user?.role ?? 'sales') as UserRole)
@@ -201,35 +220,56 @@ export function KnowledgeBase() {
   useEffect(() => { fetchAll() }, [fetchAll])
 
   const handleSave = async (data: KBEntryCreate | Partial<KBEntry>, id?: string) => {
+    // Close ONLY on success — a try/finally here once closed the modal over a
+    // failed request and silently threw the article away. This content feeds
+    // the AI; losing it must be loud.
     try {
       if (id) {
         await updateKBEntry(id, data as Partial<KBEntry>)
         setEntries(prev => prev.map(e => e.id === id ? { ...e, ...(data as Partial<KBEntry>) } : e))
+        toast.success('Article saved.')
       } else {
         const created = await createKBEntry(data as KBEntryCreate)
         setEntries(prev => [created, ...prev])
+        toast.success('Article created.')
       }
-    } finally { closeModal() }
+      closeModal()
+    } catch {
+      toast.error("Couldn't save the article — your text is still in the editor. Try again.")
+    }
   }
 
   const toggleActive = async (entry: KBEntry) => {
     const newVal = !entry.is_active
-    await updateKBEntry(entry.id, { is_active: newVal })
-    setEntries(prev => prev.map(e => e.id === entry.id ? { ...e, is_active: newVal } : e))
+    try {
+      await updateKBEntry(entry.id, { is_active: newVal })
+      setEntries(prev => prev.map(e => e.id === entry.id ? { ...e, is_active: newVal } : e))
+    } catch {
+      toast.error("Couldn't change the article's status.")
+    }
   }
 
   const handleDelete = async (entryId: string) => {
-    if (!confirm('Delete this article? This cannot be undone.')) return
     setDeletingId(entryId)
     try {
       await deleteKBEntry(entryId)
       setEntries(prev => prev.filter(e => e.id !== entryId))
-    } finally { setDeletingId(null) }
+      toast.success('Article deleted.')
+    } catch {
+      toast.error("Couldn't delete the article.")
+    } finally {
+      setDeletingId(null)
+      setDeleteTarget(null)
+    }
   }
 
   const visibleEntries = entries.filter(e => {
     if (selectedCat && e.category_id !== selectedCat.id) return false
     if (tunnelFilter !== 'all' && e.tunnel !== tunnelFilter) return false
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      if (!e.title.toLowerCase().includes(q) && !e.content.toLowerCase().includes(q)) return false
+    }
     return true
   })
 
@@ -238,11 +278,7 @@ export function KnowledgeBase() {
   return (
     <>
       <Header>
-        <div className='ms-auto flex items-center space-x-4'>
-          <ConnectionBanner />
-          <ThemeSwitch />
-          <ProfileDropdown />
-        </div>
+        <HeaderActions />
       </Header>
       <Main fixed>
         <div className="flex h-full overflow-hidden rounded-lg border border-border">
@@ -265,7 +301,7 @@ export function KnowledgeBase() {
               {/* All articles */}
               <button onClick={() => setSelectedCat(null)}
                 className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-accent transition ${!selectedCat ? 'bg-[#0B1829]/5 font-medium text-foreground border-l-2 border-[#C9A54E]' : 'text-muted-foreground'}`}>
-                <span className="w-4 h-4 flex items-center justify-center text-xs">📋</span>
+                <LibraryBig className="w-4 h-4" />
                 All Articles
                 <span className="ml-auto text-xs text-muted-foreground">{visibleEntries.length}</span>
               </button>
@@ -291,6 +327,17 @@ export function KnowledgeBase() {
               <div>
                 <span className="text-sm font-medium text-foreground">{selectedCat ? selectedCat.name : 'All Articles'}</span>
                 <span className="ml-2 text-xs text-muted-foreground">{visibleEntries.length} articles</span>
+              </div>
+              {/* The AI eats this content — the humans maintaining it need search. */}
+              <div className="relative mx-3 max-w-xs flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Search articles..."
+                  className="w-full pl-8 pr-3 py-1.5 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40"
+                />
               </div>
               <div className="flex gap-2">
                 <button onClick={fetchAll} className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition">
@@ -340,7 +387,7 @@ export function KnowledgeBase() {
                           <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed line-clamp-2">{entry.content}</p>
                           <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground">
                             <span>{entry.content.length} chars</span>
-                            <span>{entry.view_count} uses</span>
+                            {entry.view_count > 0 && <span>{entry.view_count} uses</span>}
                             <span>updated {timeAgo(entry.updated_at)}</span>
                           </div>
                         </div>
@@ -354,8 +401,9 @@ export function KnowledgeBase() {
                             className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition">
                             <Edit2 className="w-4 h-4" />
                           </button>
-                          <button onClick={() => handleDelete(entry.id)} disabled={deletingId === entry.id}
-                            className="p-2 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 transition disabled:opacity-40">
+                          <button onClick={() => setDeleteTarget(entry)} disabled={deletingId === entry.id}
+                            aria-label={`Delete article "${entry.title}"`}
+                            className="p-2 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition disabled:opacity-40">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
@@ -379,6 +427,19 @@ export function KnowledgeBase() {
               onClose={closeModal}
             />
           )}
+
+          {/* Delete confirmation — same dialog system as everywhere else,
+              replacing the native browser prompt that broke the app's own pattern. */}
+          <ConfirmDialog
+            open={deleteTarget !== null}
+            onOpenChange={(open: boolean) => { if (!open) setDeleteTarget(null) }}
+            title="Delete KB Article"
+            desc={`Delete "${deleteTarget?.title ?? ''}"? The AI stops using it immediately, and this cannot be undone.`}
+            confirmText="Delete"
+            destructive
+            isLoading={deletingId !== null}
+            handleConfirm={() => deleteTarget && handleDelete(deleteTarget.id)}
+          />
         </div>
       </Main>
     </>
