@@ -4,13 +4,10 @@ import { useAuthStore } from '@/stores/auth-store'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { Separator } from '@/components/ui/separator'
-import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { ConnectionBanner } from '@/components/connection-banner'
 import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
 import { SidebarNav } from './components/sidebar-nav'
 
 const sidebarNavItems = [
@@ -59,12 +56,7 @@ export function Settings() {
       {/* ===== Top Heading ===== */}
       <Header>
         <Search />
-        <div className='ms-auto flex items-center space-x-4'>
-          <ConnectionBanner />
-          <ThemeSwitch />
-          <ConfigDrawer />
-          <ProfileDropdown />
-        </div>
+        <HeaderActions />
       </Header>
 
       <Main fixed>

@@ -139,7 +139,9 @@ export function BBCAvatar({
     <div
       style={{
         ...base,
-        background: `hsl(${hue}, 55%, 50%)`,
+        // Muted, brand-adjacent tones — the neon initials broke the
+        // "never bright/neon" brand rule on every user list.
+        background: `hsl(${hue}, 28%, 40%)`,
         color: '#fff',
         fontSize: size * 0.38,
         fontWeight: 600,

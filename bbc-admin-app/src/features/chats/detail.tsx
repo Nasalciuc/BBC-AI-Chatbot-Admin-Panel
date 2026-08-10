@@ -90,10 +90,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     queryFn: () => getConversation(conversationId),
     enabled: !usingMock,
     // Bug 5: do NOT cache null/error — otherwise a single transient Supabase
-    // failure poisons the UI with "not found" for 60 seconds. staleTime=0
-    // means every click refetches; combined with retry, a genuine flake
-    // is recovered within ~1 second.
-    staleTime: 0,
+    // failure poisons the UI with "not found" for 60 seconds. (That concern
+    // is about caching FAILURES; retry handles it.) A short staleTime kills
+    // the blank "Loading..." flash operators saw on every single chat click
+    // — dozens of times per shift — while incremental polling + send/close
+    // invalidations keep the thread fresh.
+    staleTime: 10_000,
     retry: 1,
     retryDelay: 500,
   })
@@ -481,10 +483,25 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-muted">
           {allMessages.length === 0 ? (
             <div className="text-center text-muted-foreground text-sm py-8">No messages</div>
-          ) : allMessages.map(msg => {
+          ) : allMessages.map((msg, i) => {
             const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system
+            // Day separator: a 3-day conversation must not read as one
+            // sitting — timestamps alone are hour:minute.
+            const day = new Date(msg.created_at).toDateString()
+            const prevDay = i > 0 ? new Date(allMessages[i - 1].created_at).toDateString() : null
+            const showDay = day !== prevDay && !Number.isNaN(new Date(msg.created_at).getTime())
             return (
-              <div key={msg.id} className={`flex ${style.align} gap-2`}>
+              <div key={msg.id}>
+              {showDay && (
+                <div className="flex items-center gap-3 my-4" aria-hidden>
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-[11px] font-medium text-muted-foreground">
+                    {new Date(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+              )}
+              <div className={`flex ${style.align} gap-2`}>
                 {msg.role !== 'user' && (
                   <div className="w-7 h-7 rounded-full bg-card border border-border flex items-center justify-center shrink-0 mt-1 shadow-sm">
                     {style.icon}
@@ -496,7 +513,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     <span className="text-[11px] opacity-50">
                       {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    {msg.model_used && <span className="text-[11px] opacity-40">{msg.model_used}</span>}
+                    {/* Model ids are ops jargon — admins only, not operators. */}
+                    {isAdmin && msg.model_used && <span className="text-[11px] opacity-40">{msg.model_used}</span>}
                   </div>
                 </div>
                 {msg.role === 'user' && (
@@ -504,6 +522,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     <User className="w-4 h-4 text-[#C9A54E]" />
                   </div>
                 )}
+              </div>
               </div>
             )
           })}
@@ -520,9 +539,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   Client is composing
                 </span>
                 <span className="flex gap-0.5 items-center">
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  {/* Smooth opacity wave, not a bounce — the dots breathe. */}
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '250ms' }} />
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '500ms' }} />
                 </span>
               </div>
               {typingData.text && (
@@ -775,7 +795,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all ${
-                      lead.score >= 80 ? 'bg-yellow-500' : lead.score >= 50 ? 'bg-muted-foreground' : 'bg-orange-400'
+                      lead.score >= 80 ? 'bg-[#C9A54E]' : lead.score >= 50 ? 'bg-slate-400' : 'bg-amber-400'
                     }`}
                     style={{ width: `${lead.score}%` }}
                   />

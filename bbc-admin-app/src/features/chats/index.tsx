@@ -4,13 +4,9 @@ import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTr
 import type { Conversation, ConversationTag } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
-import { NotificationBell } from '@/components/notification-bell'
-import { ReadyToggle } from '@/components/ready-toggle'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
-import { ConnectionBanner } from '@/components/connection-banner'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { ThemeSwitch } from '@/components/theme-switch'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { formatAge } from '@/lib/format-age'
@@ -194,13 +190,7 @@ export function Chats() {
   return (
     <>
       <Header>
-        <div className='ms-auto flex items-center space-x-4'>
-          <ConnectionBanner />
-          <ReadyToggle />
-          <NotificationBell />
-          <ThemeSwitch />
-          <ProfileDropdown />
-        </div>
+        <HeaderActions />
       </Header>
       <Main fixed>
         <div ref={containerRef} className="flex h-full overflow-hidden rounded-lg border border-border">
@@ -317,6 +307,7 @@ export function Chats() {
                 </div>
               ) : conversations.map(conv => (
                 <button key={conv.id}
+                  aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}`}
                   onClick={() => {
                     stopAssignmentAlerts()
                     setSelectedId(conv.id === selectedId ? null : conv.id)

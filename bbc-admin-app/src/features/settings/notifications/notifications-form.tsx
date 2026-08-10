@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Link } from '@tanstack/react-router'
-import { showSubmittedData } from '@/lib/show-submitted-data'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -50,7 +50,12 @@ export function NotificationsForm() {
   return (
     <Form {...form}>
       <form
-        onSubmit={form.handleSubmit((data) => showSubmittedData(data))}
+        onSubmit={form.handleSubmit((data) => {
+          // Honest scope: preferences live in this browser until a backend
+          // endpoint exists — no fake "saved to server", no debug JSON dump.
+          try { localStorage.setItem('bbc_notification_prefs', JSON.stringify(data)) } catch { /* storage off */ }
+          toast.success('Notification preferences saved on this device.')
+        })}
         className='space-y-8'
       >
         <FormField
@@ -125,10 +130,10 @@ export function NotificationsForm() {
                 <FormItem className='flex flex-row items-center justify-between rounded-lg border p-4'>
                   <div className='space-y-0.5'>
                     <FormLabel className='text-base'>
-                      Marketing emails
+                      No-agents alerts
                     </FormLabel>
                     <FormDescription>
-                      Receive emails about new products, features, and more.
+                      Email when a client is chatting and no agents are online.
                     </FormDescription>
                   </div>
                   <FormControl>
@@ -146,9 +151,9 @@ export function NotificationsForm() {
               render={({ field }) => (
                 <FormItem className='flex flex-row items-center justify-between rounded-lg border p-4'>
                   <div className='space-y-0.5'>
-                    <FormLabel className='text-base'>Social emails</FormLabel>
+                    <FormLabel className='text-base'>Assignment alerts</FormLabel>
                     <FormDescription>
-                      Receive emails for friend requests, follows, and more.
+                      Email when a conversation is assigned to you or goes stale.
                     </FormDescription>
                   </div>
                   <FormControl>
