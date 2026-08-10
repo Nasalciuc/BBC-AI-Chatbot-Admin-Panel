@@ -480,7 +480,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-muted">
+        <div className="flex-1 overflow-y-auto px-4 py-4 bg-muted">
           {allMessages.length === 0 ? (
             <div className="text-center text-muted-foreground text-sm py-8">No messages</div>
           ) : allMessages.map((msg, i) => {
@@ -490,8 +490,11 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             const day = new Date(msg.created_at).toDateString()
             const prevDay = i > 0 ? new Date(allMessages[i - 1].created_at).toDateString() : null
             const showDay = day !== prevDay && !Number.isNaN(new Date(msg.created_at).getTime())
+            // Grouping: consecutive same-role messages read as one turn —
+            // avatar once, tight gap. A new day always starts a new group.
+            const grouped = !showDay && i > 0 && allMessages[i - 1].role === msg.role
             return (
-              <div key={msg.id}>
+              <div key={msg.id} className={grouped ? 'mt-1' : 'mt-3 first:mt-0'}>
               {showDay && (
                 <div className="flex items-center gap-3 my-4" aria-hidden>
                   <div className="h-px flex-1 bg-border" />
@@ -503,24 +506,29 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               )}
               <div className={`flex ${style.align} gap-2`}>
                 {msg.role !== 'user' && (
-                  <div className="w-7 h-7 rounded-full bg-card border border-border flex items-center justify-center shrink-0 mt-1 shadow-sm">
-                    {style.icon}
-                  </div>
+                  grouped
+                    ? <div className="w-7 shrink-0" aria-hidden />
+                    : <div className="w-7 h-7 rounded-full bg-card border border-border flex items-center justify-center shrink-0 mt-1 shadow-sm">
+                        {style.icon}
+                      </div>
                 )}
-                <div className={`max-w-[75%] px-3.5 py-2.5 shadow-sm ${style.bubble}`}>
+                {/* min-w: a one-character reply must not collapse into a blob */}
+                <div className={`max-w-[75%] min-w-[76px] px-3.5 py-2.5 shadow-sm ${style.bubble}`}>
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                   <div className="flex items-center justify-end gap-2 mt-1">
-                    <span className="text-[11px] opacity-50">
+                    <span className="text-[11px] opacity-70">
                       {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                     {/* Model ids are ops jargon — admins only, not operators. */}
-                    {isAdmin && msg.model_used && <span className="text-[11px] opacity-40">{msg.model_used}</span>}
+                    {isAdmin && msg.model_used && <span className="text-[11px] opacity-50">{msg.model_used}</span>}
                   </div>
                 </div>
                 {msg.role === 'user' && (
-                  <div className="w-7 h-7 rounded-full bg-[#C9A54E]/20 border border-[#C9A54E]/30 flex items-center justify-center shrink-0 mt-1">
-                    <User className="w-4 h-4 text-[#C9A54E]" />
-                  </div>
+                  grouped
+                    ? <div className="w-7 shrink-0" aria-hidden />
+                    : <div className="w-7 h-7 rounded-full bg-[#C9A54E]/20 border border-[#C9A54E]/30 flex items-center justify-center shrink-0 mt-1">
+                        <User className="w-4 h-4 text-[#C9A54E]" />
+                      </div>
                 )}
               </div>
               </div>
@@ -740,11 +748,18 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <span className="min-w-0 truncate">
               Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-muted-foreground'}`}>{conv.status}</span>
               {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-muted-foreground'}`}>{conv.mode}</span>
-              {' · '}Client:
-              <span className={`ml-1 inline-flex items-center gap-1 font-medium ${clientPresence.text}`}>
-                <span className={`inline-block h-2 w-2 rounded-full ${clientPresence.dot}`} />
-                {clientPresence.label}
-              </span>
+              {/* Presence is meaningless on a closed thread — "Client:
+                  Active" next to "Status: closed" was the panel arguing
+                  with itself. */}
+              {conv.status !== 'closed' && (
+                <>
+                  {' · '}Client:
+                  <span className={`ml-1 inline-flex items-center gap-1 font-medium ${clientPresence.text}`}>
+                    <span className={`inline-block h-2 w-2 rounded-full ${clientPresence.dot}`} />
+                    {clientPresence.label}
+                  </span>
+                </>
+              )}
               {conv.agent_state === 'active' && conv.assigned_agent_name && conv.status === 'active' && (
                 <span className="ml-2 text-green-600 text-[11px]">● {conv.assigned_agent_name}</span>
               )}
@@ -758,7 +773,9 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <span className="ml-2 text-blue-500 text-[11px]">● You are chatting</span>
               )}
             </span>
-            <span className="shrink-0">{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
+            <span className="shrink-0">{conv.closed_at
+              ? `Closed ${new Date(conv.closed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+              : `Started ${new Date(conv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}</span>
           </div>
         </div>
       </div>
@@ -872,7 +889,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             return site ? (
               <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Source</span>
+                  {/* "Brand", not "Source" — the Acquisition card below has
+                      its own utm Source; two different "Source"s in one
+                      sidebar sent operators guessing. */}
+                  <span className="text-sm text-muted-foreground">Brand site</span>
                   <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
                     site === 'bbc'
                       ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
