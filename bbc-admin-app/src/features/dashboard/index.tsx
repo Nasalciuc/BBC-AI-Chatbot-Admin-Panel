@@ -17,17 +17,20 @@ import { TopRoutes } from './components/top-routes'
 import { LeadFunnel } from './components/lead-funnel'
 import { AiHealthIndicator } from './components/ai-health-indicator'
 import { TeamLiveCard } from './components/team-live-card'
+import { DataStateView } from '@/components/data-state'
+import { resolveDataState } from '@/lib/data-state'
 
 export function Dashboard() {
   const role = useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole
   const { canViewDashboardGlobal: canViewGlobal } = usePermissions(role)
 
-  const { data: stats } = useQuery<DashboardStats>({
+  const { data: stats, isLoading, isError } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
     queryFn: () => getDashboardStats(),
     staleTime: 0,
     refetchInterval: 60_000,
   })
+  const dataState = resolveDataState({ isLoading: isLoading || !stats, isError })
 
   return (
     <>
@@ -48,7 +51,8 @@ export function Dashboard() {
             </p>
           </div>
 
-          {stats ? (
+          <DataStateView state={dataState} what='dashboard stats'>
+          {stats && (
             <div className='space-y-6'>
               {canViewGlobal && (
                 <AlertBanner
@@ -91,11 +95,8 @@ export function Dashboard() {
                 </div>
               </div>
             </div>
-          ) : (
-            <div className='flex items-center justify-center py-16 text-sm text-muted-foreground'>
-              Loading dashboard stats...
-            </div>
           )}
+          </DataStateView>
         </div>
       </Main>
     </>

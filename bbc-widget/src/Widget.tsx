@@ -190,10 +190,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     const style = document.createElement('style')
     style.id = styleId
     style.textContent = `
-      @keyframes bbc-bounce {
-        0%, 100% { transform: translateY(0) scale(1); }
-        30%       { transform: translateY(-10px) scale(1.08); }
-        60%       { transform: translateY(-5px) scale(1.03); }
+      @keyframes bbc-nudge {
+        0%   { transform: translateY(0); }
+        35%  { transform: translateY(-6px); }
+        100% { transform: translateY(0); }
       }
       @keyframes bbc-fadein {
         from { opacity: 0; transform: translateY(6px); }

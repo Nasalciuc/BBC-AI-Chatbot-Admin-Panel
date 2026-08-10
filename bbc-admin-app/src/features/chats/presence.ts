@@ -6,6 +6,10 @@
  * seconds later — a fresh "left" rendered red would be the panel lying.
  */
 
+// Relative import (not @/): this module is imported by the zero-dependency
+// node test runner, which resolves no path aliases.
+import { formatAge } from '../../lib/format-age.ts'
+
 export interface PresenceDisplay {
   label: string
   /** Tailwind class for the status dot. */
@@ -18,15 +22,8 @@ export interface PresenceDisplay {
 const FRESH_MS = 2 * 60 * 1000
 
 function ageLabel(lastEventAt: string | undefined, now: Date): string | null {
-  if (!lastEventAt) return null
-  const then = new Date(lastEventAt).getTime()
-  if (Number.isNaN(then)) return null
-  const mins = Math.floor((now.getTime() - then) / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const h = Math.floor(mins / 60)
-  const rem = mins % 60
-  return rem > 0 ? `${h}h ${rem}m ago` : `${h}h ago`
+  // Shared formatter: m → h → d → mo caps ("3d ago", "2mo ago" — never "1447h").
+  return formatAge(lastEventAt, now)
 }
 
 function isFresh(lastEventAt: string | undefined, now: Date): boolean {
@@ -72,6 +69,24 @@ export function describeClientPresence(
   }
 
   return { ...NEUTRAL, label: 'Unknown' }
+}
+
+/**
+ * Status dot for a conversation LIST row — the same aged truth the detail
+ * header shows. The list rows were painting a fresh green dot on clients
+ * idle for days: green must be EARNED by recent activity, never implied by
+ * "status=active". List payloads carry no widget_presence, so recency of
+ * `updated_at` stands in for the activity signal.
+ */
+export function listRowDot(
+  status: string | undefined,
+  lastActivityAt: string | undefined,
+  now: Date,
+): string {
+  if (status === 'needs_agent') return 'bg-red-400'
+  if (status === 'pending') return 'bg-yellow-400'
+  if (status !== 'active') return 'bg-muted-foreground/50'
+  return describeClientPresence('online', lastActivityAt, now).dot
 }
 
 /** Presence key from conversation metadata, tolerating legacy shapes. */

@@ -4,6 +4,9 @@
  * 🟢 ready (online + is_ready) · ⚪ online, not ready · gray offline with age.
  */
 import type { LiveAgent } from '@/lib/types'
+// Relative import (not @/): this module is imported by the zero-dependency
+// node test runner, which resolves no path aliases.
+import { formatAge } from '../../../lib/format-age.ts'
 
 export type LiveState = 'ready' | 'online' | 'offline'
 
@@ -16,14 +19,22 @@ export interface LiveDisplay {
 }
 
 export function lastSeenLabel(lastSeen: string | null, now: Date): string | null {
-  if (!lastSeen) return null
-  const then = new Date(lastSeen).getTime()
-  if (Number.isNaN(then)) return null
-  const mins = Math.floor((now.getTime() - then) / 60000)
-  if (mins < 1) return 'last seen just now'
-  if (mins < 60) return `last seen ${mins}m ago`
-  const h = Math.floor(mins / 60)
-  return `last seen ${h}h${mins % 60 ? ` ${mins % 60}m` : ''} ago`
+  // Shared formatter caps magnitudes (m → h → d → mo): "last seen 2mo ago",
+  // never "last seen 1447h 30m ago".
+  const age = formatAge(lastSeen, now)
+  return age ? `last seen ${age}` : null
+}
+
+/** Live members first, offline collapsed behind a toggle — a 53-row flat
+ *  roster of offline seed users must never dominate the dashboard. */
+export function partitionLive(agents: LiveAgent[]): {
+  live: LiveAgent[]
+  offline: LiveAgent[]
+} {
+  const live: LiveAgent[] = []
+  const offline: LiveAgent[] = []
+  for (const a of agents) (a.is_online ? live : offline).push(a)
+  return { live, offline }
 }
 
 export function describeLiveAgent(agent: LiveAgent, now: Date): LiveDisplay {

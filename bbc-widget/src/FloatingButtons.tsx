@@ -73,7 +73,8 @@ export function FloatingButtons({ onSelect, showAttention = false }: Props) {
           justifyContent: 'center',
           padding: 0,
           flexShrink: 0,
-          animation: showAttention ? 'bbc-bounce 0.7s ease 2' : 'none',
+          // Gentle lift with exponential ease-out — bounce/elastic reads dated.
+          animation: showAttention ? 'bbc-nudge 0.6s cubic-bezier(0.22, 1, 0.36, 1) 2' : 'none',
         }}
       >
         <img

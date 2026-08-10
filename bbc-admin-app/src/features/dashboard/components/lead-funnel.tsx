@@ -78,16 +78,24 @@ export function LeadFunnel({ funnel = [] }: LeadFunnelProps) {
                 </span>
                 <div className="flex flex-1 items-center gap-2">
                   <div className="h-8 flex-1 overflow-hidden rounded-full bg-muted/30">
+                    {/* scaleX, not width: width transitions relayout every
+                        frame; transform composites on the GPU. The label sits
+                        OUTSIDE the scaled fill so it never distorts. */}
                     <div
-                      className="flex h-full items-center rounded-full px-3"
-                      style={{
-                        width: animated ? `${widthPct}%` : '0%',
-                        backgroundColor: stage.color,
-                        transition: 'width 0.8s ease-out',
-                      }}
+                      className="relative flex h-full items-center rounded-full px-3"
+                      style={{ width: `${widthPct}%` }}
                     >
+                      <div
+                        className="absolute inset-0 rounded-full"
+                        style={{
+                          backgroundColor: stage.color,
+                          transform: animated ? 'scaleX(1)' : 'scaleX(0)',
+                          transformOrigin: 'left',
+                          transition: 'transform 0.8s cubic-bezier(0.22, 1, 0.36, 1)',
+                        }}
+                      />
                       {widthPct > 30 && (
-                        <span className="text-xs font-semibold text-white">
+                        <span className="relative text-xs font-semibold text-white">
                           {stage.count}
                         </span>
                       )}
@@ -99,7 +107,7 @@ export function LeadFunnel({ funnel = [] }: LeadFunnelProps) {
                     </span>
                   )}
                   {dropOffPct !== null && (
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
                       → {dropOffPct}%
                     </span>
                   )}
