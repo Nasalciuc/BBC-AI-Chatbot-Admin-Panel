@@ -327,18 +327,18 @@ export function KnowledgeBase() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="text-sm font-semibold text-foreground">{entry.title}</h3>
-                            <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${TUNNEL_STYLES[entry.tunnel]}`}>{entry.tunnel}</span>
+                            <span className={`inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${TUNNEL_STYLES[entry.tunnel]}`}>{entry.tunnel}</span>
                             {!entry.is_active && (
-                              <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] bg-muted text-muted-foreground">inactive</span>
+                              <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] bg-muted text-muted-foreground">inactive</span>
                             )}
                             {isStale(entry.updated_at) && (
-                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-600 border border-amber-200">
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] bg-amber-50 text-amber-600 border border-amber-200">
                                 <AlertCircle className="w-2.5 h-2.5" />stale
                               </span>
                             )}
                           </div>
                           <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed line-clamp-2">{entry.content}</p>
-                          <div className="flex items-center gap-3 mt-2 text-[10px] text-muted-foreground">
+                          <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground">
                             <span>{entry.content.length} chars</span>
                             <span>{entry.view_count} uses</span>
                             <span>updated {timeAgo(entry.updated_at)}</span>

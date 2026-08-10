@@ -396,13 +396,13 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                       : (conv.visitor_name ?? 'Anonymous Visitor'))
                 }
               </h2>
-              <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-medium ${
+              <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${
                 conv.tunnel === 'sales' ? 'bg-blue-500/20 text-blue-200' : 'bg-purple-500/20 text-purple-200'
               }`}>
                 {conv.tunnel}
               </span>
               {conv.tag && (
-                <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-white/10 text-white/80">
+                <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-white/10 text-white/80">
                   {DETAIL_TAG_LABELS[conv.tag] ?? conv.tag}
                 </span>
               )}
@@ -420,7 +420,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </span>
               )}
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px] text-muted-foreground">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-muted-foreground">
               <span className="shrink-0">{allMessages.length} messages</span>
               {(conv.request_id || lead?.id) && (
                 <a
@@ -466,10 +466,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 <div className={`max-w-[75%] px-3.5 py-2.5 shadow-sm ${style.bubble}`}>
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                   <div className="flex items-center justify-end gap-2 mt-1">
-                    <span className="text-[10px] opacity-50">
+                    <span className="text-[11px] opacity-50">
                       {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    {msg.model_used && <span className="text-[10px] opacity-40">{msg.model_used}</span>}
+                    {msg.model_used && <span className="text-[11px] opacity-40">{msg.model_used}</span>}
                   </div>
                 </div>
                 {msg.role === 'user' && (
@@ -489,7 +489,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
             <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl">
               <div className="flex items-center gap-1.5 mb-1">
-                <span className="text-[10px] font-medium text-blue-500 uppercase tracking-wide">
+                <span className="text-[11px] font-medium text-blue-500 uppercase tracking-wide">
                   Client is composing
                 </span>
                 <span className="flex gap-0.5 items-center">
@@ -522,7 +522,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   </button>
                   {showEmojiPicker && (
                     <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-56 rounded-xl border border-border bg-card p-2 shadow-lg">
-                      <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Quick emoji</p>
+                      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Quick emoji</p>
                       <div className="grid grid-cols-5 gap-1">
                         {QUICK_EMOJIS.map((emoji) => (
                           <button
@@ -674,7 +674,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 {blocking ? 'Blocking…' : 'Block Visitor'}
               </button>
               {blockResult && (
-                <p className="mt-1 text-[10px] text-muted-foreground text-center">{blockResult}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground text-center">{blockResult}</p>
               )}
               <ConfirmDialog
                 open={blockDialogOpen}
@@ -699,16 +699,16 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 {clientPresence.label}
               </span>
               {conv.agent_state === 'active' && conv.assigned_agent_name && conv.status === 'active' && (
-                <span className="ml-2 text-green-600 text-[10px]">● {conv.assigned_agent_name}</span>
+                <span className="ml-2 text-green-600 text-[11px]">● {conv.assigned_agent_name}</span>
               )}
               {conv.agent_state === 'fallback' && conv.engaged_agent_name && (
-                <span className="ml-2 text-amber-600 text-[10px]">● {conv.engaged_agent_name} → AI</span>
+                <span className="ml-2 text-amber-600 text-[11px]">● {conv.engaged_agent_name} → AI</span>
               )}
               {conv.agent_state === 'ai_only' && conv.mode === 'ai' && conv.status === 'active' && (
-                <span className="ml-2 text-amber-500 text-[10px]">● AI handling</span>
+                <span className="ml-2 text-amber-500 text-[11px]">● AI handling</span>
               )}
               {conv.mode === 'human' && conv.status === 'active' && conv.agent_state !== 'active' && (
-                <span className="ml-2 text-blue-500 text-[10px]">● You are chatting</span>
+                <span className="ml-2 text-blue-500 text-[11px]">● You are chatting</span>
               )}
             </span>
             <span className="shrink-0">{conv.closed_at ? `Closed ${new Date(conv.closed_at).toLocaleDateString()}` : `Started ${new Date(conv.created_at).toLocaleDateString()}`}</span>
@@ -755,7 +755,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </div>
                 <span className="text-sm font-bold text-foreground">{lead.score}</span>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1">
+              <p className="text-[11px] text-muted-foreground mt-1">
                 Status: <span className="font-medium text-muted-foreground">{lead.status}</span>
               </p>
             </div>

@@ -174,10 +174,10 @@ export function KpiCards(props: KpiCardsProps) {
                   </a>
                 )}
                 <div className="mt-1 flex items-center gap-1.5">
-                  <Badge className="border border-slate-300 bg-slate-100 px-1.5 text-[10px] text-slate-700 hover:bg-slate-100">
+                  <Badge className="border border-slate-300 bg-slate-100 px-1.5 text-[11px] text-slate-700 hover:bg-slate-100">
                     {leads_silver}S
                   </Badge>
-                  <Badge className="border border-orange-300 bg-orange-100 px-1.5 text-[10px] text-orange-800 hover:bg-orange-100">
+                  <Badge className="border border-orange-300 bg-orange-100 px-1.5 text-[11px] text-orange-800 hover:bg-orange-100">
                     {leads_bronze}B
                   </Badge>
                 </div>

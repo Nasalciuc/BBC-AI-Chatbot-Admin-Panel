@@ -267,15 +267,15 @@ export function LeadDetailDrawer({ leadId, onClose }: Props) {
                       return (
                         <div key={msg.id} className="group">
                           <div className="flex items-center gap-1.5 mb-1">
-                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${role.cls}`}>
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium ${role.cls}`}>
                               {role.icon} {role.label}
                             </span>
                             {model && (
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${model.cls}`}>
+                              <span className={`px-1.5 py-0.5 rounded text-[11px] font-medium ${model.cls}`}>
                                 {model.label}
                               </span>
                             )}
-                            <span className="text-[10px] text-muted-foreground ml-auto">
+                            <span className="text-[11px] text-muted-foreground ml-auto">
                               {format(new Date(msg.created_at), 'HH:mm')}
                             </span>
                           </div>

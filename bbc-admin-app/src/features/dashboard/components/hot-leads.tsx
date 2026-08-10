@@ -13,13 +13,12 @@ import {
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import type { DashboardStats } from '@/lib/types'
+import { formatDuration } from '@/lib/format-age'
+import { isDegenerateRoute } from '@/lib/route-display'
 
 interface HotLeadsProps {
   hot_leads: DashboardStats['hot_leads']
 }
-
-const formatTime = (min: number): string =>
-  min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${min}m`
 
 const tierStyles: Record<
   'gold' | 'silver' | 'bronze',
@@ -33,6 +32,7 @@ const tierStyles: Record<
 }
 
 export function HotLeads({ hot_leads = [] }: HotLeadsProps) {
+  const leads = hot_leads.filter((l) => !isDegenerateRoute(l.route))
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -40,7 +40,7 @@ export function HotLeads({ hot_leads = [] }: HotLeadsProps) {
         <CardDescription>Uncontacted high-value leads</CardDescription>
       </CardHeader>
       <CardContent>
-        {hot_leads.length === 0 ? (
+        {leads.length === 0 ? (
           <div className="rounded-lg bg-green-50 p-6 text-center">
             <span className="text-2xl">🎉</span>
             <p className="mt-2 text-sm font-medium text-green-700">
@@ -49,7 +49,7 @@ export function HotLeads({ hot_leads = [] }: HotLeadsProps) {
           </div>
         ) : (
           <>
-            {hot_leads.map((lead) => (
+            {leads.map((lead) => (
               <div
                 key={lead.id}
                 className="flex items-center justify-between border-b py-3 last:border-b-0"
@@ -75,15 +75,15 @@ export function HotLeads({ hot_leads = [] }: HotLeadsProps) {
                 <div className="shrink-0 text-right">
                   {lead.minutes_since_created < 120 ? (
                     <span className="text-xs font-medium text-green-600">
-                      {formatTime(lead.minutes_since_created)}
+                      {formatDuration(lead.minutes_since_created)}
                     </span>
                   ) : lead.minutes_since_created < 180 ? (
                     <span className="text-xs font-medium text-amber-600">
-                      {formatTime(lead.minutes_since_created)} ⚠
+                      {formatDuration(lead.minutes_since_created)} ⚠
                     </span>
                   ) : (
                     <span className="animate-pulse text-xs font-bold text-red-600">
-                      {formatTime(lead.minutes_since_created)} 🔴
+                      {formatDuration(lead.minutes_since_created)} 🔴
                     </span>
                   )}
                 </div>
