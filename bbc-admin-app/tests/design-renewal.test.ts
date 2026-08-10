@@ -93,3 +93,17 @@ test('lead-score mid tier no longer reads as disabled', () => {
   const detail = read('features/chats/detail.tsx')
   assert.ok(!/score >= 50 \? 'bg-muted-foreground'/.test(detail))
 })
+
+// ── chat stream polish (from the owner's screenshot review) ──
+
+test('chat stream: grouping, min-width bubbles, honest footer, one date language', () => {
+  const detail = readFileSync(join(SRC, 'features/chats/detail.tsx'), 'utf8')
+  assert.match(detail, /const grouped = !showDay/)          // same-role turns group
+  assert.match(detail, /min-w-\[76px\]/)                    // "2" never collapses into a blob
+  assert.ok(!/opacity-50">\s*\{new Date\(msg\.created_at\)\.toLocaleTimeString/.test(detail),
+    'bubble timestamps still at 50% opacity')
+  assert.match(detail, /conv\.status !== 'closed' && \(\s*<>\s*\{' · '\}Client:/)  // no presence on closed
+  assert.ok(!/Closed \$\{new Date\(conv\.closed_at\)\.toLocaleDateString\(\)\}/.test(detail),
+    'locale-roulette closed date survives')
+  assert.match(detail, /Brand site/)                        // Source/Source dedup
+})
