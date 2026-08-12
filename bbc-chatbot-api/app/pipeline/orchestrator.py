@@ -61,6 +61,74 @@ def decide_open_door_reply(
     return stripped, True
 
 
+# ── Confirmation truth: the gate speaks the clients' languages ───────────
+# Conv #1347 "Purnisa": summary shown → client typed "Urs" (mobile typo for
+# "Yes") → neither list matched → the LLM improvised "everything's locked
+# in" while confirmed_at stayed NULL. The deterministic gate stays — but it
+# must understand yes/si/da/oui/ja, tolerate one-letter typos, and on ANY
+# doubt ASK instead of letting the prose outrun the state.
+
+CONFIRM_WORDS = {
+    "yes", "yeah", "yep", "yup", "ok", "okay", "sure", "correct", "right",
+    "perfect", "exact", "confirmed", "confirm", "great", "absolutely",
+    "da", "si", "claro", "correcto", "oui", "ja", "jawohl", "confirmo",
+    "all good", "looks good", "thats right", "thats correct",
+    "that works", "sounds good",
+}
+REJECT_WORDS = {
+    "no", "nope", "not right", "not correct", "wrong", "incorrect", "change",
+    "mal", "incorrecto", "cambiar", "falsch", "non", "nu", "gresit",
+}
+
+
+def _normalize_reply(text: str) -> str:
+    """strip → lower → drop punctuation → strip diacritics ("Sí." → "si")."""
+    import re as _re
+    import unicodedata as _ud
+
+    lowered = (text or "").strip().lower()
+    no_punct = _re.sub(r"[^\w\s]", "", lowered)
+    decomposed = _ud.normalize("NFKD", no_punct)
+    return "".join(c for c in decomposed if not _ud.combining(c)).strip()
+
+
+def _lev_leq1(a: str, b: str) -> bool:
+    """Levenshtein distance ≤ 1 — tiny inline check, no dependency."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la > lb:
+        a, b, la, lb = b, a, lb, la
+    # a is the shorter (or equal) string; allow one edit.
+    i = j = edits = 0
+    while i < la and j < lb:
+        if a[i] == b[j]:
+            i += 1; j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        if la == lb:
+            i += 1  # substitution
+        j += 1      # insertion into the shorter
+    return edits + (lb - j) + (la - i) <= 1
+
+
+def is_confirmation(normalized: str) -> bool:
+    """Exact multilingual match, or one typo away from yes/si.
+    "Urs" is distance 2 from "yes" — deliberately NOT a confirmation:
+    it lands on the re-ask."""
+    if normalized in CONFIRM_WORDS:
+        return True
+    return _lev_leq1(normalized, "yes") or _lev_leq1(normalized, "si")
+
+
+def is_rejection(normalized: str) -> bool:
+    return normalized in REJECT_WORDS
+
+
 def _fire_and_forget(coro):
     """Run coroutine in background without blocking pipeline."""
     task = asyncio.create_task(coro)
@@ -302,18 +370,16 @@ async def _pipeline(
     _brand_phone = _get_brand(
         (metadata or {}).get("site") or _conv_meta.get("site")
     ).get("contact_phone", "+1 (888) 322-7999")
+    _awaiting_correction_directive = False
     if _conv_meta.get("summary_shown_at") and not _conv_meta.get("confirmed_at"):
-        _normalized = message.strip().lower().rstrip(".!")
+        _normalized = _normalize_reply(message)
         # REJECTION comes FIRST — before the confirm listener and before any
         # other post-summary listener. Conv "Costa": the client answered "no"
         # to "Is everything correct?" and no branch existed to hear it.
-        _reject_words = {
-            "no", "nope", "not right", "not correct", "wrong",
-            "incorrect", "change",
-        }
-        if _normalized in _reject_words:
+        if is_rejection(_normalized):
             from app.ai.templates import get_template as _get_tpl
 
+            logger.info(f"[{cid}] Summary REJECTED (matched '{_normalized}') — asking what to correct")
             _correction_text = _get_tpl("summary_correction", tunnel, visitor) or (
                 "Thanks for catching that — what should I fix: "
                 "the route, the dates, or the passengers?"
@@ -327,21 +393,65 @@ async def _pipeline(
             )
             if _persist_state is not None:
                 _persist_state["ai_persisted"] = True
-            logger.info(f"[{cid}] Summary REJECTED — asking what to correct")
             return ChatResponse(
                 conversation_id=cid,
                 message=_correction_text,
                 type="template",
                 model_used="template",
             )
-        _confirm_words = {
-            "yes", "correct", "looks good", "confirm", "that's right",
-            "da", "yep", "yeah", "ok", "okay", "sure", "perfect",
-            "great", "absolutely", "that works", "sounds good",
-        }
-        if _normalized in _confirm_words:
+        elif is_confirmation(_normalized):
             intent = Intent.CONFIRMED
-            logger.info(f"[{cid}] Intent override → CONFIRMED (summary was shown)")
+            logger.info(
+                f"[{cid}] Intent override → CONFIRMED "
+                f"(matched '{_normalized}' after summary)"
+            )
+        else:
+            # NEITHER — ambiguity must never fall through to a free LLM turn
+            # (conv #1347: "Urs" → Opus improvised "everything's locked in"
+            # while confirmed_at stayed NULL).
+            _probe = extract_entities(message)
+            _has_correction_entities = bool(
+                _probe.origin_code or _probe.destination_code
+                or _probe.departure_date or _probe.return_date
+                or _probe.passengers
+            )
+            if _has_correction_entities:
+                # A correction ("March 7 instead"): re-open the summary state
+                # so the pipeline updates the lead and Step 7.5 re-renders the
+                # summary with the new facts.
+                _meta_upd = dict(_conv_meta)
+                _meta_upd.pop("summary_shown_at", None)
+                _meta_upd.pop("open_door_pending", None)
+                try:
+                    await db.update_conversation(cid, {"metadata": _meta_upd})
+                    _conv_meta = _meta_upd
+                except Exception as e:
+                    logger.warning(f"[{cid}] summary re-open failed: {e}")
+                _awaiting_correction_directive = True
+                logger.info(f"[{cid}] Post-summary correction with entities — summary will re-render")
+            else:
+                from app.ai.templates import get_template as _get_tpl
+
+                logger.info(f"[{cid}] Post-summary ambiguity ('{_normalized[:30]}') — re-asking, not improvising")
+                _reask_text = _get_tpl("summary_reask", tunnel, visitor) or (
+                    "Just to confirm everything's correct — reply YES, "
+                    "or tell me what to change."
+                )
+                await conversation_service.add_message(
+                    conversation_id=cid,
+                    role="ai",
+                    content=_reask_text,
+                    model_used="template",
+                    cost=0.0,
+                )
+                if _persist_state is not None:
+                    _persist_state["ai_persisted"] = True
+                return ChatResponse(
+                    conversation_id=cid,
+                    message=_reask_text,
+                    type="template",
+                    model_used="template",
+                )
     _confirmed_this_turn = intent == Intent.CONFIRMED
 
     # Merged view of where this visitor came from — widget metadata for this
@@ -421,7 +531,18 @@ async def _pipeline(
             logger.info(f"[{cid}] Open-door window closed (no must-have stored)")
 
     entities: dict = {
-        "_raw_message": message,
+        # HARD RULE while a summary awaits confirmation: the LLM never speaks
+        # "done". The state machine owns confirmation; prose must not outrun
+        # it (conv #1347: improvised "everything's locked in" on NULL state).
+        "_raw_message": (
+            message + (
+                "\n\n(SYSTEM: the booking summary is awaiting the client's "
+                "explicit confirmation. Do NOT use confirmation or closing "
+                "language — no 'locked in', no 'all set', no 'everything's "
+                "confirmed', no consultant-call promises. Acknowledge the "
+                "correction; the system will re-show the summary.)"
+            ) if _awaiting_correction_directive else ""
+        ),
         # name: ALWAYS from visitor form data — never extract from message text
         # extracting name from message causes "looking for" or other text fragments
         # to override the real visitor name submitted in the form

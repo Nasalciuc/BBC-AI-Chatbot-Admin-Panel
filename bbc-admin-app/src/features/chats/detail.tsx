@@ -630,6 +630,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 </div>
               )}
               {(() => {
+                // The button renders from the lead ROW, not from a derived
+                // flag. Conv #1347: the row existed (ensure_lead) while
+                // created_in_crm was correctly false pre-confirmation — and
+                // the old button lied "Create Lead" as if nothing existed.
                 const hasName  = !!lead.visitor_name?.trim() || !!conv.visitor_name?.trim()
                 const hasEmail = !!lead.visitor_email?.trim() || !!conv.visitor_email?.trim()
                 const hasPhone = !!lead.visitor_phone?.trim() || !!conv.visitor_phone?.trim()
@@ -637,63 +641,40 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                 if (!hasName)  missing.push('name')
                 if (!hasEmail) missing.push('email')
                 if (!hasPhone) missing.push('phone')
-                const isCreated  = lead.created_in_crm === true
+                const isSynced   = lead.created_in_crm === true
                 const hasAllData = missing.length === 0
                 const isBlockedTag = conv.tag === 'abandoned' || conv.tag === 'no_engagement'
+                const blockedReason = conv.tag === 'no_engagement'
+                  ? 'Customer left contact but never wrote a message'
+                  : 'Customer went quiet before the conversation was completed'
 
-                if (isCreated) {
-                  return (
-                    <button
-                      disabled
-                      className="w-full py-2 rounded-lg border border-emerald-400 bg-emerald-100 text-emerald-800 text-xs font-semibold cursor-default flex items-center justify-center gap-1.5"
-                    >
+                return (
+                  <div className="space-y-1.5">
+                    <div className="w-full py-2 rounded-lg border border-emerald-400 bg-emerald-100 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5">
                       <Check className="w-3 h-3" />
                       Lead Created
-                    </button>
-                  )
-                }
-                if (isBlockedTag) {
-                  const reason = conv.tag === 'no_engagement'
-                    ? 'Customer left contact but never wrote a message'
-                    : 'Customer went quiet before the conversation was completed'
-                  return (
-                    <button
-                      disabled
-                      title={`${reason} — CRM submission blocked`}
-                      className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-not-allowed"
-                    >
-                      Create Lead ({DETAIL_TAG_LABELS[conv.tag ?? ''] ?? 'Blocked'})
-                    </button>
-                  )
-                }
-                if (markingLead) {
-                  return (
-                    <button
-                      disabled
-                      className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-wait"
-                    >
-                      Creating...
-                    </button>
-                  )
-                }
-                if (!hasAllData) {
-                  return (
-                    <button
-                      disabled
-                      title={`Missing: ${missing.join(', ')}`}
-                      className="w-full py-2 rounded-lg border border-border bg-muted text-muted-foreground text-xs font-medium cursor-not-allowed"
-                    >
-                      Create Lead
-                    </button>
-                  )
-                }
-                return (
-                  <button
-                    onClick={handleMarkLeadCreated}
-                    className="w-full py-2 rounded-lg bg-[#C9A54E] text-white text-xs font-semibold hover:bg-[#C9A54E]/90 transition-all"
-                  >
-                    Create Lead
-                  </button>
+                    </div>
+                    {!isSynced && (
+                      isBlockedTag ? (
+                        <p className="text-center text-[11px] text-muted-foreground" title={blockedReason}>
+                          CRM submission blocked · {DETAIL_TAG_LABELS[conv.tag ?? ''] ?? 'Blocked'}
+                        </p>
+                      ) : markingLead ? (
+                        <p className="text-center text-[11px] text-muted-foreground">Submitting to CRM…</p>
+                      ) : !hasAllData ? (
+                        <p className="text-center text-[11px] text-muted-foreground" title={`Missing: ${missing.join(', ')}`}>
+                          Syncing to CRM — waiting for {missing.join(', ')}
+                        </p>
+                      ) : (
+                        <button
+                          onClick={handleMarkLeadCreated}
+                          className="w-full py-2 rounded-lg bg-[#C9A54E] text-white text-xs font-semibold hover:bg-[#C9A54E]/90 transition-all"
+                        >
+                          Submit to CRM
+                        </button>
+                      )
+                    )}
+                  </div>
                 )
               })()}
             </div>

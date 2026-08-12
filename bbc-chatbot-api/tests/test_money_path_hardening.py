@@ -108,11 +108,13 @@ class TestRejectionBranch:
             assert not meta.get("open_door_pending")
             assert not meta.get("confirmed_at")
 
-    def test_reject_words_checked_before_confirm_words(self):
-        from app.pipeline import orchestrator as orch
+    def test_rejection_checked_before_confirmation(self):
+        # Renamed to module-level matchers in the confirmation-truth PR;
+        # the ORDER contract is unchanged: rejection is heard first.
+        from app.pipeline.orchestrator import _pipeline
 
-        src = inspect.getsource(orch)
-        assert src.index("_reject_words") < src.index("_confirm_words")
+        src = inspect.getsource(_pipeline)
+        assert src.index("is_rejection(_normalized)") < src.index("is_confirmation(_normalized)")
 
     def test_correction_template_exists(self):
         text = get_template("summary_correction", "sales", VisitorInfo())
