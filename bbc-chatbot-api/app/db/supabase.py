@@ -22,10 +22,50 @@ _client: Optional[Client] = None
 _executor = ThreadPoolExecutor(max_workers=20)
 
 
-async def _run_sync(fn):
-    """Run a sync supabase-py call on thread pool to avoid blocking event loop."""
+# Errors that mean "the pooled HTTP connection died under us", not "the
+# query is wrong": Supabase's pooler closes idle keep-alive connections
+# server-side; the next query on that socket raises RemoteProtocolError
+# ("Server disconnected"). One retry on a fresh connection heals it —
+# a second failure is a real outage and raises as before.
+_DISCONNECT_MARKERS = (
+    "Server disconnected",
+    "RemoteProtocolError",
+    "Connection reset",
+    "ConnectionTerminated",
+)
+
+
+def _is_disconnect(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return any(m in text for m in _DISCONNECT_MARKERS)
+
+
+async def _run_sync(fn, idempotent: bool = True):
+    """Run a sync supabase-py call on thread pool to avoid blocking event loop.
+
+    Retries ONCE when the pooled connection was dropped server-side (the
+    'Couldn't load conversation' 500s and the KPI 997→0→997 flicker were
+    all first-query-after-idle deaths). The stale global client is also
+    reset so later calls start from a fresh pool.
+
+    idempotent=False (every INSERT site) disables the retry: a disconnect
+    can land AFTER the server committed the write, and re-running an
+    INSERT would duplicate the row (a doubled chat message pollutes
+    history, the summarizer and KPIs). SELECT/UPDATE/DELETE re-run to the
+    same end state and stay retried."""
+    global _client
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, fn)
+    try:
+        return await loop.run_in_executor(_executor, fn)
+    except Exception as e:
+        if not idempotent or not _is_disconnect(e):
+            raise
+        logger.warning(
+            f"[db-retry] dead connection ({type(e).__name__}: {e}) — "
+            "rebuilding client, retrying once"
+        )
+        _client = None
+        return await loop.run_in_executor(_executor, fn)
 
 
 def get_client() -> Client:
@@ -188,7 +228,7 @@ async def get_or_create_conversation(
             payload["visitor_phone"] = format_phone_international(visitor.phone)
         if visitor and visitor.country_code: payload["visitor_phone_country"] = visitor.country_code
         try:
-            res = await _run_sync(lambda: db.table("conversations").insert(payload).execute())
+            res = await _run_sync(lambda: db.table("conversations").insert(payload).execute(), idempotent=False)
             return res.data[0] if res.data else None
         except Exception as ins_err:
             # Twin /start lost the uq_conv_active_visitor race (029) —
@@ -229,7 +269,7 @@ async def add_message(
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
-        res = await _run_sync(lambda: db.table("messages").insert(payload).execute())
+        res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False)
         row = res.data[0] if res.data else None
         if row:
             await _touch_conversation_activity(
@@ -1217,7 +1257,7 @@ async def get_kb_entries(
 async def create_kb_entry(payload: dict) -> Optional[dict]:
     try:
         db = get_client()
-        res = await _run_sync(lambda: db.table("kb_entries").insert(payload).execute())
+        res = await _run_sync(lambda: db.table("kb_entries").insert(payload).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"create_kb_entry error: {e}")
@@ -1548,7 +1588,7 @@ async def create_user(payload: dict) -> Optional[dict]:
     """Create a new user (for invite flow)."""
     try:
         db = get_client()
-        res = await _run_sync(lambda: db.table("users").insert(payload).execute())
+        res = await _run_sync(lambda: db.table("users").insert(payload).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"create_user error: {e}")
@@ -1569,7 +1609,7 @@ async def create_user_access_audit(payload: dict) -> Optional[dict]:
     """Record access rights change for a user."""
     try:
         db = get_client()
-        res = await _run_sync(lambda: db.table("user_access_audit").insert(payload).execute())
+        res = await _run_sync(lambda: db.table("user_access_audit").insert(payload).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"create_user_access_audit error: {e}")
@@ -1613,7 +1653,7 @@ async def create_team(payload: dict) -> Optional[dict]:
         now_iso = datetime.now(timezone.utc).isoformat()
         data.setdefault("created_at", now_iso)
         data["updated_at"] = now_iso
-        res = await _run_sync(lambda: db.table("teams").insert(data).execute())
+        res = await _run_sync(lambda: db.table("teams").insert(data).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"create_team error: {e}")
@@ -1772,7 +1812,7 @@ async def create_invite_token(payload: dict) -> Optional[dict]:
     """Create one-time invite token row."""
     try:
         db = get_client()
-        res = await _run_sync(lambda: db.table("invite_tokens").insert(payload).execute())
+        res = await _run_sync(lambda: db.table("invite_tokens").insert(payload).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"create_invite_token error: {e}")
@@ -1865,7 +1905,7 @@ async def create_pipeline_run(payload: dict) -> Optional[dict]:
     """Insert a pipeline run record. Non-fatal — never blocks the pipeline."""
     try:
         db_client = get_client()
-        res = await _run_sync(lambda: db_client.table("pipeline_runs").insert(payload).execute())
+        res = await _run_sync(lambda: db_client.table("pipeline_runs").insert(payload).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.warning(f"create_pipeline_run error (non-fatal): {e}")
@@ -2512,7 +2552,8 @@ async def create_task(payload: dict) -> Optional[dict]:
     """Create a new task."""
     db_client = get_client()
     res = await _run_sync(
-        lambda: db_client.table("tasks").insert(payload).execute()
+        lambda: db_client.table("tasks").insert(payload).execute(),
+        idempotent=False,
     )
     return res.data[0] if res.data else None
 
@@ -2739,7 +2780,7 @@ async def ensure_lead_for_conversation(conversation_id: str) -> dict | None:
             db.table("leads")
             .insert(payload)
             .execute()
-        ))
+        ), idempotent=False)
         return result.data[0] if result.data else None
     except Exception as e:
         logger.error(f"ensure_lead_for_conversation error: {e}")
@@ -2793,7 +2834,8 @@ async def upsert_presence_day(user_id: str, day: str, d: dict) -> None:
             await _run_sync(
                 lambda: db_client.table("agent_presence_daily")
                 .insert({"user_id": user_id, "day": day, **d})
-                .execute()
+                .execute(),
+                idempotent=False,
             )
     except Exception as e:
         logger.warning(f"upsert_presence_day error: {e}")
@@ -2805,7 +2847,8 @@ async def insert_ready_log(user_id: str, is_ready: bool) -> None:
         await _run_sync(
             lambda: db_client.table("agent_ready_log")
             .insert({"user_id": user_id, "is_ready": is_ready})
-            .execute()
+            .execute(),
+            idempotent=False,
         )
     except Exception as e:
         logger.warning(f"insert_ready_log error: {e}")
@@ -2826,7 +2869,8 @@ async def insert_activity_log(
         if resp_s is not None:
             row["response_seconds"] = resp_s
         await _run_sync(
-            lambda: db_client.table("agent_activity_log").insert(row).execute()
+            lambda: db_client.table("agent_activity_log").insert(row).execute(),
+            idempotent=False,
         )
     except Exception as e:
         logger.warning(f"insert_activity_log error: {e}")
@@ -2990,7 +3034,7 @@ async def reset_stale_ready_users(timeout_seconds: int = 600) -> list[dict]:
                         .execute()
                     )
 
-                await _run_sync(_audit)
+                await _run_sync(_audit, idempotent=False)
             except Exception:
                 pass  # table may not exist on older deployments
         return stale
@@ -3154,6 +3198,11 @@ async def claim_attention_email(conversation_id: str) -> bool:
 # normalize on both write and read or matching will silently fail.
 
 
+# PGRST205 (blocklist table absent) is chronic until 022 is applied —
+# without this flag it logged twice per client message and buried real errors.
+_BLOCKLIST_TABLE_MISSING_WARNED = False
+
+
 async def blocklist_has_active(kind: str, value: str) -> bool:
     """True if (kind, value) has a non-expired blocklist entry.
 
@@ -3183,6 +3232,18 @@ async def blocklist_has_active(kind: str, value: str) -> bool:
                 return True
         return False
     except Exception as e:
+        if "PGRST205" in str(e):
+            # Table missing = migration 022_blocklist.sql never applied in
+            # production. Fail-open ("not blocked") is correct; warn once
+            # per process, not twice per message.
+            global _BLOCKLIST_TABLE_MISSING_WARNED
+            if not _BLOCKLIST_TABLE_MISSING_WARNED:
+                _BLOCKLIST_TABLE_MISSING_WARNED = True
+                logger.warning(
+                    "blocklist table missing (PGRST205) — blocklist disabled; "
+                    "apply migrations/022_blocklist.sql (warned once per process)"
+                )
+            return False
         logger.error(f"blocklist_has_active({kind}) error: {e}")
         return False
 

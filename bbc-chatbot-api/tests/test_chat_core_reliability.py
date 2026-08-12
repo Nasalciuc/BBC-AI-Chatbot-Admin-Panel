@@ -159,7 +159,7 @@ class TestStartDedup:
         winner = {"id": "conv-winner", "status": "active", "visitor_id": "v-1"}
         calls = {"n": 0}
 
-        async def fake_run_sync(fn):
+        async def fake_run_sync(fn, **kwargs):  # accepts idempotent=...
             calls["n"] += 1
             if calls["n"] == 1:  # Path B select — nothing committed yet
                 return SimpleNamespace(data=[])
@@ -184,7 +184,7 @@ class TestStartDedup:
 
         calls = {"n": 0}
 
-        async def fake_run_sync(fn):
+        async def fake_run_sync(fn, **kwargs):  # accepts idempotent=...
             calls["n"] += 1
             if calls["n"] == 1:
                 return SimpleNamespace(data=[])
