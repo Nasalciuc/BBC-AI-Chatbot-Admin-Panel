@@ -485,6 +485,12 @@ def supervisor_columns_status() -> dict:
     }
 
 
+# How many newest rows a derived-tag filter scans before deriving. ~1,350
+# conversations exist; 400 covers every realistic supervisor filter window
+# while keeping the scan one PostgREST page-batch. Overflow logs loudly.
+_TAG_SCAN_CAP = 400
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -567,7 +573,18 @@ async def get_conversations(
                     .not_.is_("visitor_phone", "null").neq("visitor_phone", "")
                     .not_.is_("visitor_email", "null").neq("visitor_email", "")
                 )
-            return q.range(offset, offset + limit - 1).execute()
+            return q.range(_rng[0], _rng[1]).execute()
+
+        # Derived tags can't be a SQL WHERE: PostgREST cannot compare two
+        # columns (main_queue/active hinge on last_user_message_at >
+        # last_agent_message_at) and `completed` needs the lead join. So a
+        # tag-filtered request scans a SUPERSET (up to _TAG_SCAN_CAP rows,
+        # newest first, plus the cheap DB pre-filters above), derives on all
+        # of them, filters, and pages in Python — a page-local filter used
+        # to hide matching rows beyond page 1 and returned page-local counts.
+        # no_engagement keeps its exact DB predicate (cheap + global).
+        _tag_scan = bool(tag) and not no_engagement_only
+        _rng = (0, _TAG_SCAN_CAP - 1) if _tag_scan else (offset, offset + limit - 1)
 
         use_supervisor_cols = _supervisor_columns_available()
         try:
@@ -604,10 +621,17 @@ async def get_conversations(
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
             if no_engagement_only:
-                # Already DB-filtered above — res.count is the true total,
-                # unlike the Python-filtered tags below (page-local count).
+                # Already DB-filtered above — res.count is the true total.
                 return rows, res.count or 0
-            return rows, len(rows)
+            # Derived-tag paging over the scanned superset: true count over
+            # the scan, then the caller's page. Never silently truncate.
+            if (res.count or 0) > _TAG_SCAN_CAP:
+                logger.warning(
+                    f"get_conversations: tag='{tag}' scan capped at "
+                    f"{_TAG_SCAN_CAP} of {res.count} candidate rows — "
+                    "oldest conversations not scanned"
+                )
+            return rows[offset:offset + limit], len(rows)
         return rows, res.count or 0
     except Exception as e:
         logger.error(f"get_conversations error: {e}")
