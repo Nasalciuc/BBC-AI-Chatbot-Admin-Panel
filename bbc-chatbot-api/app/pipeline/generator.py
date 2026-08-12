@@ -24,6 +24,32 @@ from app.ai.claude import (
 
 logger = logging.getLogger(__name__)
 
+# ── Generation-cascade visibility (surfaced in /health) ──────
+# The tiered-generation → fallback-template cascade was invisible until a
+# client pasted a transcript: every model died, the dead-end template
+# shipped, and no counter moved. The original exception is logged by
+# app/ai/claude.py at the failing call ("Claude API error" / "Claude+Tool
+# STREAM API error" immediately above this counter's ERROR line).
+GENERATION_HEALTH: dict = {
+    "fallbacks_since_boot": 0,
+    "last_at": None,
+    "last_intent": None,
+}
+
+
+def _record_generation_fallback(intent, tier: str, conversation_id) -> None:
+    from datetime import datetime, timezone
+
+    GENERATION_HEALTH["fallbacks_since_boot"] += 1
+    GENERATION_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
+    GENERATION_HEALTH["last_intent"] = getattr(intent, "value", str(intent))
+    logger.error(
+        f"GENERATION FALLBACK: all AI failed — serving template | "
+        f"model={tier} intent={getattr(intent, 'value', intent)} "
+        f"conversation_id={conversation_id or 'unknown'} "
+        f"(original exception in the claude.py error above)"
+    )
+
 
 @dataclass
 class GeneratedResponse:
@@ -196,6 +222,7 @@ def generate_response(
     budget_remaining: Optional[float] = None,
     skip_templates: bool = False,
     on_chunk=None,
+    conversation_id: Optional[str] = None,
 ) -> GeneratedResponse:
     """Decision tree for response generation.
 
@@ -524,8 +551,9 @@ def generate_response(
                 text=ai_text, model_used=tier, cost=ai_cost, tool_entities=tool_entities
             )
 
-    # 5c. Fallback
-    logger.warning("AI generation failed — using fallback template")
+    # 5c. Fallback — the whole cascade died; make it count and shout.
+    _tier_seen = locals().get("tier") or locals().get("_tier") or "unknown"
+    _record_generation_fallback(intent, _tier_seen, conversation_id)
     fallback_key = "no_agent_available" if skip_templates else "ai_fallback"
     text = get_template(fallback_key, tunnel, visitor) or (
         "For immediate assistance, please call +1 (888) 322-7999."

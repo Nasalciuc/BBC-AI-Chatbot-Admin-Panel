@@ -136,6 +136,23 @@ TEMPLATES: dict[str, list[str]] = {
         "For the best answer on that, I'd recommend calling our team directly at +1 (888) 322-7999.",
         "That's a great question — our travel specialists can help. Call +1 (888) 322-7999 for immediate assistance.",
     ],
+    # Sales NEVER dead-ends to a phone number: a generation failure landed
+    # this exact template on live clients mid-purchase (Catherine LAX→SYD
+    # giving dates got "recommend calling our team"). The fallback keeps
+    # collecting — one question, phone at most secondary. The un-suffixed
+    # keys above stay for the support tunnel.
+    "ai_fallback:sales": [
+        "Your consultant prices that directly — the private fares aren't on "
+        "any public site. When are you looking to travel?",
+        "That's exactly what your consultant digs into — those fares never "
+        "show up on public sites. Which route are you working with?",
+    ],
+    "no_agent_available:sales": [
+        "Every consultant is with a client right now — you're already in "
+        "line and they'll call you shortly. To get ahead of it: when are "
+        "you looking to travel? If you'd rather talk right away, we're at "
+        "+1 (888) 322-7999.",
+    ],
     "rate_limited": [
         "I need a moment to process that. For immediate assistance, "
         "please call +1 (888) 322-7999.",
