@@ -191,3 +191,103 @@ async def route_conversation(
     except Exception as e:
         logger.error(f"[routing] Unexpected error: {e} → fallback AI")
         return {"agent_id": None, "mode": "ai", "agent_name": None}
+
+
+# ── Human dispatch: needs_agent gets DRAINED ─────────────────────────────
+# The queue flag was set in two places and consumed in zero — a shelf label.
+# This dispatcher turns it into an actual assignment: ready operator found →
+# the SAME unified handoff path the manual Take button uses; none ready →
+# the existing super-alert. The heartbeat/notify-assignment infra in the
+# panel already rings on new assignments — no new notification framework.
+
+async def dispatch_needs_agent(conversation_id: str) -> bool:
+    """Try to hand a needs_agent conversation to a ready operator.
+
+    Returns True when an operator was assigned. Concurrency-safe: the
+    needs_agent → active status flip is a conditional update; whichever
+    dispatch wins the flip performs the handoff, the loser walks away —
+    a conversation can never be double-assigned.
+    """
+    try:
+        conv = await db.get_conversation_simple(conversation_id)
+        if not conv or conv.get("status") != "needs_agent":
+            return False
+        if conv.get("assigned_agent_id"):
+            return False
+
+        tunnel = conv.get("tunnel") or "sales"
+
+        class _V:  # minimal visitor shape for route_conversation's sticky check
+            name = conv.get("visitor_name")
+            email = conv.get("visitor_email")
+            phone = conv.get("visitor_phone")
+
+        route = await route_conversation(
+            tunnel, visitor=_V, visitor_id=conv.get("visitor_id")
+        )
+
+        if not route or not route.get("agent_id"):
+            # Nobody ready — the demand signal stays queued and the existing
+            # super-alert path fires exactly as it does today.
+            try:
+                from app.services.closing import claim_super_alert
+                from app.services.email import send_super_alert_email
+
+                if await claim_super_alert(
+                    conversation_id, settings.super_alert_cooldown_minutes
+                ):
+                    await send_super_alert_email(
+                        conversation_id=conversation_id,
+                        visitor_name=conv.get("visitor_name"),
+                        visitor_phone=conv.get("visitor_phone"),
+                        visitor_email=conv.get("visitor_email"),
+                        tunnel=tunnel,
+                        last_message="(queued: client asked for a human agent)",
+                        chat_number=conv.get("chat_number"),
+                    )
+            except Exception as e:
+                logger.warning(f"[dispatch] super-alert failed for {conversation_id}: {e}")
+            logger.info(f"[dispatch] {conversation_id}: no ready operators — stays queued")
+            return False
+
+        # Conditional claim: only the dispatch that flips needs_agent → active
+        # proceeds. rows==0 means someone else (dispatch or manual Take) won.
+        client = db.get_client()
+        res = await db._run_sync(
+            lambda: client.table("conversations")
+            .update({"status": "active"})
+            .eq("id", conversation_id)
+            .eq("status", "needs_agent")
+            .execute()
+        )
+        if not res.data:
+            logger.info(f"[dispatch] {conversation_id}: lost the claim race — skipping")
+            return False
+
+        try:
+            from app.services.handoff import perform_handoff_to_agent
+
+            await perform_handoff_to_agent(
+                conversation_id,
+                agent_id=route["agent_id"],
+                agent_name=route.get("agent_name", "A specialist"),
+                tunnel=tunnel,
+                emit_messages=False,
+                handoff_reason="auto_assign",
+            )
+        except Exception:
+            # The handoff itself failed — put the demand signal back on the
+            # shelf so a later dispatch (or /open self-heal) retries it.
+            try:
+                await db.update_conversation(conversation_id, {"status": "needs_agent"})
+            except Exception:
+                pass
+            raise
+        logger.info(
+            f"[dispatch] {conversation_id} → {route.get('agent_name')} "
+            f"({str(route['agent_id'])[:8]}...) via auto_assign"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"[dispatch] failed for {conversation_id}: {e}", exc_info=True)
+        return False
