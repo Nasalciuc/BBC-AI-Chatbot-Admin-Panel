@@ -274,7 +274,7 @@ async def _mark_client_active(conversation_id: str) -> None:
         metadata["widget_presence"] = "online"
         metadata["widget_last_event"] = "message"
         metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
-        await db.update_conversation(conversation_id, {"metadata": metadata})
+        await db.update_conversation_presence(conversation_id, metadata)
     except Exception as e:
         logger.warning(f"[presence] message-implies-online failed conv={conversation_id}: {e}")
 
@@ -538,7 +538,11 @@ async def chat(
             and _conv_check.get("mode") == "ai"
             and not _conv_check.get("assigned_agent_id")
         ):
-            _msg_count = await db.count_messages(req.conversation_id)
+            # Count CLIENT messages only — the AI greeting (#170) is message
+            # #1 and must not close this gate. The un-scoped count killed
+            # first-contact routing AND the Tyke no-agents email for six
+            # days (assignments flatlined 2026-08-06 23:41 UTC).
+            _msg_count = await db.count_messages(req.conversation_id, role="user")
             if _msg_count == 0:  # first user message — not yet saved
                 _route = await route_conversation(
                     req.tunnel,
@@ -724,7 +728,7 @@ async def mark_chat_session_open(
     metadata["widget_presence"] = "online"
     metadata["widget_last_event"] = "open"
     metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
-    await db.update_conversation(conversation_id, {"metadata": metadata})
+    await db.update_conversation_presence(conversation_id, metadata)
     # Self-healing dispatch: a conversation stuck in needs_agent (queued when
     # nobody was ready, or a dispatch that died mid-flight) retries the
     # moment the client is back at the widget.
@@ -754,7 +758,7 @@ async def mark_chat_session_close(
     metadata["widget_last_event"] = "close"
     metadata["widget_last_close_reason"] = reason
     metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
-    await db.update_conversation(conversation_id, {"metadata": metadata})
+    await db.update_conversation_presence(conversation_id, metadata)
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_typing(conversation_id)
     return {"success": True}

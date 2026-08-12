@@ -187,8 +187,30 @@ async def get_or_create_conversation(
             from app.services.crm import format_phone_international
             payload["visitor_phone"] = format_phone_international(visitor.phone)
         if visitor and visitor.country_code: payload["visitor_phone_country"] = visitor.country_code
-        res = await _run_sync(lambda: db.table("conversations").insert(payload).execute())
-        return res.data[0] if res.data else None
+        try:
+            res = await _run_sync(lambda: db.table("conversations").insert(payload).execute())
+            return res.data[0] if res.data else None
+        except Exception as ins_err:
+            # Twin /start lost the uq_conv_active_visitor race (029) —
+            # the winner's row IS this visitor's conversation. Re-select.
+            _msg = str(ins_err)
+            if visitor_id and ("23505" in _msg or "uq_conv_active_visitor" in _msg):
+                logger.info(
+                    f"get_or_create_conversation: duplicate /start for visitor "
+                    f"{visitor_id} — returning the winner's active conversation"
+                )
+                res = await _run_sync(
+                    lambda: db.table("conversations")
+                    .select("*")
+                    .eq("visitor_id", visitor_id)
+                    .eq("status", "active")
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if res.data:
+                    return res.data[0]
+            raise
     except Exception as e:
         logger.error(f"get_or_create_conversation error: {e}")
         return None
@@ -256,12 +278,24 @@ async def _touch_conversation_activity(
         )
 
 
-async def count_messages(conversation_id: str) -> int:
+async def count_messages(conversation_id: str, role: str | None = None) -> int:
+    """Count messages, optionally scoped to one role.
+
+    role=None keeps every existing caller identical. Errors fail OPEN
+    toward routing (return 0) — intended — but no longer silently."""
     try:
         db = get_client()
-        res = await _run_sync(lambda: db.table("messages").select("id", count="exact").eq("conversation_id", conversation_id).execute())  # type: ignore[arg-type]
+
+        def _q():
+            q = db.table("messages").select("id", count="exact").eq("conversation_id", conversation_id)  # type: ignore[arg-type]
+            if role is not None:
+                q = q.eq("role", role)
+            return q.execute()
+
+        res = await _run_sync(_q)
         return res.count or 0
-    except Exception:
+    except Exception as e:
+        logger.warning(f"count_messages failed conv={conversation_id}: {e}")
         return 0
 
 
@@ -842,6 +876,34 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
     except Exception as e:
         logger.error(f"update_conversation error: {e}")
         return None
+
+
+async def update_conversation_presence(conversation_id: str, metadata: dict) -> bool:
+    """Presence-only metadata write that does NOT bump updated_at.
+
+    Goes through the update_conv_presence PG function (migration 029) —
+    SET LOCAL app.skip_touch makes trg_conversations_updated_at leave
+    updated_at alone, so a widget open/close/heartbeat can't resurrect a
+    ghost conversation to the top of updated_at-sorted lists. rpc is
+    deliberate here (not CRUD): a PostgREST UPDATE cannot carry the
+    transaction-local GUC. Falls back to the plain touching update when
+    029 isn't applied yet, so presence never breaks on deploy order."""
+    try:
+        db = get_client()
+        await _run_sync(
+            lambda: db.rpc(
+                "update_conv_presence",
+                {"p_conversation_id": conversation_id, "p_metadata": metadata},
+            ).execute()
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            f"update_conv_presence rpc failed conv={conversation_id} ({e}) — "
+            "falling back to touching update (apply migration 029)"
+        )
+        res = await update_conversation(conversation_id, {"metadata": metadata})
+        return res is not None
 
 
 # ════════════════════════════════════════════════════════════════
