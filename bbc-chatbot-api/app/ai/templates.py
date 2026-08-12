@@ -69,6 +69,10 @@ TEMPLATES: dict[str, list[str]] = {
         "Thanks for catching that — what should I fix: "
         "the route, the dates, or the passengers?",
     ],
+    "summary_reask:sales": [
+        "Just to confirm everything's correct — reply YES, "
+        "or tell me what to change.",
+    ],
     "closing:sales": [
         "Thanks{name_suffix} — your consultant takes it from here. Speak soon.",
         "Your search is in expert hands{name_suffix}. We'll be in touch soon.",
