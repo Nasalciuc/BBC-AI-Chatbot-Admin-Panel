@@ -725,6 +725,12 @@ async def mark_chat_session_open(
     metadata["widget_last_event"] = "open"
     metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
     await db.update_conversation(conversation_id, {"metadata": metadata})
+    # Self-healing dispatch: a conversation stuck in needs_agent (queued when
+    # nobody was ready, or a dispatch that died mid-flight) retries the
+    # moment the client is back at the widget.
+    if conv.get("status") == "needs_agent":
+        from app.services.routing import dispatch_needs_agent
+        _fire_and_forget(dispatch_needs_agent(conversation_id))
     return {"success": True}
 
 

@@ -24,6 +24,8 @@ async def health() -> dict:
     from app.services.lead_service import LEAD_WRITE_HEALTH
     # Provider fallback counter: primary-model failures must be visible.
     from app.ai.claude import AI_FALLBACK_HEALTH
+    # Missed handoffs: every count is a client who asked for a human.
+    from app.services.handoff import HANDOFF_HEALTH
 
     if not settings.debug:
         return {
@@ -32,6 +34,7 @@ async def health() -> dict:
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
+            "handoffs_expired": dict(HANDOFF_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -65,4 +68,5 @@ async def health() -> dict:
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
+        "handoffs_expired": dict(HANDOFF_HEALTH),
     }

@@ -22,6 +22,10 @@ from app.realtime.manager import manager
 
 logger = logging.getLogger(__name__)
 
+# Missed-handoff counter — surfaced in /health as handoffs_expired. Every
+# increment is a client who asked for a human and never got one in time.
+HANDOFF_HEALTH: dict = {"expired_since_boot": 0, "last_at": None}
+
 
 # ── H1: Agent staleness detection + AI fallback ──────────────
 
@@ -199,12 +203,49 @@ async def get_handoff_response(
     try:
         await db.update_conversation(conversation_id, {"status": "needs_agent"})
         logger.info(f"[{conversation_id}] No agent available → status=needs_agent (queued)")
+        from app.services.routing import dispatch_needs_agent
+        from app.pipeline.orchestrator import _fire_and_forget
+        _fire_and_forget(dispatch_needs_agent(conversation_id))
     except Exception as e:
         logger.warning(f"[{conversation_id}] Failed to queue needs_agent: {e}")
 
-    text = get_template("no_agent_available", tunnel, visitor)
+    # The queue reply COLLECTS instead of deflecting to a phone number —
+    # acknowledge, promise the teammate, and ask the next missing piece so
+    # the wait is never a dead end. (The phone stays in closing flows only.)
+    _next_question = ""
+    try:
+        from app.services import lead_service
+        from app.models.lead import get_missing_fields
+
+        _lead = await lead_service.get_or_create_lead(conversation_id)
+        _conv_row = await db.get_conversation_simple(conversation_id) or {}
+        _missing = get_missing_fields(_lead or {}, {
+            "visitor_name": _conv_row.get("visitor_name") or getattr(visitor, "name", None),
+            "visitor_email": _conv_row.get("visitor_email") or getattr(visitor, "email", None),
+            "visitor_phone": _conv_row.get("visitor_phone") or getattr(visitor, "phone", None),
+        })
+        _ask_map = {
+            "route": None,  # route is two questions — keep it free-form
+            "travel dates": "ask_dates",
+            "departure date": "ask_dates",
+            "phone": "ask_phone",
+            "email": "ask_email",
+            "name": "ask_name",
+            "passengers": "ask_passengers",
+        }
+        for _m in _missing:
+            _tpl_key = next((v for k, v in _ask_map.items() if k in _m), None)
+            if _tpl_key:
+                _q = get_template(_tpl_key, tunnel, visitor)
+                if _q:
+                    _next_question = f" While they join — {_q[0].lower()}{_q[1:]}"
+                    break
+    except Exception as _e:
+        logger.warning(f"[{conversation_id}] queue-reply question skipped: {_e}")
+
     return (
-        text or "All specialists are currently busy. Please call +1 (888) 322-7999.",
+        "You got it — I'm flagging a teammate right now, and your chat is "
+        f"first in line.{_next_question}",
         "template",
     )
 
@@ -217,6 +258,20 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     _conv = await db.get_conversation_simple(conversation_id)
     _meta = dict((_conv or {}).get("metadata") or {})
     _was_unannounced = bool(_meta.get("announce_pending"))
+    # A missed handoff is a LOST demand signal, not housekeeping — it used to
+    # be swept back silently (Oslo's chats_served_today=1 with zero messages
+    # was an assignment he never saw). Scream, count, and mark it.
+    _missed_by = (_conv or {}).get("assigned_agent_id")
+    if _missed_by:
+        from datetime import datetime as _dt, timezone as _tz
+
+        HANDOFF_HEALTH["expired_since_boot"] += 1
+        HANDOFF_HEALTH["last_at"] = _dt.now(_tz.utc).isoformat()
+        _meta["missed_by_human_at"] = HANDOFF_HEALTH["last_at"]
+        logger.error(
+            f"[{conversation_id}] HANDOFF EXPIRED: agent {_missed_by} never "
+            f"engaged — conversation returns to AI (counted in /health)"
+        )
     # GO-08: reset loop guards so the conversation can be re-assigned.
     _meta.pop("agent_assign_count", None)
     _meta.pop("agent_cooldown_until", None)

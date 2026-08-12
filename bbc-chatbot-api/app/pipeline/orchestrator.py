@@ -374,12 +374,15 @@ async def _pipeline(
                 kw in m.get("content", "").lower() for kw in agent_keywords
             )
         )
-        # Current message is the (agent_request_count + 1)th request.
-        # Set needs_agent on the 2nd explicit request (count >= 1 = 1 prior).
-        if agent_request_count >= 1:
+        # The FIRST explicit request counts. The old 2nd-request gate meant
+        # "Agent, please" got a phone number and the demand signal died —
+        # almost nobody asks twice.
+        if agent_request_count >= 0:
             try:
                 await db.update_conversation(cid, {"status": "needs_agent"})
-                logger.info(f"[{cid}] HANDOFF: {agent_request_count + 1} agent requests → status=needs_agent")
+                logger.info(f"[{cid}] HANDOFF: agent request #{agent_request_count + 1} → status=needs_agent")
+                from app.services.routing import dispatch_needs_agent
+                _fire_and_forget(dispatch_needs_agent(cid))
             except Exception as e:
                 logger.warning(f"[{cid}] Failed to set needs_agent status: {e}")
 
