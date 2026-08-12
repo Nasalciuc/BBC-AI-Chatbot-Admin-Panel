@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 # The collection must never die with the primary model: on a non-timeout
 # API error (overloaded / rate-limit / 5xx) the call retries ONCE against
 # the cheaper fallback model. Generation quality degrades gracefully.
-AI_FALLBACK_HEALTH: dict = {"activations_since_boot": 0, "last_at": None}
+AI_FALLBACK_HEALTH: dict = {
+    "activations_since_boot": 0,
+    "last_at": None,
+    "payload_errors": 0,
+}
 
 
 def _record_fallback(primary: str, exc: Exception) -> None:
@@ -26,6 +30,22 @@ def _record_fallback(primary: str, exc: Exception) -> None:
     AI_FALLBACK_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
     logger.error(
         f"AI FALLBACK ACTIVATED: {primary} → {settings.fallback_model} "
+        f"({type(exc).__name__}: {exc})"
+    )
+
+
+def _is_payload_error(exc: Exception) -> bool:
+    """400 invalid_request means OUR payload is broken, not the provider.
+    Retrying another model resends the same broken payload (empty first
+    user turn → 400 again) or silently degrades the tiering (opus's
+    temperature-deprecated 400 ran the closing turns on Haiku for days)."""
+    return isinstance(exc, anthropic.BadRequestError) or getattr(exc, "status_code", None) == 400
+
+
+def _record_payload_error(model: str, exc: Exception) -> None:
+    AI_FALLBACK_HEALTH["payload_errors"] += 1
+    logger.error(
+        f"AI payload-invalid, fallback skipped: model={model} "
         f"({type(exc).__name__}: {exc})"
     )
 
@@ -109,6 +129,48 @@ def _build_system(system_prompt):
     return system_prompt  # string — classify, summary, legacy
 
 
+# ── Payload guards ────────────────────────────────────────────
+# Anthropic requires a NON-EMPTY user-first message. Greet-first (#170)
+# made ai-first histories the norm, and an empty client turn reaching
+# messages[0] 400s the whole call ("messages.0: user messages must have
+# non-empty content") — live mid-purchase conversations got the dead-end
+# template. The stub keeps the payload valid; the conversation context
+# lives in the system prompt ([CONVERSATION] block), so nothing is lost.
+_EMPTY_USER_STUB = "(client opened the chat)"
+
+
+def _build_messages(user_message: str) -> list[dict]:
+    """Single-turn payload that never carries an empty user message."""
+    content = user_message if (user_message or "").strip() else _EMPTY_USER_STUB
+    return [{"role": "user", "content": content}]
+
+
+# ── Per-model sampling-parameter policy ───────────────────────
+# claude-opus-4-8 rejects `temperature` ("400 'temperature' is deprecated
+# for this model") — every opus call died and the provider fallback
+# quietly rescued the decisive tiers onto Haiku. Strip what a model
+# rejects; keep the params for the models that accept them. Prefix match
+# so env-pinned versioned ids stay covered.
+_PARAM_DENYLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("claude-opus-4-8", ("temperature",)),
+)
+_STRIP_LOGGED: set[str] = set()  # log once per model per process
+
+
+def _sampling_params(model: str, **params) -> dict:
+    for prefix, denied in _PARAM_DENYLIST:
+        if model.startswith(prefix):
+            kept = {k: v for k, v in params.items() if k not in denied}
+            if model not in _STRIP_LOGGED:
+                _STRIP_LOGGED.add(model)
+                logger.info(
+                    f"[model-params] {model}: stripping "
+                    f"{sorted(set(params) - set(kept))} (deprecated for this model)"
+                )
+            return kept
+    return params
+
+
 # ── API calls ─────────────────────────────────────────────────
 
 def call_haiku(system_prompt, user_message: str) -> tuple[Optional[str], float]:
@@ -189,9 +251,9 @@ def _call_model(
             response = _get_client().messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature,
+                **_sampling_params(model, temperature=temperature),
                 system=_build_system(system_prompt),
-                messages=[{"role": "user", "content": user_message}],
+                messages=_build_messages(user_message),
                 timeout=settings.claude_timeout,
             )
 
@@ -214,6 +276,9 @@ def _call_model(
             return None, 0.0
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e} | model={model} | status={getattr(e, 'status_code', 'N/A')}")
+            if _is_payload_error(e):
+                _record_payload_error(model, e)
+                return None, 0.0
             if not _is_fallback and model != settings.fallback_model:
                 _record_fallback(model, e)
                 return _call_model(
@@ -360,9 +425,9 @@ def _validate_with_reprompt(
         response = _get_client().messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
+            **_sampling_params(model, temperature=temperature),
             system=_build_system(system_prompt),
-            messages=[{"role": "user", "content": retry_message}],
+            messages=_build_messages(retry_message),
             tools=[TRAVEL_TOOL],
             timeout=settings.claude_timeout,
         )
@@ -405,9 +470,9 @@ def _call_model_with_tools(
         response = _get_client().messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
+            **_sampling_params(model, temperature=temperature),
             system=_build_system(system_prompt),
-            messages=[{"role": "user", "content": user_message}],
+            messages=_build_messages(user_message),
             tools=[TRAVEL_TOOL],
             timeout=settings.claude_timeout,
         )
@@ -436,9 +501,9 @@ def _call_model_with_tools(
             response = _get_client().messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature,
+                **_sampling_params(model, temperature=temperature),
                 system=_build_system(system_prompt),
-                messages=[{"role": "user", "content": user_message}],
+                messages=_build_messages(user_message),
                 tools=[TRAVEL_TOOL],
                 timeout=settings.claude_timeout,
             )
@@ -461,6 +526,9 @@ def _call_model_with_tools(
         logger.error(
             f"Claude+Tool API error: {e} | status={getattr(e, 'status_code', 'N/A')}"
         )
+        if _is_payload_error(e):
+            _record_payload_error(model, e)
+            return None, 0.0, {}
         if not _is_fallback and model != settings.fallback_model:
             _record_fallback(model, e)
             return _call_model_with_tools(
@@ -528,9 +596,9 @@ def _stream_model_with_tools(
         with _get_client().messages.stream(
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
+            **_sampling_params(model, temperature=temperature),
             system=_build_system(system_prompt),
-            messages=[{"role": "user", "content": user_message}],
+            messages=_build_messages(user_message),
             tools=[TRAVEL_TOOL],
             timeout=settings.claude_timeout,
         ) as stream:
@@ -598,6 +666,9 @@ def _stream_model_with_tools(
         return None, 0.0, {}
     except anthropic.APIError as e:
         logger.error(f"Claude+Tool STREAM API error: {e}")
+        if _is_payload_error(e):
+            _record_payload_error(model, e)
+            return None, 0.0, {}
         if model != settings.fallback_model:
             # Provider fallback degrades to a non-streamed reply — the text
             # arrives as one chunk instead of a stream, but the chat survives.
@@ -660,9 +731,9 @@ def _stream_model(
             with _get_client().messages.stream(
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature,
+                **_sampling_params(model, temperature=temperature),
                 system=_build_system(system_prompt),
-                messages=[{"role": "user", "content": user_message}],
+                messages=_build_messages(user_message),
                 timeout=settings.claude_timeout,
             ) as stream:
                 full_text = ""
@@ -707,6 +778,8 @@ def _stream_model(
                 f"Claude STREAM API error: {e} | model={model} "
                 f"| status={getattr(e, 'status_code', 'N/A')}"
             )
+            if _is_payload_error(e):
+                _record_payload_error(model, e)
             return None, 0.0
         except Exception as e:
             logger.error(

@@ -195,6 +195,9 @@ async def sync_kb_entries(entries: list[dict]) -> dict:
 # SEARCH — send raw text query, Qdrant embeds + searches
 # ════════════════════════════════════════════════════════════════
 
+_QUERY_BODY_LOGGED = False  # dump the failing /points/query body once per process
+
+
 def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list[dict]:
     """Search KB entries by text similarity. Qdrant embeds the query server-side."""
     client = _get_client()
@@ -235,6 +238,18 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
         logger.info(f"[qdrant] query='{query_text[:50]}' \u2192 {len(results)} results above threshold {_SCORE_THRESHOLD}")
         return results
     except Exception as e:
+        # FOLLOW-UP: /points/query returns 400 in production (KB silently
+        # degraded to keyword search). Needs its own investigation — the
+        # one-shot dump below captures the failing body for it. WARNING,
+        # not DEBUG: production runs at INFO, a DEBUG line would never
+        # surface; and the flag is only consumed on an actual 400 so a
+        # timeout can't waste the single shot. Body carries no PII beyond
+        # the query text already logged at INFO.
+        global _QUERY_BODY_LOGGED
+        _status = getattr(getattr(e, "response", None), "status_code", None)
+        if _status == 400 and not _QUERY_BODY_LOGGED:
+            _QUERY_BODY_LOGGED = True
+            logger.warning(f"[qdrant] failing /points/query body (once): {body}")
         logger.warning(f"Qdrant search failed (falling back to keyword): {e}")
         return []
 

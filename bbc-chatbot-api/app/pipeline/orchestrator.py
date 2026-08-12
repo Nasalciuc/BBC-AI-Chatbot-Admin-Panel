@@ -534,8 +534,12 @@ async def _pipeline(
         # HARD RULE while a summary awaits confirmation: the LLM never speaks
         # "done". The state machine owns confirmation; prose must not outrun
         # it (conv #1347: improvised "everything's locked in" on NULL state).
-        "_raw_message": (
-            message + (
+        # NOTE: the directive is the conditional part, never the message —
+        # `a + b if c else ""` binds as `(a + b) if c else ""` and erased
+        # the client's message on every non-correction turn (API 400
+        # "messages.0: user messages must have non-empty content").
+        "_raw_message": message + (
+            (
                 "\n\n(SYSTEM: the booking summary is awaiting the client's "
                 "explicit confirmation. Do NOT use confirmation or closing "
                 "language — no 'locked in', no 'all set', no 'everything's "
