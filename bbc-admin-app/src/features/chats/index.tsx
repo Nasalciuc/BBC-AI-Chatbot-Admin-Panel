@@ -7,6 +7,7 @@ import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
+import { useAttentionStore } from '@/stores/attention-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { formatAge } from '@/lib/format-age'
@@ -87,6 +88,7 @@ export function Chats() {
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
   const [highlightId] = useState<string | null>(urlHighlight)
   const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
+  const attentionIds = useAttentionStore((s) => s.attentionIds)
 
   useEffect(() => {
     setViewingConversationId(selectedId)
@@ -312,7 +314,7 @@ export function Chats() {
                     stopAssignmentAlerts()
                     setSelectedId(conv.id === selectedId ? null : conv.id)
                   }}
-                  className={`w-full text-left px-4 py-3 hover:bg-accent transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
+                  className={`w-full text-left px-4 py-3 hover:bg-accent transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : attentionIds.includes(conv.id) ? 'bg-amber-50 dark:bg-amber-900/20 border-l-2 border-amber-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">

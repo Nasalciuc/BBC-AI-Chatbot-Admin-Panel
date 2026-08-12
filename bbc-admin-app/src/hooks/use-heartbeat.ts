@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { apiFetch, getConversations } from '@/lib/api'
 import {
   canReceiveAssignNotifications,
   notifyAssignment,
   stopAssignmentAlerts,
 } from '@/lib/notify-assignment'
+import { useAttentionStore } from '@/stores/attention-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
@@ -50,6 +52,9 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
 
   /** Conversations the operator has opened — never ring for these again. */
   const attended = useRef<Set<string>>(new Set())
+  /** Conversations already toasted this attention episode — one toast each,
+   *  not one per 5s poll. Cleared when the alert fully stops. */
+  const toasted = useRef<Set<string>>(new Set())
   /** Last seen message_count per conversation, to detect new incoming messages. */
   const seenCounts = useRef<Map<string, number>>(new Map())
   const baselineTaken = useRef(false)
@@ -140,10 +145,34 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
 
         baselineTaken.current = true
 
+        // The list page highlights exactly these rows.
+        useAttentionStore.getState().setAttentionIds([...needsAttention])
+
         if (needsAttention.size > 0) {
           notifyAssignment()
+          // One toast per conversation per episode — the ring says "something
+          // needs you", the toast says WHICH chat and takes you there.
+          for (const id of needsAttention) {
+            if (toasted.current.has(id)) continue
+            toasted.current.add(id)
+            const conv = mine.find((c) => c.id === id)
+            const label =
+              conv?.chat_number != null ? `#${conv.chat_number}` : 'a client'
+            toast(`New chat assigned — ${label}`, {
+              duration: 10_000,
+              action: {
+                label: 'Open',
+                onClick: () => {
+                  // Full navigation on purpose: the list reads ?highlight=
+                  // at mount, and the toast can fire on any admin page.
+                  window.location.assign(`/chats?highlight=${id}`)
+                },
+              },
+            })
+          }
         } else {
           stopAssignmentAlerts()
+          toasted.current.clear()
         }
       } catch {
         // Never let the alert loop break the heartbeat
