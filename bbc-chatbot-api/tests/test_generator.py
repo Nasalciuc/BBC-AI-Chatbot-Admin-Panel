@@ -143,8 +143,15 @@ class TestLoopPrevention:
         res = _gen(Intent.NEW_BOOKING, lead=lead, history=history)
         text_lower = res.text.lower()
         # Should NOT ask dates again — should fall through to AI/fallback
-        # (or ask phone instead, which is next in priority)
-        assert "when" not in text_lower or "phone" in text_lower or "specialist" in text_lower
+        # (or ask phone instead, which is next in priority). The collecting
+        # ai_fallback:sales variants carry "consultant" — a fallback serve
+        # is the AI dying, not the smart-routing loop this test pins.
+        assert (
+            "when" not in text_lower
+            or "phone" in text_lower
+            or "specialist" in text_lower
+            or "consultant" in text_lower
+        )
 
     def test_no_double_phone_ask(self):
         """If last AI msg asked for phone, skip phone question."""
@@ -176,7 +183,13 @@ class TestBudgetGuard:
         # specialists, the other points to the phone line; both are fallbacks).
         from app.ai.templates import TEMPLATES as _T
 
-        _fallbacks = {t.format(name="", name_suffix="") for t in _T["ai_fallback"]}
+        # sales resolves ai_fallback:sales first (collecting variants) —
+        # accept any live fallback variant, suffixed or universal.
+        _fallbacks = {
+            t.format(name="", name_suffix="")
+            for key in ("ai_fallback:sales", "ai_fallback")
+            for t in _T[key]
+        }
         assert res.text in _fallbacks or "specialist" in res.text.lower() or "connect" in res.text.lower()
 
     def test_budget_ok_proceeds(self):

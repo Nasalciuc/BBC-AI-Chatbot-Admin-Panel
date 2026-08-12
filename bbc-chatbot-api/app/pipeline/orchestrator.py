@@ -751,6 +751,7 @@ async def _pipeline(
         budget_remaining=budget_remaining,
         skip_templates=_skip_templates,
         on_chunk=_on_chunk,
+        conversation_id=cid,
     )
     gen = await asyncio.to_thread(_gen_fn)
     logger.info(f"[{cid}] Generated via {gen.model_used} | cost=${gen.cost:.4f}")

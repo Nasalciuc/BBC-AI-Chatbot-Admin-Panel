@@ -33,6 +33,9 @@ BANNED_PHRASES = (
     "perfect choice",
     "excellent choice",
     "wonderful choice",
+    # The dead-end: a generation failure served this to live clients
+    # mid-purchase. Sales never ends on "go call someone else".
+    "recommend calling our team directly",
 )
 
 # A banned phrase quoted as a NEGATIVE example ("never say 'great choice'")
@@ -128,3 +131,96 @@ class TestNewCurriculumPresent:
             "Hi{name_suffix}! I can help with booking changes, cancellations, "
             "or questions about your trip.",
         ]
+
+
+class TestFallbackNeverDeadEnds:
+    """Wave 5 PR 2 — the fallback keeps selling.
+
+    A generation failure used to serve "recommend calling our team
+    directly" to live clients mid-purchase (Catherine LAX→SYD, giving
+    dates). The sales fallback now COLLECTS: one question, phone at most
+    secondary. And the cascade is no longer invisible — every fallback
+    serve counts into /health.generation_fallbacks with an ERROR log.
+    """
+
+    def test_sales_fallback_collects(self):
+        # Every sales variant asks exactly one question, never dead-ends.
+        for key in ("ai_fallback:sales", "no_agent_available:sales"):
+            for text in TEMPLATES[key]:
+                assert text.count("?") == 1, f"{key} must ask ONE question: {text}"
+                assert "recommend calling our team" not in text.lower()
+
+    def test_marker_present(self):
+        # MARKER for future waves: "consultant prices" == 2a done.
+        assert any(
+            "consultant prices" in t for t in TEMPLATES["ai_fallback:sales"]
+        )
+
+    def test_universal_keys_survive_for_support(self):
+        # The un-suffixed keys still exist — support's last net.
+        assert "ai_fallback" in TEMPLATES
+        assert "no_agent_available" in TEMPLATES
+
+    def test_generation_failure_serves_question_and_counts(self):
+        from unittest.mock import patch
+
+        from app.models.chat import VisitorInfo
+        from app.pipeline import generator as gen
+        from app.pipeline.generator import GENERATION_HEALTH, generate_response
+        from app.pipeline.intent import Intent
+
+        GENERATION_HEALTH["fallbacks_since_boot"] = 0
+        with patch.object(gen, "_run_tiered_generation",
+                          return_value=(None, 0.0, None, "sonnet", "mocked-failure")):
+            resp = generate_response(
+                intent=Intent.OTHER,
+                entities={"_raw_message": "I want LAX to SYD"},
+                kb_results=[],
+                visitor=VisitorInfo(),
+                lead=None,
+                history=[{"role": "ai", "content": "hi"}],
+                tunnel="sales",
+                conversation_id="conv-cath",
+            )
+
+        assert resp.model_used == "template"
+        assert "?" in resp.text, "fallback must keep collecting with a question"
+        assert "recommend calling our team" not in resp.text.lower()
+        assert GENERATION_HEALTH["fallbacks_since_boot"] == 1
+
+    def test_double_failure_still_no_dead_end(self):
+        from unittest.mock import patch
+
+        from app.models.chat import VisitorInfo
+        from app.pipeline import generator as gen
+        from app.pipeline.generator import GENERATION_HEALTH, generate_response
+        from app.pipeline.intent import Intent
+
+        GENERATION_HEALTH["fallbacks_since_boot"] = 0
+        with patch.object(gen, "_run_tiered_generation",
+                          return_value=(None, 0.0, None, "sonnet", "mocked-failure")):
+            for _ in range(2):
+                resp = generate_response(
+                    intent=Intent.OTHER,
+                    entities={"_raw_message": "LAX to SYD please"},
+                    kb_results=[],
+                    visitor=VisitorInfo(),
+                    lead=None,
+                    history=[],
+                    tunnel="sales",
+                    conversation_id="conv-cath",
+                )
+                assert "recommend calling our team" not in resp.text.lower()
+                assert "?" in resp.text
+
+        assert GENERATION_HEALTH["fallbacks_since_boot"] == 2
+
+    def test_health_endpoint_carries_generation_fallbacks(self):
+        import os
+
+        here = os.path.dirname(__file__)
+        with open(os.path.join(here, "..", "app", "api", "health.py"), encoding="utf-8") as f:
+            src = f.read()
+        assert src.count('"generation_fallbacks"') == 2, (
+            "generation_fallbacks must appear in BOTH debug and non-debug payloads"
+        )

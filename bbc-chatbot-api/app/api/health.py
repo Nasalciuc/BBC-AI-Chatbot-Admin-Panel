@@ -26,6 +26,9 @@ async def health() -> dict:
     from app.ai.claude import AI_FALLBACK_HEALTH
     # Missed handoffs: every count is a client who asked for a human.
     from app.services.handoff import HANDOFF_HEALTH
+    # Generation cascade deaths: each count is a client who got a template
+    # because every model failed.
+    from app.pipeline.generator import GENERATION_HEALTH
 
     if not settings.debug:
         return {
@@ -35,6 +38,7 @@ async def health() -> dict:
             "lead_writes": dict(LEAD_WRITE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
+            "generation_fallbacks": dict(GENERATION_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -69,4 +73,5 @@ async def health() -> dict:
         "lead_writes": dict(LEAD_WRITE_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
+        "generation_fallbacks": dict(GENERATION_HEALTH),
     }
