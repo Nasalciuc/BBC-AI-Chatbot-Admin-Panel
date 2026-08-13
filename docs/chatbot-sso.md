@@ -13,10 +13,17 @@ When a user opens `/chat` in the CRM, the page loads the chatbot in an iframe
 with a signed token on the URL:
 
 ```
-https://chat.buybusinessclass.com/?token=<JWT>
+https://chat.buybusinessclass.com/?sso_token=<JWT>
 ```
 
-The chatbot backend must read `token` from the **query string** on page load.
+> **Param rename (action for the CRM team):** the SSO param is now
+> `sso_token`. The legacy `?token=` spelling keeps working everywhere
+> EXCEPT public token routes (`/set-password` — operator invite links own
+> `?token=` there). Please switch the embed URL to `?sso_token=` when
+> convenient; until then the legacy spelling continues to log in.
+
+The chatbot frontend reads `sso_token` (or legacy `token`) from the
+**query string** on page load.
 
 ---
 
@@ -26,7 +33,7 @@ The chatbot backend must read `token` from the **query string** on page load.
 | ----------------- | ------------------------------------------------------------- |
 | **Algorithm**     | `HS256`                                                       |
 | **Shared secret** | `CHAT_SSO_SECRET` (delivered separately, securely — see §4)   |
-| **Transport**     | query param `?token=`                                         |
+| **Transport**     | query param `?sso_token=` (legacy `?token=` still accepted)   |
 | **TTL**           | 900s (15 min) — short-lived, used only for login at load time |
 
 **Payload (claims):**
@@ -69,8 +76,10 @@ different origin than the API, so the token is read client-side and exchanged
 server-side):
 
 - **Frontend** (`bbc-admin-app/src/lib/crm-embed-auth.ts`): on load, reads
-  `?token=` from the URL, POSTs it to the backend, applies the returned BBC
-  session on success, then strips `?token=` from the URL.
+  `?sso_token=` (or legacy `?token=` outside public token routes) from the
+  URL, POSTs it to the backend, applies the returned BBC session on success,
+  then strips the param from the URL — on success only; a failed exchange
+  leaves the URL intact.
 - **Backend** (`POST /api/auth/sso/crm-exchange`): verifies the CRM JWT with
   `CHAT_SSO_SECRET` (HS256, `exp`/`iat` required, `iss=crm`), looks up the BBC
   user **by email**, and issues our own normal session JWT.
