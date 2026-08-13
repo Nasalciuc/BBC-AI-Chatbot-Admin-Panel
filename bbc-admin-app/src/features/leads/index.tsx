@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Search, Filter, Phone, Mail, Plane, ChevronDown, RefreshCw, Check, X } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Lead } from '@/lib/types'
-import { getLeads, updateLeadStatus, reviewLead } from '@/lib/api'
+import { apiFetch, getLeads, updateLeadStatus, reviewLead } from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
@@ -66,6 +66,11 @@ export function Leads() {
   const [offset, setOffset]         = useState(0)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
+  // "CRM pending" work-list: leads the CRM never received — gold orphans
+  // and gate-refused rows. The human decides per row; nothing auto-pushes
+  // from history (dates may be past, duplicates may exist).
+  const [crmPending, setCrmPending] = useState(false)
+  const [pushingId, setPushingId] = useState<string | null>(null)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const LIMIT = 50
 
@@ -77,6 +82,7 @@ export function Leads() {
       if (statusFilter) params.status = statusFilter
       if (tierFilter)   params.tier = tierFilter
       if (reviewFilter !== 'all') params.reviewed = reviewFilter
+      if (crmPending)   params.crm_pending = 'true'
       const json = await getLeads(params)
       setLeads(json.data); setTotal(json.count)
       if (json.review_stats) {
@@ -87,7 +93,7 @@ export function Leads() {
       console.error('[leads] API error:', err)
       setLeads([]); setTotal(0)
     } finally { setLoading(false) }
-  }, [search, statusFilter, tierFilter, reviewFilter, offset, activeTab])
+  }, [search, statusFilter, tierFilter, reviewFilter, crmPending, offset, activeTab])
 
   useEffect(() => { fetchLeads() }, [fetchLeads])
 
@@ -127,8 +133,28 @@ export function Leads() {
     'Tier',
     'Status',
     'Departure',
+    ...(crmPending ? ['CRM'] : []),
     'Action',
   ]
+
+  const handlePushToCrm = async (lead: Lead) => {
+    if (pushingId) return
+    setPushingId(lead.id)
+    try {
+      // 20s: the server's CRM call can take up to 10s — the default 8s
+      // abort would "fail" a push that actually succeeded (double-push bait).
+      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' }, 20_000)
+      toast.success(`Pushed to CRM — ${lead.visitor_name ?? 'lead'}`)
+      await fetchLeads()
+    } catch (e) {
+      // The endpoint performs the real push; a 422 carries the CRM's
+      // refusal or the gate reason — show it verbatim.
+      const message = e instanceof Error ? e.message : 'CRM push failed'
+      toast.error(message || 'CRM push failed')
+    } finally {
+      setPushingId(null)
+    }
+  }
 
   return (
     <>
@@ -228,6 +254,19 @@ export function Leads() {
                 <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
               </div>
             )}
+            <button
+              type="button"
+              onClick={() => { setCrmPending(v => !v); setOffset(0) }}
+              aria-pressed={crmPending}
+              title="Leads the CRM never received — gold orphans and gate-refused rows"
+              className={`px-3 py-2 text-sm rounded-lg border transition-colors ${
+                crmPending
+                  ? 'border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-700'
+                  : 'border-input bg-background text-muted-foreground hover:bg-accent'
+              }`}
+            >
+              CRM pending
+            </button>
           </div>
 
           {/* Table */}
@@ -293,6 +332,29 @@ export function Leads() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground text-xs">{lead.departure_date ?? <span className="text-muted-foreground">—</span>}</td>
+                      {crmPending && (
+                        <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[11px] text-amber-700 dark:text-amber-400">
+                              {lead.crm_push_gate_reason
+                                ? `refused: ${lead.crm_push_gate_reason.replace(/_/g, ' ')}`
+                                : (lead.crm_push_attempts ?? 0) > 0
+                                  ? `push failed ×${lead.crm_push_attempts}`
+                                  : 'never pushed'}
+                            </span>
+                            {permissions.canEditLeads && (
+                              <button
+                                type="button"
+                                disabled={pushingId === lead.id}
+                                onClick={() => handlePushToCrm(lead)}
+                                className="self-start px-2 py-1 rounded-md bg-[#C9A54E] text-white text-[11px] font-semibold hover:bg-[#C9A54E]/90 disabled:opacity-50"
+                              >
+                                {pushingId === lead.id ? 'Pushing…' : 'Push'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      )}
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <select value={lead.status} disabled={updatingId === lead.id || !permissions.canEditLeads}
                           onChange={e => handleStatusUpdate(lead.id, e.target.value)}

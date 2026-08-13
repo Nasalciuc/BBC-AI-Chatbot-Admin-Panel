@@ -50,6 +50,59 @@ class CRMResult:
     error: str = ""
 
 
+# ── Push truth (surfaced in /health as crm_pushes) ────────────
+# #1259 pessaint: the CRM rejected a malformed email at validation, our
+# flag went true anyway. State is written only on PROOF (2xx + id).
+CRM_PUSH_HEALTH: dict = {
+    "ok": 0,
+    "failed": 0,
+    "refused": 0,
+    "last_error_at": None,
+    "last_refusal_reason": None,
+}
+
+
+def _record_push(outcome: str, reason: str | None = None) -> None:
+    CRM_PUSH_HEALTH[outcome] = CRM_PUSH_HEALTH.get(outcome, 0) + 1
+    if outcome == "failed":
+        CRM_PUSH_HEALTH["last_error_at"] = datetime.now(timezone.utc).isoformat()
+    if outcome == "refused" and reason:
+        CRM_PUSH_HEALTH["last_refusal_reason"] = reason
+
+
+# ── Push quality gate ─────────────────────────────────────────
+# Seen in pushed production data: test@ leads, score-0 shells, LHR→LHR,
+# yahool.com/fomcast.net typo domains. The pipe pushed junk while gold
+# rotted. Refusals are logged (INFO) and counted — never silently eaten.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+# Typo domains are REFUSED, never auto-corrected — we don't invent an
+# address the client didn't give us.
+_TYPO_DOMAINS = {
+    "yahool.com", "fomcast.net", "gmial.com", "gamil.com", "hotmial.com",
+    "yaho.com", "gnail.com", "hotmali.com", "outlok.com",
+}
+
+
+def crm_push_gate(lead: dict, email: str) -> Optional[str]:
+    """Refusal reason, or None when the lead may be pushed."""
+    email = (email or "").lower().strip()
+    if not _EMAIL_RE.match(email):
+        return "email_invalid"
+    # Prefix only — a substring check would refuse "contest@gmail.com".
+    if email.startswith("test@"):
+        return "test_email"
+    domain = email.rsplit("@", 1)[-1]
+    if domain in _TYPO_DOMAINS:
+        return "email_typo_domain"
+    if (lead.get("score") or 0) < 40:
+        return "low_score"
+    origin = (lead.get("origin_code") or "").upper()
+    dest = (lead.get("destination_code") or "").upper()
+    if origin and dest and origin == dest:
+        return "same_route"
+    return None
+
+
 def format_phone_international(phone: str) -> str:
     """Format phone to E.164: +{country}{number} — digits only after +.
 
@@ -270,6 +323,14 @@ async def submit_to_crm(
         if resp.status_code == 200:
             data = resp.json()
             request_id = data.get("data", {}).get("id", "")
+            if not request_id:
+                # 200 with no id = the CRM's validation rejection shape
+                # (#1259 pessaint). NOT a success — an id is the proof.
+                logger.error(
+                    f"CRM FAIL conv={conversation_id} status=200 without id "
+                    f"body={resp.text[:300]}"
+                )
+                return CRMResult(success=False, error="no_id_in_response")
             logger.info(
                 f"CRM OK conv={conversation_id} "
                 f"crm_id={request_id} "
@@ -287,6 +348,69 @@ async def submit_to_crm(
     except Exception as e:
         logger.error(f"CRM ERROR conv={conversation_id}: {e}")
         return CRMResult(success=False, error=str(e))
+
+
+async def push_lead_to_crm(
+    lead: dict,
+    visitor,
+    conversation_id: str,
+    conv_metadata: dict | None = None,
+    client_ip: str | None = None,
+    suid: str | None = None,
+) -> CRMResult:
+    """THE push path: gate → submit → flag ONLY on proof (2xx + crm id).
+
+    Every caller that wants created_in_crm=true goes through here — the
+    panel's Push button and the orphan backstop. The flag, timestamp and
+    crm_lead_id are written together on success and never otherwise.
+    A gate refusal is VISIBLE state: the reason is stored on the lead
+    (crm_push_gate_reason → the panel's "CRM pending" work-list) and
+    counted in /health.crm_pushes; failures likewise counted, flag stays
+    false."""
+    from app.db import supabase as db
+
+    reason = crm_push_gate(lead, getattr(visitor, "email", "") or "")
+    if reason:
+        logger.info(
+            f"CRM push refused conv={conversation_id} lead={lead.get('id')} "
+            f"reason={reason}"
+        )
+        _record_push("refused", reason)
+        await db.update_lead_crm_push_state(lead["id"], gate_reason=reason)
+        return CRMResult(success=False, error=f"gate:{reason}")
+
+    result = await submit_to_crm(
+        lead, visitor, conversation_id,
+        conv_metadata=conv_metadata, client_ip=client_ip, suid=suid,
+    )
+    if result.success and result.request_id:
+        marked = await db.mark_lead_created_in_crm(
+            lead["id"], crm_lead_id=result.request_id
+        )
+        if marked is None:
+            # The CRM row EXISTS but our flag write died. Reporting success
+            # would strand the lead as an "orphan" the backstop re-pushes
+            # every tick — a fresh CRM duplicate each time, uncapped.
+            # Reporting failure makes the attempt cap apply.
+            _record_push("failed")
+            logger.error(
+                f"CRM ACCEPTED conv={conversation_id} lead={lead.get('id')} "
+                f"crm_id={result.request_id} but the flag write FAILED — "
+                "returned as failure so retries stay attempt-capped"
+            )
+            return CRMResult(
+                success=False,
+                request_id=result.request_id,
+                error="flag_write_failed",
+            )
+        _record_push("ok")
+    else:
+        _record_push("failed")
+        logger.error(
+            f"CRM push failed conv={conversation_id} lead={lead.get('id')} "
+            f"error={result.error} — created_in_crm stays false"
+        )
+    return result
 
 
 async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
@@ -341,6 +465,14 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
                 logger.error(f"[CRM-ABANDONED] FAIL conv={cid} body success=false: {resp.text[:300]}")
                 return CRMResult(success=False, error="CRM returned success=false")
             req_id = data.get("data", {}).get("id", "")
+            if not req_id:
+                # Same proof rule as submit_to_crm: a 200 without an id is
+                # the CRM's validation-rejection shape (#1259), not success.
+                logger.error(
+                    f"[CRM-ABANDONED] FAIL conv={cid} status=200 without id "
+                    f"body={resp.text[:300]}"
+                )
+                return CRMResult(success=False, error="no_id_in_response")
             logger.info(f"[CRM-ABANDONED] OK conv={cid} crm_id={req_id}")
             return CRMResult(success=True, request_id=req_id)
 

@@ -304,11 +304,15 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     setMarkingLead(true)
     setMarkLeadError(null)
     try {
-      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' })
+      // 20s: the server's CRM call can take up to 10s — the default 8s
+      // abort would "fail" a push that actually succeeded (double-push bait).
+      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' }, 20_000)
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       onConversationChange?.()
     } catch (err) {
-      const msg = (err as ApiError)?.message ?? 'Failed to create lead. Please try again.'
+      // The endpoint now performs the REAL push — a 422 carries the CRM's
+      // refusal (gate reason or CRM error body). Show it verbatim.
+      const msg = (err as ApiError)?.message ?? 'CRM push failed. Please try again.'
       setMarkLeadError(msg)
     } finally {
       setMarkingLead(false)
@@ -652,7 +656,11 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                   <div className="space-y-1.5">
                     <div className="w-full py-2 rounded-lg border border-emerald-400 bg-emerald-100 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5">
                       <Check className="w-3 h-3" />
-                      Lead Created
+                      {/* The id is the receipt — a flag with an id was proven
+                          by the CRM's own 2xx response, never assumed. */}
+                      {isSynced && lead.crm_lead_id
+                        ? `In CRM · ${lead.crm_lead_id}`
+                        : 'Lead Created'}
                     </div>
                     {!isSynced && (
                       isBlockedTag ? (
@@ -660,7 +668,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                           CRM submission blocked · {DETAIL_TAG_LABELS[conv.tag ?? ''] ?? 'Blocked'}
                         </p>
                       ) : markingLead ? (
-                        <p className="text-center text-[11px] text-muted-foreground">Submitting to CRM…</p>
+                        <p className="text-center text-[11px] text-muted-foreground">Pushing to CRM…</p>
                       ) : !hasAllData ? (
                         <p className="text-center text-[11px] text-muted-foreground" title={`Missing: ${missing.join(', ')}`}>
                           Syncing to CRM — waiting for {missing.join(', ')}
@@ -670,7 +678,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                           onClick={handleMarkLeadCreated}
                           className="w-full py-2 rounded-lg bg-[#C9A54E] text-white text-xs font-semibold hover:bg-[#C9A54E]/90 transition-all"
                         >
-                          Submit to CRM
+                          Push to CRM
                         </button>
                       )
                     )}

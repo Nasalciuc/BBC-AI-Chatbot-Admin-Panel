@@ -152,7 +152,7 @@ class TestPanelButtonContract:
         )
         src = open(path, encoding="utf-8").read()
         assert "Lead Created" in src
-        assert "Submit to CRM" in src            # the manual action stops lying
+        assert "Push to CRM" in src              # the button pushes; it doesn't declare
         assert "Syncing to CRM" in src           # muted sub-state pre-sync
         # The old lie: an existing row rendering as "Create Lead".
         assert ">\n                          Create Lead\n" not in src

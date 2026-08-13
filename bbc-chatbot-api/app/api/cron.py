@@ -76,7 +76,10 @@ async def run_abandoned_crm() -> dict:
             crm_result = await submit_abandoned_to_crm(conv, lead)
 
             if crm_result.success:
-                await db.mark_lead_created_in_crm(lead["id"])
+                # The returned id is the receipt — stored with the flag.
+                await db.mark_lead_created_in_crm(
+                    lead["id"], crm_lead_id=crm_result.request_id
+                )
                 await db.update_conversation(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
@@ -227,3 +230,67 @@ async def daily_learning(
     from app.services.learning import run_learning
 
     return await run_learning(bootstrap=bootstrap, force=force)
+
+
+async def run_crm_orphan_backstop() -> dict:
+    """The 24-Paulettes fix, human-gated for history.
+
+    Every scheduler tick: gold leads (score>=70) the CRM never received,
+    created between 48h and 1h ago, get ONE push attempt (max 3 per lead)
+    through the one true push path — gate, then flag only on 2xx+id.
+    FRESH failures only: anything older than 48h (including the current
+    backlog of orphans) is never auto-pushed — it sits in the panel's
+    "CRM pending" work-list where a human decides (dates may be past,
+    duplicates may exist under a corrected email). No surprise CRM influx.
+    """
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from app.services.crm import push_lead_to_crm
+
+    now = datetime.now(timezone.utc)
+    orphans = await db.get_crm_orphan_leads(
+        min_score=70,
+        older_than_iso=(now - timedelta(hours=1)).isoformat(),
+        younger_than_iso=(now - timedelta(hours=48)).isoformat(),
+        max_attempts=3,
+        limit=20,
+    )
+    if orphans:
+        logger.info(f"[cron][crm-backstop] {len(orphans)} fresh gold orphan(s)")
+
+    results = []
+    for lead in orphans:
+        lead_id = lead["id"]
+        try:
+            conv = None
+            if lead.get("conversation_id"):
+                conv = await db.get_conversation_simple(lead["conversation_id"])
+            conv = conv or {}
+            visitor = SimpleNamespace(
+                name=conv.get("visitor_name") or "",
+                email=conv.get("visitor_email") or "",
+                phone=conv.get("visitor_phone") or "",
+            )
+            result = await push_lead_to_crm(
+                lead,
+                visitor,
+                lead.get("conversation_id") or lead_id,
+                conv_metadata=conv.get("metadata"),
+                suid=conv.get("visitor_id"),
+            )
+            if result.success:
+                results.append({"id": lead_id, "status": "pushed", "crm_id": result.request_id})
+            else:
+                # Attempt spent either way — 3 strikes and the lead stays
+                # in the work-list instead of burning CRM calls forever.
+                await db.update_lead_crm_push_state(
+                    lead_id,
+                    bump_attempts_from=int(lead.get("crm_push_attempts") or 0),
+                )
+                results.append({"id": lead_id, "status": "failed", "error": result.error})
+        except Exception as e:
+            logger.error(f"[cron][crm-backstop] lead={lead_id}: {e}")
+            results.append({"id": lead_id, "status": "error", "error": str(e)})
+
+    return {"scanned": len(orphans), "results": results}
