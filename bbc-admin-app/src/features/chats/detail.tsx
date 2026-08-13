@@ -241,7 +241,15 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       // The trust-critical path: a reply to a LIVE customer must never
       // vanish silently. Input is preserved (cleared only on success).
       toast.error('Message NOT delivered — check your connection and press Send again.')
-    } finally { setSending(false) }
+    } finally {
+      setSending(false)
+      // disabled={sending} dropped the focus when the send started; give
+      // it back so the operator keeps typing (or re-presses Send on the
+      // error path, where the preserved input is waiting). rAF: focusing
+      // a still-disabled textarea is a no-op — the re-enable lands on the
+      // next render.
+      requestAnimationFrame(() => taRef.current?.focus())
+    }
   }
 
   const QUICK_EMOJIS = ['🙂', '😊', '👍', '🙏', '✈️', '💼', '✅', '🎉', '📞', '💬']
