@@ -2,10 +2,11 @@
  * CRM SSO — two entry points into the panel session:
  *
  * 1. URL token (docs/chatbot-sso.md — the mechanism the CRM team built):
- *    the CRM opens `https://chat.buybusinessclass.com/?token=<crm-signed-jwt>`.
- *    `tryCrmUrlTokenLogin()` exchanges that CRM token at
+ *    the CRM opens `https://chat.buybusinessclass.com/?sso_token=<crm-signed-jwt>`
+ *    (legacy `?token=` still accepted outside public-token routes until the
+ *    CRM side renames). `tryCrmUrlTokenLogin()` exchanges that CRM token at
  *    `POST /api/auth/sso/crm-exchange` for OUR session JWT, logs in, then strips
- *    `?token=` from the URL so it doesn't linger in history/bookmarks.
+ *    the param from the URL — on success only.
  *
  * 2. postMessage (kept for a possible future same-domain/iframe handshake):
  *    parent posts { type: 'bbc-auth', token: '<our jwt>' } into the iframe.
@@ -70,21 +71,27 @@ function applyToken(token: string): boolean {
   return true
 }
 
+// Relative import with extension on purpose — the pure routing rules are
+// node-tested directly (path aliases don't resolve under node --test).
+import { pickSsoToken } from './sso-token-routing.ts'
+
 /**
- * URL-token SSO (docs/chatbot-sso.md). Reads `?token=` from the current URL,
- * exchanges the CRM-signed JWT for OUR session JWT via the backend, logs in, and
- * strips the token from the URL. Returns true on success, false otherwise (no
- * token, exchange failed, or bad response) so the caller can fall back to the
- * normal manual-login flow. Never throws.
+ * URL-token SSO (docs/chatbot-sso.md). Reads `?sso_token=` (or the legacy
+ * `?token=` outside public-token routes), exchanges the CRM-signed JWT for OUR
+ * session JWT via the backend, logs in, and strips the param from the URL —
+ * ON SUCCESS ONLY. A failed exchange leaves the URL intact: stripping on 401
+ * is what destroyed invite links, and it also erases the evidence needed to
+ * retry or debug. Returns true on success; never throws.
  */
 export async function tryCrmUrlTokenLogin(): Promise<boolean> {
-  let token: string | null = null
+  let picked: [string, string] | null = null
   try {
-    token = new URLSearchParams(window.location.search).get('token')
+    picked = pickSsoToken(window.location.pathname, window.location.search)
   } catch {
     return false
   }
-  if (!token) return false
+  if (!picked) return false
+  const [param, token] = picked
 
   try {
     const res = await fetch(`${API_BASE}/api/auth/sso/crm-exchange`, {
@@ -96,28 +103,26 @@ export async function tryCrmUrlTokenLogin(): Promise<boolean> {
     if (!res.ok) {
       // eslint-disable-next-line no-console
       console.warn('CRM SSO exchange failed:', res.status)
-      stripTokenFromUrl()
       return false
     }
     const data = await res.json()
     // data.token is OUR issued JWT (same claims as /api/auth/login) — reuse the
     // exact same store-application path as the postMessage receiver.
     const ok = typeof data?.token === 'string' && applyToken(data.token)
-    stripTokenFromUrl()
+    if (ok) stripTokenFromUrl(param)
     return ok
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('CRM SSO exchange error:', e)
-    stripTokenFromUrl()
     return false
   }
 }
 
-function stripTokenFromUrl(): void {
+function stripTokenFromUrl(param: string): void {
   try {
     const url = new URL(window.location.href)
-    if (!url.searchParams.has('token')) return
-    url.searchParams.delete('token')
+    if (!url.searchParams.has(param)) return
+    url.searchParams.delete(param)
     window.history.replaceState({}, '', url.toString())
   } catch {
     /* non-browser / opaque — ignore */
