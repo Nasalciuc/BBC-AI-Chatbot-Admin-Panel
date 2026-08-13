@@ -985,15 +985,21 @@ async def get_leads(
     include_drafts: bool = False,
     reviewed_filter: Optional[str] = None,
     team_ids: Optional[list[str]] = None,
+    crm_pending: bool = False,
 ) -> tuple[list, int]:
     """List leads with JOIN on conversations for contact details. Returns (rows, total_count).
 
     team_ids (Phase 2): non-empty ⇒ restrict to leads whose frozen team_id is
     in that set (supervisor scoping). ANDs with all other filters.
+
+    crm_pending: the "CRM pending" work-list — leads the CRM never received
+    and a human should look at: gold orphans (score>=70) OR anything the
+    quality gate refused (crm_push_gate_reason set). Overrides the default
+    created_in_crm=true view.
     """
     try:
         db = get_client()
-        def _query():
+        def _query(with_030_cols: bool = True):
             q = db.table("leads").select(
                 "*, conversations!inner(visitor_name, visitor_email, visitor_phone, tunnel, assigned_agent_id)",
                 count="exact"  # type: ignore[arg-type]
@@ -1002,7 +1008,19 @@ async def get_leads(
                 q = q.order("created_at", desc=False)
             else:
                 q = q.order("score", desc=True)
-            if not include_drafts:
+            if crm_pending:
+                q = q.or_("created_in_crm.is.null,created_in_crm.eq.false")
+                if with_030_cols:
+                    # Gold orphans OR gate-refused OR push-failed — a 40-69
+                    # lead whose push failed must not vanish from every view.
+                    q = q.or_(
+                        "crm_push_gate_reason.not.is.null,"
+                        "score.gte.70,"
+                        "crm_push_attempts.gt.0"
+                    )
+                else:
+                    q = q.gte("score", 70)
+            elif not include_drafts:
                 q = q.eq("created_in_crm", True)
             if team_ids:
                 q = q.in_("team_id", team_ids)
@@ -1025,7 +1043,18 @@ async def get_leads(
             elif assigned_to and assigned_to != "all":
                 q = q.eq("conversations.assigned_agent_id", assigned_to)
             return q.range(offset, offset + limit - 1).execute()
-        res = await _run_sync(_query)
+        try:
+            res = await _run_sync(_query)
+        except Exception as col_err:
+            # 030 not applied → the work-list degrades to gold orphans only.
+            if crm_pending and _is_missing_column_error(col_err):
+                logger.warning(
+                    "get_leads(crm_pending): 030 columns missing — gate "
+                    "reasons unavailable (apply migrations/030_crm_lead_id.sql)"
+                )
+                res = await _run_sync(lambda: _query(with_030_cols=False))
+            else:
+                raise
         rows = []
         for row in (res.data or []):
             flat = dict(row)
@@ -1212,23 +1241,118 @@ async def get_existing_lead_by_contact(
         return None
 
 
-async def mark_lead_created_in_crm(lead_id: str) -> Optional[dict]:
+async def mark_lead_created_in_crm(
+    lead_id: str, crm_lead_id: Optional[str] = None
+) -> Optional[dict]:
     """Mark a lead as successfully created in the CRM system.
-    Updates: created_in_crm=true, created_in_crm_at=NOW()"""
+    Updates: created_in_crm=true, created_in_crm_at=NOW(), and — when the
+    caller has the CRM's id (the proof) — crm_lead_id, clearing any gate
+    refusal. Falls back without the 030 columns if the migration isn't
+    applied yet."""
     try:
         db_client = get_client()
         from datetime import datetime
-        payload = {
+        payload: dict = {
             "created_in_crm": True,
             "created_in_crm_at": datetime.utcnow().isoformat(),
         }
-        res = await _run_sync(
-            lambda: db_client.table("leads").update(payload).eq("id", lead_id).execute()
-        )
+        if crm_lead_id:
+            payload["crm_lead_id"] = crm_lead_id
+            payload["crm_push_gate_reason"] = None
+        try:
+            res = await _run_sync(
+                lambda: db_client.table("leads").update(payload).eq("id", lead_id).execute()
+            )
+        except Exception as col_err:
+            if crm_lead_id and _is_missing_column_error(col_err):
+                logger.warning(
+                    "mark_lead_created_in_crm: 030 columns missing — flag set "
+                    "without crm_lead_id (apply migrations/030_crm_lead_id.sql)"
+                )
+                payload.pop("crm_lead_id", None)
+                payload.pop("crm_push_gate_reason", None)
+                res = await _run_sync(
+                    lambda: db_client.table("leads").update(payload).eq("id", lead_id).execute()
+                )
+            else:
+                raise
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"mark_lead_created_in_crm error: {e}")
         return None
+
+
+async def update_lead_crm_push_state(
+    lead_id: str,
+    gate_reason: Optional[str] = None,
+    bump_attempts_from: Optional[int] = None,
+) -> None:
+    """Record visible push state on the lead: the gate refusal reason
+    and/or the backstop's attempt counter. Never raises; missing 030
+    columns degrade to a warning (the health counters still moved)."""
+    payload: dict = {}
+    if gate_reason is not None:
+        payload["crm_push_gate_reason"] = gate_reason
+    if bump_attempts_from is not None:
+        payload["crm_push_attempts"] = bump_attempts_from + 1
+    if not payload:
+        return
+    try:
+        db_client = get_client()
+        await _run_sync(
+            lambda: db_client.table("leads").update(payload).eq("id", lead_id).execute()
+        )
+    except Exception as e:
+        if _is_missing_column_error(e):
+            logger.warning(
+                "update_lead_crm_push_state: 030 columns missing — apply "
+                "migrations/030_crm_lead_id.sql"
+            )
+        else:
+            logger.error(f"update_lead_crm_push_state error: {e}")
+
+
+async def get_crm_orphan_leads(
+    min_score: int = 70,
+    older_than_iso: str = "",
+    younger_than_iso: str = "",
+    max_attempts: int = 3,
+    limit: int = 20,
+) -> list[dict]:
+    """Gold leads the CRM never received: score>=min, flag false/null,
+    created inside (younger_than, older_than] — the backstop's auto
+    window. Attempt-capped so a permanently failing lead stops burning
+    CRM calls and stays visible in the work-list instead."""
+    try:
+        db_client = get_client()
+
+        def _q():
+            q = (
+                db_client.table("leads")
+                .select("*")
+                .gte("score", min_score)
+                .or_("created_in_crm.is.null,created_in_crm.eq.false")
+                .lt("crm_push_attempts", max_attempts)
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            if older_than_iso:
+                q = q.lt("created_at", older_than_iso)
+            if younger_than_iso:
+                q = q.gt("created_at", younger_than_iso)
+            return q.execute()
+
+        res = await _run_sync(_q)
+        return res.data or []
+    except Exception as e:
+        if _is_missing_column_error(e):
+            logger.warning(
+                "get_crm_orphan_leads: 030 columns missing — backstop idle "
+                "until migrations/030_crm_lead_id.sql is applied"
+            )
+        else:
+            logger.error(f"get_crm_orphan_leads error: {e}")
+        return []
 
 
 # ════════════════════════════════════════════════════════════════

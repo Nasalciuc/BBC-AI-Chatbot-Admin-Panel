@@ -95,6 +95,7 @@ async def test_list_leads_pagination():
     mock_db.assert_called_once_with(
         status=None, tier=None, tunnel=None, search=None,
         assigned_to="all", include_drafts=False, reviewed_filter=None,
+            crm_pending=False,
         limit=5, offset=0,
     )
 
@@ -112,6 +113,7 @@ async def test_list_leads_filter_status():
     mock_db.assert_called_once_with(
         status="new", tier=None, tunnel=None, search=None,
         assigned_to="all", include_drafts=False, reviewed_filter=None,
+            crm_pending=False,
         limit=50, offset=0,
     )
 
@@ -129,6 +131,7 @@ async def test_list_leads_filter_tier():
     mock_db.assert_called_once_with(
         status=None, tier="gold", tunnel=None, search=None,
         assigned_to="all", include_drafts=False, reviewed_filter=None,
+            crm_pending=False,
         limit=50, offset=0,
     )
 
@@ -146,6 +149,7 @@ async def test_list_leads_search():
     mock_db.assert_called_once_with(
         status=None, tier=None, tunnel=None, search="john",
         assigned_to="all", include_drafts=False, reviewed_filter=None,
+            crm_pending=False,
         limit=50, offset=0,
     )
 

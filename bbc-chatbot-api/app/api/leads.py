@@ -29,6 +29,7 @@ async def list_leads(
     include_drafts: bool = Query(False, description="Include leads not yet marked as Create Lead by an agent"),
     assigned_to: Optional[str] = Query(None, pattern="^(me|all|none)$"),
     reviewed: Optional[str] = Query(None, pattern="^(true|false)$"),
+    crm_pending: bool = Query(False, description="CRM pending work-list: gold orphans + gate-refused leads the CRM never received"),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
@@ -78,6 +79,7 @@ async def list_leads(
             assigned_to=agent_filter,
             include_drafts=include_drafts,
             reviewed_filter=reviewed,
+            crm_pending=crm_pending,
             limit=limit,
             offset=offset,
             **_team_kw,
@@ -87,7 +89,9 @@ async def list_leads(
             from app.security.pii import mask_visitor_row
             rows = [mask_visitor_row(dict(r)) for r in rows]
         response: dict = {"success": True, "data": rows, "count": total}
-        if user.get("role") in ("owner", "admin", "supervisor", "qa"):
+        # review_stats counts the curated (created_in_crm=true) universe —
+        # meaningless over the CRM-pending work-list, so skip it there.
+        if user.get("role") in ("owner", "admin", "supervisor", "qa") and not crm_pending:
             reviewed_n, total_n = await db.get_leads_review_counts(
                 status=status,
                 tier=tier,
@@ -214,39 +218,90 @@ async def check_existing_lead(
 
 @router.patch("/leads/{lead_id}/mark-crm-created")
 async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_current_user)):
-    """Mark a lead as successfully created in the external CRM system.
-    Updates created_in_crm flag and timestamp.
-    Requires authentication.
+    """PUSH the lead to the CRM — the button does what it says (#1372 Jia:
+    the old endpoint only flipped the flag; the CRM never saw the lead).
 
-    Blocked when the parent conversation's derived tag is Abandoned (customer
-    wrote, then went quiet) or No engagement (customer never wrote at all) —
-    neither is a real lead. Completed / Fresh / Active / Main Queue proceed
-    normally.
+    Runs the ONE push path (gate → submit → flag only on 2xx + crm id).
+    Success returns the updated lead (with crm_lead_id); a CRM failure or
+    a gate refusal returns 422 with the reason and the flag stays false.
+
+    Still blocked when the parent conversation's derived tag is Abandoned
+    or No engagement — neither is a real lead.
     """
     if user.get("role") not in ("owner", "admin", "dev", "sales"):
-        raise HTTPException(status_code=403, detail="Not authorized to mark leads as CRM created")
-    
+        raise HTTPException(status_code=403, detail="Not authorized to push leads to the CRM")
+
     try:
         lead = await db.get_lead_full(lead_id)
         if not lead:
             raise HTTPException(404, "Lead not found")
+        if lead.get("created_in_crm"):
+            return {"success": True, "data": lead, "already": True}
         conv_id = lead.get("conversation_id")
-        if conv_id:
-            conv = await db.get_conversation_simple(conv_id)
-            if conv and db.derive_conversation_tag(conv, lead=lead) in ("abandoned", "no_engagement"):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "This conversation is abandoned or has no customer engagement. "
-                        "It can't be submitted to the CRM."
-                    ),
-                )
-        result = await db.mark_lead_created_in_crm(lead_id)
+        conv = await db.get_conversation_simple(conv_id) if conv_id else None
+        if conv and db.derive_conversation_tag(conv, lead=lead) in ("abandoned", "no_engagement"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This conversation is abandoned or has no customer engagement. "
+                    "It can't be submitted to the CRM."
+                ),
+            )
+
+        from types import SimpleNamespace
+
+        from app.services.crm import push_lead_to_crm
+
+        conv = conv or {}
+        visitor = SimpleNamespace(
+            name=conv.get("visitor_name") or "",
+            email=conv.get("visitor_email") or "",
+            phone=conv.get("visitor_phone") or "",
+        )
+        result = await push_lead_to_crm(
+            lead,
+            visitor,
+            conv_id or lead_id,
+            conv_metadata=conv.get("metadata"),
+            suid=conv.get("visitor_id"),
+        )
+        if not result.success:
+            raise HTTPException(
+                status_code=422,
+                detail=f"CRM push failed: {result.error}",
+            )
+        updated = await db.get_lead_full(lead_id)
+        return {"success": True, "data": updated or lead}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to push lead: {str(e)}")
+
+
+@router.patch("/leads/{lead_id}/crm-id")
+async def set_manual_crm_id(
+    lead_id: str,
+    crm_id: str = Query(..., min_length=1, max_length=64),
+    user: dict = Depends(get_current_user),
+):
+    """The SEPARATE manual action: an operator entered the lead in the CRM
+    by hand and pastes the CRM's id here. No push happens — the pasted id
+    IS the proof. Distinct from mark-crm-created on purpose: a declaring
+    button and a pushing button must never share a name."""
+    if user.get("role") not in ("owner", "admin", "dev", "sales"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    crm_id = crm_id.strip()
+    if not crm_id:
+        # A whitespace id would flip the flag with NO proof stored —
+        # exactly the lying state this PR exists to kill.
+        raise HTTPException(status_code=422, detail="crm_id must be non-empty")
+    try:
+        result = await db.mark_lead_created_in_crm(lead_id, crm_lead_id=crm_id)
         if not result:
             raise HTTPException(404, "Lead not found")
         return {"success": True, "data": result}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to mark lead: {str(e)}")
+        raise HTTPException(500, f"Failed to record CRM id: {str(e)}")
 

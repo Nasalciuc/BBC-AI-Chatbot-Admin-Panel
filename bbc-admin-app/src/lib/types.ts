@@ -75,6 +75,11 @@ export interface Lead {
   converted_at: string | null
   created_in_crm?: boolean
   created_in_crm_at?: string | null
+  /** The CRM's own id — the proof behind created_in_crm (migration 030). */
+  crm_lead_id?: string | null
+  crm_push_attempts?: number
+  /** Why the quality gate refused the push (visible, never silent). */
+  crm_push_gate_reason?: string | null
   visitor_name: string | null
   visitor_email: string | null
   visitor_phone: string | null

@@ -75,21 +75,28 @@ def start(app_state, settings) -> list[asyncio.Task]:
         run_attention_emails,
         run_cleanup_stale_ready,
         run_close_stale_presence,
+        run_crm_orphan_backstop,
     )
 
+    # (name, fn, interval_override) — None = the shared default cadence.
+    # The CRM backstop runs every 30 min: fast enough that a fresh failed
+    # push retries within the client's attention window, slow enough that
+    # 3 attempts spread over a real CRM outage instead of burning out in
+    # minutes.
     jobs = [
-        ("abandoned_crm", run_abandoned_crm),
-        ("agent_sweep", run_agent_sweep),
-        ("stale_ready", run_cleanup_stale_ready),
-        ("stale_presence", run_close_stale_presence),
-        ("attention_emails", run_attention_emails),
+        ("abandoned_crm", run_abandoned_crm, None),
+        ("agent_sweep", run_agent_sweep, None),
+        ("stale_ready", run_cleanup_stale_ready, None),
+        ("stale_presence", run_close_stale_presence, None),
+        ("attention_emails", run_attention_emails, None),
+        ("crm_orphan_backstop", run_crm_orphan_backstop, 1800),
     ]
     tasks = [
         asyncio.create_task(
-            _run_forever(name, fn, settings.scheduler_interval_seconds),
+            _run_forever(name, fn, interval or settings.scheduler_interval_seconds),
             name=f"scheduler_{name}",
         )
-        for name, fn in jobs
+        for name, fn, interval in jobs
     ]
     logger.info(
         f"[scheduler:internal] started {len(tasks)} jobs @ "

@@ -341,19 +341,23 @@ class TestCrmOutcomeTagBlock:
         assert derive_conversation_tag(conv, lead=lead) == kind
         marked = {"id": "L1", "created_in_crm": True}
 
+        # The endpoint now performs the REAL push (crm-push-truth): non-blocked
+        # tags reach push_lead_to_crm; the flag is written inside that path.
+        from app.services.crm import CRMResult
+
         with (
-            patch("app.api.leads.db.get_lead_full", new=AsyncMock(return_value=lead)),
+            patch("app.api.leads.db.get_lead_full", new=AsyncMock(side_effect=[lead, marked])),
             patch("app.api.leads.db.get_conversation_simple", new=AsyncMock(return_value=conv)),
             patch(
-                "app.api.leads.db.mark_lead_created_in_crm",
-                new=AsyncMock(return_value=marked),
-            ) as mark,
+                "app.services.crm.push_lead_to_crm",
+                new=AsyncMock(return_value=CRMResult(success=True, request_id="R-1")),
+            ) as push,
         ):
             result = await mark_lead_created_in_crm(
                 "L1", user={"role": "sales", "id": "u1"}
             )
             assert result["success"] is True
-            mark.assert_called_once_with("L1")
+            push.assert_called_once()
 
 
 class TestAttentionEmail:

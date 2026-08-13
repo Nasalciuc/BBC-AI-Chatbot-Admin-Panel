@@ -29,6 +29,8 @@ async def health() -> dict:
     # Generation cascade deaths: each count is a client who got a template
     # because every model failed.
     from app.pipeline.generator import GENERATION_HEALTH
+    # CRM push truth: ok = proven (2xx+id); failed/refused = flag stayed false.
+    from app.services.crm import CRM_PUSH_HEALTH
 
     if not settings.debug:
         return {
@@ -39,6 +41,7 @@ async def health() -> dict:
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
+            "crm_pushes": dict(CRM_PUSH_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -74,4 +77,5 @@ async def health() -> dict:
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "generation_fallbacks": dict(GENERATION_HEALTH),
+        "crm_pushes": dict(CRM_PUSH_HEALTH),
     }
