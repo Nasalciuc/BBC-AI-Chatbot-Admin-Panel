@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { apiFetch, getVisitorId } from './api'
 import brand from './config'
+import { promoteTemp, reconcileBatch } from './reconcile'
 
 interface Message {
   id: string
@@ -204,19 +205,19 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
         if (json.success && json.data && json.data.length > 0) {
           const incoming = json.data as Message[]
           setMessages(prev => {
-            // Remove optimistic temp-* messages — real versions arrived from server
-            const cleaned = prev.filter(m => !m.id.startsWith('temp-'))
-            const ids = new Set(cleaned.map(m => m.id))
-            const newMsgs = incoming.filter(m => !ids.has(m.id))
-            if (newMsgs.length === 0) {
-              return cleaned.length !== prev.length ? cleaned : prev
-            }
-            if (newMsgs.some(m => m.role === 'ai')) {
+            // Reconcile (src/reconcile.ts): the poll may EXPIRE only stale
+            // temps — a confirmed send lives as `sent-*` until its server
+            // row arrives in a batch and replaces it. The old "drop all
+            // temps, hope the batch has them" erased the client's own
+            // message whenever the agent-joined burst advanced the ?after=
+            // cursor past its timestamp.
+            const { next, sawAi } = reconcileBatch(prev, incoming, Date.now())
+            if (sawAi) {
               setIsStreaming(false)
               isStreamingRef.current = false
               setSending(false)
             }
-            return [...cleaned, ...newMsgs]
+            return next
           })
           lastMsgTime.current = json.data[json.data.length - 1].created_at
         }
@@ -463,6 +464,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
       if (!res.ok) throw new Error('API error')
       const data = await res.json()
+
+      // The 200 IS the save receipt: promote the optimistic bubble to
+      // `sent-*` so no poll can ever drop it. When a batch later carries
+      // the real user row, reconcileBatch swaps it in (content match).
+      setMessages(prev => promoteTemp(prev, optimisticMsg.id, Date.now()))
 
       if (data.conversation_id && !convId) {
         setConvId(data.conversation_id)
