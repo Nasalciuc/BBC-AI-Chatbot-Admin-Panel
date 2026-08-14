@@ -42,6 +42,9 @@ class ExtractedEntities:
     budget_hint: Optional[str] = None
     price_seen: Optional[str] = None
     best_call_time: Optional[str] = None
+    # Set ONLY on the correction path (context given): "17th am" — the
+    # morning/evening preference rides into the lead notes.
+    time_preference: Optional[str] = None
 
 
 # ── Patterns ──────────────────────────────────────────────────
@@ -1004,8 +1007,86 @@ DREAM_OUTCOMES = {
 }
 
 
-def extract_entities(message: str) -> ExtractedEntities:
-    """Extract structured entities from a visitor chat message."""
+# ── Correction-path day-only dates (Deborah, TPA→SJU) ────────────────────
+# "No returning on the 17th am if possible" burned a client turn: no parser
+# handled a day without a month. With the summary's departure as context the
+# month/year is resolvable deterministically.
+_DAY_ONLY_RETURN_RE = re.compile(
+    r"returning\s+(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b", re.IGNORECASE
+)
+# Bare form REQUIRES the ordinal suffix — "the 3 of us" must never read as a date.
+_DAY_ONLY_BARE_RE = re.compile(r"\bthe\s+(\d{1,2})(?:st|nd|rd|th)\b", re.IGNORECASE)
+# Collision guard (Ravi): a number that belongs to a passenger phrase is not a day.
+_PAX_PHRASE_RE = re.compile(
+    r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine)\s*"
+    r"(?:of\s+us|people|passengers|travelers|travellers|pax)\b",
+    re.IGNORECASE,
+)
+_TIME_PREF_MORNING_RE = re.compile(r"\b(?:am|morning)\b", re.IGNORECASE)
+_TIME_PREF_EVENING_RE = re.compile(r"\b(?:pm|evening|night)\b", re.IGNORECASE)
+
+
+def _resolve_day_only_return(entities: ExtractedEntities, text: str, departure_iso: str) -> None:
+    """Resolve "returning on the 17th" against the summary's departure.
+
+    Guards: a full date with a month already parsed from THIS message wins
+    (skip); numbers inside passenger phrases are never days; day must be
+    1-31 and produce a real calendar date — nonsense stays unset (the
+    re-ask is then correct)."""
+    # Time preference survives regardless of whether a date resolves.
+    if _TIME_PREF_MORNING_RE.search(text):
+        entities.time_preference = "morning"
+    elif _TIME_PREF_EVENING_RE.search(text):
+        entities.time_preference = "evening"
+
+    # The full-date parsers already spoke — their answer wins.
+    if entities.return_date or entities.departure_date:
+        return
+
+    pax_spans = [m.span(1) for m in _PAX_PHRASE_RE.finditer(text)]
+
+    def _in_pax_phrase(start: int, end: int) -> bool:
+        return any(ps <= start and end <= pe for ps, pe in pax_spans)
+
+    m = _DAY_ONLY_RETURN_RE.search(text)
+    if not m:
+        m = _DAY_ONLY_BARE_RE.search(text)
+    if not m or _in_pax_phrase(*m.span(1)):
+        return
+    day = int(m.group(1))
+    if not 1 <= day <= 31:
+        return
+
+    from datetime import date as _date
+
+    try:
+        dep = _date.fromisoformat(departure_iso[:10])
+    except ValueError:
+        return
+    # Same month as departure when the day falls after it; else next month.
+    year, month = dep.year, dep.month
+    if day <= dep.day:
+        month += 1
+        if month == 13:
+            month, year = 1, year + 1
+    try:
+        resolved = _date(year, month, day)
+    except ValueError:
+        return  # e.g. Feb 31 — no entity; the re-ask is the right answer
+    entities.return_date = resolved.isoformat()
+    if entities.trip_type != "multi_city":
+        entities.trip_type = "round_trip"
+
+
+def extract_entities(
+    message: str, *, context: dict | None = None
+) -> ExtractedEntities:
+    """Extract structured entities from a visitor chat message.
+
+    context (correction path ONLY — the post-summary probe passes it):
+    {"departure_date": "YYYY-MM-DD"} lets day-only return mentions
+    ("returning on the 17th") resolve their month/year from the summary's
+    departure. Default None — every other call site is unchanged."""
     entities = ExtractedEntities()
     text = message.strip()
 
@@ -1244,10 +1325,17 @@ def extract_entities(message: str) -> ExtractedEntities:
     if call_time:
         entities.best_call_time = call_time.group(1).strip().rstrip(".")[:40]
 
+    # Correction-path only: day-only return mentions resolve against the
+    # summary's departure. Runs AFTER the normal parsers so a full date
+    # with a month always wins.
+    if context and context.get("departure_date"):
+        _resolve_day_only_return(entities, text, context["departure_date"])
+
     found = [k for k in ["email", "phone", "name", "origin_code", "destination_code",
                           "passengers", "cabin_class", "departure_date", "return_date", "trip_type",
                           "occasion", "booking_for", "nonstop_only", "airline_preference",
-                          "airline_avoid", "budget_hint", "price_seen", "best_call_time"]
+                          "airline_avoid", "budget_hint", "price_seen", "best_call_time",
+                          "time_preference"]
              if getattr(entities, k) is not None]
     if found:
         logger.info(f"Entities extracted: {', '.join(found)}")

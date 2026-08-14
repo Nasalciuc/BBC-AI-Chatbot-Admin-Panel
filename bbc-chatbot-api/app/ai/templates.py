@@ -73,6 +73,12 @@ TEMPLATES: dict[str, list[str]] = {
         "Just to confirm everything's correct — reply YES, "
         "or tell me what to change.",
     ],
+    # Second re-ask in the same summary cycle: teach the format instead of
+    # repeating the wall verbatim (Deborah burned two turns on it).
+    "summary_reask_2:sales": [
+        "Almost there — tell me what to change, e.g. 'returning Nov 17' "
+        "or 'make it round trip'.",
+    ],
     "closing:sales": [
         "Thanks{name_suffix} — your consultant takes it from here. Speak soon.",
         "Your search is in expert hands{name_suffix}. We'll be in touch soon.",

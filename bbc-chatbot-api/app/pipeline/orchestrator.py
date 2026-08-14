@@ -409,12 +409,30 @@ async def _pipeline(
             # NEITHER — ambiguity must never fall through to a free LLM turn
             # (conv #1347: "Urs" → Opus improvised "everything's locked in"
             # while confirmed_at stayed NULL).
-            _probe = extract_entities(message)
-            _has_correction_entities = bool(
-                _probe.origin_code or _probe.destination_code
-                or _probe.departure_date or _probe.return_date
-                or _probe.passengers
+            # Day-only dates ("returning on the 17th") resolve against the
+            # summary's departure — the correction probe is the ONLY caller
+            # that passes context.
+            _lead_for_probe = None
+            try:
+                _lead_for_probe = await lead_service.get_or_create_lead(cid)
+            except Exception:
+                pass
+            _probe = extract_entities(
+                message,
+                context={
+                    "departure_date": (_lead_for_probe or {}).get("departure_date")
+                },
             )
+            # Deborah, TPA→SJU: "Round trip, returning on the 17th" DID set
+            # trip_type — and the old gate threw the entity away. A cabin
+            # change post-summary is equally a correction.
+            _correction_fields = [
+                k for k in (
+                    "origin_code", "destination_code", "departure_date",
+                    "return_date", "passengers", "trip_type", "cabin_class",
+                ) if getattr(_probe, k)
+            ]
+            _has_correction_entities = bool(_correction_fields)
             if _has_correction_entities:
                 # A correction ("March 7 instead"): re-open the summary state
                 # so the pipeline updates the lead and Step 7.5 re-renders the
@@ -422,18 +440,46 @@ async def _pipeline(
                 _meta_upd = dict(_conv_meta)
                 _meta_upd.pop("summary_shown_at", None)
                 _meta_upd.pop("open_door_pending", None)
+                _meta_upd.pop("summary_reask_count", None)
                 try:
                     await db.update_conversation(cid, {"metadata": _meta_upd})
                     _conv_meta = _meta_upd
                 except Exception as e:
                     logger.warning(f"[{cid}] summary re-open failed: {e}")
                 _awaiting_correction_directive = True
-                logger.info(f"[{cid}] Post-summary correction with entities — summary will re-render")
+                logger.info(
+                    f"[{cid}] Post-summary correction — summary will re-render "
+                    f"(triggered by: {', '.join(_correction_fields)})"
+                )
+                # "17th am" — the morning/evening preference survives into
+                # the lead notes even though the correction owns the turn.
+                if _probe.time_preference and _lead_for_probe:
+                    try:
+                        _cur_notes = (_lead_for_probe.get("notes") or "").strip()
+                        _tp_line = f"Time preference: {_probe.time_preference}"
+                        if _tp_line not in _cur_notes:
+                            await db.update_lead(
+                                _lead_for_probe["id"],
+                                {"notes": f"{_cur_notes}\n{_tp_line}".strip()},
+                            )
+                    except Exception as e:
+                        logger.warning(f"[{cid}] time-preference note failed: {e}")
             else:
                 from app.ai.templates import get_template as _get_tpl
 
                 logger.info(f"[{cid}] Post-summary ambiguity ('{_normalized[:30]}') — re-asking, not improvising")
-                _reask_text = _get_tpl("summary_reask", tunnel, visitor) or (
+                # A wall that repeats itself verbatim reads as broken: the
+                # SECOND re-ask in a summary cycle teaches the format instead.
+                _reask_n = int(_conv_meta.get("summary_reask_count") or 0)
+                _reask_key = "summary_reask_2" if _reask_n >= 1 else "summary_reask"
+                try:
+                    _meta_reask = dict(_conv_meta)
+                    _meta_reask["summary_reask_count"] = _reask_n + 1
+                    await db.update_conversation(cid, {"metadata": _meta_reask})
+                    _conv_meta = _meta_reask
+                except Exception as e:
+                    logger.warning(f"[{cid}] reask-count update failed: {e}")
+                _reask_text = _get_tpl(_reask_key, tunnel, visitor) or (
                     "Just to confirm everything's correct — reply YES, "
                     "or tell me what to change."
                 )

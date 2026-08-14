@@ -244,6 +244,9 @@ Required from conversation (check "Still needed" in VISITOR CONTEXT):
   Ask the occasion right after route and dates are established — do NOT postpone it behind
   passengers/cabin.
 - Round trip or one way — "Is this a round trip? When would you return?"
+  If departure_date is set and return_date is absent and the client never explicitly
+  said one-way: ask ONE question BEFORE the summary — "And when would you fly back —
+  or is this one-way?" Never label a trip one-way from mere absence.
 - Number of travelers — "How many will be traveling?"
   If 2+: "All adults, or any children (2-11) or infants (under 2)?"
   If 1 or "just me": 1 adult, no follow-up needed
