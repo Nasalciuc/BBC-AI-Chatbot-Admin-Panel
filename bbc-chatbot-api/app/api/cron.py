@@ -17,8 +17,54 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# One-time AAA backfill — flips after the first run in this process;
+# true idempotency is the created_in_crm flag (a second run pushes nothing).
+_AAA_BACKFILL_RAN = False
+
+
+async def run_aaa_backfill(days: int = 3) -> dict:
+    """The last N days of contacts the old guards blocked — pushed once.
+
+    Selects every sales conversation with contact from the window
+    (INCLUDING closed — the live cron only sees active), skips leads
+    already in the CRM, pushes the rest through the defaults path with
+    normal flag discipline (2xx + crm_id only). Idempotent by the flag."""
+    convs = await db.get_recent_contact_conversations(days=days)
+    pushed = 0
+    skipped_hygiene = 0
+    for conv in convs:
+        cid = conv["id"]
+        try:
+            lead = await get_or_create_lead(cid)
+            if not lead or lead.get("created_in_crm"):
+                continue
+            if not conv.get("last_user_message_at"):
+                conv["_no_engagement"] = True
+            result = await submit_abandoned_to_crm(conv, lead)
+            if result.success and result.request_id:
+                await db.mark_lead_created_in_crm(
+                    lead["id"], crm_lead_id=result.request_id
+                )
+                pushed += 1
+            else:
+                skipped_hygiene += 1
+        except Exception as e:
+            logger.warning(f"[cron][aaa-backfill] conv={cid}: {e}")
+            skipped_hygiene += 1
+    logger.info(f"AAA backfill: {pushed} pushed, {skipped_hygiene} skipped(hygiene)")
+    return {"pushed": pushed, "skipped": skipped_hygiene, "scanned": len(convs)}
+
+
 async def run_abandoned_crm() -> dict:
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
+    global _AAA_BACKFILL_RAN
+    if not _AAA_BACKFILL_RAN:
+        _AAA_BACKFILL_RAN = True
+        try:
+            await run_aaa_backfill()
+        except Exception as e:
+            logger.error(f"[cron] AAA backfill failed (non-fatal): {e}")
+
     abandoned = await db.get_abandoned_conversations(settings.abandoned_timeout_minutes)
     logger.info(f"[cron] Found {len(abandoned)} abandoned conversations")
 
@@ -28,17 +74,18 @@ async def run_abandoned_crm() -> dict:
         try:
             phone = format_phone_international(conv.get("visitor_phone", ""))
             email = (conv.get("visitor_email") or "").strip()
-            name = (conv.get("visitor_name") or "").strip()
 
             if not phone or len(phone) < 8:
                 results.append({"id": cid, "status": "skipped", "reason": "phone_invalid"})
                 continue
-            if not email or "@" not in email:
+            # BUSINESS RULE: every captured contact is dialable. Email is
+            # optional when the phone is valid (hygiene on a PRESENT email
+            # runs inside submit_abandoned_to_crm); name is never required
+            # — the payload defaults to "Customer".
+            if email and "@" not in email:
                 results.append({"id": cid, "status": "skipped", "reason": "email_invalid"})
                 continue
-            if not name or len(name) < 2:
-                results.append({"id": cid, "status": "skipped", "reason": "name_invalid"})
-                continue
+            name = (conv.get("visitor_name") or "").strip() or "Customer"
 
             lead = await get_or_create_lead(cid)
             if lead and lead.get("created_in_crm"):

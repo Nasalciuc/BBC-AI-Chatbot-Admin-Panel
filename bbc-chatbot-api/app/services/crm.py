@@ -83,23 +83,43 @@ _TYPO_DOMAINS = {
 }
 
 
-def crm_push_gate(lead: dict, email: str) -> Optional[str]:
-    """Refusal reason, or None when the lead may be pushed."""
+def crm_hygiene_gate(
+    lead: dict, email: str, *, require_email: bool = True
+) -> Optional[str]:
+    """The HARD hygiene refusals — they hold on EVERY path (test@ emails,
+    malformed/typo-domain email, origin==destination). require_email=False
+    (the abandoned/no-engagement path) lets an email-less but phone-bearing
+    contact through — the phone check lives in submit_abandoned_to_crm."""
     email = (email or "").lower().strip()
-    if not _EMAIL_RE.match(email):
+    if email:
+        if not _EMAIL_RE.match(email):
+            return "email_invalid"
+        # Prefix only — a substring check would refuse "contest@gmail.com".
+        if email.startswith("test@"):
+            return "test_email"
+        domain = email.rsplit("@", 1)[-1]
+        if domain in _TYPO_DOMAINS:
+            return "email_typo_domain"
+    elif require_email:
         return "email_invalid"
-    # Prefix only — a substring check would refuse "contest@gmail.com".
-    if email.startswith("test@"):
-        return "test_email"
-    domain = email.rsplit("@", 1)[-1]
-    if domain in _TYPO_DOMAINS:
-        return "email_typo_domain"
-    if (lead.get("score") or 0) < 40:
-        return "low_score"
     origin = (lead.get("origin_code") or "").upper()
     dest = (lead.get("destination_code") or "").upper()
     if origin and dest and origin == dest:
         return "same_route"
+    return None
+
+
+def crm_push_gate(lead: dict, email: str) -> Optional[str]:
+    """Refusal reason for the STRICT (confirm-flow/button) push path:
+    hygiene + the score floor. The abandoned/no-engagement path uses
+    crm_hygiene_gate alone — BUSINESS RULE (owner, explicit): every
+    captured contact is dialable, silent leads included; score never
+    blocks a dialable human there."""
+    reason = crm_hygiene_gate(lead, email, require_email=True)
+    if reason:
+        return reason
+    if (lead.get("score") or 0) < 40:
+        return "low_score"
     return None
 
 
@@ -424,6 +444,18 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         if not phone:
             return CRMResult(success=False, error="Phone invalid")
 
+        # Hygiene holds on THIS path too (score deliberately does not —
+        # every contact is dialable). Refusals stay visible in /health.
+        _hyg = crm_hygiene_gate(
+            lead, conv.get("visitor_email") or "", require_email=False
+        )
+        if _hyg:
+            _record_push("refused", _hyg)
+            logger.info(
+                f"[CRM-ABANDONED] refused conv={conv.get('id', '?')} reason={_hyg}"
+            )
+            return CRMResult(success=False, error=f"gate:{_hyg}")
+
         from types import SimpleNamespace
         _v = SimpleNamespace(
             name=conv.get("visitor_name") or "",
@@ -439,6 +471,18 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         )
 
         _ab_meta = conv.get("metadata") or {}
+        # Silent lead (form filled, zero client messages): the consultant
+        # must know exactly what they're dialing BEFORE the call.
+        if conv.get("_no_engagement"):
+            _tag_line = (
+                "No engagement — form only "
+                f"(source: {_ab_meta.get('utm_source') or 'direct'}, "
+                f"landing: {_ab_meta.get('page_url') or 'unknown'})"
+            )
+            _existing_ctx = payload.get("chat_context")
+            payload["chat_context"] = (
+                f"{_tag_line} | {_existing_ctx}" if _existing_ctx else _tag_line
+            )
         _ab_site = _ab_meta.get("site")
         _crm_base = _resolve_crm_base(_ab_site)
         endpoint = f"{_crm_base.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"

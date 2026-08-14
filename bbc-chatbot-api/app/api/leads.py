@@ -239,13 +239,31 @@ async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_curren
             return {"success": True, "data": lead, "already": True}
         conv_id = lead.get("conversation_id")
         conv = await db.get_conversation_simple(conv_id) if conv_id else None
-        if conv and db.derive_conversation_tag(conv, lead=lead) in ("abandoned", "no_engagement"):
+        _tag = db.derive_conversation_tag(conv, lead=lead) if conv else None
+        if _tag in ("abandoned", "no_engagement"):
+            # BUSINESS RULE (owner, explicit): every captured contact is
+            # dialable — silent leads GO to CRM through the defaults path
+            # (AAA route placeholders, +30d departure). The old 409 was one
+            # of three layers strangling the original AAA design.
+            from app.services.crm import submit_abandoned_to_crm
+
+            _conv_payload = dict(conv or {})
+            _conv_payload.setdefault("id", conv_id)
+            if _tag == "no_engagement":
+                _conv_payload["_no_engagement"] = True
+            result = await submit_abandoned_to_crm(_conv_payload, lead)
+            if result.success and result.request_id:
+                await db.mark_lead_created_in_crm(
+                    lead_id, crm_lead_id=result.request_id
+                )
+                updated = await db.get_lead_full(lead_id)
+                return {
+                    "success": True,
+                    "data": updated or lead,
+                    "pushed_with_defaults": True,
+                }
             raise HTTPException(
-                status_code=409,
-                detail=(
-                    "This conversation is abandoned or has no customer engagement. "
-                    "It can't be submitted to the CRM."
-                ),
+                status_code=422, detail=f"CRM push failed: {result.error}"
             )
 
         from types import SimpleNamespace

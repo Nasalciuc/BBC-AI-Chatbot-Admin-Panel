@@ -2815,24 +2815,34 @@ async def get_assigned_tasks(user_id: str) -> list[dict]:
 
 
 async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
-    """Active AI sales convs with contact, last message older than timeout."""
+    """Active AI sales convs with contact, last activity older than timeout.
+
+    BUSINESS RULE (owner, explicit): every captured contact is dialable —
+    contact means visitor_email OR visitor_phone (name no longer required;
+    the CRM payload defaults to "Customer"). Silent conversations (form
+    filled, ZERO messages) are included — their age is measured from
+    created_at and they come back flagged `_no_engagement` so the payload
+    carries the "form only" note. 30-day window: never resurrect ancient
+    contacts."""
     db = get_client()
     try:
+        _window_start = (
+            datetime.now(timezone.utc) - timedelta(days=30)
+        ).isoformat()
         result = await _run_sync(lambda: (
             db.table("conversations")
             .select(
                 "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
-                "tunnel, message_count, mode, status, metadata, visitor_id"
+                "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
             )
             .eq("status", "active")
             .eq("mode", "ai")
             .eq("tunnel", "sales")
-            .not_.is_("visitor_name", "null")
-            .neq("visitor_name", "")
-            .not_.is_("visitor_phone", "null")
-            .neq("visitor_phone", "")
-            .not_.is_("visitor_email", "null")
-            .neq("visitor_email", "")
+            .gte("created_at", _window_start)
+            .or_(
+                "and(visitor_phone.not.is.null,visitor_phone.neq.),"
+                "and(visitor_email.not.is.null,visitor_email.neq.)"
+            )
             .execute()
         ))
     except Exception as e:
@@ -2851,13 +2861,26 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             # CRM=true convs now handled by cron close-only path
             msg_res = await _run_sync(lambda cid=cid: (
                 db.table("messages")
-                .select("created_at")
+                .select("created_at, role")
                 .eq("conversation_id", cid)
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()
             ))
             if not msg_res.data:
+                # Silent lead: form filled, nobody ever spoke. Age from
+                # conversation creation; the old `continue` here was the
+                # third layer strangling the AAA design.
+                created_raw = conv.get("created_at")
+                if not created_raw:
+                    continue
+                created = datetime.fromisoformat(
+                    str(created_raw).replace("Z", "+00:00")
+                )
+                if created > cutoff:
+                    continue
+                conv["_no_engagement"] = True
+                abandoned.append(conv)
                 continue
 
             raw_ts = msg_res.data[0]["created_at"]
@@ -2871,6 +2894,37 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             continue
 
     return abandoned
+
+
+async def get_recent_contact_conversations(days: int = 3) -> list[dict]:
+    """The AAA backfill's select: every sales conversation from the last
+    N days that captured contact (email OR phone) — INCLUDING closed ones
+    (the live abandoned cron only sees active). Idempotency lives on the
+    lead flag (created_in_crm), not here."""
+    try:
+        db = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        result = await _run_sync(lambda: (
+            db.table("conversations")
+            .select(
+                "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
+                "tunnel, message_count, mode, status, metadata, visitor_id, "
+                "created_at, last_user_message_at"
+            )
+            .eq("tunnel", "sales")
+            .gte("created_at", cutoff)
+            .or_(
+                "and(visitor_phone.not.is.null,visitor_phone.neq.),"
+                "and(visitor_email.not.is.null,visitor_email.neq.)"
+            )
+            .order("created_at", desc=True)
+            .limit(500)
+            .execute()
+        ))
+        return result.data or []
+    except Exception as e:
+        logger.error(f"get_recent_contact_conversations error: {e}")
+        return []
 
 
 async def get_last_system_message(conversation_id: str) -> dict | None:
