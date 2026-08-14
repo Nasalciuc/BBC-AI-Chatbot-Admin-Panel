@@ -259,8 +259,12 @@ class TestAttachDerivedTag:
 
 class TestCrmOutcomeTagBlock:
     @pytest.mark.asyncio
-    async def test_abandoned_returns_409(self):
+    async def test_abandoned_pushes_with_defaults(self):
+        """BUSINESS RULE (feat/crm-aaa-restore, owner explicit): every
+        captured contact is dialable — the old 409 became the defaults
+        push through submit_abandoned_to_crm."""
         from app.api.leads import mark_lead_created_in_crm
+        from app.services.crm import CRMResult
 
         now = datetime.now(timezone.utc)
         quiet_user = (now - timedelta(minutes=45)).isoformat()
@@ -280,17 +284,21 @@ class TestCrmOutcomeTagBlock:
             patch("app.api.leads.db.get_lead_full", new=AsyncMock(return_value=lead)),
             patch("app.api.leads.db.get_conversation_simple", new=AsyncMock(return_value=conv)),
             patch("app.api.leads.db.mark_lead_created_in_crm", new=AsyncMock()) as mark,
+            patch(
+                "app.services.crm.submit_abandoned_to_crm",
+                new=AsyncMock(return_value=CRMResult(success=True, request_id="R-1")),
+            ) as push,
         ):
-            from fastapi import HTTPException
-
-            with pytest.raises(HTTPException) as ei:
-                await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "u1"})
-            assert ei.value.status_code == 409
-            mark.assert_not_called()
+            out = await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "u1"})
+            assert out["success"] is True
+            assert out.get("pushed_with_defaults") is True
+            push.assert_awaited_once()
+            mark.assert_awaited_once_with("L1", crm_lead_id="R-1")
 
     @pytest.mark.asyncio
-    async def test_no_engagement_returns_409(self):
+    async def test_no_engagement_pushes_with_defaults_and_flag(self):
         from app.api.leads import mark_lead_created_in_crm
+        from app.services.crm import CRMResult
 
         lead = {"id": "L1", "conversation_id": "C1"}
         conv = _conv(**FULL_CONTACT, last_user_message_at=None)
@@ -300,13 +308,17 @@ class TestCrmOutcomeTagBlock:
             patch("app.api.leads.db.get_lead_full", new=AsyncMock(return_value=lead)),
             patch("app.api.leads.db.get_conversation_simple", new=AsyncMock(return_value=conv)),
             patch("app.api.leads.db.mark_lead_created_in_crm", new=AsyncMock()) as mark,
+            patch(
+                "app.services.crm.submit_abandoned_to_crm",
+                new=AsyncMock(return_value=CRMResult(success=True, request_id="R-2")),
+            ) as push,
         ):
-            from fastapi import HTTPException
-
-            with pytest.raises(HTTPException) as ei:
-                await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "u1"})
-            assert ei.value.status_code == 409
-            mark.assert_not_called()
+            out = await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "u1"})
+            assert out["success"] is True
+            # The silent-lead marker rides into the payload conv so the
+            # consultant sees "No engagement — form only" on the CRM row.
+            assert push.await_args.args[0].get("_no_engagement") is True
+            mark.assert_awaited_once_with("L1", crm_lead_id="R-2")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["fresh", "active", "main_queue", "completed"])
