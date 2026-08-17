@@ -1100,17 +1100,50 @@ async def _pipeline(
                 gen.cost = 0.0
                 logger.info(f"[{cid}] Step 7.5: Summary shown (awaiting confirmation)")
 
-        elif _conv_meta.get("confirmed_at") and _crm_submitted_this_turn:
-            from app.services.closing import compute_closing_text, claim_closing_sent
+        elif _conv_meta.get("confirmed_at") and (
+            _confirmed_this_turn or _crm_submitted_this_turn
+        ):
+            # The closing no longer waits for a SUCCESSFUL CRM push: a
+            # confirmed client whose push failed used to get no closing at
+            # all. The push outcome only chooses what we may PROMISE.
+            from app.services.closing import (
+                claim_closing_sent,
+                compute_closing_text,
+                generate_closing,
+            )
 
             _claimed = await claim_closing_sent(cid)
             if _claimed:
-                validated_text = compute_closing_text(
-                    metadata.get("site") if metadata else None
+                _site = metadata.get("site") if metadata else None
+                # Deliberately NOT streamed to the client: Step 7.5 REPLACES
+                # whatever the main generation produced, and that answer may
+                # already have streamed — appending closing chunks on top
+                # would render the reply twice. The 6s budget still applies.
+                _closing_text, _closing_model, _closing_cost = await generate_closing(
+                    _fl_crm or {},
+                    visitor,
+                    crm_ok=bool(_crm_submitted_this_turn),
+                    site=_site,
                 )
-                gen.model_used = "template"
-                gen.cost = 0.0
-                logger.info(f"[{cid}] Step 7.5: Confirmed → closing (claimed)")
+                if _closing_text:
+                    validated_text = _closing_text
+                    gen.model_used = _closing_model
+                    gen.cost = _closing_cost
+                    logger.info(
+                        f"[{cid}] Step 7.5: Confirmed → closing generated "
+                        f"(model={_closing_model} crm_ok={bool(_crm_submitted_this_turn)})"
+                    )
+                else:
+                    # Warmth failed; the client still gets closed properly.
+                    from app.pipeline.generator import _record_generation_fallback
+
+                    validated_text = compute_closing_text(_site)
+                    gen.model_used = "template"
+                    gen.cost = 0.0
+                    _record_generation_fallback(
+                        intent, "opus", cid, reason="closing"
+                    )
+                    logger.info(f"[{cid}] Step 7.5: Closing fell back to template")
             else:
                 validated_text = "You're all set! Our consultant will reach out shortly."
                 gen.model_used = "template"
