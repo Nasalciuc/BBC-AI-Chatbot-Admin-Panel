@@ -22,21 +22,114 @@ router = APIRouter()
 _AAA_BACKFILL_RAN = False
 
 
-async def run_aaa_backfill(days: int = 3) -> dict:
-    """The last N days of contacts the old guards blocked — pushed once.
+def _contact_ids(conv: dict) -> list[str]:
+    """Every identifier that names this human: phone AND/OR email.
 
-    Selects every sales conversation with contact from the window
-    (INCLUDING closed — the live cron only sees active), skips leads
-    already in the CRM, pushes the rest through the defaults path with
-    normal flag discipline (2xx + crm_id only). Idempotent by the flag."""
-    convs = await db.get_recent_contact_conversations(days=days)
+    Matching on the PAIR would split one person into several CRM rows
+    the moment a second form omitted the email — so each identifier is
+    its own link and rows sharing ANY identifier become one group."""
+    from app.services.crm import format_phone_international
+
+    ids = []
+    phone = format_phone_international(conv.get("visitor_phone") or "")
+    if phone:
+        ids.append(f"p:{phone}")
+    email = (conv.get("visitor_email") or "").strip().lower()
+    if email:
+        ids.append(f"e:{email}")
+    return ids
+
+
+def _richness(conv: dict) -> tuple:
+    """Which of two conversations for the SAME contact to push.
+
+    More messages first (a real conversation beats a bare form), then a
+    name on file, then the newest. Deterministic — no coin flips over
+    which row reaches the consultant."""
+    return (
+        int(conv.get("message_count") or 0),
+        1 if (conv.get("visitor_name") or "").strip() else 0,
+        str(conv.get("created_at") or ""),
+    )
+
+
+def pick_richest_by_contact(convs: list[dict]) -> list[dict]:
+    """One conversation per human — the richest — carrying `_twin_count`.
+
+    Union by shared identifier (phone or email), so "same phone, email
+    only on one row" is still ONE person. Conversations with no usable
+    identifier pass through untouched (the contract refuses them later)."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    passthrough: list[dict] = []
+    keyed: list[tuple[str, dict]] = []
+    for conv in convs:
+        ids = _contact_ids(conv)
+        if not ids:
+            passthrough.append(conv)
+            continue
+        for other in ids[1:]:
+            union(ids[0], other)
+        keyed.append((ids[0], conv))
+
+    groups: dict[str, list[dict]] = {}
+    for anchor, conv in keyed:
+        groups.setdefault(find(anchor), []).append(conv)
+
+    chosen: list[dict] = []
+    for members in groups.values():
+        best = max(members, key=_richness)
+        if len(members) > 1:
+            best = dict(best)
+            best["_twin_count"] = len(members) - 1
+        chosen.append(best)
+    return chosen + passthrough
+
+
+async def _persist_refusal(lead_id: str, error: str) -> bool:
+    """Only a real GATE refusal becomes work-list state. A transient
+    HTTP/timeout failure must stay retryable — writing it as a gate
+    reason would freeze a dialable lead into a permanent 'refused' row."""
+    if not (error or "").startswith("gate:"):
+        return False
+    await db.update_lead_crm_push_state(
+        lead_id, gate_reason=error[len("gate:"):]
+    )
+    return True
+
+
+async def run_aaa_backfill(days: int = 30) -> dict:
+    """The contacts the old guards blocked — pushed once, safely.
+
+    The full 30-day window, active AND closed, any mode: skips leads
+    already in the CRM (idempotency lives on the flag), dedups by contact
+    so one human never becomes two CRM rows, and pushes the rest through
+    the defaults path with normal proof discipline (2xx + crm_id only).
+    A gate/contract refusal is NOT a loss: the row keeps its reason and
+    surfaces in the panel's "CRM pending" work-list for a human."""
+    convs = pick_richest_by_contact(
+        await db.get_recent_contact_conversations(days=days)
+    )
     pushed = 0
-    skipped_hygiene = 0
+    work_list = 0
+    skipped = 0
     for conv in convs:
         cid = conv["id"]
         try:
             lead = await get_or_create_lead(cid)
             if not lead or lead.get("created_in_crm"):
+                skipped += 1
                 continue
             if not conv.get("last_user_message_at"):
                 conv["_no_engagement"] = True
@@ -47,12 +140,25 @@ async def run_aaa_backfill(days: int = 3) -> dict:
                 )
                 pushed += 1
             else:
-                skipped_hygiene += 1
+                # Visible state, never a silent drop: a GATE refusal rides
+                # on the lead into the "CRM pending" work-list. A transient
+                # failure stays retryable instead of freezing as a refusal.
+                if await _persist_refusal(lead["id"], result.error or ""):
+                    work_list += 1
+                else:
+                    skipped += 1
         except Exception as e:
             logger.warning(f"[cron][aaa-backfill] conv={cid}: {e}")
-            skipped_hygiene += 1
-    logger.info(f"AAA backfill: {pushed} pushed, {skipped_hygiene} skipped(hygiene)")
-    return {"pushed": pushed, "skipped": skipped_hygiene, "scanned": len(convs)}
+            skipped += 1
+    logger.info(
+        f"AAA backfill: {pushed} pushed, {work_list} work-list, {skipped} skipped"
+    )
+    return {
+        "pushed": pushed,
+        "work_list": work_list,
+        "skipped": skipped,
+        "scanned": len(convs),
+    }
 
 
 async def run_abandoned_crm() -> dict:
@@ -68,10 +174,21 @@ async def run_abandoned_crm() -> dict:
     abandoned = await db.get_abandoned_conversations(settings.abandoned_timeout_minutes)
     logger.info(f"[cron] Found {len(abandoned)} abandoned conversations")
 
+    # One human = one CRM row, in the live sweep too. Without this the
+    # backfill's careful dedup is undone minutes later by the next tick.
+    _push_owners = {c["id"] for c in pick_richest_by_contact(abandoned)}
+
     results = []
     for conv in abandoned:
         cid = conv["id"]
         try:
+            # The select is WIDE (closed + human) so no dialable lead is
+            # orphaned — but width feeds the PUSH only. Closing, unassigning
+            # and posting a closing message are never done to a chat a human
+            # owns or to one that is already closed.
+            _human_owned = conv.get("mode") == "human"
+            _already_closed = conv.get("status") == "closed"
+            _may_close = not _human_owned and not _already_closed
             phone = format_phone_international(conv.get("visitor_phone", ""))
             email = (conv.get("visitor_email") or "").strip()
 
@@ -88,6 +205,12 @@ async def run_abandoned_crm() -> dict:
             name = (conv.get("visitor_name") or "").strip() or "Customer"
 
             lead = await get_or_create_lead(cid)
+            if lead and lead.get("created_in_crm") and not _may_close:
+                # In the CRM already, and this conversation must not be
+                # touched (a human owns it, or it is already closed):
+                # nothing left to do.
+                results.append({"id": cid, "status": "already_done"})
+                continue
             if lead and lead.get("created_in_crm"):
                 # Close-only: CRM done but conv still active (zombie)
                 _meta = conv.get("metadata") or {}
@@ -120,23 +243,52 @@ async def run_abandoned_crm() -> dict:
                     results.append({"id": cid, "status": "error", "error": "lead_create_failed"})
                     continue
 
+            if cid not in _push_owners:
+                # A richer conversation for this same human owns the push.
+                # Visible state, no CRM call, no close (closing it would
+                # orphan the row silently).
+                await _persist_refusal(lead["id"], "gate:duplicate_contact")
+                results.append({"id": cid, "status": "dedup_twin"})
+                continue
+
             crm_result = await submit_abandoned_to_crm(conv, lead)
 
             if crm_result.success:
                 # The returned id is the receipt — stored with the flag.
-                await db.mark_lead_created_in_crm(
+                marked = await db.mark_lead_created_in_crm(
                     lead["id"], crm_lead_id=crm_result.request_id
                 )
-                await db.update_conversation(cid, {
-                    "status": "closed",
-                    "closed_at": datetime.now(timezone.utc).isoformat(),
-                    "mode": "ai",
-                    "assigned_agent_id": None,
-                })
-                logger.info(f"[cron][{cid}] Success: CRM submitted + closed ({name})")
+                if marked is None:
+                    # The CRM row EXISTS but our flag write died. Closing now
+                    # would hide it; leaving the flag false without closing
+                    # means the next tick re-pushes a DUPLICATE. Neither is
+                    # acceptable silently — shout and stop touching this row.
+                    logger.error(
+                        f"[cron][{cid}] CRM ACCEPTED crm_id={crm_result.request_id} "
+                        "but the flag write FAILED — manual reconciliation needed"
+                    )
+                    results.append({
+                        "id": cid, "status": "flag_write_failed",
+                        "crm_id": crm_result.request_id,
+                    })
+                    continue
+                if _may_close:
+                    await db.update_conversation(cid, {
+                        "status": "closed",
+                        "closed_at": datetime.now(timezone.utc).isoformat(),
+                        "mode": "ai",
+                        "assigned_agent_id": None,
+                    })
+                logger.info(
+                    f"[cron][{cid}] Success: CRM submitted ({name})"
+                    f"{' + closed' if _may_close else ' (left open — human/closed)'}"
+                )
                 results.append({"id": cid, "status": "success", "name": name})
             else:
                 logger.error(f"[cron][{cid}] CRM fail: {crm_result.error}")
+                # A gate refusal becomes work-list state; a transient HTTP
+                # failure stays retryable (see _persist_refusal).
+                await _persist_refusal(lead["id"], crm_result.error or "")
                 results.append({"id": cid, "status": "crm_failed", "error": crm_result.error})
 
         except Exception as e:
