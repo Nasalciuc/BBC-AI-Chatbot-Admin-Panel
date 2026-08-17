@@ -146,6 +146,77 @@ def format_phone_international(phone: str) -> str:
     return f"+{digits}"
 
 
+# ── The CRM contract (createAiChat doc is authoritative) ──────
+# Every refusal below is a row the CRM would 422 anyway — better refused
+# here, visibly, than silently rejected after the flag was written.
+_CONTRACT_PHONE_RE = re.compile(r"^\+\d+$")
+_IATA_RE = re.compile(r"^[A-Za-z]{3}$")
+CRM_CABIN_ENUM = frozenset({"business", "first", "premium_economy"})
+
+
+def validate_crm_payload(payload: dict) -> Optional[str]:
+    """Refusal reason, or None when the payload satisfies the contract."""
+    client = payload.get("client") or {}
+    phone = re.sub(r"[^\d+]", "", str(client.get("phone") or ""))
+    if not _CONTRACT_PHONE_RE.match(phone):
+        return "phone_format"
+    if len((client.get("name") or "").strip()) < 2:
+        return "name_too_short"
+    flights = payload.get("flights") or []
+    if not flights:
+        return "no_flights"
+    for leg in flights:
+        if not _IATA_RE.match(str(leg.get("from") or "")):
+            return "iata_from"
+        if not _IATA_RE.match(str(leg.get("to") or "")):
+            return "iata_to"
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(leg.get("date") or "")):
+            return "date_format"
+    adult = (payload.get("passengers") or {}).get("adult")
+    if not isinstance(adult, int) or not 1 <= adult <= 9:
+        return "adult_range"
+    if payload.get("cabin_class") not in CRM_CABIN_ENUM:
+        return "cabin_enum"
+    return None
+
+
+def compute_defaults_notes(lead: dict, conv_metadata: dict | None = None) -> list[str]:
+    """What the consultant must know before dialing a defaulted row.
+
+    Every gap the AAA path papers over becomes one honest line — a
+    consultant who knows the route is a placeholder opens the call
+    differently than one who thinks AAA→AAA is real."""
+    meta = conv_metadata or {}
+    # MISSING trip facts — these make a row genuinely incomplete.
+    gaps: list[str] = []
+    if not (lead.get("origin_code") and lead.get("destination_code")):
+        gaps.append("route unknown — defaulted to AAA")
+    if not lead.get("departure_date"):
+        gaps.append("date unknown — defaulted to +30 days")
+    if lead.get("trip_type") == "round_trip" and not lead.get("return_date"):
+        gaps.append("client said round trip, return unknown")
+    # A translated value is NOT a gap: the client told us the cabin, the
+    # CRM enum just has no word for it. It must not stamp "incomplete"
+    # on an otherwise complete lead.
+    extras: list[str] = []
+    cabin = str(lead.get("cabin_class") or "").lower().strip()
+    if cabin and cabin.replace(" ", "_") not in CRM_CABIN_ENUM:
+        extras.append(f"cabin '{cabin}' outside CRM enum — sent as premium_economy")
+
+    if not gaps:
+        # A complete lead is NOT "data incomplete" — claiming it would
+        # make the consultant distrust the honest notes on the rows that
+        # really are thin.
+        return extras
+    return [
+        "form only / data incomplete — "
+        f"source: {meta.get('utm_source') or 'direct'}, "
+        f"landing: {meta.get('page_url') or 'unknown'}",
+        *gaps,
+        *extras,
+    ]
+
+
 def format_date_iso(date_str) -> str:
     """Ensure date is YYYY-MM-DD for CRM API. Safety net — dates should already be ISO from extractor."""
     if not date_str:
@@ -209,6 +280,11 @@ def build_crm_payload(
     return_date = lead.get("return_date")
 
     trip_type = lead.get("trip_type") or ("round_trip" if return_date else "one_way")
+    if allow_defaults and trip_type == "round_trip" and not return_date:
+        # The CRM would reject a round trip with one leg. Send the truth we
+        # have (one_way) — compute_defaults_notes tells the consultant the
+        # client DID say round trip and the return is simply unknown.
+        trip_type = "one_way"
 
     cabin = lead.get("cabin_class") or "business"
     cabin_map = {
@@ -217,7 +293,12 @@ def build_crm_payload(
         "premium_economy": "premium_economy",
         "premium economy": "premium_economy",
     }
-    cabin_class = cabin_map.get(str(cabin).lower(), "business")
+    # Outside the CRM enum (e.g. "economy"): the strict path keeps the
+    # historical business default; the defaults path sends the closest
+    # legal cabin DOWN, never silently upgrading a client to business.
+    cabin_class = cabin_map.get(
+        str(cabin).lower(), "premium_economy" if allow_defaults else "business"
+    )
 
     pax = lead.get("passengers")
     if not pax:
@@ -289,11 +370,18 @@ def build_crm_payload(
     if _chat_context:
         _utm["chat_context"] = _chat_context
 
+    _client_name = (getattr(visitor, "name", "") or "").strip()
+    if allow_defaults and len(_client_name) < 2:
+        # The CRM contract wants ≥2 chars; a one-letter form entry is a
+        # dialable human, not a reject — send the same placeholder an
+        # empty name gets.
+        _client_name = "Customer"
+
     payload = {
         "trip_type": trip_type,
         "cabin_class": cabin_class,
         "client": {
-            "name": (getattr(visitor, "name", "") or "Customer").strip(),
+            "name": _client_name or "Customer",
             "email": (getattr(visitor, "email", "") or "").lower().strip(),
             "phone": phone,
         },
@@ -471,22 +559,62 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         )
 
         _ab_meta = conv.get("metadata") or {}
-        # Silent lead (form filled, zero client messages): the consultant
-        # must know exactly what they're dialing BEFORE the call.
+        cid = conv.get("id", "?")
+
+        # A past departure is NOT dialable as-is (the trip already left):
+        # the row goes to the panel's "CRM pending" work-list for a human,
+        # never auto-pushed.
+        _dep_raw = lead.get("departure_date")
+        if _dep_raw:
+            from datetime import date as _date
+
+            try:
+                if _date.fromisoformat(str(_dep_raw)[:10]) < datetime.now(timezone.utc).date():
+                    _record_push("refused", "past_date")
+                    logger.info(f"[CRM-ABANDONED] refused conv={cid} reason=past_date")
+                    return CRMResult(success=False, error="gate:past_date")
+            except ValueError:
+                pass  # unparseable date → the contract check below catches it
+
+        # Every gap the AAA defaults paper over becomes an honest line the
+        # consultant reads BEFORE dialing. Silent leads lead with that fact.
+        _notes = compute_defaults_notes(lead, _ab_meta)
+        if conv.get("_twin_count"):
+            _notes.append(
+                f"{conv['_twin_count']} duplicate contact conversation(s) — "
+                "this is the richest record"
+            )
         if conv.get("_no_engagement"):
-            _tag_line = (
+            # Source/landing appear ONCE: the no-engagement line owns them
+            # and replaces the generic header when both would fire.
+            _notes = [
+                n for n in _notes
+                if not n.startswith("form only / data incomplete")
+            ]
+            _notes.insert(
+                0,
                 "No engagement — form only "
                 f"(source: {_ab_meta.get('utm_source') or 'direct'}, "
-                f"landing: {_ab_meta.get('page_url') or 'unknown'})"
+                f"landing: {_ab_meta.get('page_url') or 'unknown'})",
             )
-            _existing_ctx = payload.get("chat_context")
-            payload["chat_context"] = (
-                f"{_tag_line} | {_existing_ctx}" if _existing_ctx else _tag_line
-            )
+        _existing_ctx = payload.get("chat_context")
+        if _existing_ctx:
+            _notes.append(str(_existing_ctx))
+        if _notes:
+            payload["chat_context"] = " | ".join(_notes)
+        else:
+            payload.pop("chat_context", None)
+
+        # The contract (createAiChat doc): refuse what the CRM would 422.
+        _contract = validate_crm_payload(payload)
+        if _contract:
+            _record_push("refused", _contract)
+            logger.info(f"[CRM-ABANDONED] refused conv={cid} reason={_contract}")
+            return CRMResult(success=False, error=f"gate:{_contract}")
+
         _ab_site = _ab_meta.get("site")
         _crm_base = _resolve_crm_base(_ab_site)
         endpoint = f"{_crm_base.rstrip('/')}{CRM_CHATBOT_ENDPOINT}"
-        cid = conv.get("id", "?")
         logger.info(f"[cron][{cid}] CRM endpoint: {endpoint} (site={_ab_site or 'default'})")
         _fl0 = (payload.get("flights") or [{}])[0]
         logger.info(
@@ -519,6 +647,14 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
                 return CRMResult(success=False, error="no_id_in_response")
             logger.info(f"[CRM-ABANDONED] OK conv={cid} crm_id={req_id}")
             return CRMResult(success=True, request_id=req_id)
+
+        if resp.status_code == 422:
+            # VERBATIM, untruncated: a 422 names the exact contract field
+            # the CRM rejected — truncating it is throwing away the fix.
+            logger.error(
+                f"[CRM-ABANDONED] 422 conv={cid} body(verbatim)={resp.text}"
+            )
+            return CRMResult(success=False, error=f"HTTP 422: {resp.text[:300]}")
 
         body = resp.text[:300]
         logger.error(f"[CRM-ABANDONED] FAIL conv={cid} status={resp.status_code} body={body}")

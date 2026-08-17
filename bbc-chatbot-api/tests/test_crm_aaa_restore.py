@@ -128,7 +128,11 @@ class TestAbandonedPath:
              patch.object(crm.settings, "crm_api_url", "https://crm.test"):
             await submit_abandoned_to_crm(conv, dict(LEAD))
         note = client.post.call_args.kwargs["json"].get("chat_context") or ""
-        assert "form only" not in note
+        # The intent: an ENGAGED conversation is never labeled no-engagement.
+        # (Wave 6 adds a separate "form only / data incomplete" line for
+        # DEFAULTED fields — this lead has neither route nor date, so that
+        # honest line is expected and correct.)
+        assert "No engagement" not in note
 
 
 # ════════════════════════════════════════════════════════════
@@ -305,4 +309,6 @@ class TestBackfill:
     def test_summary_line_logged(self):
         with open(os.path.join(APP, "api", "cron.py"), encoding="utf-8") as f:
             src = f.read()
-        assert "AAA backfill: {pushed} pushed, {skipped_hygiene} skipped(hygiene)" in src
+        # Three counters since the 30-day backfill: refusals are a
+        # work-list, not a loss.
+        assert "AAA backfill: {pushed} pushed, {work_list} work-list, {skipped} skipped" in src

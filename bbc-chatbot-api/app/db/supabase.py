@@ -2814,8 +2814,14 @@ async def get_assigned_tasks(user_id: str) -> list[dict]:
         return []
 
 
+# Newest-first page size for the abandoned sweep. Each row costs one
+# message query, and the caller runs on a shared scheduler tick — a
+# 30-day closed+human window must not turn one tick into a table scan.
+_ABANDONED_SCAN_CAP = 200
+
+
 async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
-    """Active AI sales convs with contact, last activity older than timeout.
+    """Sales convs with contact whose last activity is older than timeout.
 
     BUSINESS RULE (owner, explicit): every captured contact is dialable —
     contact means visitor_email OR visitor_phone (name no longer required;
@@ -2823,7 +2829,14 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     filled, ZERO messages) are included — their age is measured from
     created_at and they come back flagged `_no_engagement` so the payload
     carries the "form only" note. 30-day window: never resurrect ancient
-    contacts."""
+    contacts.
+
+    status AND mode are both WIDE (127-orphan census): a CLOSED
+    conversation with contact inside the window is exactly the dialable
+    lead the rule protects (Diana class), and `mode='ai'` silently
+    excluded every conversation a human ever touched — the Paulette class
+    (human took over, the push was orphaned, nothing ever retried).
+    'completed' is excluded on purpose: post-CRM, already sold."""
     db = get_client()
     try:
         _window_start = (
@@ -2835,19 +2848,30 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
                 "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
                 "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
             )
-            .eq("status", "active")
-            .eq("mode", "ai")
+            .in_("status", ["active", "closed"])
+            .in_("mode", ["ai", "human"])
             .eq("tunnel", "sales")
             .gte("created_at", _window_start)
             .or_(
                 "and(visitor_phone.not.is.null,visitor_phone.neq.),"
                 "and(visitor_email.not.is.null,visitor_email.neq.)"
             )
+            .order("created_at", desc=True)
+            .limit(_ABANDONED_SCAN_CAP)
             .execute()
         ))
     except Exception as e:
         logger.error(f"get_abandoned_conversations query error: {e}")
         return []
+
+    # The widened select (closed + human, 30 days) can return far more
+    # rows than the old active-only one, and each costs a message query.
+    # Cap it — and NEVER cap silently.
+    if len(result.data or []) >= _ABANDONED_SCAN_CAP:
+        logger.warning(
+            f"get_abandoned_conversations: hit the {_ABANDONED_SCAN_CAP}-row "
+            "scan cap — older candidates wait for the next tick"
+        )
 
     if not result.data:
         return []
@@ -2896,11 +2920,12 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     return abandoned
 
 
-async def get_recent_contact_conversations(days: int = 3) -> list[dict]:
+async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
     """The AAA backfill's select: every sales conversation from the last
-    N days that captured contact (email OR phone) — INCLUDING closed ones
-    (the live abandoned cron only sees active). Idempotency lives on the
-    lead flag (created_in_crm), not here."""
+    N days that captured contact (email OR phone) — active AND closed
+    (the live abandoned cron historically only saw active), any mode.
+    'completed' is excluded: post-CRM, already sold. Idempotency lives on
+    the lead flag (created_in_crm), not here."""
     try:
         db = get_client()
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -2912,6 +2937,7 @@ async def get_recent_contact_conversations(days: int = 3) -> list[dict]:
                 "created_at, last_user_message_at"
             )
             .eq("tunnel", "sales")
+            .in_("status", ["active", "closed"])
             .gte("created_at", cutoff)
             .or_(
                 "and(visitor_phone.not.is.null,visitor_phone.neq.),"
@@ -2921,7 +2947,16 @@ async def get_recent_contact_conversations(days: int = 3) -> list[dict]:
             .limit(500)
             .execute()
         ))
-        return result.data or []
+        rows = result.data or []
+        if len(rows) >= 500:
+            # No silent truncation: the backfill's whole promise is "the
+            # full window" — say it out loud when it wasn't.
+            logger.warning(
+                "get_recent_contact_conversations: hit the 500-row cap — "
+                f"the oldest of the {days}-day window were NOT returned; "
+                "re-run the backfill after the first batch is processed"
+            )
+        return rows
     except Exception as e:
         logger.error(f"get_recent_contact_conversations error: {e}")
         return []
