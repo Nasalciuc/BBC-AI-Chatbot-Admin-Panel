@@ -400,7 +400,13 @@ async def keyword_search_kb(keywords: list[str], tunnel: str = "sales", limit: i
 _LIST_COLUMNS_BASE = (
     "id,tunnel,status,mode,visitor_name,message_count,updated_at,"
     "has_flagged_content,flagged_reason,assigned_agent_id,"
-    "engaged_agent_id:metadata->>engaged_agent_id"
+    "engaged_agent_id:metadata->>engaged_agent_id,"
+    # Presence is DERIVED on read, so the two keys it needs are lifted
+    # here too — without them the list showed a dot computed from
+    # updated_at while the detail showed the real thing.
+    "widget_presence:metadata->>widget_presence,"
+    "widget_last_event_at:metadata->>widget_last_event_at,"
+    "widget_pings:metadata->>widget_pings"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -612,12 +618,20 @@ async def get_conversations(
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
         for row in rows:
-            row["metadata"] = {"engaged_agent_id": row.pop("engaged_agent_id", None)}
+            row["metadata"] = {
+                "engaged_agent_id": row.pop("engaged_agent_id", None),
+                "widget_presence": row.pop("widget_presence", None),
+                "widget_last_event_at": row.pop("widget_last_event_at", None),
+                # jsonb ->> yields the STRING "true"; the derivation only
+                # needs truthiness, but None must stay falsy.
+                "widget_pings": row.pop("widget_pings", None) in ("true", True),
+            }
         rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
             lead_map = await _get_lead_completeness_inputs([r["id"] for r in rows])
             for row in rows:
                 attach_derived_tag(row, lead=lead_map.get(row["id"]))
+                attach_effective_presence(row)
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
             if no_engagement_only:
@@ -819,6 +833,7 @@ async def get_conversation(
         )
         await enrich_conversations_agent_info([result])
         attach_derived_tag(result)
+        attach_effective_presence(result)
         return result
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
@@ -940,6 +955,34 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
     except Exception as e:
         logger.error(f"update_conversation error: {e}")
         return None
+
+
+async def patch_conversation_presence(conversation_id: str, patch: dict) -> bool:
+    """Merge ONLY these keys into metadata — no read, no full-blob write.
+
+    The heartbeat runs 120×/hour per open widget. Reading the whole blob
+    and writing it back would revert any flag another request claimed in
+    between (closing_sent_at, confirmed_at, summary state…), and would
+    cost a full conversation read every time. patch_conv_presence merges
+    server-side under 029's no-touch discipline (migration 031)."""
+    try:
+        db = get_client()
+        await _run_sync(
+            lambda: db.rpc(
+                "patch_conv_presence",
+                {"p_conversation_id": conversation_id, "p_patch": patch},
+            ).execute(),
+            idempotent=False,
+        )
+        return True
+    except Exception as e:
+        # 031 not applied yet → skip the heartbeat rather than fall back
+        # to a read-modify-write that could clobber a claim flag.
+        logger.warning(
+            f"patch_conv_presence unavailable conv={conversation_id} ({e}) — "
+            "presence ping skipped (apply migrations/031_security_hardening.sql)"
+        )
+        return False
 
 
 async def update_conversation_presence(conversation_id: str, metadata: dict) -> bool:
@@ -1702,6 +1745,88 @@ def derive_conversation_tag(
     return "active"
 
 
+# A stored "online" is a CLAIM, not a fact: the widget's close beacon is
+# best-effort (a killed tab, a suspended phone, a dropped network all lose
+# it), so 9 of the 34 vanish-census conversations sat at `online` forever
+# with the client long gone. Presence is DERIVED on read, from the age of
+# the last signal — the widget pings every 30s while it is really open.
+PRESENCE_STALE_SECONDS = 90      # two missed pings
+PRESENCE_LEFT_SECONDS = 1800     # 30 min: a backgrounded tab is quiet, not gone
+
+
+def derive_effective_presence(
+    metadata: dict,
+    now: Optional[datetime] = None,
+    last_user_message_at: Optional[str] = None,
+) -> tuple[Optional[str], Optional[int]]:
+    """(effective_presence, age_seconds). Never upgrades a state — only
+    ages one down: online → stale → left.
+
+    Two guards learned the hard way:
+      * Only conversations whose widget ACTUALLY pings are aged down
+        (`widget_pings`). Without it, every client running a cached older
+        bundle would read "left" the moment this deploys — a fleet-wide
+        lie dressed as a fix.
+      * A client who is actively SENDING messages is present, whatever
+        the ping stream says: the message path only rewrites presence
+        when it changes, so a chatty client's timestamp can be minutes
+        old while they are mid-sentence.
+    """
+    meta = metadata or {}
+    stored = meta.get("widget_presence")
+    raw_at = meta.get("widget_last_event_at")
+    if not raw_at:
+        return stored, None
+
+    def _parse(value) -> Optional[datetime]:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        # Legacy rows stored naive timestamps; subtracting one from an
+        # aware `now` raises TypeError and blanked the whole chats list.
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    seen = _parse(raw_at)
+    if seen is None:
+        return stored, None
+    now_dt = now or datetime.now(timezone.utc)
+    # A clock skew that puts the signal in the future must not read as
+    # "seen -20s ago" and certainly not as stale.
+    age = max(0, int((now_dt - seen).total_seconds()))
+    if stored != "online":
+        return stored, age
+    if not meta.get("widget_pings"):
+        return stored, age          # no heartbeat to reason from
+    typed = _parse(last_user_message_at)
+    if typed is not None:
+        age = min(age, max(0, int((now_dt - typed).total_seconds())))
+    if age >= PRESENCE_LEFT_SECONDS:
+        return "left", age
+    if age >= PRESENCE_STALE_SECONDS:
+        return "stale", age
+    return "online", age
+
+
+def attach_effective_presence(row: dict, now: Optional[datetime] = None) -> dict:
+    """Stamp the derived presence onto the ROW (never into `metadata`).
+
+    metadata is written back to the DB elsewhere; a derived, read-time
+    value living inside it would eventually be persisted as if the client
+    had reported it."""
+    meta = row.get("metadata")
+    if not isinstance(meta, dict):
+        return row
+    effective, age = derive_effective_presence(
+        meta, now, row.get("last_user_message_at")
+    )
+    if effective is not None:
+        row["client_presence"] = effective
+    if age is not None:
+        row["client_presence_age_seconds"] = age
+    return row
+
+
 def attach_derived_tag(
     row: dict, *, quiet_minutes: Optional[int] = None, lead: Optional[dict] = None
 ) -> dict:
@@ -1967,8 +2092,14 @@ async def create_invite_token(payload: dict) -> Optional[dict]:
         return None
 
 
-async def invalidate_active_invite_tokens(user_id: str, purpose: str = "set_password") -> int:
-    """Invalidate previous unused tokens for a user (single active link policy)."""
+async def invalidate_active_invite_tokens(
+    user_id: str, purpose: str = "set_password", except_token: str | None = None
+) -> int:
+    """Invalidate previous unused tokens for a user (single active link policy).
+
+    except_token spares the link that was JUST minted: callers now create
+    the new token first and invalidate afterwards, so a failed create can
+    no longer leave an operator with no valid link at all."""
     try:
         db = get_client()
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1978,12 +2109,86 @@ async def invalidate_active_invite_tokens(user_id: str, purpose: str = "set_pass
             .eq("user_id", user_id)
             .eq("purpose", purpose)
             .is_("used_at", "null")
+            .neq("token", except_token or "")
             .execute()
         )
         return len(res.data or [])
     except Exception as e:
         logger.error(f"invalidate_active_invite_tokens error: {e}")
         return 0
+
+
+async def diagnose_invite_token(token: str, purpose: str = "set_password") -> str:
+    """WHY a token failed: expired | used | superseded | unknown.
+
+    "Invite link expired or invalid" for all four made every failure look
+    like the operator's fault. The reason decides what the page tells
+    them to do next — and only one of the four is worth re-issuing."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("invite_tokens")
+            .select("used_at, expires_at, user_id, created_at")
+            .eq("token", token)
+            .eq("purpose", purpose)
+            .limit(1)
+            .execute()
+        )
+        row = (res.data or [None])[0]
+        if not row:
+            return "unknown"
+        if row.get("used_at"):
+            return "used"
+        now = datetime.now(timezone.utc)
+        try:
+            exp = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError):
+            return "unknown"
+        if exp <= now:
+            # A NEWER token for the same user means this one was replaced
+            # by a re-invite, not simply left to rot.
+            newer = await _run_sync(
+                lambda: db.table("invite_tokens")
+                .select("id")
+                .eq("user_id", row.get("user_id"))
+                .eq("purpose", purpose)
+                .gt("created_at", row.get("created_at") or "")
+                .limit(1)
+                .execute()
+            )
+            return "superseded" if (newer.data or []) else "expired"
+        return "unknown"
+    except Exception as e:
+        logger.error(f"diagnose_invite_token error: {e}")
+        return "unknown"
+
+
+async def find_recent_invite_token(
+    user_id: str, purpose: str = "set_password", within_seconds: int = 5
+) -> Optional[dict]:
+    """A token minted for this user seconds ago — a double-clicked Invite
+    button must not mint twins (Kate got two 240ms apart, and the second
+    silently invalidated the one in her email)."""
+    try:
+        db = get_client()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
+        ).isoformat()
+        res = await _run_sync(
+            lambda: db.table("invite_tokens")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("purpose", purpose)
+            .is_("used_at", "null")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return (res.data or [None])[0]
+    except Exception as e:
+        logger.error(f"find_recent_invite_token error: {e}")
+        return None
 
 
 async def get_valid_invite_token(token: str, purpose: str = "set_password") -> Optional[dict]:

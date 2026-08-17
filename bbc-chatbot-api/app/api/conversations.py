@@ -190,11 +190,19 @@ async def get_conversation_presence(
     _enforce_tunnel(user, conv.get("tunnel"))
 
     metadata = dict(conv.get("metadata") or {})
+    # This endpoint drives the LIVE presence line in the open chat — the
+    # one place an operator looks before typing. It must derive exactly
+    # like the list and the detail, or the panel contradicts itself.
+    effective, age = db.derive_effective_presence(
+        metadata, last_user_message_at=conv.get("last_user_message_at")
+    )
     return {
         "success": True,
         "data": {
             "widget_open": metadata.get("widget_open", False),
             "widget_presence": metadata.get("widget_presence", "minimized"),
+            "widget_presence_effective": effective,
+            "widget_presence_age_seconds": age,
             "widget_last_close_reason": metadata.get("widget_last_close_reason"),
             "widget_last_event_at": metadata.get("widget_last_event_at"),
             "updated_at": conv.get("updated_at"),

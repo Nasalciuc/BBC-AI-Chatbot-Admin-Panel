@@ -10,7 +10,7 @@ const ago = (mins: number) => new Date(NOW.getTime() - mins * 60000).toISOString
 
 test('online + fresh → green "Active now"', () => {
   const d = describeClientPresence('online', ago(1), NOW)
-  assert.equal(d.label, 'Active now')
+  assert.match(d.label, /^Active now/)   // now carries the age: "Active now · last seen 12s ago"
   assert.equal(d.tone, 'green')
 })
 

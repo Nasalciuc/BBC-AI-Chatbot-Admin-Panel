@@ -197,7 +197,9 @@ class Settings(BaseSettings):
     admin_panel_url: str = "https://chat.buybusinessclass.com"
     super_alert_email: str = "super@buybusinessclass.com"
     super_alert_cooldown_minutes: int = 1440  # 1 email/conv/24h (Postmark limit)
-    invite_link_expiry_minutes: int = 1440
+    # 48h: a 24h link that lands in a Friday inbox is dead by Monday
+    # (Mitch never used his). Long enough to survive a weekend.
+    invite_link_expiry_minutes: int = 2880
     invite_link_path: str = "/set-password"
 
     # Supervisor visibility suite — customer silence (Inactive tag) and

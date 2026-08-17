@@ -36,6 +36,16 @@ BANNED_PHRASES = (
     # The dead-end: a generation failure served this to live clients
     # mid-purchase. Sales never ends on "go call someone else".
     "recommend calling our team directly",
+    # Never diminish a route someone is buying business class on, and
+    # never invent operations we cannot see (Pensacola→Raleigh: "that's a
+    # short hop"; "you'd connect through Chicago or Atlanta").
+    "short hop",
+    "quick flight",
+    "short domestic",
+    "easy trip",
+    "connections through",
+    "connecting through",
+    "well-served",
 )
 
 # A banned phrase quoted as a NEGATIVE example ("never say 'great choice'")

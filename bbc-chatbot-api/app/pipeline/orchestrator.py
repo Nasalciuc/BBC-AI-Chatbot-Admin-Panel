@@ -400,18 +400,21 @@ async def _pipeline(
         (metadata or {}).get("site") or _conv_meta.get("site")
     ).get("contact_phone", "+1 (888) 322-7999")
     _awaiting_correction_directive = False
-    # Correction-turn state (post-summary). The main extraction at Step 4
-    # reuses _correction_context so a value the probe resolved — a day-only
-    # return, a bare "Return" — actually reaches the lead instead of being
-    # re-extracted without context and lost.
-    _correction_context: Optional[dict] = None
-    _clear_return_date = False
-    _suppress_return_date = False
-    _multi_city_declared = False
-    # An added leg describes ITSELF, not the trip: "return from Paris to
-    # Sydney on nov 9" must not overwrite Marky's real route and departure.
-    _suppress_leg_fields = False
-    if _conv_meta.get("summary_shown_at") and not _conv_meta.get("confirmed_at"):
+    # A callback request outranks the confirmation wall: JOSEF asked to be
+    # rung WHILE a summary was on the table, and the ambiguity re-ask
+    # answered him first — the exact state his transcript was reported in.
+    # Step 3.45 owns those turns.
+    from app.pipeline.callback_intent import detect_callback_request as _cb_probe
+
+    _callback_pending = _cb_probe(message)
+    if _callback_pending and _conv_meta.get("summary_shown_at"):
+        logger.info(f"[{cid}] Callback request during summary wait — it wins")
+
+    if (
+        _conv_meta.get("summary_shown_at")
+        and not _conv_meta.get("confirmed_at")
+        and not _callback_pending
+    ):
         _normalized = _normalize_reply(message)
         # REJECTION comes FIRST — before the confirm listener and before any
         # other post-summary listener. Conv "Costa": the client answered "no"
@@ -728,6 +731,90 @@ async def _pipeline(
         )
         if probe_count >= 3:
             logger.warning(f"[{cid}] SECURITY: Multi-turn probe detected ({probe_count} probes in history)")
+
+    # ── STEP 3.45: CALLBACK REQUEST ──────────────────────────
+    # JOSEF typed his number and asked us to ring him; the pipeline asked
+    # what he meant. A callback request is never ambiguous — hear it,
+    # keep the number, queue a human, and carry on collecting.
+    from app.pipeline.callback_intent import callback_note
+
+    _callback = _callback_pending
+    if _callback:
+        logger.info(f"[{cid}] Callback requested (cue={_callback['cue']})")
+        try:
+            _cb_lead = await lead_service.get_or_create_lead(cid)
+            if _cb_lead:
+                _cb_signals = _cb_lead.get("intent_signals")
+                _cb_signals = dict(_cb_signals) if isinstance(_cb_signals, dict) else {}
+                _cb_signals["callback_requested"] = True
+                _cb_note = callback_note(_callback["number"])
+                _cb_notes = (_cb_lead.get("notes") or "").strip()
+                _cb_payload: dict = {"intent_signals": _cb_signals}
+                if _cb_note not in _cb_notes:
+                    # The consultant must see it FIRST, above everything else.
+                    _cb_payload["notes"] = f"{_cb_note}\n{_cb_notes}".strip()
+                if _callback["number"] and not _cb_lead.get("visitor_phone"):
+                    _cb_payload["visitor_phone"] = _callback["number"]
+                await db.update_lead(_cb_lead["id"], _cb_payload)
+        except Exception as e:
+            logger.warning(f"[{cid}] callback note failed: {e}")
+        # A human owns this now — same queue the explicit agent request uses.
+        try:
+            from app.services.routing import dispatch_needs_agent
+
+            if (conv or {}).get("status") != "needs_agent":
+                await db.update_conversation(cid, {"status": "needs_agent"})
+            _fire_and_forget(dispatch_needs_agent(cid))
+        except Exception as e:
+            logger.warning(f"[{cid}] callback dispatch failed: {e}")
+
+        # Confirm warmly and keep collecting — deterministic, because the
+        # one thing this turn must never do is ask him what he meant.
+        from app.ai.templates import get_template as _cb_tpl
+
+        if _callback["number"]:
+            _cb_text = _cb_tpl(
+                "callback_confirmed", tunnel, visitor, number=_callback["number"]
+            ) or f"Of course — a consultant will call you on {_callback['number']}."
+            _cb_next = ""
+            try:
+                from app.models.lead import get_missing_fields as _cb_gmf
+
+                _cb_missing = _cb_gmf(_cb_lead or {}, {
+                    "visitor_name": getattr(visitor, "name", None),
+                    "visitor_email": getattr(visitor, "email", None),
+                    "visitor_phone": _callback["number"],
+                })
+                _cb_ask_map = {
+                    "travel dates": "ask_dates", "departure date": "ask_dates",
+                    "email": "ask_email", "name": "ask_name",
+                    "passengers": "ask_passengers",
+                }
+                for _m in _cb_missing:
+                    _k = next((v for k, v in _cb_ask_map.items() if k in _m), None)
+                    if _k:
+                        _q = _cb_tpl(_k, tunnel, visitor)
+                        if _q:
+                            _cb_next = f" While they get to you — {_q[0].lower()}{_q[1:]}"
+                            break
+            except Exception:
+                pass
+            _cb_text = f"{_cb_text}{_cb_next}"
+        else:
+            _cb_text = _cb_tpl("callback_confirmed_no_number", tunnel, visitor) or (
+                "Of course — a consultant will call you. "
+                "What's the best number to reach you on?"
+            )
+        await conversation_service.add_message(
+            conversation_id=cid, role="ai", content=_cb_text,
+            model_used="template", cost=0.0,
+        )
+        if _persist_state is not None:
+            _persist_state["ai_persisted"] = True
+        return ChatResponse(
+            conversation_id=cid, message=_cb_text,
+            type="template", model_used="template",
+        )
 
     # ── STEP 3.5: AGENT HANDOFF CHECK ────────────────────────
     if intent == Intent.TALK_TO_AGENT and history:

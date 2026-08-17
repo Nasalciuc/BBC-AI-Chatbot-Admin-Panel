@@ -65,6 +65,15 @@ TEMPLATES: dict[str, list[str]] = {
         f"within {CONSULTANT_SLA_TEXT} with the best {{route}} options. "
         "We'll contact you at {contact}.",
     ],
+    # JOSEF: a client who asks to be called gets a YES, not a question
+    # about what he meant.
+    "callback_confirmed:sales": [
+        "Of course — I'm putting a consultant on this to call you on {number}.",
+    ],
+    "callback_confirmed_no_number:sales": [
+        "Of course — a consultant will call you. "
+        "What's the best number to reach you on?",
+    ],
     "summary_correction:sales": [
         "Thanks for catching that — what should I fix: "
         "the route, the dates, or the passengers?",

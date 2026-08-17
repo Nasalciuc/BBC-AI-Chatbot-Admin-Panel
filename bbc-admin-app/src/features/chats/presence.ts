@@ -45,9 +45,20 @@ export function describeClientPresence(
 
   if (presence === 'online') {
     if (fresh) {
-      return { label: 'Active now', dot: 'bg-emerald-500', text: 'text-emerald-600', tone: 'green' }
+      // The age is shown even when live: an operator calibrates trust from
+      // "last seen 12s ago", not from a green dot that might be an hour old.
+      return {
+        label: age ? `Active now · last seen ${age}` : 'Active now',
+        dot: 'bg-emerald-500', text: 'text-emerald-600', tone: 'green',
+      }
     }
     return { ...NEUTRAL, label: age ? `Active · ${age}` : 'Active · a while ago' }
+  }
+
+  // Derived server-side (widget pings every 30s while really open): two
+  // missed pings and the stored "online" is no longer evidence of anyone.
+  if (presence === 'stale') {
+    return { ...NEUTRAL, label: age ? `No signal for ${age}` : 'No signal' }
   }
 
   if (presence === 'minimized') {
@@ -89,8 +100,14 @@ export function listRowDot(
   return describeClientPresence('online', lastActivityAt, now).dot
 }
 
-/** Presence key from conversation metadata, tolerating legacy shapes. */
+/** Presence key from conversation metadata, tolerating legacy shapes.
+ *
+ * The server derives `widget_presence_effective` on read (age-aware) and
+ * it WINS: a stored "online" is a claim the client may have abandoned
+ * without ever managing to send a close beacon. */
 export function presenceFromMetadata(m: Record<string, unknown>): string | undefined {
+  const effective = m.widget_presence_effective
+  if (typeof effective === 'string' && effective) return effective
   const presence = m.widget_presence
   if (typeof presence === 'string' && presence) return presence
   if (m.widget_open === true || m.widget_open === 'true') return 'online'
