@@ -34,17 +34,27 @@ GENERATION_HEALTH: dict = {
     "fallbacks_since_boot": 0,
     "last_at": None,
     "last_intent": None,
+    "last_reason": None,
+    # Which stage fell back — a closing served as a template is a
+    # different (and more expensive) failure than a mid-collection turn.
+    "by_reason": {},
 }
 
 
-def _record_generation_fallback(intent, tier: str, conversation_id) -> None:
+def _record_generation_fallback(
+    intent, tier: str, conversation_id, reason: str = "generation"
+) -> None:
     from datetime import datetime, timezone
 
     GENERATION_HEALTH["fallbacks_since_boot"] += 1
     GENERATION_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
     GENERATION_HEALTH["last_intent"] = getattr(intent, "value", str(intent))
+    GENERATION_HEALTH["last_reason"] = reason
+    GENERATION_HEALTH["by_reason"][reason] = (
+        GENERATION_HEALTH["by_reason"].get(reason, 0) + 1
+    )
     logger.error(
-        f"GENERATION FALLBACK: all AI failed — serving template | "
+        f"GENERATION FALLBACK: serving template | reason={reason} "
         f"model={tier} intent={getattr(intent, 'value', intent)} "
         f"conversation_id={conversation_id or 'unknown'} "
         f"(original exception in the claude.py error above)"

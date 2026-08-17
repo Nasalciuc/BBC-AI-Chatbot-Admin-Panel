@@ -129,10 +129,16 @@ class TestRejectionBranch:
         assert abs(_arm - src.index('summary_shown_at"] = ')) > 600
 
     def test_closing_requires_confirmed_at(self):
+        """The invariant: no closing without an explicit confirmation.
+
+        (Wave 6 widened the SECOND half of the condition — a confirmed
+        client whose CRM push failed used to get no closing at all — but
+        confirmed_at itself stays mandatory.)"""
         from app.pipeline import orchestrator as orch
 
         src = inspect.getsource(orch)
-        assert 'elif _conv_meta.get("confirmed_at") and _crm_submitted_this_turn:' in src
+        assert 'elif _conv_meta.get("confirmed_at") and (' in src
+        assert "_confirmed_this_turn or _crm_submitted_this_turn" in src
 
 
 # ── 1f + 1g: ensure_lead + un-swallowed money path ───────────────────────
