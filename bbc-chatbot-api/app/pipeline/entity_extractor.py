@@ -45,6 +45,9 @@ class ExtractedEntities:
     # Set ONLY on the correction path (context given): "17th am" — the
     # morning/evening preference rides into the lead notes.
     time_preference: Optional[str] = None
+    # Two dates the client offered as alternatives ("Oct 1 or Oct 8") —
+    # the pipeline must ASK which, never choose.
+    date_alternatives: Optional[list] = None
 
 
 # ── Patterns ──────────────────────────────────────────────────
@@ -1025,6 +1028,55 @@ _PAX_PHRASE_RE = re.compile(
 _TIME_PREF_MORNING_RE = re.compile(r"\b(?:am|morning)\b", re.IGNORECASE)
 _TIME_PREF_EVENING_RE = re.compile(r"\b(?:pm|evening|night)\b", re.IGNORECASE)
 
+# POST-SUMMARY ONLY. "Return", "Returning", "Return glight" (Alistair's
+# typo) mean round trip once a summary is on the table — but ONLY in a
+# short, return-centric message. Inside a sentence the word means many
+# other things ("what is your return policy", "a returning customer",
+# "I'll return to you later"), and reading those as a round trip rewrites
+# a lead the client never touched.
+_CORRECTION_RETURN_RE = re.compile(r"\breturn(?:ing)?\b", re.IGNORECASE)
+_RETURN_MAX_WORDS = 4
+# The same word with a NEGATION is the opposite instruction: the client is
+# cancelling the return, which is a ONE-WAY correction (KAZUO: "Drop the
+# return", "no return needed").
+_RETURN_CANCEL_RE = re.compile(
+    r"\b(?:no|not|dont|don't|do\s+not|without|cancel|drop|remove|skip|forget)\b"
+    r"[^.?!]{0,24}\breturn(?:ing)?\b"
+    r"|\breturn(?:ing)?\b[^.?!]{0,16}\b(?:not\s+needed|isn'?t\s+needed|cancelled|canceled)\b",
+    re.IGNORECASE,
+)
+# Figures of speech that must never delete a booking field.
+_RETURN_IDIOM_RE = re.compile(r"point\s+of\s+no\s+return", re.IGNORECASE)
+# Nouns that are not a flight leg.
+_RETURN_NOUN_RE = re.compile(
+    r"\breturn(?:ing)?\s+(?:the\s+|my\s+|your\s+|a\s+)?"
+    r"(?:call|policy|ticket|customer|item|order|favou?r|email|message)\b",
+    re.IGNORECASE,
+)
+# "Oct 1 or Oct 8" / "Oct 1 or the 8th" — alternatives, never a range.
+# The word half MUST be a real month: an unconstrained \w+ turned
+# "Terminal 5 or Terminal 2" and "gate 5 or gate 6" into date questions.
+_ALT_SIDE = (
+    rf"(?:(?:{_MONTH_PAT})\s+\d{{1,2}}(?:st|nd|rd|th)?"
+    rf"|\d{{1,2}}(?:st|nd|rd|th)\s+(?:of\s+)?(?:{_MONTH_PAT})"
+    rf"|the\s+\d{{1,2}}(?:st|nd|rd|th)"
+    rf"|\d{{1,2}}(?:st|nd|rd|th)"
+    rf"|\d{{4}}-\d{{2}}-\d{{2}})"
+)
+_ALT_JOIN_RE = re.compile(
+    rf"({_ALT_SIDE})\s+or\s+({_ALT_SIDE})", re.IGNORECASE
+)
+
+
+def _date_alternatives(text: str) -> Optional[list[str]]:
+    """The two options a client offered, verbatim — the pipeline asks
+    which one instead of silently picking the first."""
+    m = _ALT_JOIN_RE.search(text)
+    if not m:
+        return None
+    a, b = m.group(1).strip(), m.group(2).strip()
+    return [a, b] if a.lower() != b.lower() else None
+
 
 def _resolve_day_only_return(entities: ExtractedEntities, text: str, departure_iso: str) -> None:
     """Resolve "returning on the 17th" against the summary's departure.
@@ -1330,6 +1382,45 @@ def extract_entities(
     # with a month always wins.
     if context and context.get("departure_date"):
         _resolve_day_only_return(entities, text, context["departure_date"])
+
+    # We ASKED "when would you fly back?" — the answer is a return date,
+    # whatever shape it takes. Reading it as a departure moved the
+    # outbound and re-triggered the same question every turn.
+    if context and context.get("expect") == "return":
+        if entities.departure_date and not entities.return_date:
+            entities.return_date = entities.departure_date
+            entities.departure_date = None
+        if entities.return_date and entities.trip_type != "multi_city":
+            entities.trip_type = "round_trip"
+
+    # Correction-path only (context given): after a summary, a bare
+    # "Return" / "Return glight" IS a round-trip correction — Alistair
+    # said it twice and the pipeline heard nothing. Mid-collection the
+    # same word is ambiguous ("I'll return the call"), so this never
+    # runs there.
+    if context is not None:
+        if not entities.trip_type:
+            _words = len(text.split())
+            if _RETURN_IDIOM_RE.search(text):
+                pass  # "point of no return" is not a booking instruction
+            elif _RETURN_CANCEL_RE.search(text):
+                # "No return needed" is a ONE-WAY correction, not a round
+                # trip. Reading it as round trip made the pipeline argue
+                # with the client and re-ask forever.
+                entities.trip_type = "one_way"
+            elif (
+                _CORRECTION_RETURN_RE.search(text)
+                and not _RETURN_NOUN_RE.search(text)
+                and "?" not in text
+                and _words <= _RETURN_MAX_WORDS
+            ):
+                entities.trip_type = "round_trip"
+        # "Oct 1 or Oct 8" — two dates joined by OR are ALTERNATIVES, not
+        # a range. Picking one silently is how a client ends up booked on
+        # a day they never chose.
+        _alts = _date_alternatives(text)
+        if _alts:
+            entities.date_alternatives = _alts
 
     found = [k for k in ["email", "phone", "name", "origin_code", "destination_code",
                           "passengers", "cabin_class", "departure_date", "return_date", "trip_type",
