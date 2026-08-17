@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { DotsHorizontalIcon } from '@radix-ui/react-icons'
 import { type Row } from '@tanstack/react-table'
 import { Mail, Trash2, UserPen } from 'lucide-react'
@@ -22,6 +23,7 @@ type DataTableRowActionsProps = {
 
 export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { setOpen, setCurrentRow } = useUsers()
+  const [inviting, setInviting] = useState(false)
   const role = useAuthStore((s) => s.auth.user?.role)
   if (role === 'supervisor') return null
   return (
@@ -50,7 +52,14 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuItem>
           {row.original.is_active && !row.original.last_seen_at && (
             <DropdownMenuItem
+              disabled={inviting}
+              onSelect={(e) => e.preventDefault()}
               onClick={async () => {
+                // Disabled until the response lands: a double click used to
+                // mint two tokens 240ms apart, and the second silently
+                // invalidated the one already in the operator's inbox.
+                if (inviting) return
+                setInviting(true)
                 try {
                   await inviteUser({
                     name: row.original.name || '',
@@ -61,10 +70,12 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
                   toast.success('Invite resent successfully')
                 } catch (err: unknown) {
                   toast.error(err instanceof Error ? err.message : 'Failed to resend invite')
+                } finally {
+                  setInviting(false)
                 }
               }}
             >
-              Resend Invite
+              {inviting ? 'Sending…' : 'Resend Invite'}
               <DropdownMenuShortcut>
                 <Mail size={16} />
               </DropdownMenuShortcut>

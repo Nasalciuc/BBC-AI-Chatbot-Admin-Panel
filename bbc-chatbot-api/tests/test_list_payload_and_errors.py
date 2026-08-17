@@ -154,7 +154,13 @@ async def test_engaged_agent_id_is_reshaped_so_agent_state_still_works():
 
     assert total == 1
     row = out[0]
-    assert row["metadata"] == {"engaged_agent_id": ENGAGED_ID}
+    # The lifted keys grew when presence became read-derived: the list
+    # REPLACES metadata, so everything the panel needs must be lifted here.
+    assert row["metadata"]["engaged_agent_id"] == ENGAGED_ID
+    assert set(row["metadata"]) == {
+        "engaged_agent_id", "widget_presence",
+        "widget_last_event_at", "widget_pings",
+    }
     # The lifted alias is not left lying around at the top level
     assert "engaged_agent_id" not in {k for k in row if k != "metadata"}
     assert row["agent_state"] == "fallback"

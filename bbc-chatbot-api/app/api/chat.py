@@ -738,6 +738,37 @@ async def mark_chat_session_open(
     return {"success": True}
 
 
+@router.post("/chat/session/{conversation_id}/ping")
+async def ping_chat_session(
+    conversation_id: str,
+    _owner: None = Depends(require_visitor_ownership),
+):
+    """The widget is open and the tab is visible — the client is really there.
+
+    9 of the 34 vanish-census conversations still read `online` with no
+    close event ever recorded: `keepalive` beacons die with a killed tab
+    or a suspended phone, and nothing ever contradicted the stored value.
+    An operator then opens the chat believing someone is on the other end.
+
+    A PATCH, not a read-modify-write: at 120 pings/hour a full-blob
+    rewrite would eventually revert a flag another request claimed in
+    between (closing_sent_at, confirmed_at, summary state) and would
+    cost a whole conversation read each time. Only these four keys are
+    merged, server-side, under 029's no-touch discipline — a heartbeat
+    must never resurrect a conversation to the top of the panel's list."""
+    ok = await db.patch_conversation_presence(conversation_id, {
+        "widget_open": True,
+        "widget_presence": "online",
+        "widget_last_event": "ping",
+        "widget_last_event_at": datetime.now(timezone.utc).isoformat(),
+        # Proof this conversation has a PINGING widget: without it the
+        # server cannot tell "silent because gone" from "silent because
+        # the client runs an older bundle that never pings".
+        "widget_pings": True,
+    })
+    return {"success": ok}
+
+
 @router.post("/chat/session/{conversation_id}/close")
 async def mark_chat_session_close(
     conversation_id: str,

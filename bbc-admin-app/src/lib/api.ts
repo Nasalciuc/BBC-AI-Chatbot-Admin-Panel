@@ -88,7 +88,17 @@ export async function apiFetch<T>(
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new ApiError(res.status, text || `HTTP ${res.status}`)
+    // FastAPI answers {"detail": "..."} — throwing the raw body meant
+    // every error toast (and the set-password page) showed JSON to a
+    // human. Unwrap it once, here, for every caller.
+    let message = text || `HTTP ${res.status}`
+    try {
+      const body = JSON.parse(text) as { detail?: unknown }
+      if (typeof body?.detail === 'string' && body.detail) message = body.detail
+    } catch {
+      /* not JSON — keep the raw text */
+    }
+    throw new ApiError(res.status, message)
   }
   // 204 No Content → return undefined
   if (res.status === 204) return undefined as unknown as T

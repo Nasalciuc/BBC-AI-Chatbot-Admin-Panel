@@ -110,6 +110,10 @@ class TestTouchGuard:
     def test_exactly_three_presence_sites_switched(self):
         src = _read(os.path.join(API_DIR, "api", "chat.py"))
         assert src.count("db.update_conversation_presence(") == 3
+        # The visitor heartbeat is a FOURTH presence write, but it uses the
+        # patch path (no read, no full-blob overwrite) — same 029 no-touch
+        # discipline, different tool.
+        assert src.count("db.patch_conversation_presence(") == 1
 
     @pytest.mark.asyncio
     async def test_rpc_path_used(self):

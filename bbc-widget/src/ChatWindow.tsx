@@ -57,6 +57,10 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSentRef = useRef<number>(0)
   const closeSentRef = useRef(false)
+  // Last time the client actually DID something in the chat. A tab left
+  // open on a desk is visible, not present — the ping stops after a
+  // stretch of real idleness so the server can age the state down.
+  const lastInteractionRef = useRef(Date.now())
   /** Operator-typing state, polled from the backend (name only, never the draft). */
   const [agentTyping, setAgentTyping] = useState<{ is_typing: boolean; name: string }>({
     is_typing: false,
@@ -185,6 +189,40 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     window.addEventListener('beforeunload', handlePageLeave)
     window.addEventListener('pageshow', handlePageReturn)
 
+    // PRESENCE HEARTBEAT — the close beacon is best-effort: a killed tab,
+    // a suspended phone or a dropped network loses it, and the panel then
+    // shows "online" for someone who left an hour ago. A ping every 30s
+    // while the tab is VISIBLE means silence is itself the signal: two
+    // missed pings and the server derives 'stale' on read. Presence-only
+    // write — it never bumps updated_at (migration 029).
+    const PING_MS = 30_000
+    // A tab left open on a desk overnight is visible, not present. After
+    // this long without the client touching the chat, stop claiming they
+    // are there and let the server age the state down honestly.
+    const PING_IDLE_CUTOFF_MS = 15 * 60_000
+    let pingInterval: ReturnType<typeof setInterval> | null = null
+    const sendPing = () => {
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - lastInteractionRef.current > PING_IDLE_CUTOFF_MS) return
+      apiFetch(`${apiUrl}/api/chat/session/${convId}/ping`, { method: 'POST' }).catch(() => {})
+    }
+    const startPing = () => {
+      if (pingInterval) return
+      sendPing()
+      pingInterval = setInterval(sendPing, PING_MS)
+    }
+    const stopPing = () => {
+      if (!pingInterval) return
+      clearInterval(pingInterval)
+      pingInterval = null
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') startPing()
+      else stopPing()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    startPing()
+
     let source: EventSource | null = null
     let fallbackInterval: ReturnType<typeof setInterval> | null = null
     let errorCount = 0
@@ -291,6 +329,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       source?.close()
       if (fallbackInterval) clearInterval(fallbackInterval)
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+      stopPing()
+      document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('pagehide', handlePageLeave)
       window.removeEventListener('beforeunload', handlePageLeave)
       window.removeEventListener('pageshow', handlePageReturn)
@@ -387,6 +427,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
+    lastInteractionRef.current = Date.now()
     // Clear typing indicator immediately when sending
     if (convId) {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
@@ -763,6 +804,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
           value={input}
           onInput={e => {
             const val = (e.target as HTMLInputElement).value
+            lastInteractionRef.current = Date.now()
             setInput(val)
             sendTypingEvent(val)
           }}

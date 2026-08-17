@@ -286,10 +286,14 @@ class TestDbRetry:
         inserts = src.count(".insert(")
         # call-site marks only (trailing , or )) — not the docstring mention
         marks = len(re.findall(r"idempotent=False[,)]", src))
-        assert inserts == marks, (
-            f"{inserts} .insert( sites but {marks} idempotent=False marks — "
+        # The presence PATCH rpc is also non-idempotent (a retried merge is
+        # harmless, but a retried heartbeat is pointless work), so marks may
+        # exceed inserts — every INSERT must still carry one.
+        assert marks >= inserts, (
+            f"{inserts} .insert( sites but only {marks} idempotent=False marks — "
             "a new INSERT went through _run_sync with the retry enabled"
         )
+        assert "patch_conv_presence" in src
 
 
 # ════════════════════════════════════════════════════════════
