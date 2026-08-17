@@ -15,6 +15,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
 from app.api.teams import router as teams_router
 from app.api.agent import router as agent_router
+from app.api.integration import router as integration_router
 from app.api.tasks import router as tasks_router
 from app.api.notifications import router as notifications_router
 from app.api.lessons import router as lessons_router
@@ -67,6 +68,11 @@ app.include_router(cron_router, prefix="/api", tags=["cron"])
 
 # Auth: PUBLIC login, protected invite (auth dependency inside the route)
 app.include_router(auth_router)
+
+# Integration: PUBLIC by design — the caller is the CRM's BACKEND, not a
+# panel user, and its auth is the CRM-signed token (same shared secret as
+# /sso/crm-exchange). Read-only: it answers questions, it changes nothing.
+app.include_router(integration_router, prefix="/api", tags=["integration"])
 
 # Admin: ALL PROTECTED by get_current_user (Basic + Bearer)
 from fastapi import Depends

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from config.settings import settings
 from app.db import supabase as db
 from app.security.auth import get_current_user
+from app.security.crm_token import PURPOSE_LOGIN, verify_crm_token
 from app.security.rate_limiter import check_rate_limit
 from app.services.storage import upload_avatar
 
@@ -108,27 +109,12 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
 
     role/tunnel_scope ALWAYS come from OUR users table — never trusted from the CRM
     token (they send none today; even if added later, ignored). Fails closed."""
-    if not settings.chat_sso_secret or not settings.chat_sso_secret.strip():
-        raise HTTPException(503, "CRM SSO not configured")
-
-    try:
-        payload = jwt.decode(
-            req.token,
-            settings.chat_sso_secret,
-            algorithms=["HS256"],
-            options={"require": ["exp", "iat"]},
-        )
-    except jwt.ExpiredSignatureError:
-        logger.warning("CRM SSO exchange: token expired")
-        raise HTTPException(401, "SSO token expired — please reload from the CRM")
-    except jwt.InvalidTokenError:
-        # Covers bad signature, malformed, and ImmatureSignatureError (nbf in future).
-        logger.warning("CRM SSO exchange: invalid token")
-        raise HTTPException(401, "Invalid SSO token")
-
-    if payload.get("iss") != "crm":
-        logger.warning(f"CRM SSO exchange: bad issuer {payload.get('iss')!r}")
-        raise HTTPException(401, "Invalid SSO token issuer")
+    # Shared with the presence gate (app/security/crm_token.py): one
+    # verification policy, not two copies drifting apart. The purpose is
+    # named explicitly so a token minted for a presence CHECK can never
+    # be exchanged for a session — absent stays accepted, which is the
+    # CRM's shape today.
+    payload = verify_crm_token(req.token, expected_purpose=PURPOSE_LOGIN)
 
     email = payload.get("email")
     if not email:
