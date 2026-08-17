@@ -140,6 +140,35 @@ def _fire_and_forget(coro):
     return task
 
 
+async def _persist_unambiguous_correction(cid: str, probe, *, drop_dates: bool) -> None:
+    """A question about ONE field must not eat the rest of the message.
+
+    "Make it 4 passengers, business, returning Oct 1 or Oct 8" asks which
+    date — and used to discard the passengers and the cabin with it, so
+    the client had to say them again (and often didn't). Everything
+    unambiguous is written before the question goes out; only the fields
+    the question is ABOUT are held back."""
+    payload: dict = {}
+    if probe.passengers:
+        payload["passengers"] = probe.passengers
+    if probe.cabin_class:
+        payload["cabin_class"] = probe.cabin_class
+    if not drop_dates:
+        if probe.departure_date:
+            payload["departure_date"] = probe.departure_date
+        if probe.origin_code:
+            payload["origin"] = probe.origin_code
+        if probe.destination_code:
+            payload["destination"] = probe.destination_code
+    if not payload:
+        return
+    try:
+        await lead_service.update_lead_from_entities(cid, payload)
+        logger.info(f"[{cid}] Ask-turn kept: {', '.join(sorted(payload))}")
+    except Exception as e:
+        logger.warning(f"[{cid}] Ask-turn persistence failed: {e}")
+
+
 async def _persist_fallback_reply(cid: str, text: str, reason: str) -> None:
     """Failure handlers MUST leave a trace the visitor and the admin can see.
 
@@ -371,6 +400,17 @@ async def _pipeline(
         (metadata or {}).get("site") or _conv_meta.get("site")
     ).get("contact_phone", "+1 (888) 322-7999")
     _awaiting_correction_directive = False
+    # Correction-turn state (post-summary). The main extraction at Step 4
+    # reuses _correction_context so a value the probe resolved — a day-only
+    # return, a bare "Return" — actually reaches the lead instead of being
+    # re-extracted without context and lost.
+    _correction_context: Optional[dict] = None
+    _clear_return_date = False
+    _suppress_return_date = False
+    _multi_city_declared = False
+    # An added leg describes ITSELF, not the trip: "return from Paris to
+    # Sydney on nov 9" must not overwrite Marky's real route and departure.
+    _suppress_leg_fields = False
     if _conv_meta.get("summary_shown_at") and not _conv_meta.get("confirmed_at"):
         _normalized = _normalize_reply(message)
         # REJECTION comes FIRST — before the confirm listener and before any
@@ -417,12 +457,63 @@ async def _pipeline(
                 _lead_for_probe = await lead_service.get_or_create_lead(cid)
             except Exception:
                 pass
-            _probe = extract_entities(
-                message,
-                context={
-                    "departure_date": (_lead_for_probe or {}).get("departure_date")
-                },
+            _probe_ctx = {
+                "departure_date": (_lead_for_probe or {}).get("departure_date")
+            }
+            _probe = extract_entities(message, context=_probe_ctx)
+
+            # What does this correction MEAN? (app/pipeline/corrections.py —
+            # MARKY's third city, KAZUO's impossible pairs, ALISTAIR's
+            # field-without-a-value.) Asks beat writes.
+            from app.pipeline.corrections import (
+                classify_correction,
+                detect_field_only_correction,
             )
+
+            _outcome = classify_correction(_probe, _lead_for_probe or {}, message)
+            if _outcome.ask:
+                from app.ai.templates import get_template as _get_tpl
+
+                _ask_map = {
+                    "date_choice": "ask_date_choice",
+                    "return_before_departure": "ask_return_date",
+                    "return_equals_departure": "ask_return_date",
+                }
+                _fmt = {}
+                if _outcome.ask == "date_choice" and len(_outcome.ask_options) >= 2:
+                    _fmt = {
+                        "option_a": _outcome.ask_options[0],
+                        "option_b": _outcome.ask_options[1],
+                    }
+                _ask_text = _get_tpl(
+                    _ask_map[_outcome.ask], tunnel, visitor, **_fmt
+                ) or "Could you confirm the exact dates for me?"
+                if _outcome.ask == "return_before_departure":
+                    _ask_text = (
+                        "That return lands before the departure — "
+                        "when would you fly back?"
+                    )
+                elif _outcome.ask == "return_equals_departure":
+                    _ask_text = (
+                        "Same day there and back — did you mean a later "
+                        "return? When would you fly back?"
+                    )
+                logger.info(
+                    f"[{cid}] Post-summary correction needs an answer "
+                    f"({_outcome.ask}) — asking instead of rendering"
+                )
+                # Everything the client said that ISN'T in question stays.
+                await _persist_unambiguous_correction(cid, _probe, drop_dates=True)
+                await conversation_service.add_message(
+                    conversation_id=cid, role="ai", content=_ask_text,
+                    model_used="template", cost=0.0,
+                )
+                if _persist_state is not None:
+                    _persist_state["ai_persisted"] = True
+                return ChatResponse(
+                    conversation_id=cid, message=_ask_text,
+                    type="template", model_used="template",
+                )
             # Deborah, TPA→SJU: "Round trip, returning on the 17th" DID set
             # trip_type — and the old gate threw the entity away. A cabin
             # change post-summary is equally a correction.
@@ -447,10 +538,103 @@ async def _pipeline(
                 except Exception as e:
                     logger.warning(f"[{cid}] summary re-open failed: {e}")
                 _awaiting_correction_directive = True
+                # Step 4 re-extracts the SAME message; without the context
+                # the probe used, a day-only return ("the 17th") or a bare
+                # "Return" would be parsed away and never reach the lead.
+                _correction_context = _probe_ctx
+                _clear_return_date = _outcome.clear_return
+                _suppress_return_date = _outcome.drop_return
                 logger.info(
                     f"[{cid}] Post-summary correction — summary will re-render "
                     f"(triggered by: {', '.join(_correction_fields)})"
                 )
+                # MARKY: "And return from Paris to Sydney on nov 9" — a leg
+                # between two cities the trip doesn't touch. It is ADDED,
+                # never swapped in over the route he already gave.
+                # Sticky, but never deaf: if the client now states a simple
+                # trip type ("actually just a round trip"), that wins and
+                # the multi-city latch is released — otherwise every later
+                # correction was overwritten back to multi_city forever.
+                if _probe.trip_type in ("one_way", "round_trip"):
+                    if _conv_meta.get("multi_city_declared"):
+                        _meta_clear = dict(_conv_meta)
+                        _meta_clear.pop("multi_city_declared", None)
+                        _meta_clear.pop("extra_legs", None)
+                        try:
+                            await db.update_conversation(cid, {"metadata": _meta_clear})
+                            _conv_meta = _meta_clear
+                        except Exception as e:
+                            logger.warning(f"[{cid}] multi-city release failed: {e}")
+                        logger.info(
+                            f"[{cid}] Client restated a simple trip type "
+                            f"({_probe.trip_type}) — multi-city released"
+                        )
+                elif _outcome.multi_city or _conv_meta.get("multi_city_declared"):
+                    _multi_city_declared = True
+                if _outcome.extra_leg:
+                    _suppress_leg_fields = True
+                    _legs = list(_conv_meta.get("extra_legs") or [])
+                    if _outcome.extra_leg not in _legs:
+                        _legs.append(_outcome.extra_leg)
+                    _meta_legs = dict(_conv_meta)
+                    _meta_legs["extra_legs"] = _legs
+                    _meta_legs["multi_city_declared"] = True
+                    try:
+                        await db.update_conversation(cid, {"metadata": _meta_legs})
+                        _conv_meta = _meta_legs
+                    except Exception as e:
+                        logger.warning(f"[{cid}] extra-leg persist failed: {e}")
+                    logger.info(
+                        f"[{cid}] Client-stated extra leg: "
+                        f"{_outcome.extra_leg['from']}→{_outcome.extra_leg['to']}"
+                    )
+
+                # ALISTAIR: "round trip dates" carries a trip_type AND names
+                # a field with no value. Persist the trip type, then ask for
+                # the dates — re-rendering the identical summary answers
+                # nothing (it happened to him three times).
+                _field_named = detect_field_only_correction(message, _probe)
+                if _field_named:
+                    if _probe.trip_type and _lead_for_probe:
+                        try:
+                            _tt_payload = {"trip_type": _probe.trip_type}
+                            if _outcome.clear_return:
+                                _tt_payload["return_date"] = None
+                            await db.update_lead(_lead_for_probe["id"], _tt_payload)
+                        except Exception as e:
+                            logger.warning(f"[{cid}] trip-type persist failed: {e}")
+                    from app.ai.templates import get_template as _get_tpl_f
+
+                    _field_text = _get_tpl_f(
+                        f"ask_field_{_field_named}", tunnel, visitor
+                    ) or "Of course — what should it be?"
+                    logger.info(
+                        f"[{cid}] Correction named '{_field_named}' with no value — asking"
+                    )
+                    await _persist_unambiguous_correction(
+                        cid, _probe, drop_dates=(_field_named == "dates")
+                    )
+                    if _probe.time_preference and _lead_for_probe:
+                        try:
+                            _n = (_lead_for_probe.get("notes") or "").strip()
+                            _l = f"Time preference: {_probe.time_preference}"
+                            if _l not in _n:
+                                await db.update_lead(
+                                    _lead_for_probe["id"],
+                                    {"notes": f"{_n}\n{_l}".strip()},
+                                )
+                        except Exception as e:
+                            logger.warning(f"[{cid}] time-pref note failed: {e}")
+                    await conversation_service.add_message(
+                        conversation_id=cid, role="ai", content=_field_text,
+                        model_used="template", cost=0.0,
+                    )
+                    if _persist_state is not None:
+                        _persist_state["ai_persisted"] = True
+                    return ChatResponse(
+                        conversation_id=cid, message=_field_text,
+                        type="template", model_used="template",
+                    )
                 # "17th am" — the morning/evening preference survives into
                 # the lead notes even though the correction owns the turn.
                 if _probe.time_preference and _lead_for_probe:
@@ -466,6 +650,30 @@ async def _pipeline(
                         logger.warning(f"[{cid}] time-preference note failed: {e}")
             else:
                 from app.ai.templates import get_template as _get_tpl
+
+                # ALISTAIR: "round trip dates" / "change the dates" names a
+                # FIELD with no value. Re-rendering the identical summary
+                # (what happened three times) answers nothing — ask for the
+                # field he just named.
+                _field_only = detect_field_only_correction(message, _probe)
+                if _field_only:
+                    _field_text = _get_tpl(
+                        f"ask_field_{_field_only}", tunnel, visitor
+                    ) or "Of course — what should it be?"
+                    logger.info(
+                        f"[{cid}] Post-summary field-only correction "
+                        f"({_field_only}) — asking for the value"
+                    )
+                    await conversation_service.add_message(
+                        conversation_id=cid, role="ai", content=_field_text,
+                        model_used="template", cost=0.0,
+                    )
+                    if _persist_state is not None:
+                        _persist_state["ai_persisted"] = True
+                    return ChatResponse(
+                        conversation_id=cid, message=_field_text,
+                        type="template", model_used="template",
+                    )
 
                 logger.info(f"[{cid}] Post-summary ambiguity ('{_normalized[:30]}') — re-asking, not improvising")
                 # A wall that repeats itself verbatim reads as broken: the
@@ -546,7 +754,28 @@ async def _pipeline(
     t_section = time.perf_counter()
 
     # ── STEP 4: ENTITY EXTRACTION ────────────────────────────
-    extracted = extract_entities(message)
+    # _correction_context is set ONLY on a post-summary correction turn, so
+    # the value the probe resolved (day-only return, bare "Return") lands in
+    # the lead instead of being parsed away a second time without context.
+    if _correction_context is None and _conv_meta.get("awaiting_return_date"):
+        # We just asked "when would you fly back?" — a bare date in the
+        # answer is the RETURN. Without this it was read as a new
+        # departure and walked the outbound forward, re-asking forever.
+        _correction_context = {
+            "departure_date": _conv_meta.get("awaiting_return_departure"),
+            "expect": "return",
+        }
+    extracted = extract_entities(message, context=_correction_context)
+    if _conv_meta.get("awaiting_return_date") and extracted.return_date:
+        _meta_clear_rt = dict(_conv_meta)
+        _meta_clear_rt.pop("awaiting_return_date", None)
+        _meta_clear_rt.pop("awaiting_return_departure", None)
+        _meta_clear_rt.pop("return_ask_count", None)
+        try:
+            await db.update_conversation(cid, {"metadata": _meta_clear_rt})
+            _conv_meta = _meta_clear_rt
+        except Exception as e:
+            logger.warning(f"[{cid}] return-ask clear failed: {e}")
 
     # OPEN DOOR: one-turn window after the summary. Needs the extractor's
     # trip fields so a route restatement is never stored as a must-have.
@@ -599,13 +828,17 @@ async def _pipeline(
         "name": visitor.name if visitor.name else None,
         "email": extracted.email or (visitor.email if visitor.email else None),
         "phone": extracted.phone or (visitor.phone if visitor.phone else None),
-        "origin": extracted.origin_code,
-        "destination": extracted.destination_code,
+        # A client-stated extra leg describes the LEG — writing its cities
+        # and date onto the trip is how MARKY's original route vanished.
+        "origin": None if _suppress_leg_fields else extracted.origin_code,
+        "destination": None if _suppress_leg_fields else extracted.destination_code,
         "passengers": extracted.passengers,
         "cabin_class": extracted.cabin_class,
-        "departure_date": extracted.departure_date,
-        "return_date": extracted.return_date,
-        "trip_type": extracted.trip_type,
+        "departure_date": None if _suppress_leg_fields else extracted.departure_date,
+        # KAZUO: an explicit one-way, an impossible pair or a "X or Y"
+        # choice must never leave a return date behind.
+        "return_date": None if _suppress_return_date else extracted.return_date,
+        "trip_type": "multi_city" if _multi_city_declared else extracted.trip_type,
         "itinerary": extracted.itinerary,
         "_children_count": extracted.children_count or 0,
         "_infant_count": extracted.infant_count or 0,
@@ -624,6 +857,13 @@ async def _pipeline(
         "_metadata": _site_metadata,
     }
 
+    # An explicit one-way wipes a stale return date on the lead (KAZUO:
+    # the summary kept showing a return he had just cancelled).
+    if _clear_return_date:
+        entities["_clear_return_date"] = True
+    # MARKY's client-stated legs lead the notes so the consultant reads the
+    # real shape of the trip before anything else.
+
     # Prefer a persona already confirmed on the lead (history) over marketing priors.
     _history_persona = None
     _history_confidence = None
@@ -639,6 +879,29 @@ async def _pipeline(
                 _occasion_for_persona = _prior_signals.get("occasion")
     except Exception as _lead_peek_err:  # noqa: BLE001
         logger.warning(f"[{cid}] Lead peek for persona history failed: {_lead_peek_err}")
+
+    # MARKY's client-stated legs lead the consultant's note. The base route
+    # comes from the LEAD, never from this message: on the leg turn the
+    # message's cities ARE the leg, so reading them here wrote the leg
+    # twice and dropped the real route. A full chain typed by the client
+    # (extractor `itinerary`) wins outright.
+    if _conv_meta.get("extra_legs") and not extracted.itinerary:
+        _leg_parts = [
+            f"{leg.get('from', '?')}→{leg.get('to', '?')}"
+            + (f" {leg['date']}" if leg.get("date") else "")
+            for leg in _conv_meta["extra_legs"]
+        ]
+        _base_route = " → ".join(
+            p for p in (
+                (_prior_lead or {}).get("origin_code"),
+                (_prior_lead or {}).get("destination_code"),
+            ) if p
+        )
+        entities["itinerary"] = (
+            f"{', '.join(_leg_parts)} (client-stated)"
+            if not _base_route
+            else f"{_base_route}, {', '.join(_leg_parts)} (client-stated)"
+        )
 
     _persona, _persona_source, _persona_confidence = derive_t0_persona(
         _site_metadata,
@@ -910,6 +1173,17 @@ async def _pipeline(
     if gen.tool_entities:
         _te = gen.tool_entities
         _merged = False
+        # The tool reads the SAME client message and its prompt says "use
+        # the LAST mentioned value" — so on an added-leg turn it happily
+        # returns the leg's cities and date. Without this the suppressions
+        # above are undone here and MARKY's route dies anyway.
+        _tool_blocked = set()
+        if _suppress_leg_fields:
+            _tool_blocked |= {"origin", "destination", "departure_date", "return_date"}
+        if _clear_return_date or _suppress_return_date:
+            _tool_blocked.add("return_date")
+        if _multi_city_declared:
+            _tool_blocked.add("trip_type")
         for key in [
             "origin",
             "destination",
@@ -919,6 +1193,8 @@ async def _pipeline(
             "passengers",
             "cabin_class",
         ]:
+            if key in _tool_blocked:
+                continue
             val = _te.get(key)
             if val is None:
                 continue
@@ -1084,13 +1360,106 @@ async def _pipeline(
 
     if not _gmf_missing:
         if not _summary_shown:
-            from app.ai.templates import build_summary
+            from app.ai.templates import build_summary, get_template as _tpl75
+            from app.pipeline.corrections import (
+                loop_action,
+                needs_return_date,
+                summary_fingerprint,
+            )
 
-            _summary_text = build_summary(_fl_crm or {})
+            # ALISTAIR: a round trip with no return date rendered a naked
+            # "📅 2026-10-01" — no label, nothing to correct, three loops.
+            # ASK before rendering; the label in build_summary is only a net.
+            _return_asks = int(_conv_meta.get("return_ask_count") or 0)
+            if needs_return_date(_fl_crm or {}) and _return_asks < 2:
+                _rt_ask = _tpl75("ask_return_date", tunnel, visitor) or (
+                    "Round trip it is — when would you fly back?"
+                )
+                validated_text = _rt_ask
+                gen.model_used = "template"
+                gen.cost = 0.0
+                # State, not just words: the NEXT turn must read a bare
+                # "October 20" as the RETURN. Without this the answer to
+                # our own question became a new departure date and walked
+                # the outbound forward, re-triggering the same question.
+                _meta_rt = dict(_conv_meta)
+                _meta_rt["awaiting_return_date"] = True
+                # Stored so the next turn needs no extra query to resolve
+                # a day-only answer ("the 20th") against the departure.
+                _meta_rt["awaiting_return_departure"] = (_fl_crm or {}).get("departure_date")
+                _meta_rt["return_ask_count"] = _return_asks + 1
+                try:
+                    await db.update_conversation(cid, {"metadata": _meta_rt})
+                    _conv_meta = _meta_rt
+                except Exception as e:
+                    logger.warning(f"[{cid}] return-ask state failed: {e}")
+                logger.info(
+                    f"[{cid}] Step 7.5: round trip without a return — "
+                    f"asking (#{_return_asks + 1})"
+                )
+                _summary_text = None
+            elif needs_return_date(_fl_crm or {}):
+                # Asked twice and still nothing: stop asking, render what we
+                # have (labelled) rather than loop a third time.
+                logger.info(f"[{cid}] Step 7.5: return still unknown after 2 asks — rendering labelled")
+                _summary_text = build_summary(
+                    _fl_crm or {}, extra_legs=_conv_meta.get("extra_legs")
+                )
+            else:
+                _summary_text = build_summary(
+                    _fl_crm or {}, extra_legs=_conv_meta.get("extra_legs")
+                )
+
+            # A wall shown three times is not a conversation (LOOP BREAKER).
+            # The count follows the summary's CONTENT: a client who fixes
+            # three different things is iterating, not looping, and must
+            # never be escalated for it.
+            _render_n = int(_conv_meta.get("summary_render_count") or 0)
+            if _summary_text:
+                _last_fp = _conv_meta.get("summary_fingerprint")
+                _fp = summary_fingerprint(_summary_text)
+                if _fp != _last_fp:
+                    _render_n = 0        # different trip on screen → fresh start
+                _render_n += 1           # counts EVERY attempt, including asks
+                _meta_count = dict(_conv_meta)
+                _meta_count["summary_render_count"] = _render_n
+                _meta_count["summary_fingerprint"] = _fp
+                try:
+                    await db.update_conversation(cid, {"metadata": _meta_count})
+                    _conv_meta = _meta_count
+                except Exception as e:
+                    logger.warning(f"[{cid}] render-count update failed: {e}")
+            _loop = loop_action(_render_n) if _summary_text else None
+            if _loop:
+                _loop_key = (
+                    "summary_loop_consultant" if _loop == "consultant"
+                    else "summary_loop_escalation"
+                )
+                validated_text = _tpl75(_loop_key, tunnel, visitor) or (
+                    "Let's reset this cleanly — tell me the trip in one line."
+                )
+                gen.model_used = "template"
+                gen.cost = 0.0
+                logger.info(
+                    f"[{cid}] Step 7.5: summary loop ×{_render_n} — {_loop}"
+                )
+                if _loop == "consultant":
+                    # Stop asking and put a human on it — the same queue
+                    # path a "talk to an agent" request takes (#187).
+                    from app.services.routing import dispatch_needs_agent
+
+                    try:
+                        await db.update_conversation(cid, {"status": "needs_agent"})
+                    except Exception as e:
+                        logger.warning(f"[{cid}] loop→needs_agent flip failed: {e}")
+                    _fire_and_forget(dispatch_needs_agent(cid))
+                _summary_text = None
+
             if _summary_text:
                 validated_text = _summary_text
                 _meta_upd = dict(_conv_meta)
                 _meta_upd["summary_shown_at"] = datetime.now(timezone.utc).isoformat()
+                _meta_upd["summary_render_count"] = _render_n + 1
                 # Open-door arms on CONFIRMATION now, not here — a post-summary
                 # "no" must reach the rejection branch, never the graceful-no
                 # list of the open-door capture (the Costa collision).
