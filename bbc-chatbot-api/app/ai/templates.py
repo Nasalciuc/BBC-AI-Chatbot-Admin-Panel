@@ -88,6 +88,39 @@ TEMPLATES: dict[str, list[str]] = {
         "Almost there — tell me what to change, e.g. 'returning Nov 17' "
         "or 'make it round trip'.",
     ],
+    # A round trip whose return date we never captured (Alistair): ASK,
+    # never render a date with no label.
+    "ask_return_date:sales": [
+        "Round trip it is — when would you fly back?",
+    ],
+    # The client named a FIELD but no value ("change the dates"): ask for
+    # that field instead of re-rendering the identical summary.
+    "ask_field_dates:sales": [
+        "Happy to change the dates — which dates would you like?",
+    ],
+    "ask_field_route:sales": [
+        "Of course — which cities should it be?",
+    ],
+    "ask_field_passengers:sales": [
+        "Sure — how many travelers should it be?",
+    ],
+    "ask_field_cabin:sales": [
+        "Of course — which cabin would you prefer?",
+    ],
+    # Two dates offered as alternatives — pick nothing, ask which.
+    "ask_date_choice:sales": [
+        "Both work — which one should I lock in, {option_a} or {option_b}?",
+    ],
+    # Same summary shown three times without a YES: the wall isn't
+    # working. Ask for the whole trip in one line.
+    "summary_loop_escalation:sales": [
+        "Let's reset this cleanly — tell me the trip in one line, "
+        "e.g. 'round trip, Oct 1 to Oct 20, 2 travelers'.",
+    ],
+    "summary_loop_consultant:sales": [
+        "Let me get a consultant on this with you — they'll sort the "
+        "details in a minute. What's the best number to reach you?",
+    ],
     "closing:sales": [
         "Thanks{name_suffix} — your consultant takes it from here. Speak soon.",
         "Your search is in expert hands{name_suffix}. We'll be in touch soon.",
@@ -318,8 +351,13 @@ _REQUIRED_SUMMARY_FIELDS = (
 )
 
 
-def build_summary(lead: dict) -> str | None:
-    """Build confirmation summary from lead, or None if incomplete."""
+def build_summary(lead: dict, extra_legs: list | None = None) -> str | None:
+    """Build confirmation summary from lead, or None if incomplete.
+
+    extra_legs: client-stated legs beyond the main route (MARKY said
+    "And return from Paris to Sydney on nov 9" — a third city that is
+    neither origin nor destination). They are SHOWN, because a summary
+    that quietly drops a leg the client just named is worse than none."""
     from config.settings import settings
 
     if any(not lead.get(f) for f in _REQUIRED_SUMMARY_FIELDS):
@@ -330,10 +368,17 @@ def build_summary(lead: dict) -> str | None:
         return_clause = f" — {lead['return_date']} (round trip)"
     elif lead.get("trip_type") == "one_way":
         return_clause = " (one-way)"
+    elif lead.get("trip_type") == "round_trip":
+        # Alistair: round_trip with no return_date used to fall through
+        # BOTH branches and render a naked date. The orchestrator now asks
+        # for the return before rendering; this label is the safety net if
+        # a summary ever reaches here anyway — an unlabelled date is what
+        # sent him round the loop three times.
+        return_clause = " (round trip — return date pending)"
     else:
         return_clause = ""
 
-    return settings.summary_template.format(
+    summary = settings.summary_template.format(
         origin_code=lead["origin_code"],
         destination_code=lead["destination_code"],
         departure=departure,
@@ -341,3 +386,17 @@ def build_summary(lead: dict) -> str | None:
         passengers=lead["passengers"],
         cabin_class=lead.get("cabin_class", "business"),
     )
+    if extra_legs:
+        _legs = "\n".join(
+            f"➕ {leg.get('from', '?')} → {leg.get('to', '?')}"
+            + (f" {leg['date']}" if leg.get("date") else "")
+            for leg in extra_legs
+        )
+        # Inserted before the confirmation question so the client reads
+        # the full trip before answering YES.
+        _marker = "\n\nIs everything correct?"
+        if _marker in summary:
+            summary = summary.replace(_marker, f"\n{_legs}{_marker}", 1)
+        else:
+            summary = f"{summary}\n{_legs}"
+    return summary

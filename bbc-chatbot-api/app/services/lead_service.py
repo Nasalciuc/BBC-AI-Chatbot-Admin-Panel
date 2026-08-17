@@ -308,6 +308,11 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             _ret = _validate_future_date(entities["return_date"])
             if _ret:
                 lead_payload["return_date"] = _ret
+        elif entities.get("_clear_return_date"):
+            # KAZUO: "actually one way" must UNSET the return date. Without
+            # this the summary kept showing a return he had just cancelled —
+            # writes could only ever add, never take away.
+            lead_payload["return_date"] = None
         if entities.get("trip_type"):
             lead_payload["trip_type"] = entities["trip_type"]
         if entities.get("_children_count"):
