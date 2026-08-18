@@ -1,6 +1,7 @@
 """Tests for internal asyncio scheduler (ADR-10)."""
 
 import asyncio
+import time
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,7 +32,14 @@ async def test_run_forever_survives_repeated_job_failures(caplog):
         caplog.at_level("ERROR"),
     ):
         task = asyncio.create_task(sched._run_forever("fail_job", always_fails, 0.01))
-        await asyncio.sleep(0.08)
+        # Wait for the evidence, not for the clock. A fixed 0.08s sleep passed
+        # alone and failed under the full suite, because "two iterations of a
+        # 0.01s loop" is a promise about the machine, not about the code. CI
+        # runners are slower than this laptop and would have inherited the
+        # flake on day one.
+        deadline = time.monotonic() + 5.0
+        while calls["n"] < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

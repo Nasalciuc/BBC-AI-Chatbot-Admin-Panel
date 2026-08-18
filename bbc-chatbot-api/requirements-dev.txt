@@ -1,0 +1,7 @@
+# Needed ONLY to run the tests. Kept out of requirements.txt so Railway does
+# not install a test framework into production, and kept in the repo rather
+# than inline in the CI workflow so a fresh clone can run the suite without
+# reading a YAML file to find out what is missing.
+pytest~=9.0
+pytest-asyncio~=1.3
+freezegun~=1.5

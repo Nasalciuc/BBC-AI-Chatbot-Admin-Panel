@@ -1,0 +1,7 @@
+# Frozen 18 Aug 2026 — 1 finding(s). This number may only ever GO DOWN.
+#
+# A branch that answers the client and returns BEFORE entity extraction, without
+# first persisting what the client just said. Route, dates, passengers, cabin —
+# the whole reason the conversation exists — are dropped on the floor, and the
+# client is never called back about a trip we have no record of.
+app/pipeline/orchestrator.py::_pipeline::early-return-without-persist
