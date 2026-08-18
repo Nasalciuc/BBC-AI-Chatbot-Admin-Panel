@@ -400,6 +400,23 @@ async def _pipeline(
         (metadata or {}).get("site") or _conv_meta.get("site")
     ).get("contact_phone", "+1 (888) 322-7999")
     _awaiting_correction_directive = False
+    # Correction-turn state (post-summary). The main extraction at Step 4
+    # reuses _correction_context so a value the probe resolved — a day-only
+    # return, a bare "Return" — actually reaches the lead instead of being
+    # re-extracted without context and lost.
+    #
+    # These five MUST be initialised here and not only in the branch that
+    # sets them: Step 4 reads _correction_context on EVERY turn (line ~847),
+    # so a turn that never enters the post-summary branch would otherwise
+    # die with UnboundLocalError before the client ever gets an answer.
+    # That is exactly what #204 caused by dropping this block.
+    _correction_context: Optional[dict] = None
+    _clear_return_date = False
+    _suppress_return_date = False
+    _multi_city_declared = False
+    # An added leg describes ITSELF, not the trip: "return from Paris to
+    # Sydney on nov 9" must not overwrite Marky's real route and departure.
+    _suppress_leg_fields = False
     # A callback request outranks the confirmation wall: JOSEF asked to be
     # rung WHILE a summary was on the table, and the ambiguity re-ask
     # answered him first — the exact state his transcript was reported in.
