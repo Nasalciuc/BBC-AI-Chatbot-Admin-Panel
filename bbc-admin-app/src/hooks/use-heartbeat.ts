@@ -8,6 +8,7 @@ import {
   stopAssignmentAlerts,
 } from '@/lib/notify-assignment'
 import { useAttentionStore } from '@/stores/attention-store'
+import { reportAttentionCycle, reportPresence } from '@/lib/crm-bridge'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
@@ -69,6 +70,8 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     const processResponse = (res: HeartbeatResponse) => {
       if (typeof res?.is_ready === 'boolean') {
         setReady(res.is_ready)
+        // The CRM shows the agent's own state next to the chat button.
+        reportPresence(res.is_ready)
       }
     }
 
@@ -114,6 +117,12 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
         const mine = res?.data ?? []
         const viewing = viewingRef.current
         const needsAttention = new Set<string>()
+        // Read before the loop flips it: on the baseline pass the CRM must
+        // get the count but must NOT be told to jump in front of the agent.
+        const baselineAlreadyTaken = baselineTaken.current
+        // The list arrives ordered by updated_at DESC, so the first new
+        // arrival in it is the most recent one. One per cycle, on purpose.
+        let firstNewArrivalId: string | null = null
 
         for (const conv of mine) {
           const prevCount = seenCounts.current.get(conv.id)
@@ -130,6 +139,7 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
             const isNewArrival = prevCount === undefined
             const gotNewMessage = prevCount !== undefined && count > prevCount
             if (isNewArrival || gotNewMessage) needsAttention.add(conv.id)
+            if (isNewArrival && firstNewArrivalId === null) firstNewArrivalId = conv.id
           }
 
           seenCounts.current.set(conv.id, count)
@@ -147,6 +157,23 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
 
         // The list page highlights exactly these rows.
         useAttentionStore.getState().setAttentionIds([...needsAttention])
+
+        // Same set, said out loud to the parent frame. No new fetch, no new
+        // state, no PII — see src/lib/crm-bridge.ts.
+        reportAttentionCycle({
+          attentionIds: [...needsAttention],
+          // Server truth, and the only part that survives a reload: the
+          // backend widens assigned_to=me/status=active to include
+          // `needs_agent`, which means reserved-for-me with the client still
+          // waiting for a first human reply.
+          needsAgentIds: mine
+            .filter((c) => c.status === 'needs_agent')
+            .map((c) => c.id),
+          liveIds: [...liveIds],
+          viewingId: viewing,
+          newArrivalId: firstNewArrivalId,
+          baselineTaken: baselineAlreadyTaken,
+        })
 
         if (needsAttention.size > 0) {
           notifyAssignment()

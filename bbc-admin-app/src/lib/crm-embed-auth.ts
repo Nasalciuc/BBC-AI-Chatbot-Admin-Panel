@@ -29,7 +29,7 @@ function parseJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
-function isAllowedCrmOrigin(origin: string): boolean {
+export function isAllowedCrmOrigin(origin: string): boolean {
   try {
     const url = new URL(origin)
     if (url.protocol !== 'https:' && url.hostname !== 'localhost') return false

@@ -4,6 +4,8 @@ import { useHeartbeat } from '@/hooks/use-heartbeat'
 import { useReadyStore } from '@/stores/ready-store'
 import { getCookie } from '@/lib/cookies'
 import { requestNotifyPermission } from '@/lib/notify-assignment'
+import { installCrmBridge } from '@/lib/crm-bridge'
+import { isAllowedCrmOrigin } from '@/lib/crm-embed-auth'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
 import { SearchProvider } from '@/context/search-provider'
@@ -22,6 +24,15 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   useEffect(() => {
     requestNotifyPermission()
   }, [])
+
+  // Tell the CRM when a conversation is waiting. Mounted here, next to the
+  // heartbeat that feeds it. The bridge is a no-op unless we are inside an
+  // iframe, so a panel opened in its own tab behaves exactly as before.
+  useEffect(
+    () =>
+      installCrmBridge({ isAllowedOrigin: isAllowedCrmOrigin }),
+    []
+  )
 
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   return (
