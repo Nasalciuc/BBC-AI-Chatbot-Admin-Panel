@@ -33,6 +33,9 @@ async def health() -> dict:
     from app.services.crm import CRM_PUSH_HEALTH
     # Presence gate: aggregate only — never who was blocked, or when.
     from app.api.integration import PRESENCE_GATE_HEALTH
+    # Turns we refused to speak: every count is a moment the bot was about to
+    # answer a question nobody asked.
+    from app.pipeline.orchestrator import PIPELINE_HEALTH
 
     if not settings.debug:
         return {
@@ -45,6 +48,7 @@ async def health() -> dict:
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
             "presence_gate": dict(PRESENCE_GATE_HEALTH),
+            "phantom_turns": dict(PIPELINE_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -82,4 +86,5 @@ async def health() -> dict:
         "generation_fallbacks": dict(GENERATION_HEALTH),
         "crm_pushes": dict(CRM_PUSH_HEALTH),
         "presence_gate": dict(PRESENCE_GATE_HEALTH),
+            "phantom_turns": dict(PIPELINE_HEALTH),
     }

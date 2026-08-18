@@ -113,6 +113,51 @@ _FALLBACK_MSG = (
 )
 
 
+async def _claim_fallback_notice(conversation_id: str, metadata: dict) -> bool:
+    """Win the right to say "I'm here" exactly once, or stay quiet.
+
+    `_safe_system_msg`'s cooldown is check-then-act: it reads the last system
+    message, decides it is not a duplicate, and only then writes. Three
+    deadline sweeps firing within the same second all read the same "nothing
+    there yet" and all three write. On 18 Aug 2026 a client got the apology
+    three times in a row, seconds apart.
+
+    So the decision moves into the database, where it can only have one
+    answer: the flag is set by a single UPDATE whose WHERE clause requires it
+    to be absent. Exactly one caller updates a row; everyone else gets zero
+    rows back and says nothing.
+
+    The metadata we merge is the dict this function's caller has just written,
+    so this adds no clobber window that the write above it did not already
+    have. Returns False on any error — losing the race and a broken query both
+    mean the same thing here: do not speak.
+    """
+    try:
+        client = db.get_client()
+        payload = {**(metadata or {}), "fallback_notice_at": datetime.now(timezone.utc).isoformat()}
+        res = await db._run_sync(
+            lambda: client.table("conversations")
+            .update({"metadata": payload})
+            .eq("id", conversation_id)
+            .is_("metadata->>fallback_notice_at", "null")
+            .execute(),
+            idempotent=False,
+        )
+        won = bool(res.data)
+        if not won:
+            logger.info(
+                f"[handoff] Conv {conversation_id}: fallback notice already claimed "
+                "by a concurrent sweep — staying quiet"
+            )
+        return won
+    except Exception as e:
+        logger.warning(
+            f"[handoff] Conv {conversation_id}: could not claim the fallback notice ({e}) — "
+            "staying quiet rather than risking a duplicate"
+        )
+        return False
+
+
 async def _safe_system_msg(
     conversation_id: str,
     content: str,
@@ -292,15 +337,24 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     # either the announce ("X has joined") OR the queued-message promise
     # ("One moment please, connecting you with a specialist...").
     _promised_recently = await _handoff_phrase_recently_sent(conversation_id)
-    _silent = _was_unannounced and not _promised_recently
+    # "Sorry for the wait — I'm here" says a human arrived. If no agent was
+    # ever assigned on this conversation, nobody arrived, and the sentence is
+    # simply false: the client reads it, believes an operator is now reading
+    # along, and waits for them. The AI keeps answering either way (the FIX-C
+    # backstop below), so silence costs the client nothing and the lie costs
+    # them their patience.
+    _silent = (_was_unannounced and not _promised_recently) or not _agent
     if not _silent:
-        msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
-        if msg:
-            await manager.push(conversation_id, msg)
+        # Two nets, in order: the row-level claim decides WHO speaks, the
+        # content cooldown still guards against a repeat later in the shift.
+        if await _claim_fallback_notice(conversation_id, _meta):
+            msg = await _safe_system_msg(conversation_id, _FALLBACK_MSG, cooldown_seconds=120)
+            if msg:
+                await manager.push(conversation_id, msg)
     # else: silent reservation expired — visitor never knew; AI continues seamlessly.
     logger.info(
         f"[handoff] Conv {conversation_id}: agent offline → fell back to AI "
-        f"(loop guards cleared, silent={_was_unannounced})"
+        f"(loop guards cleared, silent={_silent}, had_agent={bool(_agent)})"
     )
     # FIX-C: backstop — if the visitor's last message was never answered (it arrived
     # while in human mode and no AI reply followed), re-run the pipeline now so they

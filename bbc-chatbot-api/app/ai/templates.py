@@ -84,9 +84,14 @@ TEMPLATES: dict[str, list[str]] = {
     ],
     # Second re-ask in the same summary cycle: teach the format instead of
     # repeating the wall verbatim (Deborah burned two turns on it).
+    # The example must never contain a date the client did not give us.
+    # 18 Aug 2026 this said "e.g. 'returning Nov 17'" to a client flying in
+    # December, and he answered "I never said anything about November" — he
+    # thought we were inventing his trip. Name the FIELDS he can change; the
+    # values are his to supply.
     "summary_reask_2:sales": [
-        "Almost there — tell me what to change, e.g. 'returning Nov 17' "
-        "or 'make it round trip'.",
+        "Almost there — tell me what to change: the dates, the number of "
+        "travellers, or the cabin. Reply YES if it's all correct.",
     ],
     # A round trip whose return date we never captured (Alistair): ASK,
     # never render a date with no label.

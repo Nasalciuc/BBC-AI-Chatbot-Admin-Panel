@@ -695,6 +695,16 @@ def scan_source_for_unpersisted_early_returns(source: str, rel_path: str) -> lis
         value = node.value
         if not (isinstance(value, ast.Call) and getattr(value.func, "id", getattr(value.func, "attr", "")) == "ChatResponse"):
             continue
+        # A return that says NOTHING is not an answer, and the rule is about
+        # answering. The phantom-turn guard bails out with an empty message
+        # precisely so the client hears nothing at all — there is no reply to
+        # persist alongside, and the message it declined to answer is already
+        # in the database.
+        if any(
+            kw.arg == "message" and isinstance(kw.value, ast.Constant) and kw.value.value == ""
+            for kw in value.keywords
+        ):
+            continue
         if not persists_before(node):
             func = quals.get(id(node), owner.name)
             findings.append(f"{rel_path}::{func}::early-return-without-persist")
