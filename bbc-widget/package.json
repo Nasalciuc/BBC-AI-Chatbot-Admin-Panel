@@ -2,6 +2,7 @@
   "name": "bbc-widget",
   "version": "1.0.0",
   "private": true,
+  "engines": { "node": ">=22.6" },
   "scripts": {
     "build": "vite build",
     "build:bbc": "vite build --mode bbc",

@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "type": "module",
   "packageManager": "npm@10.0.0",
+  "engines": { "node": ">=22.6" },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
