@@ -208,8 +208,14 @@ class TestReasks:
                 _CID, "Urs", "sales", VisitorInfo(name="Deborah"),
                 None, _persist_state={"ai_persisted": False},
             )
-        assert "returning Nov 17" in resp.message
-        assert "make it round trip" in resp.message
+        # The old example was a hardcoded date — "e.g. 'returning Nov 17'".
+        # 18 Aug 2026 a client flying in December read it and answered
+        # "I never said anything about November": he thought we were inventing
+        # his trip. The second re-ask still teaches the format, but it names
+        # the FIELDS he can change and never a date that is not his.
+        assert "Nov" not in resp.message
+        for field in ("dates", "travellers", "cabin"):
+            assert field in resp.message, f"second re-ask must name {field}"
 
     def test_correction_resets_the_reask_counter(self):
         src = inspect.getsource(_pipeline)

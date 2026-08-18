@@ -116,17 +116,72 @@ def _lev_leq1(a: str, b: str) -> bool:
     return edits + (lb - j) + (la - i) <= 1
 
 
+# Words that turn a "yes" into a request. "yes but make it one way" is not a
+# confirmation of the summary as shown — closing over it would push a wrong
+# lead to a consultant.
+_CORRECTION_MARKERS = {
+    "but", "however", "actually", "except", "instead", "though", "although",
+    "pero", "aber", "mais", "dar", "insa",
+}
+
+# A confirmation with a tail stays a confirmation only while the tail is
+# short. "yes correct" and "yes thats right" agree; five more words are
+# carrying content, and content belongs to the correction path — this also
+# keeps a Spanish "si quieres cambiar la fecha…" from reading as agreement.
+_MAX_CONFIRM_TOKENS = 4
+
+
 def is_confirmation(normalized: str) -> bool:
-    """Exact multilingual match, or one typo away from yes/si.
-    "Urs" is distance 2 from "yes" — deliberately NOT a confirmation:
-    it lands on the re-ask."""
+    """Exact multilingual match, or one typo away from yes/si — and the same
+    once more when the client agrees in more than one word.
+
+    "Yes corewct" was read as a rejection on 18 Aug 2026 and got the client a
+    re-ask: the whole string matched nothing, and two tokens are not one typo
+    away from "yes". A client who opens with a yes has said yes.
+
+    "Urs" is distance 2 from "yes" — deliberately still NOT a confirmation:
+    it lands on the re-ask.
+    """
     if normalized in CONFIRM_WORDS:
         return True
-    return _lev_leq1(normalized, "yes") or _lev_leq1(normalized, "si")
+    if _lev_leq1(normalized, "yes") or _lev_leq1(normalized, "si"):
+        return True
+
+    tokens = normalized.split()
+    if len(tokens) < 2 or len(tokens) > _MAX_CONFIRM_TOKENS:
+        return False
+    head = tokens[0]
+    if not (head in CONFIRM_WORDS or _lev_leq1(head, "yes") or _lev_leq1(head, "si")):
+        return False
+    # "yes, but…" is a correction wearing a yes.
+    return not any(t in _CORRECTION_MARKERS for t in tokens[1:])
 
 
 def is_rejection(normalized: str) -> bool:
     return normalized in REJECT_WORDS
+
+
+# Turns we refused to speak. Every count is a moment the bot was about to
+# answer a question nobody asked — 18 Aug 2026 it invented "you plus some
+# friends" out of nothing and turned a solo traveller into a 7-passenger lead.
+PIPELINE_HEALTH: dict = {"phantom_turns_blocked": 0, "last_at": None}
+
+
+def _is_phantom_turn(history: list) -> bool:
+    """True when the last thing said in this conversation is already ours.
+
+    The bot speaks ONLY in reply. If the newest message is an AI or agent
+    message, there is no question on the table, and generating now produces a
+    turn out of thin air: the model is handed a history whose last line is its
+    own, and it invents a premise to continue from.
+    """
+    for msg in reversed(history or []):
+        role = (msg or {}).get("role")
+        if role == "user":
+            return False          # a client message is the newest — answer it
+        if role in ("ai", "agent"):
+            return True           # we (or a human) spoke last — nothing to answer
+    return False                  # only system messages, or none at all
 
 
 def _fire_and_forget(coro):
@@ -380,6 +435,33 @@ async def _pipeline(
 
     # Fetch history (lead fetched later when needed — L359+)
     history = await db.get_recent_messages(cid, limit=10)
+
+    # ── PHANTOM TURN GUARD ───────────────────────────────────
+    # Only the re-entrant path can get here without contributing a client
+    # message: FIX-C's backstop is fire-and-forget, and `fall_back_to_ai` can
+    # fire more than once for the same conversation, so two of them can both
+    # read "the visitor's last message has no reply yet" before either reply
+    # exists. The second run then answers a message that was already answered,
+    # and the client sees the bot talking to itself.
+    #
+    # The normal path is deliberately NOT gated: its user message is saved a
+    # few lines above, so it is always the newest, and if that save ever fails
+    # we still owe the client an answer.
+    if skip_user_save and _is_phantom_turn(history):
+        PIPELINE_HEALTH["phantom_turns_blocked"] += 1
+        PIPELINE_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
+        logger.warning(
+            f"[{cid}] phantom_turn_blocked: last message is already ours — "
+            "refusing to generate a turn nobody asked for"
+        )
+        return ChatResponse(
+            conversation_id=cid,
+            message="",
+            streaming=False,
+            type="blocked",
+            model_used="none",
+        )
+
     logger.info(f"[{cid}] [PERF] setup: {(time.perf_counter() - pipeline_start) * 1000:.0f}ms")
     t_section = time.perf_counter()
 

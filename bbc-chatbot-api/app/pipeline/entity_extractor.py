@@ -162,6 +162,29 @@ NAME_PATTERNS = [
     re.compile(r"(?:my name is|I'm|I am|this is|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", re.I),
 ]
 
+# "Going by myself. Ticket for me only." — 18 Aug 2026, said AFTER a summary
+# showed 7 passengers, and matched nothing: `just me` was the only solo phrase
+# we knew. The client repeated himself three times and the lead still went to a
+# consultant saying seven people were flying.
+#
+# Intent without a number is still a number: every one of these means one.
+# (Bare "solo" already has SOLO_RE further down — left exactly as it was.)
+SOLO_PAX_RE = re.compile(
+    r"\b(?:"
+    r"by\s+myself|just\s+me|only\s+me|me\s+only|myself\s+only|just\s+for\s+me|"
+    r"ticket\s+for\s+me\s+only|(?:travell?ing|flying|going)\s+alone"
+    r")\b",
+    re.I,
+)
+# …unless the same breath adds someone. "just me and 3 friends" is four people,
+# and reading that as one would be the same bug pointing the other way.
+SOLO_VETO_RE = re.compile(
+    r"\b(?:and|plus|with)\s+"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|a|an|my|his|her|their|the)\b"
+    r"|\b\d+\s*(?:friends?|others?|colleagues?|family|kids?|children|people|persons?)\b",
+    re.I,
+)
+
 PAX_RE = re.compile(r'(\d+)\s*(?:passengers?|people|persons?|travelers?|pax|of us|adults?)', re.I)
 # Word-number passengers: "one" as a short answer, "two travelers", …
 # Conv #1244: the client confirmed "one" and passengers stayed NULL.
@@ -244,6 +267,54 @@ _DATE_MONTH_DAY = re.compile(
 # "3/15", "3/15/2026", "03-15-2026"
 _DATE_NUMERIC = re.compile(r'\b(?P<m>\d{1,2})[/\-](?P<d>\d{1,2})(?:[/\-](?P<y>\d{4}))?\b')
 
+# "Dec23rd -1/3/27" — one client, one line, two date formats and no spaces.
+# The text parser demanded a space after the month, so "Dec23rd" vanished; the
+# numeric one only accepted four-digit years, so "1/3/27" was read loosely.
+# What came back was the RETURN date sitting in the departure field and no
+# return at all, from a client who had given a perfectly clear range.
+#
+# Either side may be written either way, the separator may be a dash or a word,
+# and the year may be two digits. First date is the departure, second is the
+# return — in that order, always.
+def _range_atom(p: str) -> str:
+    """One date, written as text ("Dec 23", "Dec23rd") or as slashes ("1/3/27")."""
+    return (
+        "(?:"
+        "(?:(?P<" + p + "_tm>" + _MONTH_PAT + r")\s*(?P<" + p + r"_td>\d{1,2})(?:st|nd|rd|th)?"
+        r"(?:\s*,?\s*(?P<" + p + r"_ty>\d{2,4}))?)"
+        "|"
+        r"(?:(?P<" + p + r"_nm>\d{1,2})/(?P<" + p + r"_nd>\d{1,2})(?:/(?P<" + p + r"_ny>\d{2,4}))?)"
+        ")"
+    )
+
+
+_DATE_RANGE_MIXED = re.compile(
+    r"\b" + _range_atom("a")
+    + r"\s*(?:-|–|—|to|until|through|thru)\s*"
+    + _range_atom("b"),
+    re.I,
+)
+
+
+def _range_side(m: "re.Match", p: str) -> "tuple[int, int, int | None] | None":
+    """(month, day, year) for one side of a matched range, or None."""
+    if m.group(p + "_tm"):
+        month = MONTH_NAMES.get(m.group(p + "_tm").lower())
+        day = int(m.group(p + "_td"))
+        year = m.group(p + "_ty")
+    else:
+        month = int(m.group(p + "_nm"))
+        day = int(m.group(p + "_nd"))
+        year = m.group(p + "_ny")
+    if not month or not day or month > 12:
+        return None
+    if year is not None:
+        year = int(year)
+        if year < 100:          # "27" is 2027, not year 27
+            year += 2000
+    return month, day, year
+
+
 # "March 15-22" (same month range with dash)
 _DATE_RANGE_DASH = re.compile(
     r'\b(?P<m>' + _MONTH_PAT + r')\s+(?P<d1>\d{1,2})(?:st|nd|rd|th)?'
@@ -321,6 +392,18 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
                     if _dm_month and _dm_day:
                         dep_date = _make_date(_dm_month, _dm_day, _dm_year)
                 return dep_date, ret_date
+
+    # 0. Mixed-format range: "Dec23rd -1/3/27", "12/23/26-1/3/27".
+    # Runs first: both sides are explicit, so there is nothing to infer.
+    _mixed = _DATE_RANGE_MIXED.search(text)
+    if _mixed:
+        _a = _range_side(_mixed, "a")
+        _b = _range_side(_mixed, "b")
+        if _a and _b:
+            _dep = _make_date(*_a)
+            _ret = _make_date(*_b)
+            if _dep and _ret:
+                return _dep, _ret
 
     # 1. Same-month range: "March 15-22"
     m = _DATE_RANGE_DASH.search(text)
@@ -1250,7 +1333,7 @@ def extract_entities(
             entities.passengers = n
         elif n > 9:
             entities.passengers = 9
-    elif re.search(r'\bjust\s+me\b', text, re.I):
+    elif SOLO_PAX_RE.search(text) and not SOLO_VETO_RE.search(text):
         entities.passengers = 1
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
@@ -1295,7 +1378,7 @@ def extract_entities(
         if COUPLE_RE.search(text):
             entities.passengers = 2
     if not entities.passengers:
-        if SOLO_RE.search(text):
+        if SOLO_RE.search(text) and not SOLO_VETO_RE.search(text):
             entities.passengers = 1
 
     # Cap passengers at 9 (CRM API max)
