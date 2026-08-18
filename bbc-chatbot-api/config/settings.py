@@ -186,6 +186,12 @@ class Settings(BaseSettings):
     # session-signing secret). CRM signs, we verify → both sides use the SAME value.
     # Empty = CRM SSO disabled (503).
     chat_sso_secret: str = ""
+    # CRM_PRESENCE_WINDOW_SECONDS: how fresh the agent's heartbeat must be for
+    # the CRM presence gate to consider them online. The panel pings every 5s,
+    # so 90s tolerates 18 missed beats — a network blink never blocks anyone.
+    # Distinct from agent_timeout_seconds, which governs conversations falling
+    # back to AI.
+    crm_presence_window_seconds: int = 90
     abandoned_timeout_minutes: int = 30
     internal_scheduler_enabled: bool = True  # G3 kill-switch; see ADR-10
     scheduler_interval_seconds: int = 300  # real 5-min cadence (GitHub Actions

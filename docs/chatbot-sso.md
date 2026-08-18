@@ -93,3 +93,120 @@ server-side):
 
 `CHAT_SSO_SECRET` must be **identical** on both sides (the CRM signs, we verify)
 and shared over a secure channel.
+
+---
+
+## 6. Agent presence gate (`POST /api/integration/agent-presence`)
+
+The CRM asks us one question before letting a sales agent work leads:
+**is this agent genuinely present in the chat panel?** Live visitors are routed
+only to agents whose panel is open and who pressed **Ready** — an agent sitting
+in the CRM with the chat closed leaves visitors waiting for nobody.
+
+We answer with **state only**. No name, no phone, no team, no conversation
+counts. The endpoint performs one read and writes nothing.
+
+> **Call this from the CRM's BACKEND.** The shared secret signs the token; it
+> must never reach a browser.
+
+### Request
+
+```
+POST /api/integration/agent-presence
+Content-Type: application/json
+
+{"token": "<JWT>"}
+```
+
+The token is signed with the same secret as the SSO login token, but it is
+**not the same token** — see the box below.
+
+| | |
+|---|---|
+| Algorithm | `HS256`, signed with `CHAT_SSO_SECRET` |
+| Required claims | `iss="crm"`, `iat`, `exp`, **`purpose="presence"`** |
+| TTL | **≤ 60 seconds** — it is minted per check |
+| Max age | `iat` older than **120s** is refused even if `exp` is still valid |
+| Agent identity | `email` in the payload (`sub` is used only if it *is* an address) |
+
+> ### ⚠️ `purpose` is mandatory — action for the CRM team
+>
+> Both endpoints verify with `CHAT_SSO_SECRET`. Without an audience claim,
+> every presence token — one per lead-open, high frequency, passing through
+> your logs, an APM span, a proxy, a retry queue — would also be a **full
+> login credential** for that agent's panel account. Anything that merely
+> *observed* one could exchange it for a session.
+>
+> - Presence tokens **must** carry `"purpose": "presence"` (or `"aud"`).
+>   Without it the answer is `401`, and the gate fails open.
+> - Login tokens must carry `"purpose": "login"` or **omit the claim**
+>   (today's shape — it keeps working unchanged). A presence token sent to
+>   `/sso/crm-exchange` is refused.
+>
+> Keep the signing host **NTP-synced**: an `iat` in the future is rejected
+> with no leeway, exactly as the login exchange has always rejected it.
+
+The email is read from the **signed payload only** — never from a query string,
+path segment or header, because those land in request logs and an employee's
+email is PII. `sub` is your internal user id, so it is used as an email only
+when it actually looks like one; otherwise the answer is `unknown_user`.
+
+### Response — always `200`
+
+```json
+{"ready": true, "online": true, "exempt": false, "reason": "ok", "last_seen_seconds": 12}
+```
+
+| Field | Meaning |
+|---|---|
+| `online` | the panel's heartbeat is fresher than 90s |
+| `ready` | `online` **and** the agent pressed Ready **and** they hold an operator role |
+| `exempt` | this account is not an operator — never block it |
+| `reason` | why (see below) |
+| `last_seen_seconds` | age of the last heartbeat, `null` if it never beat |
+
+### `reason` values and what to show the agent
+
+| `reason` | Block? | Message for the agent |
+|---|---|---|
+| `ok` | no | — |
+| `offline` | **yes** | "Open the chat panel to start working" |
+| `not_ready` | **yes** | "You're logged in but not Ready — press the Ready button" |
+| `inactive` | **yes** | "This account is deactivated — contact your manager" |
+| `wrong_role` | never | — (owner/admin/dev/supervisor and any future role) |
+| `unknown_user` | never | — (we do not know this email; not our call to make) |
+
+`inactive` exists because deactivating an account does not reach a live
+session: the panel keeps heartbeating on a JWT that has not expired yet, so a
+disabled employee can look perfectly present. Login already refuses them; this
+gate must not answer the opposite about the same person.
+
+### The two rules the CRM MUST implement
+
+1. **Block only when `exempt === false` AND `ready === false` AND the answer
+   arrived within 2 seconds.**
+2. **Any timeout, network error, `401`, `429` or `503` → do NOT block (fail
+   open) and log it.** A gate that blocks when it is broken costs more than one
+   it fails open on.
+
+### Rate limit and visibility
+
+The endpoint carries its own budget — **600 checks per minute per caller IP** —
+because the shared per-IP limit is sized for browser traffic and your backend
+is a single IP. Exceeding it returns `429`, which rule 2 turns into "do not
+block".
+
+`GET /health` reports `presence_gate: {checks, blocked, errors}` — aggregate
+only. `errors` counts every `401`/`503` we answered, because those are exactly
+the responses that switch the gate **off** while it still looks alive from the
+outside. There is deliberately **no per-agent record** of who was blocked and
+when: that is employee surveillance, and if it is wanted it belongs on the CRM
+side, where the manager who asked for it can be held to it.
+
+### Why 90 seconds
+
+The panel heartbeats every 5s, so the window tolerates 18 missed beats — a
+network blink never blocks anyone. The window exists because **`is_ready` is
+never cleared automatically**: it is set when the agent presses the button and
+stays set, so an agent who pressed Ready on Monday and went home would still
+read as ready today. Only a fresh pulse makes the flag mean anything.

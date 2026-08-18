@@ -31,6 +31,8 @@ async def health() -> dict:
     from app.pipeline.generator import GENERATION_HEALTH
     # CRM push truth: ok = proven (2xx+id); failed/refused = flag stayed false.
     from app.services.crm import CRM_PUSH_HEALTH
+    # Presence gate: aggregate only — never who was blocked, or when.
+    from app.api.integration import PRESENCE_GATE_HEALTH
 
     if not settings.debug:
         return {
@@ -42,6 +44,7 @@ async def health() -> dict:
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
+            "presence_gate": dict(PRESENCE_GATE_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -78,4 +81,5 @@ async def health() -> dict:
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "generation_fallbacks": dict(GENERATION_HEALTH),
         "crm_pushes": dict(CRM_PUSH_HEALTH),
+        "presence_gate": dict(PRESENCE_GATE_HEALTH),
     }
