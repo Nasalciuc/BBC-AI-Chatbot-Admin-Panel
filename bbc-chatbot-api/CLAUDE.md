@@ -1,68 +1,71 @@
-﻿# BBC Chatbot API — CLAUDE.md
+# BBC Chatbot API — CLAUDE.md
 
-> Every line changes AI agent behavior.
+> Regulile de cod sunt în [`../CLAUDE.md`](../CLAUDE.md) și sunt verificate de teste, nu de bunăvoință.
 
 ## Identity
 
 - **Project:** BBC AI Chatbot Backend (`bbc-chatbot-api`)
 - **Purpose:** FastAPI — chat pipeline, admin CRUD, KB search, leads
-- **NOT:** Frontend (`bbc-admin-app`), QM system, customer widget
+- **NOT:** Frontend (`bbc-admin-app`), QM system, customer widget (`bbc-widget`)
 
-## Current State (2026-03-18)
+## Stack
+
+Python 3.11 (Railway) | FastAPI async | supabase-py (sync — wrap) | Claude Haiku + Sonnet + Opus | Qdrant Cloud | Railway
+
+## Critical Rules
+
+1. NICIUN apel supabase sincron pe event loop. Stratul de DB trece prin
+   `await _run_sync(fn, idempotent=...)` (`app/db/supabase.py`). `idempotent=False`
+   la FIECARE insert: o deconectare poate cădea DUPĂ ce serverul a scris, iar un
+   retry ar dubla rândul (un mesaj dublat otrăvește istoricul, sumarizarea și KPI-urile).
+2. `SUPABASE_KEY` = service_role JWT. Cheia anon dă 42501.
+3. NICIODATĂ expresii SQL ca valori. Timpul se calculează în Python:
+   `datetime.now(timezone.utc).isoformat()`.
+4. TOATE endpointurile admin întorc `{ success: bool, data: T, count: int, error?: str }`.
+5. FIECARE apel AI își loghează costul.
+6. `.rpc()` doar unde PostgREST nu poate exprima operația atomic (două locuri în
+   `supabase.py`) — niciodată pentru CRUD obișnuit.
+7. NICIODATĂ PII (email, telefon, nume) în loguri la INFO sau mai sus.
+
+## File Structure
+
+`app/main.py` · `app/api/` (rute) · `app/db/supabase.py` · `app/pipeline/`
+(orchestrator, intent, entity_extractor, generator, corrections) ·
+`app/services/` (lead_service, crm, routing, handoff, closing) ·
+`app/ai/` (claude, prompts, templates) · `app/security/` · `app/models/` ·
+`migrations/` · `tests/`
+
+## Git Rules
+
+- Un singur scope per commit: `feat(api)`, `fix(ui)`, `fix(infra)`, `docs`
+- NICIODATĂ frontend + backend în același commit
+- Singurul remote: github.com/Nasalciuc/BBC-AI-Chatbot-Admin-Panel
+
+## Gates
+
+`pytest` verde (inclusiv `tests/test_code_discipline.py`) · fără chei hardcodate ·
+apeluri DB wrapped · shape corect · cost logat · `/health` 200
+
+## Migrații
+
+Fișierul în repo NU înseamnă aplicat. Fiecare PR care adaugă o migrație declară
+`APPLIED: da/nu`, iar codul care depinde de o coloană nouă tratează absența ei ca
+pe un caz normal, nu ca pe o excepție.
+
+---
+
+## Istoric (neactualizat, 18 mar 2026)
+
+Ce urmează a fost adevărat în martie 2026 și NU a mai fost verificat de atunci.
+Nu lua nicio decizie pe baza lui — citește codul. Starea sistemului nu se mai
+documentează aici, tocmai pentru că îmbătrânește și devine minciună.
 
 - Deploy: Railway LIVE at HEAD, auto-deploy ON, Trial plan (~20 days remaining)
 - Pipeline: 8 steps + 3 security sub-steps (3.5 handoff, 3.6 probe, 7.5 refusal)
 - Qdrant: CONNECTED, MiniLM 384d server-side FREE, 30 entries, feature flag ON
-- Templates: 41+ keys (~90% coverage)
-- Intents: 22 (14 original + 8 support V2)
-- Security: 29 injection patterns, KB sanitization, history sanitization, XSS strip, Sonnet DoW cap
-- Summarization: every 5 messages (Haiku)
-- Tools: executor.py V2 foundation (zero tools active)
-- ThreadPool: 20 workers (upgraded from 5)
-
-## Stack
-
-Python 3.11 | FastAPI async | supabase-py (sync — wrap) | Claude Haiku+Sonnet | Qdrant Cloud | Railway
-
-## Critical Rules
-
-1. EVERY supabase in async: `await asyncio.to_thread(lambda: sb.table(...).execute())`
-2. SUPABASE_KEY = service_role JWT. Anon = 42501.
-3. NEVER SQL expressions as values. Python `datetime.utcnow().isoformat()`
-4. ALL admin endpoints: `{ success: bool, data: T, count: int, error?: str }`
-5. EVERY AI call logs cost.
-
-## File Structure
-
-app/main.py | app/db/supabase.py | app/pipeline/(orchestrator,intent,entity,generator,lead_service) | app/ai/(claude,prompts,templates) | app/models/ | app/routes/
-
-## Completed Work
-- Sprint 1 (5 days): 20 deliverables — infra, widget, Qdrant, drawer, prompts, templates, docs
-- Week 2 (in progress): support KB expansion (30 entries), support intents (8), CSV export, Gold KPI, security hardening (S1-S3), handoff mechanism
-- Security: 4-layer defense (sanitizer 29 patterns + system prompt + validator + budget guard) + V2 tool executor foundation
-
-## Next Actions
-1. ⬜ Railway Trial → Hobby (Dan — $5/mo, ~20 days remaining)
-2. ⬜ Widget embed on buybusinessclass.com (Dan — instructions in docs/WIDGET-EMBED-GUIDE.md)
-3. ⬜ UptimeRobot monitoring (/health every 5 min)
-4. ⬜ Post-launch: iterate based on real pipeline_runs data
-
-## Git Rules
-- One scope per commit: feat(api), fix(ui), fix(infra), docs
-- NEVER mix frontend + backend in one commit
-- ONLY remote: github.com/Nasalciuc/BBC-AI-Chatbot-Admin-Panel
-- Push after EVERY completed task, verify on production
-
-## Never List
-
-1. NEVER anon key | 2. NEVER sync in async | 3. NEVER raw LLM output
-4. NEVER PII at INFO | 5. NEVER hardcode keys | 6. NEVER skip cost tracking
-7. NEVER change shape without frontend update | 8. NEVER .rpc() for CRUD
-
-## Gates
-
-pytest | no hardcoded keys | async wrapped | shape correct | cost tracked | /health 200
-
-## Agent Teams
-
-Status: **ACTIVE**. Workflow: research → plan → build. Contract-first. Budget: $50/day sprint.
+- Templates: 41+ keys (~90% coverage) · Intents: 22 (14 original + 8 support V2)
+- Security: 29 injection patterns, KB sanitization, history sanitization, XSS strip
+- Summarization: every 5 messages (Haiku) · Tools: executor.py V2, zero tools active
+- ThreadPool: 20 workers
+- Next actions din martie: Railway Trial → Hobby, widget embed pe
+  buybusinessclass.com, UptimeRobot pe `/health`

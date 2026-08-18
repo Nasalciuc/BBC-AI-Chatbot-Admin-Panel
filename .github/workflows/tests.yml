@@ -1,0 +1,121 @@
+# The tests that already exist, run by a machine instead of by whoever
+# remembered. Nothing here deploys, nothing here needs a secret: if this file
+# leaked in full it would tell an attacker only that we run pytest.
+#
+# Job names are short and must stay stable — `backend`, `admin`, `widget` are
+# what you tick in Settings -> Branches -> required status checks. Rename one
+# and the required check silently stops applying.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Fake, and deliberately obvious about it. `supabase_url` / `supabase_key`
+      # are the only settings with no default, so importing the app without
+      # them raises before a single test runs. Nine test files rely on a local
+      # .env that CI will never have — this is what replaces it.
+      #
+      # SUPABASE_KEY has to be JWT-SHAPED, not just a string: supabase-py
+      # 2.7.4 (the pinned version, and what Railway installs) rejects anything
+      # else with SupabaseException("Invalid API key") inside create_client.
+      # 21 tests that build a client and patch the call underneath it fail on
+      # a plain string. The payload below decodes to {"role":"ci-fake"} and the
+      # signature is not a signature — it authenticates nothing, anywhere.
+      SUPABASE_URL: https://ci.invalid.supabase.co
+      SUPABASE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiY2ktZmFrZSIsImlhdCI6MH0.ci_not_a_real_signature
+      ANTHROPIC_API_KEY: ci-not-a-real-key
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'          # what Railway runs
+          cache: pip
+          cache-dependency-path: |
+            bbc-chatbot-api/requirements.txt
+            bbc-chatbot-api/requirements-dev.txt
+
+      - name: Install
+        working-directory: bbc-chatbot-api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Tests
+        working-directory: bbc-chatbot-api
+        # `-m "not integration"` is the escape hatch for anything that ever
+        # needs the network. No test carries that mark today — the whole suite
+        # runs offline — and the day one does, this line already excludes it.
+        run: python -m pytest -q -m "not integration"
+
+  admin:
+    name: admin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22, not 20: the test scripts use --experimental-strip-types, which
+          # landed in Node 22.6. On 20 node exits 9 with "bad option" before a
+          # single test runs. 22 is LTS; 23 is current and leaves support fast.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bbc-admin-app/package-lock.json
+
+      - name: Install
+        working-directory: bbc-admin-app
+        run: npm ci
+
+      - name: Tests
+        working-directory: bbc-admin-app
+        run: npm test
+
+      - name: Build
+        working-directory: bbc-admin-app
+        # `build` is `tsc -b && vite build`, so this IS the typecheck. Its
+        # `prebuild` hook installs and builds bbc-widget first and copies the
+        # bundle in — that is why this job is the slow one.
+        run: npm run build
+
+  widget:
+    name: widget
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22, not 20: the test scripts use --experimental-strip-types, which
+          # landed in Node 22.6. On 20 node exits 9 with "bad option" before a
+          # single test runs. 22 is LTS; 23 is current and leaves support fast.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bbc-widget/package-lock.json
+
+      - name: Install
+        working-directory: bbc-widget
+        run: npm ci
+
+      - name: Tests
+        working-directory: bbc-widget
+        run: npm test
+
+      - name: Build
+        working-directory: bbc-widget
+        run: npm run build
