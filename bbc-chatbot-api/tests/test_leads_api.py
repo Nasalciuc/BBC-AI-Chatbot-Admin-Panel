@@ -24,6 +24,23 @@ AUTH_HEADERS = {
     "Authorization": "Basic " + base64.b64encode(b"testadmin:testpass").decode()
 }
 
+
+@pytest.fixture(autouse=True)
+def _basic_auth_credentials():
+    """Force the credentials onto the settings object, not onto os.environ.
+
+    `settings` is a module-level singleton built the first time anything
+    imports it. Under the full suite that has already happened long before
+    this file's `os.environ[...]` lines run, so those writes reach nothing and
+    every request here answered 401. It passed locally only because the
+    developer `.env` sets DEBUG=true, which turns on the dev auth bypass —
+    a mask that CI does not have and production must never have.
+    """
+    from config.settings import settings
+
+    with patch.object(settings, "api_user", "testadmin"),          patch.object(settings, "api_pass", "testpass"),          patch.object(settings, "debug", False):
+        yield
+
 # ── Sample data ──────────────────────────────────────────────
 LEAD_NEW_GOLD = {
     "id": "lead-001",

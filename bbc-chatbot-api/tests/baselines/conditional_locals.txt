@@ -1,0 +1,21 @@
+# Frozen 18 Aug 2026 — 2 findings. This number may only ever GO DOWN.
+#
+# A name that some path can reach while it is still unbound. This rule exists
+# because the same shape has now cost two outages in two days, both in
+# `_pipeline`: 17 Aug (five UnboundLocalError, ten hours of emergency-template
+# replies, 16 clients, /health reporting zero) and 18 Aug (#204 deleted five
+# initialisers; every turn died before the client got a word back).
+#
+# Both remaining findings are live hazards masked by luck rather than design:
+#   route_result  — bound only in the `else` branch, read unconditionally eight
+#                   lines later. It survives today ONLY because the `and`
+#                   before it short-circuits. Reorder that condition and the
+#                   client gets a 500.
+#   _cb_lead      — bound inside a `try` whose handler logs and carries on,
+#                   then read afterwards. If get_or_create_lead throws, the
+#                   callback confirmation loses its follow-up question.
+#
+# The fix is always the same: initialise the name at the top of the function
+# with a neutral default, instead of only in the branch that produces it.
+app/pipeline/orchestrator.py::_pipeline::_cb_lead::conditional
+app/pipeline/orchestrator.py::_pipeline::route_result::conditional
