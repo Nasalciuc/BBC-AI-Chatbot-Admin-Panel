@@ -219,7 +219,16 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # 033: chat_enabled comes from the DB too, never from the JWT. An absent
     # column (migration not applied yet) reads as True — see supabase.py.
     chat_enabled = bool((user_db or {}).get("chat_enabled", True))
-    if user_db and role_db in db._OPERATOR_ROLES and is_ready and chat_enabled:
+    # D4: OFF with the shared queue — an operator must not receive a
+    # conversation because their browser pinged first. Behind the flag for one
+    # iteration as a rollback path; deleted in QUEUE-CLEANUP.
+    if (
+        settings.auto_dispatch_enabled
+        and user_db
+        and role_db in db._OPERATOR_ROLES
+        and is_ready
+        and chat_enabled
+    ):
         agent_name = user_db.get("name") or user_db.get("email") or "A specialist"
         assigned = await _assign_pending_conversations(
             user_id,

@@ -191,6 +191,35 @@ async def route_conversation(
 # the existing super-alert. The heartbeat/notify-assignment infra in the
 # panel already rings on new assignments — no new notification framework.
 
+async def _needs_agent_super_alert(
+    conversation_id: str, conv: dict, tunnel: str
+) -> None:
+    """Email super@ when a client asked for a human and nobody is there.
+
+    Extracted from dispatch_needs_agent so it survives D4: the queue removes
+    the automatic ASSIGNMENT, never the shout. A visitor who asked out loud and
+    got nobody is exactly the case management wants to hear about.
+    """
+    try:
+        from app.services.closing import claim_super_alert
+        from app.services.email import send_super_alert_email
+
+        if await claim_super_alert(
+            conversation_id, settings.super_alert_cooldown_minutes
+        ):
+            await send_super_alert_email(
+                conversation_id=conversation_id,
+                visitor_name=conv.get("visitor_name"),
+                visitor_phone=conv.get("visitor_phone"),
+                visitor_email=conv.get("visitor_email"),
+                tunnel=tunnel,
+                last_message="(queued: client asked for a human agent)",
+                chat_number=conv.get("chat_number"),
+            )
+    except Exception as e:
+        logger.warning(f"[dispatch] super-alert failed for {conversation_id}: {e}")
+
+
 async def dispatch_needs_agent(conversation_id: str) -> bool:
     """Try to hand a needs_agent conversation to a ready operator.
 
@@ -207,6 +236,17 @@ async def dispatch_needs_agent(conversation_id: str) -> bool:
             return False
 
         tunnel = conv.get("tunnel") or "sales"
+        # D4: automatic assignment is off — the conversation belongs to the
+        # shared queue, where the first click wins. The shout still goes out:
+        # a client who asked for a human and got nobody is the one case
+        # management must hear about.
+        if not settings.auto_dispatch_enabled:
+            await _needs_agent_super_alert(conversation_id, conv, tunnel)
+            logger.info(
+                f"[dispatch] {conversation_id}: auto-dispatch off — "
+                "stays in the shared queue (alert sent)"
+            )
+            return False
 
         class _V:  # minimal visitor shape for route_conversation's sticky check
             name = conv.get("visitor_name")
@@ -220,24 +260,7 @@ async def dispatch_needs_agent(conversation_id: str) -> bool:
         if not route or not route.get("agent_id"):
             # Nobody ready — the demand signal stays queued and the existing
             # super-alert path fires exactly as it does today.
-            try:
-                from app.services.closing import claim_super_alert
-                from app.services.email import send_super_alert_email
-
-                if await claim_super_alert(
-                    conversation_id, settings.super_alert_cooldown_minutes
-                ):
-                    await send_super_alert_email(
-                        conversation_id=conversation_id,
-                        visitor_name=conv.get("visitor_name"),
-                        visitor_phone=conv.get("visitor_phone"),
-                        visitor_email=conv.get("visitor_email"),
-                        tunnel=tunnel,
-                        last_message="(queued: client asked for a human agent)",
-                        chat_number=conv.get("chat_number"),
-                    )
-            except Exception as e:
-                logger.warning(f"[dispatch] super-alert failed for {conversation_id}: {e}")
+            await _needs_agent_super_alert(conversation_id, conv, tunnel)
             logger.info(f"[dispatch] {conversation_id}: no ready operators — stays queued")
             return False
 

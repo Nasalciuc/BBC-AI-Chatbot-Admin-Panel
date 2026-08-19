@@ -11,6 +11,8 @@ from app.security.input_sanitizer import sanitize_message
 from app.services.conversation_service import add_message
 from app.realtime.manager import manager
 
+from config.settings import settings
+
 logger = logging.getLogger(__name__)
 
 # Per-instance claim counters, same shape as HANDOFF_HEALTH (handoff.py) and
@@ -645,12 +647,16 @@ async def close_conversation(
         log_activity(db, user.get("id"), conversation_id, "closed")
     )
 
-    # Auto-assign: freed operator picks up oldest unassigned AI conv.
-    # Management roles (owner/admin/dev) do NOT auto-receive conversations.
+    # Auto-assign on close — OFF with the shared queue (spec v2.4 §2bis/A3).
+    # Handing the oldest conversation to whoever just finished meant someone
+    # received work without claiming it, while everyone else watched a row
+    # vanish with no explanation. The queue is now the only distribution path
+    # for ownerless conversations. Kept behind the flag for one iteration as a
+    # rollback path; deleted in QUEUE-CLEANUP.
     next_conv_id = None
     agent_id = user.get("id")
     role = user.get("role", "")
-    if role not in db._MANAGEMENT_ROLES:
+    if settings.auto_dispatch_enabled and role not in db._MANAGEMENT_ROLES:
         tunnel_scope = user.get("tunnel_scope", "sales")
         tunnels = ["sales", "support"] if tunnel_scope == "all" else [tunnel_scope]
 
