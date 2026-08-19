@@ -8,6 +8,7 @@ import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
 import { useAttentionStore } from '@/stores/attention-store'
+import { QueueSection } from './components/queue-section'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { formatAge } from '@/lib/format-age'
@@ -230,6 +231,14 @@ export function Chats() {
                 </button>
               ))}
             </div>
+
+            {/* Shared queue — waiting for ANY operator; first click wins */}
+            <QueueSection
+              onClaimed={(id) => {
+                stopAssignmentAlerts()
+                setSelectedId(id)
+              }}
+            />
 
             {/* Search + Tunnel filter */}
             <div className="px-4 py-3 border-b border-border space-y-2">

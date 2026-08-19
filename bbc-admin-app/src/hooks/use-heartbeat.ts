@@ -6,8 +6,10 @@ import {
   canReceiveAssignNotifications,
   notifyAssignment,
   stopAssignmentAlerts,
+  playQueueChime,
 } from '@/lib/notify-assignment'
 import { useAttentionStore } from '@/stores/attention-store'
+import { useQueueStore } from '@/stores/queue-store'
 import { reportAttentionCycle, reportPresence } from '@/lib/crm-bridge'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
@@ -32,6 +34,10 @@ type HeartbeatResponse = {
   assigned?: number
   /** Active human-mode conversations assigned to this operator. */
   active_assigned?: number
+  /** Shared queue, scoped to this operator (tunnel/team). Same value that
+   *  feeds the CRM's chat:queue badge — one source, no contradictions. */
+  queue_count?: number
+  queue_ids?: string[]
 }
 
 /**
@@ -59,6 +65,8 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
   /** Last seen message_count per conversation, to detect new incoming messages. */
   const seenCounts = useRef<Map<string, number>>(new Map())
   const baselineTaken = useRef(false)
+  /** Queue conversations already chimed about — one sound each, not one per 5s poll. */
+  const announcedQueue = useRef<Set<string>>(new Set())
   /** Kept in a ref so the polling loop always reads the current selection. */
   const viewingRef = useRef<string | null>(viewingConversationId ?? null)
 
@@ -72,6 +80,26 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
         setReady(res.is_ready)
         // The CRM shows the agent's own state next to the chat button.
         reportPresence(res.is_ready)
+      }
+      // Shared queue, riding on the same beat — no second poll.
+      if (Array.isArray(res?.queue_ids)) {
+        const ids = res.queue_ids
+        useQueueStore.getState().setQueue(ids, res.queue_count ?? ids.length)
+        // One chime per conversation per episode, the `attended` pattern:
+        // the sound says "the line grew", the badge says by how much.
+        let isNew = false
+        for (const id of ids) {
+          if (!announcedQueue.current.has(id)) {
+            announcedQueue.current.add(id)
+            isNew = true
+          }
+        }
+        if (isNew && ids.length > 0) playQueueChime()
+        // Conversations that left the line may return later (released):
+        // forget them so their return rings again.
+        for (const known of announcedQueue.current) {
+          if (!ids.includes(known)) announcedQueue.current.delete(known)
+        }
       }
     }
 

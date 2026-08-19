@@ -554,6 +554,39 @@ async def claim_conversation(
     return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
 
 
+@router.post("/conversations/{conversation_id}/release")
+async def release_conversation_endpoint(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Give a conversation back to the shared line — for accidental claims.
+
+    The panel offers this for 30 seconds after a claim. Only the current owner
+    may release: the conditional write guarantees it, so a stale click cannot
+    take a conversation away from whoever holds it now.
+    """
+    conv = await db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+    _me = user.get("id")
+    if conv.get("assigned_agent_id") != _me:
+        raise HTTPException(status_code=409, detail="Not yours to release")
+    from app.services.handoff import _release_from_agent
+    _meta = dict(conv.get("metadata") or {})
+    _meta.pop("announce_pending", None)
+    _meta.pop("agent_assigned_at", None)
+    ok = await _release_from_agent(
+        conversation_id, _me, _meta, reason="released_by_agent"
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="Already released")
+    from app.services.presence import log_activity
+    from app.pipeline.orchestrator import _fire_and_forget
+    _fire_and_forget(log_activity(db, _me, conversation_id, "released_by_agent"))
+    return {"success": True, "data": {"conversation_id": conversation_id}}
+
+
 @router.post("/conversations/{conversation_id}/close")
 async def close_conversation(
     conversation_id: str,

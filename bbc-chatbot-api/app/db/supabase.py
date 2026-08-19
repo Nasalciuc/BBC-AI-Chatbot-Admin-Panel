@@ -4056,3 +4056,101 @@ async def enqueue_conversation(conversation_id: str) -> bool:
         _downgrade_queued_at(e)
         logger.warning(f"[{conversation_id}] enqueue_conversation failed: {e}")
         return False
+
+
+# ── Shared queue: one raw fetch per (tunnel, team) per 5s, filtered per viewer ──
+# The heartbeat runs every 5s per operator. Querying conversations once per
+# operator per beat would be ~120 queries/minute on the hottest table with ten
+# people online — the very cost that ruled out a separate poll. The raw rows are
+# cached for 5s; the per-viewer parts (the 60s reservation) are applied after.
+_queue_cache: dict = {}          # (tunnel, team_id) -> {"at": float, "rows": list}
+QUEUE_CACHE_SECONDS = 5
+
+
+async def get_queue_for_operator(
+    tunnel: str,
+    team_id: str | None = None,
+    viewer_agent_id: str | None = None,
+    limit: int = 20,
+) -> list:
+    """Conversations waiting for ANY operator — the shared line, as one person sees it.
+
+    Filters (spec v2.4 §6.5). Note what is NOT here: status = 'needs_agent'.
+    A brand-new conversation is 'active', so filtering on needs_agent alone
+    would give a queue that is permanently empty for exactly the visitors it
+    exists for — a bug that looks like a working system.
+
+        queued_at IS NOT NULL
+        AND assigned_agent_id IS NULL
+        AND status IN ('active', 'needs_agent')
+        AND tunnel = :tunnel
+        AND (team_id IS NULL OR team_id = :team_id)
+        ORDER BY queued_at ASC          -- oldest wait first, not oldest creation
+
+    team_id NULL is visible to EVERYONE eligible in the tunnel: new
+    conversations have no team yet, and a strict equality would empty the line
+    for all teams at once, with each team assuming it belonged to the other.
+
+    Applied afterwards, in Python (metadata cannot be filtered efficiently in
+    PostgREST):
+      * the 60s silent reservation — a conversation released by the sweeper
+        stays invisible to everyone except the operator who was already talking
+        to that client, so they can resume without a race and the client is not
+        greeted a second time by a stranger;
+      * needs_agent rows sort first — the visitor asked for a human out loud.
+    """
+    _key = (tunnel, team_id or "")
+    _now = time.time()
+    _hit = _queue_cache.get(_key)
+    if _hit and _now - _hit["at"] < QUEUE_CACHE_SECONDS:
+        rows = _hit["rows"]
+    else:
+        if not _queued_at_column_available():
+            return []
+        try:
+            db_client = get_client()
+            def _q():
+                q = (
+                    db_client.table("conversations")
+                    .select(
+                        "id, chat_number, tunnel, status, created_at, queued_at, "
+                        "team_id, last_user_message_at, last_reply_at, "
+                        "message_count, metadata"
+                    )
+                    .not_.is_("queued_at", "null")
+                    .is_("assigned_agent_id", "null")
+                    .in_("status", ["active", "needs_agent"])
+                    .eq("tunnel", tunnel)
+                    .order("queued_at", desc=False)
+                    .limit(limit)
+                )
+                if team_id:
+                    q = q.or_(f"team_id.is.null,team_id.eq.{team_id}")
+                return q.execute()
+            res = await _run_sync(_q)
+            rows = res.data or []
+            _queue_cache[_key] = {"at": _now, "rows": rows}
+        except Exception as e:
+            _downgrade_queued_at(e)
+            logger.warning(f"get_queue_for_operator error (tunnel={tunnel}): {e}")
+            return []
+    # --- per-viewer filtering, after the cache ---
+    from datetime import datetime, timezone
+    _cut = datetime.now(timezone.utc).timestamp() - 60
+    out = []
+    for r in rows:
+        _meta = r.get("metadata") or {}
+        _engaged = _meta.get("engaged_agent_id")
+        if _engaged and viewer_agent_id and _engaged != viewer_agent_id:
+            try:
+                _qa = datetime.fromisoformat(
+                    str(r.get("queued_at")).replace("Z", "+00:00")
+                ).timestamp()
+            except (ValueError, TypeError):
+                _qa = 0
+            if _qa > _cut:
+                continue        # silent reservation still running — not yours yet
+        out.append(r)
+    # The visitor who asked for a human out loud goes to the top.
+    out.sort(key=lambda r: 0 if r.get("status") == "needs_agent" else 1)
+    return out
