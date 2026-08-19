@@ -1,16 +1,17 @@
-"""Routing engine — casino-fair assignment to free operators.
+"""Routing engine — sticky affinity, then the shared queue.
 
-Algorithm: Fisher-Yates shuffle (CSPRNG) + sort by chats_served_today.
-Least-served-today agent wins. Equal counts: random tiebreak.
-Daily counter resets lazily (date check, no cron needed).
+Order: a returning client (closed conv within 90 days) goes back to the same
+operator if they are at their desk — continuity is the ONE automatic
+assignment kept. Everyone else goes to the shared queue: every eligible
+operator sees the conversation, and the first to press Take owns it (via the
+claim gate in supabase.py). The old 1:1 cap and the casino-fair shuffle are
+gone — spec v2.4 §2ter/D1; the owners asked for competition.
 
-Sticky affinity: returning clients (closed conv within 90 days) go back to
-the same operator if they're online, bypassing max_concurrent_chats.
-New leads still respect the max_concurrent cap.
+chats_served_today survives as the SCORE, incremented only for genuinely won
+assignments (claim-gate winners and sticky hits).
 """
-import secrets
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from config.settings import settings
 from app.db import supabase as db
@@ -123,14 +124,13 @@ async def _find_sticky_operator(
 async def route_conversation(
     tunnel: str, visitor=None, visitor_id: Optional[str] = None
 ) -> dict:
-    """Pick a FREE operator using casino-fair distribution.
+    """Sticky affinity first; everyone else queues.
 
-    Order of preference:
+    Order:
       1. Sticky routing — returning client's previous operator, if online.
-         Bypasses max_concurrent_chats.
-      2. Normal routing — least-loaded eligible operator under max_concurrent.
-      3. No agent — returns {'agent_id': None, 'mode': 'ai'}, caller falls
-         through to AI pipeline.
+      2. Shared queue — {'agent_id': None, 'reason': 'queued'}: nobody is
+         auto-picked; the first operator to press Take wins via the claim gate.
+      3. Nobody online — same shape, and the caller falls through to AI.
 
     Returns: {"agent_id": uuid|None, "mode": "human"|"ai", "agent_name": str|None}
     """
@@ -159,42 +159,25 @@ async def route_conversation(
             logger.info(f"[routing] No agents online for tunnel={tunnel} → AI")
             return {"agent_id": None, "mode": "ai", "agent_name": None}
 
-        # Filter: only FREE agents (0 active conversations — strict 1:1 rule)
-        free_agents = []
-        for agent in agents:
-            count = await db.get_agent_active_count(agent["id"])
-            if count < settings.max_concurrent_chats:
-                free_agents.append(agent)
-
-        if not free_agents:
-            logger.info(f"[routing] All agents busy for tunnel={tunnel} → AI")
-            return {"agent_id": None, "mode": "ai", "agent_name": None}
-
-        # Lazy daily reset: stale date → treat served count as 0
-        today = date.today().isoformat()
-        for a in free_agents:
-            if a.get("chats_served_date") != today:
-                a["chats_served_today"] = 0
-
-        # Casino step 1: Fisher-Yates shuffle with CSPRNG (random tiebreak)
-        for i in range(len(free_agents) - 1, 0, -1):
-            j = secrets.randbelow(i + 1)
-            free_agents[i], free_agents[j] = free_agents[j], free_agents[i]
-
-        # Casino step 2: stable sort by least served today
-        free_agents.sort(key=lambda a: a.get("chats_served_today", 0))
-        selected = free_agents[0]
-
-        # Increment daily counter (1 DB call — uses data already in memory)
-        await db.increment_chats_served(selected)
-
-        agent_name = selected.get("name") or selected.get("email", "A specialist")
+        # The 1:1 filter and the "casino" below it are gone (spec v2.4
+        # §2ter/D1). An ownerless conversation is no longer handed to the
+        # least-loaded operator: it goes to the shared queue, everyone eligible
+        # sees it, and the first to press "Take" gets it. A fast operator
+        # holding several conversations at once is the intended behaviour, not
+        # an accident — the owners asked for competition, and balancing it
+        # quietly would be overruling them.
+        #
+        # chats_served_today survives as the SCORE, not as policy: it is
+        # incremented in the claim gate (winners only) and by sticky above,
+        # which is an assignment that was genuinely won. No path scores twice.
+        #
+        # get_agent_active_count is no longer called here — one DB call per
+        # eligible agent, per conversation, removed.
         logger.info(
-            f"[routing] Assigned to {agent_name} "
-            f"(served {selected.get('chats_served_today', 0)} today) "
-            f"for tunnel={tunnel}"
+            f"[routing] {len(agents)} eligible operator(s) online for "
+            f"tunnel={tunnel} → shared queue (nobody auto-picked)"
         )
-        return {"agent_id": selected["id"], "mode": "human", "agent_name": agent_name, "reason": "dispatch"}
+        return {"agent_id": None, "mode": "ai", "agent_name": None, "reason": "queued"}
 
     except Exception as e:
         logger.error(f"[routing] Unexpected error: {e} → fallback AI")

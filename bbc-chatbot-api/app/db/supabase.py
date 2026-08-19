@@ -4021,3 +4021,38 @@ async def reassign_conversation(
     except Exception as e:
         logger.warning(f"[{conversation_id}] reassign failed: {e}")
         return False
+
+
+async def enqueue_conversation(conversation_id: str) -> bool:
+    """Put a conversation into the shared queue: stamp queued_at, leave it unassigned.
+
+    Conditional on purpose: queued_at is written ONLY if it is still NULL, so
+    the age the queue displays — and the >2min alert — is the real waiting time
+    and is never reset by the visitor's later messages.
+
+    The opposite rule applies to _release_from_agent: a release overwrites
+    queued_at unconditionally, because a release starts a NEW life in the line
+    and its age must start then. The two are not in conflict; they are the two
+    halves of one lifecycle (spec v2.4 §6.2).
+
+    Silent no-op until migration 034 is applied — one error line, never a raise.
+    """
+    if not _queued_at_column_available():
+        return False
+    try:
+        from datetime import datetime, timezone
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"queued_at": datetime.now(timezone.utc).isoformat()})
+            .eq("id", conversation_id)
+            .is_("assigned_agent_id", "null")
+            .is_("queued_at", "null")
+            .execute(),
+            idempotent=False,
+        )
+        return bool(res.data)
+    except Exception as e:
+        _downgrade_queued_at(e)
+        logger.warning(f"[{conversation_id}] enqueue_conversation failed: {e}")
+        return False
