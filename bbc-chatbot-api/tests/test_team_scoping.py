@@ -103,11 +103,18 @@ async def test_fallback_does_not_clear_team_id():
         patch("app.db.supabase.get_recent_messages", new_callable=AsyncMock, return_value=[]),
         patch("app.services.presence.log_activity", new=MagicMock()),
         patch("app.pipeline.orchestrator._fire_and_forget", new=MagicMock()),
+        # Conditional release: only one sweep of many may hand the
+        # conversation back (21 duplicate Timeout rows, 18 Aug). It carries
+        # the same payload the plain update used to.
+        patch(
+            "app.services.handoff._release_from_agent",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as rel,
     ):
         await fall_back_to_ai(CONV)
-    payload = upd.await_args.args[1]
-    assert payload.get("assigned_agent_id") is None
-    assert "team_id" not in payload  # team stays frozen; only agent is cleared
+    meta = rel.await_args.args[2]
+    assert "team_id" not in meta  # team stays frozen; only the agent is cleared
 
 
 # ── 3. Supervisor sees own team's conversations ──────────────────────

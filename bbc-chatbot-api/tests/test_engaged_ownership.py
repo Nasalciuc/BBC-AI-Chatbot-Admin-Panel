@@ -236,9 +236,20 @@ async def test_fall_back_preserves_engaged_agent_id():
     async def _capture_update(_id, payload):
         updates.append(payload)
 
+    async def _capture_release(_id, _agent, metadata):
+        # The release is CONDITIONAL now — `.eq("assigned_agent_id", …)`, so
+        # only one of the many sweeps can hand the conversation back (21
+        # duplicate Timeout rows on 18 Aug). It writes the same three fields
+        # the plain update used to; this stands in for that statement.
+        updates.append(
+            {"mode": "ai", "assigned_agent_id": None, "metadata": metadata}
+        )
+        return True
+
     with (
         patch("app.services.handoff.db.get_conversation_simple", new_callable=AsyncMock, return_value=conv),
         patch("app.services.handoff.db.update_conversation", new_callable=AsyncMock, side_effect=_capture_update),
+        patch("app.services.handoff._release_from_agent", new_callable=AsyncMock, side_effect=_capture_release),
         patch("app.services.handoff.db.get_recent_messages", new_callable=AsyncMock, return_value=[]),
         patch("app.services.handoff._safe_system_msg", new_callable=AsyncMock, return_value=None),
         patch("app.services.handoff._handoff_phrase_recently_sent", new_callable=AsyncMock, return_value=False),
