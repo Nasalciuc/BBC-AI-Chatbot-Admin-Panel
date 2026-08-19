@@ -176,9 +176,13 @@ class TestFallbackTrace:
         conv = {"id": _CID, "assigned_agent_id": _AGENT,
                 "metadata": {"announce_pending": True}}
         upd = AsyncMock()
+        # The write is conditional now (one sweep of many may release), so the
+        # payload this test protects travels through _release_from_agent.
+        rel = AsyncMock(return_value=True)
         with patch("app.services.handoff.db.get_conversation_simple",
                    new=AsyncMock(return_value=conv)), \
              patch("app.services.handoff.db.update_conversation", upd), \
+             patch("app.services.handoff._release_from_agent", rel), \
              patch("app.services.handoff.add_message", new=AsyncMock()), \
              caplog.at_level(logging.ERROR):
             await fall_back_to_ai(_CID)
@@ -187,7 +191,7 @@ class TestFallbackTrace:
         assert HANDOFF_HEALTH["last_at"] is not None
         assert any("HANDOFF EXPIRED" in r.message and _AGENT in r.message
                    for r in caplog.records)
-        meta = upd.await_args.args[1]["metadata"]
+        meta = rel.await_args.args[2]
         assert meta["missed_by_human_at"]  # the panel/audits can count losses
 
     @pytest.mark.asyncio

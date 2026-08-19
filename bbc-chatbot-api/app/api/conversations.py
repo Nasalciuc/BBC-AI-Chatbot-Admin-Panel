@@ -518,6 +518,40 @@ async def close_conversation(
     _enforce_tunnel(user, conv.get("tunnel"))
 
     from datetime import datetime, timezone
+
+    # WHO closed this matters more than the fact that it is closed. The
+    # abandoned-conversation cron sweeps closed conversations on purpose (#200
+    # — the Diana class: a client who left contact details and went quiet is
+    # exactly the dialable lead). But an AGENT closing a chat is a human
+    # decision — spam, resolved by phone, not a lead — and the cron must not
+    # overrule it by pushing a flight request to the CRM anyway.
+    #
+    # Written BEFORE the status change, so there is never an instant where the
+    # conversation reads `closed` without saying who closed it. A patch, not a
+    # snapshot: a full metadata write would erase keys another request set in
+    # between (that is what migration 031 exists for).
+    _marked = await db.patch_conversation_presence(conversation_id, {
+        "closed_by_agent_id": user.get("id"),
+        "closed_by_role": user.get("role") or "",
+    })
+    if not _marked:
+        # Fall back rather than lose the decision: an unmarked close is one the
+        # cron will happily push to the CRM tomorrow.
+        try:
+            _cm = dict((conv or {}).get("metadata") or {})
+            _cm["closed_by_agent_id"] = user.get("id")
+            _cm["closed_by_role"] = user.get("role") or ""
+            await db.update_conversation(conversation_id, {"metadata": _cm})
+            logger.warning(
+                f"[{conversation_id}] closed-by marker written by snapshot — "
+                "patch_conv_presence unavailable (migration 031)"
+            )
+        except Exception as e:
+            logger.error(
+                f"[{conversation_id}] could not record who closed it ({e}) — "
+                "the CRM cron may still push this conversation"
+            )
+
     await db.update_conversation(conversation_id, {
         "status": "closed",
         "closed_at": datetime.now(timezone.utc).isoformat(),

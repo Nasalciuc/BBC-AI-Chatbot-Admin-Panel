@@ -1,13 +1,12 @@
 import { useState } from 'react'
-import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import useDialogState from '@/hooks/use-dialog-state'
+import { Link } from '@tanstack/react-router'
 import { useAuthStore } from '@/stores/auth-store'
+import { getUsers } from '@/lib/api'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
-import { getUsers } from '@/lib/api'
-import type { TeamUser } from '@/features/teams/data/types'
-import { TeamDialog } from '@/features/teams/components/team-dialog'
+import { isEmbedded } from '@/lib/crm-bridge'
+import useDialogState from '@/hooks/use-dialog-state'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -21,6 +20,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { SignOutDialog } from '@/components/sign-out-dialog'
+import { TeamDialog } from '@/features/teams/components/team-dialog'
+import type { TeamUser } from '@/features/teams/data/types'
 
 export function ProfileDropdown() {
   const [open, setOpen] = useDialogState()
@@ -96,13 +97,20 @@ export function ProfileDropdown() {
               </DropdownMenuItem>
             )}
           </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem variant='destructive' onClick={() => setOpen(true)}>
-            Sign out
-            <DropdownMenuShortcut className='text-current'>
-              ⇧⌘Q
-            </DropdownMenuShortcut>
-          </DropdownMenuItem>
+          {!isEmbedded() && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant='destructive'
+                onClick={() => setOpen(true)}
+              >
+                Sign out
+                <DropdownMenuShortcut className='text-current'>
+                  ⇧⌘Q
+                </DropdownMenuShortcut>
+              </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

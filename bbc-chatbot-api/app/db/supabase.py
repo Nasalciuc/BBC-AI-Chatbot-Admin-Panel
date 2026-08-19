@@ -3055,6 +3055,13 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             )
             .in_("status", ["active", "closed"])
             .in_("mode", ["ai", "human"])
+            # …but never one a HUMAN closed. #200 widened this to closed+human
+            # to rescue the Diana/Paulette classes — conversations the SYSTEM
+            # abandoned. An agent closing a chat has already decided it is not
+            # a lead; pushing it to the CRM anyway overrules them, and the
+            # consultant calls someone who was handled hours ago. If the agent
+            # does want it pushed, the panel button still does exactly that.
+            .is_("metadata->>closed_by_agent_id", "null")
             .eq("tunnel", "sales")
             .gte("created_at", _window_start)
             .or_(

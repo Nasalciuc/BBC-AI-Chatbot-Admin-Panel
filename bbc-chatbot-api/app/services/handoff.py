@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Missed-handoff counter — surfaced in /health as handoffs_expired. Every
 # increment is a client who asked for a human and never got one in time.
-HANDOFF_HEALTH: dict = {"expired_since_boot": 0, "last_at": None}
+HANDOFF_HEALTH: dict = {"expired_since_boot": 0, "last_at": None, "fallback_races": 0}
 
 
 # ── H1: Agent staleness detection + AI fallback ──────────────
@@ -111,6 +111,46 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
 _FALLBACK_MSG = (
     "Sorry for the wait — I'm here and we can pick up right where we left off."
 )
+
+
+async def _release_from_agent(
+    conversation_id: str, agent_id: str, metadata: dict
+) -> bool:
+    """Hand the conversation back to the AI — once, by whoever gets there first.
+
+    The sweeper runs on EVERY operator heartbeat, so with N operators online it
+    passes over the same stale conversation every 5 seconds, N times. Nothing
+    stopped it running twice: the release wrote `assigned_agent_id = None`
+    unconditionally, so every run "succeeded", and every run logged a timeout
+    against the agent. On 18 Aug one missed handoff produced 21 `Timeout`
+    rows in three seconds in Nolan Hunt's history, and 16 in Robert Doyle's.
+    A supervisor reading that cannot tell what happened, and "how often did X
+    miss a handoff" answers 21 instead of 1.
+
+    So the WRITE decides. `.eq("assigned_agent_id", agent_id)` matches exactly
+    one run — the one that still finds the conversation belonging to that
+    agent. Everyone else gets zero rows back, and has nothing left to say.
+
+    Returns False on error too: if we cannot prove we are the one who released
+    it, we must not log a timeout against a human's record.
+    """
+    try:
+        client = db.get_client()
+        res = await db._run_sync(
+            lambda: client.table("conversations")
+            .update({"mode": "ai", "assigned_agent_id": None, "metadata": metadata})
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", agent_id)
+            .execute(),
+            idempotent=False,
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.warning(
+            f"[handoff] Conv {conversation_id}: conditional release failed ({e}) — "
+            "treating as lost race, no timeout recorded"
+        )
+        return False
 
 
 async def _claim_fallback_notice(conversation_id: str, metadata: dict) -> bool:
@@ -310,29 +350,45 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     if _missed_by:
         from datetime import datetime as _dt, timezone as _tz
 
-        HANDOFF_HEALTH["expired_since_boot"] += 1
-        HANDOFF_HEALTH["last_at"] = _dt.now(_tz.utc).isoformat()
-        _meta["missed_by_human_at"] = HANDOFF_HEALTH["last_at"]
-        logger.error(
-            f"[{conversation_id}] HANDOFF EXPIRED: agent {_missed_by} never "
-            f"engaged — conversation returns to AI (counted in /health)"
-        )
+        # Stamped into the payload now; COUNTED only if we win the release
+        # below. Counting here is what made one missed handoff look like 21.
+        _meta["missed_by_human_at"] = _dt.now(_tz.utc).isoformat()
     # GO-08: reset loop guards so the conversation can be re-assigned.
     _meta.pop("agent_assign_count", None)
     _meta.pop("agent_cooldown_until", None)
     _meta.pop("announce_pending", None)
     _meta.pop("agent_assigned_at", None)
 
-    await db.update_conversation(conversation_id, {
-        "mode": "ai",
-        "assigned_agent_id": None,
-        "metadata": _meta,
-    })
     from app.services.presence import log_activity
     from app.pipeline.orchestrator import _fire_and_forget
     _agent = (_conv or {}).get("assigned_agent_id") or ""
+
     if _agent:
+        # One release, one set of consequences. Whoever loses this stops here:
+        # the conversation was already handed back, and there is nothing left
+        # to log, say, or push.
+        if not await _release_from_agent(conversation_id, _agent, _meta):
+            HANDOFF_HEALTH["fallback_races"] += 1
+            logger.info(
+                f"[{conversation_id}] fallback race lost — already released by "
+                "another sweep, staying quiet"
+            )
+            return
+        HANDOFF_HEALTH["expired_since_boot"] += 1
+        HANDOFF_HEALTH["last_at"] = _meta.get("missed_by_human_at")
+        logger.error(
+            f"[{conversation_id}] HANDOFF EXPIRED: agent {_agent} never "
+            f"engaged — conversation returns to AI (counted in /health)"
+        )
         _fire_and_forget(log_activity(db, _agent, conversation_id, "deadline_fired"))
+    else:
+        # Nobody holds it, so there is no race and no human to charge a
+        # timeout to. Same write as before, no activity row.
+        await db.update_conversation(conversation_id, {
+            "mode": "ai",
+            "assigned_agent_id": None,
+            "metadata": _meta,
+        })
     # V4: emit fallback message ⟺ a promise was made this cycle —
     # either the announce ("X has joined") OR the queued-message promise
     # ("One moment please, connecting you with a specialist...").
