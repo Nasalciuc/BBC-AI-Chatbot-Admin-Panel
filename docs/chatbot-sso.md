@@ -160,7 +160,7 @@ when it actually looks like one; otherwise the answer is `unknown_user`.
 | Field | Meaning |
 |---|---|
 | `online` | the panel's heartbeat is fresher than 90s |
-| `ready` | `online` **and** the agent pressed Ready **and** they hold an operator role |
+| `ready` | `online` **and** an operator role **and** active **and** chat-enabled (no button involved) |
 | `exempt` | this account is not an operator — never block it |
 | `reason` | why (see below) |
 | `last_seen_seconds` | age of the last heartbeat, `null` if it never beat |
@@ -171,10 +171,15 @@ when it actually looks like one; otherwise the answer is `unknown_user`.
 |---|---|---|
 | `ok` | no | — |
 | `offline` | **yes** | "Open the chat panel to start working" |
-| `not_ready` | **yes** | "You're logged in but not Ready — press the Ready button" |
 | `inactive` | **yes** | "This account is deactivated — contact your manager" |
 | `wrong_role` | never | — (owner/admin/dev/supervisor and any future role) |
+| `chat_disabled` | never | — (account removed from the shared chat system by management) |
 | `unknown_user` | never | — (we do not know this email; not our call to make) |
+
+Presence is the heartbeat pulse; agents no longer need to press anything.
+`exempt=true` means: do not block them and do not ask them to enter chat,
+whatever the reason. (`not_ready` no longer exists as a reason — spec v2.4
+A1 removed `is_ready` from this gate.)
 
 `inactive` exists because deactivating an account does not reach a live
 session: the panel keeps heartbeating on a JWT that has not expired yet, so a

@@ -122,17 +122,27 @@ def evaluate_presence(user: Optional[dict], window_seconds: int) -> dict:
         }
 
     role = (user.get("role") or "").strip().lower()
-    exempt = role not in db._OPERATOR_ROLES
+    # 033: an account with no right to chats must never be told to "go into
+    # chat" — it is exempt exactly like a non-operator role.
+    chat_enabled = bool(user.get("chat_enabled", True))
+    wrong_role = role not in db._OPERATOR_ROLES
+    exempt = wrong_role or (not chat_enabled)
     active = bool(user.get("is_active", True))
     age = _seconds_since(user.get("last_seen_at"))
     online = age is not None and age <= window_seconds
-    is_ready = bool(user.get("is_ready", False))
-    ready = online and is_ready and not exempt and active
+    # is_ready is NOT part of presence for this gate (spec v2.4 §2/A1): the
+    # pulse already says "I am here", and a button left on overnight lies. The
+    # real defence against a lying pulse is the response deadline plus the
+    # idempotent fallback from #211 — not a button the agent forgets.
+    ready = online and not exempt and active
 
     if exempt:
         # Owner/admin/dev/supervisor — and any role invented after this
-        # code was written — are never blocked from working leads.
-        reason = "wrong_role"
+        # code was written — are never blocked from working leads. Neither are
+        # the accounts management removed from chat entirely: their ROLE is
+        # correct, their RIGHT was withdrawn, and "wrong_role" would be a lie
+        # the senior reads on their own screen.
+        reason = "chat_disabled" if (not wrong_role and not chat_enabled) else "wrong_role"
     elif not active:
         # Deactivation does not reach a live session: the panel keeps
         # heartbeating on an unexpired JWT, so a disabled account can
@@ -141,8 +151,6 @@ def evaluate_presence(user: Optional[dict], window_seconds: int) -> dict:
         reason = "inactive"
     elif not online:
         reason = "offline"
-    elif not is_ready:
-        reason = "not_ready"
     else:
         reason = "ok"
 

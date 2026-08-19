@@ -54,6 +54,15 @@ export function Users() {
             <h2 className='text-2xl font-bold tracking-tight'>User List</h2>
             <p className='text-muted-foreground'>
               Manage your users and their roles here.
+              {(() => {
+                const active = users.filter((u) => u.is_active)
+                const withChat = active.filter((u) => u.chat_enabled !== false)
+                return active.length > 0 ? (
+                  <span className='ml-2'>
+                    Chat activ: {withChat.length} / {active.length}
+                  </span>
+                ) : null
+              })()}
             </p>
           </div>
           <UsersPrimaryButtons />

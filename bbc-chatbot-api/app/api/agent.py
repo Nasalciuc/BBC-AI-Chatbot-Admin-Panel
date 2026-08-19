@@ -216,7 +216,10 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     user_db = await db.get_user_by_id(user_id)
     role_db = (user_db or {}).get("role") or ""
     is_ready = bool((user_db or {}).get("is_ready", False))
-    if user_db and role_db in db._OPERATOR_ROLES and is_ready:
+    # 033: chat_enabled comes from the DB too, never from the JWT. An absent
+    # column (migration not applied yet) reads as True — see supabase.py.
+    chat_enabled = bool((user_db or {}).get("chat_enabled", True))
+    if user_db and role_db in db._OPERATOR_ROLES and is_ready and chat_enabled:
         agent_name = user_db.get("name") or user_db.get("email") or "A specialist"
         assigned = await _assign_pending_conversations(
             user_id,

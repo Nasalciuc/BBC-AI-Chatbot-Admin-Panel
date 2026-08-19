@@ -180,6 +180,23 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
         if f in payload and payload.get(f) != existing.get(f):
             changed_fields.append(f)
 
+    # 033: a chat_enabled toggle is a management decision about a person and
+    # leaves a row in audit_log (exists in production; formalised by 032).
+    if "chat_enabled" in payload and payload.get("chat_enabled") != existing.get(
+        "chat_enabled", True
+    ):
+        await db.log_audit(
+            user_id=user.get("id"),
+            user_email=user.get("email"),
+            action="chat_enabled_toggle",
+            target_table="users",
+            target_id=user_id,
+            details={
+                "from": bool(existing.get("chat_enabled", True)),
+                "to": bool(payload.get("chat_enabled")),
+            },
+        )
+
     if changed_fields:
         await db.create_user_access_audit({
             "target_user_id": user_id,

@@ -118,6 +118,9 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     tunnel_scope: Optional[str] = None
     is_active: Optional[bool] = None
+    # 033: management-controlled right to be in the shared chat system.
+    # Guarded server-side like the other access rights: only owner/admin/dev.
+    chat_enabled: Optional[bool] = None
     phone: Optional[str] = None
     avatar_url: Optional[str] = None
     # Nullable: null moves the user to the unassigned pool. The endpoint uses

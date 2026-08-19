@@ -82,8 +82,16 @@ async def _find_sticky_operator(
         return None
     if not agent.get("is_active"):
         return None
-    if not agent.get("is_ready"):
-        return None
+    if not agent.get("chat_enabled", True):
+        return None  # 033: removed from the chat system entirely
+    # is_ready deliberately NOT checked (spec v2.4 §2bis/A2): a returning client
+    # must reach the operator who already knows them if that operator is at
+    # their desk. A forgotten button used to send them to a stranger, who then
+    # heard the whole story again — often with different details, which is how
+    # a good lead becomes a wrong one.
+    # The defence against a live-pulse ghost (June's 46 phantoms) is the
+    # response deadline plus the idempotent fallback from #211, and that is an
+    # acceptance criterion of this work, not an accident.
     if agent.get("role") in db._MANAGEMENT_ROLES:
         return None  # guards against former operator promoted to admin/dev/owner
 

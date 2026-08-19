@@ -478,6 +478,64 @@ def _downgrade_supervisor_columns(err: Exception) -> None:
     )
 
 
+# ── 033/034: optional-column detection, same shape as the supervisor columns ──
+# The code must run BEFORE the migration is applied (deploy order is not
+# guaranteed) and must heal WITHOUT a redeploy once it is. Optimistic by
+# default; a real missing-column error downgrades for a TTL, then re-probes.
+_chat_enabled_ok: bool | None = None
+_chat_enabled_downgraded_at: float | None = None
+_queued_at_ok: bool | None = None
+_queued_at_downgraded_at: float | None = None
+OPTIONAL_COLUMNS_RETRY_SECONDS = 60
+
+
+def _chat_enabled_column_available() -> bool:
+    """True unless a real missing-column error for users.chat_enabled is in TTL."""
+    if _chat_enabled_ok is not False:
+        return True
+    if _chat_enabled_downgraded_at is None:
+        return True
+    return time.time() - _chat_enabled_downgraded_at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_chat_enabled(err: Exception) -> None:
+    """Flip the flag ONLY for a real missing-column error. Never silent."""
+    global _chat_enabled_ok, _chat_enabled_downgraded_at
+    if not _is_missing_column_error(err):
+        return
+    if _chat_enabled_ok is not False:
+        logger.error(
+            "users.chat_enabled is missing — apply migrations/033_chat_enabled.sql. "
+            "Running WITHOUT the filter (everyone is treated as chat_enabled=true) "
+            "and re-probing in 60s."
+        )
+    _chat_enabled_ok = False
+    _chat_enabled_downgraded_at = time.time()
+
+
+def _queued_at_column_available() -> bool:
+    """True unless a real missing-column error for conversations.queued_at is in TTL."""
+    if _queued_at_ok is not False:
+        return True
+    if _queued_at_downgraded_at is None:
+        return True
+    return time.time() - _queued_at_downgraded_at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_queued_at(err: Exception) -> None:
+    """Flip the flag ONLY for a real missing-column error. Never silent."""
+    global _queued_at_ok, _queued_at_downgraded_at
+    if not _is_missing_column_error(err):
+        return
+    if _queued_at_ok is not False:
+        logger.error(
+            "conversations.queued_at is missing — apply migrations/034_queued_at.sql. "
+            "The shared queue is INERT until then; re-probing in 60s."
+        )
+    _queued_at_ok = False
+    _queued_at_downgraded_at = time.time()
+
+
 def supervisor_columns_status() -> dict:
     """Surface for /health — ops must see a freeze without reading logs."""
     downgraded_at = None
@@ -1495,9 +1553,16 @@ async def get_users(
     row. ANDs with role/search.
     """
     db = get_client()
-    def _query():
+    def _query(with_chat_enabled: bool = True):
+        _cols = (
+            "id,email,name,role,tunnel_scope,avatar_url,is_active,"
+            "last_seen_at,phone,team_id,created_at,updated_at"
+        )
+        if with_chat_enabled and _chat_enabled_column_available():
+            # 033: the panel renders the management toggle from this list.
+            _cols += ",chat_enabled"
         q = db.table("users").select(
-            "id,email,name,role,tunnel_scope,avatar_url,is_active,last_seen_at,phone,team_id,created_at,updated_at",
+            _cols,
             count="exact",  # type: ignore[arg-type]
         ).order("created_at", desc=True)
         if role:    q = q.eq("role", role)
@@ -1513,7 +1578,13 @@ async def get_users(
                 f"email.ilike.%{search}%"
             )
         return q.range(offset, offset + limit - 1).execute()
-    res = await _run_sync(_query)
+    try:
+        res = await _run_sync(_query)
+    except Exception as _e:
+        _downgrade_chat_enabled(_e)
+        if _chat_enabled_column_available():
+            raise           # not a missing-column error — surface it
+        res = await _run_sync(lambda: _query(False))
     return res.data or [], res.count or 0
 
 
@@ -2644,18 +2715,33 @@ async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
         from datetime import datetime, timezone, timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
 
-        def _q():
-            return (
+        def _q(with_chat_enabled: bool):
+            _cols = (
+                "id, name, email, role, tunnel_scope, last_seen_at, "
+                "chats_served_today, chats_served_date"
+            )
+            if with_chat_enabled:
+                _cols += ", chat_enabled"
+            q = (
                 db_client.table("users")
-                .select("id, name, email, role, tunnel_scope, last_seen_at, chats_served_today, chats_served_date")
+                .select(_cols)
                 .eq("is_active", True)
                 .gt("last_seen_at", cutoff)
                 .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
                 .in_("role", list(_OPERATOR_ROLES))
-                .eq("is_ready", True)
-                .execute()
+                .eq("is_ready", True)   # legacy first-message routing keeps this
             )
-        res = await _run_sync(_q)
+            if with_chat_enabled:
+                # 033: management-level right to receive chats at all.
+                q = q.eq("chat_enabled", True)
+            return q.execute()
+        try:
+            res = await _run_sync(lambda: _q(_chat_enabled_column_available()))
+        except Exception as _e:
+            _downgrade_chat_enabled(_e)
+            if _chat_enabled_column_available():
+                raise           # not a missing-column error — let it surface
+            res = await _run_sync(lambda: _q(False))
         return res.data or []
     except Exception as e:
         logger.error(f"get_available_agents error: {e}")
@@ -3776,3 +3862,41 @@ async def blocklist_list(limit: int = 200) -> list[dict]:
     except Exception as e:
         logger.error(f"blocklist_list error: {e}")
         return []
+
+
+async def log_audit(
+    user_id: str | None,
+    user_email: str | None,
+    action: str,
+    target_table: str,
+    target_id: str | None = None,
+    details: dict | None = None,
+    ip_address: str | None = None,
+) -> None:
+    """Write one row into audit_log. Management decisions leave a trace.
+
+    audit_log exists in production and is formalised by migration 032. Failures
+    are logged, never raised: an audit write must not break the action it
+    records, and must never disappear silently either.
+    """
+    try:
+        db_client = get_client()
+        row: dict = {
+            "action": action,
+            "target_table": target_table,
+            "details": details or {},
+        }
+        if user_id:
+            row["user_id"] = user_id
+        if user_email:
+            row["user_email"] = user_email
+        if target_id:
+            row["target_id"] = target_id
+        if ip_address:
+            row["ip_address"] = ip_address
+        await _run_sync(
+            lambda: db_client.table("audit_log").insert(row).execute(),
+            idempotent=False,
+        )
+    except Exception as e:
+        logger.warning(f"log_audit error ({action}/{target_table}): {e}")

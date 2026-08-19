@@ -340,7 +340,7 @@ export async function inviteUser(data: {
 
 export async function updateUser(
   id: string,
-  data: { name?: string; role?: string; is_active?: boolean; tunnel_scope?: string; phone?: string; avatar_url?: string | null },
+  data: { name?: string; role?: string; is_active?: boolean; chat_enabled?: boolean; tunnel_scope?: string; phone?: string; avatar_url?: string | null },
 ): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',

@@ -25,6 +25,9 @@ const userSchema = z.object({
   role: userRoleSchema,
   tunnel_scope: z.string(),
   is_active: z.boolean(),
+  // 033: management-controlled right to receive chats. Optional because
+  // the column arrives with the migration; absent means true.
+  chat_enabled: z.boolean().optional(),
   // Real relationship only — a team renders ONLY from users.team_id.
   team_id: z.string().nullable().optional(),
   last_seen_at: z.string().nullable().optional(),
