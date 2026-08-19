@@ -6,8 +6,9 @@ import {
   CreditCard,
   LogOut,
 } from 'lucide-react'
-import useDialogState from '@/hooks/use-dialog-state'
 import { useAuthStore } from '@/stores/auth-store'
+import { isEmbedded } from '@/lib/crm-bridge'
+import useDialogState from '@/hooks/use-dialog-state'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
@@ -56,7 +57,9 @@ export function NavUser() {
               >
                 <Avatar className='h-8 w-8 rounded-lg'>
                   <AvatarImage src={avatarSrc} alt={displayName} />
-                  <AvatarFallback className='rounded-lg'>{initials}</AvatarFallback>
+                  <AvatarFallback className='rounded-lg'>
+                    {initials}
+                  </AvatarFallback>
                 </Avatar>
                 <div className='grid flex-1 text-start text-sm leading-tight'>
                   <span className='truncate font-semibold'>{displayName}</span>
@@ -75,10 +78,14 @@ export function NavUser() {
                 <div className='flex items-center gap-2 px-1 py-1.5 text-start text-sm'>
                   <Avatar className='h-8 w-8 rounded-lg'>
                     <AvatarImage src={avatarSrc} alt={displayName} />
-                    <AvatarFallback className='rounded-lg'>{initials}</AvatarFallback>
+                    <AvatarFallback className='rounded-lg'>
+                      {initials}
+                    </AvatarFallback>
                   </Avatar>
                   <div className='grid flex-1 text-start text-sm leading-tight'>
-                    <span className='truncate font-semibold'>{displayName}</span>
+                    <span className='truncate font-semibold'>
+                      {displayName}
+                    </span>
                     <span className='truncate text-xs'>{displayEmail}</span>
                   </div>
                 </div>
@@ -104,14 +111,18 @@ export function NavUser() {
                   </Link>
                 </DropdownMenuItem>
               </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant='destructive'
-                onClick={() => setOpen(true)}
-              >
-                <LogOut />
-                Sign out
-              </DropdownMenuItem>
+              {!isEmbedded() && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant='destructive'
+                    onClick={() => setOpen(true)}
+                  >
+                    <LogOut />
+                    Sign out
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </SidebarMenuItem>
