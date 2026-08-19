@@ -234,6 +234,7 @@ export function Chats() {
 
             {/* Shared queue — waiting for ANY operator; first click wins */}
             <QueueSection
+              canClaim={!hideMyActive}
               onClaimed={(id) => {
                 stopAssignmentAlerts()
                 setSelectedId(id)

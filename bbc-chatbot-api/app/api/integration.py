@@ -136,19 +136,23 @@ def evaluate_presence(user: Optional[dict], window_seconds: int) -> dict:
     # idempotent fallback from #211 — not a button the agent forgets.
     ready = online and not exempt and active
 
-    if exempt:
+    if not active:
+        # Deactivation is checked FIRST, before exemption: a disabled account
+        # must stay blocked even when chat was also switched off for it.
+        # Evaluating exempt first turned "always blocked" into "never blocked"
+        # for anyone who was both deactivated and chat-disabled.
+        # (Deactivation does not reach a live session: the panel keeps
+        # heartbeating on an unexpired JWT, so a disabled account can look
+        # perfectly present. The login path 403s them; this gate must not
+        # answer the opposite about the same person.)
+        reason = "inactive"
+    elif exempt:
         # Owner/admin/dev/supervisor — and any role invented after this
         # code was written — are never blocked from working leads. Neither are
         # the accounts management removed from chat entirely: their ROLE is
         # correct, their RIGHT was withdrawn, and "wrong_role" would be a lie
         # the senior reads on their own screen.
         reason = "chat_disabled" if (not wrong_role and not chat_enabled) else "wrong_role"
-    elif not active:
-        # Deactivation does not reach a live session: the panel keeps
-        # heartbeating on an unexpired JWT, so a disabled account can
-        # look perfectly present. The login path 403s them; this gate
-        # must not answer the opposite about the same person.
-        reason = "inactive"
     elif not online:
         reason = "offline"
     else:

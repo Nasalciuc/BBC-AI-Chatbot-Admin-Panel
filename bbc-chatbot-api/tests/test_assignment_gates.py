@@ -203,7 +203,10 @@ class TestReleaseReason:
 
     @pytest.mark.asyncio
     async def test_queue_reasons_stamp_queued_at(self):
-        for reason in ("agent_offline", "released_by_agent", "supervisor"):
+        # released_by_agent left with the Release button (owner's decision):
+        # a client who just reached a human must not return to the line with
+        # the wait reset.
+        for reason in ("agent_offline", "supervisor"):
             ok, table = await self._release(reason)
             assert ok is True
             assert table.row["queued_at"] is not None, reason
@@ -268,6 +271,65 @@ class TestClaimEndpoint:
         src = inspect.getsource(capi.claim_conversation)
         assert '"claim_won"' in src
         assert "response_seconds=int(_age)" in src
+
+    def test_gate_won_still_stamps_agent_assigned_at(self):
+        """FIX 1 (CRITICAL): the gate writes assigned_agent_id BEFORE
+        perform_handoff re-reads, so the read sees the agent already in place
+        and _is_new_cycle went false on the manual-claim path — no
+        agent_assigned_at, no 'assigned' row, and _enforce_response_deadline
+        SKIPPED every queue claim: the one defence kept when is_ready left
+        sticky (spec v2.4 V7). _gate_won now means new-cycle by definition,
+        because the gate only matches on NULL."""
+        import inspect
+
+        src = inspect.getsource(handoff.perform_handoff_to_agent)
+        assert "_gate_won or (_conv_cur or {})" in src
+
+    @pytest.mark.asyncio
+    async def test_gate_won_behaviour_stamps_the_cycle_metadata(self):
+        conv = {"id": _CID, "assigned_agent_id": "agent-A", "metadata": {}}
+        # ^ the gate ALREADY wrote ownership — the re-read sees agent-A.
+        upd = AsyncMock()
+        fire = MagicMock()
+        with patch.object(handoff.db, "get_conversation_simple",
+                          new=AsyncMock(return_value=conv)), \
+             patch.object(handoff.db, "update_conversation", upd), \
+             patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget", fire):
+            await handoff.perform_handoff_to_agent(
+                _CID, "agent-A", emit_messages=False,
+                handoff_reason="manual_claim", _gate_won=True,
+            )
+        meta = upd.await_args.args[1]["metadata"]
+        assert "agent_assigned_at" in meta, "the deadline clock must start"
+        assert meta.get("engaged_agent_id") == "agent-A"
+        assert meta.get("handoff_reason") == "manual_claim"
+        assert fire.call_count == 1, "the 'assigned' activity row is written"
+
+    def test_claim_endpoint_enforces_chat_enabled(self):
+        """FIX 4: the UI hides the queue, but the endpoint is the door."""
+        import inspect
+
+        from app.api import conversations as capi
+
+        src = inspect.getsource(capi.claim_conversation)
+        assert 'get("chat_enabled", True)' in src
+        assert "not part of the shared chat system" in src
+
+    def test_a_lost_claim_with_no_owner_is_not_a_race(self):
+        """FIX 5: database outages must not inflate races_detected, and the
+        operator must not be told a colleague took something nobody has."""
+        import inspect
+
+        from app.api import conversations as capi
+
+        src = inspect.getsource(capi.claim_conversation)
+        assert '"claim_failed"' in src
+        # races_detected increments only inside the winner branch.
+        winner_branch = src.index("if _winner_id:")
+        races = src.index('CLAIM_HEALTH["races_detected"] += 1')
+        assert races > winner_branch
 
     def test_health_exposes_claims_in_both_payloads(self):
         import pathlib

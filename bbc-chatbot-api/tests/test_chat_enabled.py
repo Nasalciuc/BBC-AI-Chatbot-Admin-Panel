@@ -151,6 +151,15 @@ def test_not_ready_is_no_longer_a_reason():
     assert '"not_ready"' not in inspect.getsource(integration)
 
 
+def test_deactivated_and_chat_disabled_is_still_inactive():
+    """FIX 3: active is evaluated before exempt. A disabled account with chat
+    also switched off reported exempt/chat_disabled — the CRM stopped blocking
+    an account that must ALWAYS be blocked."""
+    out = evaluate_presence(_user(active=False, chat_enabled=False), WINDOW)
+    assert out["reason"] == "inactive"
+    assert out["ready"] is False
+
+
 def test_offline_and_inactive_still_block():
     assert evaluate_presence(_user(seen_seconds_ago=500), WINDOW)["reason"] == "offline"
     assert evaluate_presence(_user(active=False), WINDOW)["reason"] == "inactive"

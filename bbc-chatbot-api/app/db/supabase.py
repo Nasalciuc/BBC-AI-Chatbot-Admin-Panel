@@ -4180,6 +4180,20 @@ async def get_queue_stats() -> dict:
     try:
         from datetime import datetime, timezone, date
         db_client = get_client()
+        # Exact depth, separate from the small ordered read. A capped len()
+        # stops growing past the limit, and the stall alert only re-fires when
+        # the number GROWS — so the signal would die exactly when the queue is
+        # at its worst.
+        _cnt = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id", count="exact")
+            .not_.is_("queued_at", "null")
+            .is_("assigned_agent_id", "null")
+            .in_("status", ["active", "needs_agent"])
+            .limit(1)
+            .execute()
+        )
+        out["waiting_now"] = _cnt.count or 0
         res = await _run_sync(
             lambda: db_client.table("conversations")
             .select("queued_at")
@@ -4187,11 +4201,10 @@ async def get_queue_stats() -> dict:
             .is_("assigned_agent_id", "null")
             .in_("status", ["active", "needs_agent"])
             .order("queued_at", desc=False)
-            .limit(200)
+            .limit(1)
             .execute()
         )
         rows = res.data or []
-        out["waiting_now"] = len(rows)
         if rows:
             _oldest = str(rows[0].get("queued_at"))
             try:
@@ -4203,7 +4216,18 @@ async def get_queue_stats() -> dict:
                 )
             except (ValueError, TypeError):  # noqa: silent — a malformed timestamp reads as age 0; waiting_now still counts the row
                 out["oldest_seconds"] = 0
-        _today = date.today().isoformat()
+        # UTC day boundary from a UTC clock: date.today() is the host's date,
+        # and stamping it with +00:00 shifts the window on a non-UTC host.
+        _today = datetime.now(timezone.utc).date().isoformat()
+        _claim_cnt = await _run_sync(
+            lambda: db_client.table("agent_activity_log")
+            .select("id", count="exact")
+            .eq("action", "claim_won")
+            .gte("happened_at", f"{_today}T00:00:00+00:00")
+            .limit(1)
+            .execute()
+        )
+        out["claimed_today"] = _claim_cnt.count or 0
         res2 = await _run_sync(
             lambda: db_client.table("agent_activity_log")
             .select("response_seconds")
@@ -4213,7 +4237,6 @@ async def get_queue_stats() -> dict:
             .execute()
         )
         claims = res2.data or []
-        out["claimed_today"] = len(claims)
         _vals = [c["response_seconds"] for c in claims if c.get("response_seconds") is not None]
         if _vals:
             out["avg_time_to_claim_seconds"] = round(sum(_vals) / len(_vals), 1)
@@ -4246,9 +4269,14 @@ async def get_operator_load(timeout_seconds: int = 90) -> dict:
             .in_("role", list(_OPERATOR_ROLES))
             .execute()
         )
-        for a in (agents.data or []):
-            n = await get_agent_active_count(a["id"])
-            out["per_agent"][a["id"]] = {"name": a.get("name"), "active": n}
+        _agents = agents.data or []
+        if _agents:
+            import asyncio
+            _counts = await asyncio.gather(
+                *[get_agent_active_count(a["id"]) for a in _agents]
+            )
+            for a, n in zip(_agents, _counts):
+                out["per_agent"][a["id"]] = {"name": a.get("name"), "active": n}
         return out
     except Exception as e:
         logger.warning(f"get_operator_load error: {e}")

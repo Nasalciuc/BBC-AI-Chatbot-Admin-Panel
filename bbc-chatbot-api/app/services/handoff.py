@@ -121,7 +121,7 @@ async def _release_from_agent(
 
     reason (spec v2.4 §5.4) decides one extra thing: whether this release also
     throws the conversation back into the shared line.
-      agent_offline | released_by_agent | supervisor  -> queued_at = now()
+      agent_offline | supervisor                 -> queued_at = now()
       anything else                                   -> queued_at untouched
     The write is unconditional for those reasons, on purpose: enqueue is
     idempotent so the first wait is never reset by later messages, but a release
@@ -149,7 +149,11 @@ async def _release_from_agent(
         _update: dict = {
             "mode": "ai", "assigned_agent_id": None, "metadata": metadata,
         }
-        if reason in ("agent_offline", "released_by_agent", "supervisor") \
+        # The agent-initiated release reason left with the Release button
+        # (owner's decision): a conversation that already reached a human must
+        # not be thrown back into the line with its age reset, and in a
+        # competitive system giving back what you took defeats the point.
+        if reason in ("agent_offline", "supervisor") \
                 and db._queued_at_column_available():
             from datetime import datetime as _dt2, timezone as _tz2
             _update["queued_at"] = _dt2.now(_tz2.utc).isoformat()
@@ -498,7 +502,16 @@ async def perform_handoff_to_agent(
     # agent_assigned_at marks the START of an assignment CYCLE.
     # Write it ONLY when the assigned agent CHANGES — never refresh on
     # re-handoff to the same agent (F1: refreshing evicted engaged agents).
-    _is_new_cycle = (_conv_cur or {}).get("assigned_agent_id") != agent_id
+    # _gate_won means the caller ALREADY won claim_conversation_if_unassigned,
+    # which only matches when assigned_agent_id was NULL — so this is a new
+    # cycle by definition. Without this, the gate's own write makes the read
+    # below see the agent already in place, _is_new_cycle goes false, and the
+    # manual-claim path silently skips agent_assigned_at — which is the field
+    # _enforce_response_deadline needs. The queue claim would have no deadline:
+    # the one defence we kept when is_ready left sticky (spec v2.4 V7).
+    _is_new_cycle = (
+        _gate_won or (_conv_cur or {}).get("assigned_agent_id") != agent_id
+    )
     if _is_new_cycle:
         _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
         _meta["handoff_reason"] = handoff_reason

@@ -264,8 +264,19 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
                         viewer_agent_id=user_id,
                     )
                 )
-            _queue_count = len(_rows)
+            # Concatenating two tunnels keeps sales before support whatever the
+            # wait — the oldest would stop being first, which is the one promise
+            # a queue makes. Re-sort the merged list on the same key the
+            # per-tunnel query used: the client who asked for a human out loud
+            # first, then the longest wait.
+            _rows.sort(
+                key=lambda r: (
+                    0 if r.get("status") == "needs_agent" else 1,
+                    str(r.get("queued_at") or ""),
+                )
+            )
             _queue_ids = [r["id"] for r in _rows][:20]
+            _queue_count = len(_rows)
     except Exception as e:
         # The queue must never break the heartbeat: presence is more important
         # than the badge. Logged, never silent.

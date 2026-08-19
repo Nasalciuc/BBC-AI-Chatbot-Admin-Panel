@@ -192,14 +192,36 @@ def test_heartbeat_gates_the_queue_at_the_source():
     assert "queue fetch failed" in src
 
 
-def test_release_endpoint_exists_and_only_the_owner_may_release():
+def test_the_release_endpoint_is_gone_and_the_queue_endpoint_took_its_place():
+    """Release left with the button (owner's decision): a client who just
+    reached a human must not be thrown back into the line with the wait reset,
+    and in a competitive system giving back what you took defeats the point."""
     import inspect
 
     from app.api import conversations as capi
 
-    src = inspect.getsource(capi.release_conversation_endpoint)
-    assert 'reason="released_by_agent"' in src
-    assert '"Not yours to release"' in src
+    assert not hasattr(capi, "release_conversation_endpoint")
+    src = inspect.getsource(capi)
+    assert "/release" not in src
+    # The queue endpoint exists, and is declared BEFORE the dynamic
+    # /conversations/{conversation_id} routes — FastAPI matches in declaration
+    # order and would otherwise read "queue" as a conversation id.
+    assert '@router.get("/conversations/queue")' in src
+    assert src.index('"/conversations/queue"') < src.index('"/conversations/{conversation_id}"')
+
+
+def test_heartbeat_merge_keeps_the_oldest_first_across_tunnels():
+    """FIX 2: concatenating sales+support kept every sales row before every
+    support row whatever the wait. The merged list re-sorts on the same key
+    the per-tunnel query used."""
+    import inspect
+
+    from app.api import agent as agent_api
+
+    src = inspect.getsource(agent_api)
+    sort_at = src.index("_rows.sort(")
+    slice_at = src.index('[r["id"] for r in _rows][:20]')
+    assert sort_at < slice_at, "sort BEFORE the cap, or the cap keeps the wrong 20"
 
 
 def test_three_windows_three_names():

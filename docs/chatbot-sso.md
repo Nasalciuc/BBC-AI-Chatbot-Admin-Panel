@@ -100,8 +100,9 @@ and shared over a secure channel.
 
 The CRM asks us one question before letting a sales agent work leads:
 **is this agent genuinely present in the chat panel?** Live visitors are routed
-only to agents whose panel is open and who pressed **Ready** — an agent sitting
-in the CRM with the chat closed leaves visitors waiting for nobody.
+to agents whose panel is open — presence is the heartbeat pulse; there is
+nothing to press. An agent sitting in the CRM with the chat closed leaves
+visitors waiting for nobody.
 
 We answer with **state only**. No name, no phone, no team, no conversation
 counts. The endpoint performs one read and writes nothing.
@@ -161,7 +162,7 @@ when it actually looks like one; otherwise the answer is `unknown_user`.
 |---|---|
 | `online` | the panel's heartbeat is fresher than 90s |
 | `ready` | `online` **and** an operator role **and** active **and** chat-enabled (no button involved) |
-| `exempt` | this account is not an operator — never block it |
+| `exempt` | this account must not be blocked and must not be asked to enter chat — either the role is not an operator role, or management removed the account from the shared chat system (`chat_disabled`) |
 | `reason` | why (see below) |
 | `last_seen_seconds` | age of the last heartbeat, `null` if it never beat |
 
@@ -210,8 +211,8 @@ side, where the manager who asked for it can be held to it.
 
 ### Why 90 seconds
 
-The panel heartbeats every 5s, so the window tolerates 18 missed beats — a
-network blink never blocks anyone. The window exists because **`is_ready` is
-never cleared automatically**: it is set when the agent presses the button and
-stays set, so an agent who pressed Ready on Monday and went home would still
-read as ready today. Only a fresh pulse makes the flag mean anything.
+Presence is simply the last heartbeat. The panel beats every 5s, so the window
+tolerates 18 missed beats — a network blink never blocks anyone — while still
+letting go of someone who actually closed the panel: ninety seconds after the
+last pulse they are no longer "present", with nothing to press and nothing to
+forget switched on overnight.

@@ -170,6 +170,46 @@ async def get_conversation_counts(
     return {"success": True, "data": counts}
 
 
+@router.get("/conversations/queue")
+async def get_queue(user: dict = Depends(get_current_user)):
+    """The shared line, exactly as the heartbeat computed it.
+
+    The panel used to re-derive this from the unassigned list, which filtered
+    status='active' and so dropped every needs_agent row — the visitor who
+    asked for a human out loud was the one the queue never showed. Same source
+    as queue_ids, so list and badge can never disagree.
+
+    Declared BEFORE the /conversations/{conversation_id} routes: FastAPI
+    matches in declaration order and would otherwise read "queue" as an id.
+    """
+    _db_user = await db.get_user_by_id(user.get("id")) or {}
+    _role = (_db_user.get("role") or "").lower()
+    if (
+        not _db_user.get("is_active", True)
+        or not bool(_db_user.get("chat_enabled", True))
+        or _role not in db._OPERATOR_ROLES
+    ):
+        return {"success": True, "data": []}
+    _scope = _db_user.get("tunnel_scope") or "sales"
+    _tunnels = ["sales", "support"] if _scope == "all" else [_scope]
+    _rows: list = []
+    for _t in _tunnels:
+        _rows.extend(
+            await db.get_queue_for_operator(
+                tunnel=_t,
+                team_id=_db_user.get("team_id"),
+                viewer_agent_id=user.get("id"),
+            )
+        )
+    _rows.sort(
+        key=lambda r: (
+            0 if r.get("status") == "needs_agent" else 1,
+            str(r.get("queued_at") or ""),
+        )
+    )
+    return {"success": True, "data": _rows[:20]}
+
+
 @router.get("/conversations/{conversation_id}/typing")
 async def get_typing_status(
     conversation_id: str,
@@ -490,6 +530,14 @@ async def claim_conversation(
             status_code=403,
             detail="Your role cannot claim conversations",
         )
+    # 033: management removed this account from the shared chat system. The UI
+    # hides the queue for them, but the endpoint is the door that matters.
+    # Absent column (migration not applied yet) reads as enabled.
+    if not bool((_claimer_db or {}).get("chat_enabled", True)):
+        raise HTTPException(
+            status_code=403,
+            detail="This account is not part of the shared chat system",
+        )
 
     from app.services.handoff import perform_handoff_to_agent
     current_agent = conv.get("assigned_agent_id")
@@ -520,15 +568,29 @@ async def claim_conversation(
     if not _claim.get("won"):
         _cur = await db.get_conversation_simple(conversation_id)
         _winner_id = (_cur or {}).get("assigned_agent_id")
-        _winner = await db.get_user_by_id(_winner_id) if _winner_id else None
         from app.services.presence import log_activity
         from app.pipeline.orchestrator import _fire_and_forget
         CLAIM_HEALTH["lost"] += 1
-        CLAIM_HEALTH["races_detected"] += 1
-        _fire_and_forget(log_activity(db, _me, conversation_id, "claim_lost"))
+        if _winner_id:
+            # A real race: somebody owns it now.
+            _winner = await db.get_user_by_id(_winner_id)
+            CLAIM_HEALTH["races_detected"] += 1
+            _fire_and_forget(log_activity(db, _me, conversation_id, "claim_lost"))
+            raise HTTPException(status_code=409, detail={
+                "detail": "already_claimed",
+                "winner": (_winner or {}).get("name") or "another agent",
+                "conversation_id": conversation_id,
+            })
+        # Nobody owns it, yet the write matched nothing: the conversation left
+        # active/needs_agent, or the gate hit a database error and swallowed it.
+        # Calling that a race would inflate the competition signal and tell the
+        # operator a colleague took something nobody has.
+        logger.warning(
+            f"[{conversation_id}] claim failed with no owner — "
+            "status changed or database error"
+        )
         raise HTTPException(status_code=409, detail={
-            "detail": "already_claimed",
-            "winner": (_winner or {}).get("name") or "another agent",
+            "detail": "claim_failed",
             "conversation_id": conversation_id,
         })
     # Won: the gate already wrote ownership, status and queued_at atomically.
@@ -554,39 +616,6 @@ async def claim_conversation(
     )
 
     return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
-
-
-@router.post("/conversations/{conversation_id}/release")
-async def release_conversation_endpoint(
-    conversation_id: str,
-    user: dict = Depends(get_current_user),
-):
-    """Give a conversation back to the shared line — for accidental claims.
-
-    The panel offers this for 30 seconds after a claim. Only the current owner
-    may release: the conditional write guarantees it, so a stale click cannot
-    take a conversation away from whoever holds it now.
-    """
-    conv = await db.get_conversation(conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    _enforce_tunnel(user, conv.get("tunnel"))
-    _me = user.get("id")
-    if conv.get("assigned_agent_id") != _me:
-        raise HTTPException(status_code=409, detail="Not yours to release")
-    from app.services.handoff import _release_from_agent
-    _meta = dict(conv.get("metadata") or {})
-    _meta.pop("announce_pending", None)
-    _meta.pop("agent_assigned_at", None)
-    ok = await _release_from_agent(
-        conversation_id, _me, _meta, reason="released_by_agent"
-    )
-    if not ok:
-        raise HTTPException(status_code=409, detail="Already released")
-    from app.services.presence import log_activity
-    from app.pipeline.orchestrator import _fire_and_forget
-    _fire_and_forget(log_activity(db, _me, conversation_id, "released_by_agent"))
-    return {"success": True, "data": {"conversation_id": conversation_id}}
 
 
 @router.post("/conversations/{conversation_id}/close")

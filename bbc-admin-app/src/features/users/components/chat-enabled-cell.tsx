@@ -30,7 +30,7 @@ export function ChatEnabledCell({ user }: { user: User }) {
   if (!canToggle) {
     return enabled ? null : (
       <Badge variant='outline' className='text-muted-foreground'>
-        Fara chat
+        No chat
       </Badge>
     )
   }
@@ -39,7 +39,7 @@ export function ChatEnabledCell({ user }: { user: User }) {
     <Switch
       checked={enabled}
       disabled={busy}
-      aria-label='Primeste chaturi'
+      aria-label='Receives chats'
       onCheckedChange={async (next) => {
         setBusy(true)
         try {
@@ -47,12 +47,12 @@ export function ChatEnabledCell({ user }: { user: User }) {
           if (!res.success) throw new Error('update failed')
           toast.success(
             next
-              ? `${user.name} primeste din nou chaturi`
-              : `${user.name} nu mai primeste chaturi`
+              ? `${user.name} receives chats again`
+              : `${user.name} no longer receives chats`
           )
           queryClient.invalidateQueries({ queryKey: ['users'] })
         } catch {
-          toast.error('Nu am putut salva — incearca din nou')
+          toast.error('Could not save — try again')
         } finally {
           setBusy(false)
         }

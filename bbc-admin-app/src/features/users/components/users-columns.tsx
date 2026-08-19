@@ -132,7 +132,7 @@ export const usersColumns: ColumnDef<User>[] = [
   {
     accessorKey: 'chat_enabled',
     header: ({ column }) => (
-      <DataTableColumnHeader column={column} title='Primeste chaturi' />
+      <DataTableColumnHeader column={column} title='Receives chats' />
     ),
     cell: ({ row }) => <ChatEnabledCell user={row.original} />,
     enableSorting: false,

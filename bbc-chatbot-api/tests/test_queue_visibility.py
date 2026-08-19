@@ -95,6 +95,66 @@ class TestStallAlert:
 # Health: the numbers come from the right places
 # ══════════════════════════════════════════════════════════════
 
+class _CountTable:
+    """Honours select(count="exact"): .count carries the real depth even when
+    .data is capped by limit()."""
+
+    def __init__(self, total):
+        self.total = total
+
+    def table(self, _n):
+        return self
+
+    def select(self, _cols, **kw):
+        self._counted = kw.get("count") == "exact"
+        return self
+
+    @property
+    def not_(self):
+        return self
+
+    def is_(self, *_a):
+        return self
+
+    def in_(self, *_a):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def gte(self, *_a):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        from unittest.mock import MagicMock
+
+        if self._counted:
+            return MagicMock(count=self.total, data=[{"id": "x"}])
+        return MagicMock(count=None, data=[{"queued_at": "2026-08-19T00:00:00+00:00",
+                                            "response_seconds": 5}])
+
+
+@pytest.mark.asyncio
+async def test_waiting_now_is_the_exact_depth_not_the_page_size():
+    """FIX 6: a capped len() stopped at 200, and the stall alert only re-fires
+    when the number GROWS — the signal died exactly when the queue was worst."""
+    from app.db import supabase as sb
+
+    table = _CountTable(total=250)
+    with patch.object(sb, "get_client", return_value=table), \
+         patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())), \
+         patch.object(sb, "_queued_at_column_available", return_value=True):
+        out = await sb.get_queue_stats()
+    assert out["waiting_now"] == 250, "not 200"
+    assert out["claimed_today"] == 250, "same exact-count rule for claims"
+
+
 def test_avg_time_to_claim_reads_claim_won_not_queued_at():
     import inspect
 

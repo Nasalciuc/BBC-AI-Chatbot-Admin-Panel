@@ -139,9 +139,9 @@ export function claimConversation(id: string): Promise<{ success: boolean }> {
   return apiFetch(`/api/conversations/${encodeURIComponent(id)}/claim`, { method: 'POST' })
 }
 
-/** Give a freshly-claimed conversation back to the line (30s window in the UI). */
-export function releaseConversation(id: string): Promise<{ success: boolean }> {
-  return apiFetch(`/api/conversations/${encodeURIComponent(id)}/release`, { method: 'POST' })
+/** The shared line, straight from the server — same source as the badge. */
+export function getQueue(): Promise<{ success: boolean; data: Conversation[] }> {
+  return apiFetch('/api/conversations/queue')
 }
 
 export async function getOperatorHistory(conversationId: string) {
