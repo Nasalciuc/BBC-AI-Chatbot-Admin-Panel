@@ -114,9 +114,19 @@ _FALLBACK_MSG = (
 
 
 async def _release_from_agent(
-    conversation_id: str, agent_id: str, metadata: dict
+    conversation_id: str, agent_id: str, metadata: dict,
+    reason: str = "agent_offline",
 ) -> bool:
     """Hand the conversation back to the AI — once, by whoever gets there first.
+
+    reason (spec v2.4 §5.4) decides one extra thing: whether this release also
+    throws the conversation back into the shared line.
+      agent_offline | released_by_agent | supervisor  -> queued_at = now()
+      anything else                                   -> queued_at untouched
+    The write is unconditional for those reasons, on purpose: enqueue is
+    idempotent so the first wait is never reset by later messages, but a release
+    starts a NEW life in the queue, and its age must start now. The five
+    terminal closes are NOT releases and never come through here.
 
     The sweeper runs on EVERY operator heartbeat, so with N operators online it
     passes over the same stale conversation every 5 seconds, N times. Nothing
@@ -136,19 +146,38 @@ async def _release_from_agent(
     """
     try:
         client = db.get_client()
-        res = await db._run_sync(
-            lambda: client.table("conversations")
-            .update({"mode": "ai", "assigned_agent_id": None, "metadata": metadata})
-            .eq("id", conversation_id)
-            .eq("assigned_agent_id", agent_id)
-            .execute(),
-            idempotent=False,
-        )
+        _update: dict = {
+            "mode": "ai", "assigned_agent_id": None, "metadata": metadata,
+        }
+        if reason in ("agent_offline", "released_by_agent", "supervisor") \
+                and db._queued_at_column_available():
+            from datetime import datetime as _dt2, timezone as _tz2
+            _update["queued_at"] = _dt2.now(_tz2.utc).isoformat()
+        def _rel(with_queued_at: bool):
+            _u = dict(_update)
+            if not with_queued_at:
+                _u.pop("queued_at", None)
+            return (
+                client.table("conversations")
+                .update(_u)
+                .eq("id", conversation_id)
+                .eq("assigned_agent_id", agent_id)
+                .execute()
+            )
+        try:
+            res = await db._run_sync(
+                lambda: _rel("queued_at" in _update), idempotent=False
+            )
+        except Exception as _e:
+            db._downgrade_queued_at(_e)
+            if db._queued_at_column_available():
+                raise
+            res = await db._run_sync(lambda: _rel(False), idempotent=False)
         return bool(res.data)
     except Exception as e:
         logger.warning(
-            f"[handoff] Conv {conversation_id}: conditional release failed ({e}) — "
-            "treating as lost race, no timeout recorded"
+            f"[handoff] Conv {conversation_id}: conditional release failed ({e}, "
+            f"reason={reason}) — treating as lost race, no timeout recorded"
         )
         return False
 
@@ -367,7 +396,9 @@ async def fall_back_to_ai(conversation_id: str) -> None:
         # One release, one set of consequences. Whoever loses this stops here:
         # the conversation was already handed back, and there is nothing left
         # to log, say, or push.
-        if not await _release_from_agent(conversation_id, _agent, _meta):
+        if not await _release_from_agent(
+            conversation_id, _agent, _meta, reason="agent_offline"
+        ):
             HANDOFF_HEALTH["fallback_races"] += 1
             logger.info(
                 f"[{conversation_id}] fallback race lost — already released by "
@@ -440,6 +471,7 @@ async def perform_handoff_to_agent(
     handoff_reason: str = "manual",
     _extra_meta: dict | None = None,
     _pop_meta_keys: list | None = None,
+    _gate_won: bool = False,
 ) -> dict:
     """Assign conversation to an agent and emit system messages.
 
@@ -483,11 +515,29 @@ async def perform_handoff_to_agent(
     # even if the operator later changes teams. Only stamp when the operator
     # actually has a team — never overwrite a previously-stamped team with
     # NULL. (AI fallback nulls assigned_agent_id but leaves team_id intact.)
-    _update: dict = {
-        "mode": "human",
-        "assigned_agent_id": agent_id,
-        "metadata": _meta,
-    }
+    # Spec v2.4 §5.5: ownership is decided by the gate, and NOTHING happens
+    # before it is won. A caller that already went through the gate passes
+    # _gate_won=True and we must not write ownership twice.
+    if _is_new_cycle and not _gate_won:
+        _claim = await db.claim_conversation_if_unassigned(conversation_id, agent_id)
+        if not _claim.get("won"):
+            # Someone else owns it. No metadata, no "X has joined", no
+            # notification, no CRM signal: the client must never see two
+            # consultants introducing themselves two seconds apart.
+            logger.info(
+                f"[handoff] Conv {conversation_id}: claim gate lost for agent "
+                f"{agent_id} (reason={handoff_reason}) — no side effects"
+            )
+            return {}
+        _gate_won = True
+
+    _update: dict = {"metadata": _meta}
+    if not _gate_won:
+        # Re-handoff to the SAME agent (not a new cycle): ownership is already
+        # correct, we only refresh metadata. Writing it again is harmless and
+        # keeps behaviour identical to today.
+        _update["mode"] = "human"
+        _update["assigned_agent_id"] = agent_id
     _operator = await db.get_user_by_id(agent_id)
     _operator_team_id = (_operator or {}).get("team_id")
     if _operator_team_id:

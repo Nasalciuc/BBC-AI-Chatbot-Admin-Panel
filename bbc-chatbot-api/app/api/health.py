@@ -33,6 +33,8 @@ async def health() -> dict:
     from app.services.crm import CRM_PUSH_HEALTH
     # Presence gate: aggregate only — never who was blocked, or when.
     from app.api.integration import PRESENCE_GATE_HEALTH
+    # Claim races: exactly one wins; the losers are counted, not punished.
+    from app.api.conversations import CLAIM_HEALTH
     # Turns we refused to speak: every count is a moment the bot was about to
     # answer a question nobody asked.
     from app.pipeline.orchestrator import PIPELINE_HEALTH
@@ -45,6 +47,7 @@ async def health() -> dict:
             "lead_writes": dict(LEAD_WRITE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
+            "claims": dict(CLAIM_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
             "presence_gate": dict(PRESENCE_GATE_HEALTH),
@@ -83,6 +86,7 @@ async def health() -> dict:
         "lead_writes": dict(LEAD_WRITE_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
+        "claims": dict(CLAIM_HEALTH),
         "generation_fallbacks": dict(GENERATION_HEALTH),
         "crm_pushes": dict(CRM_PUSH_HEALTH),
         "presence_gate": dict(PRESENCE_GATE_HEALTH),

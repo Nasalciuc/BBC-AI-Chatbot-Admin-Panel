@@ -13,6 +13,11 @@ from app.realtime.manager import manager
 
 logger = logging.getLogger(__name__)
 
+# Per-instance claim counters, same shape as HANDOFF_HEALTH (handoff.py) and
+# GENERATION_HEALTH (generator.py). Single-instance deploy today (ADR-5); a
+# scale-out would shard these, which is why /health labels them per-instance.
+CLAIM_HEALTH: dict = {"won": 0, "lost": 0, "races_detected": 0, "last_at": None}
+
 router = APIRouter()
 
 
@@ -484,24 +489,69 @@ async def claim_conversation(
             detail="Your role cannot claim conversations",
         )
 
-    # Check if already assigned to someone else
-    current_agent = conv.get("assigned_agent_id")
-    if current_agent and current_agent != user.get("id"):
-        raise HTTPException(status_code=409, detail="Conversation already taken by another agent")
-
     from app.services.handoff import perform_handoff_to_agent
+    current_agent = conv.get("assigned_agent_id")
+    _me = user.get("id")
+    # Re-claiming my own conversation: allowed exactly as before. The gate would
+    # answer False here (the field is not NULL), and that False would mean
+    # "someone else has it" — which is not true, it is mine.
+    if current_agent and current_agent == _me:
+        await perform_handoff_to_agent(
+            conversation_id=conversation_id,
+            agent_id=_me,
+            tunnel=conv.get("tunnel", "sales"),
+            emit_messages=False,
+            handoff_reason="manual_claim",
+            _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+        )
+        return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
+    # Cheap fast path: obviously taken. The gate below is still the truth.
+    if current_agent:
+        _owner = await db.get_user_by_id(current_agent)
+        raise HTTPException(status_code=409, detail={
+            "detail": "already_claimed",
+            "winner": (_owner or {}).get("name") or "another agent",
+            "conversation_id": conversation_id,
+        })
+    # The database decides. Exactly one UPDATE matches; the losers get nothing.
+    _claim = await db.claim_conversation_if_unassigned(conversation_id, _me)
+    if not _claim.get("won"):
+        _cur = await db.get_conversation_simple(conversation_id)
+        _winner_id = (_cur or {}).get("assigned_agent_id")
+        _winner = await db.get_user_by_id(_winner_id) if _winner_id else None
+        from app.services.presence import log_activity
+        from app.pipeline.orchestrator import _fire_and_forget
+        CLAIM_HEALTH["lost"] += 1
+        CLAIM_HEALTH["races_detected"] += 1
+        _fire_and_forget(log_activity(db, _me, conversation_id, "claim_lost"))
+        raise HTTPException(status_code=409, detail={
+            "detail": "already_claimed",
+            "winner": (_winner or {}).get("name") or "another agent",
+            "conversation_id": conversation_id,
+        })
+    # Won: the gate already wrote ownership, status and queued_at atomically.
+    from app.services.presence import log_activity
+    from datetime import datetime, timezone
+    CLAIM_HEALTH["won"] += 1
+    CLAIM_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
+    _age = _claim.get("queued_age_seconds")
+    await log_activity(
+        db, _me, conversation_id, "claim_won",
+        response_seconds=int(_age) if _age is not None else None,
+    )
     # Reset loop guards — agent chose this conv actively.
     # Single metadata write via perform_handoff (reads + merges + writes).
     await perform_handoff_to_agent(
         conversation_id=conversation_id,
-        agent_id=user.get("id"),
+        agent_id=_me,
         tunnel=conv.get("tunnel", "sales"),
         emit_messages=False,
         handoff_reason="manual_claim",
         _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+        _gate_won=True,
     )
 
-    return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": user.get("id")}}
+    return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
 
 
 @router.post("/conversations/{conversation_id}/close")

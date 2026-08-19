@@ -3900,3 +3900,124 @@ async def log_audit(
         )
     except Exception as e:
         logger.warning(f"log_audit error ({action}/{target_table}): {e}")
+
+
+async def claim_conversation_if_unassigned(
+    conversation_id: str, agent_id: str
+) -> dict:
+    """Assign an operator ONLY if nobody holds this conversation yet.
+
+    This is the ONLY compare-and-swap for ownership (spec v2.4 §2ter/D5).
+    Ownership lives on assigned_agent_id; status FOLLOWS it, it does not decide
+    it. Before this, claim_conversation read the field and perform_handoff wrote
+    it tens of milliseconds later: two agents pressing inside that window both
+    passed the read and both wrote. The database decides instead — exactly one
+    UPDATE matches, everyone else gets zero rows.
+
+    One UPDATE writes, atomically:
+        assigned_agent_id, mode="human", status="active", queued_at=None
+    status: a needs_agent conversation becomes active in the same write, so no
+    second mechanism can win on a different axis.
+    queued_at: "NULL once claimed" — and the waiting age is read BEFORE the
+    write and returned to the winner, because avg_time_to_claim computed after
+    the NULL would read nothing and produce an average that looks fine.
+
+    Returns {"won": bool, "queued_age_seconds": float | None}.
+    won=False (including on error) means NOTHING happened: the caller answers
+    409 and performs no side effects.
+    """
+    try:
+        db_client = get_client()
+        # Read the waiting age first. Telemetry only — never a gate.
+        _age: float | None = None
+        if _queued_at_column_available():
+            try:
+                _cur = await _run_sync(
+                    lambda: db_client.table("conversations")
+                    .select("queued_at")
+                    .eq("id", conversation_id)
+                    .limit(1)
+                    .execute()
+                )
+                _rows = _cur.data or []
+                _qa = _rows[0].get("queued_at") if _rows else None
+                if _qa:
+                    from datetime import datetime, timezone
+                    _age = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(str(_qa).replace("Z", "+00:00"))
+                    ).total_seconds()
+            except Exception as _e:
+                _downgrade_queued_at(_e)
+                _age = None
+        _update: dict = {
+            "assigned_agent_id": agent_id,
+            "mode": "human",
+            "status": "active",
+        }
+        if _queued_at_column_available():
+            _update["queued_at"] = None
+        def _claim(with_queued_at: bool):
+            _u = dict(_update)
+            if not with_queued_at:
+                _u.pop("queued_at", None)
+            return (
+                db_client.table("conversations")
+                .update(_u)
+                .eq("id", conversation_id)
+                .is_("assigned_agent_id", "null")
+                .in_("status", ["active", "needs_agent"])
+                .execute()
+            )
+        try:
+            res = await _run_sync(
+                lambda: _claim(_queued_at_column_available()), idempotent=False
+            )
+        except Exception as _e:
+            _downgrade_queued_at(_e)
+            if _queued_at_column_available():
+                raise
+            res = await _run_sync(lambda: _claim(False), idempotent=False)
+        won = bool(res.data)
+        if won:
+            # The competition score is incremented HERE and only here for queue
+            # claims. increment_chats_served reads chats_served_today and
+            # chats_served_date OUT OF THE DICT it is given: passing {"id": ...}
+            # would make it write 1 every single time instead of incrementing.
+            # So the full user row is fetched first.
+            try:
+                _agent_row = await get_user_by_id(agent_id)
+                if _agent_row:
+                    await increment_chats_served(_agent_row)
+            except Exception as _e:
+                logger.warning(f"[{conversation_id}] score increment skipped: {_e}")
+        return {"won": won, "queued_age_seconds": _age if won else None}
+    except Exception as e:
+        logger.warning(f"[{conversation_id}] claim gate failed: {e}")
+        return {"won": False, "queued_age_seconds": None}
+
+
+async def reassign_conversation(
+    conversation_id: str, from_agent_id: str, to_agent_id: str
+) -> bool:
+    """Supervisor move, or re-claim after a timeout: A -> B, only if it is still A's.
+
+    Same compare-and-swap mechanic as _release_from_agent (#211), with a target
+    instead of None. Deliberately NOT routed through the claim gate: that would
+    require emptying assigned_agent_id first, which is exactly the window this
+    work closes.
+    """
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"assigned_agent_id": to_agent_id})
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", from_agent_id)
+            .execute(),
+            idempotent=False,
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.warning(f"[{conversation_id}] reassign failed: {e}")
+        return False
