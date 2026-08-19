@@ -10,7 +10,7 @@ import {
 } from '@/lib/notify-assignment'
 import { useAttentionStore } from '@/stores/attention-store'
 import { useQueueStore } from '@/stores/queue-store'
-import { reportAttentionCycle, reportPresence } from '@/lib/crm-bridge'
+import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bridge'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
@@ -95,6 +95,8 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
           }
         }
         if (isNew && ids.length > 0) playQueueChime()
+        // The CRM's badge rides the same number — one source, no contradictions.
+        reportQueue(res.queue_count ?? ids.length)
         // Conversations that left the line may return later (released):
         // forget them so their return rings again.
         for (const known of announcedQueue.current) {
