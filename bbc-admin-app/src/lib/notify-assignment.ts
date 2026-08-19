@@ -83,6 +83,24 @@ export function notifyAssignment(info?: { name?: string }): void {
   }
 }
 
+/**
+ * One-shot chime for the shared queue — a conversation ARRIVED in the line.
+ * Deliberately not notifyAssignment(): that one LOOPS until attended, which is
+ * right for "this is yours and waiting" and wrong for "somebody could take
+ * this". One sound per conversation, no flashing title, no notification.
+ */
+export function playQueueChime(): void {
+  try {
+    const a = new Audio('/notification.wav')
+    a.volume = 0.6
+    a.play().catch(() => {
+      /* autoplay blocked — the badge still shows the queue */
+    })
+  } catch {
+    /* no audio */
+  }
+}
+
 export function stopAssignmentAlerts(): void {
   _alertsActive = false
   if (_ringAudio) {

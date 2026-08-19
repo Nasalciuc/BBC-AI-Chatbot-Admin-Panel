@@ -236,7 +236,7 @@ async def test_fall_back_preserves_engaged_agent_id():
     async def _capture_update(_id, payload):
         updates.append(payload)
 
-    async def _capture_release(_id, _agent, metadata):
+    async def _capture_release(_id, _agent, metadata, reason="agent_offline"):
         # The release is CONDITIONAL now — `.eq("assigned_agent_id", …)`, so
         # only one of the many sweeps can hand the conversation back (21
         # duplicate Timeout rows on 18 Aug). It writes the same three fields

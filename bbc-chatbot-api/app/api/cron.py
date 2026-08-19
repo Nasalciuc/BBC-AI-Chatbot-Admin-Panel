@@ -493,3 +493,75 @@ async def run_crm_orphan_backstop() -> dict:
             results.append({"id": lead_id, "status": "error", "error": str(e)})
 
     return {"scanned": len(orphans), "results": results}
+
+
+# Anti-spam state for the queue alert. Per-instance, like the other counters.
+_QUEUE_ALERT: dict = {"last_sent_at": None, "last_count": 0, "active": False}
+QUEUE_ALERT_COOLDOWN_MINUTES = 15
+QUEUE_ALERT_AFTER_SECONDS = 120
+
+
+async def run_queue_stall_alert() -> dict:
+    """Shout when the line stops moving.
+
+    Ten people notified is nine people assuming somebody else will take it —
+    the bystander effect, which is exactly what a shared queue invites. So the
+    system watches instead: a conversation waiting more than two minutes with no
+    owner emails super@ and raises a banner. At most one alert per fifteen
+    minutes however many are waiting; a second only if the number grew. When the
+    queue empties after an alert, ONE recovery email — otherwise nobody knows it
+    is over.
+    """
+    from datetime import datetime, timezone, timedelta
+    try:
+        stats = await db.get_queue_stats()
+        waiting = stats.get("waiting_now", 0)
+        oldest = stats.get("oldest_seconds", 0)
+        now = datetime.now(timezone.utc)
+        if waiting == 0 or oldest < QUEUE_ALERT_AFTER_SECONDS:
+            if _QUEUE_ALERT["active"]:
+                _QUEUE_ALERT["active"] = False
+                _QUEUE_ALERT["last_count"] = 0
+                try:
+                    from app.services.email import send_super_alert_email
+                    await send_super_alert_email(
+                        conversation_id="-",
+                        visitor_name=None, visitor_phone=None, visitor_email=None,
+                        tunnel="sales",
+                        last_message="(queue recovered: nobody is waiting any more)",
+                        chat_number=None,
+                    )
+                except Exception as e:
+                    logger.warning(f"[queue-alert] recovery email failed: {e}")
+                return {"state": "recovered"}
+            return {"state": "ok", "waiting": waiting}
+        _last = _QUEUE_ALERT["last_sent_at"]
+        _cooled = (
+            _last is None
+            or now - _last >= timedelta(minutes=QUEUE_ALERT_COOLDOWN_MINUTES)
+        )
+        _grew = waiting > _QUEUE_ALERT["last_count"]
+        if not (_cooled or _grew):
+            return {"state": "suppressed", "waiting": waiting}
+        try:
+            from app.services.email import send_super_alert_email
+            await send_super_alert_email(
+                conversation_id="-",
+                visitor_name=None, visitor_phone=None, visitor_email=None,
+                tunnel="sales",
+                last_message=(
+                    f"(queue stalled: {waiting} waiting, oldest {oldest}s, "
+                    "nobody has taken it)"
+                ),
+                chat_number=None,
+            )
+        except Exception as e:
+            logger.warning(f"[queue-alert] email failed: {e}")
+            return {"state": "email_failed", "waiting": waiting}
+        _QUEUE_ALERT["last_sent_at"] = now
+        _QUEUE_ALERT["last_count"] = waiting
+        _QUEUE_ALERT["active"] = True
+        return {"state": "alerted", "waiting": waiting, "oldest": oldest}
+    except Exception as e:
+        logger.error(f"[queue-alert] failed: {e}", exc_info=True)
+        return {"state": "error"}

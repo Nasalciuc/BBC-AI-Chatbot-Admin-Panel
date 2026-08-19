@@ -131,6 +131,32 @@ class Settings(BaseSettings):
     #                                  and how fresh an agent message must be to
     #                                  count as presence on its own.
     agent_timeout_seconds: int = 600
+    # Spec v2.4 §2.1 — THREE presence windows, three jobs, three names:
+    #   agent_timeout_seconds (600s)        routing + sticky. Raised
+    #     deliberately: a returning client must not lose their operator over a
+    #     three-minute phone call (D2).
+    #   crm_presence_window_seconds (90s)   the CRM gate. Unchanged.
+    #   queue_presence_window_seconds (90s) THIS one — the shared queue.
+    #     "Leave the CRM and you are out of the line in ninety seconds, without
+    #     pressing anything." A ten-minute window would keep ghosts visible in
+    #     the line for ten minutes, which is the disease we spent June curing.
+    queue_presence_window_seconds: int = 90
+    # Spec v2.4 §2ter/D4 — the three automatic drains are OFF once the shared
+    # queue opens: close auto-assign, heartbeat assign, and dispatch_needs_agent.
+    # Only one mechanism may distribute ownerless conversations, and it is the
+    # queue: someone receiving work without pressing anything, while the others
+    # watch a row vanish with no explanation, is the thing we removed.
+    #
+    # This flag is the rollback net for a single-PR deploy: flipping it to True
+    # restores yesterday's distribution WITHOUT reverting the queue. The dead
+    # code is deleted in ticket QUEUE-CLEANUP (one iteration) — dead code with a
+    # deadline, not dead code that rots.
+    auto_dispatch_enabled: bool = False
+    # Load signal, never a barrier (spec v2.4 §6.9): above this many active
+    # conversations an operator's row is flagged for the supervisor. Nothing is
+    # blocked — the owners asked for competition, and a hidden cap would be
+    # balancing by stealth.
+    operator_load_threshold: int = 5
     agent_silent_timeout_seconds: int = 900  # was 480; an operator READING a long thread before replying must not be reverted
     # First-response timeout: operator must send first message after assignment.
     # If silent → AI takes over instantly. The 480s silent timeout above is for

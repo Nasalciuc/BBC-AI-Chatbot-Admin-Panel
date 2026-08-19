@@ -61,13 +61,18 @@ async def test_stamp_team_id_on_assign():
         patch("app.db.supabase.get_conversation_simple", new_callable=AsyncMock, return_value=conv_cur),
         patch("app.db.supabase.get_user_by_id", new_callable=AsyncMock, return_value=operator),
         patch("app.db.supabase.update_conversation", new_callable=AsyncMock, return_value={}) as upd,
+        # The gate decides ownership now (shared-queue wave); winning it lets
+        # the handoff proceed to metadata + the team stamp this test pins.
+        patch("app.db.supabase.claim_conversation_if_unassigned",
+              new_callable=AsyncMock, return_value={"won": True, "queued_age_seconds": None}),
         patch("app.services.presence.log_activity", new=MagicMock()),
         patch("app.pipeline.orchestrator._fire_and_forget", new=MagicMock()),
     ):
         await perform_handoff_to_agent(CONV, agent_id="op-1", emit_messages=False)
     payload = upd.await_args.args[1]
     assert payload.get("team_id") == "alpha"
-    assert payload.get("assigned_agent_id") == "op-1"
+    # Ownership was written atomically by the claim gate, not by this update.
+    assert "assigned_agent_id" not in payload
 
 
 @pytest.mark.asyncio
@@ -79,6 +84,8 @@ async def test_stamp_not_applied_when_operator_has_no_team():
         patch("app.db.supabase.get_conversation_simple", new_callable=AsyncMock, return_value=conv_cur),
         patch("app.db.supabase.get_user_by_id", new_callable=AsyncMock, return_value=operator),
         patch("app.db.supabase.update_conversation", new_callable=AsyncMock, return_value={}) as upd,
+        patch("app.db.supabase.claim_conversation_if_unassigned",
+              new_callable=AsyncMock, return_value={"won": True, "queued_age_seconds": None}),
         patch("app.services.presence.log_activity", new=MagicMock()),
         patch("app.pipeline.orchestrator._fire_and_forget", new=MagicMock()),
     ):

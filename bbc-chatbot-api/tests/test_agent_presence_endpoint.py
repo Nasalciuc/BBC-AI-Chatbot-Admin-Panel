@@ -124,11 +124,15 @@ async def test_a_present_ready_agent_passes():
 
 
 @pytest.mark.asyncio
-async def test_present_but_not_ready():
+async def test_present_with_ready_button_off_is_still_ready():
+    """Spec v2.4 A1 (shared-queue wave): is_ready left this gate. The pulse
+    already says "I am here", and a button left on overnight lies — the real
+    defence against a lying pulse is the response deadline plus the idempotent
+    fallback (#211). `not_ready` no longer exists as a reason."""
     out = await _ask(_user(ready=False, seen_seconds_ago=3))
     assert out["online"] is True
-    assert out["ready"] is False
-    assert out["reason"] == "not_ready"
+    assert out["ready"] is True
+    assert out["reason"] == "ok"
 
 
 @pytest.mark.asyncio

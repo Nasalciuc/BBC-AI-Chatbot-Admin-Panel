@@ -29,6 +29,12 @@ export type ChatBridgeMessage =
   | { type: 'chat:incoming'; unread: number; conversationId: string }
   | { type: 'chat:unread'; unread: number }
   | { type: 'chat:presence'; online: boolean; ready: boolean }
+  // Spec v2.4 §6.10 — "N conversations are waiting for somebody". BADGE ONLY.
+  // Auto-open stays exclusive to chat:incoming (a conversation assigned to THIS
+  // agent). Opening the panel on chat:queue would take over every agent's
+  // screen every time anyone gets a chat — ten times an hour, for nine people
+  // who did not ask.
+  | { type: 'chat:queue'; count: number }
 
 export type CrmBridgeDeps = {
   /** `isAllowedCrmOrigin` from crm-embed-auth — the ONE allow-list. */
@@ -46,6 +52,8 @@ let handshakeOrigin: string | null = null
  *  CRM would receive 720 identical messages an hour. */
 let lastUnreadSent: number | null = null
 let lastPresenceSent: string | null = null
+/** Last queue count told to the CRM — same anti-noise rule as chat:unread. */
+let lastQueueSent: number | null = null
 
 /**
  * Conversations this agent has not dealt with yet — a LEVEL, not an event.
@@ -178,6 +186,19 @@ export function reportAttentionCycle(opts: {
   }
 }
 
+/**
+ * The shared queue's depth, only when it changed. `count: 0` goes out exactly
+ * once when the line empties, so the CRM badge switches off. The value is the
+ * heartbeat's `queue_count` — the SAME number that feeds the panel badge, so
+ * the two can never contradict each other.
+ */
+export function reportQueue(count: number): void {
+  if (!isEmbedded()) return
+  if (count === lastQueueSent) return
+  lastQueueSent = count
+  sendToCrm({ type: 'chat:queue', count })
+}
+
 /** Presence, only when it actually changed. */
 export function reportPresence(ready: boolean): void {
   if (!isEmbedded()) return
@@ -240,5 +261,6 @@ export function __resetBridgeState(): void {
   handshakeOrigin = null
   lastUnreadSent = null
   lastPresenceSent = null
+  lastQueueSent = null
   waiting.clear()
 }

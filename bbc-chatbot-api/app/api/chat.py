@@ -564,9 +564,17 @@ async def chat(
                     )
                     # Fall through — pipeline saves user message and generates AI greeting.
                 else:
+                    # Nobody was picked for this conversation — by design now
+                    # (spec v2.4 §2ter/D1). It goes into the shared line, where
+                    # everyone eligible sees it and the first click wins. The AI
+                    # pipeline continues below either way, so the visitor is
+                    # never left waiting for a human who may not come (D3).
+                    # route_conversation's signature is untouched: the id lives
+                    # here, at the call site, not inside routing.
+                    await db.enqueue_conversation(req.conversation_id)
                     logger.info(
                         f"[{req.conversation_id}] First-message routing → "
-                        f"no operator, AI pipeline"
+                        f"no operator, shared queue + AI pipeline"
                     )
                     # Management rule (Tyke, 02-Jul): email super@ whenever a
                     # client starts chatting and NO agents are logged in —

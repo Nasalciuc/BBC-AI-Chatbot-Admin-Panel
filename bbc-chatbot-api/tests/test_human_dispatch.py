@@ -87,9 +87,14 @@ class TestFirstRequestCounts:
 class TestDispatcher:
     @pytest.mark.asyncio
     async def test_ready_agent_gets_assigned_via_unified_handoff(self):
+        # D4 (shared-queue wave): automatic dispatch ships OFF; this test now
+        # pins the ROLLBACK path — flag on restores yesterday's behaviour
+        # without a revert. The default-off behaviour is pinned in
+        # test_no_auto_dispatch.py.
+        from config.settings import settings as _settings
         client = _update_result([{"id": _CID}])  # claim wins
         perform = AsyncMock()
-        with patch("app.services.routing.db.get_conversation_simple",
+        with patch.object(_settings, "auto_dispatch_enabled", True),              patch("app.services.routing.db.get_conversation_simple",
                    new=AsyncMock(return_value=dict(_QUEUED_CONV))), \
              patch("app.services.routing.route_conversation",
                    new=AsyncMock(return_value={"agent_id": _AGENT, "mode": "human", "agent_name": "Oslo"})), \
@@ -107,9 +112,10 @@ class TestDispatcher:
 
     @pytest.mark.asyncio
     async def test_double_dispatch_race_single_assignment(self):
+        from config.settings import settings as _settings
         client = _update_result([])  # claim LOST — someone else flipped status
         perform = AsyncMock()
-        with patch("app.services.routing.db.get_conversation_simple",
+        with patch.object(_settings, "auto_dispatch_enabled", True),              patch("app.services.routing.db.get_conversation_simple",
                    new=AsyncMock(return_value=dict(_QUEUED_CONV))), \
              patch("app.services.routing.route_conversation",
                    new=AsyncMock(return_value={"agent_id": _AGENT, "mode": "human", "agent_name": "Oslo"})), \

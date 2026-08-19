@@ -8,6 +8,7 @@ import { callTypes, roles } from '../data/data'
 import { type User } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
 import { TeamCell } from './team-cell'
+import { ChatEnabledCell } from './chat-enabled-cell'
 import { BBCAvatar } from '@/components/bbc-avatar'
 
 export const usersColumns: ColumnDef<User>[] = [
@@ -126,6 +127,14 @@ export const usersColumns: ColumnDef<User>[] = [
       return value.includes(status)
     },
     enableHiding: false,
+    enableSorting: false,
+  },
+  {
+    accessorKey: 'chat_enabled',
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Primeste chaturi' />
+    ),
+    cell: ({ row }) => <ChatEnabledCell user={row.original} />,
     enableSorting: false,
   },
   {

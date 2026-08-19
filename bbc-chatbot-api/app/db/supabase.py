@@ -478,6 +478,64 @@ def _downgrade_supervisor_columns(err: Exception) -> None:
     )
 
 
+# ── 033/034: optional-column detection, same shape as the supervisor columns ──
+# The code must run BEFORE the migration is applied (deploy order is not
+# guaranteed) and must heal WITHOUT a redeploy once it is. Optimistic by
+# default; a real missing-column error downgrades for a TTL, then re-probes.
+_chat_enabled_ok: bool | None = None
+_chat_enabled_downgraded_at: float | None = None
+_queued_at_ok: bool | None = None
+_queued_at_downgraded_at: float | None = None
+OPTIONAL_COLUMNS_RETRY_SECONDS = 60
+
+
+def _chat_enabled_column_available() -> bool:
+    """True unless a real missing-column error for users.chat_enabled is in TTL."""
+    if _chat_enabled_ok is not False:
+        return True
+    if _chat_enabled_downgraded_at is None:
+        return True
+    return time.time() - _chat_enabled_downgraded_at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_chat_enabled(err: Exception) -> None:
+    """Flip the flag ONLY for a real missing-column error. Never silent."""
+    global _chat_enabled_ok, _chat_enabled_downgraded_at
+    if not _is_missing_column_error(err):
+        return
+    if _chat_enabled_ok is not False:
+        logger.error(
+            "users.chat_enabled is missing — apply migrations/033_chat_enabled.sql. "
+            "Running WITHOUT the filter (everyone is treated as chat_enabled=true) "
+            "and re-probing in 60s."
+        )
+    _chat_enabled_ok = False
+    _chat_enabled_downgraded_at = time.time()
+
+
+def _queued_at_column_available() -> bool:
+    """True unless a real missing-column error for conversations.queued_at is in TTL."""
+    if _queued_at_ok is not False:
+        return True
+    if _queued_at_downgraded_at is None:
+        return True
+    return time.time() - _queued_at_downgraded_at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_queued_at(err: Exception) -> None:
+    """Flip the flag ONLY for a real missing-column error. Never silent."""
+    global _queued_at_ok, _queued_at_downgraded_at
+    if not _is_missing_column_error(err):
+        return
+    if _queued_at_ok is not False:
+        logger.error(
+            "conversations.queued_at is missing — apply migrations/034_queued_at.sql. "
+            "The shared queue is INERT until then; re-probing in 60s."
+        )
+    _queued_at_ok = False
+    _queued_at_downgraded_at = time.time()
+
+
 def supervisor_columns_status() -> dict:
     """Surface for /health — ops must see a freeze without reading logs."""
     downgraded_at = None
@@ -1495,9 +1553,16 @@ async def get_users(
     row. ANDs with role/search.
     """
     db = get_client()
-    def _query():
+    def _query(with_chat_enabled: bool = True):
+        _cols = (
+            "id,email,name,role,tunnel_scope,avatar_url,is_active,"
+            "last_seen_at,phone,team_id,created_at,updated_at"
+        )
+        if with_chat_enabled and _chat_enabled_column_available():
+            # 033: the panel renders the management toggle from this list.
+            _cols += ",chat_enabled"
         q = db.table("users").select(
-            "id,email,name,role,tunnel_scope,avatar_url,is_active,last_seen_at,phone,team_id,created_at,updated_at",
+            _cols,
             count="exact",  # type: ignore[arg-type]
         ).order("created_at", desc=True)
         if role:    q = q.eq("role", role)
@@ -1513,7 +1578,13 @@ async def get_users(
                 f"email.ilike.%{search}%"
             )
         return q.range(offset, offset + limit - 1).execute()
-    res = await _run_sync(_query)
+    try:
+        res = await _run_sync(_query)
+    except Exception as _e:
+        _downgrade_chat_enabled(_e)
+        if _chat_enabled_column_available():
+            raise           # not a missing-column error — surface it
+        res = await _run_sync(lambda: _query(False))
     return res.data or [], res.count or 0
 
 
@@ -2644,18 +2715,33 @@ async def get_available_agents(tunnel: str, timeout_seconds: int = 120) -> list:
         from datetime import datetime, timezone, timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).isoformat()
 
-        def _q():
-            return (
+        def _q(with_chat_enabled: bool):
+            _cols = (
+                "id, name, email, role, tunnel_scope, last_seen_at, "
+                "chats_served_today, chats_served_date"
+            )
+            if with_chat_enabled:
+                _cols += ", chat_enabled"
+            q = (
                 db_client.table("users")
-                .select("id, name, email, role, tunnel_scope, last_seen_at, chats_served_today, chats_served_date")
+                .select(_cols)
                 .eq("is_active", True)
                 .gt("last_seen_at", cutoff)
                 .or_(f"tunnel_scope.eq.{tunnel},tunnel_scope.eq.all")
                 .in_("role", list(_OPERATOR_ROLES))
-                .eq("is_ready", True)
-                .execute()
+                .eq("is_ready", True)   # legacy first-message routing keeps this
             )
-        res = await _run_sync(_q)
+            if with_chat_enabled:
+                # 033: management-level right to receive chats at all.
+                q = q.eq("chat_enabled", True)
+            return q.execute()
+        try:
+            res = await _run_sync(lambda: _q(_chat_enabled_column_available()))
+        except Exception as _e:
+            _downgrade_chat_enabled(_e)
+            if _chat_enabled_column_available():
+                raise           # not a missing-column error — let it surface
+            res = await _run_sync(lambda: _q(False))
         return res.data or []
     except Exception as e:
         logger.error(f"get_available_agents error: {e}")
@@ -3776,3 +3862,394 @@ async def blocklist_list(limit: int = 200) -> list[dict]:
     except Exception as e:
         logger.error(f"blocklist_list error: {e}")
         return []
+
+
+async def log_audit(
+    user_id: str | None,
+    user_email: str | None,
+    action: str,
+    target_table: str,
+    target_id: str | None = None,
+    details: dict | None = None,
+    ip_address: str | None = None,
+) -> None:
+    """Write one row into audit_log. Management decisions leave a trace.
+
+    audit_log exists in production and is formalised by migration 032. Failures
+    are logged, never raised: an audit write must not break the action it
+    records, and must never disappear silently either.
+    """
+    try:
+        db_client = get_client()
+        row: dict = {
+            "action": action,
+            "target_table": target_table,
+            "details": details or {},
+        }
+        if user_id:
+            row["user_id"] = user_id
+        if user_email:
+            row["user_email"] = user_email
+        if target_id:
+            row["target_id"] = target_id
+        if ip_address:
+            row["ip_address"] = ip_address
+        await _run_sync(
+            lambda: db_client.table("audit_log").insert(row).execute(),
+            idempotent=False,
+        )
+    except Exception as e:
+        logger.warning(f"log_audit error ({action}/{target_table}): {e}")
+
+
+async def claim_conversation_if_unassigned(
+    conversation_id: str, agent_id: str
+) -> dict:
+    """Assign an operator ONLY if nobody holds this conversation yet.
+
+    This is the ONLY compare-and-swap for ownership (spec v2.4 §2ter/D5).
+    Ownership lives on assigned_agent_id; status FOLLOWS it, it does not decide
+    it. Before this, claim_conversation read the field and perform_handoff wrote
+    it tens of milliseconds later: two agents pressing inside that window both
+    passed the read and both wrote. The database decides instead — exactly one
+    UPDATE matches, everyone else gets zero rows.
+
+    One UPDATE writes, atomically:
+        assigned_agent_id, mode="human", status="active", queued_at=None
+    status: a needs_agent conversation becomes active in the same write, so no
+    second mechanism can win on a different axis.
+    queued_at: "NULL once claimed" — and the waiting age is read BEFORE the
+    write and returned to the winner, because avg_time_to_claim computed after
+    the NULL would read nothing and produce an average that looks fine.
+
+    Returns {"won": bool, "queued_age_seconds": float | None}.
+    won=False (including on error) means NOTHING happened: the caller answers
+    409 and performs no side effects.
+    """
+    try:
+        db_client = get_client()
+        # Read the waiting age first. Telemetry only — never a gate.
+        _age: float | None = None
+        if _queued_at_column_available():
+            try:
+                _cur = await _run_sync(
+                    lambda: db_client.table("conversations")
+                    .select("queued_at")
+                    .eq("id", conversation_id)
+                    .limit(1)
+                    .execute()
+                )
+                _rows = _cur.data or []
+                _qa = _rows[0].get("queued_at") if _rows else None
+                if _qa:
+                    from datetime import datetime, timezone
+                    _age = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(str(_qa).replace("Z", "+00:00"))
+                    ).total_seconds()
+            except Exception as _e:
+                _downgrade_queued_at(_e)
+                logger.warning(
+                    f"[{conversation_id}] queue age read failed: {_e} — "
+                    "claim proceeds, avg_time_to_claim loses this sample"
+                )
+                _age = None
+        _update: dict = {
+            "assigned_agent_id": agent_id,
+            "mode": "human",
+            "status": "active",
+        }
+        if _queued_at_column_available():
+            _update["queued_at"] = None
+        def _claim(with_queued_at: bool):
+            _u = dict(_update)
+            if not with_queued_at:
+                _u.pop("queued_at", None)
+            return (
+                db_client.table("conversations")
+                .update(_u)
+                .eq("id", conversation_id)
+                .is_("assigned_agent_id", "null")
+                .in_("status", ["active", "needs_agent"])
+                .execute()
+            )
+        try:
+            res = await _run_sync(
+                lambda: _claim(_queued_at_column_available()), idempotent=False
+            )
+        except Exception as _e:
+            _downgrade_queued_at(_e)
+            if _queued_at_column_available():
+                raise
+            res = await _run_sync(lambda: _claim(False), idempotent=False)
+        won = bool(res.data)
+        if won:
+            # The competition score is incremented HERE and only here for queue
+            # claims. increment_chats_served reads chats_served_today and
+            # chats_served_date OUT OF THE DICT it is given: passing {"id": ...}
+            # would make it write 1 every single time instead of incrementing.
+            # So the full user row is fetched first.
+            try:
+                _agent_row = await get_user_by_id(agent_id)
+                if _agent_row:
+                    await increment_chats_served(_agent_row)
+            except Exception as _e:
+                logger.warning(f"[{conversation_id}] score increment skipped: {_e}")
+        return {"won": won, "queued_age_seconds": _age if won else None}
+    except Exception as e:
+        logger.warning(f"[{conversation_id}] claim gate failed: {e}")
+        return {"won": False, "queued_age_seconds": None}
+
+
+async def reassign_conversation(
+    conversation_id: str, from_agent_id: str, to_agent_id: str
+) -> bool:
+    """Supervisor move, or re-claim after a timeout: A -> B, only if it is still A's.
+
+    Same compare-and-swap mechanic as _release_from_agent (#211), with a target
+    instead of None. Deliberately NOT routed through the claim gate: that would
+    require emptying assigned_agent_id first, which is exactly the window this
+    work closes.
+    """
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"assigned_agent_id": to_agent_id})
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", from_agent_id)
+            .execute(),
+            idempotent=False,
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.warning(f"[{conversation_id}] reassign failed: {e}")
+        return False
+
+
+async def enqueue_conversation(conversation_id: str) -> bool:
+    """Put a conversation into the shared queue: stamp queued_at, leave it unassigned.
+
+    Conditional on purpose: queued_at is written ONLY if it is still NULL, so
+    the age the queue displays — and the >2min alert — is the real waiting time
+    and is never reset by the visitor's later messages.
+
+    The opposite rule applies to _release_from_agent: a release overwrites
+    queued_at unconditionally, because a release starts a NEW life in the line
+    and its age must start then. The two are not in conflict; they are the two
+    halves of one lifecycle (spec v2.4 §6.2).
+
+    Silent no-op until migration 034 is applied — one error line, never a raise.
+    """
+    if not _queued_at_column_available():
+        return False
+    try:
+        from datetime import datetime, timezone
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"queued_at": datetime.now(timezone.utc).isoformat()})
+            .eq("id", conversation_id)
+            .is_("assigned_agent_id", "null")
+            .is_("queued_at", "null")
+            .execute(),
+            idempotent=False,
+        )
+        return bool(res.data)
+    except Exception as e:
+        _downgrade_queued_at(e)
+        logger.warning(f"[{conversation_id}] enqueue_conversation failed: {e}")
+        return False
+
+
+# ── Shared queue: one raw fetch per (tunnel, team) per 5s, filtered per viewer ──
+# The heartbeat runs every 5s per operator. Querying conversations once per
+# operator per beat would be ~120 queries/minute on the hottest table with ten
+# people online — the very cost that ruled out a separate poll. The raw rows are
+# cached for 5s; the per-viewer parts (the 60s reservation) are applied after.
+_queue_cache: dict = {}          # (tunnel, team_id) -> {"at": float, "rows": list}
+QUEUE_CACHE_SECONDS = 5
+
+
+async def get_queue_for_operator(
+    tunnel: str,
+    team_id: str | None = None,
+    viewer_agent_id: str | None = None,
+    limit: int = 20,
+) -> list:
+    """Conversations waiting for ANY operator — the shared line, as one person sees it.
+
+    Filters (spec v2.4 §6.5). Note what is NOT here: status = 'needs_agent'.
+    A brand-new conversation is 'active', so filtering on needs_agent alone
+    would give a queue that is permanently empty for exactly the visitors it
+    exists for — a bug that looks like a working system.
+
+        queued_at IS NOT NULL
+        AND assigned_agent_id IS NULL
+        AND status IN ('active', 'needs_agent')
+        AND tunnel = :tunnel
+        AND (team_id IS NULL OR team_id = :team_id)
+        ORDER BY queued_at ASC          -- oldest wait first, not oldest creation
+
+    team_id NULL is visible to EVERYONE eligible in the tunnel: new
+    conversations have no team yet, and a strict equality would empty the line
+    for all teams at once, with each team assuming it belonged to the other.
+
+    Applied afterwards, in Python (metadata cannot be filtered efficiently in
+    PostgREST):
+      * the 60s silent reservation — a conversation released by the sweeper
+        stays invisible to everyone except the operator who was already talking
+        to that client, so they can resume without a race and the client is not
+        greeted a second time by a stranger;
+      * needs_agent rows sort first — the visitor asked for a human out loud.
+    """
+    _key = (tunnel, team_id or "")
+    _now = time.time()
+    _hit = _queue_cache.get(_key)
+    if _hit and _now - _hit["at"] < QUEUE_CACHE_SECONDS:
+        rows = _hit["rows"]
+    else:
+        if not _queued_at_column_available():
+            return []
+        try:
+            db_client = get_client()
+            def _q():
+                q = (
+                    db_client.table("conversations")
+                    .select(
+                        "id, chat_number, tunnel, status, created_at, queued_at, "
+                        "team_id, last_user_message_at, last_reply_at, "
+                        "message_count, metadata"
+                    )
+                    .not_.is_("queued_at", "null")
+                    .is_("assigned_agent_id", "null")
+                    .in_("status", ["active", "needs_agent"])
+                    .eq("tunnel", tunnel)
+                    .order("queued_at", desc=False)
+                    .limit(limit)
+                )
+                if team_id:
+                    q = q.or_(f"team_id.is.null,team_id.eq.{team_id}")
+                return q.execute()
+            res = await _run_sync(_q)
+            rows = res.data or []
+            _queue_cache[_key] = {"at": _now, "rows": rows}
+        except Exception as e:
+            _downgrade_queued_at(e)
+            logger.warning(f"get_queue_for_operator error (tunnel={tunnel}): {e}")
+            return []
+    # --- per-viewer filtering, after the cache ---
+    from datetime import datetime, timezone
+    _cut = datetime.now(timezone.utc).timestamp() - 60
+    out = []
+    for r in rows:
+        _meta = r.get("metadata") or {}
+        _engaged = _meta.get("engaged_agent_id")
+        if _engaged and viewer_agent_id and _engaged != viewer_agent_id:
+            try:
+                _qa = datetime.fromisoformat(
+                    str(r.get("queued_at")).replace("Z", "+00:00")
+                ).timestamp()
+            except (ValueError, TypeError):  # noqa: silent — unparseable queued_at treats the reservation as expired; the row is still shown
+                _qa = 0
+            if _qa > _cut:
+                continue        # silent reservation still running — not yours yet
+        out.append(r)
+    # The visitor who asked for a human out loud goes to the top.
+    out.sort(key=lambda r: 0 if r.get("status") == "needs_agent" else 1)
+    return out
+
+
+async def get_queue_stats() -> dict:
+    """Numbers for /health.queue: how long are clients waiting, and how fast are
+    they picked up.
+
+    avg_time_to_claim comes from agent_activity_log rows with action='claim_won'
+    and their response_seconds — the age captured INSIDE the gate. It cannot be
+    computed from queued_at, because the gate sets that to NULL on the way in:
+    that is the whole point of capturing it first.
+    """
+    out = {
+        "waiting_now": 0,
+        "oldest_seconds": 0,
+        "claimed_today": 0,
+        "avg_time_to_claim_seconds": None,
+    }
+    if not _queued_at_column_available():
+        return out
+    try:
+        from datetime import datetime, timezone, date
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("queued_at")
+            .not_.is_("queued_at", "null")
+            .is_("assigned_agent_id", "null")
+            .in_("status", ["active", "needs_agent"])
+            .order("queued_at", desc=False)
+            .limit(200)
+            .execute()
+        )
+        rows = res.data or []
+        out["waiting_now"] = len(rows)
+        if rows:
+            _oldest = str(rows[0].get("queued_at"))
+            try:
+                out["oldest_seconds"] = int(
+                    (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(_oldest.replace("Z", "+00:00"))
+                    ).total_seconds()
+                )
+            except (ValueError, TypeError):  # noqa: silent — a malformed timestamp reads as age 0; waiting_now still counts the row
+                out["oldest_seconds"] = 0
+        _today = date.today().isoformat()
+        res2 = await _run_sync(
+            lambda: db_client.table("agent_activity_log")
+            .select("response_seconds")
+            .eq("action", "claim_won")
+            .gte("happened_at", f"{_today}T00:00:00+00:00")
+            .limit(1000)
+            .execute()
+        )
+        claims = res2.data or []
+        out["claimed_today"] = len(claims)
+        _vals = [c["response_seconds"] for c in claims if c.get("response_seconds") is not None]
+        if _vals:
+            out["avg_time_to_claim_seconds"] = round(sum(_vals) / len(_vals), 1)
+        return out
+    except Exception as e:
+        logger.warning(f"get_queue_stats error: {e}")
+        return out
+
+
+async def get_operator_load(timeout_seconds: int = 90) -> dict:
+    """How many active conversations each online operator is holding right now.
+
+    A SIGNAL, never a barrier (spec v2.4 §6.9). The owners asked for
+    competition; a hidden cap would be balancing by stealth. This exists so the
+    supervisor can start a conversation with a person, not so the router can
+    refuse them work.
+    """
+    out: dict = {"per_agent": {}, "over_threshold": 0}
+    try:
+        from datetime import datetime, timezone, timedelta
+        db_client = get_client()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+        ).isoformat()
+        agents = await _run_sync(
+            lambda: db_client.table("users")
+            .select("id, name")
+            .eq("is_active", True)
+            .gt("last_seen_at", cutoff)
+            .in_("role", list(_OPERATOR_ROLES))
+            .execute()
+        )
+        for a in (agents.data or []):
+            n = await get_agent_active_count(a["id"])
+            out["per_agent"][a["id"]] = {"name": a.get("name"), "active": n}
+        return out
+    except Exception as e:
+        logger.warning(f"get_operator_load error: {e}")
+        return out

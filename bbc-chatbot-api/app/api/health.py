@@ -33,6 +33,10 @@ async def health() -> dict:
     from app.services.crm import CRM_PUSH_HEALTH
     # Presence gate: aggregate only — never who was blocked, or when.
     from app.api.integration import PRESENCE_GATE_HEALTH
+    # Claim races: exactly one wins; the losers are counted, not punished.
+    from app.api.conversations import CLAIM_HEALTH
+    # Sticky's only defence is the deadline — these two say if it is holding.
+    from app.services.routing import STICKY_HEALTH
     # Turns we refused to speak: every count is a moment the bot was about to
     # answer a question nobody asked.
     from app.pipeline.orchestrator import PIPELINE_HEALTH
@@ -45,6 +49,8 @@ async def health() -> dict:
             "lead_writes": dict(LEAD_WRITE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
+            "claims": dict(CLAIM_HEALTH),
+            "sticky": dict(STICKY_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
             "presence_gate": dict(PRESENCE_GATE_HEALTH),
@@ -53,6 +59,16 @@ async def health() -> dict:
 
     # Check Supabase connectivity
     db_ok = await check_connection()
+
+    # Queue visibility — DB-backed, so only in the full (debug) payload; the
+    # lightweight payload keeps to in-memory counters (UptimeRobot pings it).
+    from app.db import supabase as _db
+    _queue_stats = await _db.get_queue_stats()
+    _load = await _db.get_operator_load(settings.queue_presence_window_seconds)
+    _thr = settings.operator_load_threshold
+    _load["over_threshold"] = sum(
+        1 for v in _load["per_agent"].values() if v["active"] > _thr
+    )
 
     # Check service configuration (don't make live calls)
     claude_ok = bool(settings.anthropic_api_key)
@@ -83,6 +99,10 @@ async def health() -> dict:
         "lead_writes": dict(LEAD_WRITE_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
+        "claims": dict(CLAIM_HEALTH),
+        "sticky": dict(STICKY_HEALTH),
+        "queue": _queue_stats,
+        "operator_load": _load,
         "generation_fallbacks": dict(GENERATION_HEALTH),
         "crm_pushes": dict(CRM_PUSH_HEALTH),
         "presence_gate": dict(PRESENCE_GATE_HEALTH),

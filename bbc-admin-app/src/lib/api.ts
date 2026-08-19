@@ -134,6 +134,16 @@ export async function getConversation(id: string): Promise<Conversation | null> 
   }
 }
 
+/** Claim from the shared queue — the DATABASE decides; 409 names the winner. */
+export function claimConversation(id: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(id)}/claim`, { method: 'POST' })
+}
+
+/** Give a freshly-claimed conversation back to the line (30s window in the UI). */
+export function releaseConversation(id: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(id)}/release`, { method: 'POST' })
+}
+
 export async function getOperatorHistory(conversationId: string) {
   return apiFetch<{ source: string; events: Array<{ action: string; agent_name?: string; happened_at: string; handoff_reason?: string; response_seconds?: number }>; summary: string }>(
     `/api/conversations/${encodeURIComponent(conversationId)}/operator-history`
@@ -340,7 +350,7 @@ export async function inviteUser(data: {
 
 export async function updateUser(
   id: string,
-  data: { name?: string; role?: string; is_active?: boolean; tunnel_scope?: string; phone?: string; avatar_url?: string | null },
+  data: { name?: string; role?: string; is_active?: boolean; chat_enabled?: boolean; tunnel_scope?: string; phone?: string; avatar_url?: string | null },
 ): Promise<{ success: boolean; data: Record<string, unknown> }> {
   return apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',

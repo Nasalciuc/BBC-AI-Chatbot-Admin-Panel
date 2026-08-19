@@ -216,7 +216,19 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     user_db = await db.get_user_by_id(user_id)
     role_db = (user_db or {}).get("role") or ""
     is_ready = bool((user_db or {}).get("is_ready", False))
-    if user_db and role_db in db._OPERATOR_ROLES and is_ready:
+    # 033: chat_enabled comes from the DB too, never from the JWT. An absent
+    # column (migration not applied yet) reads as True — see supabase.py.
+    chat_enabled = bool((user_db or {}).get("chat_enabled", True))
+    # D4: OFF with the shared queue — an operator must not receive a
+    # conversation because their browser pinged first. Behind the flag for one
+    # iteration as a rollback path; deleted in QUEUE-CLEANUP.
+    if (
+        settings.auto_dispatch_enabled
+        and user_db
+        and role_db in db._OPERATOR_ROLES
+        and is_ready
+        and chat_enabled
+    ):
         agent_name = user_db.get("name") or user_db.get("email") or "A specialist"
         assigned = await _assign_pending_conversations(
             user_id,
@@ -224,6 +236,40 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
             agent_name,
         )
         active_assigned = await db.get_agent_active_count(user_id)
+    # --- shared queue, riding on the heartbeat (spec v2.4 §6.7) ---
+    # Zero new HTTP requests: a separate poll at 10 operators would be ~120
+    # queries/minute on the hottest table. Nothing is computed for someone who
+    # has no right to it: 0 and [] AT THE SOURCE, not filtered later in the UI.
+    _queue_count = 0
+    _queue_ids: list = []
+    try:
+        _qa_ok = (
+            user_db
+            and bool(user_db.get("is_active", True))
+            and bool(user_db.get("chat_enabled", True))
+            and role_db in db._OPERATOR_ROLES
+        )
+        if _qa_ok:
+            _tunnels = (
+                ["sales", "support"]
+                if (user_db.get("tunnel_scope") or "sales") == "all"
+                else [user_db.get("tunnel_scope") or "sales"]
+            )
+            _rows: list = []
+            for _t in _tunnels:
+                _rows.extend(
+                    await db.get_queue_for_operator(
+                        tunnel=_t,
+                        team_id=user_db.get("team_id"),
+                        viewer_agent_id=user_id,
+                    )
+                )
+            _queue_count = len(_rows)
+            _queue_ids = [r["id"] for r in _rows][:20]
+    except Exception as e:
+        # The queue must never break the heartbeat: presence is more important
+        # than the badge. Logged, never silent.
+        logger.warning(f"[heartbeat] queue fetch failed for {user_id}: {e}")
     return {
         "success": True,
         "cleaned": cleaned,
@@ -231,6 +277,8 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "active_assigned": active_assigned,
         "is_ready": is_ready,
         "role": role_db,
+        "queue_count": _queue_count,
+        "queue_ids": _queue_ids,
     }
 
 

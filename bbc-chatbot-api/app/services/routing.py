@@ -1,21 +1,30 @@
-"""Routing engine — casino-fair assignment to free operators.
+"""Routing engine — sticky affinity, then the shared queue.
 
-Algorithm: Fisher-Yates shuffle (CSPRNG) + sort by chats_served_today.
-Least-served-today agent wins. Equal counts: random tiebreak.
-Daily counter resets lazily (date check, no cron needed).
+Order: a returning client (closed conv within 90 days) goes back to the same
+operator if they are at their desk — continuity is the ONE automatic
+assignment kept. Everyone else goes to the shared queue: every eligible
+operator sees the conversation, and the first to press Take owns it (via the
+claim gate in supabase.py). The old 1:1 cap and the casino-fair shuffle are
+gone — spec v2.4 §2ter/D1; the owners asked for competition.
 
-Sticky affinity: returning clients (closed conv within 90 days) go back to
-the same operator if they're online, bypassing max_concurrent_chats.
-New leads still respect the max_concurrent cap.
+chats_served_today survives as the SCORE, incremented only for genuinely won
+assignments (claim-gate winners and sticky hits).
 """
-import secrets
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from config.settings import settings
 from app.db import supabase as db
 
 logger = logging.getLogger(__name__)
+
+# Spec v2.4 §7 / V7 — sticky is the one automatic assignment we KEPT, and it no
+# longer checks is_ready. Its only defence against a live-pulse ghost is the
+# response deadline. These two numbers say whether that defence is holding:
+# if fell_back approaches routed the way June's phantoms did (73% of assigns
+# with zero agent messages), the supervisor can see it and deal with it person
+# by person — which is what D2 asked for. Per-instance, like the others.
+STICKY_HEALTH: dict = {"sticky_routed": 0, "sticky_fell_back": 0}
 
 AFFINITY_WINDOW_DAYS = 90  # Dan's business rule — returning-client definition
 
@@ -82,8 +91,16 @@ async def _find_sticky_operator(
         return None
     if not agent.get("is_active"):
         return None
-    if not agent.get("is_ready"):
-        return None
+    if not agent.get("chat_enabled", True):
+        return None  # 033: removed from the chat system entirely
+    # is_ready deliberately NOT checked (spec v2.4 §2bis/A2): a returning client
+    # must reach the operator who already knows them if that operator is at
+    # their desk. A forgotten button used to send them to a stranger, who then
+    # heard the whole story again — often with different details, which is how
+    # a good lead becomes a wrong one.
+    # The defence against a live-pulse ghost (June's 46 phantoms) is the
+    # response deadline plus the idempotent fallback from #211, and that is an
+    # acceptance criterion of this work, not an accident.
     if agent.get("role") in db._MANAGEMENT_ROLES:
         return None  # guards against former operator promoted to admin/dev/owner
 
@@ -115,14 +132,13 @@ async def _find_sticky_operator(
 async def route_conversation(
     tunnel: str, visitor=None, visitor_id: Optional[str] = None
 ) -> dict:
-    """Pick a FREE operator using casino-fair distribution.
+    """Sticky affinity first; everyone else queues.
 
-    Order of preference:
+    Order:
       1. Sticky routing — returning client's previous operator, if online.
-         Bypasses max_concurrent_chats.
-      2. Normal routing — least-loaded eligible operator under max_concurrent.
-      3. No agent — returns {'agent_id': None, 'mode': 'ai'}, caller falls
-         through to AI pipeline.
+      2. Shared queue — {'agent_id': None, 'reason': 'queued'}: nobody is
+         auto-picked; the first operator to press Take wins via the claim gate.
+      3. Nobody online — same shape, and the caller falls through to AI.
 
     Returns: {"agent_id": uuid|None, "mode": "human"|"ai", "agent_name": str|None}
     """
@@ -139,6 +155,7 @@ async def route_conversation(
                 await db.increment_chats_served(
                     await db.get_user_by_id(sticky["agent_id"]) or {}
                 )
+                STICKY_HEALTH["sticky_routed"] += 1
                 return sticky
         except Exception as e:
             logger.error(f"[routing] Sticky check failed: {e} → normal routing")
@@ -151,42 +168,25 @@ async def route_conversation(
             logger.info(f"[routing] No agents online for tunnel={tunnel} → AI")
             return {"agent_id": None, "mode": "ai", "agent_name": None}
 
-        # Filter: only FREE agents (0 active conversations — strict 1:1 rule)
-        free_agents = []
-        for agent in agents:
-            count = await db.get_agent_active_count(agent["id"])
-            if count < settings.max_concurrent_chats:
-                free_agents.append(agent)
-
-        if not free_agents:
-            logger.info(f"[routing] All agents busy for tunnel={tunnel} → AI")
-            return {"agent_id": None, "mode": "ai", "agent_name": None}
-
-        # Lazy daily reset: stale date → treat served count as 0
-        today = date.today().isoformat()
-        for a in free_agents:
-            if a.get("chats_served_date") != today:
-                a["chats_served_today"] = 0
-
-        # Casino step 1: Fisher-Yates shuffle with CSPRNG (random tiebreak)
-        for i in range(len(free_agents) - 1, 0, -1):
-            j = secrets.randbelow(i + 1)
-            free_agents[i], free_agents[j] = free_agents[j], free_agents[i]
-
-        # Casino step 2: stable sort by least served today
-        free_agents.sort(key=lambda a: a.get("chats_served_today", 0))
-        selected = free_agents[0]
-
-        # Increment daily counter (1 DB call — uses data already in memory)
-        await db.increment_chats_served(selected)
-
-        agent_name = selected.get("name") or selected.get("email", "A specialist")
+        # The 1:1 filter and the "casino" below it are gone (spec v2.4
+        # §2ter/D1). An ownerless conversation is no longer handed to the
+        # least-loaded operator: it goes to the shared queue, everyone eligible
+        # sees it, and the first to press "Take" gets it. A fast operator
+        # holding several conversations at once is the intended behaviour, not
+        # an accident — the owners asked for competition, and balancing it
+        # quietly would be overruling them.
+        #
+        # chats_served_today survives as the SCORE, not as policy: it is
+        # incremented in the claim gate (winners only) and by sticky above,
+        # which is an assignment that was genuinely won. No path scores twice.
+        #
+        # get_agent_active_count is no longer called here — one DB call per
+        # eligible agent, per conversation, removed.
         logger.info(
-            f"[routing] Assigned to {agent_name} "
-            f"(served {selected.get('chats_served_today', 0)} today) "
-            f"for tunnel={tunnel}"
+            f"[routing] {len(agents)} eligible operator(s) online for "
+            f"tunnel={tunnel} → shared queue (nobody auto-picked)"
         )
-        return {"agent_id": selected["id"], "mode": "human", "agent_name": agent_name, "reason": "dispatch"}
+        return {"agent_id": None, "mode": "ai", "agent_name": None, "reason": "queued"}
 
     except Exception as e:
         logger.error(f"[routing] Unexpected error: {e} → fallback AI")
@@ -199,6 +199,35 @@ async def route_conversation(
 # the SAME unified handoff path the manual Take button uses; none ready →
 # the existing super-alert. The heartbeat/notify-assignment infra in the
 # panel already rings on new assignments — no new notification framework.
+
+async def _needs_agent_super_alert(
+    conversation_id: str, conv: dict, tunnel: str
+) -> None:
+    """Email super@ when a client asked for a human and nobody is there.
+
+    Extracted from dispatch_needs_agent so it survives D4: the queue removes
+    the automatic ASSIGNMENT, never the shout. A visitor who asked out loud and
+    got nobody is exactly the case management wants to hear about.
+    """
+    try:
+        from app.services.closing import claim_super_alert
+        from app.services.email import send_super_alert_email
+
+        if await claim_super_alert(
+            conversation_id, settings.super_alert_cooldown_minutes
+        ):
+            await send_super_alert_email(
+                conversation_id=conversation_id,
+                visitor_name=conv.get("visitor_name"),
+                visitor_phone=conv.get("visitor_phone"),
+                visitor_email=conv.get("visitor_email"),
+                tunnel=tunnel,
+                last_message="(queued: client asked for a human agent)",
+                chat_number=conv.get("chat_number"),
+            )
+    except Exception as e:
+        logger.warning(f"[dispatch] super-alert failed for {conversation_id}: {e}")
+
 
 async def dispatch_needs_agent(conversation_id: str) -> bool:
     """Try to hand a needs_agent conversation to a ready operator.
@@ -216,6 +245,17 @@ async def dispatch_needs_agent(conversation_id: str) -> bool:
             return False
 
         tunnel = conv.get("tunnel") or "sales"
+        # D4: automatic assignment is off — the conversation belongs to the
+        # shared queue, where the first click wins. The shout still goes out:
+        # a client who asked for a human and got nobody is the one case
+        # management must hear about.
+        if not settings.auto_dispatch_enabled:
+            await _needs_agent_super_alert(conversation_id, conv, tunnel)
+            logger.info(
+                f"[dispatch] {conversation_id}: auto-dispatch off — "
+                "stays in the shared queue (alert sent)"
+            )
+            return False
 
         class _V:  # minimal visitor shape for route_conversation's sticky check
             name = conv.get("visitor_name")
@@ -229,24 +269,7 @@ async def dispatch_needs_agent(conversation_id: str) -> bool:
         if not route or not route.get("agent_id"):
             # Nobody ready — the demand signal stays queued and the existing
             # super-alert path fires exactly as it does today.
-            try:
-                from app.services.closing import claim_super_alert
-                from app.services.email import send_super_alert_email
-
-                if await claim_super_alert(
-                    conversation_id, settings.super_alert_cooldown_minutes
-                ):
-                    await send_super_alert_email(
-                        conversation_id=conversation_id,
-                        visitor_name=conv.get("visitor_name"),
-                        visitor_phone=conv.get("visitor_phone"),
-                        visitor_email=conv.get("visitor_email"),
-                        tunnel=tunnel,
-                        last_message="(queued: client asked for a human agent)",
-                        chat_number=conv.get("chat_number"),
-                    )
-            except Exception as e:
-                logger.warning(f"[dispatch] super-alert failed for {conversation_id}: {e}")
+            await _needs_agent_super_alert(conversation_id, conv, tunnel)
             logger.info(f"[dispatch] {conversation_id}: no ready operators — stays queued")
             return False
 
