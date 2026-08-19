@@ -113,7 +113,9 @@ def test_heartbeat_gate_requires_chat_enabled():
     from app.api import agent as agent_api
 
     src = inspect.getsource(agent_api)
-    assert "and is_ready and chat_enabled:" in src
+    # Commit 5 folded the same condition chain behind auto_dispatch_enabled;
+    # the chat_enabled gate is still part of it.
+    assert "and is_ready" in src and "and chat_enabled" in src
     assert 'get("chat_enabled", True)' in src, "absent column must read as True"
 
 

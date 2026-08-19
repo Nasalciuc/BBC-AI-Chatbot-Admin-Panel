@@ -3949,6 +3949,10 @@ async def claim_conversation_if_unassigned(
                     ).total_seconds()
             except Exception as _e:
                 _downgrade_queued_at(_e)
+                logger.warning(
+                    f"[{conversation_id}] queue age read failed: {_e} — "
+                    "claim proceeds, avg_time_to_claim loses this sample"
+                )
                 _age = None
         _update: dict = {
             "assigned_agent_id": agent_id,
@@ -4146,7 +4150,7 @@ async def get_queue_for_operator(
                 _qa = datetime.fromisoformat(
                     str(r.get("queued_at")).replace("Z", "+00:00")
                 ).timestamp()
-            except (ValueError, TypeError):
+            except (ValueError, TypeError):  # noqa: silent — unparseable queued_at treats the reservation as expired; the row is still shown
                 _qa = 0
             if _qa > _cut:
                 continue        # silent reservation still running — not yours yet
@@ -4197,7 +4201,7 @@ async def get_queue_stats() -> dict:
                         - datetime.fromisoformat(_oldest.replace("Z", "+00:00"))
                     ).total_seconds()
                 )
-            except (ValueError, TypeError):
+            except (ValueError, TypeError):  # noqa: silent — a malformed timestamp reads as age 0; waiting_now still counts the row
                 out["oldest_seconds"] = 0
         _today = date.today().isoformat()
         res2 = await _run_sync(
