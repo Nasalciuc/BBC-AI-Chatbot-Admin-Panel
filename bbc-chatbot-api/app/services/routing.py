@@ -18,6 +18,14 @@ from app.db import supabase as db
 
 logger = logging.getLogger(__name__)
 
+# Spec v2.4 §7 / V7 — sticky is the one automatic assignment we KEPT, and it no
+# longer checks is_ready. Its only defence against a live-pulse ghost is the
+# response deadline. These two numbers say whether that defence is holding:
+# if fell_back approaches routed the way June's phantoms did (73% of assigns
+# with zero agent messages), the supervisor can see it and deal with it person
+# by person — which is what D2 asked for. Per-instance, like the others.
+STICKY_HEALTH: dict = {"sticky_routed": 0, "sticky_fell_back": 0}
+
 AFFINITY_WINDOW_DAYS = 90  # Dan's business rule — returning-client definition
 
 # TODO (privacy hardening): shared-browser residual risk — on a shared PC,
@@ -147,6 +155,7 @@ async def route_conversation(
                 await db.increment_chats_served(
                     await db.get_user_by_id(sticky["agent_id"]) or {}
                 )
+                STICKY_HEALTH["sticky_routed"] += 1
                 return sticky
         except Exception as e:
             logger.error(f"[routing] Sticky check failed: {e} → normal routing")

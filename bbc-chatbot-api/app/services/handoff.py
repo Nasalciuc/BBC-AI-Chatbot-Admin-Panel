@@ -407,6 +407,12 @@ async def fall_back_to_ai(conversation_id: str) -> None:
             return
         HANDOFF_HEALTH["expired_since_boot"] += 1
         HANDOFF_HEALTH["last_at"] = _meta.get("missed_by_human_at")
+        if _meta.get("handoff_reason") == "affinity":
+            # A returning client's own operator was routed to and never spoke.
+            # This is the number that says whether dropping is_ready from sticky
+            # cost us anything (spec v2.4 §7).
+            from app.services.routing import STICKY_HEALTH
+            STICKY_HEALTH["sticky_fell_back"] += 1
         logger.error(
             f"[{conversation_id}] HANDOFF EXPIRED: agent {_agent} never "
             f"engaged — conversation returns to AI (counted in /health)"

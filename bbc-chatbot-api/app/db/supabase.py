@@ -4154,3 +4154,98 @@ async def get_queue_for_operator(
     # The visitor who asked for a human out loud goes to the top.
     out.sort(key=lambda r: 0 if r.get("status") == "needs_agent" else 1)
     return out
+
+
+async def get_queue_stats() -> dict:
+    """Numbers for /health.queue: how long are clients waiting, and how fast are
+    they picked up.
+
+    avg_time_to_claim comes from agent_activity_log rows with action='claim_won'
+    and their response_seconds — the age captured INSIDE the gate. It cannot be
+    computed from queued_at, because the gate sets that to NULL on the way in:
+    that is the whole point of capturing it first.
+    """
+    out = {
+        "waiting_now": 0,
+        "oldest_seconds": 0,
+        "claimed_today": 0,
+        "avg_time_to_claim_seconds": None,
+    }
+    if not _queued_at_column_available():
+        return out
+    try:
+        from datetime import datetime, timezone, date
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("queued_at")
+            .not_.is_("queued_at", "null")
+            .is_("assigned_agent_id", "null")
+            .in_("status", ["active", "needs_agent"])
+            .order("queued_at", desc=False)
+            .limit(200)
+            .execute()
+        )
+        rows = res.data or []
+        out["waiting_now"] = len(rows)
+        if rows:
+            _oldest = str(rows[0].get("queued_at"))
+            try:
+                out["oldest_seconds"] = int(
+                    (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(_oldest.replace("Z", "+00:00"))
+                    ).total_seconds()
+                )
+            except (ValueError, TypeError):
+                out["oldest_seconds"] = 0
+        _today = date.today().isoformat()
+        res2 = await _run_sync(
+            lambda: db_client.table("agent_activity_log")
+            .select("response_seconds")
+            .eq("action", "claim_won")
+            .gte("happened_at", f"{_today}T00:00:00+00:00")
+            .limit(1000)
+            .execute()
+        )
+        claims = res2.data or []
+        out["claimed_today"] = len(claims)
+        _vals = [c["response_seconds"] for c in claims if c.get("response_seconds") is not None]
+        if _vals:
+            out["avg_time_to_claim_seconds"] = round(sum(_vals) / len(_vals), 1)
+        return out
+    except Exception as e:
+        logger.warning(f"get_queue_stats error: {e}")
+        return out
+
+
+async def get_operator_load(timeout_seconds: int = 90) -> dict:
+    """How many active conversations each online operator is holding right now.
+
+    A SIGNAL, never a barrier (spec v2.4 §6.9). The owners asked for
+    competition; a hidden cap would be balancing by stealth. This exists so the
+    supervisor can start a conversation with a person, not so the router can
+    refuse them work.
+    """
+    out: dict = {"per_agent": {}, "over_threshold": 0}
+    try:
+        from datetime import datetime, timezone, timedelta
+        db_client = get_client()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+        ).isoformat()
+        agents = await _run_sync(
+            lambda: db_client.table("users")
+            .select("id, name")
+            .eq("is_active", True)
+            .gt("last_seen_at", cutoff)
+            .in_("role", list(_OPERATOR_ROLES))
+            .execute()
+        )
+        for a in (agents.data or []):
+            n = await get_agent_active_count(a["id"])
+            out["per_agent"][a["id"]] = {"name": a.get("name"), "active": n}
+        return out
+    except Exception as e:
+        logger.warning(f"get_operator_load error: {e}")
+        return out

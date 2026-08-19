@@ -76,6 +76,7 @@ def start(app_state, settings) -> list[asyncio.Task]:
         run_cleanup_stale_ready,
         run_close_stale_presence,
         run_crm_orphan_backstop,
+        run_queue_stall_alert,
     )
 
     # (name, fn, interval_override) — None = the shared default cadence.
@@ -90,6 +91,9 @@ def start(app_state, settings) -> list[asyncio.Task]:
         ("stale_presence", run_close_stale_presence, None),
         ("attention_emails", run_attention_emails, None),
         ("crm_orphan_backstop", run_crm_orphan_backstop, 1800),
+        # Every 60s: the two-minute stall must be noticed inside the client's
+        # attention window, not on the shared cadence.
+        ("queue_stall_alert", run_queue_stall_alert, 60),
     ]
     tasks = [
         asyncio.create_task(
