@@ -203,7 +203,9 @@ class TestReleaseReason:
 
     @pytest.mark.asyncio
     async def test_queue_reasons_stamp_queued_at(self):
-        for reason in ("agent_offline", "released_by_agent", "supervisor"):
+        # The agent-initiated reason left with the Release button (owner's
+        # decision) — only the sweeper and a supervisor re-queue.
+        for reason in ("agent_offline", "supervisor"):
             ok, table = await self._release(reason)
             assert ok is True
             assert table.row["queued_at"] is not None, reason

@@ -192,14 +192,16 @@ def test_heartbeat_gates_the_queue_at_the_source():
     assert "queue fetch failed" in src
 
 
-def test_release_endpoint_exists_and_only_the_owner_may_release():
+def test_the_release_endpoint_is_gone():
+    """Release left with its button (owner's decision): a client who just
+    reached a human must not be thrown back into the line with the wait reset,
+    and in a competitive system giving back what you took defeats the point."""
     import inspect
 
     from app.api import conversations as capi
 
-    src = inspect.getsource(capi.release_conversation_endpoint)
-    assert 'reason="released_by_agent"' in src
-    assert '"Not yours to release"' in src
+    assert not hasattr(capi, "release_conversation_endpoint")
+    assert "/release" not in inspect.getsource(capi)
 
 
 def test_three_windows_three_names():

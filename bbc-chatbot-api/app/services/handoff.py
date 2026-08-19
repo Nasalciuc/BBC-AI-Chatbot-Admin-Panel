@@ -121,7 +121,7 @@ async def _release_from_agent(
 
     reason (spec v2.4 §5.4) decides one extra thing: whether this release also
     throws the conversation back into the shared line.
-      agent_offline | released_by_agent | supervisor  -> queued_at = now()
+      agent_offline | supervisor                 -> queued_at = now()
       anything else                                   -> queued_at untouched
     The write is unconditional for those reasons, on purpose: enqueue is
     idempotent so the first wait is never reset by later messages, but a release
@@ -149,7 +149,11 @@ async def _release_from_agent(
         _update: dict = {
             "mode": "ai", "assigned_agent_id": None, "metadata": metadata,
         }
-        if reason in ("agent_offline", "released_by_agent", "supervisor") \
+        # The agent-initiated release reason left with the Release button
+        # (owner's decision): a conversation that already reached a human must
+        # not be thrown back into the line with its age reset, and in a
+        # competitive system giving back what you took defeats the point.
+        if reason in ("agent_offline", "supervisor") \
                 and db._queued_at_column_available():
             from datetime import datetime as _dt2, timezone as _tz2
             _update["queued_at"] = _dt2.now(_tz2.utc).isoformat()

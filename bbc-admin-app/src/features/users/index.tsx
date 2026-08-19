@@ -59,7 +59,7 @@ export function Users() {
                 const withChat = active.filter((u) => u.chat_enabled !== false)
                 return active.length > 0 ? (
                   <span className='ml-2'>
-                    Chat activ: {withChat.length} / {active.length}
+                    Chat active: {withChat.length} / {active.length}
                   </span>
                 ) : null
               })()}
