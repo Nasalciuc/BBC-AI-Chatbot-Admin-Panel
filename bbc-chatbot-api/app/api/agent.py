@@ -242,6 +242,7 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # has no right to it: 0 and [] AT THE SOURCE, not filtered later in the UI.
     _queue_count = 0
     _queue_ids: list = []
+    _queue_oldest = None
     try:
         _qa_ok = (
             user_db
@@ -266,6 +267,61 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
                 )
             _queue_count = len(_rows)
             _queue_ids = [r["id"] for r in _rows][:20]
+            # The OLDEST waiting conversation — by queued_at, not by list
+            # order: the queue sorts needs_agent first, so _rows[0] is the
+            # loudest, not the longest-waiting. The CRM shows this one in its
+            # notification, and its age decides how long they keep reminding.
+            _oldest_row = min(
+                (r for r in _rows if r.get("queued_at")),
+                key=lambda r: str(r["queued_at"]),
+                default=None,
+            )
+            if _oldest_row:
+                from datetime import datetime, timezone
+                _age = None
+                try:
+                    _age = int(
+                        (
+                            datetime.now(timezone.utc)
+                            - datetime.fromisoformat(
+                                str(_oldest_row["queued_at"]).replace("Z", "+00:00")
+                            )
+                        ).total_seconds()
+                    )
+                except (ValueError, TypeError):  # noqa: silent — a malformed queued_at reads as unknown age; the notification still names the conversation
+                    _age = None
+                # The route the pipeline already extracted — never the
+                # client's own words (see ChatBridgeMessage: the text would go
+                # into a desktop notification that stays up until touched).
+                # ADAPTATION vs the brief: the route does NOT live in
+                # conversations.metadata — it lives on the leads table
+                # (origin_code / destination_code, written by lead_service).
+                # One targeted read-only select, only while a queue exists;
+                # get_or_create_lead is NOT used here because it CREATES.
+                _from = _to = None
+                try:
+                    _lead_res = await db._run_sync(
+                        lambda: db.get_client()
+                        .table("leads")
+                        .select("origin_code, destination_code")
+                        .eq("conversation_id", _oldest_row["id"])
+                        .limit(1)
+                        .execute()
+                    )
+                    _lead_rows = _lead_res.data or []
+                    if _lead_rows:
+                        _from = _lead_rows[0].get("origin_code")
+                        _to = _lead_rows[0].get("destination_code")
+                except Exception as _e:
+                    logger.warning(
+                        f"[heartbeat] route lookup failed for queue_oldest: {_e} "
+                        f"— notification goes out without a route"
+                    )
+                _queue_oldest = {
+                    "id": _oldest_row["id"],
+                    "waiting_seconds": _age,
+                    "route": f"{_from} → {_to}" if (_from and _to) else None,
+                }
     except Exception as e:
         # The queue must never break the heartbeat: presence is more important
         # than the badge. Logged, never silent.
@@ -279,6 +335,7 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "role": role_db,
         "queue_count": _queue_count,
         "queue_ids": _queue_ids,
+        "queue_oldest": _queue_oldest,
     }
 
 

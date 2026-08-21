@@ -20,12 +20,28 @@
  * resolve `@/` aliases or `import.meta.env`.
  */
 
-/** Everything we are ever allowed to say. Note what is absent: no name, no
- *  email, no phone, no message text. A `preview` field would land in a
- *  desktop notification on a possibly shared screen, and a client's first
- *  sentence is usually exactly what should not be there. */
+/** Everything we are ever allowed to say. Note what is still absent: no name,
+ *  no email, no phone, and NO MESSAGE TEXT.
+ *
+ *  The CRM asked for a `preview` of what the client wrote, so the agent can
+ *  decide whether to take the chat. The goal is right; the raw text cannot
+ *  leave. Our bot asks for a name and a phone number in its first replies, so
+ *  a first message reads "Hi, my name is John, call me at 828-217-4558" as
+ *  often as it reads "auckland nz" — and we cannot tell which is which before
+ *  sending it. The destination is not a panel screen: it is a desktop
+ *  notification with requireInteraction, which stays on screen until somebody
+ *  touches it. That can be forty minutes on a shared monitor, mid screen-share.
+ *
+ *  So we send `route` instead: the pipeline's own extraction (`HNL → AKL`).
+ *  Derived, never free text, and it is the thing the agent actually wants in
+ *  order to decide. When no route has been extracted yet the field is simply
+ *  absent and the notification says what it says today. */
 export type ChatBridgeMessage =
-  | { type: 'chat:hello'; unread: number }
+  // The handshake reply carries BOTH levels. An agent who reloads the CRM
+  // mid-shift, or starts one, with a conversation already waiting would
+  // otherwise see a clean, silent CRM — the queue invisible at exactly the
+  // moment somebody finally arrived to look at it.
+  | { type: 'chat:hello'; unread: number; queued: number }
   | { type: 'chat:incoming'; unread: number; conversationId: string }
   | { type: 'chat:unread'; unread: number }
   | { type: 'chat:presence'; online: boolean; ready: boolean }
@@ -34,11 +50,35 @@ export type ChatBridgeMessage =
   // agent). Opening the panel on chat:queue would take over every agent's
   // screen every time anyone gets a chat — ten times an hour, for nine people
   // who did not ask.
-  | { type: 'chat:queue'; count: number }
+  //
+  // conversationId: the oldest waiting conversation. Sent so the CRM can act on
+  // a specific one — their stated purpose is blocking bots. The block itself
+  // lives on our side (the `blocklist` table, the panel's "Block Visitor"
+  // button, keyed by IP / email / phone); this is the anchor that says WHICH.
+  //
+  // waitingSeconds: the age of that same conversation. They asked for a maximum
+  // queue wait so they could stop reminding about a chat that is already gone;
+  // there is no maximum — the AI keeps working the visitor the whole time, so
+  // nothing expires — but the age lets them decide when a reminder has stopped
+  // being useful.
+  | {
+      type: 'chat:queue'
+      count: number
+      conversationId?: string
+      waitingSeconds?: number
+      route?: string
+    }
 
 export type CrmBridgeDeps = {
   /** `isAllowedCrmOrigin` from crm-embed-auth — the ONE allow-list. */
   isAllowedOrigin: (origin: string) => boolean
+  /** Current queue depth, read at handshake time. Injected rather than
+   *  imported so this module stays dependency-free and node-testable. */
+  getQueueCount?: () => number
+  /** Show the queue view. The CRM sends `crm:focus-queue` right before it
+   *  opens the panel for a queued conversation; without this the agent lands
+   *  on whatever screen they left, on a panel that opened itself. */
+  onFocusQueue?: () => void
 }
 
 const CHAT_SOURCE = 'bbc-chat'
@@ -192,11 +232,21 @@ export function reportAttentionCycle(opts: {
  * heartbeat's `queue_count` — the SAME number that feeds the panel badge, so
  * the two can never contradict each other.
  */
-export function reportQueue(count: number): void {
+export function reportQueue(
+  count: number,
+  oldest?: { conversationId?: string; waitingSeconds?: number; route?: string },
+): void {
   if (!isEmbedded()) return
+  // The anti-noise rule stays on `count` ALONE. waitingSeconds changes every
+  // five seconds by definition; letting it trigger a send would put us back to
+  // 720 messages an hour, which is the thing this guard exists to prevent.
   if (count === lastQueueSent) return
   lastQueueSent = count
-  sendToCrm({ type: 'chat:queue', count })
+  const msg: ChatBridgeMessage = { type: 'chat:queue', count }
+  if (oldest?.conversationId) msg.conversationId = oldest.conversationId
+  if (typeof oldest?.waitingSeconds === 'number') msg.waitingSeconds = oldest.waitingSeconds
+  if (oldest?.route) msg.route = oldest.route
+  sendToCrm(msg)
 }
 
 /** Presence, only when it actually changed. */
@@ -244,7 +294,18 @@ export function installCrmBridge(d: CrmBridgeDeps): () => void {
       rememberParentOrigin(event.origin)
       const unread = waiting.size
       lastUnreadSent = unread
-      sendToCrm({ type: 'chat:hello', unread })
+      const queued = deps.getQueueCount ? deps.getQueueCount() : 0
+      // Prime the anti-noise guard too: without this the next heartbeat would
+      // see `count === lastQueueSent` as false and repeat what we just said.
+      lastQueueSent = queued
+      sendToCrm({ type: 'chat:hello', unread, queued })
+    }
+    if (data.type === 'crm:focus-queue') {
+      // The CRM is about to open the panel because something is waiting in the
+      // line. Land the agent on the queue, not on whatever they left open.
+      // Ignoring it breaks nothing — it just makes the panel unhelpful on a
+      // screen it opened without being asked.
+      deps.onFocusQueue?.()
     }
   }
 
