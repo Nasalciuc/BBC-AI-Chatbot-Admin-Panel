@@ -38,6 +38,12 @@ type HeartbeatResponse = {
    *  feeds the CRM's chat:queue badge — one source, no contradictions. */
   queue_count?: number
   queue_ids?: string[]
+  /** The longest-waiting conversation in the line — never the client's words. */
+  queue_oldest?: {
+    id: string
+    waiting_seconds: number | null
+    route: string | null
+  } | null
 }
 
 /**
@@ -96,7 +102,13 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
         }
         if (isNew && ids.length > 0) playQueueChime()
         // The CRM's badge rides the same number — one source, no contradictions.
-        reportQueue(res.queue_count ?? ids.length)
+        // The oldest waiting conversation travels with it: which one, how long,
+        // and the route the pipeline extracted. Never the client's own words.
+        reportQueue(res.queue_count ?? ids.length, {
+          conversationId: res.queue_oldest?.id,
+          waitingSeconds: res.queue_oldest?.waiting_seconds ?? undefined,
+          route: res.queue_oldest?.route ?? undefined,
+        })
         // Conversations that left the line may return later (released):
         // forget them so their return rings again.
         for (const known of announcedQueue.current) {

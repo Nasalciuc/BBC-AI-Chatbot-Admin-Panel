@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
-import { Outlet } from '@tanstack/react-router'
+import { useEffect, useRef } from 'react'
+import { Outlet, useNavigate } from '@tanstack/react-router'
 import { useHeartbeat } from '@/hooks/use-heartbeat'
 import { useReadyStore } from '@/stores/ready-store'
 import { getCookie } from '@/lib/cookies'
 import { requestNotifyPermission } from '@/lib/notify-assignment'
 import { installCrmBridge } from '@/lib/crm-bridge'
+import { useQueueStore } from '@/stores/queue-store'
 import { isAllowedCrmOrigin } from '@/lib/crm-embed-auth'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
@@ -21,6 +22,10 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const viewingConversationId = useReadyStore((s) => s.viewingConversationId)
   useHeartbeat(undefined, viewingConversationId)
 
+  const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+
   useEffect(() => {
     requestNotifyPermission()
   }, [])
@@ -30,7 +35,16 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   // iframe, so a panel opened in its own tab behaves exactly as before.
   useEffect(
     () =>
-      installCrmBridge({ isAllowedOrigin: isAllowedCrmOrigin }),
+      installCrmBridge({
+        isAllowedOrigin: isAllowedCrmOrigin,
+        // Read at handshake time, not captured at mount: the store's value
+        // moves with every heartbeat and a closure would freeze it at zero.
+        getQueueCount: () => useQueueStore.getState().queueCount,
+        // Through a ref: putting `navigate` in the effect's dependency list
+        // would remount the bridge on every navigation, losing handshakeOrigin
+        // and silently killing the agent's alerts until the next crm:hello.
+        onFocusQueue: () => navigateRef.current({ to: '/chats' }),
+      }),
     []
   )
 

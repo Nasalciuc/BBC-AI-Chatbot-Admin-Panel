@@ -116,5 +116,7 @@ test('panel badge and CRM count come from the same heartbeat value', () => {
   assert.ok(start > 0, 'the queue block must exist in processResponse')
   const block = src.slice(start, start + 1200)
   assert.match(block, /setQueue\(ids, res\.queue_count \?\? ids\.length\)/)
-  assert.match(block, /reportQueue\(res\.queue_count \?\? ids\.length\)/)
+  // The queue-handshake wave added the oldest-conversation context as a second
+  // argument; the COUNT still comes from the same heartbeat value.
+  assert.match(block, /reportQueue\(res\.queue_count \?\? ids\.length, \{/)
 })

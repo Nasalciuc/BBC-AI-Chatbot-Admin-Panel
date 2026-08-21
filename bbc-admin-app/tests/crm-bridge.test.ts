@@ -324,8 +324,15 @@ test('crm:hello is answered on that origin, with the real level', () => {
     env.posted.length = 0
 
     // A mid-shift reload: the CRM says hello again and must not be told zero.
+    // The handshake now carries BOTH levels (queue-handshake wave); without a
+    // getQueueCount injected, queued reads 0.
     env.fire({ source: 'bbc-crm', type: 'crm:hello' }, CRM)
-    assert.deepEqual(env.posted[0].msg, { source: 'bbc-chat', type: 'chat:hello', unread: 2 })
+    assert.deepEqual(env.posted[0].msg, {
+      source: 'bbc-chat',
+      type: 'chat:hello',
+      unread: 2,
+      queued: 0,
+    })
     assert.equal(env.posted[0].target, CRM)
   } finally {
     env.restore()
@@ -432,7 +439,7 @@ test('payloads carry exactly the documented keys and no client data', () => {
     env.fire({ source: 'bbc-crm', type: 'crm:hello' }, CRM)
 
     const byType = Object.fromEntries(env.posted.map((p) => [p.msg.type, Object.keys(p.msg).sort()]))
-    assert.deepEqual(byType['chat:hello'], ['source', 'type', 'unread'])
+    assert.deepEqual(byType['chat:hello'], ['queued', 'source', 'type', 'unread'])
     assert.deepEqual(byType['chat:incoming'], ['conversationId', 'source', 'type', 'unread'])
     assert.deepEqual(byType['chat:presence'], ['online', 'ready', 'source', 'type'])
 
