@@ -1377,7 +1377,20 @@ async def mark_lead_created_in_crm(
                 )
             else:
                 raise
-        return res.data[0] if res.data else None
+        if not res.data:
+            # A successful UPDATE that matched NOTHING. Until today this
+            # returned None with no log at all, indistinguishable from a
+            # database error — and the two callers that ignore the return
+            # value turned it into six CRM records for one client. Whatever
+            # the cause (a lead_id that no longer resolves, a row the write
+            # cannot see), it must announce itself.
+            logger.error(
+                f"mark_lead_created_in_crm: UPDATE matched NO ROW for "
+                f"lead_id={lead_id} crm_lead_id={crm_lead_id} — the CRM row "
+                "exists but our flag does not. This lead WILL be re-pushed."
+            )
+            return None
+        return res.data[0]
     except Exception as e:
         logger.error(f"mark_lead_created_in_crm error: {e}")
         return None

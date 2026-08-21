@@ -1476,8 +1476,22 @@ async def _pipeline(
                         suid=_suid,
                     )
                     if _crm.success:
-                        await db.mark_lead_created_in_crm(_lead_fresh["id"])
-                        _crm_submitted_this_turn = True
+                        _marked = await db.mark_lead_created_in_crm(_lead_fresh["id"])
+                        if _marked is None:
+                            # The CRM row EXISTS but our flag write died. The
+                            # backstop and the abandoned cron have checked this
+                            # since day one; this path did not, and that is why
+                            # thirteen confirmed conversations were pushed a
+                            # second time days later, and one of them six times.
+                            # Loud, and NOT counted as submitted: a lead we
+                            # cannot mark is a lead the crons must be told about.
+                            logger.error(
+                                f"[{cid}] CRM ACCEPTED lead={_lead_fresh['id']} "
+                                "but the flag write FAILED — this conversation "
+                                "will be re-pushed by the cron unless fixed by hand"
+                            )
+                        else:
+                            _crm_submitted_this_turn = True
                         logger.info(f"[{cid}] CRM submitted after client confirmation")
         except Exception as e:
             logger.error(f"CRM re-check error (non-blocking): {e}")

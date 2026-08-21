@@ -220,6 +220,18 @@ class Settings(BaseSettings):
     crm_presence_window_seconds: int = 90
     abandoned_timeout_minutes: int = 30
     internal_scheduler_enabled: bool = True  # G3 kill-switch; see ADR-10
+    # 21 Aug 2026. The abandoned-CRM sweep ran from TWO places: this process's
+    # scheduler (guarded by an asyncio.Lock) and GitHub Actions hitting
+    # /api/cron/abandoned-crm. The lock is per-process and never saw Actions.
+    # The comment in scheduler.py said the overlap was "covered by job
+    # idempotency" — and that idempotency was created_in_crm, the exact flag
+    # that was failing to write. Two schedules, one broken guard, six CRM
+    # records for one client.
+    #
+    # One source now. The internal scheduler is the source, because it is in
+    # the same process as the lock that protects it. The HTTP endpoint stays
+    # for manual runs, but Actions must not call it on a schedule.
+    abandoned_cron_enabled: bool = True
     scheduler_interval_seconds: int = 300  # real 5-min cadence (GitHub Actions
     # '*/5' measured at 1-2h due to schedule throttling on low-activity repos)
 

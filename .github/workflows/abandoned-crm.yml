@@ -1,8 +1,14 @@
 name: Process Abandoned Conversations
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  # 21 Aug 2026: the scheduled run is OFF. This workflow and the app's internal
+  # scheduler both swept /api/cron/abandoned-crm; the internal asyncio.Lock is
+  # per-process and never saw Actions, and the "job idempotency" the overlap
+  # relied on was the created_in_crm flag — the exact write that was failing.
+  # One client, six CRM records. The internal scheduler (same process as its
+  # lock) is the single source now; workflow_dispatch stays for manual runs.
+  # schedule:
+  #   - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 jobs:
