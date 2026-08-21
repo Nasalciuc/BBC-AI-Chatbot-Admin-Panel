@@ -21,6 +21,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _fresh_day_guard():
+    """The duplicate-push day guard (fix/crm-duplicate-pushes) is per-process
+    module state, exactly like production. These tests reuse the same
+    conversation ids across cases, so each case starts with a clean day —
+    otherwise the second sweep in the file is "blocked" by the first one's
+    successful push, which is the guard working, not the sweep breaking."""
+    from app.api import cron as _cron
+    _cron._pushed_today = set()
+    _cron._pushed_today_date = ""
+    yield
+    _cron._pushed_today = set()
+    _cron._pushed_today_date = ""
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-key")

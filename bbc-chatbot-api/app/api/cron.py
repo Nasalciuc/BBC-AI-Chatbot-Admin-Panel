@@ -21,6 +21,29 @@ router = APIRouter()
 # true idempotency is the created_in_crm flag (a second run pushes nothing).
 _AAA_BACKFILL_RAN = False
 
+# Conversations pushed to the CRM in this process today: the second guard,
+# the one that does not depend on a database write succeeding. Reset lazily on
+# date change. Per-process, like the health counters — it does not survive a
+# restart, and that is accepted: it caps the damage of a mark that fails, it
+# does not replace the flag.
+_pushed_today: set = set()
+_pushed_today_date: str = ""
+
+
+def _day_guard_blocks(cid: str) -> bool:
+    """True when this process already pushed this conversation today.
+
+    The created_in_crm flag is the real guard; this is the one that still
+    works when the flag write dies — which is how one client ended up with six
+    CRM records on 21 Aug 2026."""
+    global _pushed_today, _pushed_today_date
+    from datetime import datetime, timezone
+    _today_str = datetime.now(timezone.utc).date().isoformat()
+    if _pushed_today_date != _today_str:
+        _pushed_today = set()
+        _pushed_today_date = _today_str
+    return cid in _pushed_today
+
 
 def _contact_ids(conv: dict) -> list[str]:
     """Every identifier that names this human: phone AND/OR email.
@@ -127,6 +150,13 @@ async def run_aaa_backfill(days: int = 30) -> dict:
     for conv in convs:
         cid = conv["id"]
         try:
+            if _day_guard_blocks(cid):
+                logger.warning(
+                    f"[cron][{cid}] already pushed today in this process — "
+                    "skipping to avoid a CRM duplicate (flag write likely failed)"
+                )
+                skipped += 1
+                continue
             lead = await get_or_create_lead(cid)
             if not lead or lead.get("created_in_crm"):
                 skipped += 1
@@ -135,9 +165,18 @@ async def run_aaa_backfill(days: int = 30) -> dict:
                 conv["_no_engagement"] = True
             result = await submit_abandoned_to_crm(conv, lead)
             if result.success and result.request_id:
-                await db.mark_lead_created_in_crm(
+                _marked = await db.mark_lead_created_in_crm(
                     lead["id"], crm_lead_id=result.request_id
                 )
+                if _marked is None:
+                    logger.error(
+                        f"[aaa-backfill][{cid}] CRM ACCEPTED "
+                        f"crm_id={result.request_id} but the flag write FAILED "
+                        "— manual reconciliation needed"
+                    )
+                    skipped += 1
+                    continue
+                _pushed_today.add(cid)
                 pushed += 1
             else:
                 # Visible state, never a silent drop: a GATE refusal rides
@@ -163,6 +202,9 @@ async def run_aaa_backfill(days: int = 30) -> dict:
 
 async def run_abandoned_crm() -> dict:
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
+    if not settings.abandoned_cron_enabled:
+        logger.info("[cron] abandoned-CRM sweep disabled by settings")
+        return {"disabled": True}
     global _AAA_BACKFILL_RAN
     if not _AAA_BACKFILL_RAN:
         _AAA_BACKFILL_RAN = True
@@ -204,6 +246,13 @@ async def run_abandoned_crm() -> dict:
                 continue
             name = (conv.get("visitor_name") or "").strip() or "Customer"
 
+            if _day_guard_blocks(cid):
+                logger.warning(
+                    f"[cron][{cid}] already pushed today in this process — "
+                    "skipping to avoid a CRM duplicate (flag write likely failed)"
+                )
+                results.append({"id": cid, "status": "skipped", "reason": "pushed_today"})
+                continue
             lead = await get_or_create_lead(cid)
             if lead and lead.get("created_in_crm") and not _may_close:
                 # In the CRM already, and this conversation must not be
@@ -283,6 +332,7 @@ async def run_abandoned_crm() -> dict:
                     f"[cron][{cid}] Success: CRM submitted ({name})"
                     f"{' + closed' if _may_close else ' (left open — human/closed)'}"
                 )
+                _pushed_today.add(cid)
                 results.append({"id": cid, "status": "success", "name": name})
             else:
                 logger.error(f"[cron][{cid}] CRM fail: {crm_result.error}")

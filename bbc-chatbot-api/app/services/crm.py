@@ -274,8 +274,26 @@ def build_crm_payload(
         dest = "AAA"
     _dep = lead.get("departure_date")
     if not _dep:
-        _dep = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
-        logger.info(f"CRM payload: departure_date defaulted to {_dep} (+30d)")
+        # Anchored to the CONVERSATION, never to the clock. Computed from
+        # now(), this produced a different date on every push: 17 Aug → 16 Sep,
+        # 19 Aug → 18 Sep, 20 Aug → 19 Sep. The consultant then had four
+        # records for one client with four departure dates, none of which the
+        # client had ever said — and no way to tell which to keep.
+        # conversations.metadata has no created_at of its own (that is a
+        # COLUMN), so the cron call site injects it as conversation_created_at.
+        _anchor = (conv_metadata or {}).get("conversation_created_at")
+        _base = None
+        if _anchor:
+            try:
+                _base = datetime.fromisoformat(str(_anchor).replace("Z", "+00:00"))
+            except (ValueError, TypeError):  # noqa: silent — unparseable anchor falls back to now(); the log line below says which base was used
+                _base = None
+        _base = _base or datetime.now(timezone.utc)
+        _dep = (_base + timedelta(days=30)).strftime("%Y-%m-%d")
+        logger.info(
+            f"CRM payload: departure_date defaulted to {_dep} "
+            f"(+30d from {'conversation start' if _anchor else 'now — no anchor'})"
+        )
     departure = format_date_iso(_dep)
     return_date = lead.get("return_date")
 
@@ -553,7 +571,13 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         payload = build_crm_payload(
             lead,
             _v,
-            conv_metadata=conv.get("metadata"),
+            # metadata plus the conversation's own birth time: the default
+            # departure date anchors to it so every re-push computes the SAME
+            # date instead of a fresh clock+30d each time.
+            conv_metadata={
+                **(conv.get("metadata") or {}),
+                "conversation_created_at": conv.get("created_at"),
+            },
             suid=conv.get("visitor_id"),
             allow_defaults=True,
         )
