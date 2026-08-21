@@ -158,7 +158,14 @@ async def run_aaa_backfill(days: int = 30) -> dict:
                 skipped += 1
                 continue
             lead = await get_or_create_lead(cid)
-            if not lead or lead.get("created_in_crm"):
+            if not lead:
+                # Same reasoning as run_abandoned_crm: a failed read is not an
+                # absent lead. Skipping costs one cycle; guessing costs a
+                # duplicate CRM record and a consultant's phone call.
+                logger.warning(f"[aaa-backfill][{cid}] lead read failed — skipping")
+                skipped += 1
+                continue
+            if lead.get("created_in_crm"):
                 skipped += 1
                 continue
             if not conv.get("last_user_message_at"):
@@ -254,13 +261,29 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "skipped", "reason": "pushed_today"})
                 continue
             lead = await get_or_create_lead(cid)
-            if lead and lead.get("created_in_crm") and not _may_close:
+            if not lead:
+                # A read that FAILED is not a lead that does not exist. Both
+                # created_in_crm guards below were conditioned on `lead` being
+                # truthy, so a single transient error — and the SSL drops in
+                # these logs are transient and frequent — skipped every guard
+                # and fell through to the push. That is how eight clients who
+                # were already marked on 20 Aug got a second CRM record today,
+                # hours after consultants had cleaned the first ones by hand.
+                # The conversation is not going anywhere; the next cycle can
+                # read it properly.
+                logger.warning(
+                    f"[cron][{cid}] lead read failed — skipping this cycle "
+                    "rather than risking a duplicate CRM record"
+                )
+                results.append({"id": cid, "status": "skipped", "reason": "lead_read_failed"})
+                continue
+            if lead.get("created_in_crm") and not _may_close:
                 # In the CRM already, and this conversation must not be
                 # touched (a human owns it, or it is already closed):
                 # nothing left to do.
                 results.append({"id": cid, "status": "already_done"})
                 continue
-            if lead and lead.get("created_in_crm"):
+            if lead.get("created_in_crm"):
                 # Close-only: CRM done but conv still active (zombie)
                 _meta = conv.get("metadata") or {}
                 _site = _meta.get("site")
@@ -286,11 +309,11 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "closed_existing_crm", "name": name})
                 continue
 
-            if not lead:
-                lead = await db.ensure_lead_for_conversation(cid)
-                if not lead:
-                    results.append({"id": cid, "status": "error", "error": "lead_create_failed"})
-                    continue
+            # The `if not lead:` recreate-and-push branch that used to live here
+            # is gone. It was only ever reached when the read above failed — and
+            # on that path we had already lost the one thing that says "this
+            # lead is in the CRM already". Creating a lead is the pipeline's
+            # job, not this sweep's.
 
             if cid not in _push_owners:
                 # A richer conversation for this same human owns the push.
