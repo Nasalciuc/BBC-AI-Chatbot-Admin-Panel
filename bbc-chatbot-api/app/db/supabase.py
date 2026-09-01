@@ -18,8 +18,51 @@ logger = logging.getLogger(__name__)
 
 _client: Optional[Client] = None
 
-# Dedicated thread pool for sync supabase-py calls (D-01)
-_executor = ThreadPoolExecutor(max_workers=20)
+# Dedicated thread pool for sync supabase-py calls (D-01). Size from settings
+# (db_executor_workers) so capacity is a variable, not a deploy.
+_executor = ThreadPoolExecutor(max_workers=settings.db_executor_workers)
+
+# ── DB telemetry (1 Sep 2026) ────────────────────────────────────────────
+# We hunted "network flakiness" for two weeks because nothing measured the
+# executor. Every DB call passes through _run_sync, so this is the one place
+# that sees saturation coming. Per-instance, like CRM_PUSH_HEALTH.
+from collections import deque as _deque
+
+DB_HEALTH: dict = {
+    "in_flight": 0,          # threads busy right now
+    "peak_in_flight": 0,     # max since last /health alert evaluation
+    "calls": 0,
+    "errors": 0,
+    "disconnects": 0,        # errors matching _DISCONNECT_MARKERS
+    "retries_ok": 0,
+    "retries_failed": 0,
+    "latency_ms": _deque(maxlen=1000),
+    "by_label": {},          # label -> {"calls": n, "errors": n}
+}
+
+
+def db_health_snapshot() -> dict:
+    """Serializable view for /health: percentiles computed here, not stored."""
+    lat = sorted(DB_HEALTH["latency_ms"])
+
+    def _pct(p: float) -> float:
+        if not lat:
+            return 0.0
+        return round(lat[min(len(lat) - 1, int(len(lat) * p))], 1)
+
+    return {
+        "in_flight": DB_HEALTH["in_flight"],
+        "peak_in_flight": DB_HEALTH["peak_in_flight"],
+        "workers": settings.db_executor_workers,
+        "calls": DB_HEALTH["calls"],
+        "errors": DB_HEALTH["errors"],
+        "disconnects": DB_HEALTH["disconnects"],
+        "retries_ok": DB_HEALTH["retries_ok"],
+        "retries_failed": DB_HEALTH["retries_failed"],
+        "p50_ms": _pct(0.50),
+        "p95_ms": _pct(0.95),
+        "by_label": {k: dict(v) for k, v in DB_HEALTH["by_label"].items()},
+    }
 
 
 # Errors that mean "the pooled HTTP connection died under us", not "the
@@ -32,6 +75,16 @@ _DISCONNECT_MARKERS = (
     "RemoteProtocolError",
     "Connection reset",
     "ConnectionTerminated",
+    # The dominant error in two weeks of Railway logs was NOT in this list.
+    # ssl.SSLEOFError — "EOF occurred in violation of protocol" — is what the
+    # client sees when Supabase's edge closes a keep-alive socket while the
+    # thread that owned it was queued behind a saturated executor. It is the
+    # same transient class as the four above, and it was reaching the panel
+    # as a 500 ("Couldn't load conversation") instead of being retried.
+    "EOF occurred in violation of protocol",
+    "SSLEOFError",
+    "SSLError",
+    "RemoteDisconnected",
 )
 
 
@@ -40,32 +93,57 @@ def _is_disconnect(exc: Exception) -> bool:
     return any(m in text for m in _DISCONNECT_MARKERS)
 
 
-async def _run_sync(fn, idempotent: bool = True):
-    """Run a sync supabase-py call on thread pool to avoid blocking event loop.
+async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
+    """Run a sync supabase-py call on the thread pool to avoid blocking the loop.
 
-    Retries ONCE when the pooled connection was dropped server-side (the
-    'Couldn't load conversation' 500s and the KPI 997→0→997 flicker were
-    all first-query-after-idle deaths). The stale global client is also
-    reset so later calls start from a fresh pool.
+    Retries ONCE when the pooled connection was dropped server-side. The old
+    version also did `_client = None` here — that was theatre: `fn` is a
+    lambda that captured the client BEFORE the call, so the retry hit the same
+    object anyway, while the reset left the old client's socket pool orphaned
+    (never closed). Under a burst of disconnects that was N orphaned pools.
+    httpx already discards a dead socket and opens a fresh one on the next
+    request from the same client — that is what actually made the retry work.
 
-    idempotent=False (every INSERT site) disables the retry: a disconnect
-    can land AFTER the server committed the write, and re-running an
-    INSERT would duplicate the row (a doubled chat message pollutes
-    history, the summarizer and KPIs). SELECT/UPDATE/DELETE re-run to the
-    same end state and stay retried."""
-    global _client
+    idempotent=False (every INSERT site) disables the retry: a disconnect can
+    land AFTER the server committed the write, and re-running an INSERT would
+    duplicate the row. SELECT/UPDATE/DELETE re-run to the same end state.
+
+    label: telemetry bucket for the handful of hot call sites (heartbeat, list,
+    messages, typing, queue). Everything else is "other". Keyword-only so it
+    can never be confused with `idempotent`."""
     loop = asyncio.get_event_loop()
+    bucket = DB_HEALTH["by_label"].setdefault(label, {"calls": 0, "errors": 0})
+    DB_HEALTH["calls"] += 1
+    bucket["calls"] += 1
+    DB_HEALTH["in_flight"] += 1
+    if DB_HEALTH["in_flight"] > DB_HEALTH["peak_in_flight"]:
+        DB_HEALTH["peak_in_flight"] = DB_HEALTH["in_flight"]
+    t0 = time.monotonic()
     try:
-        return await loop.run_in_executor(_executor, fn)
-    except Exception as e:
-        if not idempotent or not _is_disconnect(e):
-            raise
-        logger.warning(
-            f"[db-retry] dead connection ({type(e).__name__}: {e}) — "
-            "rebuilding client, retrying once"
-        )
-        _client = None
-        return await loop.run_in_executor(_executor, fn)
+        try:
+            return await loop.run_in_executor(_executor, fn)
+        except Exception as e:
+            if not idempotent or not _is_disconnect(e):
+                DB_HEALTH["errors"] += 1
+                bucket["errors"] += 1
+                raise
+            DB_HEALTH["disconnects"] += 1
+            logger.warning(
+                f"[db-retry] dead connection ({type(e).__name__}: {e}) — retrying once "
+                f"(label={label})"
+            )
+            try:
+                out = await loop.run_in_executor(_executor, fn)
+                DB_HEALTH["retries_ok"] += 1
+                return out
+            except Exception:
+                DB_HEALTH["retries_failed"] += 1
+                DB_HEALTH["errors"] += 1
+                bucket["errors"] += 1
+                raise
+    finally:
+        DB_HEALTH["in_flight"] -= 1
+        DB_HEALTH["latency_ms"].append((time.monotonic() - t0) * 1000.0)
 
 
 def get_client() -> Client:
@@ -656,7 +734,8 @@ async def get_conversations(
                 lambda: _query(
                     _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
                     use_supervisor_cols,
-                )
+                ),
+                label="list",
             )
         except Exception as e:
             if not use_supervisor_cols:
@@ -671,7 +750,7 @@ async def get_conversations(
                     "get_conversations: supervisor-columns query failed "
                     f"(not a missing-column error — not downgrading): {e}"
                 )
-            res = await _run_sync(lambda: _query(_LIST_COLUMNS_BASE, False))
+            res = await _run_sync(lambda: _query(_LIST_COLUMNS_BASE, False), label="list")
         rows = res.data or []
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
@@ -981,7 +1060,7 @@ async def get_messages_after(
             if after:
                 q = q.gt("created_at", after)
             return q.execute()
-        res = await _run_sync(_q)
+        res = await _run_sync(_q, label="messages")
         return res.data or []
     except Exception as e:
         logger.error(f"get_messages_after error: {e}")
@@ -1619,7 +1698,8 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
     try:
         db = get_client()
         res = await _run_sync(
-            lambda: db.table("users").select("*").eq("id", user_id).single().execute()
+            lambda: db.table("users").select("*").eq("id", user_id).single().execute(),
+            label="heartbeat",
         )
         return res.data if res.data else None
     except Exception as e:
@@ -2690,18 +2770,55 @@ async def get_dashboard_stats(
 # ════════════════════════════════════════════════════════════════
 
 
-async def update_user_last_seen(user_id: str) -> None:
-    """Update agent's last_seen_at timestamp (heartbeat)."""
+_VIEWING_COLUMN_WARNED = False
+
+
+async def update_user_last_seen(
+    user_id: str, viewing_conversation_id: str | None = None
+) -> None:
+    """Update agent's last_seen_at timestamp (heartbeat).
+
+    Also records what the operator is looking at (035). Written on EVERY
+    heartbeat — value or NULL — so a closed tab cannot leave a stale claim
+    behind; the sweep additionally ignores it once last_seen_at is >30s old.
+    Same UPDATE as before: zero extra queries.
+
+    If 035 is not applied yet, the UPDATE is retried without the new column:
+    a heartbeat that dies on an unapplied migration is exactly the 13-16 Aug
+    class of incident."""
+    global _VIEWING_COLUMN_WARNED
     try:
         db_client = get_client()
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).isoformat()
-        await _run_sync(
-            lambda: db_client.table("users")
-            .update({"last_seen_at": now_iso})
-            .eq("id", user_id)
-            .execute()
-        )
+        try:
+            await _run_sync(
+                lambda: db_client.table("users")
+                .update({
+                    "last_seen_at": now_iso,
+                    "viewing_conversation_id": viewing_conversation_id or None,
+                })
+                .eq("id", user_id)
+                .execute(),
+                label="heartbeat",
+            )
+        except Exception as col_err:
+            if not _is_missing_column_error(col_err):
+                raise
+            if not _VIEWING_COLUMN_WARNED:
+                _VIEWING_COLUMN_WARNED = True
+                logger.error(
+                    "users.viewing_conversation_id is missing — migration 035 is not "
+                    "applied. Presence still writes; the sweep loses the "
+                    "'operator is viewing → 120s' extension until it is."
+                )
+            await _run_sync(
+                lambda: db_client.table("users")
+                .update({"last_seen_at": now_iso})
+                .eq("id", user_id)
+                .execute(),
+                label="heartbeat",
+            )
     except Exception as e:
         logger.warning(f"update_user_last_seen error: {e}")
 
@@ -2792,7 +2909,8 @@ async def get_stale_agent_conversations(timeout_seconds: int) -> list:
             .eq("mode", "human")
             .not_.is_("assigned_agent_id", "null")
             .lt("users.last_seen_at", cutoff)
-            .execute()
+            .execute(),
+            label="sweep",
         )
         return res.data or []
     except Exception as e:
@@ -2897,19 +3015,60 @@ async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> li
         return []
 
 
+_SWEEP_JOIN_WARNED = False
+
+
 async def get_active_human_conversations() -> list:
     """Active conversations in human mode with an assigned agent.
-    Used by response-deadline sweep (small set: max_concurrent=1 per agent)."""
-    try:
-        db_client = get_client()
-        res = await _run_sync(
-            lambda: db_client.table("conversations")
-            .select("id, assigned_agent_id, metadata")
+    Used by the response-deadline sweep.
+
+    Carries everything the sweep needs so the loop issues ZERO further
+    queries: last_agent_message_at (has the agent replied since assignment?)
+    and the assigned user's last_seen_at + viewing_conversation_id (is the
+    operator looking at this one right now?). Before this, the sweep called
+    has_agent_message_since() once per row — and ran on every heartbeat.
+
+    If 035 is not applied the join is retried without it. Returning [] there
+    would silently stop every fallback in the system — the deadline matters
+    more than the 120s viewing courtesy."""
+    global _SWEEP_JOIN_WARNED
+
+    def _select(fields: str):
+        return (
+            db_client.table("conversations")
+            .select(fields)
             .eq("status", "active")
             .eq("mode", "human")
             .not_.is_("assigned_agent_id", "null")
             .execute()
         )
+
+    try:
+        db_client = get_client()
+        try:
+            res = await _run_sync(
+                lambda: _select(
+                    "id, assigned_agent_id, metadata, last_agent_message_at, "
+                    "users!conversations_assigned_agent_id_fkey(last_seen_at, viewing_conversation_id)"
+                ),
+                label="sweep",
+            )
+        except Exception as col_err:
+            if not _is_missing_column_error(col_err):
+                raise
+            if not _SWEEP_JOIN_WARNED:
+                _SWEEP_JOIN_WARNED = True
+                logger.error(
+                    "sweep join dropped viewing_conversation_id — migration 035 is not "
+                    "applied. Deadlines still fire; the viewing extension does not."
+                )
+            res = await _run_sync(
+                lambda: _select(
+                    "id, assigned_agent_id, metadata, last_agent_message_at, "
+                    "users!conversations_assigned_agent_id_fkey(last_seen_at)"
+                ),
+                label="sweep",
+            )
         return res.data or []
     except Exception as e:
         logger.error(f"get_active_human_conversations error: {e}")
@@ -4144,7 +4303,7 @@ async def get_queue_for_operator(
                 if team_id:
                     q = q.or_(f"team_id.is.null,team_id.eq.{team_id}")
                 return q.execute()
-            res = await _run_sync(_q)
+            res = await _run_sync(_q, label="queue")
             rows = res.data or []
             _queue_cache[_key] = {"at": _now, "rows": rows}
         except Exception as e:

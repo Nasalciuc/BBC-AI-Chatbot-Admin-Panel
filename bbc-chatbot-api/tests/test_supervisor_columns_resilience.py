@@ -107,7 +107,8 @@ class TestDowngradeTrigger:
     async def test_get_conversations_column_error_does_downgrade(self):
         calls = {"n": 0}
 
-        async def fake_run(fn):
+        # **kwargs: _run_sync now takes a keyword-only telemetry `label`.
+        async def fake_run(fn, *_a, **_k):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _Err('column "chat_number" does not exist', code="42703")

@@ -39,11 +39,6 @@ async def test_first_response_timeout_30s():
             return_value=[_conv_no_agent_msg()],
         ),
         patch(
-            "app.api.agent.db.has_agent_message_since",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-        patch(
             "app.services.handoff.fall_back_to_ai",
             new_callable=AsyncMock,
         ) as fallback_mock,
@@ -54,6 +49,20 @@ async def test_first_response_timeout_30s():
     fallback_mock.assert_awaited_once_with(_CONV_ID)
 
 
+def _conv_engaged(assigned_ago: float):
+    """Agent replied AFTER assignment. Engagement is now read from the row
+    (last_agent_message_at, migration 024) — the per-row query the sweep used
+    to issue for every open conversation is what took the panel down on 31 Aug.
+    """
+    assigned = datetime.now(timezone.utc) - timedelta(seconds=assigned_ago)
+    return {
+        "id": _CONV_ID,
+        "assigned_agent_id": "agent-1",
+        "metadata": {"agent_assigned_at": assigned.isoformat()},
+        "last_agent_message_at": (assigned + timedelta(seconds=5)).isoformat(),
+    }
+
+
 @pytest.mark.asyncio
 async def test_engaged_agent_not_timed_out_at_30s():
     from app.api.agent import _enforce_response_deadline
@@ -62,12 +71,7 @@ async def test_engaged_agent_not_timed_out_at_30s():
         patch(
             "app.api.agent.db.get_active_human_conversations",
             new_callable=AsyncMock,
-            return_value=[_conv_no_agent_msg()],
-        ),
-        patch(
-            "app.api.agent.db.has_agent_message_since",
-            new_callable=AsyncMock,
-            return_value=True,
+            return_value=[_conv_engaged(95)],
         ),
         patch(
             "app.services.handoff.fall_back_to_ai",
@@ -84,18 +88,11 @@ async def test_engaged_agent_not_timed_out_at_30s():
 async def test_engaged_agent_skipped_by_enforce_even_at_500s():
     from app.api.agent import _enforce_response_deadline
 
-    old_assigned = (datetime.now(timezone.utc) - timedelta(seconds=500)).isoformat()
-    conv = {"id": _CONV_ID, "metadata": {"agent_assigned_at": old_assigned}}
     with (
         patch(
             "app.api.agent.db.get_active_human_conversations",
             new_callable=AsyncMock,
-            return_value=[conv],
-        ),
-        patch(
-            "app.api.agent.db.has_agent_message_since",
-            new_callable=AsyncMock,
-            return_value=True,
+            return_value=[_conv_engaged(500)],
         ),
         patch(
             "app.services.handoff.fall_back_to_ai",
