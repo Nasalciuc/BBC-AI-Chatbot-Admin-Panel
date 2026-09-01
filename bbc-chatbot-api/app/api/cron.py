@@ -375,11 +375,18 @@ async def run_abandoned_crm() -> dict:
 
 
 async def run_agent_sweep() -> dict:
-    """Backstop sweep: fall back conversations past the agent response deadline."""
-    from app.api.agent import _enforce_response_deadline
+    """The ONE place the stale + deadline sweep runs.
 
-    swept = await _enforce_response_deadline()
-    logger.info(f"[cron][agent-response-sweep] swept={swept}")
+    Until 1 Sep this was a backstop behind a sweep that every heartbeat also
+    performed — 35 agents × every 5s. Now the heartbeat only writes presence
+    and reads the queue; this job does the sweeping, once per
+    agent_sweep_interval_seconds. Both passes: offline agents (stale
+    last_seen_at → fall back) and online-but-silent agents (first-response
+    deadline, one query for the whole set)."""
+    from app.api.agent import _cleanup_stale_conversations
+
+    swept = await _cleanup_stale_conversations()
+    logger.info(f"[cron][agent-sweep] swept={swept}")
     return {"success": True, "swept": swept}
 
 
@@ -566,6 +573,62 @@ async def run_crm_orphan_backstop() -> dict:
             results.append({"id": lead_id, "status": "error", "error": str(e)})
 
     return {"scanned": len(orphans), "results": results}
+
+
+_DB_ALERT: dict = {"last_sent_at": None}
+DB_ALERT_COOLDOWN_MINUTES = 15
+
+
+async def run_db_saturation_alert() -> dict:
+    """Shout BEFORE the panel breaks.
+
+    Two signals, either is enough: the executor was pinned near its ceiling
+    since the last check, or the heartbeat — the hottest endpoint — is slow.
+    We learned about the 31 Aug saturation from an operator in a group chat;
+    this closes that gap. Threshold-based, cooldown 15 min, like the queue
+    stall alert. Resets peak_in_flight after evaluating so each window is
+    judged on its own."""
+    from datetime import datetime, timezone, timedelta
+    from app.db.supabase import DB_HEALTH, db_health_snapshot
+    from app.api.agent import heartbeat_health_snapshot
+    try:
+        db_s = db_health_snapshot()
+        hb_s = heartbeat_health_snapshot()
+        ceiling = max(1, db_s["workers"] - 2)
+        saturated = db_s["peak_in_flight"] >= ceiling
+        slow = hb_s["p95_ms"] > 1500
+        # window reset: peak is per evaluation window
+        DB_HEALTH["peak_in_flight"] = DB_HEALTH["in_flight"]
+        if not (saturated or slow):
+            return {"state": "ok", **db_s, "heartbeat": hb_s}
+        now = datetime.now(timezone.utc)
+        last = _DB_ALERT["last_sent_at"]
+        if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
+            return {"state": "suppressed", **db_s, "heartbeat": hb_s}
+        try:
+            from app.services.email import send_ops_alert_email
+            _why = "executor saturated" if saturated else "heartbeat slow"
+            await send_ops_alert_email(
+                subject=f"DB saturation — {_why} ({db_s['peak_in_flight']}/{db_s['workers']})",
+                body=(
+                    f"peak_in_flight={db_s['peak_in_flight']}/{db_s['workers']}\n"
+                    f"heartbeat p95={hb_s['p95_ms']}ms (threshold 1500)\n"
+                    f"disconnects={db_s['disconnects']} "
+                    f"retries_ok={db_s['retries_ok']} retries_failed={db_s['retries_failed']}\n"
+                    f"p50={db_s['p50_ms']}ms p95={db_s['p95_ms']}ms\n"
+                    f"by_label={db_s['by_label']}\n\n"
+                    "The panel starts failing when the pool pins near its ceiling. "
+                    "Check /health.db by_label to see which caller is loudest."
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"[db-alert] email failed: {e}")
+            return {"state": "email_failed"}
+        _DB_ALERT["last_sent_at"] = now
+        return {"state": "alerted", **db_s, "heartbeat": hb_s}
+    except Exception as e:
+        logger.error(f"[db-alert] failed: {e}", exc_info=True)
+        return {"state": "error"}
 
 
 # Anti-spam state for the queue alert. Per-instance, like the other counters.

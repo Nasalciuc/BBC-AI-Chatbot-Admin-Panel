@@ -220,6 +220,29 @@ class Settings(BaseSettings):
     crm_presence_window_seconds: int = 90
     abandoned_timeout_minutes: int = 30
     internal_scheduler_enabled: bool = True  # G3 kill-switch; see ADR-10
+
+    # Bounded on purpose: both are env overrides and both comments below invite
+    # an operator to change them under pressure. max_workers=0 raises at IMPORT
+    # of app/db/supabase.py — the process would not start at all — and a sweep
+    # interval of 0 is a hot loop against the database, which is the thing this
+    # whole change exists to stop. A bad value now fails settings validation
+    # with a readable message instead.
+    #
+    # 1 Sep 2026 — the stale/deadline sweep moved OUT of the heartbeat (where
+    # every online agent ran it every 5s: 35 × 0.2/s = the same sweep seven
+    # times a second, each issuing one query per open conversation) and INTO
+    # the scheduler, once per interval. 15s is deliberately faster than the
+    # old effective cadence would suggest is needed: the first-response
+    # deadline is 90s, so 15s keeps the worst-case detection lag under 20%.
+    agent_sweep_interval_seconds: int = Field(default=15, ge=5)
+
+    # Size of the thread pool every sync supabase-py call runs on. 20 was a
+    # constant; it is now an env so the NEXT capacity question is answered by
+    # /health.db.peak_in_flight and a variable, not a deploy. Raise it only
+    # when telemetry shows peak_in_flight pinned near the ceiling AFTER the
+    # demand-side fixes — a bigger pool on the old heartbeat would just have
+    # moved the cliff.
+    db_executor_workers: int = Field(default=20, ge=4)
     # 21 Aug 2026. The abandoned-CRM sweep ran from TWO places: this process's
     # scheduler (guarded by an asyncio.Lock) and GitHub Actions hitting
     # /api/cron/abandoned-crm. The lock is per-process and never saw Actions.

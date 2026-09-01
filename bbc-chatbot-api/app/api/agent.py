@@ -1,5 +1,7 @@
 """Agent presence — heartbeat endpoint."""
 import logging
+import time
+from collections import deque as _deque
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +15,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _HANDOFF_COOLDOWN_SECONDS = 120
+
+# The heartbeat is the hottest endpoint in the system (every agent, every 5s).
+# Its latency is the earliest signal of executor saturation — it climbs minutes
+# before the panel shows "Couldn't load". Per-instance, like CRM_PUSH_HEALTH.
+HEARTBEAT_HEALTH: dict = {"calls": 0, "latency_ms": _deque(maxlen=1000)}
+
+
+# Rows the deadline sweep cannot judge. A conversation assigned to an ONLINE
+# agent whose agent_assigned_at is missing or unparseable is invisible to both
+# passes: this one skips it, and the stale pass only looks at OFFLINE agents.
+# It would hang forever — and every hung chat is one more row in every sweep.
+# Counted rather than silently skipped: if this stays 0 the concern is
+# theoretical; if it climbs, the metadata repair is its own ticket.
+DEADLINE_HEALTH: dict = {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
+
+
+def heartbeat_health_snapshot() -> dict:
+    lat = sorted(HEARTBEAT_HEALTH["latency_ms"])
+
+    def _pct(p: float) -> float:
+        return round(lat[min(len(lat) - 1, int(len(lat) * p))], 1) if lat else 0.0
+
+    return {"calls": HEARTBEAT_HEALTH["calls"], "p50_ms": _pct(0.5), "p95_ms": _pct(0.95)}
 
 
 class HeartbeatBody(BaseModel):
@@ -36,11 +61,24 @@ async def _enforce_response_deadline(
     viewing_conversation_id: str | None = None,
     viewing_user_id: str | None = None,
 ) -> int:
-    """Fall back conversations where the assigned agent never sent a message within
-    agent_silent_timeout_seconds of assignment (checked via agent_assigned_at metadata).
+    """Fall back conversations whose assigned agent never replied within the
+    first-response deadline.
 
-    Covers agents who ARE online but simply never engaged — the stale-heartbeat pass
-    only catches agents who went offline. 73% zero-response rate (30d audit Jun 2026).
+    ONE query for the whole set; the loop is pure memory. The previous version
+    issued has_agent_message_since() for EVERY active human conversation before
+    checking any deadline, and ran on every heartbeat from every agent —
+    O(agents × open chats) per 5s, ~290 queries/s at 35 agents × 40 chats. That
+    product is what took the panel down on 31 Aug.
+
+    `last_agent_message_at` (migration 024, updated on every agent message)
+    answers "has the agent replied since assignment" without a query. The old
+    `deadline_engaged` branch is gone: an agent who HAD replied was skipped
+    unconditionally right after, so that timeout never decided anything.
+
+    The "operator is viewing this conversation → 120s" extension is read from
+    the joined users row (035), honoured only while the operator's last_seen_at
+    is fresh (<30s) so a closed tab cannot shield a conversation forever. The
+    two parameters are kept for callers/tests; when given they take precedence.
 
     Returns number of conversations fallen back."""
     from config.settings import settings
@@ -50,35 +88,58 @@ async def _enforce_response_deadline(
     count = 0
     now = datetime.now(timezone.utc)
     deadline_first = timedelta(seconds=settings.agent_first_response_timeout_seconds)
-    deadline_engaged = timedelta(seconds=settings.agent_silent_timeout_seconds)
+    viewing_grace = timedelta(seconds=120)
+    fresh_window = timedelta(seconds=30)
+
+    def _parse(ts, *, count_bad: bool = False):
+        if not ts:
+            return None
+        try:
+            return datetime.fromisoformat(
+                ts.replace("Z", "+00:00") if isinstance(ts, str) else ts
+            )
+        except (ValueError, TypeError):  # noqa: silent — every None here fails SAFE and the one that could hang a chat is COUNTED in DEADLINE_HEALTH: an unparseable agent_assigned_at skips the row, an unparseable last_agent_message_at reads as "never replied" so the deadline still fires, an unparseable last_seen_at just loses the 120s viewing courtesy
+            if count_bad:
+                DEADLINE_HEALTH["skipped_bad_timestamp"] += 1
+            return None
+
     for conv in convs:
         meta = conv.get("metadata") or {}
-        assigned_at_raw = meta.get("agent_assigned_at")
-        if not assigned_at_raw:
-            continue  # pre-PR3 assignment: stale cleanup covers it
-        try:
-            assigned_at = datetime.fromisoformat(
-                assigned_at_raw.replace("Z", "+00:00")
-                if isinstance(assigned_at_raw, str) else assigned_at_raw
-            )
-        except (ValueError, TypeError):
+        assigned_at = _parse(meta.get("agent_assigned_at"), count_bad=True)
+        if not assigned_at:
+            # Pre-PR3 assignment, or metadata we cannot read. The stale pass
+            # only catches OFFLINE agents, so a row like this sitting on an
+            # ONLINE agent is invisible to both passes and hangs. Skipping is
+            # the safe action (we will not fall back a conversation we cannot
+            # reason about) — but it is counted, not silent.
+            DEADLINE_HEALTH["skipped_no_assigned_at"] += 1
             continue
-        _has_responded = await db.has_agent_message_since(conv["id"], assigned_at_raw)
-        _timeout = deadline_engaged if _has_responded else deadline_first
 
-        # Extend timeout to 120s if this operator is VIEWING this conversation
-        if (
-            not _has_responded
-            and viewing_conversation_id
-            and conv["id"] == viewing_conversation_id
-            and conv.get("assigned_agent_id") == viewing_user_id
-        ):
-            _timeout = timedelta(seconds=120)
-
-        if now - assigned_at < _timeout:
-            continue
-        if _has_responded:
+        last_agent = _parse(conv.get("last_agent_message_at"))
+        if last_agent and last_agent >= assigned_at:
             continue  # engaged agent → stale cleanup handles offline/silence
+
+        # Viewing extension: explicit params (tests/legacy) or the joined user row.
+        agent_row = conv.get("users") or {}
+        if isinstance(agent_row, list):
+            agent_row = agent_row[0] if agent_row else {}
+        is_viewing = False
+        if viewing_conversation_id:
+            is_viewing = (
+                conv["id"] == viewing_conversation_id
+                and conv.get("assigned_agent_id") == viewing_user_id
+            )
+        else:
+            last_seen = _parse(agent_row.get("last_seen_at"))
+            is_viewing = (
+                agent_row.get("viewing_conversation_id") == conv["id"]
+                and last_seen is not None
+                and now - last_seen < fresh_window
+            )
+        timeout = viewing_grace if is_viewing else deadline_first
+
+        if now - assigned_at < timeout:
+            continue
         await fall_back_to_ai(conv["id"])
         count += 1
     return count
@@ -88,8 +149,12 @@ async def _cleanup_stale_conversations(
     viewing_conversation_id: str | None = None,
     viewing_user_id: str | None = None,
 ) -> int:
-    """Revert conversations from offline agents back to AI mode.
-    Called on every heartbeat — each online agent helps clean up."""
+    """Revert conversations from offline agents back to AI mode, then enforce
+    the first-response deadline.
+
+    Called from the scheduler (run_agent_sweep) ONCE per interval. It used to
+    be called from every heartbeat — "each online agent helps clean up" — which
+    meant 35 agents ran the identical sweep seven times a second."""
     from config.settings import settings
     from app.services.handoff import fall_back_to_ai
     stale = await db.get_stale_agent_conversations(settings.agent_timeout_seconds)
@@ -201,13 +266,20 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     user_id = user.get("id")
     if not user_id:
         return {"success": False, "error": "No user ID in token"}
-    await db.update_user_last_seen(user_id)
+    # The presence write carries what the operator is looking at (035) so the
+    # scheduler sweep can honour the "operator is viewing → 120s" extension
+    # without this endpoint doing the sweep itself.
+    _t0 = time.monotonic()
+    await db.update_user_last_seen(
+        user_id, viewing_conversation_id=body.viewing_conversation_id
+    )
     from app.services.presence import record_presence_tick
     _fire_and_forget(record_presence_tick(user_id, db))
-    cleaned = await _cleanup_stale_conversations(
-        viewing_conversation_id=body.viewing_conversation_id,
-        viewing_user_id=user_id,
-    )
+    # The stale/deadline sweep used to run HERE — on every heartbeat, from every
+    # agent. It now runs once, in the scheduler (run_agent_sweep). `cleaned`
+    # stays in the response for one cycle of client compatibility; nothing
+    # reads it. Removed in QUEUE-CLEANUP.
+    cleaned = 0
     assigned = 0
     active_assigned = 0
     # SECURITY: role, readiness AND tunnel_scope all from DB, never from JWT.
@@ -326,6 +398,8 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         # The queue must never break the heartbeat: presence is more important
         # than the badge. Logged, never silent.
         logger.warning(f"[heartbeat] queue fetch failed for {user_id}: {e}")
+    HEARTBEAT_HEALTH["latency_ms"].append((time.monotonic() - _t0) * 1000.0)
+    HEARTBEAT_HEALTH["calls"] += 1
     return {
         "success": True,
         "cleaned": cleaned,

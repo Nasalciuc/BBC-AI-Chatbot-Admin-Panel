@@ -76,6 +76,7 @@ def start(app_state, settings) -> list[asyncio.Task]:
         run_cleanup_stale_ready,
         run_close_stale_presence,
         run_crm_orphan_backstop,
+        run_db_saturation_alert,
         run_queue_stall_alert,
     )
 
@@ -86,7 +87,12 @@ def start(app_state, settings) -> list[asyncio.Task]:
     # minutes.
     jobs = [
         ("abandoned_crm", run_abandoned_crm, None),
-        ("agent_sweep", run_agent_sweep, None),
+        # One sweep for everyone. Interval from settings (15s): the heartbeat no
+        # longer sweeps, so this is now the only thing that falls conversations
+        # back — it must run reliably and not slower than a fraction of the 90s
+        # first-response deadline.
+        ("agent_sweep", run_agent_sweep, settings.agent_sweep_interval_seconds),
+        ("db_saturation_alert", run_db_saturation_alert, 60),
         ("stale_ready", run_cleanup_stale_ready, None),
         ("stale_presence", run_close_stale_presence, None),
         ("attention_emails", run_attention_emails, None),
