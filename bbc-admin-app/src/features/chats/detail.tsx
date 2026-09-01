@@ -22,6 +22,7 @@ import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
 import { OperatorHistory, OperatorBadge } from './operator-history'
 import { describeClientPresence, presenceFromMetadata } from './presence'
+import { openSse } from '@/lib/sse-reader'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 
 interface Props {
@@ -86,6 +87,10 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const prevBaseLen           = useRef(0)
   // A panel nobody is looking at asks nothing — see stores/panel-mode-store.
   const dormant = usePanelModeStore((s) => s.dormant)
+  // While the stream is open the three polls below are off. On three
+  // consecutive failures openSse gives up and they come back at exactly
+  // today's intervals — never faster.
+  const [sseLive, setSseLive] = useState(false)
 
   // Full conversation load — cached, long staleTime
   const { data: conv, isLoading: loading, isError, error, refetch } = useQuery({
@@ -129,7 +134,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       )
       return res.data ?? { is_typing: false, text: '' }
     },
-    refetchInterval: dormant ? false : (activeTab === 'my_active' ? 500 : false),
+    refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 500 : false),
     enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
@@ -147,7 +152,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       }
       return res.success ? res.data : []
     },
-    refetchInterval: dormant ? false : (activeTab === 'my_active' ? 2_000 : false),
+    refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
     enabled: !!conv && activeTab === 'my_active',
   })
 
@@ -160,9 +165,53 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       )
       return res.data ?? {}
     },
-    refetchInterval: dormant ? false : (activeTab === 'my_active' ? 2_000 : false),
+    refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
     enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
   })
+
+  // Push instead of ask. One stream for the conversation on screen carries
+  // messages, typing and presence — the three things the polls above were
+  // asking about, which the server already knew the moment they happened.
+  // Bearer over fetch()+ReadableStream, not EventSource: EventSource cannot
+  // set headers and a session JWT in a query string lands in every proxy log.
+  const token = useAuthStore((s) => s.auth.accessToken)
+  useEffect(() => {
+    if (!conversationId || !token || activeTab !== 'my_active') return
+    const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+    const h = openSse(
+      `${apiBase}/api/agent/stream/${conversationId}`,
+      token,
+      (ev) => {
+        const e = ev as { event?: string; id?: string; [k: string]: unknown }
+        if (e.event === 'typing') {
+          queryClient.setQueryData(['typing', conversationId], {
+            is_typing: Boolean(e.is_typing),
+            text: String(e.text ?? ''),
+          })
+        } else if (e.event === 'presence') {
+          queryClient.setQueryData(
+            ['presence', conversationId],
+            (old: unknown) => ({ ...(old as Record<string, unknown>), ...e })
+          )
+        } else if (e.event === 'stream_chunk') {
+          // The panel renders whole messages; the widget owns the typewriter.
+        } else if (e.id) {
+          // Message rows (agent/system/ai) and stream_end. Deduped by id — the
+          // incremental poll may have delivered the same row a moment earlier.
+          queryClient.setQueryData(
+            ['messages-incremental', conversationId],
+            (old: unknown) => {
+              const list = Array.isArray(old) ? (old as Message[]) : []
+              return list.some((m) => m.id === e.id) ? list : [...list, e as unknown as Message]
+            }
+          )
+        }
+      },
+      (state) => setSseLive(state === 'open'),
+      () => setSseLive(false)
+    )
+    return () => h.close()
+  }, [conversationId, token, activeTab, queryClient])
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {

@@ -708,6 +708,10 @@ async def set_typing_status(
         await typing_manager.set_typing(conversation_id, text)
     else:
         await typing_manager.clear_typing(conversation_id)
+    # The panel used to poll this every 500ms per open chat. Now it subscribes;
+    # the Redis write stays as the fallback/polling source of truth.
+    from app.realtime.manager import manager
+    await manager.push(conversation_id, {"event": "typing", "is_typing": bool(text), "text": text})
     return {"success": True}
 
 
@@ -774,6 +778,19 @@ async def ping_chat_session(
         # the client runs an older bundle that never pings".
         "widget_pings": True,
     })
+    if ok:
+        # Same shape GET /conversations/{id}/presence returns, so the panel can
+        # setQueryData(['presence', id]) with it instead of polling every 2s.
+        # widget_presence_effective is derived from these two by the same rule.
+        from app.realtime.manager import manager
+        await manager.push(conversation_id, {
+            "event": "presence",
+            "widget_open": True,
+            "widget_presence": "online",
+            "widget_presence_effective": "online",
+            "widget_presence_age_seconds": 0,
+            "widget_last_event_at": datetime.now(timezone.utc).isoformat(),
+        })
     return {"success": ok}
 
 
@@ -943,7 +960,7 @@ async def sse_stream(
                     # Keepalive ping every 25s — prevents proxy from closing idle connections
                     yield ": keepalive\n\n"
         finally:
-            manager.disconnect(conversation_id)
+            manager.disconnect(conversation_id, queue)
 
     return StreamingResponse(
         event_generator(),

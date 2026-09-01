@@ -258,7 +258,9 @@ test('every polling site honours dormant', () => {
     const src = read(file)
     for (const line of src.split('\n')) {
       if (!line.includes('refetchInterval:')) continue
-      assert.match(line, /dormant \?/, `${file}: "${line.trim()}" ignores dormant`)
+      // `dormant ?` or `dormant || sseLive ?` (PR-C) — dormant must be in the
+      // condition either way, and it must be what turns the poll OFF.
+      assert.match(line, /dormant(?: \|\| \w+)? \?/, `${file}: "${line.trim()}" ignores dormant`)
     }
     assert.match(src, /usePanelModeStore/, `${file} does not read the panel mode`)
   }
