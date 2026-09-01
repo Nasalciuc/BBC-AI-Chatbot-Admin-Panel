@@ -606,17 +606,20 @@ async def run_db_saturation_alert() -> dict:
         if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
             return {"state": "suppressed", **db_s, "heartbeat": hb_s}
         try:
-            from app.services.email import send_super_alert_email
-            await send_super_alert_email(
-                conversation_id="-",
-                visitor_name=None, visitor_phone=None, visitor_email=None,
-                tunnel="sales",
-                last_message=(
-                    f"(db saturation: peak_in_flight={db_s['peak_in_flight']}/"
-                    f"{db_s['workers']}, heartbeat p95={hb_s['p95_ms']}ms, "
-                    f"retries_failed={db_s['retries_failed']})"
+            from app.services.email import send_ops_alert_email
+            _why = "executor saturated" if saturated else "heartbeat slow"
+            await send_ops_alert_email(
+                subject=f"DB saturation — {_why} ({db_s['peak_in_flight']}/{db_s['workers']})",
+                body=(
+                    f"peak_in_flight={db_s['peak_in_flight']}/{db_s['workers']}\n"
+                    f"heartbeat p95={hb_s['p95_ms']}ms (threshold 1500)\n"
+                    f"disconnects={db_s['disconnects']} "
+                    f"retries_ok={db_s['retries_ok']} retries_failed={db_s['retries_failed']}\n"
+                    f"p50={db_s['p50_ms']}ms p95={db_s['p95_ms']}ms\n"
+                    f"by_label={db_s['by_label']}\n\n"
+                    "The panel starts failing when the pool pins near its ceiling. "
+                    "Check /health.db by_label to see which caller is loudest."
                 ),
-                chat_number=None,
             )
         except Exception as e:
             logger.warning(f"[db-alert] email failed: {e}")

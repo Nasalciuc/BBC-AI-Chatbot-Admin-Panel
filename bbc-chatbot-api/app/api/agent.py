@@ -22,6 +22,15 @@ _HANDOFF_COOLDOWN_SECONDS = 120
 HEARTBEAT_HEALTH: dict = {"calls": 0, "latency_ms": _deque(maxlen=1000)}
 
 
+# Rows the deadline sweep cannot judge. A conversation assigned to an ONLINE
+# agent whose agent_assigned_at is missing or unparseable is invisible to both
+# passes: this one skips it, and the stale pass only looks at OFFLINE agents.
+# It would hang forever — and every hung chat is one more row in every sweep.
+# Counted rather than silently skipped: if this stays 0 the concern is
+# theoretical; if it climbs, the metadata repair is its own ticket.
+DEADLINE_HEALTH: dict = {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
+
+
 def heartbeat_health_snapshot() -> dict:
     lat = sorted(HEARTBEAT_HEALTH["latency_ms"])
 
@@ -82,21 +91,29 @@ async def _enforce_response_deadline(
     viewing_grace = timedelta(seconds=120)
     fresh_window = timedelta(seconds=30)
 
-    def _parse(ts):
+    def _parse(ts, *, count_bad: bool = False):
         if not ts:
             return None
         try:
             return datetime.fromisoformat(
                 ts.replace("Z", "+00:00") if isinstance(ts, str) else ts
             )
-        except (ValueError, TypeError):  # noqa: silent — every None here fails SAFE: an unparseable agent_assigned_at skips the row (stale cleanup owns it), an unparseable last_agent_message_at reads as "never replied" so the deadline still fires, an unparseable last_seen_at just loses the 120s viewing courtesy
+        except (ValueError, TypeError):  # noqa: silent — every None here fails SAFE and the one that could hang a chat is COUNTED in DEADLINE_HEALTH: an unparseable agent_assigned_at skips the row, an unparseable last_agent_message_at reads as "never replied" so the deadline still fires, an unparseable last_seen_at just loses the 120s viewing courtesy
+            if count_bad:
+                DEADLINE_HEALTH["skipped_bad_timestamp"] += 1
             return None
 
     for conv in convs:
         meta = conv.get("metadata") or {}
-        assigned_at = _parse(meta.get("agent_assigned_at"))
+        assigned_at = _parse(meta.get("agent_assigned_at"), count_bad=True)
         if not assigned_at:
-            continue  # pre-PR3 assignment: stale cleanup covers it
+            # Pre-PR3 assignment, or metadata we cannot read. The stale pass
+            # only catches OFFLINE agents, so a row like this sitting on an
+            # ONLINE agent is invisible to both passes and hangs. Skipping is
+            # the safe action (we will not fall back a conversation we cannot
+            # reason about) — but it is counted, not silent.
+            DEADLINE_HEALTH["skipped_no_assigned_at"] += 1
+            continue
 
         last_agent = _parse(conv.get("last_agent_message_at"))
         if last_agent and last_agent >= assigned_at:

@@ -53,6 +53,9 @@ def _reset_counters():
     db.DB_HEALTH["by_label"].clear()
     agent_api.HEARTBEAT_HEALTH["calls"] = 0
     agent_api.HEARTBEAT_HEALTH["latency_ms"].clear()
+    agent_api.DEADLINE_HEALTH.update(
+        {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
+    )
     yield
 
 
@@ -332,8 +335,8 @@ async def test_saturation_alerts_once_then_suppresses():
     db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
     db.DB_HEALTH["in_flight"] = 3
 
-    with patch("app.services.email.send_super_alert_email",
-               new=AsyncMock()) as mail:
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
         first = await cron.run_db_saturation_alert()
         assert first["state"] == "alerted"
         assert mail.await_count == 1
@@ -354,8 +357,8 @@ async def test_a_quiet_executor_says_ok():
 
     cron._DB_ALERT["last_sent_at"] = None
     db.DB_HEALTH["peak_in_flight"] = 2
-    with patch("app.services.email.send_super_alert_email",
-               new=AsyncMock()) as mail:
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
         out = await cron.run_db_saturation_alert()
     assert out["state"] == "ok"
     mail.assert_not_awaited()
@@ -368,17 +371,142 @@ async def test_a_slow_heartbeat_alone_is_enough():
     cron._DB_ALERT["last_sent_at"] = None
     db.DB_HEALTH["peak_in_flight"] = 1
     agent_api.HEARTBEAT_HEALTH["latency_ms"].extend([4000.0] * 20)
-    with patch("app.services.email.send_super_alert_email",
-               new=AsyncMock()) as mail:
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
         out = await cron.run_db_saturation_alert()
     assert out["state"] == "alerted"
     assert mail.await_count == 1
+    assert "heartbeat slow" in mail.await_args.kwargs["subject"]
     cron._DB_ALERT["last_sent_at"] = None
 
 
 # ══════════════════════════════════════════════════════════════
 # 035 — an unapplied migration must not break the heartbeat
 # ══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_a_row_we_cannot_judge_is_counted_not_swallowed():
+    """No agent_assigned_at: the stale pass only sees OFFLINE agents, so this
+    row hangs on an online one. Skipping is safe; being silent is not."""
+    conv = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {}}
+    count, _p, fb = await _deadline([conv])
+    assert count == 0
+    fb.assert_not_awaited()
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 1
+    assert agent_api.DEADLINE_HEALTH["skipped_bad_timestamp"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_timestamp_is_counted_separately():
+    conv = {
+        "id": _CONV,
+        "assigned_agent_id": _AGENT,
+        "metadata": {"agent_assigned_at": "not-a-date"},
+    }
+    count, _p, fb = await _deadline([conv])
+    assert count == 0
+    fb.assert_not_awaited()
+    assert agent_api.DEADLINE_HEALTH["skipped_bad_timestamp"] == 1
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_readable_row_never_touches_the_skip_counters():
+    await _deadline([_conv(_CONV, 95)])
+    assert agent_api.DEADLINE_HEALTH == {
+        "skipped_no_assigned_at": 0,
+        "skipped_bad_timestamp": 0,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+# Settings floors — a bad env must fail loudly, not at import
+# ══════════════════════════════════════════════════════════════
+
+def _settings_with(**env):
+    from config.settings import Settings
+
+    return Settings(**env)
+
+
+def test_zero_workers_is_refused_before_it_can_kill_the_process():
+    from pydantic import ValidationError
+
+    # ThreadPoolExecutor(max_workers=0) raises at IMPORT of app/db/supabase.py.
+    with pytest.raises(ValidationError):
+        _settings_with(db_executor_workers=0)
+    with pytest.raises(ValidationError):
+        _settings_with(db_executor_workers=3)
+    assert _settings_with(db_executor_workers=4).db_executor_workers == 4
+
+
+def test_a_sweep_interval_below_the_floor_is_refused():
+    from pydantic import ValidationError
+
+    # 0 would be a hot loop against the database — the thing this branch fixes.
+    with pytest.raises(ValidationError):
+        _settings_with(agent_sweep_interval_seconds=0)
+    with pytest.raises(ValidationError):
+        _settings_with(agent_sweep_interval_seconds=1)
+    assert _settings_with(agent_sweep_interval_seconds=5).agent_sweep_interval_seconds == 5
+
+
+# ══════════════════════════════════════════════════════════════
+# The alert says what it is
+# ══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_the_alert_does_not_arrive_as_a_waiting_chat():
+    from app.api import cron
+    from config.settings import settings
+
+    cron._DB_ALERT["last_sent_at"] = None
+    db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+
+    with (
+        patch("app.services.email.send_ops_alert_email",
+              new=AsyncMock(return_value=True)) as ops,
+        patch("app.services.email.send_super_alert_email",
+              new=AsyncMock()) as customer,
+    ):
+        out = await cron.run_db_saturation_alert()
+
+    assert out["state"] == "alerted"
+    customer.assert_not_awaited(), "an infra alert must not borrow a chat subject"
+    subject = ops.await_args.kwargs["subject"]
+    assert "DB saturation" in subject
+    assert "executor saturated" in subject
+    assert "no agents online" not in subject
+    assert "by_label" in ops.await_args.kwargs["body"]
+    cron._DB_ALERT["last_sent_at"] = None
+
+
+@pytest.mark.asyncio
+async def test_ops_alert_reuses_the_super_transport():
+    """One transport to super@ — two copies of the credentials is how they
+    drift apart."""
+    from app.services import email
+
+    with patch.object(email, "_send_super_inbox_email",
+                      new=AsyncMock(return_value=True)) as send:
+        assert await email.send_ops_alert_email("subj", "line one\nline two")
+
+    kwargs = send.await_args.kwargs
+    assert kwargs["subject"] == "subj"
+    assert kwargs["text_body"] == "line one\nline two"
+
+
+@pytest.mark.asyncio
+async def test_ops_alert_body_is_escaped_in_html():
+    from app.services import email
+
+    with patch.object(email, "_send_super_inbox_email",
+                      new=AsyncMock(return_value=True)) as send:
+        await email.send_ops_alert_email("s", "by_label={'a': '<b>'}")
+
+    assert "<b>" not in send.await_args.kwargs["html_body"]
+    assert "&lt;b&gt;" in send.await_args.kwargs["html_body"]
+
 
 @pytest.mark.asyncio
 async def test_presence_write_survives_an_unapplied_035():

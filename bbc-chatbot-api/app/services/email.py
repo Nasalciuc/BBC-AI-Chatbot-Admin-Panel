@@ -1,4 +1,5 @@
 """Email service — invite emails via Postmark HTTP API."""
+import html
 import logging
 import secrets
 import string
@@ -257,14 +258,59 @@ async def send_super_alert_email(
     accepted but intentionally NOT displayed — emails get forwarded. Full
     client details stay in the admin panel behind the link. The chat number
     is not PII."""
-    if not settings.postmark_token:
-        logger.warning("POSTMARK_TOKEN not set — skipping super alert email")
-        return False
-
     chat_link = f"{settings.admin_panel_url.rstrip('/')}/chats?highlight={conversation_id}"
     safe_message = (last_message or "")[:500]
     num = f"#{chat_number}" if chat_number else f"({conversation_id[:8]})"
 
+    return await _send_super_inbox_email(
+        subject=f"Chat {num} waiting — no agents online ({tunnel})",
+        html_body=(
+            "<h2>A client is chatting with no agents available</h2>"
+            f"<p><strong>Chat:</strong> {num}</p>"
+            f"<p><strong>Tunnel:</strong> {tunnel}</p>"
+            f'<p><strong>Latest message:</strong> "{safe_message}"</p>'
+            f'<p><a href="{chat_link}">Open conversation in admin panel</a></p>'
+            '<p style="color:#888;font-size:12px;">'
+            "Client details are available in the admin panel.</p>"
+        ),
+        text_body=(
+            f"Chat: {num}\n"
+            "A client is chatting with no agents available.\n\n"
+            f"Tunnel: {tunnel}\n"
+            f'Latest message: "{safe_message}"\n\n'
+            f"Open: {chat_link}\n\n"
+            "Client details are available in the admin panel."
+        ),
+        what=f"super alert email for conv {conversation_id}",
+    )
+
+
+async def send_ops_alert_email(subject: str, body: str) -> bool:
+    """Infrastructure alerts (saturation, stalls) — NOT a customer event.
+
+    send_super_alert_email builds a fixed 'Chat N waiting — no agents online'
+    subject; routing an infrastructure alert through it puts the wrong
+    incident in the recipient's inbox list and the real reason only in the
+    body. Same transport and recipient, honest subject."""
+    return await _send_super_inbox_email(
+        subject=subject,
+        html_body=f"<pre style=\"font-family:monospace\">{html.escape(body)}</pre>",
+        text_body=body,
+        what=f"ops alert email ({subject})",
+    )
+
+
+async def _send_super_inbox_email(
+    *, subject: str, html_body: str, text_body: str, what: str
+) -> bool:
+    """The one transport to super@. Extracted so an infrastructure alert can
+    have its own subject without duplicating Postmark configuration — two
+    copies of the credentials/recipient is how they drift apart.
+
+    Fire-and-forget safe: returns False on any failure, never raises."""
+    if not settings.postmark_token:
+        logger.warning(f"POSTMARK_TOKEN not set — skipping {what}")
+        return False
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(
@@ -276,35 +322,17 @@ async def send_super_alert_email(
                 json={
                     "From": settings.email_from,
                     "To": settings.super_alert_email,
-                    "Subject": f"Chat {num} waiting — no agents online ({tunnel})",
+                    "Subject": subject,
                     "MessageStream": "outbound",
-                    "HtmlBody": (
-                        "<h2>A client is chatting with no agents available</h2>"
-                        f"<p><strong>Chat:</strong> {num}</p>"
-                        f"<p><strong>Tunnel:</strong> {tunnel}</p>"
-                        f'<p><strong>Latest message:</strong> "{safe_message}"</p>'
-                        f'<p><a href="{chat_link}">Open conversation in admin panel</a></p>'
-                        '<p style="color:#888;font-size:12px;">'
-                        "Client details are available in the admin panel.</p>"
-                    ),
-                    "TextBody": (
-                        f"Chat: {num}\n"
-                        "A client is chatting with no agents available.\n\n"
-                        f"Tunnel: {tunnel}\n"
-                        f'Latest message: "{safe_message}"\n\n'
-                        f"Open: {chat_link}\n\n"
-                        "Client details are available in the admin panel."
-                    ),
+                    "HtmlBody": html_body,
+                    "TextBody": text_body,
                 },
             )
             if res.status_code == 200:
-                logger.info(
-                    f"Super alert email sent for conv {conversation_id} → "
-                    f"{settings.super_alert_email}"
-                )
+                logger.info(f"Sent {what} → {settings.super_alert_email}")
                 return True
-            logger.error(f"Super alert email failed: {res.status_code} {res.text}")
+            logger.error(f"Failed {what}: {res.status_code} {res.text}")
             return False
     except Exception as e:
-        logger.error(f"Super alert email exception: {e}")
+        logger.error(f"Exception sending {what}: {e}")
         return False

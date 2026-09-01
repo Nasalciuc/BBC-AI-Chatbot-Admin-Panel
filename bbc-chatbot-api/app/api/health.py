@@ -34,7 +34,7 @@ async def health() -> dict:
     # Executor saturation: the thing nothing measured while we blamed the network
     # for two weeks. peak_in_flight near `workers` is the cliff, not a symptom.
     from app.db.supabase import db_health_snapshot
-    from app.api.agent import heartbeat_health_snapshot
+    from app.api.agent import DEADLINE_HEALTH, heartbeat_health_snapshot
     # Presence gate: aggregate only — never who was blocked, or when.
     from app.api.integration import PRESENCE_GATE_HEALTH
     # Claim races: exactly one wins; the losers are counted, not punished.
@@ -59,6 +59,7 @@ async def health() -> dict:
             "crm_pushes": dict(CRM_PUSH_HEALTH),
             "db": db_health_snapshot(),
             "heartbeat": heartbeat_health_snapshot(),
+            "deadline_skips": dict(DEADLINE_HEALTH),
             "presence_gate": dict(PRESENCE_GATE_HEALTH),
             "phantom_turns": dict(PIPELINE_HEALTH),
         }
@@ -113,6 +114,7 @@ async def health() -> dict:
         "crm_pushes": dict(CRM_PUSH_HEALTH),
         "db": db_health_snapshot(),
         "heartbeat": heartbeat_health_snapshot(),
+        "deadline_skips": dict(DEADLINE_HEALTH),
         "presence_gate": dict(PRESENCE_GATE_HEALTH),
         "phantom_turns": dict(PIPELINE_HEALTH),
     }
