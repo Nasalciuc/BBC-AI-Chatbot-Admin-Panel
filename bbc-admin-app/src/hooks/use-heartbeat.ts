@@ -80,6 +80,9 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
   // main effect's deps or a mode change would tear the worker down and lose
   // the token.
   const workerRef = useRef<Worker | null>(null)
+  // Last fallback ping (no-Worker path only) — lets the dormant cadence be
+  // enforced inside `ping` itself, since no interval object exists to retime.
+  const lastFallbackPing = useRef(0)
 
   viewingRef.current = viewingConversationId ?? null
 
@@ -135,6 +138,16 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
 
     const ping = async () => {
       if (!active.current) return
+      // Worker-less fallback (no Worker support): the cadence effect cannot
+      // reconfigure a setInterval it does not own, so the dormant cadence is
+      // enforced here instead. Presence still needs a beat, so we skip only
+      // the fast ticks: at most one ping per DORMANT_PING_MS while dormant.
+      if (usePanelModeStore.getState().dormant) {
+        const nowMs = Date.now()
+        const gap = useQueueStore.getState().queueCount > 0 ? 5_000 : 15_000
+        if (nowMs - lastFallbackPing.current < gap - 250) return
+        lastFallbackPing.current = nowMs
+      }
       try {
         const res = await apiFetch<HeartbeatResponse>('/api/agent/heartbeat', {
           method: 'POST',
@@ -153,6 +166,12 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
      */
     const refreshAttention = async () => {
       if (!active.current) return
+      // A dormant panel asks for nothing. This runs on its own interval,
+      // separate from the worker the cadence effect reconfigures — which is
+      // how a "dormant" panel kept a five-second conversations poll alive and
+      // undercut the whole point of this branch. Read at call time, never
+      // captured: the effect's deps deliberately exclude `dormant`.
+      if (usePanelModeStore.getState().dormant) return
       try {
         // Reads the chats list's cache when it's fresh; fetches itself
         // otherwise (other pages, other tabs) so the alert still works there.
@@ -295,7 +314,13 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     // heartbeat response — still reaches the CRM within seconds.
     const ms = dormant ? (queueCount > 0 ? 5_000 : 15_000) : intervalMs
     if (w) w.postMessage({ type: 'setInterval', ms })
-    if (wasDormant.current && !dormant && w) w.postMessage({ type: 'pingNow' })
+    if (wasDormant.current && !dormant) {
+      if (w) w.postMessage({ type: 'pingNow' })
+      // The attention loop skipped every tick while dormant, so its view of
+      // "which chats need me" is as old as the dormancy. Refetch once on wake
+      // rather than showing a stale alert state until the next interval.
+      void queryClient.invalidateQueries({ queryKey: ATTENTION_QUERY_KEY })
+    }
     wasDormant.current = dormant
   }, [dormant, queueCount, intervalMs])
 }

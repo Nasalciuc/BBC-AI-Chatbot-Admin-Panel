@@ -94,7 +94,26 @@ export function Chats() {
   const attentionIds = useAttentionStore((s) => s.attentionIds)
   const dormant = usePanelModeStore((s) => s.dormant)
   const [idleOnly, setIdleOnly] = useState(false)
-  const [nudgeDismissedAt, setNudgeDismissedAt] = useState(0)
+  // Once per session, as specified. sessionStorage (not state) because the
+  // banner must not come back on a remount — and not localStorage, because a
+  // new shift tomorrow deserves the reminder again.
+  const [nudgeDismissed, setNudgeDismissed] = useState(
+    () => {
+      try {
+        return sessionStorage.getItem('bbc_idle_nudge_seen') === '1'
+      } catch {
+        return false
+      }
+    },
+  )
+  const dismissNudge = useCallback(() => {
+    setNudgeDismissed(true)
+    try {
+      sessionStorage.setItem('bbc_idle_nudge_seen', '1')
+    } catch {
+      /* private mode: the in-memory flag still holds for this mount */
+    }
+  }, [])
 
   useEffect(() => {
     setViewingConversationId(selectedId)
@@ -184,7 +203,7 @@ export function Chats() {
     () => conversations.filter((c) => (idleMinutes(c) ?? 0) >= IDLE_NUDGE_MIN).length,
     [conversations],
   )
-  const showNudge = !dormant && idleCount >= 3 && idleCount > nudgeDismissedAt
+  const showNudge = !dormant && idleCount >= 3 && !nudgeDismissed
 
   // Counts — 1 request for tab badges, polls every 10s
   const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
@@ -305,16 +324,6 @@ export function Chats() {
                   >
                     All
                   </button>
-                  <button
-                    onClick={() => setIdleOnly((v) => !v)}
-                    className={`px-2 py-1 min-h-11 md:min-h-0 rounded-full text-[11px] font-medium border transition-colors ${
-                      idleOnly
-                        ? 'bg-[#0B1829] text-white border-[#0B1829]'
-                        : 'bg-background text-muted-foreground border-input hover:text-foreground'
-                    }`}
-                  >
-                    Idle
-                  </button>
                   {TAG_FILTERS.map((t) => (
                     <button
                       key={t.key}
@@ -330,6 +339,21 @@ export function Chats() {
                   ))}
                 </div>
               )}
+              {/* Idle is a view, not a permission: every operator who can
+                  reach it through the nudge's Review must also be able to
+                  turn it off. Sales is not in canFilterTag. */}
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                <button
+                  onClick={() => setIdleOnly((v) => !v)}
+                  className={`px-2 py-1 min-h-11 md:min-h-0 rounded-full text-[11px] font-medium border transition-colors ${
+                    idleOnly
+                      ? 'bg-[#0B1829] text-white border-[#0B1829]'
+                      : 'bg-background text-muted-foreground border-input hover:text-foreground'
+                  }`}
+                >
+                  Idle
+                </button>
+              </div>
             </div>
 
             {/* A desk somebody walked away from. No close-all: only the agent
@@ -338,11 +362,13 @@ export function Chats() {
               <div className="mx-3 my-2 rounded-md border bg-muted/40 px-3 py-2 text-[12px] flex items-center justify-between gap-2">
                 <span>{idleCount} chats with no activity for over {IDLE_NUDGE_MIN} min.</span>
                 <div className="flex gap-3 shrink-0">
-                  <button className="underline" onClick={() => setIdleOnly(true)}>Review</button>
                   <button
-                    className="text-muted-foreground"
-                    onClick={() => setNudgeDismissedAt(idleCount)}
+                    className="underline"
+                    onClick={() => { setIdleOnly(true); dismissNudge() }}
                   >
+                    Review
+                  </button>
+                  <button className="text-muted-foreground" onClick={dismissNudge}>
                     Not now
                   </button>
                 </div>

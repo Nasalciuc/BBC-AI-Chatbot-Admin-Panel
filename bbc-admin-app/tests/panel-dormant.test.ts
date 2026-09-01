@@ -258,8 +258,6 @@ test('every polling site honours dormant', () => {
     const src = read(file)
     for (const line of src.split('\n')) {
       if (!line.includes('refetchInterval:')) continue
-      // `dormant ?` or `dormant || sseLive ?` (PR-C) — dormant must be in the
-      // condition either way, and it must be what turns the poll OFF.
       assert.match(line, /dormant(?: \|\| \w+)? \?/, `${file}: "${line.trim()}" ignores dormant`)
     }
     assert.match(src, /usePanelModeStore/, `${file} does not read the panel mode`)
@@ -309,4 +307,176 @@ test('the list badges, sorts and nudges — and never offers to close them all',
   assert.match(src, /Not now/)
   assert.match(src, /!dormant && idleCount >= 3/)
   assert.doesNotMatch(src, /close all|Close all|closeAll/i)
+})
+
+// ── CodeRabbit #219: the dormant panel really stops asking ───────
+
+test('refreshAttention asks for nothing while dormant — before fetchQuery', () => {
+  const h = read('src/hooks/use-heartbeat.ts')
+  const start = h.indexOf('const refreshAttention')
+  const body = h.slice(start, h.indexOf('setInterval(refreshAttention'))
+  const dormantGuard = body.indexOf('usePanelModeStore.getState().dormant')
+  const fetch = body.indexOf('queryClient.fetchQuery')
+  assert.ok(dormantGuard >= 0, 'refreshAttention must read dormancy at call time')
+  assert.ok(fetch >= 0, 'refreshAttention still fetches when awake')
+  assert.ok(dormantGuard < fetch, 'the dormant return must precede fetchQuery')
+  assert.match(body, /if \(usePanelModeStore\.getState\(\)\.dormant\) return/)
+  assert.match(body, /queryKey: ATTENTION_QUERY_KEY/)
+})
+
+test('waking from dormant invalidates the attention query once', () => {
+  const h = read('src/hooks/use-heartbeat.ts')
+  const start = h.indexOf('wasDormant.current && !dormant')
+  const body = h.slice(start, h.indexOf('wasDormant.current = dormant'))
+  assert.match(body, /type: 'pingNow'/)
+  assert.match(body, /invalidateQueries\(\{ queryKey: ATTENTION_QUERY_KEY \}\)/)
+  assert.equal(
+    [...body.matchAll(/invalidateQueries/g)].length,
+    1,
+    'wake must invalidate exactly once, not on every cadence tick',
+  )
+})
+
+test('worker-less fallback ping enforces 15s empty / 5s queued while dormant', () => {
+  const h = read('src/hooks/use-heartbeat.ts')
+  assert.match(h, /const lastFallbackPing = useRef\(0\)/)
+  const ping = h.slice(h.indexOf('const ping ='), h.indexOf('const refreshAttention'))
+  assert.match(ping, /usePanelModeStore\.getState\(\)\.dormant/)
+  assert.match(ping, /queueCount > 0 \? 5_000 : 15_000/)
+  assert.match(ping, /nowMs - lastFallbackPing\.current < gap - 250/)
+  // The interval the fallback still owns is intervalMs (5s). The guard must
+  // skip those ticks when dormant and the queue is empty.
+  const skip = (elapsed: number, queueCount: number) => {
+    const gap = queueCount > 0 ? 5_000 : 15_000
+    return elapsed < gap - 250
+  }
+  assert.equal(skip(5_000, 0), true, 'empty queue: a 5s tick is skipped')
+  assert.equal(skip(15_000, 0), false, 'empty queue: a 15s tick is allowed')
+  assert.equal(skip(5_000, 2), false, 'queue of 2 keeps the 5s beat')
+})
+
+test('Idle toggle is outside canFilterTag so sales can turn the filter off', () => {
+  const src = read('src/features/chats/index.tsx')
+  assert.match(src, /canFilterTag = \['owner', 'admin', 'dev', 'supervisor', 'qa'\]\.includes\(role\)/)
+  assert.doesNotMatch(src, /canFilterTag = \[[^\]]*sales/)
+  const gate = src.indexOf('{canFilterTag && (')
+  const idleView = src.indexOf('Idle is a view, not a permission')
+  const idleToggle = src.indexOf('setIdleOnly((v) => !v)')
+  assert.ok(gate >= 0 && idleView >= 0 && idleToggle >= 0)
+  assert.ok(idleView > gate, 'Idle chip is declared after the tag gate')
+  assert.ok(idleToggle > idleView, 'the toggle lives in the ungated wrap')
+  // The trap: Review enables idleOnly for every role, including sales.
+  assert.match(src, /setIdleOnly\(true\); dismissNudge\(\)/)
+})
+
+const NUDGE_KEY = 'bbc_idle_nudge_seen'
+
+function installSessionStorage(store: Record<string, string> | { throwOnGet?: boolean; throwOnSet?: boolean }) {
+  const throwing = 'throwOnGet' in store || 'throwOnSet' in store
+  const data: Record<string, string> = throwing ? {} : (store as Record<string, string>)
+  const flags = store as { throwOnGet?: boolean; throwOnSet?: boolean }
+  const prev = (globalThis as any).sessionStorage
+  ;(globalThis as any).sessionStorage = {
+    getItem: (k: string) => {
+      if (flags.throwOnGet) throw new Error('private mode')
+      return data[k] ?? null
+    },
+    setItem: (k: string, v: string) => {
+      if (flags.throwOnSet) throw new Error('private mode')
+      data[k] = v
+    },
+  }
+  return {
+    data,
+    restore: () => {
+      if (prev === undefined) delete (globalThis as any).sessionStorage
+      else (globalThis as any).sessionStorage = prev
+    },
+  }
+}
+
+/** Mirrors the component: session flag + in-memory dismiss. Remount = new instance. */
+function nudgeSession() {
+  let dismissed: boolean
+  try {
+    dismissed = sessionStorage.getItem(NUDGE_KEY) === '1'
+  } catch {
+    dismissed = false
+  }
+  const dismiss = () => {
+    dismissed = true
+    try {
+      sessionStorage.setItem(NUDGE_KEY, '1')
+    } catch {
+      /* private mode: the in-memory flag still holds for this mount */
+    }
+  }
+  const show = (idleCount: number, dormant = false) => !dormant && idleCount >= 3 && !dismissed
+  return { show, dismiss, get dismissed() { return dismissed } }
+}
+
+test('nudge is once per session: Review writes the flag and a remount stays quiet', () => {
+  const src = read('src/features/chats/index.tsx')
+  assert.match(src, /sessionStorage\.getItem\('bbc_idle_nudge_seen'\) === '1'/)
+  assert.match(src, /sessionStorage\.setItem\('bbc_idle_nudge_seen', '1'/)
+  assert.match(src, /idleCount >= 3 && !nudgeDismissed/)
+  assert.match(src, /setIdleOnly\(true\); dismissNudge\(\)/)
+  assert.doesNotMatch(src, /nudgeDismissedAt/)
+
+  const ss = installSessionStorage({})
+  try {
+    const first = nudgeSession()
+    assert.equal(first.show(4), true, 'four idle chats show the banner')
+    first.dismiss() // Review
+    assert.equal(first.show(4), false)
+    assert.equal(ss.data[NUDGE_KEY], '1')
+    const remount = nudgeSession()
+    assert.equal(remount.show(5), false, 'five idle chats after remount must not bring it back')
+  } finally {
+    ss.restore()
+  }
+})
+
+test('Not now has the same effect on the banner as Review', () => {
+  const src = read('src/features/chats/index.tsx')
+  assert.match(src, /onClick=\{dismissNudge\}/)
+  const ss = installSessionStorage({})
+  try {
+    const s = nudgeSession()
+    assert.equal(s.show(4), true)
+    s.dismiss() // Not now
+    assert.equal(s.show(4), false)
+    assert.equal(ss.data[NUDGE_KEY], '1')
+    assert.equal(nudgeSession().show(4), false)
+  } finally {
+    ss.restore()
+  }
+})
+
+test('sessionStorage throwing does not crash; the banner hides for this mount', () => {
+  const src = read('src/features/chats/index.tsx')
+  assert.match(src, /private mode: the in-memory flag still holds for this mount/)
+  const ss = installSessionStorage({ throwOnGet: true, throwOnSet: true })
+  try {
+    const s = nudgeSession()
+    assert.equal(s.show(4), true, 'unreadable storage starts unseen')
+    assert.doesNotThrow(() => s.dismiss())
+    assert.equal(s.show(4), false, 'in-memory flag still hides it')
+  } finally {
+    ss.restore()
+  }
+})
+
+test('shared contracts live in src/lib/types.ts', () => {
+  const types = read('src/lib/types.ts')
+  assert.match(types, /export type PanelDormancyReason = 'tab_hidden' \| 'crm_hidden' \| 'not_leader'/)
+  assert.match(types, /export interface CrmBridgeDeps/)
+  const bridge = read('src/lib/crm-bridge.ts')
+  assert.match(bridge, /import type \{ CrmBridgeDeps \} from '@\/lib\/types'/)
+  assert.match(bridge, /export type \{ CrmBridgeDeps \}/)
+  assert.match(bridge, /export type ChatBridgeMessage/)
+  assert.doesNotMatch(bridge, /export type CrmBridgeDeps =/)
+  const store = read('src/stores/panel-mode-store.ts')
+  assert.match(store, /import type \{ PanelDormancyReason \} from '@\/lib\/types'/)
+  assert.doesNotMatch(store, /type Reason =/)
 })

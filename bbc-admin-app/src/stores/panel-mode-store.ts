@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { PanelDormancyReason } from '@/lib/types'
 
 /**
  * Dormant = the operator cannot see this panel right now.
@@ -15,16 +16,14 @@ import { create } from 'zustand'
  * chat:queue still reaches the CRM promptly) and stops every other poll.
  * Nothing anywhere gets FASTER than today.
  */
-type Reason = 'tab_hidden' | 'crm_hidden' | 'not_leader'
-
 interface PanelModeState {
-  reasons: Set<Reason>
+  reasons: Set<PanelDormancyReason>
   dormant: boolean
-  setReason: (reason: Reason, on: boolean) => void
+  setReason: (reason: PanelDormancyReason, on: boolean) => void
 }
 
 export const usePanelModeStore = create<PanelModeState>((set) => ({
-  reasons: new Set<Reason>(),
+  reasons: new Set<PanelDormancyReason>(),
   dormant: false,
   setReason: (reason, on) =>
     set((s) => {
