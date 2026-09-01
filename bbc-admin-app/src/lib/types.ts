@@ -36,6 +36,11 @@ export interface Conversation {
   ai_cost_total: number
   created_at: string
   updated_at: string
+  /** Activity clocks (migration 024). The list returns them whenever the
+   *  supervisor columns are available; the Idle badge is derived from them.
+   *  Optional because the backend drops them if 023/024 are not applied. */
+  last_user_message_at?: string | null
+  last_agent_message_at?: string | null
   closed_at: string | null
   summary?: string | null
   messages?: Message[]
@@ -255,4 +260,25 @@ export interface LiveAgent {
   is_ready: boolean
   is_online: boolean
   last_seen: string | null
+}
+
+/** Why a panel considers itself off-screen. Any one reason is enough. */
+export type PanelDormancyReason = 'tab_hidden' | 'crm_hidden' | 'not_leader'
+
+/** Injected into installCrmBridge so the bridge stays dependency-free and
+ *  node-testable: it never imports a store or a router itself. */
+export interface CrmBridgeDeps {
+  /** `isAllowedCrmOrigin` from crm-embed-auth — the ONE allow-list. */
+  isAllowedOrigin: (origin: string) => boolean
+  /** Current queue depth, read at handshake time. Injected rather than
+   *  imported so this module stays dependency-free and node-testable. */
+  getQueueCount?: () => number
+  /** Show the queue view. The CRM sends `crm:focus-queue` right before it
+   *  opens the panel for a queued conversation; without this the agent lands
+   *  on whatever screen they left, on a panel that opened itself. */
+  onFocusQueue?: () => void
+  /** The CRM's dock was minimised or restored. An iframe hidden by CSS is not
+   *  "hidden" to Page Visibility — the CRM tab is visible — so the CRM is the
+   *  only one who can tell us the panel is off-screen. */
+  onVisibility?: (hidden: boolean) => void
 }

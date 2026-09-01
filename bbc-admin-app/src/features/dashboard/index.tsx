@@ -6,6 +6,7 @@ import type { DashboardStats } from '@/lib/types'
 import type { UserRole } from '@/lib/bbc/types'
 import { usePermissions } from '@/lib/bbc/hooks'
 import { useAuthStore } from '@/stores/auth-store'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQuery } from '@tanstack/react-query'
 import { AlertBanner } from './components/alert-banner'
 import { KpiCards } from './components/kpi-cards'
@@ -21,12 +22,13 @@ import { resolveDataState } from '@/lib/data-state'
 export function Dashboard() {
   const role = useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole
   const { canViewDashboardGlobal: canViewGlobal } = usePermissions(role)
+  const dormant = usePanelModeStore((s) => s.dormant)
 
   const { data: stats, isLoading, isError } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
     queryFn: () => getDashboardStats(),
     staleTime: 0,
-    refetchInterval: 60_000,
+    refetchInterval: dormant ? false : 60_000,
   })
   const dataState = resolveDataState({ isLoading: isLoading || !stats, isError })
 

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Users } from 'lucide-react'
 import { claimConversation, getConversations, ApiError } from '@/lib/api'
 import { type Conversation } from '@/lib/types'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { Badge } from '@/components/ui/badge'
 
@@ -27,12 +28,13 @@ export function QueueSection({ onClaimed }: { onClaimed: (id: string) => void })
   const queueIds = useQueueStore((s) => s.queueIds)
   const queueCount = useQueueStore((s) => s.queueCount)
   const queryClient = useQueryClient()
+  const dormant = usePanelModeStore((s) => s.dormant)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const { data: rows = [] } = useQuery({
     queryKey: ['queue-rows', queueIds.join(',')],
     enabled: queueIds.length > 0,
-    refetchInterval: 5_000,
+    refetchInterval: dormant ? false : 5_000,
     queryFn: async () => {
       const res = await getConversations({ assigned_to: 'none', status: 'active', limit: '50' })
       const wanted = new Set(queueIds)
