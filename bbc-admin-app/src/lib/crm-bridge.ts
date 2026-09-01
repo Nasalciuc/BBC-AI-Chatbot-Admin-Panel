@@ -20,6 +20,9 @@
  * resolve `@/` aliases or `import.meta.env`.
  */
 
+import type { CrmBridgeDeps } from '@/lib/types'
+export type { CrmBridgeDeps }
+
 /** Everything we are ever allowed to say. Note what is still absent: no name,
  *  no email, no phone, and NO MESSAGE TEXT.
  *
@@ -68,22 +71,6 @@ export type ChatBridgeMessage =
       waitingSeconds?: number
       route?: string
     }
-
-export type CrmBridgeDeps = {
-  /** `isAllowedCrmOrigin` from crm-embed-auth — the ONE allow-list. */
-  isAllowedOrigin: (origin: string) => boolean
-  /** Current queue depth, read at handshake time. Injected rather than
-   *  imported so this module stays dependency-free and node-testable. */
-  getQueueCount?: () => number
-  /** Show the queue view. The CRM sends `crm:focus-queue` right before it
-   *  opens the panel for a queued conversation; without this the agent lands
-   *  on whatever screen they left, on a panel that opened itself. */
-  onFocusQueue?: () => void
-  /** The CRM's dock was minimised or restored. An iframe hidden by CSS is not
-   *  "hidden" to Page Visibility — the CRM tab is visible — so the CRM is the
-   *  only one who can tell us the panel is off-screen. */
-  onVisibility?: (hidden: boolean) => void
-}
 
 const CHAT_SOURCE = 'bbc-chat'
 const CRM_SOURCE = 'bbc-crm'

@@ -261,3 +261,24 @@ export interface LiveAgent {
   is_online: boolean
   last_seen: string | null
 }
+
+/** Why a panel considers itself off-screen. Any one reason is enough. */
+export type PanelDormancyReason = 'tab_hidden' | 'crm_hidden' | 'not_leader'
+
+/** Injected into installCrmBridge so the bridge stays dependency-free and
+ *  node-testable: it never imports a store or a router itself. */
+export interface CrmBridgeDeps {
+  /** `isAllowedCrmOrigin` from crm-embed-auth — the ONE allow-list. */
+  isAllowedOrigin: (origin: string) => boolean
+  /** Current queue depth, read at handshake time. Injected rather than
+   *  imported so this module stays dependency-free and node-testable. */
+  getQueueCount?: () => number
+  /** Show the queue view. The CRM sends `crm:focus-queue` right before it
+   *  opens the panel for a queued conversation; without this the agent lands
+   *  on whatever screen they left, on a panel that opened itself. */
+  onFocusQueue?: () => void
+  /** The CRM's dock was minimised or restored. An iframe hidden by CSS is not
+   *  "hidden" to Page Visibility — the CRM tab is visible — so the CRM is the
+   *  only one who can tell us the panel is off-screen. */
+  onVisibility?: (hidden: boolean) => void
+}
