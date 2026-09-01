@@ -5,6 +5,8 @@ import { useReadyStore } from '@/stores/ready-store'
 import { getCookie } from '@/lib/cookies'
 import { requestNotifyPermission } from '@/lib/notify-assignment'
 import { installCrmBridge } from '@/lib/crm-bridge'
+import { installPanelLeader } from '@/lib/panel-leader'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { isAllowedCrmOrigin } from '@/lib/crm-embed-auth'
 import { cn } from '@/lib/utils'
@@ -44,10 +46,25 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
         // would remount the bridge on every navigation, losing handshakeOrigin
         // and silently killing the agent's alerts until the next crm:hello.
         onFocusQueue: () => navigateRef.current({ to: '/chats' }),
+        onVisibility: (hidden) =>
+          usePanelModeStore.getState().setReason('crm_hidden', hidden),
       }),
     []
   )
 
+  // A background tab is the only case the browser tells us about by itself.
+  useEffect(() => {
+    const set = usePanelModeStore.getState().setReason
+    const onVis = () => set('tab_hidden', document.hidden)
+    onVis()
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
+  // One consumer per human: the embedded panel wins, a standalone tab dozes.
+  useEffect(() => installPanelLeader(), [])
+
+  const notLeader = usePanelModeStore((s) => s.reasons.has('not_leader'))
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   return (
     <SearchProvider>
@@ -69,6 +86,11 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
               'peer-data-[variant=inset]:has-data-[layout=fixed]:h-[calc(100svh-(var(--spacing)*4))]'
             )}
           >
+            {notLeader && (
+              <div className='bg-muted/50 border-b px-3 py-1.5 text-[12px] text-muted-foreground'>
+                This panel is idle — it's active in the CRM. Work from there.
+              </div>
+            )}
             {children ?? <Outlet />}
           </SidebarInset>
         </SidebarProvider>

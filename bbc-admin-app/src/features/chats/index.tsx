@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useDeferredValue, useCallback } from 'react'
+import { useState, useRef, useEffect, useDeferredValue, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
@@ -11,7 +11,9 @@ import { useAttentionStore } from '@/stores/attention-store'
 import { QueueSection } from './components/queue-section'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { formatAge } from '@/lib/format-age'
+import { idleMinutes, IDLE_BADGE_MIN, IDLE_NUDGE_MIN } from './idle'
 import { listRowDot } from './presence'
 import ConversationDetail from './detail'
 
@@ -90,6 +92,9 @@ export function Chats() {
   const [highlightId] = useState<string | null>(urlHighlight)
   const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
   const attentionIds = useAttentionStore((s) => s.attentionIds)
+  const dormant = usePanelModeStore((s) => s.dormant)
+  const [idleOnly, setIdleOnly] = useState(false)
+  const [nudgeDismissedAt, setNudgeDismissedAt] = useState(0)
 
   useEffect(() => {
     setViewingConversationId(selectedId)
@@ -99,7 +104,7 @@ export function Chats() {
   const { data: notifData } = useQuery({
     queryKey: ['notifications'],
     queryFn: getNotifications,
-    refetchInterval: 30_000,
+    refetchInterval: dormant ? false : 30_000,
   })
   const staleIds = new Set(notifData?.stale_conversations?.map(s => s.id) ?? [])
   const debouncedSearch = useDeferredValue(search)
@@ -154,9 +159,32 @@ export function Chats() {
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter, tagFilter],
     queryFn: () => getConversations(listParams),
-    refetchInterval: 5_000, // Bug 3: agents need near-realtime assignment visibility
+    // Bug 3: agents need near-realtime assignment visibility
+    refetchInterval: dormant ? false : 5_000,
   })
   const conversations: Conversation[] = convResponse?.data ?? []
+
+  // Live conversations first, idle ones below — a stable secondary sort that
+  // keeps the server's order (and the needs-attention/stale ordering) intact
+  // inside each group.
+  const ordered = useMemo(() => {
+    const rows = idleOnly
+      ? conversations.filter((c) => (idleMinutes(c) ?? 0) >= IDLE_NUDGE_MIN)
+      : [...conversations]
+    return rows.sort((a, b) => {
+      const ai = (idleMinutes(a) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0
+      const bi = (idleMinutes(b) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0
+      return ai - bi
+    })
+  }, [conversations, idleOnly])
+
+  // Counted on the WHOLE list, not the filtered view: the number must not
+  // change just because the operator turned the Idle chip on.
+  const idleCount = useMemo(
+    () => conversations.filter((c) => (idleMinutes(c) ?? 0) >= IDLE_NUDGE_MIN).length,
+    [conversations],
+  )
+  const showNudge = !dormant && idleCount >= 3 && idleCount > nudgeDismissedAt
 
   // Counts — 1 request for tab badges, polls every 10s
   const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
@@ -168,7 +196,7 @@ export function Chats() {
       )
       return { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, ...res.data }
     },
-    refetchInterval: 10_000,
+    refetchInterval: dormant ? false : 10_000,
   })
 
   // Sound handled globally by notify-assignment.ts (loop ring via heartbeat)
@@ -277,6 +305,16 @@ export function Chats() {
                   >
                     All
                   </button>
+                  <button
+                    onClick={() => setIdleOnly((v) => !v)}
+                    className={`px-2 py-1 min-h-11 md:min-h-0 rounded-full text-[11px] font-medium border transition-colors ${
+                      idleOnly
+                        ? 'bg-[#0B1829] text-white border-[#0B1829]'
+                        : 'bg-background text-muted-foreground border-input hover:text-foreground'
+                    }`}
+                  >
+                    Idle
+                  </button>
                   {TAG_FILTERS.map((t) => (
                     <button
                       key={t.key}
@@ -294,6 +332,23 @@ export function Chats() {
               )}
             </div>
 
+            {/* A desk somebody walked away from. No close-all: only the agent
+                who owns a chat closes it, one at a time, after opening it. */}
+            {showNudge && (
+              <div className="mx-3 my-2 rounded-md border bg-muted/40 px-3 py-2 text-[12px] flex items-center justify-between gap-2">
+                <span>{idleCount} chats with no activity for over {IDLE_NUDGE_MIN} min.</span>
+                <div className="flex gap-3 shrink-0">
+                  <button className="underline" onClick={() => setIdleOnly(true)}>Review</button>
+                  <button
+                    className="text-muted-foreground"
+                    onClick={() => setNudgeDismissedAt(idleCount)}
+                  >
+                    Not now
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Conversation list */}
             <div className="flex-1 overflow-y-auto divide-y divide-border">
               {isError ? (
@@ -305,7 +360,7 @@ export function Chats() {
                 </div>
               ) : isLoading ? (
                 <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">Loading...</div>
-              ) : conversations.length === 0 ? (
+              ) : ordered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
                   <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
                   <p className="text-xs">
@@ -316,7 +371,7 @@ export function Chats() {
                         : 'No active conversations'}
                   </p>
                 </div>
-              ) : conversations.map(conv => (
+              ) : ordered.map(conv => (
                 <button key={conv.id}
                   aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}`}
                   onClick={() => {
@@ -361,6 +416,17 @@ export function Chats() {
                         )}
                         <span className={`inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${TUNNEL_STYLES[conv.tunnel] ?? ''}`}>{conv.tunnel}</span>
                         <span className="text-[11px] text-muted-foreground">{conv.message_count} msgs</span>
+                        {(() => {
+                          const idle = idleMinutes(conv)
+                          return idle !== null && idle >= IDLE_BADGE_MIN ? (
+                            <span
+                              title="No message from either side"
+                              className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium bg-muted text-muted-foreground"
+                            >
+                              Idle {idle}m
+                            </span>
+                          ) : null
+                        })()}
                         {conv.agent_state === 'active' && conv.assigned_agent_name ? (
                           <span className="text-[11px] text-green-700">● {conv.assigned_agent_name}</span>
                         ) : conv.agent_state === 'fallback' && conv.engaged_agent_name ? (

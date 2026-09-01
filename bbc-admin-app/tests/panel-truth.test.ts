@@ -85,7 +85,7 @@ test('reassign panel is a real combobox: filter input + keyboard-capable Command
   assert.match(panel, /role='combobox'/)
 })
 
-test('team live card polls every 30s', () => {
+test('team live card polls every 30s — and not at all when nobody is looking', () => {
   const card = readFileSync(join(SRC, 'features/dashboard/components/team-live-card.tsx'), 'utf8')
-  assert.match(card, /refetchInterval: 30_000/)
+  assert.match(card, /refetchInterval: dormant \? false : 30_000/)
 })

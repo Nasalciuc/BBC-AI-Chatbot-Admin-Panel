@@ -11,15 +11,17 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { getNotifications } from '@/lib/api'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import type { StaleConversation, AssignedTask } from '@/lib/types'
 
 export function NotificationBell() {
   const navigate = useNavigate()
+  const dormant = usePanelModeStore((s) => s.dormant)
 
   const { data } = useQuery({
     queryKey: ['notifications'],
     queryFn: getNotifications,
-    refetchInterval: 30_000,
+    refetchInterval: dormant ? false : 30_000,
   })
 
   const stale: StaleConversation[] = data?.stale_conversations ?? []

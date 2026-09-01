@@ -28,6 +28,17 @@ self.onmessage = function (e) {
     _token = msg.token || ''
   } else if (msg.type === 'updateViewing') {
     _viewingConversationId = msg.viewingConversationId || null
+  } else if (msg.type === 'setInterval') {
+    // Dormant mode (panel hidden in the CRM dock, or a background tab) slows
+    // the heartbeat without tearing the worker down: terminate()+new Worker
+    // would lose the token and re-fire the immediate first ping.
+    var ms = Number(msg.ms) || HEARTBEAT_MS
+    if (_interval) clearInterval(_interval)
+    _interval = setInterval(doHeartbeat, ms)
+  } else if (msg.type === 'pingNow') {
+    // Leaving dormant: refresh presence and queue at once instead of waiting
+    // up to 15s for the next slow tick.
+    doHeartbeat()
   }
 }
 

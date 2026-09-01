@@ -26,7 +26,9 @@ test('assignment poll interval is 5s or faster', () => {
 
 test('my_active list poll matches the <=5s requirement', () => {
   const src = read('src/features/chats/index.tsx')
-  assert.match(src, /refetchInterval: 5_000/)
+  // Dormant turns the poll OFF for a panel nobody is looking at; when it IS
+  // being looked at the cadence is unchanged at 5s.
+  assert.match(src, /refetchInterval: dormant \? false : 5_000/)
 })
 
 test('toast names the chat and offers Open', () => {

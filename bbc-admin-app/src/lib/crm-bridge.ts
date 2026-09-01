@@ -79,6 +79,10 @@ export type CrmBridgeDeps = {
    *  opens the panel for a queued conversation; without this the agent lands
    *  on whatever screen they left, on a panel that opened itself. */
   onFocusQueue?: () => void
+  /** The CRM's dock was minimised or restored. An iframe hidden by CSS is not
+   *  "hidden" to Page Visibility — the CRM tab is visible — so the CRM is the
+   *  only one who can tell us the panel is off-screen. */
+  onVisibility?: (hidden: boolean) => void
 }
 
 const CHAT_SOURCE = 'bbc-chat'
@@ -306,6 +310,9 @@ export function installCrmBridge(d: CrmBridgeDeps): () => void {
       // Ignoring it breaks nothing — it just makes the panel unhelpful on a
       // screen it opened without being asked.
       deps.onFocusQueue?.()
+    }
+    if (data.type === 'crm:visibility') {
+      deps.onVisibility?.(Boolean((data as { hidden?: unknown }).hidden))
     }
   }
 

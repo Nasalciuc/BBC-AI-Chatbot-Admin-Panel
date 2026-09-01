@@ -20,6 +20,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { getLiveAgents } from '@/lib/api'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import type { LiveAgent } from '@/lib/types'
 import { describeLiveAgent, groupByRole, partitionLive } from './live-state'
 
@@ -46,10 +47,11 @@ function AgentRow({ agent, now }: { agent: LiveAgent; now: Date }) {
 }
 
 export function TeamLiveCard() {
+  const dormant = usePanelModeStore((s) => s.dormant)
   const { data: agents = [], isLoading } = useQuery<LiveAgent[]>({
     queryKey: ['agents-live'],
     queryFn: () => getLiveAgents(),
-    refetchInterval: 30_000,
+    refetchInterval: dormant ? false : 30_000,
   })
   const [showOffline, setShowOffline] = useState(false)
 

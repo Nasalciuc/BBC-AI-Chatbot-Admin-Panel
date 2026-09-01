@@ -22,6 +22,7 @@ import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
 import { OperatorHistory, OperatorBadge } from './operator-history'
 import { describeClientPresence, presenceFromMetadata } from './presence'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 
 interface Props {
   conversationId: string
@@ -83,6 +84,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const queryClient           = useQueryClient()
   const [accumMsgs, setAccumMsgs] = useState<Message[]>([])
   const prevBaseLen           = useRef(0)
+  // A panel nobody is looking at asks nothing — see stores/panel-mode-store.
+  const dormant = usePanelModeStore((s) => s.dormant)
 
   // Full conversation load — cached, long staleTime
   const { data: conv, isLoading: loading, isError, error, refetch } = useQuery({
@@ -126,7 +129,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       )
       return res.data ?? { is_typing: false, text: '' }
     },
-    refetchInterval: activeTab === 'my_active' ? 500 : false,
+    refetchInterval: dormant ? false : (activeTab === 'my_active' ? 500 : false),
     enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
@@ -144,7 +147,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       }
       return res.success ? res.data : []
     },
-    refetchInterval: activeTab === 'my_active' ? 2_000 : false,
+    refetchInterval: dormant ? false : (activeTab === 'my_active' ? 2_000 : false),
     enabled: !!conv && activeTab === 'my_active',
   })
 
@@ -157,7 +160,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       )
       return res.data ?? {}
     },
-    refetchInterval: activeTab === 'my_active' ? 2_000 : false,
+    refetchInterval: dormant ? false : (activeTab === 'my_active' ? 2_000 : false),
     enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
   })
 

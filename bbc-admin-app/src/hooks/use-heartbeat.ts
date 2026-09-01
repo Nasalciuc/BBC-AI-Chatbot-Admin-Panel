@@ -9,6 +9,7 @@ import {
   playQueueChime,
 } from '@/lib/notify-assignment'
 import { useAttentionStore } from '@/stores/attention-store'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bridge'
 import { useAuthStore } from '@/stores/auth-store'
@@ -75,6 +76,10 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
   const announcedQueue = useRef<Set<string>>(new Set())
   /** Kept in a ref so the polling loop always reads the current selection. */
   const viewingRef = useRef<string | null>(viewingConversationId ?? null)
+  // The dormant effect reconfigures the RUNNING worker; it must not be in the
+  // main effect's deps or a mode change would tear the worker down and lose
+  // the token.
+  const workerRef = useRef<Worker | null>(null)
 
   viewingRef.current = viewingConversationId ?? null
 
@@ -126,6 +131,7 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     } catch {
       // Worker not supported — fall back to setInterval below
     }
+    workerRef.current = worker
 
     const ping = async () => {
       if (!active.current) return
@@ -274,7 +280,22 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       if (worker) {
         worker.postMessage({ type: 'stop' })
         worker.terminate()
+        workerRef.current = null
       }
     }
   }, [intervalMs, role, setReady, viewingConversationId, queryClient])
+
+  const dormant = usePanelModeStore((s) => s.dormant)
+  const queueCount = useQueueStore((s) => s.queueCount)
+  const wasDormant = useRef(false)
+  useEffect(() => {
+    const w = workerRef.current
+    // Dormant with an empty queue is the 90% case. Dormant with someone
+    // waiting keeps the normal cadence so chat:queue — which rides the
+    // heartbeat response — still reaches the CRM within seconds.
+    const ms = dormant ? (queueCount > 0 ? 5_000 : 15_000) : intervalMs
+    if (w) w.postMessage({ type: 'setInterval', ms })
+    if (wasDormant.current && !dormant && w) w.postMessage({ type: 'pingNow' })
+    wasDormant.current = dormant
+  }, [dormant, queueCount, intervalMs])
 }

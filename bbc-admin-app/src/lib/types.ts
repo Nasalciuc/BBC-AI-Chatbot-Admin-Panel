@@ -36,6 +36,11 @@ export interface Conversation {
   ai_cost_total: number
   created_at: string
   updated_at: string
+  /** Activity clocks (migration 024). The list returns them whenever the
+   *  supervisor columns are available; the Idle badge is derived from them.
+   *  Optional because the backend drops them if 023/024 are not applied. */
+  last_user_message_at?: string | null
+  last_agent_message_at?: string | null
   closed_at: string | null
   summary?: string | null
   messages?: Message[]

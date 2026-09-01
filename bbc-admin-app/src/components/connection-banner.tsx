@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Wifi, WifiOff } from 'lucide-react'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
@@ -12,8 +13,10 @@ interface HealthResponse {
 export function ConnectionBanner() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [isLive, setIsLive] = useState(false)
+  const dormant = usePanelModeStore((s) => s.dormant)
 
   useEffect(() => {
+    if (dormant) return // nothing to check for a panel nobody is looking at
     const check = async () => {
       try {
         const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(3000) })
@@ -29,7 +32,7 @@ export function ConnectionBanner() {
     check()
     const interval = setInterval(check, 30000)
     return () => clearInterval(interval)
-  }, [])
+  }, [dormant])
 
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-full ${
