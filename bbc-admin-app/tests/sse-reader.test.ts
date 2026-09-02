@@ -184,6 +184,23 @@ test('the panel subscribes to its own conversation and cleans up', () => {
   assert.match(src, /\(old \?\? \[\]\)\.some\(\(m\) => m\.id === e\.id\)/)
 })
 
+test('a user row without event is appended to messages-incremental', () => {
+  const src = read('src/features/chats/detail.tsx')
+  const start = src.indexOf("if (!('event' in e))")
+  const end = src.indexOf('switch (e.event)', start)
+  assert.ok(start >= 0 && end > start, 'plain-row SSE handler missing')
+  const handler = src.slice(start, end)
+  assert.match(handler, /\['messages-incremental', conversationId\]/)
+  assert.match(handler, /\[\.\.\.\(old \?\? \[\]\), e\]/)
+  assert.doesNotMatch(handler, /role/, 'visitor rows must not be filtered out of the incremental cache')
+
+  const e = { id: 'u1', role: 'user', content: 'hi' }
+  const take = (old: { id: string }[] | undefined) =>
+    (old ?? []).some((m) => m.id === e.id) ? (old ?? []) : [...(old ?? []), e]
+  assert.deepEqual(take([]), [e])
+  assert.deepEqual(take([e]), [e])
+})
+
 test('the reader is transport: it never sees a token', () => {
   const src = read('src/lib/sse-reader.ts')
   assert.match(src, /headers: \{ \.\.\.headers, Accept: 'text\/event-stream' \}/)

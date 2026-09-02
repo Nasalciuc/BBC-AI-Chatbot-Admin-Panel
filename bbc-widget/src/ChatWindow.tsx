@@ -301,6 +301,12 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
           }
 
           const msg = parsed as Message
+          // The server now fans out the visitor's own message too (so the
+          // operator's panel sees it). The widget already rendered it locally
+          // under a temp- id that will never match the stored UUID, so taking
+          // it from the stream would show it twice. A second tab of the same
+          // visitor still gets it through the incremental poll.
+          if (msg.role === 'user') return
           setMessages(prev => {
             if (prev.some(m => m.id === msg.id)) return prev
             return [...prev, msg]
