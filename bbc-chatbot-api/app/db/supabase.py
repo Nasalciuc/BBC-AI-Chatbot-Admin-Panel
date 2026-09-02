@@ -347,7 +347,7 @@ async def add_message(
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
-        res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False)
+        res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False, label="messages")
         row = res.data[0] if res.data else None
         if row:
             await _touch_conversation_activity(
@@ -844,7 +844,7 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
 
     use_supervisor_cols = _supervisor_columns_available()
     try:
-        res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS if use_supervisor_cols else _SIMPLE_COLUMNS_BASE))
+        res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS if use_supervisor_cols else _SIMPLE_COLUMNS_BASE), label="conv_simple")
         from app.models.rows import observe_conversation_row
         return observe_conversation_row(res.data)
     except Exception as e:
@@ -853,7 +853,7 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
             # row — retrying on the legacy set tells the two apart. Only a
             # real missing-column error flips the process-wide flag.
             try:
-                res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS_BASE))
+                res = await _run_sync(lambda: _q(_SIMPLE_COLUMNS_BASE), label="conv_simple")
                 if _is_missing_column_error(e):
                     _downgrade_supervisor_columns(e)
                 else:
@@ -1535,7 +1535,7 @@ async def get_crm_orphan_leads(
                 q = q.gt("created_at", younger_than_iso)
             return q.execute()
 
-        res = await _run_sync(_q)
+        res = await _run_sync(_q, label="cron")
         return res.data or []
     except Exception as e:
         if _is_missing_column_error(e):
@@ -2422,7 +2422,7 @@ async def create_pipeline_run(payload: dict) -> Optional[dict]:
     """Insert a pipeline run record. Non-fatal — never blocks the pipeline."""
     try:
         db_client = get_client()
-        res = await _run_sync(lambda: db_client.table("pipeline_runs").insert(payload).execute(), idempotent=False)
+        res = await _run_sync(lambda: db_client.table("pipeline_runs").insert(payload).execute(), idempotent=False, label="pipeline")
         return res.data[0] if res.data else None
     except Exception as e:
         logger.warning(f"create_pipeline_run error (non-fatal): {e}")
@@ -2453,6 +2453,29 @@ async def get_today_cost() -> float:
 # ADMIN — DASHBOARD STATS
 # ════════════════════════════════════════════════════════════════
 
+# ── Dashboard raw cache ─────────────────────────────────────────────────
+# The aggregates are computed over the same rows for every panel; only the
+# scope differs. Fetch once, filter per caller in memory. Single-flight: when
+# the entry expires, ONE caller refetches while the others await its result —
+# otherwise six aligned 60s timers would each fire the 3-way gather.
+_DASH_RAW: dict = {"at": 0.0, "convos": [], "leads": [], "runs": [], "msgs": 0}
+_DASH_LOCK = asyncio.Lock()
+DASHBOARD_CACHE_HEALTH: dict = {"hits": 0, "misses": 0, "single_flight_waits": 0}
+
+
+def _scope_rows(rows: list, key_tunnel: str | None, key_agent: str | None,
+                tunnel_filter: str | None, agent_filter: str | None) -> list:
+    """Pure, and the ONLY place scope is applied. Must produce exactly what the
+    old SQL .eq() filters produced — pinned by test. key_* name the columns on
+    each row that carry tunnel / assigned agent (None = not applicable)."""
+    out = rows
+    if tunnel_filter and key_tunnel:
+        out = [r for r in out if r.get(key_tunnel) == tunnel_filter]
+    if agent_filter and key_agent:
+        out = [r for r in out if r.get(key_agent) == agent_filter]
+    return out
+
+
 async def get_dashboard_stats(
     tunnel_filter: Optional[str] = None,
     agent_filter: Optional[str] = None,
@@ -2464,59 +2487,59 @@ async def get_dashboard_stats(
     try:
         db = get_client()
 
-        # ── Parallel fetch: conversations, leads, pipeline_runs, messages count ──
-        # NOTE: Supabase default limit = 1000 rows; use .limit(10000) to fetch all
-        convos_q = db.table("conversations").select(
-            "id, tunnel, status, visitor_name, created_at, closed_at, assigned_agent_id"
-        ).limit(10000)
-        if tunnel_filter:
-            convos_q = convos_q.eq("tunnel", tunnel_filter)
-        if agent_filter:
-            convos_q = convos_q.eq("assigned_agent_id", agent_filter)
-
-        if tunnel_filter or agent_filter:
-            join_fields = "tunnel, assigned_agent_id" if agent_filter else "tunnel"
-
-            def _fetch_leads():
-                q = db.table("leads").select(
-                    "id, score, tier, status, origin_code, destination_code, "
-                    "route_display, created_at, conversation_id, "
-                    f"conversations!inner({join_fields})"
-                )
-                if tunnel_filter:
-                    q = q.eq("conversations.tunnel", tunnel_filter)
-                if agent_filter:
-                    q = q.eq("conversations.assigned_agent_id", agent_filter)
-                return q.limit(10000).execute()
-
-            leads_future = _run_sync(_fetch_leads)
+        # ── Raw fetch, cached and single-flight; scope applied in memory ──
+        from config.settings import settings as _s
+        _now = time.monotonic()
+        if _now - _DASH_RAW["at"] > _s.dashboard_cache_ttl_seconds:
+            if _DASH_LOCK.locked():
+                DASHBOARD_CACHE_HEALTH["single_flight_waits"] += 1
+            async with _DASH_LOCK:
+                # Re-check with a FRESH clock: a waiter's _now predates the refetch
+                # that just finished, so the stale value would only skip by accident.
+                if time.monotonic() - _DASH_RAW["at"] > _s.dashboard_cache_ttl_seconds:
+                    DASHBOARD_CACHE_HEALTH["misses"] += 1
+                    # ORDER before LIMIT: without it, past 10,000 rows Supabase
+                    # returns an unspecified subset. The dashboard reads
+                    # today/yesterday/7d/30d — if we must truncate, drop the OLDEST.
+                    convos_q = db.table("conversations").select(
+                        "id, tunnel, status, visitor_name, created_at, closed_at, assigned_agent_id"
+                    ).order("created_at", desc=True).limit(10000)
+                    # Leads carry the parent conversation's tunnel + agent so scope
+                    # can be applied in memory without a per-caller join.
+                    leads_q = db.table("leads").select(
+                        "id, score, tier, status, origin_code, destination_code, "
+                        "route_display, created_at, conversation_id, "
+                        "conversations!inner(tunnel, assigned_agent_id)"
+                    ).order("created_at", desc=True).limit(10000)
+                    pipeline_q = db.table("pipeline_runs").select(
+                        "cost, latency_ms, status, had_fallback, tunnel, created_at"
+                    ).order("created_at", desc=True).limit(10000)
+                    convos, leads_res, pipeline_res, msgs_res = await asyncio.gather(
+                        _run_sync(lambda: convos_q.execute(), label="dashboard"),
+                        _run_sync(lambda: leads_q.execute(), label="dashboard"),
+                        _run_sync(lambda: pipeline_q.execute(), label="dashboard"),
+                        _run_sync(lambda: db.table("messages").select("id", count="exact").limit(0).execute(), label="dashboard"),  # type: ignore[arg-type]
+                    )
+                    _leads = []
+                    for lead in (leads_res.data or []):
+                        _c = lead.pop("conversations", None) or {}
+                        lead["_tunnel"] = _c.get("tunnel")
+                        lead["_agent"] = _c.get("assigned_agent_id")
+                        _leads.append(lead)
+                    _DASH_RAW.update({
+                        "at": time.monotonic(),
+                        "convos": convos.data or [],
+                        "leads": _leads,
+                        "runs": pipeline_res.data or [],
+                        "msgs": msgs_res.count or 0,
+                    })
         else:
-            leads_future = _run_sync(lambda: db.table("leads").select(
-                "id, score, tier, status, origin_code, destination_code, "
-                "route_display, created_at, conversation_id"
-            ).limit(10000).execute())
+            DASHBOARD_CACHE_HEALTH["hits"] += 1
 
-        pipeline_q = db.table("pipeline_runs").select(
-            "cost, latency_ms, status, had_fallback, tunnel, created_at"
-        ).limit(10000)
-        if tunnel_filter:
-            pipeline_q = pipeline_q.eq("tunnel", tunnel_filter)
-
-        # Fire all 4 queries in parallel
-        convos, leads_res, pipeline_res, msgs_res = await asyncio.gather(
-            _run_sync(lambda: convos_q.execute()),
-            leads_future,
-            _run_sync(lambda: pipeline_q.execute()),
-            _run_sync(lambda: db.table("messages").select("id", count="exact").limit(0).execute()),  # type: ignore[arg-type]
-        )
-
-        all_convos = convos.data or []
-        all_leads = leads_res.data or []
-        if tunnel_filter or agent_filter:
-            for lead in all_leads:
-                lead.pop("conversations", None)
-        all_runs = pipeline_res.data or []
-        messages_total_month = msgs_res.count or 0
+        all_convos = _scope_rows(_DASH_RAW["convos"], "tunnel", "assigned_agent_id", tunnel_filter, agent_filter)
+        all_leads = _scope_rows(_DASH_RAW["leads"], "_tunnel", "_agent", tunnel_filter, agent_filter)
+        all_runs = _scope_rows(_DASH_RAW["runs"], "tunnel", None, tunnel_filter, agent_filter)
+        messages_total_month = _DASH_RAW["msgs"]
 
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -3329,7 +3352,7 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             .order("created_at", desc=True)
             .limit(_ABANDONED_SCAN_CAP)
             .execute()
-        ))
+        ), label="cron")
     except Exception as e:
         logger.error(f"get_abandoned_conversations query error: {e}")
         return []
@@ -3360,7 +3383,7 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()
-            ))
+            ), label="cron")
             if not msg_res.data:
                 # Silent lead: form filled, nobody ever spoke. Age from
                 # conversation creation; the old `continue` here was the
@@ -3416,7 +3439,7 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
             .order("created_at", desc=True)
             .limit(500)
             .execute()
-        ))
+        ), label="cron")
         rows = result.data or []
         if len(rows) >= 500:
             # No silent truncation: the backfill's whole promise is "the
@@ -3517,7 +3540,8 @@ async def get_presence_day(user_id: str, day: str) -> dict | None:
             .select("*")
             .eq("user_id", user_id)
             .eq("day", day)
-            .execute()
+            .execute(),
+            label="presence",
         )
         return res.data[0] if res.data else None
     except Exception as e:
@@ -3535,7 +3559,8 @@ async def upsert_presence_day(user_id: str, day: str, d: dict) -> None:
                 .update(d)
                 .eq("user_id", user_id)
                 .eq("day", day)
-                .execute()
+                .execute(),
+                label="presence",
             )
         else:
             await _run_sync(
@@ -3543,6 +3568,7 @@ async def upsert_presence_day(user_id: str, day: str, d: dict) -> None:
                 .insert({"user_id": user_id, "day": day, **d})
                 .execute(),
                 idempotent=False,
+                label="presence",
             )
     except Exception as e:
         logger.warning(f"upsert_presence_day error: {e}")

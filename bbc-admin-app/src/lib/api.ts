@@ -28,9 +28,12 @@ import type {
   Task,
   TasksResponse,
   UserAccessAuditItem,
+  AgentSseEvent,
 } from './types'
+import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
 import { getCookie } from './cookies'
+import { openSse, type SseHandle } from '@/lib/sse-reader'
 
 // ── Config ────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -70,6 +73,26 @@ export async function loginUser(email: string, password: string) {
     throw new Error(body.detail || 'Login failed')
   }
   return res.json()
+}
+
+/** The panel's live channel for one conversation. Auth comes from the same
+ *  authHeaders() every request uses — components never see a token. EventSource
+ *  cannot send headers and a session JWT in a query string lands in every proxy
+ *  log, hence fetch+ReadableStream under the hood. Frames are validated here;
+ *  consumers receive AgentSseEvent, never unknown. */
+export function openAgentStream(
+  conversationId: string,
+  onEvent: (e: AgentSseEvent) => void,
+  onStateChange: (state: 'open' | 'reconnecting' | 'closed') => void,
+  onGiveUp: () => void,
+): SseHandle {
+  return openSse(
+    `${BASE}/api/agent/stream/${conversationId}`,
+    authHeaders(),
+    (raw) => { const e = parseAgentSseEvent(raw); if (e) onEvent(e) },
+    onStateChange,
+    onGiveUp,
+  )
 }
 
 // ── Generic fetch wrapper ─────────────────────────────────────

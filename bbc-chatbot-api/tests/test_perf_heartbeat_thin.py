@@ -326,21 +326,27 @@ def test_snapshot_shape_and_worker_size():
 # 11 — the alert shouts before the panel breaks
 # ══════════════════════════════════════════════════════════════
 
+def _reset_db_alert():
+    from app.api import cron
+    cron._DB_ALERT.update({"last_sent_at": None, "over_streak": 0, "episode_open": False})
+
+
 @pytest.mark.asyncio
 async def test_saturation_alerts_once_then_suppresses():
     from app.api import cron
     from config.settings import settings
 
-    cron._DB_ALERT["last_sent_at"] = None
-    db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
-    db.DB_HEALTH["in_flight"] = 3
-
+    _reset_db_alert()
     with patch("app.services.email.send_ops_alert_email",
                new=AsyncMock(return_value=True)) as mail:
-        first = await cron.run_db_saturation_alert()
-        assert first["state"] == "alerted"
+        states = []
+        for _ in range(3):
+            db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+            db.DB_HEALTH["in_flight"] = 3
+            states.append((await cron.run_db_saturation_alert())["state"])
+        assert states[:2] == ["watching", "watching"]
+        assert states[2] == "alerted"
         assert mail.await_count == 1
-        # the window is judged on its own — peak resets to what is in flight now
         assert db.DB_HEALTH["peak_in_flight"] == 3
 
         db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
@@ -348,14 +354,48 @@ async def test_saturation_alerts_once_then_suppresses():
         assert second["state"] == "suppressed"
         assert mail.await_count == 1
 
-    cron._DB_ALERT["last_sent_at"] = None
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_send_retries_next_window_with_cc_super():
+    """A Postmark False must not open the episode or stamp last_sent_at —
+    otherwise the next hour is silenced and cc_super is stripped from the
+    retry that never happens."""
+    from app.api import cron
+    from config.settings import settings
+
+    _reset_db_alert()
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=False)) as mail:
+        states = []
+        for _ in range(3):
+            db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+            states.append((await cron.run_db_saturation_alert())["state"])
+        assert states[:2] == ["watching", "watching"]
+        assert states[2] == "email_failed"
+        assert cron._DB_ALERT["episode_open"] is False
+        assert cron._DB_ALERT["last_sent_at"] is None
+        assert mail.await_count == 1
+        assert mail.await_args.kwargs["cc_super"] is True
+
+        db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+        retry = await cron.run_db_saturation_alert()
+        assert retry["state"] == "email_failed"
+        assert retry["state"] != "suppressed"
+        assert mail.await_count == 2
+        assert mail.await_args.kwargs["cc_super"] is True
+        assert cron._DB_ALERT["episode_open"] is False
+        assert cron._DB_ALERT["last_sent_at"] is None
+
+    _reset_db_alert()
 
 
 @pytest.mark.asyncio
 async def test_a_quiet_executor_says_ok():
     from app.api import cron
 
-    cron._DB_ALERT["last_sent_at"] = None
+    _reset_db_alert()
     db.DB_HEALTH["peak_in_flight"] = 2
     with patch("app.services.email.send_ops_alert_email",
                new=AsyncMock(return_value=True)) as mail:
@@ -368,16 +408,21 @@ async def test_a_quiet_executor_says_ok():
 async def test_a_slow_heartbeat_alone_is_enough():
     from app.api import cron
 
-    cron._DB_ALERT["last_sent_at"] = None
+    _reset_db_alert()
     db.DB_HEALTH["peak_in_flight"] = 1
     agent_api.HEARTBEAT_HEALTH["latency_ms"].extend([4000.0] * 20)
     with patch("app.services.email.send_ops_alert_email",
                new=AsyncMock(return_value=True)) as mail:
-        out = await cron.run_db_saturation_alert()
-    assert out["state"] == "alerted"
+        states = []
+        for _ in range(3):
+            db.DB_HEALTH["peak_in_flight"] = 1
+            states.append((await cron.run_db_saturation_alert())["state"])
+    assert states[:2] == ["watching", "watching"]
+    assert states[2] == "alerted"
     assert mail.await_count == 1
     assert "heartbeat slow" in mail.await_args.kwargs["subject"]
-    cron._DB_ALERT["last_sent_at"] = None
+    assert "[sustained 3×60s]" in mail.await_args.kwargs["subject"]
+    _reset_db_alert()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -437,7 +482,19 @@ def test_zero_workers_is_refused_before_it_can_kill_the_process():
         _settings_with(db_executor_workers=0)
     with pytest.raises(ValidationError):
         _settings_with(db_executor_workers=3)
-    assert _settings_with(db_executor_workers=4).db_executor_workers == 4
+    assert _settings_with(db_executor_workers=4, background_db_concurrency=3).db_executor_workers == 4
+
+
+def test_background_concurrency_must_leave_room_for_requests():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as ei:
+        _settings_with(db_executor_workers=4, background_db_concurrency=8)
+    msg = str(ei.value)
+    assert "8" in msg and "4" in msg
+    s = _settings_with(db_executor_workers=4, background_db_concurrency=3)
+    assert s.db_executor_workers == 4
+    assert s.background_db_concurrency == 3
 
 
 def test_a_sweep_interval_below_the_floor_is_refused():
@@ -460,25 +517,93 @@ async def test_the_alert_does_not_arrive_as_a_waiting_chat():
     from app.api import cron
     from config.settings import settings
 
-    cron._DB_ALERT["last_sent_at"] = None
-    db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
-
+    _reset_db_alert()
     with (
         patch("app.services.email.send_ops_alert_email",
               new=AsyncMock(return_value=True)) as ops,
         patch("app.services.email.send_super_alert_email",
               new=AsyncMock()) as customer,
     ):
-        out = await cron.run_db_saturation_alert()
+        out = None
+        for _ in range(3):
+            db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+            out = await cron.run_db_saturation_alert()
 
     assert out["state"] == "alerted"
     customer.assert_not_awaited(), "an infra alert must not borrow a chat subject"
     subject = ops.await_args.kwargs["subject"]
     assert "DB saturation" in subject
     assert "executor saturated" in subject
+    assert "[sustained 3×60s]" in subject
     assert "no agents online" not in subject
     assert "by_label" in ops.await_args.kwargs["body"]
-    cron._DB_ALERT["last_sent_at"] = None
+    assert ops.await_args.kwargs["cc_super"] is True
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_window_closes_the_episode():
+    from app.api import cron
+    from config.settings import settings
+
+    _reset_db_alert()
+    agent_api.HEARTBEAT_HEALTH["latency_ms"].clear()
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)):
+        for _ in range(3):
+            db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+            db.DB_HEALTH["in_flight"] = 3
+            await cron.run_db_saturation_alert()
+        db.DB_HEALTH["peak_in_flight"] = 1
+        db.DB_HEALTH["in_flight"] = 1
+        out = await cron.run_db_saturation_alert()
+    assert out["state"] == "ok"
+    assert cron._DB_ALERT["over_streak"] == 0
+    assert cron._DB_ALERT["episode_open"] is False
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_ops_alert_to_ops_address_ccs_super_only_on_first():
+    from app.services import email
+    from config.settings import settings
+
+    captured = []
+
+    class _Resp:
+        status_code = 200
+        text = "ok"
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return None
+        async def post(self, url, headers=None, json=None):
+            captured.append(json)
+            return _Resp()
+
+    with (
+        patch("app.services.email.httpx.AsyncClient", lambda **k: _Client()),
+        patch.object(email.settings, "postmark_token", "tok"),
+        patch.object(email.settings, "ops_alert_email", "it@x"),
+    ):
+        await email.send_ops_alert_email("s", "b", cc_super=True)
+        await email.send_ops_alert_email("s", "b", cc_super=False)
+    assert captured[0]["To"] == "it@x"
+    assert captured[0]["Cc"] == settings.super_alert_email
+    assert captured[1]["To"] == "it@x"
+    assert "Cc" not in captured[1]
+
+    captured.clear()
+    with (
+        patch("app.services.email.httpx.AsyncClient", lambda **k: _Client()),
+        patch.object(email.settings, "postmark_token", "tok"),
+        patch.object(email.settings, "ops_alert_email", ""),
+    ):
+        await email.send_ops_alert_email("s", "b", cc_super=True)
+    assert captured[0]["To"] == settings.super_alert_email
+    assert "Cc" not in captured[0]
 
 
 @pytest.mark.asyncio

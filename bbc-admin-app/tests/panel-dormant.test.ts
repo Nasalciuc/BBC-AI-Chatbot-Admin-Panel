@@ -258,7 +258,7 @@ test('every polling site honours dormant', () => {
     const src = read(file)
     for (const line of src.split('\n')) {
       if (!line.includes('refetchInterval:')) continue
-      assert.match(line, /dormant \?/, `${file}: "${line.trim()}" ignores dormant`)
+      assert.match(line, /dormant(?: \|\| \w+)? \?/, `${file}: "${line.trim()}" ignores dormant`)
     }
     assert.match(src, /usePanelModeStore/, `${file} does not read the panel mode`)
   }
@@ -480,4 +480,3 @@ test('shared contracts live in src/lib/types.ts', () => {
   assert.match(store, /import type \{ PanelDormancyReason \} from '@\/lib\/types'/)
   assert.doesNotMatch(store, /type Reason =/)
 })
-

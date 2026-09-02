@@ -184,9 +184,40 @@ def _is_phantom_turn(history: list) -> bool:
     return False                  # only system messages, or none at all
 
 
+# Bounded background concurrency. Fire-and-forget never delayed a reply, but
+# every one of these coroutines ends in a database call that takes an executor
+# slot — and there was no ceiling. Ten visitors typing at once launched 50-70
+# background calls against a 20-slot pool, and the OPERATOR panel paid for it.
+# The semaphore is created lazily so it binds to the running loop.
+_bg_semaphore: asyncio.Semaphore | None = None
+BG_HEALTH: dict = {"running": 0, "peak_running": 0, "waited": 0}
+
+
+def _get_bg_semaphore() -> asyncio.Semaphore:
+    global _bg_semaphore
+    if _bg_semaphore is None:
+        from config.settings import settings
+        _bg_semaphore = asyncio.Semaphore(settings.background_db_concurrency)
+    return _bg_semaphore
+
+
+async def _bounded(coro):
+    sem = _get_bg_semaphore()
+    if sem.locked():
+        BG_HEALTH["waited"] += 1
+    async with sem:
+        BG_HEALTH["running"] += 1
+        BG_HEALTH["peak_running"] = max(BG_HEALTH["peak_running"], BG_HEALTH["running"])
+        try:
+            return await coro
+        finally:
+            BG_HEALTH["running"] -= 1
+
+
 def _fire_and_forget(coro):
-    """Run coroutine in background without blocking pipeline."""
-    task = asyncio.create_task(coro)
+    """Run coroutine in background without blocking pipeline — but not without
+    a queue. See _bg_semaphore."""
+    task = asyncio.create_task(_bounded(coro))
     _background_tasks.add(task)
     task.add_done_callback(lambda t: (
         _background_tasks.discard(t),

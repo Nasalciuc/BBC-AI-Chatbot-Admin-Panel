@@ -99,6 +99,8 @@ async def startup() -> None:
     logger.info(f"Qdrant: {'configured' if settings.qdrant_url else 'disabled'}")
     logger.info(f"Redis: {'configured' if settings.redis_url else 'disabled'}")
     logger.info(f"Budget: ${settings.daily_budget}/day, ${settings.per_conversation_budget}/conv")
+    if not settings.ops_alert_email:
+        logger.warning("ops alerts fall back to super@ — set OPS_ALERT_EMAIL")
 
     if settings.internal_scheduler_enabled:
         from app.services.scheduler import start as start_scheduler

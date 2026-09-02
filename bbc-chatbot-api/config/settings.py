@@ -2,7 +2,7 @@
 
 import json
 
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings
 
 # Always allowed — merged into cors_origins even when CORS_ORIGINS env omits BCT
@@ -243,6 +243,34 @@ class Settings(BaseSettings):
     # demand-side fixes — a bigger pool on the old heartbeat would just have
     # moved the cliff.
     db_executor_workers: int = Field(default=20, ge=4)
+
+    # Background DB work (pipeline_run inserts, summaries, lead updates,
+    # presence marks) is fire-and-forget: it does not delay the reply, but it
+    # DOES take executor slots. With no bound, a burst of ten visitors put
+    # 50-70 background calls against a 20-slot pool and the operator panel
+    # started failing — "whenever the lead traffic increases". This caps how
+    # many background calls run at once; the rest queue, invisibly to the user.
+    #
+    # 8, not fewer: _run_summary holds its slot for the whole Haiku call
+    # (seconds) before its one DB write. Sizing for DB-only work would let a
+    # burst of summaries starve lead updates — background, but the money path.
+    # Sizing for LLM-length holds would defeat the point. Eight is the middle;
+    # /health.background.waited says which way to move it.
+    background_db_concurrency: int = Field(default=8, ge=2)
+
+    # Dashboard statistics are aggregates over the same rows for everyone; the
+    # per-user view is a filter applied afterwards. One computation every 30s
+    # serves every panel. Before: 3 parallel 10k-row queries per panel per
+    # minute, no cache — the steady 21-24/20 executor peak.
+    dashboard_cache_ttl_seconds: int = Field(default=30, ge=5)
+
+    # Infrastructure alerts are not customer events. They go here, not to the
+    # supervisors' inbox. Empty → falls back to super_alert_email (with a
+    # warning at startup that it should be set).
+    ops_alert_email: str = ""
+    # Alert only on SUSTAINED saturation: this many consecutive 60s windows
+    # over the ceiling. A one-second spike in one window is not an incident.
+    db_alert_sustained_windows: int = Field(default=3, ge=1)
     # 21 Aug 2026. The abandoned-CRM sweep ran from TWO places: this process's
     # scheduler (guarded by an asyncio.Lock) and GitHub Actions hitting
     # /api/cron/abandoned-crm. The lock is per-process and never saw Actions.
@@ -275,6 +303,19 @@ class Settings(BaseSettings):
     inactive_quiet_minutes: int = 30
     attention_email_enabled: bool = True
     attention_email_to: str = ""  # empty → falls back to super_alert_email
+
+    @model_validator(mode="after")
+    def _background_leaves_room_for_requests(self) -> "Settings":
+        # The semaphore caps BACKGROUND work so request-path DB calls always
+        # have executor slots. If it is not strictly smaller than the pool, a
+        # burst of background jobs can fill the queue ahead of every request —
+        # the exact failure it exists to prevent. Fail at startup, not at 3am.
+        if self.background_db_concurrency >= self.db_executor_workers:
+            raise ValueError(
+                f"background_db_concurrency ({self.background_db_concurrency}) must be "
+                f"< db_executor_workers ({self.db_executor_workers})"
+            )
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -285,7 +285,7 @@ async def send_super_alert_email(
     )
 
 
-async def send_ops_alert_email(subject: str, body: str) -> bool:
+async def send_ops_alert_email(subject: str, body: str, *, cc_super: bool = False) -> bool:
     """Infrastructure alerts (saturation, stalls) — NOT a customer event.
 
     send_super_alert_email builds a fixed 'Chat N waiting — no agents online'
@@ -297,11 +297,14 @@ async def send_ops_alert_email(subject: str, body: str) -> bool:
         html_body=f"<pre style=\"font-family:monospace\">{html.escape(body)}</pre>",
         text_body=body,
         what=f"ops alert email ({subject})",
+        to_override=settings.ops_alert_email or None,
+        cc=settings.super_alert_email if cc_super else None,
     )
 
 
 async def _send_super_inbox_email(
-    *, subject: str, html_body: str, text_body: str, what: str
+    *, subject: str, html_body: str, text_body: str, what: str,
+    to_override: str | None = None, cc: str | None = None,
 ) -> bool:
     """The one transport to super@. Extracted so an infrastructure alert can
     have its own subject without duplicating Postmark configuration — two
@@ -321,7 +324,8 @@ async def _send_super_inbox_email(
                 },
                 json={
                     "From": settings.email_from,
-                    "To": settings.super_alert_email,
+                    "To": to_override or settings.super_alert_email,
+                    **({"Cc": cc} if cc and cc != (to_override or settings.super_alert_email) else {}),
                     "Subject": subject,
                     "MessageStream": "outbound",
                     "HtmlBody": html_body,

@@ -1,10 +1,13 @@
-"""Agent presence — heartbeat endpoint."""
+"""Agent presence — heartbeat endpoint, and the panel's SSE stream."""
+import asyncio
+import json
 import logging
 import time
 from collections import deque as _deque
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.db import supabase as db
 from app.pipeline.orchestrator import _fire_and_forget
@@ -411,6 +414,56 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "queue_ids": _queue_ids,
         "queue_oldest": _queue_oldest,
     }
+
+
+@router.get("/agent/stream/{conversation_id}")
+async def agent_stream(
+    conversation_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """SSE for the operator panel: message / typing / presence for ONE
+    conversation — the one on screen. Replaces three polls (500ms/2s/2s).
+
+    Same generator shape as the widget stream; same fan-out. Authorisation
+    mirrors GET /conversations/{id}: tunnel gate, and a supervisor/PM outside
+    the conversation's team gets nothing (403), not a metadata-only stream —
+    events carry message text.
+
+    The panel authenticates with the Bearer header via fetch()+ReadableStream,
+    not EventSource: EventSource cannot set headers and a session JWT in a
+    query string lands in every proxy log."""
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    from app.api.conversations import _enforce_tunnel, _resolve_team_scope
+    _enforce_tunnel(user, conv.get("tunnel"))
+    if user.get("role") in ("supervisor", "project_manager"):
+        team_ids = await _resolve_team_scope(user)
+        if not team_ids or conv.get("team_id") not in team_ids:
+            raise HTTPException(status_code=403, detail="Outside your team")
+
+    from app.realtime.manager import manager
+
+    async def event_generator():
+        queue = await manager.connect(conversation_id)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except asyncio.TimeoutError:  # noqa: silent — not a failure: 25s of quiet is the normal state of an open chat, and the keepalive below is the whole point of the timeout (proxies close idle connections)
+                    yield ": keepalive\n\n"
+        finally:
+            manager.disconnect(conversation_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @router.get("/agent/status")
