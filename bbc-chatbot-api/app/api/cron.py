@@ -575,8 +575,8 @@ async def run_crm_orphan_backstop() -> dict:
     return {"scanned": len(orphans), "results": results}
 
 
-_DB_ALERT: dict = {"last_sent_at": None}
-DB_ALERT_COOLDOWN_MINUTES = 15
+_DB_ALERT: dict = {"last_sent_at": None, "over_streak": 0, "episode_open": False}
+DB_ALERT_COOLDOWN_MINUTES = 60
 
 
 async def run_db_saturation_alert() -> dict:
@@ -594,29 +594,51 @@ async def run_db_saturation_alert() -> dict:
     try:
         db_s = db_health_snapshot()
         hb_s = heartbeat_health_snapshot()
+        from app.pipeline.orchestrator import BG_HEALTH
+        from app.db.supabase import DASHBOARD_CACHE_HEALTH
         ceiling = max(1, db_s["workers"] - 2)
         saturated = db_s["peak_in_flight"] >= ceiling
         slow = hb_s["p95_ms"] > 1500
         # window reset: peak is per evaluation window
         DB_HEALTH["peak_in_flight"] = DB_HEALTH["in_flight"]
-        if not (saturated or slow):
+        # Sustained, not spiky: peak resets every window, so a one-second burst
+        # in one window used to fire the alert — 96 emails a day to super@ on
+        # a steady load. Count consecutive windows over the ceiling instead.
+        from config.settings import settings as _s
+        if saturated or slow:
+            _DB_ALERT["over_streak"] += 1
+        else:
+            if _DB_ALERT["episode_open"]:
+                logger.info("[db-alert] saturation episode ended")
+            _DB_ALERT["over_streak"] = 0
+            _DB_ALERT["episode_open"] = False
             return {"state": "ok", **db_s, "heartbeat": hb_s}
+        if _DB_ALERT["over_streak"] < _s.db_alert_sustained_windows:
+            return {"state": "watching", "streak": _DB_ALERT["over_streak"], **db_s, "heartbeat": hb_s}
         now = datetime.now(timezone.utc)
         last = _DB_ALERT["last_sent_at"]
         if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
             return {"state": "suppressed", **db_s, "heartbeat": hb_s}
+        _first_in_episode = not _DB_ALERT["episode_open"]
+        _DB_ALERT["episode_open"] = True
         try:
             from app.services.email import send_ops_alert_email
             _why = "executor saturated" if saturated else "heartbeat slow"
             await send_ops_alert_email(
-                subject=f"DB saturation — {_why} ({db_s['peak_in_flight']}/{db_s['workers']})",
+                subject=(
+                    f"DB saturation [sustained {_DB_ALERT['over_streak']}×60s] — {_why} "
+                    f"({db_s['peak_in_flight']}/{db_s['workers']})"
+                ),
+                cc_super=_first_in_episode,
                 body=(
                     f"peak_in_flight={db_s['peak_in_flight']}/{db_s['workers']}\n"
                     f"heartbeat p95={hb_s['p95_ms']}ms (threshold 1500)\n"
                     f"disconnects={db_s['disconnects']} "
                     f"retries_ok={db_s['retries_ok']} retries_failed={db_s['retries_failed']}\n"
                     f"p50={db_s['p50_ms']}ms p95={db_s['p95_ms']}ms\n"
-                    f"by_label={db_s['by_label']}\n\n"
+                    f"by_label={db_s['by_label']}\n"
+                    f"background: running={BG_HEALTH['running']} peak={BG_HEALTH['peak_running']} waited={BG_HEALTH['waited']}\n"
+                    f"dashboard_cache: {DASHBOARD_CACHE_HEALTH}\n\n"
                     "The panel starts failing when the pool pins near its ceiling. "
                     "Check /health.db by_label to see which caller is loudest."
                 ),

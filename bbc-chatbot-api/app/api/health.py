@@ -33,7 +33,7 @@ async def health() -> dict:
     from app.services.crm import CRM_PUSH_HEALTH
     # Executor saturation: the thing nothing measured while we blamed the network
     # for two weeks. peak_in_flight near `workers` is the cliff, not a symptom.
-    from app.db.supabase import db_health_snapshot
+    from app.db.supabase import db_health_snapshot, DASHBOARD_CACHE_HEALTH, _DASH_RAW
     from app.api.agent import DEADLINE_HEALTH, heartbeat_health_snapshot
     # Live SSE subscribers: the panel and the widget share a conversation's
     # fan-out now, so a count that never rises means the panel is still polling.
@@ -46,7 +46,8 @@ async def health() -> dict:
     from app.services.routing import STICKY_HEALTH
     # Turns we refused to speak: every count is a moment the bot was about to
     # answer a question nobody asked.
-    from app.pipeline.orchestrator import PIPELINE_HEALTH
+    from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
+    from app.api.cron import _DB_ALERT
 
     if not settings.debug:
         return {
@@ -61,6 +62,13 @@ async def health() -> dict:
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
             "db": db_health_snapshot(),
+            "dashboard_cache": {
+                **DASHBOARD_CACHE_HEALTH,
+                # When any of these reaches 10,000 we are truncating (oldest first).
+                "rows": {k: len(_DASH_RAW[k]) for k in ("convos", "leads", "runs")},
+            },
+            "background": dict(BG_HEALTH),
+            "db_alert": {"over_streak": _DB_ALERT["over_streak"], "episode_open": _DB_ALERT["episode_open"]},
             "heartbeat": heartbeat_health_snapshot(),
             "deadline_skips": dict(DEADLINE_HEALTH),
             "sse": {"subscribers": _sse.subscriber_count()},
@@ -117,6 +125,13 @@ async def health() -> dict:
         "generation_fallbacks": dict(GENERATION_HEALTH),
         "crm_pushes": dict(CRM_PUSH_HEALTH),
         "db": db_health_snapshot(),
+        "dashboard_cache": {
+            **DASHBOARD_CACHE_HEALTH,
+            # When any of these reaches 10,000 we are truncating (oldest first).
+            "rows": {k: len(_DASH_RAW[k]) for k in ("convos", "leads", "runs")},
+        },
+        "background": dict(BG_HEALTH),
+        "db_alert": {"over_streak": _DB_ALERT["over_streak"], "episode_open": _DB_ALERT["episode_open"]},
         "heartbeat": heartbeat_health_snapshot(),
         "deadline_skips": dict(DEADLINE_HEALTH),
         "sse": {"subscribers": _sse.subscriber_count()},
