@@ -723,6 +723,11 @@ async def clear_typing_status(
     """Widget reports client sent message or cleared input."""
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_typing(conversation_id)
+    # The panel stops polling typing while its stream is live. Without this
+    # event the "typing…" indicator stayed on until reconnect: set_typing
+    # published, clear did not.
+    from app.realtime.manager import manager
+    await manager.push(conversation_id, {"event": "typing", "is_typing": False, "text": ""})
     return {"success": True}
 
 
@@ -817,6 +822,24 @@ async def mark_chat_session_close(
     await db.update_conversation_presence(conversation_id, metadata)
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_typing(conversation_id)
+    # Publish the SAME five keys ping_chat_session publishes (chat.py:787),
+    # derived by the SAME rule GET /presence uses — the panel MERGES this over
+    # the last ping, so any key left out keeps its old value. A close payload
+    # without widget_open=False left the client "online" until reconnect.
+    from app.realtime.manager import manager
+    _effective, _age = db.derive_effective_presence(
+        metadata, last_user_message_at=conv.get("last_user_message_at")
+    )
+    await manager.push(conversation_id, {
+        "event": "presence",
+        "widget_open": False,
+        "widget_presence": reason,
+        "widget_presence_effective": _effective,
+        "widget_presence_age_seconds": _age,
+        "widget_last_close_reason": reason,
+        "widget_last_event_at": metadata["widget_last_event_at"],
+    })
+    await manager.push(conversation_id, {"event": "typing", "is_typing": False, "text": ""})
     return {"success": True}
 
 

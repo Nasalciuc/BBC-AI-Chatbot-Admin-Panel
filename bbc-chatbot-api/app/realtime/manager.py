@@ -48,19 +48,30 @@ class ConnectionManager:
             return len(self._subs.get(conv_id, ()))
         return sum(len(s) for s in self._subs.values())
 
-    def _fanout(self, conv_id: str, payload: dict, *, drop_silently: bool = False) -> None:
+    # Chunks may use at most this share of a subscriber's queue. Above it they
+    # are dropped so that whole messages and stream_end always find room. A
+    # 500-token reply on a slow client used to fill the queue with chunks the
+    # panel does not even render, and then drop the one event that carried
+    # the complete message — with the stream still "open", so polling never
+    # stepped in. The operator simply never saw the reply.
+    _CHUNK_HIGH_WATER = 0.8
+
+    def _fanout(self, conv_id: str, payload: dict, *, is_chunk: bool = False) -> None:
         for q in tuple(self._subs.get(conv_id, ())):
+            if is_chunk and q.qsize() >= int(q.maxsize * self._CHUNK_HIGH_WATER):
+                continue  # chunk backpressure: keep headroom for terminal events
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull as e:
-                # One slow subscriber drops its own copy; the loop keeps going,
-                # so the other subscriber on this conversation still gets it.
-                if not drop_silently:
-                    logger.warning(
-                        f"[sse] {type(e).__name__} for conv={conv_id} "
-                        f"(event={payload.get('event', 'message')}) — "
-                        "a subscriber likely disconnected"
-                    )
+                # A non-chunk payload found no room even above the chunk cap:
+                # this subscriber is not draining at all. Drop its copy, keep
+                # the loop going for the other subscriber, and say so loudly —
+                # a dropped stream_end is a message the operator will not see.
+                logger.warning(
+                    f"[sse] {type(e).__name__} for conv={conv_id} "
+                    f"(event={payload.get('event', 'message')}) — "
+                    "subscriber not draining; terminal event dropped"
+                )
 
     async def push(self, conv_id: str, message: dict) -> None:
         """Push message to every subscriber. No-op if none (clients poll)."""
@@ -69,7 +80,7 @@ class ConnectionManager:
     async def push_chunk(self, conv_id: str, delta: str) -> None:
         """Streaming text chunk. Dropped on a full queue — the subscriber gets
         the full message at stream_end."""
-        self._fanout(conv_id, {"event": "stream_chunk", "delta": delta}, drop_silently=True)
+        self._fanout(conv_id, {"event": "stream_chunk", "delta": delta}, is_chunk=True)
 
     async def push_stream_end(self, conv_id: str, message: dict) -> None:
         self._fanout(conv_id, {"event": "stream_end", **message})
