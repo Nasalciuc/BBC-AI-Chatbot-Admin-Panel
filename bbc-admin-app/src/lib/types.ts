@@ -308,9 +308,11 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
   if (typeof r.id === 'string') {
-    return ev === 'stream_end'
-      ? ({ ...(r as object), event: 'stream_end' } as AgentSseEvent)
-      : (r as unknown as SseMessageRow)
+    if (ev === 'stream_end') return { ...(r as object), event: 'stream_end' } as AgentSseEvent
+    // A message row has NO event field. An unknown event that happens to carry
+    // an id must not pass as a row — the consumer would see `event` and drop
+    // the frame silently, which is worse than rejecting it here.
+    if (ev === undefined) return r as unknown as SseMessageRow
   }
   return null
 }

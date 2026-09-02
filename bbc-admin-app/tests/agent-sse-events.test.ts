@@ -45,3 +45,22 @@ test('parseAgentSseEvent: each variant becomes a typed object; garbage is null',
   assert.equal(parseAgentSseEvent({}), null)
   assert.equal(parseAgentSseEvent({ event: 'x' }), null)
 })
+
+test('parseAgentSseEvent: an unknown event with an id is not a message row', () => {
+  assert.equal(parseAgentSseEvent({ event: 'x', id: 'm1' }), null)
+
+  const row = parseAgentSseEvent({ id: 'm1', role: 'agent', content: 'hi' })
+  assert.ok(row && !('event' in row))
+  assert.equal((row as { id: string }).id, 'm1')
+  assert.equal((row as { content: string }).content, 'hi')
+
+  const end = parseAgentSseEvent({
+    event: 'stream_end',
+    id: 'm1',
+    role: 'ai',
+    content: 'done',
+    created_at: 't',
+  })
+  assert.equal(end && 'event' in end && end.event, 'stream_end')
+  assert.equal((end as { id: string }).id, 'm1')
+})

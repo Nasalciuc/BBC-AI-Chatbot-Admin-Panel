@@ -14,17 +14,23 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 from app.pipeline import orchestrator as orch  # noqa: E402
 
 
-def _reset_bg():
+async def _reset_bg():
+    # cancel() only schedules; the task's finally (running -= 1) runs LATER.
+    # Await the cancelled tasks first, THEN zero the counters — otherwise a
+    # late decrement drives `running` negative and poisons the next assertion.
+    tasks = list(orch._background_tasks)
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    orch._background_tasks.clear()
     orch._bg_semaphore = None
     orch.BG_HEALTH.update({"running": 0, "peak_running": 0, "waited": 0})
-    for t in list(orch._background_tasks):
-        t.cancel()
-        orch._background_tasks.discard(t)
 
 
 @pytest.mark.asyncio
 async def test_twenty_background_jobs_peak_at_eight_and_twelve_wait():
-    _reset_bg()
+    await _reset_bg()
     inside = asyncio.Event()
     release = asyncio.Event()
     n_inside = 0
@@ -51,7 +57,7 @@ async def test_twenty_background_jobs_peak_at_eight_and_twelve_wait():
 
 @pytest.mark.asyncio
 async def test_a_failing_job_does_not_jam_the_semaphore():
-    _reset_bg()
+    await _reset_bg()
 
     async def boom():
         raise RuntimeError("bg failed")
@@ -70,3 +76,23 @@ async def test_a_failing_job_does_not_jam_the_semaphore():
     if orch._background_tasks:
         await asyncio.gather(*list(orch._background_tasks), return_exceptions=True)
     assert orch.BG_HEALTH["running"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reset_awaits_cancelled_tasks_before_zeroing_counters():
+    await _reset_bg()
+    started = asyncio.Event()
+    blocker = asyncio.Event()
+
+    async def hold():
+        started.set()
+        await blocker.wait()
+
+    orch._fire_and_forget(hold())
+    await started.wait()
+    assert orch.BG_HEALTH["running"] == 1
+    await _reset_bg()
+    assert orch.BG_HEALTH["running"] == 0
+    await asyncio.sleep(0)
+    assert orch.BG_HEALTH["running"] == 0
+    assert orch.BG_HEALTH["running"] >= 0

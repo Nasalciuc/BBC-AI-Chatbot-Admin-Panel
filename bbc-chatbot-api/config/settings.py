@@ -2,7 +2,7 @@
 
 import json
 
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings
 
 # Always allowed — merged into cors_origins even when CORS_ORIGINS env omits BCT
@@ -303,6 +303,19 @@ class Settings(BaseSettings):
     inactive_quiet_minutes: int = 30
     attention_email_enabled: bool = True
     attention_email_to: str = ""  # empty → falls back to super_alert_email
+
+    @model_validator(mode="after")
+    def _background_leaves_room_for_requests(self) -> "Settings":
+        # The semaphore caps BACKGROUND work so request-path DB calls always
+        # have executor slots. If it is not strictly smaller than the pool, a
+        # burst of background jobs can fill the queue ahead of every request —
+        # the exact failure it exists to prevent. Fail at startup, not at 3am.
+        if self.background_db_concurrency >= self.db_executor_workers:
+            raise ValueError(
+                f"background_db_concurrency ({self.background_db_concurrency}) must be "
+                f"< db_executor_workers ({self.db_executor_workers})"
+            )
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

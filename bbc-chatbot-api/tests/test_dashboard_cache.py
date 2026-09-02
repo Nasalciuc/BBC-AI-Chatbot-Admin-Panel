@@ -38,25 +38,25 @@ def _chain():
 
 def _sql_scope(convos, leads, runs, tunnel, agent):
     """Independent replica of the old SQL .eq() rules (not _scope_rows)."""
-    c, l, r = [], [], []
+    scoped_convos, scoped_leads, scoped_runs = [], [], []
     for row in convos:
         if tunnel and row.get("tunnel") != tunnel:
             continue
         if agent and row.get("assigned_agent_id") != agent:
             continue
-        c.append(row)
+        scoped_convos.append(row)
     for row in leads:
         if tunnel and row.get("_tunnel") != tunnel:
             continue
         if agent and row.get("_agent") != agent:
             continue
-        l.append(row)
+        scoped_leads.append(row)
     for row in runs:
         if tunnel and row.get("tunnel") != tunnel:
             continue
         # runs were filtered on tunnel only — never on agent
-        r.append(row)
-    return c, l, r
+        scoped_runs.append(row)
+    return scoped_convos, scoped_leads, scoped_runs
 
 
 def test_scope_rows_matches_old_sql_for_owner_supervisor_sales():

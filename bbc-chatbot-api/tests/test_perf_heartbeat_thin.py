@@ -358,6 +358,40 @@ async def test_saturation_alerts_once_then_suppresses():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_send_retries_next_window_with_cc_super():
+    """A Postmark False must not open the episode or stamp last_sent_at —
+    otherwise the next hour is silenced and cc_super is stripped from the
+    retry that never happens."""
+    from app.api import cron
+    from config.settings import settings
+
+    _reset_db_alert()
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=False)) as mail:
+        states = []
+        for _ in range(3):
+            db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+            states.append((await cron.run_db_saturation_alert())["state"])
+        assert states[:2] == ["watching", "watching"]
+        assert states[2] == "email_failed"
+        assert cron._DB_ALERT["episode_open"] is False
+        assert cron._DB_ALERT["last_sent_at"] is None
+        assert mail.await_count == 1
+        assert mail.await_args.kwargs["cc_super"] is True
+
+        db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
+        retry = await cron.run_db_saturation_alert()
+        assert retry["state"] == "email_failed"
+        assert retry["state"] != "suppressed"
+        assert mail.await_count == 2
+        assert mail.await_args.kwargs["cc_super"] is True
+        assert cron._DB_ALERT["episode_open"] is False
+        assert cron._DB_ALERT["last_sent_at"] is None
+
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
 async def test_a_quiet_executor_says_ok():
     from app.api import cron
 
@@ -448,7 +482,19 @@ def test_zero_workers_is_refused_before_it_can_kill_the_process():
         _settings_with(db_executor_workers=0)
     with pytest.raises(ValidationError):
         _settings_with(db_executor_workers=3)
-    assert _settings_with(db_executor_workers=4).db_executor_workers == 4
+    assert _settings_with(db_executor_workers=4, background_db_concurrency=3).db_executor_workers == 4
+
+
+def test_background_concurrency_must_leave_room_for_requests():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as ei:
+        _settings_with(db_executor_workers=4, background_db_concurrency=8)
+    msg = str(ei.value)
+    assert "8" in msg and "4" in msg
+    s = _settings_with(db_executor_workers=4, background_db_concurrency=3)
+    assert s.db_executor_workers == 4
+    assert s.background_db_concurrency == 3
 
 
 def test_a_sweep_interval_below_the_floor_is_refused():

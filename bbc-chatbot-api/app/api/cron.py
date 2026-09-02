@@ -620,11 +620,15 @@ async def run_db_saturation_alert() -> dict:
         if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
             return {"state": "suppressed", **db_s, "heartbeat": hb_s}
         _first_in_episode = not _DB_ALERT["episode_open"]
-        _DB_ALERT["episode_open"] = True
+        # episode_open and last_sent_at are written ONLY after a confirmed send.
+        # send_ops_alert_email returns False on a Postmark failure (it does not
+        # raise); marking the episode first meant a failed send suppressed the
+        # retry for an hour and stripped cc_super from it.
+        _sent = False
         try:
             from app.services.email import send_ops_alert_email
             _why = "executor saturated" if saturated else "heartbeat slow"
-            await send_ops_alert_email(
+            _sent = await send_ops_alert_email(
                 subject=(
                     f"DB saturation [sustained {_DB_ALERT['over_streak']}×60s] — {_why} "
                     f"({db_s['peak_in_flight']}/{db_s['workers']})"
@@ -646,6 +650,10 @@ async def run_db_saturation_alert() -> dict:
         except Exception as e:
             logger.warning(f"[db-alert] email failed: {e}")
             return {"state": "email_failed"}
+        if not _sent:
+            logger.warning("[db-alert] email not sent (transport returned False) — will retry next window")
+            return {"state": "email_failed"}
+        _DB_ALERT["episode_open"] = True
         _DB_ALERT["last_sent_at"] = now
         return {"state": "alerted", **db_s, "heartbeat": hb_s}
     except Exception as e:
