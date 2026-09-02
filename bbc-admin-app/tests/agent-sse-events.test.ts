@@ -64,3 +64,10 @@ test('parseAgentSseEvent: an unknown event with an id is not a message row', () 
   assert.equal(end && 'event' in end && end.event, 'stream_end')
   assert.equal((end as { id: string }).id, 'm1')
 })
+
+test('parseAgentSseEvent: a user row without event is a message row', () => {
+  const row = parseAgentSseEvent({ id: 'u1', role: 'user', content: 'hi', created_at: 't' })
+  assert.ok(row && !('event' in row))
+  assert.equal((row as { role: string }).role, 'user')
+  assert.equal((row as { id: string }).id, 'u1')
+})
