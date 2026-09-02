@@ -11,7 +11,7 @@ export interface SseHandle {
 
 export function openSse(
   url: string,
-  token: string,
+  headers: Record<string, string>,
   onEvent: (data: unknown) => void,
   onStateChange: (state: 'open' | 'reconnecting' | 'closed') => void,
   onGiveUp: () => void
@@ -25,7 +25,7 @@ export function openSse(
       ctrl = new AbortController()
       try {
         const res = await fetch(url, {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+          headers: { ...headers, Accept: 'text/event-stream' },
           signal: ctrl.signal,
         })
         if (!res.ok || !res.body) throw new Error(`sse ${res.status}`)

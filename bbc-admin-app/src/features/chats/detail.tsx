@@ -10,6 +10,7 @@ import {
   getConversation,
   sendAgentMessage,
   apiFetch,
+  openAgentStream,
   blockConversationVisitor,
   postAgentTyping,
   clearAgentTyping,
@@ -22,7 +23,6 @@ import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
 import { OperatorHistory, OperatorBadge } from './operator-history'
 import { describeClientPresence, presenceFromMetadata } from './presence'
-import { openSse } from '@/lib/sse-reader'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 
 interface Props {
@@ -174,44 +174,55 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   // asking about, which the server already knew the moment they happened.
   // Bearer over fetch()+ReadableStream, not EventSource: EventSource cannot
   // set headers and a session JWT in a query string lands in every proxy log.
-  const token = useAuthStore((s) => s.auth.accessToken)
   useEffect(() => {
-    if (!conversationId || !token || activeTab !== 'my_active') return
-    const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-    const h = openSse(
-      `${apiBase}/api/agent/stream/${conversationId}`,
-      token,
-      (ev) => {
-        const e = ev as { event?: string; id?: string; [k: string]: unknown }
-        if (e.event === 'typing') {
-          queryClient.setQueryData(['typing', conversationId], {
-            is_typing: Boolean(e.is_typing),
-            text: String(e.text ?? ''),
-          })
-        } else if (e.event === 'presence') {
-          queryClient.setQueryData(
-            ['presence', conversationId],
-            (old: unknown) => ({ ...(old as Record<string, unknown>), ...e })
-          )
-        } else if (e.event === 'stream_chunk') {
-          // The panel renders whole messages; the widget owns the typewriter.
-        } else if (e.id) {
-          // Message rows (agent/system/ai) and stream_end. Deduped by id — the
-          // incremental poll may have delivered the same row a moment earlier.
+    // A dormant panel holds no stream (it asks for nothing), and a mock view
+    // never opens a real authenticated channel for a conversation it does not
+    // query. Both were missing: dormant panels kept server subscriptions alive.
+    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock) return
+    const h = openAgentStream(
+      conversationId,
+      (e) => {
+        if (!('event' in e)) {
+          // Plain message row. Deduped by id — the incremental poll may have
+          // delivered the same row a moment earlier.
           queryClient.setQueryData(
             ['messages-incremental', conversationId],
-            (old: unknown) => {
-              const list = Array.isArray(old) ? (old as Message[]) : []
-              return list.some((m) => m.id === e.id) ? list : [...list, e as unknown as Message]
-            }
+            (old: Message[] | undefined) =>
+              (old ?? []).some((m) => m.id === e.id) ? (old ?? []) : [...(old ?? []), e]
           )
+          return
+        }
+        switch (e.event) {
+          case 'typing':
+            queryClient.setQueryData(['typing', conversationId], { is_typing: e.is_typing, text: e.text })
+            break
+          case 'presence': {
+            const { event: _ev, ...presence } = e
+            queryClient.setQueryData(
+              ['presence', conversationId],
+              (old: Record<string, unknown> | undefined) => ({ ...(old ?? {}), ...presence })
+            )
+            break
+          }
+          case 'stream_chunk':
+            // The panel renders whole messages; the widget owns the typewriter.
+            break
+          case 'stream_end': {
+            const { event: _ev, ...row } = e
+            queryClient.setQueryData(
+              ['messages-incremental', conversationId],
+              (old: Message[] | undefined) =>
+                (old ?? []).some((m) => m.id === row.id) ? (old ?? []) : [...(old ?? []), row as Message]
+            )
+            break
+          }
         }
       },
       (state) => setSseLive(state === 'open'),
       () => setSseLive(false)
     )
     return () => h.close()
-  }, [conversationId, token, activeTab, queryClient])
+  }, [conversationId, activeTab, dormant, usingMock, queryClient])
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {

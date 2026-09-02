@@ -282,3 +282,35 @@ export interface CrmBridgeDeps {
    *  only one who can tell us the panel is off-screen. */
   onVisibility?: (hidden: boolean) => void
 }
+
+/** SSE message rows are not a full `Message`: the stream does not always
+ *  carry conversation_id / model_used / cost. Consumers that need the rest
+ *  already have the conversation in scope. */
+export type SseMessageRow = Pick<Message, 'id' | 'role' | 'content' | 'created_at'> & Partial<Message>
+
+/** Every frame the agent stream can emit. Discriminated on `event`; a message
+ *  row has no `event` and is recognised by its `id`. Validated once in the
+ *  reader so consumers never cast `unknown`. */
+export type AgentSseEvent =
+  | { event: 'typing'; is_typing: boolean; text: string }
+  | { event: 'presence'; widget_open?: boolean; widget_presence?: string;
+      widget_presence_effective?: string; widget_presence_age_seconds?: number;
+      widget_last_close_reason?: string; widget_last_event_at?: string }
+  | { event: 'stream_chunk'; delta: string }
+  | ({ event: 'stream_end' } & SseMessageRow)
+  | SseMessageRow   // plain message row (agent / system / ai)
+
+export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const ev = r.event
+  if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
+  if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
+  if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
+  if (typeof r.id === 'string') {
+    return ev === 'stream_end'
+      ? ({ ...(r as object), event: 'stream_end' } as AgentSseEvent)
+      : (r as unknown as SseMessageRow)
+  }
+  return null
+}

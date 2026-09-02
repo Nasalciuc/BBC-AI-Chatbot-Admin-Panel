@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -52,7 +52,13 @@ const settle = () => new Promise((r) => setTimeout(r, 0))
 test('the token travels in the Authorization header, never in the URL', async () => {
   const f = withFetch(async () => streamOf([]))
   try {
-    const h = openSse('https://api.test/api/agent/stream/c1', 'JWT123', () => {}, () => {}, () => {})
+    const h = openSse(
+      'https://api.test/api/agent/stream/c1',
+      { Authorization: 'Bearer JWT123' },
+      () => {},
+      () => {},
+      () => {},
+    )
     await settle()
     h.close()
     assert.equal(f.calls.length, 1)
@@ -70,7 +76,7 @@ test('two frames arriving in one chunk are both delivered', async () => {
   )
   const seen: any[] = []
   try {
-    const h = openSse('u', 't', (e) => seen.push(e), () => {}, () => {})
+    const h = openSse('u', {}, (e) => seen.push(e), () => {}, () => {})
     await settle()
     h.close()
     assert.deepEqual(seen, [{ id: 'm1' }, { id: 'm2' }])
@@ -83,7 +89,7 @@ test('a frame split across chunks is reassembled', async () => {
   const f = withFetch(async () => streamOf(['data: {"id":', '"m3"}\n\n']))
   const seen: any[] = []
   try {
-    const h = openSse('u', 't', (e) => seen.push(e), () => {}, () => {})
+    const h = openSse('u', {}, (e) => seen.push(e), () => {}, () => {})
     await settle()
     h.close()
     assert.deepEqual(seen, [{ id: 'm3' }])
@@ -96,7 +102,7 @@ test('keepalive comments are not events', async () => {
   const f = withFetch(async () => streamOf([': keepalive\n\n', 'data: {"id":"m4"}\n\n']))
   const seen: any[] = []
   try {
-    const h = openSse('u', 't', (e) => seen.push(e), () => {}, () => {})
+    const h = openSse('u', {}, (e) => seen.push(e), () => {}, () => {})
     await settle()
     h.close()
     assert.deepEqual(seen, [{ id: 'm4' }])
@@ -109,7 +115,7 @@ test('an unparseable frame costs one event, not the stream', async () => {
   const f = withFetch(async () => streamOf(['data: not json\n\n', 'data: {"id":"m5"}\n\n']))
   const seen: any[] = []
   try {
-    const h = openSse('u', 't', (e) => seen.push(e), () => {}, () => {})
+    const h = openSse('u', {}, (e) => seen.push(e), () => {}, () => {})
     await settle()
     h.close()
     assert.deepEqual(seen, [{ id: 'm5' }])
@@ -123,7 +129,7 @@ test('it gives up after three consecutive failures so polling can resume', async
   const states: string[] = []
   let gaveUp = 0
   try {
-    openSse('u', 't', () => {}, (s) => states.push(s), () => { gaveUp += 1 })
+    openSse('u', {}, () => {}, (s) => states.push(s), () => { gaveUp += 1 })
     // 1s + 2s of backoff between the three attempts.
     await new Promise((r) => setTimeout(r, 3_500))
     assert.equal(f.calls.length, 3, 'three attempts, then it stops trying')
@@ -139,7 +145,7 @@ test('close() stops the loop and never gives up on the caller', async () => {
   const f = withFetch(async () => ({ ok: false, status: 500, body: null }))
   let gaveUp = 0
   try {
-    const h = openSse('u', 't', () => {}, () => {}, () => { gaveUp += 1 })
+    const h = openSse('u', {}, () => {}, () => {}, () => { gaveUp += 1 })
     h.close()
     await new Promise((r) => setTimeout(r, 1_200))
     assert.equal(gaveUp, 0, 'a deliberate close is not a failure')
@@ -167,19 +173,50 @@ test('the three polls stop while the stream is open, and return unchanged', () =
 
 test('the panel subscribes to its own conversation and cleans up', () => {
   const src = read('src/features/chats/detail.tsx')
-  assert.match(src, /openSse\(/)
-  assert.match(src, /\/api\/agent\/stream\/\$\{conversationId\}/)
+  assert.match(src, /openAgentStream\(/)
+  assert.doesNotMatch(src, /from '@\/lib\/sse-reader'/)
+  assert.doesNotMatch(src, /accessToken/)
   assert.match(src, /setSseLive\(state === 'open'\)/)
   assert.match(src, /return \(\) => h\.close\(\)/)
   // stream_chunk belongs to the widget's typewriter, not the panel.
-  assert.match(src, /e\.event === 'stream_chunk'/)
+  assert.match(src, /case 'stream_chunk':/)
   // Messages are deduped: the incremental poll may have delivered the row.
-  assert.match(src, /list\.some\(\(m\) => m\.id === e\.id\)/)
+  assert.match(src, /\(old \?\? \[\]\)\.some\(\(m\) => m\.id === e\.id\)/)
 })
 
-test('the reader never puts the token anywhere but the header', () => {
+test('the reader is transport: it never sees a token', () => {
   const src = read('src/lib/sse-reader.ts')
-  assert.match(src, /Authorization: `Bearer \$\{token\}`/)
-  assert.doesNotMatch(src, /token=\$\{token\}|\?token=/)
+  assert.match(src, /headers: \{ \.\.\.headers, Accept: 'text\/event-stream' \}/)
+  assert.doesNotMatch(src, /\btoken\b/)
   assert.doesNotMatch(src, /new EventSource/)
+})
+
+test('openAgentStream owns auth via authHeaders and validates frames', () => {
+  const src = read('src/lib/api.ts')
+  assert.match(src, /export function openAgentStream/)
+  assert.match(src, /authHeaders\(\)/)
+  assert.match(src, /parseAgentSseEvent\(raw\)/)
+  assert.match(src, /\$\{BASE\}\/api\/agent\/stream\/\$\{conversationId\}/)
+})
+
+test('the stream does not open for a dormant panel or a mock view', () => {
+  const src = read('src/features/chats/detail.tsx')
+  assert.match(
+    src,
+    /if \(!conversationId \|\| activeTab !== 'my_active' \|\| dormant \|\| usingMock\) return/,
+  )
+  assert.match(src, /\}, \[conversationId, activeTab, dormant, usingMock, queryClient\]\)/)
+})
+
+test('features/ never imports sse-reader and never reads the access token', () => {
+  const feat = join(root, 'src/features')
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
+      d.isDirectory() ? walk(join(dir, d.name)) : [join(dir, d.name)],
+    )
+  for (const file of walk(feat).filter((f) => f.endsWith('.ts') || f.endsWith('.tsx'))) {
+    const src = readFileSync(file, 'utf-8')
+    assert.doesNotMatch(src, /from '@\/lib\/sse-reader'/, file)
+    assert.doesNotMatch(src, /accessToken/, file)
+  }
 })

@@ -16,7 +16,7 @@
     "knip": "knip",
     "sync-widget": "node scripts/sync-widget.cjs",
     "prebuild": "npm run sync-widget",
-    "test": "node --experimental-strip-types --test tests/presence.test.ts tests/panel-truth.test.ts tests/visual-truth.test.ts tests/assignment-notification.test.ts tests/sso-token-routing.test.ts tests/composer-focus.test.ts tests/crm-bridge.test.ts tests/embedded-signout.test.ts tests/crm-queue-signal.test.ts tests/crm-bridge-queue-handshake.test.ts tests/panel-dormant.test.ts tests/sse-reader.test.ts"
+    "test": "node --experimental-strip-types --test tests/presence.test.ts tests/panel-truth.test.ts tests/visual-truth.test.ts tests/assignment-notification.test.ts tests/sso-token-routing.test.ts tests/composer-focus.test.ts tests/crm-bridge.test.ts tests/embedded-signout.test.ts tests/crm-queue-signal.test.ts tests/crm-bridge-queue-handshake.test.ts tests/panel-dormant.test.ts tests/sse-reader.test.ts tests/agent-sse-events.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
