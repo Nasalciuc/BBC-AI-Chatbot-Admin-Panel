@@ -313,22 +313,42 @@ async def test_in_flight_unwinds_and_labels_count():
 
 
 def test_snapshot_shape_and_worker_size():
+    import time
     from config.settings import settings
 
     snap = db.db_health_snapshot()
     for key in ("in_flight", "peak_in_flight", "workers", "p50_ms", "p95_ms",
+                "p99_ms", "max_ms", "n", "slow_count",
                 "disconnects", "retries_ok", "retries_failed", "by_label"):
         assert key in snap
     assert snap["workers"] == settings.db_executor_workers
+    assert snap["n"] == 0
+    hb = agent_api.heartbeat_health_snapshot()
+    for key in ("p50_ms", "p95_ms", "p99_ms", "max_ms", "n", "slow_count", "calls"):
+        assert key in hb
+    now = time.monotonic()
+    _db(now - 90, 5000.0)
+    _db(now, 40.0)
+    assert db.db_health_snapshot(window_seconds=60)["n"] == 1
+    assert db.db_health_snapshot()["n"] == 2
 
 
 # ══════════════════════════════════════════════════════════════
 # 11 — the alert shouts before the panel breaks
 # ══════════════════════════════════════════════════════════════
 
+def _hb(ts, ms):
+    agent_api.HEARTBEAT_HEALTH["latency_ms"].append((ts, ms))
+
+
+def _db(ts, ms):
+    db.DB_HEALTH["latency_ms"].append((ts, ms))
+
+
 def _reset_db_alert():
     from app.api import cron
     cron._DB_ALERT.update({"last_sent_at": None, "over_streak": 0, "episode_open": False})
+    cron._HB_ALERT.update({"last_sent_at": None, "over_streak": 0, "episode_open": False})
 
 
 @pytest.mark.asyncio
@@ -347,6 +367,10 @@ async def test_saturation_alerts_once_then_suppresses():
         assert states[:2] == ["watching", "watching"]
         assert states[2] == "alerted"
         assert mail.await_count == 1
+        subject = mail.await_args.kwargs["subject"]
+        assert "DB executor saturated" in subject
+        assert "DB saturation" not in subject
+        assert mail.await_args.kwargs["cc_super"] is True
         assert db.DB_HEALTH["peak_in_flight"] == 3
 
         db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
@@ -405,12 +429,55 @@ async def test_a_quiet_executor_says_ok():
 
 
 @pytest.mark.asyncio
-async def test_a_slow_heartbeat_alone_is_enough():
+async def test_stale_slow_samples_outside_the_window_do_not_warn():
+    import time
     from app.api import cron
 
     _reset_db_alert()
+    now = time.monotonic()
+    for _ in range(60):
+        _hb(now - 90, 4000.0)
+    for _ in range(30):
+        _hb(now, 100.0)
     db.DB_HEALTH["peak_in_flight"] = 1
-    agent_api.HEARTBEAT_HEALTH["latency_ms"].extend([4000.0] * 20)
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
+        out = await cron.run_db_saturation_alert()
+    assert out["state"] == "ok"
+    mail.assert_not_awaited()
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_fewer_than_twenty_slow_samples_do_not_raise_the_streak():
+    import time
+    from app.api import cron
+
+    _reset_db_alert()
+    cron._HB_ALERT["over_streak"] = 1
+    now = time.monotonic()
+    for _ in range(15):
+        _hb(now, 4000.0)
+    db.DB_HEALTH["peak_in_flight"] = 1
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
+        out = await cron.run_db_saturation_alert()
+    assert out["state"] == "ok"
+    assert cron._HB_ALERT["over_streak"] == 1
+    mail.assert_not_awaited()
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_heartbeat_alone_is_enough():
+    import time
+    from app.api import cron
+
+    _reset_db_alert()
+    now = time.monotonic()
+    for _ in range(30):
+        _hb(now, 4000.0)
+    db.DB_HEALTH["peak_in_flight"] = 1
     with patch("app.services.email.send_ops_alert_email",
                new=AsyncMock(return_value=True)) as mail:
         states = []
@@ -418,11 +485,51 @@ async def test_a_slow_heartbeat_alone_is_enough():
             db.DB_HEALTH["peak_in_flight"] = 1
             states.append((await cron.run_db_saturation_alert())["state"])
     assert states[:2] == ["watching", "watching"]
-    assert states[2] == "alerted"
+    assert states[2] == "warned"
     assert mail.await_count == 1
-    assert "heartbeat slow" in mail.await_args.kwargs["subject"]
-    assert "[sustained 3×60s]" in mail.await_args.kwargs["subject"]
+    subject = mail.await_args.kwargs["subject"]
+    assert "Heartbeat slow" in subject
+    assert "p99" in subject
+    assert "saturation" not in subject.lower()
+    assert mail.await_args.kwargs["cc_super"] is False
     _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_empty_window_closes_a_slow_episode():
+    from app.api import cron
+
+    _reset_db_alert()
+    cron._HB_ALERT.update(
+        {"last_sent_at": None, "over_streak": 3, "episode_open": True}
+    )
+    db.DB_HEALTH["peak_in_flight"] = 1
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
+        out = await cron.run_db_saturation_alert()
+    assert out["state"] == "ok"
+    assert cron._HB_ALERT["episode_open"] is False
+    assert cron._HB_ALERT["over_streak"] == 0
+    mail.assert_not_awaited()
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_run_sync_logs_db_slow_over_one_second(caplog):
+    import logging
+
+    clock = {"n": 0}
+
+    def _mono():
+        clock["n"] += 1
+        return 0.0 if clock["n"] == 1 else 1.2
+
+    with (
+        caplog.at_level(logging.WARNING, logger="app.db.supabase"),
+        patch.object(db.time, "monotonic", side_effect=_mono),
+    ):
+        await db._run_sync(lambda: "ok", label="heartbeat")
+    assert any("[db-slow] heartbeat 1200ms" in r.message for r in caplog.records)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -532,9 +639,8 @@ async def test_the_alert_does_not_arrive_as_a_waiting_chat():
     assert out["state"] == "alerted"
     customer.assert_not_awaited(), "an infra alert must not borrow a chat subject"
     subject = ops.await_args.kwargs["subject"]
-    assert "DB saturation" in subject
-    assert "executor saturated" in subject
-    assert "[sustained 3×60s]" in subject
+    assert "DB executor saturated" in subject
+    assert "[3×60s]" in subject
     assert "no agents online" not in subject
     assert "by_label" in ops.await_args.kwargs["body"]
     assert ops.await_args.kwargs["cc_super"] is True

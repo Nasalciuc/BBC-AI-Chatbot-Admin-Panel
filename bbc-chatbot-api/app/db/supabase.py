@@ -41,15 +41,47 @@ DB_HEALTH: dict = {
 }
 
 
-def db_health_snapshot() -> dict:
-    """Serializable view for /health: percentiles computed here, not stored."""
-    lat = sorted(DB_HEALTH["latency_ms"])
+def latency_window_stats(
+    samples, window_seconds: float | None = None, *, slow_ms: float = 1000.0
+) -> dict:
+    """Percentiles over `(monotonic_ts, ms)` tuples. No window = whole buffer."""
+    now = time.monotonic()
+    ms: list[float] = []
+    for v in samples:
+        if not isinstance(v, tuple) or len(v) < 2:
+            continue
+        ts, val = v[0], v[1]
+        if window_seconds is not None and ts < now - window_seconds:
+            continue
+        ms.append(float(val))
+    n = len(ms)
+    if n == 0:
+        return {
+            "p50_ms": 0.0,
+            "p95_ms": 0.0,
+            "p99_ms": 0.0,
+            "max_ms": 0.0,
+            "n": 0,
+            "slow_count": 0,
+        }
+    lat = sorted(ms)
 
     def _pct(p: float) -> float:
-        if not lat:
-            return 0.0
-        return round(lat[min(len(lat) - 1, int(len(lat) * p))], 1)
+        return round(lat[min(n - 1, int(n * p))], 1)
 
+    return {
+        "p50_ms": _pct(0.50),
+        "p95_ms": _pct(0.95),
+        "p99_ms": _pct(0.99),
+        "max_ms": round(lat[-1], 1),
+        "n": n,
+        "slow_count": sum(1 for x in ms if x > slow_ms),
+    }
+
+
+def db_health_snapshot(window_seconds: float | None = None) -> dict:
+    """Serializable view for /health: percentiles computed here, not stored."""
+    stats = latency_window_stats(DB_HEALTH["latency_ms"], window_seconds)
     return {
         "in_flight": DB_HEALTH["in_flight"],
         "peak_in_flight": DB_HEALTH["peak_in_flight"],
@@ -59,8 +91,7 @@ def db_health_snapshot() -> dict:
         "disconnects": DB_HEALTH["disconnects"],
         "retries_ok": DB_HEALTH["retries_ok"],
         "retries_failed": DB_HEALTH["retries_failed"],
-        "p50_ms": _pct(0.50),
-        "p95_ms": _pct(0.95),
+        **stats,
         "by_label": {k: dict(v) for k, v in DB_HEALTH["by_label"].items()},
     }
 
@@ -143,7 +174,11 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
                 raise
     finally:
         DB_HEALTH["in_flight"] -= 1
-        DB_HEALTH["latency_ms"].append((time.monotonic() - t0) * 1000.0)
+        now = time.monotonic()
+        ms = (now - t0) * 1000.0
+        DB_HEALTH["latency_ms"].append((now, ms))
+        if ms > 1000:
+            logger.warning(f"[db-slow] {label} {ms:.0f}ms")
 
 
 def get_client() -> Client:
