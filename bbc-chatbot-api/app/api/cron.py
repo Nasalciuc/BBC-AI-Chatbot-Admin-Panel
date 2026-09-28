@@ -602,7 +602,6 @@ async def run_db_saturation_alert() -> dict:
     _sent = False
     saturated = False
     slow = False
-    _first_in_episode = False
     now = None
     last = None
     kind = ""
@@ -661,7 +660,6 @@ async def run_db_saturation_alert() -> dict:
             if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
                 return {"state": "suppressed", **db_s, "heartbeat": hb_s}
             kind = "saturated"
-            _first_in_episode = not _DB_ALERT["episode_open"]
         elif slow:
             if _HB_ALERT["over_streak"] < windows:
                 return {
@@ -675,7 +673,6 @@ async def run_db_saturation_alert() -> dict:
             if last and now - last < timedelta(minutes=HB_ALERT_COOLDOWN_MINUTES):
                 return {"state": "suppressed", **db_s, "heartbeat": hb_s}
             kind = "slow"
-            _first_in_episode = False
         else:
             return {"state": "ok", **db_s, "heartbeat": hb_s}
 
@@ -706,14 +703,13 @@ async def run_db_saturation_alert() -> dict:
                 f"DB executor saturated [{windows}×60s] "
                 f"({db_s['peak_in_flight']}/{db_s['workers']})"
             )
-            cc_super = _first_in_episode
         else:
             subject = (
                 f"Heartbeat slow — pool idle "
                 f"({db_s['peak_in_flight']}/{db_s['workers']}), "
                 f"DB p99 {db_s['p99_ms']} ms"
             )
-            cc_super = False
+        # Ops only. super@ already gets customer-path alerts; this is infra.
         try:
             _sent = await send_ops_alert_email(
                 subject=subject,
