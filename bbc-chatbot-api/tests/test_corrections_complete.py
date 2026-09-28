@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from freezegun import freeze_time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
@@ -80,6 +81,7 @@ def _probe(message, ctx=_CTX):
 # MARKY — a third city is an added leg, never an overwrite
 # ════════════════════════════════════════════════════════════
 
+@freeze_time("2026-07-20")
 class TestMarky:
     def test_two_new_cities_are_an_added_leg(self):
         p = _probe("And return from Paris to Sydney on nov 9")
@@ -152,6 +154,7 @@ class TestMarky:
 # KAZUO — corrections must UNSET and REJECT
 # ════════════════════════════════════════════════════════════
 
+@freeze_time("2026-07-20")
 class TestKazuo:
     def test_explicit_one_way_clears_the_return(self):
         p = _probe("actually one way")
@@ -213,6 +216,7 @@ class TestKazuo:
 # ALISTAIR — the word, the label, and the field with no value
 # ════════════════════════════════════════════════════════════
 
+@freeze_time("2026-07-20")
 class TestAlistair:
     @pytest.mark.parametrize("msg", [
         "Return", "return", "Returning", "Return glight", "Return fligt",
@@ -365,6 +369,7 @@ class TestLoopBreaker:
 # The old behavior that must survive
 # ════════════════════════════════════════════════════════════
 
+@freeze_time("2026-07-20")
 class TestNoRegressions:
     @pytest.mark.asyncio
     async def test_urs_still_reasks(self):

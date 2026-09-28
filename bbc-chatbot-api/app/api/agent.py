@@ -34,13 +34,9 @@ HEARTBEAT_HEALTH: dict = {"calls": 0, "latency_ms": _deque(maxlen=1000)}
 DEADLINE_HEALTH: dict = {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
 
 
-def heartbeat_health_snapshot() -> dict:
-    lat = sorted(HEARTBEAT_HEALTH["latency_ms"])
-
-    def _pct(p: float) -> float:
-        return round(lat[min(len(lat) - 1, int(len(lat) * p))], 1) if lat else 0.0
-
-    return {"calls": HEARTBEAT_HEALTH["calls"], "p50_ms": _pct(0.5), "p95_ms": _pct(0.95)}
+def heartbeat_health_snapshot(window_seconds: float | None = None) -> dict:
+    stats = db.latency_window_stats(HEARTBEAT_HEALTH["latency_ms"], window_seconds)
+    return {"calls": HEARTBEAT_HEALTH["calls"], **stats}
 
 
 class HeartbeatBody(BaseModel):
@@ -401,7 +397,8 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         # The queue must never break the heartbeat: presence is more important
         # than the badge. Logged, never silent.
         logger.warning(f"[heartbeat] queue fetch failed for {user_id}: {e}")
-    HEARTBEAT_HEALTH["latency_ms"].append((time.monotonic() - _t0) * 1000.0)
+    _now = time.monotonic()
+    HEARTBEAT_HEALTH["latency_ms"].append((_now, (_now - _t0) * 1000.0))
     HEARTBEAT_HEALTH["calls"] += 1
     return {
         "success": True,

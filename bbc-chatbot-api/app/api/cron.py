@@ -576,86 +576,158 @@ async def run_crm_orphan_backstop() -> dict:
 
 
 _DB_ALERT: dict = {"last_sent_at": None, "over_streak": 0, "episode_open": False}
+_HB_ALERT: dict = {"last_sent_at": None, "over_streak": 0, "episode_open": False}
 DB_ALERT_COOLDOWN_MINUTES = 60
+HB_ALERT_COOLDOWN_MINUTES = 360
 
 
 async def run_db_saturation_alert() -> dict:
     """Shout BEFORE the panel breaks.
 
-    Two signals, either is enough: the executor was pinned near its ceiling
-    since the last check, or the heartbeat — the hottest endpoint — is slow.
-    We learned about the 31 Aug saturation from an operator in a group chat;
-    this closes that gap. Threshold-based, cooldown 15 min, like the queue
-    stall alert. Resets peak_in_flight after evaluating so each window is
-    judged on its own."""
+    Two signals, judged separately on the last 60s: the executor was pinned
+    near its ceiling (incident, cooldown 60 min), or the heartbeat is slow
+    while the pool is idle (warning, cooldown 6 h). We learned about the
+    31 Aug saturation from an operator in a group chat; this closes that
+    gap. Resets peak_in_flight after evaluating so each window is judged
+    on its own."""
     from datetime import datetime, timezone, timedelta
-    from app.db.supabase import DB_HEALTH, db_health_snapshot
+    from app.db.supabase import DB_HEALTH, db_health_snapshot, DASHBOARD_CACHE_HEALTH
     from app.api.agent import heartbeat_health_snapshot
+    from app.pipeline.orchestrator import BG_HEALTH
+    from config.settings import settings as _s
+    from app.services.email import send_ops_alert_email
+
+    db_s: dict = {}
+    hb_s: dict = {}
+    _sent = False
+    saturated = False
+    slow = False
+    _first_in_episode = False
+    now = None
+    last = None
+    kind = ""
+    hb_n = 0
+    windows = 3
+    subject = ""
+    body = ""
+    cc_super = False
+    ceiling = 1
+
     try:
-        db_s = db_health_snapshot()
-        hb_s = heartbeat_health_snapshot()
-        from app.pipeline.orchestrator import BG_HEALTH
-        from app.db.supabase import DASHBOARD_CACHE_HEALTH
+        db_s = db_health_snapshot(window_seconds=60)
+        hb_s = heartbeat_health_snapshot(window_seconds=60)
         ceiling = max(1, db_s["workers"] - 2)
         saturated = db_s["peak_in_flight"] >= ceiling
-        slow = hb_s["p95_ms"] > 1500
+        hb_n = hb_s["n"]
+        slow = hb_n >= 20 and hb_s["p95_ms"] > 1500
         # window reset: peak is per evaluation window
         DB_HEALTH["peak_in_flight"] = DB_HEALTH["in_flight"]
         # Sustained, not spiky: peak resets every window, so a one-second burst
         # in one window used to fire the alert — 96 emails a day to super@ on
         # a steady load. Count consecutive windows over the ceiling instead.
-        from config.settings import settings as _s
-        if saturated or slow:
+        if saturated:
             _DB_ALERT["over_streak"] += 1
         else:
             if _DB_ALERT["episode_open"]:
                 logger.info("[db-alert] saturation episode ended")
             _DB_ALERT["over_streak"] = 0
             _DB_ALERT["episode_open"] = False
+
+        if hb_n == 0 or (hb_n >= 20 and hb_s["p95_ms"] <= 1500):
+            if _HB_ALERT["episode_open"]:
+                logger.info("[db-alert] heartbeat-slow episode ended")
+            _HB_ALERT["over_streak"] = 0
+            _HB_ALERT["episode_open"] = False
+        elif slow:
+            _HB_ALERT["over_streak"] += 1
+
+        windows = _s.db_alert_sustained_windows
+        if saturated:
+            if _DB_ALERT["over_streak"] < windows:
+                return {
+                    "state": "watching",
+                    "streak": _DB_ALERT["over_streak"],
+                    **db_s,
+                    "heartbeat": hb_s,
+                }
+            now = datetime.now(timezone.utc)
+            last = _DB_ALERT["last_sent_at"]
+            if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
+                return {"state": "suppressed", **db_s, "heartbeat": hb_s}
+            kind = "saturated"
+            _first_in_episode = not _DB_ALERT["episode_open"]
+        elif slow:
+            if _HB_ALERT["over_streak"] < windows:
+                return {
+                    "state": "watching",
+                    "streak": _HB_ALERT["over_streak"],
+                    **db_s,
+                    "heartbeat": hb_s,
+                }
+            now = datetime.now(timezone.utc)
+            last = _HB_ALERT["last_sent_at"]
+            if last and now - last < timedelta(minutes=HB_ALERT_COOLDOWN_MINUTES):
+                return {"state": "suppressed", **db_s, "heartbeat": hb_s}
+            kind = "slow"
+            _first_in_episode = False
+        else:
             return {"state": "ok", **db_s, "heartbeat": hb_s}
-        if _DB_ALERT["over_streak"] < _s.db_alert_sustained_windows:
-            return {"state": "watching", "streak": _DB_ALERT["over_streak"], **db_s, "heartbeat": hb_s}
-        now = datetime.now(timezone.utc)
-        last = _DB_ALERT["last_sent_at"]
-        if last and now - last < timedelta(minutes=DB_ALERT_COOLDOWN_MINUTES):
-            return {"state": "suppressed", **db_s, "heartbeat": hb_s}
-        _first_in_episode = not _DB_ALERT["episode_open"]
+
         # episode_open and last_sent_at are written ONLY after a confirmed send.
         # send_ops_alert_email returns False on a Postmark failure (it does not
         # raise); marking the episode first meant a failed send suppressed the
         # retry for an hour and stripped cc_super from it.
-        _sent = False
+        body = (
+            f"peak_in_flight={db_s['peak_in_flight']}/{db_s['workers']}\n"
+            f"heartbeat (60s): n={hb_s['n']} p50={hb_s['p50_ms']}ms "
+            f"p95={hb_s['p95_ms']}ms p99={hb_s['p99_ms']}ms "
+            f"max={hb_s['max_ms']}ms slow_count={hb_s['slow_count']}\n"
+            f"db (60s): n={db_s['n']} p50={db_s['p50_ms']}ms "
+            f"p95={db_s['p95_ms']}ms p99={db_s['p99_ms']}ms "
+            f"max={db_s['max_ms']}ms slow_count={db_s['slow_count']}\n"
+            f"disconnects={db_s['disconnects']} "
+            f"retries_ok={db_s['retries_ok']} retries_failed={db_s['retries_failed']}\n"
+            f"by_label={db_s['by_label']}  # cumulative since boot — volume, not latency\n"
+            f"background: running={BG_HEALTH['running']} peak={BG_HEALTH['peak_running']} "
+            f"waited={BG_HEALTH['waited']}\n"
+            f"dashboard_cache: {DASHBOARD_CACHE_HEALTH}\n\n"
+            "The panel starts failing when the pool pins near its ceiling. "
+            "Check /health.db by_label to see which caller is loudest."
+        )
+        if kind == "saturated":
+            subject = (
+                f"DB executor saturated [{windows}×60s] "
+                f"({db_s['peak_in_flight']}/{db_s['workers']})"
+            )
+            cc_super = _first_in_episode
+        else:
+            subject = (
+                f"Heartbeat slow — pool idle "
+                f"({db_s['peak_in_flight']}/{db_s['workers']}), "
+                f"DB p99 {db_s['p99_ms']} ms"
+            )
+            cc_super = False
         try:
-            from app.services.email import send_ops_alert_email
-            _why = "executor saturated" if saturated else "heartbeat slow"
             _sent = await send_ops_alert_email(
-                subject=(
-                    f"DB saturation [sustained {_DB_ALERT['over_streak']}×60s] — {_why} "
-                    f"({db_s['peak_in_flight']}/{db_s['workers']})"
-                ),
-                cc_super=_first_in_episode,
-                body=(
-                    f"peak_in_flight={db_s['peak_in_flight']}/{db_s['workers']}\n"
-                    f"heartbeat p95={hb_s['p95_ms']}ms (threshold 1500)\n"
-                    f"disconnects={db_s['disconnects']} "
-                    f"retries_ok={db_s['retries_ok']} retries_failed={db_s['retries_failed']}\n"
-                    f"p50={db_s['p50_ms']}ms p95={db_s['p95_ms']}ms\n"
-                    f"by_label={db_s['by_label']}\n"
-                    f"background: running={BG_HEALTH['running']} peak={BG_HEALTH['peak_running']} waited={BG_HEALTH['waited']}\n"
-                    f"dashboard_cache: {DASHBOARD_CACHE_HEALTH}\n\n"
-                    "The panel starts failing when the pool pins near its ceiling. "
-                    "Check /health.db by_label to see which caller is loudest."
-                ),
+                subject=subject,
+                cc_super=cc_super,
+                body=body,
             )
         except Exception as e:
             logger.warning(f"[db-alert] email failed: {e}")
             return {"state": "email_failed"}
         if not _sent:
-            logger.warning("[db-alert] email not sent (transport returned False) — will retry next window")
+            logger.warning(
+                "[db-alert] email not sent (transport returned False) — will retry next window"
+            )
             return {"state": "email_failed"}
-        _DB_ALERT["episode_open"] = True
-        _DB_ALERT["last_sent_at"] = now
-        return {"state": "alerted", **db_s, "heartbeat": hb_s}
+        if kind == "saturated":
+            _DB_ALERT["episode_open"] = True
+            _DB_ALERT["last_sent_at"] = now
+            return {"state": "alerted", **db_s, "heartbeat": hb_s}
+        _HB_ALERT["episode_open"] = True
+        _HB_ALERT["last_sent_at"] = now
+        return {"state": "warned", **db_s, "heartbeat": hb_s}
     except Exception as e:
         logger.error(f"[db-alert] failed: {e}", exc_info=True)
         return {"state": "error"}
