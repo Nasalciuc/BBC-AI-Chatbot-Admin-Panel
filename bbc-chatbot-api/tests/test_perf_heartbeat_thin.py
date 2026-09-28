@@ -380,7 +380,7 @@ async def test_saturation_alerts_once_then_suppresses():
         subject = mail.await_args.kwargs["subject"]
         assert "DB executor saturated" in subject
         assert "DB saturation" not in subject
-        assert mail.await_args.kwargs["cc_super"] is True
+        assert mail.await_args.kwargs["cc_super"] is False
         assert db.DB_HEALTH["peak_in_flight"] == 3
 
         db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
@@ -411,14 +411,14 @@ async def test_a_failed_send_retries_next_window_with_cc_super():
         assert cron._DB_ALERT["episode_open"] is False
         assert cron._DB_ALERT["last_sent_at"] is None
         assert mail.await_count == 1
-        assert mail.await_args.kwargs["cc_super"] is True
+        assert mail.await_args.kwargs["cc_super"] is False
 
         db.DB_HEALTH["peak_in_flight"] = settings.db_executor_workers - 2
         retry = await cron.run_db_saturation_alert()
         assert retry["state"] == "email_failed"
         assert retry["state"] != "suppressed"
         assert mail.await_count == 2
-        assert mail.await_args.kwargs["cc_super"] is True
+        assert mail.await_args.kwargs["cc_super"] is False
         assert cron._DB_ALERT["episode_open"] is False
         assert cron._DB_ALERT["last_sent_at"] is None
 
@@ -752,7 +752,7 @@ async def test_the_alert_does_not_arrive_as_a_waiting_chat():
     assert "[3×60s]" in subject
     assert "no agents online" not in subject
     assert "by_label" in ops.await_args.kwargs["body"]
-    assert ops.await_args.kwargs["cc_super"] is True
+    assert ops.await_args.kwargs["cc_super"] is False
     _reset_db_alert()
 
 
