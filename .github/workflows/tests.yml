@@ -61,6 +61,10 @@ jobs:
         # runs offline — and the day one does, this line already excludes it.
         run: python -m pytest -q -m "not integration"
 
+      - name: Tests, 120 days from now (catches expiring hardcoded dates)
+        working-directory: bbc-chatbot-api
+        run: python -m pytest -q -m "not integration" --as-of=$(date -u -d '+120 days' +%F)
+
   admin:
     name: admin
     runs-on: ubuntu-latest
