@@ -640,6 +640,12 @@ async def run_db_saturation_alert() -> dict:
             _HB_ALERT["episode_open"] = False
         elif slow:
             _HB_ALERT["over_streak"] += 1
+        else:
+            # 0 < n < 20: no verdict on this window — but a gap breaks the run.
+            # "Sustained 3×60s" means three consecutive windows, not three slow
+            # windows scattered across a quiet hour. The episode itself stays as
+            # it is: a thin window neither opens nor closes it.
+            _HB_ALERT["over_streak"] = 0
 
         windows = _s.db_alert_sustained_windows
         if saturated:
@@ -688,6 +694,7 @@ async def run_db_saturation_alert() -> dict:
             f"disconnects={db_s['disconnects']} "
             f"retries_ok={db_s['retries_ok']} retries_failed={db_s['retries_failed']}\n"
             f"by_label={db_s['by_label']}  # cumulative since boot — volume, not latency\n"
+            f"slow_by_label={db_s['slow_by_label']}  # cumulative since boot — volume, not latency\n"
             f"background: running={BG_HEALTH['running']} peak={BG_HEALTH['peak_running']} "
             f"waited={BG_HEALTH['waited']}\n"
             f"dashboard_cache: {DASHBOARD_CACHE_HEALTH}\n\n"

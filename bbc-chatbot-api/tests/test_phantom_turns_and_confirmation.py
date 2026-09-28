@@ -21,6 +21,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from freezegun import freeze_time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
@@ -237,6 +238,7 @@ def test_the_second_reask_names_fields_not_invented_dates():
 # D6 — one range, two formats
 # ══════════════════════════════════════════════════════════════
 
+@freeze_time("2026-08-18")
 class TestMixedDateRange:
     @pytest.mark.parametrize(
         "text",

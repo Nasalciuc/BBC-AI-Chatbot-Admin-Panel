@@ -51,6 +51,8 @@ def _reset_counters():
     )
     db.DB_HEALTH["latency_ms"].clear()
     db.DB_HEALTH["by_label"].clear()
+    db.DB_HEALTH["slow_by_label"].clear()
+    db._SLOW_LOG.clear()
     agent_api.HEARTBEAT_HEALTH["calls"] = 0
     agent_api.HEARTBEAT_HEALTH["latency_ms"].clear()
     agent_api.DEADLINE_HEALTH.update(
@@ -318,7 +320,7 @@ def test_snapshot_shape_and_worker_size():
 
     snap = db.db_health_snapshot()
     for key in ("in_flight", "peak_in_flight", "workers", "p50_ms", "p95_ms",
-                "p99_ms", "max_ms", "n", "slow_count",
+                "p99_ms", "max_ms", "n", "slow_count", "slow_by_label",
                 "disconnects", "retries_ok", "retries_failed", "by_label"):
         assert key in snap
     assert snap["workers"] == settings.db_executor_workers
@@ -343,6 +345,14 @@ def _hb(ts, ms):
 
 def _db(ts, ms):
     db.DB_HEALTH["latency_ms"].append((ts, ms))
+
+
+def _fill_hb(n, ms=4000.0):
+    import time
+    agent_api.HEARTBEAT_HEALTH["latency_ms"].clear()
+    now = time.monotonic()
+    for _ in range(n):
+        _hb(now, ms)
 
 
 def _reset_db_alert():
@@ -463,7 +473,7 @@ async def test_fewer_than_twenty_slow_samples_do_not_raise_the_streak():
                new=AsyncMock(return_value=True)) as mail:
         out = await cron.run_db_saturation_alert()
     assert out["state"] == "ok"
-    assert cron._HB_ALERT["over_streak"] == 1
+    assert cron._HB_ALERT["over_streak"] == 0
     mail.assert_not_awaited()
     _reset_db_alert()
 
@@ -515,6 +525,59 @@ async def test_empty_window_closes_a_slow_episode():
 
 
 @pytest.mark.asyncio
+async def test_thin_windows_break_a_slow_streak():
+    """slow / thin / slow / thin / slow never reaches three consecutive."""
+    from app.api import cron
+
+    _reset_db_alert()
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
+        states = []
+        for n in (30, 15, 30, 15, 30):
+            _fill_hb(n)
+            db.DB_HEALTH["peak_in_flight"] = 1
+            states.append((await cron.run_db_saturation_alert())["state"])
+    assert mail.await_count == 0
+    assert "warned" not in states
+    assert cron._HB_ALERT["over_streak"] == 1
+    _reset_db_alert()
+
+
+@pytest.mark.asyncio
+async def test_open_slow_episode_survives_a_thin_window():
+    from app.api import cron
+
+    _reset_db_alert()
+    cron._HB_ALERT.update(
+        {"last_sent_at": None, "over_streak": 3, "episode_open": True}
+    )
+    _fill_hb(15)
+    db.DB_HEALTH["peak_in_flight"] = 1
+    with patch("app.services.email.send_ops_alert_email",
+               new=AsyncMock(return_value=True)) as mail:
+        out = await cron.run_db_saturation_alert()
+    assert out["state"] == "ok"
+    assert cron._HB_ALERT["episode_open"] is True
+    assert cron._HB_ALERT["over_streak"] == 0
+    mail.assert_not_awaited()
+    _reset_db_alert()
+
+
+class _MonoClock:
+    """Paired start/end timestamps so each _run_sync lasts `duration` seconds."""
+
+    def __init__(self, duration=1.2):
+        self._n = 0
+        self.duration = duration
+
+    def __call__(self):
+        self._n += 1
+        if self._n % 2 == 1:
+            return 0.0
+        return self.duration
+
+
+@pytest.mark.asyncio
 async def test_run_sync_logs_db_slow_over_one_second(caplog):
     import logging
 
@@ -530,6 +593,52 @@ async def test_run_sync_logs_db_slow_over_one_second(caplog):
     ):
         await db._run_sync(lambda: "ok", label="heartbeat")
     assert any("[db-slow] heartbeat 1200ms" in r.message for r in caplog.records)
+
+
+def test_db_slow_is_one_line_per_label_per_ten_seconds(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.db.supabase"):
+        t0 = 1000.0
+        for i in range(50):
+            db._note_slow_call("heartbeat", 1412.0, t0 + i * 0.02)
+        slow_lines = [r.message for r in caplog.records if "[db-slow]" in r.message]
+        assert len(slow_lines) == 1
+        assert db.DB_HEALTH["slow_by_label"]["heartbeat"] == 50
+        assert "(+" not in slow_lines[0]
+
+        db._note_slow_call("heartbeat", 1412.0, t0 + 10.0)
+        slow_lines = [r.message for r in caplog.records if "[db-slow]" in r.message]
+        assert len(slow_lines) == 2
+        assert "+49 more" in slow_lines[1]
+        assert "worst 1412ms" in slow_lines[1]
+        assert db.DB_HEALTH["slow_by_label"]["heartbeat"] == 51
+
+
+def test_db_slow_labels_do_not_suppress_each_other(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.db.supabase"):
+        db._note_slow_call("heartbeat", 1412.0, 1000.0)
+        db._note_slow_call("messages", 1500.0, 1000.1)
+    slow_lines = [r.message for r in caplog.records if "[db-slow]" in r.message]
+    assert len(slow_lines) == 2
+    assert any("heartbeat" in m for m in slow_lines)
+    assert any("messages" in m for m in slow_lines)
+
+
+@pytest.mark.asyncio
+async def test_db_slow_ignores_calls_under_one_second(caplog):
+    import logging
+
+    clock = _MonoClock(duration=0.9)
+    with (
+        caplog.at_level(logging.WARNING, logger="app.db.supabase"),
+        patch.object(db.time, "monotonic", new=clock),
+    ):
+        await db._run_sync(lambda: "ok", label="heartbeat")
+    assert not any("[db-slow]" in r.message for r in caplog.records)
+    assert db.DB_HEALTH["slow_by_label"] == {}
 
 
 # ══════════════════════════════════════════════════════════════

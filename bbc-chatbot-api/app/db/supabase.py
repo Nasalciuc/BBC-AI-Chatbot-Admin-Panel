@@ -38,7 +38,39 @@ DB_HEALTH: dict = {
     "retries_failed": 0,
     "latency_ms": _deque(maxlen=1000),
     "by_label": {},          # label -> {"calls": n, "errors": n}
+    "slow_by_label": {},     # label -> count of calls over 1000ms since boot
 }
+
+# One warning line per label per 10s. During an incident a line per slow
+# call would bury everything else that still needs to be read.
+_SLOW_LOG: dict[str, dict] = {}
+_SLOW_LOG_INTERVAL_S = 10.0
+
+
+def _note_slow_call(label: str, ms: float, now: float) -> None:
+    extra = ""
+    elapsed = 0.0
+    bucket = DB_HEALTH["slow_by_label"]
+    bucket[label] = bucket.get(label, 0) + 1
+    state = _SLOW_LOG.get(label)
+    if state is None:
+        state = {"last_at": 0.0, "suppressed": 0, "worst_ms": 0.0}
+        _SLOW_LOG[label] = state
+    elapsed = now - state["last_at"]
+    if state["last_at"] == 0.0 or elapsed >= _SLOW_LOG_INTERVAL_S:
+        if state["suppressed"]:
+            extra = (
+                f" (+{state['suppressed']} more in 10s, "
+                f"worst {state['worst_ms']:.0f}ms)"
+            )
+        logger.warning(f"[db-slow] {label} {ms:.0f}ms{extra}")
+        state["last_at"] = now
+        state["suppressed"] = 0
+        state["worst_ms"] = ms
+    else:
+        state["suppressed"] += 1
+        if ms > state["worst_ms"]:
+            state["worst_ms"] = ms
 
 
 def latency_window_stats(
@@ -93,6 +125,7 @@ def db_health_snapshot(window_seconds: float | None = None) -> dict:
         "retries_failed": DB_HEALTH["retries_failed"],
         **stats,
         "by_label": {k: dict(v) for k, v in DB_HEALTH["by_label"].items()},
+        "slow_by_label": dict(DB_HEALTH["slow_by_label"]),
     }
 
 
@@ -178,7 +211,7 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
         ms = (now - t0) * 1000.0
         DB_HEALTH["latency_ms"].append((now, ms))
         if ms > 1000:
-            logger.warning(f"[db-slow] {label} {ms:.0f}ms")
+            _note_slow_call(label, ms, now)
 
 
 def get_client() -> Client:
