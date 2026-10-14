@@ -5,7 +5,7 @@ const config: BrandConfig = {
   brandColor: '#800020',
   brandColorRgb: '128,0,32',
   headerColor: '#0B1829',
-  logoUrl: 'https://bbc-admin-panel-eight.vercel.app/images/favicon%20dark.png',
+  logoUrl: 'https://bbc-widget.vercel.app/widget-logo-96.png',
   logoAlt: 'BCT',
   formTitle: 'Business Class Tickets',
   formSubtitle: "Please enter your details and let's chat",
