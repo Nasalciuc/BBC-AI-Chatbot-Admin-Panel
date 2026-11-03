@@ -577,3 +577,35 @@ export function deleteTask(id: string) {
     method: 'DELETE',
   })
 }
+
+// ── Learning loop (PR-8) ──────────────────────────────────────
+export type QuestionVariant = {
+  id: string; slot: string; text: string; status: string; origin: string
+  shows: number; answered: number; answer_rate: number | null; prob_best: number
+}
+export type LearningReport = {
+  treatment_answer_rate: number | null; control_answer_rate: number | null
+  treatment_n: number; control_n: number
+  by_slot: Record<string, { treatment: number | null; control: number | null }>
+}
+
+export async function listQuestionVariants(): Promise<QuestionVariant[]> {
+  const res = await fetch(`${BASE}/api/admin/question-variants`, { headers: authHeaders() })
+  if (!res.ok) throw new ApiError(res.status, 'Failed to load variants')
+  return (await res.json()).variants ?? []
+}
+
+export async function setVariantStatus(id: string, status: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/admin/question-variants/${id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
+  if (!res.ok) throw new ApiError(res.status, 'Failed to update variant')
+}
+
+export async function getLearningReport(): Promise<LearningReport> {
+  const res = await fetch(`${BASE}/api/admin/learning/report`, { headers: authHeaders() })
+  if (!res.ok) throw new ApiError(res.status, 'Failed to load report')
+  return res.json()
+}

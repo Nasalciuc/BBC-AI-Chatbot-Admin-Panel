@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
-  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound,
+  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound, GraduationCap,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 import type { Permissions } from '@/lib/bbc/types'
@@ -48,6 +48,10 @@ export function getSidebarData(
                 : []),
               ...(permissions.canAssignTasks
                 ? [{ title: 'Tasks', url: '/tasks' as const, icon: ListChecks }]
+                : []),
+              // The learning loop's human gate — owner/admin/dev only.
+              ...(permissions.canManageTeams
+                ? [{ title: 'Learning', url: '/learning' as const, icon: GraduationCap }]
                 : []),
             ],
           }]
