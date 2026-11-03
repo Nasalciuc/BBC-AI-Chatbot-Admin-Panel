@@ -84,3 +84,52 @@ async def update_lesson_status(
     invalidate_lesson_cache()
     logger.info(f"Lesson {lesson_id} → {body.status} by {user.get('email') or user.get('id')}")
     return updated
+
+
+# ── Question variants + learning report (PR-8) ────────────────────────────
+VALID_VARIANT_STATUSES = {"proposed", "active", "retired"}
+
+
+class VariantStatusUpdate(BaseModel):
+    status: str
+
+
+@router.get("/admin/question-variants")
+async def list_question_variants(
+    slot: Optional[str] = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """Question variants per slot with their outcome stats (shows, answered,
+    rate, P(best))."""
+    _assert_reviewer(user)
+    from app.services.learning import get_question_variants
+
+    data = await get_question_variants(slot)
+    return {"variants": data, "count": len(data)}
+
+
+@router.patch("/admin/question-variants/{variant_id}")
+async def update_question_variant(
+    variant_id: str,
+    body: VariantStatusUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Approve (→active), retire or re-propose a variant."""
+    _assert_reviewer(user)
+    if body.status not in VALID_VARIANT_STATUSES:
+        raise HTTPException(400, f"status must be one of {sorted(VALID_VARIANT_STATUSES)}")
+    from app.services.learning import set_question_variant_status
+
+    ok = await set_question_variant_status(variant_id, body.status)
+    if not ok:
+        raise HTTPException(404, "Variant not found")
+    return {"success": True, "data": {"id": variant_id, "status": body.status}, "count": 1}
+
+
+@router.get("/admin/learning/report")
+async def learning_report(user: dict = Depends(get_current_user)):
+    """Treatment-vs-control complete-detail rate and per-variant answer rates."""
+    _assert_reviewer(user)
+    from app.services.learning import build_learning_report
+
+    return await build_learning_report()

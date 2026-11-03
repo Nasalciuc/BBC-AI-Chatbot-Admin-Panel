@@ -1247,6 +1247,13 @@ async def _pipeline(
     if has_useful or has_signals:
         await lead_service.update_lead_from_entities(cid, entities)
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
+        # Reward loop (PR-8): a detail just landed — resolve any open "did this
+        # question get answered?" rows. Best-effort, never blocks the turn.
+        try:
+            from app.learning.outcomes import resolve_outcomes
+            _fire_and_forget(resolve_outcomes(cid))
+        except Exception as _e:  # noqa: silent — the learning signal is never load-bearing
+            logger.debug(f"[{cid}] outcomes resolve skipped: {type(_e).__name__}")
 
     logger.info(f"[{cid}] [PERF] extraction: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()
