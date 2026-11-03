@@ -108,6 +108,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.turnstile import TURNSTILE_HEALTH
     from app.security.form_trap import FORM_TRAP_HEALTH
     from app.security.mfa import MFA_HEALTH
+    from app.services.retention import RETENTION_HEALTH
 
     if not full:
         return {
@@ -124,7 +125,9 @@ async def health_detail(full: bool = False) -> dict:
             "turnstile": dict(TURNSTILE_HEALTH),
             "form_trap": dict(FORM_TRAP_HEALTH),
         "mfa": dict(MFA_HEALTH),
+        "retention": dict(RETENTION_HEALTH),
             "mfa": dict(MFA_HEALTH),
+            "retention": dict(RETENTION_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),

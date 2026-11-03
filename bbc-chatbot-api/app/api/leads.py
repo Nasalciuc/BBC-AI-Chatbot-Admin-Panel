@@ -173,10 +173,14 @@ async def update_lead(
 ):
     if user.get("role") == "qa":
         raise HTTPException(403, "QA role cannot modify leads")
-    allowed = {"score", "tier", "cabin_class", "passengers", "flexible_dates", "notes", "intent_signals"}
+    # flexible_dates left with PR-14 (dates_flexibility replaced it in PR-7;
+    # migration 050 drops the column).
+    allowed = {"score", "tier", "cabin_class", "passengers", "dates_flexibility", "notes", "intent_signals"}
     payload = {k: v for k, v in body.items() if k in allowed}
     if not payload:
         raise HTTPException(400, "No valid fields to update")
+    if "dates_flexibility" in payload and payload["dates_flexibility"] not in ("exact", "flexible", "window", "unknown"):
+        raise HTTPException(400, "dates_flexibility must be exact, flexible, window or unknown")
     result = await db.update_lead(lead_id, payload)
     if not result:
         raise HTTPException(404, "Lead not found")

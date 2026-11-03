@@ -26,9 +26,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_blocklist_kind_value
     ON public.blocklist(kind, value);
 
 -- Lookup index for the hot path (is this identifier blocked right now?).
+-- PR-14 repair: an index predicate must be IMMUTABLE, and now() is not —
+-- `WHERE expires_at IS NULL OR expires_at > now()` fails on a clean replay
+-- ("functions in index predicate must be marked IMMUTABLE"). The expiry is
+-- a column of the index instead; the query filters on it at read time.
 CREATE INDEX IF NOT EXISTS idx_blocklist_active
-    ON public.blocklist(kind, value)
-    WHERE expires_at IS NULL OR expires_at > now();
+    ON public.blocklist(kind, value, expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_blocklist_conversation
     ON public.blocklist(conversation_id);

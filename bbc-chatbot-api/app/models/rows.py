@@ -55,7 +55,7 @@ class LeadRow(TypedDict, total=False):
     trip_type: Optional[str]
     cabin_class: Optional[str]
     passengers: Optional[int]
-    flexible_dates: Optional[bool]
+    dates_flexibility: Optional[str]   # replaces flexible_dates (PR-7; dropped in 050)
     origin_code: Optional[str]
     destination_code: Optional[str]
     departure_date: Optional[str]

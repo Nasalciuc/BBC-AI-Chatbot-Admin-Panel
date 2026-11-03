@@ -966,3 +966,15 @@ async def security_weekly(request: Request):
     except Exception as e:
         logger.warning(f"[security-weekly] email failed: {type(e).__name__}: {e}")
     return {"success": True, "data": report, "count": 1}
+
+
+# ── Retention (PR-14, ⚑12) ────────────────────────────────────────────────
+@router.post("/cron/retention")
+async def retention(request: Request):
+    """Counts (RETENTION_ENABLED off) or deletes (on) the rows past their
+    retention. Conversations and messages are not touched here."""
+    _require_cron(request)
+    from app.services.retention import run_once
+
+    out = await run_once()
+    return {"success": True, "data": out, "count": len(out)}

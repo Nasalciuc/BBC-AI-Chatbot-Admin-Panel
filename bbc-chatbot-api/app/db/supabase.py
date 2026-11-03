@@ -17,6 +17,18 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+
+def list_count_mode() -> str:
+    """The count the paged lists ask PostgREST for (PR-14).
+
+    "exact" (today) runs a full COUNT(*) on every page of the panel's lists.
+    LIST_COUNT_ESTIMATED on → "estimated": PostgREST counts exactly while the
+    result is small and switches to the planner's estimate above its
+    threshold (db-max-rows), so a big table costs one plan, not one scan.
+    The badge on a long list may then read "about N"; nothing else changes."""
+    from app.flags import flag
+    return "estimated" if flag("LIST_COUNT_ESTIMATED", False) else "exact"
+
 _client: Optional[Client] = None
 
 # Dedicated thread pool for sync supabase-py calls (D-01). Size from settings
@@ -789,7 +801,7 @@ async def get_conversations(
     try:
         db = get_client()
         def _query(columns: str, with_supervisor_cols: bool):
-            q = db.table("conversations").select(columns, count="exact").order("updated_at", desc=True)  # type: ignore[arg-type]
+            q = db.table("conversations").select(columns, count=list_count_mode()).order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
             if team_ids:
                 q = q.in_("team_id", team_ids)
@@ -1304,7 +1316,7 @@ async def get_leads(
         def _query(with_030_cols: bool = True):
             q = db.table("leads").select(
                 "*, conversations!inner(visitor_name, visitor_email, visitor_phone, tunnel, assigned_agent_id)",
-                count="exact"  # type: ignore[arg-type]
+                count=list_count_mode()  # type: ignore[arg-type]
             )
             if reviewed_filter == "false":
                 q = q.order("created_at", desc=False)
@@ -2405,10 +2417,27 @@ async def count_team_members(team_id: str) -> int:
         return 0
 
 
+def hash_invite_token(token: str) -> str:
+    """Invite links are stored as SHA-256 (PR-14): a leaked table row can no
+    longer set someone's password. The link itself still carries the raw
+    token; only its hash is written."""
+    import hashlib
+    return hashlib.sha256((token or "").encode()).hexdigest()
+
+
+def _invite_keys(token: str) -> list[str]:
+    """What a presented token may be stored as: its hash, or — for a link
+    minted before PR-14 and still inside its 30 minutes — the raw value."""
+    return [hash_invite_token(token), token or ""]
+
+
 async def create_invite_token(payload: dict) -> Optional[dict]:
-    """Create one-time invite token row."""
+    """Create one-time invite token row. The token is stored hashed."""
     try:
         db = get_client()
+        payload = dict(payload)
+        if payload.get("token"):
+            payload["token"] = hash_invite_token(payload["token"])
         res = await _run_sync(lambda: db.table("invite_tokens").insert(payload).execute(), idempotent=False)
         return res.data[0] if res.data else None
     except Exception as e:
@@ -2433,7 +2462,7 @@ async def invalidate_active_invite_tokens(
             .eq("user_id", user_id)
             .eq("purpose", purpose)
             .is_("used_at", "null")
-            .neq("token", except_token or "")
+            .neq("token", hash_invite_token(except_token) if except_token else "")
             .execute()
         )
         return len(res.data or [])
@@ -2453,7 +2482,7 @@ async def diagnose_invite_token(token: str, purpose: str = "set_password") -> st
         res = await _run_sync(
             lambda: db.table("invite_tokens")
             .select("used_at, expires_at, user_id, created_at")
-            .eq("token", token)
+            .in_("token", _invite_keys(token))
             .eq("purpose", purpose)
             .limit(1)
             .execute()
@@ -2523,7 +2552,7 @@ async def get_valid_invite_token(token: str, purpose: str = "set_password") -> O
         res = await _run_sync(
             lambda: db.table("invite_tokens")
             .select("*")
-            .eq("token", token)
+            .in_("token", _invite_keys(token))
             .eq("purpose", purpose)
             .is_("used_at", "null")
             .gt("expires_at", now_iso)
@@ -2544,7 +2573,7 @@ async def mark_invite_token_used(token: str) -> Optional[dict]:
         res = await _run_sync(
             lambda: db.table("invite_tokens")
             .update({"used_at": now_iso})
-            .eq("token", token)
+            .in_("token", _invite_keys(token))
             .is_("used_at", "null")
             .execute()
         )
@@ -2562,7 +2591,7 @@ async def consume_valid_invite_token(token: str, purpose: str = "set_password") 
         res = await _run_sync(
             lambda: db.table("invite_tokens")
             .update({"used_at": now_iso})
-            .eq("token", token)
+            .in_("token", _invite_keys(token))
             .eq("purpose", purpose)
             .is_("used_at", "null")
             .gt("expires_at", now_iso)
