@@ -609,3 +609,28 @@ export async function getLearningReport(): Promise<LearningReport> {
   if (!res.ok) throw new ApiError(res.status, 'Failed to load report')
   return res.json()
 }
+
+// ── Security → Bans (PR-11) ───────────────────────────────────
+export type SecurityBan = {
+  id: string; identity: string; jail: string; reason: string | null
+  first_seen_at: string; last_seen_at: string; expires_at: string | null
+  ban_count: number; unbanned_by: string | null; unbanned_at: string | null
+}
+
+export async function listBans(): Promise<SecurityBan[]> {
+  const res = await fetch(`${BASE}/api/admin/security/bans`, { headers: authHeaders() })
+  if (!res.ok) throw new ApiError(res.status, 'Failed to load bans')
+  const body = await res.json()
+  if (!body.success) throw new ApiError(500, body.error ?? 'Failed to load bans')
+  return body.data ?? []
+}
+
+export async function unbanBan(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/admin/security/bans/${id}/unban`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new ApiError(res.status, 'Unban failed')
+  const body = await res.json()
+  if (!body.success) throw new ApiError(500, body.error ?? 'Unban failed')
+}
