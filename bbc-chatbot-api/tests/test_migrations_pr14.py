@@ -64,3 +64,15 @@ def test_replay_tooling_is_present():
     code = "\n".join(l for l in script.splitlines() if not l.lstrip().startswith("#"))
     assert "--single-transaction" not in code
     assert os.access(ci / "replay_migrations.sh", os.X_OK)
+
+
+def test_a_leaked_invite_hash_is_not_a_token():
+    """Review fix: presenting the stored SHA-256 must not match its own row
+    through the raw-token fallback."""
+    from app.db.supabase import _invite_keys, hash_invite_token
+    from app.services.email import generate_invite_token
+
+    raw = generate_invite_token()
+    assert _invite_keys(raw) == [hash_invite_token(raw), raw]   # pre-deploy links still work
+    leaked = hash_invite_token(raw)
+    assert _invite_keys(leaked) == [hash_invite_token(leaked)]  # never itself

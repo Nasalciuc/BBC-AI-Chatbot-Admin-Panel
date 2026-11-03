@@ -202,8 +202,8 @@ class BanGuardMiddleware:
         ctx.update(ip=ip, store=store, vid=vid, conv=conv)
 
         # The two that never wait (PR-15): the bundle's decoy key and the
-        # widget's bait route. Banned identities are refused even in shadow.
-        if not staff and ((ip and await store.is_banned(f"always:{ip}")) or (vid and await store.is_banned(f"vid:{vid}"))):
+        # widget's bait route. Their bans are refused even in shadow.
+        if not staff and ip and await store.is_banned(f"always:{ip}"):
             FAIL2BAN_HEALTH["blocked"] += 1
             return True
 
@@ -212,11 +212,13 @@ class BanGuardMiddleware:
             return self._enforce("existing", ip)
 
         if _carries_decoy_key(headers, scope.get("query_string", b"")):
-            await self._trip(store, ip, "decoy_key", _BAN_WEEK, alert=True, staff=staff, mode="always", ctx=ctx)
+            await self._trip(store, ip, "decoy_key", _BAN_WEEK, alert=True, staff=staff,
+                             mode=self._always_mode(headers), ctx=ctx)
             return False
 
         if path == WIDGET_BAIT_PATH:
-            await self._trip(store, ip, "widget_bait", _BAN_WEEK, alert=True, staff=staff, mode="always", ctx=ctx)
+            await self._trip(store, ip, "widget_bait", _BAN_WEEK, alert=True, staff=staff,
+                             mode=self._always_mode(headers), ctx=ctx)
             return False
 
         # A Basic header: the old door (PR-1 removed it).
@@ -317,6 +319,24 @@ class BanGuardMiddleware:
         await self._alert(f"operator trap {trap} user={sub or '-'} ip={ip} "
                           f"{'sessions revoked' if enforce and sub else 'counted'}")
 
+    def _always_mode(self, headers: dict) -> str:
+        """The decoy key and the widget bait ban without waiting — but only
+        when the hit cannot have been planted and the IP is proven:
+          - a cross-site no-cors fetch (an <img> on someone else's page, to
+            get OUR visitors banned) is counted, never banned;
+          - the IP must come from a self-test that PASSED; a skipped test
+            (no PUBLIC_API_URL) or a spoofable edge only records and alerts.
+        No visitor-id ban: the id is client-supplied, so anyone who knew one
+        could have it banned for a year (review fix)."""
+        from app.security.client_ip import CLIENT_IP_HEALTH
+
+        if _is_poisoned(headers):
+            FAIL2BAN_HEALTH["poisoned_skipped"] += 1
+            return "alert_only"
+        if not CLIENT_IP_HEALTH.get("ip_verified"):
+            return "alert_only"
+        return "always"
+
     async def _trip(self, store, ip: str, jail: str, seconds: int, *, alert: bool, staff: bool,
                     mode: str = "fail2ban", ctx: Optional[dict] = None) -> None:
         """A tripwire fired. Staff (valid JWT) is never banned — it alerts.
@@ -331,6 +351,10 @@ class BanGuardMiddleware:
             return
         if mode == "always":
             enforce = True
+        elif mode == "alert_only":
+            enforce = False
+            if alert:
+                await self._alert(f"jail={jail} ip={ip} not banned (unproven IP or cross-site)")
         elif mode == "behavior":
             from app.security import behavior as bh
             enforce = bh.enforced("BEHAVIOR_TRAPS_ENFORCE")
@@ -344,11 +368,10 @@ class BanGuardMiddleware:
             return
         FAIL2BAN_HEALTH["banned"] += 1
         if mode == "always":
-            vid = (ctx or {}).get("vid", "")
+            # Recorded in security_bans under always:<ip>, so the panel can
+            # unban it like any other.
             if ip:
                 await self._ban(store, f"always:{ip}", jail, seconds, alert=alert)
-            if vid:
-                await store.ban(f"vid:{vid}", jail, 365 * 24 * 3600, permanent=True)
             return
         await self._ban(store, ip, jail, seconds, alert=alert)
 

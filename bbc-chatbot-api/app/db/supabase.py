@@ -435,7 +435,7 @@ async def add_message(
             # Output guard: strip any non-brand contact from a bot reply before
             # it is stored (PR-4). 'log' mode leaves the text unchanged.
             from app.ai.output_guard import guard_ai_text
-            content = await guard_ai_text(content)
+            content = await guard_ai_text(content, conversation_id=conversation_id)
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
@@ -2427,8 +2427,16 @@ def hash_invite_token(token: str) -> str:
 
 def _invite_keys(token: str) -> list[str]:
     """What a presented token may be stored as: its hash, or — for a link
-    minted before PR-14 and still inside its 30 minutes — the raw value."""
-    return [hash_invite_token(token), token or ""]
+    minted before PR-14 and still inside its 30 minutes — the raw value.
+
+    Never the raw value when the token is itself hash-shaped (64 hex): the
+    stored hash presented as a token must not match its own row through the
+    legacy fallback (review fix — a leaked row would otherwise still set a
+    password). Generated tokens are url-safe base64, never 64 hex."""
+    t = token or ""
+    if re.fullmatch(r"[0-9a-f]{64}", t):
+        return [hash_invite_token(t)]
+    return [hash_invite_token(t), t]
 
 
 async def create_invite_token(payload: dict) -> Optional[dict]:

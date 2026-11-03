@@ -45,17 +45,13 @@ class BanStore:
             return False
         return True
 
-    async def ban(self, ip: str, jail: str, seconds: int, *, permanent: bool = False) -> int:
+    async def ban(self, ip: str, jail: str, seconds: int) -> int:
         """Ban an identity; each repeat within 30d doubles, capped at a week.
-        permanent=True (PR-15: a visitor id that hit the widget's bait route)
-        keeps `seconds` as given — never an IP. Returns the effective seconds."""
+        Returns the effective seconds."""
         if not ip:
             return 0
         if self._redis is not None:
             try:
-                if permanent:
-                    await self._redis.setex(f"ban:{ip}", seconds, jail)
-                    return seconds
                 n = await self._redis.incr(f"bancount:{ip}")
                 await self._redis.expire(f"bancount:{ip}", 30 * 24 * 3600)
                 eff = min(seconds * (2 ** (int(n) - 1)), _MAX_BAN)
@@ -64,9 +60,6 @@ class BanStore:
             except Exception as e:
                 logger.debug(f"[ban-store] ban redis failed: {type(e).__name__}")
                 return 0
-        if permanent:
-            self._mem[ip] = time.time() + seconds
-            return seconds
         n = self._counts.get(ip, 0) + 1
         self._counts[ip] = n
         eff = min(seconds * (2 ** (n - 1)), _MAX_BAN)
@@ -120,13 +113,16 @@ class BanStore:
 
     async def revoke_sessions(self, user_id: str) -> None:
         ts = int(time.time())
+        # Always in memory too (one process, ADR-5): the read path is sync and
+        # goes through response_cache's client, which may be down even when
+        # this async one works — a revocation must never be silently missed
+        # (review fix).
+        _MEM_REVOKED[user_id] = ts
         if self._redis is not None:
             try:
                 await self._redis.set(f"revoked_before:{user_id}", ts)
             except Exception as e:
-                logger.debug(f"[ban-store] revoke redis failed: {type(e).__name__}")
-            return
-        _MEM_REVOKED[user_id] = ts
+                logger.warning(f"[ban-store] revoke redis failed (memory still holds it): {type(e).__name__}")
 
 
 # Session revocation read path is SYNC (auth.get_current_user runs under a
@@ -135,15 +131,18 @@ _MEM_REVOKED: dict[str, int] = {}
 
 
 def revoked_before_sync(user_id: str) -> Optional[int]:
+    """The latest revocation mark for the user, from Redis and from memory."""
+    marks = [v for v in (_MEM_REVOKED.get(user_id),) if v]
     try:
         from app.services.response_cache import _get_redis
         r = _get_redis()
         if r is not None:
             v = r.get(f"revoked_before:{user_id}")
-            return int(v) if v else None
+            if v:
+                marks.append(int(v))
     except Exception as e:
-        logger.debug(f"[ban-store] revoked_before_sync failed: {type(e).__name__}")
-    return _MEM_REVOKED.get(user_id)
+        logger.debug(f"[ban-store] revoked_before_sync redis read failed: {type(e).__name__}")
+    return max(marks) if marks else None
 
 
 def get_store() -> Optional[BanStore]:

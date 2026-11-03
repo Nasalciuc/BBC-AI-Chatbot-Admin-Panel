@@ -92,7 +92,7 @@ async def test_on_deletes_in_batches(fake, monkeypatch):
     out = await retention.run_once()
     assert out["pipeline_runs"] == {"deleted": 1200}
     sizes = [n for t, op, n in (x for x in log if x[1] == "delete") if t == "pipeline_runs"]
-    assert sizes == [500, 500, 200]
+    assert sizes == [100] * 12
 
 
 def test_conversations_and_messages_are_never_in_scope():

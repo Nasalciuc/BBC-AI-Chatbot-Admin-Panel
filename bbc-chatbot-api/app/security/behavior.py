@@ -109,14 +109,21 @@ _ABUSE = [
     re.compile(r"(system|original)\s+prompt", re.I),
     re.compile(r"repeat\s+(the\s+)?(text|words|everything)\s+above", re.I),
     re.compile(r"what\s+(are|were)\s+your\s+(instructions|rules|guidelines)", re.I),
-    re.compile(r"\bact\s+as\s+(a|an|my)\b", re.I),
+    # Role-play aimed at the model itself ("act as my agent" is a client
+    # talking about travel and must pass — review fix).
+    re.compile(r"\b(act|behave|pretend)\s+(as|like|to\s+be)\s+(a|an)\s+(\w+\s+)?"
+               r"(ai|gpt|chatgpt|llm|chatbot|assistant\s+without|unrestricted|unfiltered|linux|terminal)\b", re.I),
     re.compile(r"\bdeveloper\s+mode\b", re.I),
     re.compile(r"\bjail\s*break", re.I),
-    re.compile(r"\bDAN\b"),
-    re.compile(r"\b(write|give|show|generate)\s+(me\s+)?(a\s+|some\s+|the\s+)?"
-               r"(python|javascript|java|c\+\+|c#|sql|bash|html|css|rust|go)?\s*"
-               r"(code|script|program|function)\b", re.I),
-    re.compile(r"\bhello\s+world\b.*\b(code|program|in\s+\w+)", re.I),
+    # Code requests need a writing verb and something code-shaped: "give me
+    # the code" (a promo or booking code) must pass.
+    re.compile(r"\b(write|generate|code)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?"
+               r"(python|javascript|typescript|java|c\+\+|c#|sql|bash|html|css|rust|go|php)\s*"
+               r"(code|script|program|function|class|query)?\b", re.I),
+    re.compile(r"\b(write|generate)\s+(me\s+)?(a\s+|some\s+|the\s+)?(code|script|program|function)\s+"
+               r"(that|which|to|for)\b", re.I),
+    re.compile(r"\bhello\s+world\b.*\b(code|program|in\s+(python|java|javascript|c|c\+\+|rust|go))\b", re.I),
+    re.compile(r"\b(write|give)\s+(me\s+)?(a\s+)?hello\s+world\b", re.I),
     re.compile(r"\b(do|solve|write)\s+my\s+(homework|essay|assignment)\b", re.I),
 ]
 
@@ -147,7 +154,10 @@ def is_locked(metadata: Optional[dict]) -> bool:
 # ── the frustration lane ──────────────────────────────────────
 
 _FRUSTRATION = re.compile(
-    r"(talk|speak|connect).*(agent|human|person|someone)"
+    # "connecting flight for 1 person" must not match (review fix): the
+    # verb, a preposition, then who.
+    r"\b(talk|speak|chat)\s+(to|with)\s+(a\s+|an\s+|the\s+|your\s+)?(real\s+|live\s+)?"
+    r"(agent|human|person|someone|consultant|representative)\b"
     r"|\breal\s+(person|human)\b"
     r"|\bi\s+(just\s+)?need\s+a\s+quote\b"
     r"|why\s+am\s+i\s+repeating"
@@ -157,12 +167,22 @@ _FRUSTRATION = re.compile(
 )
 
 
+# Short replies that ANSWER the bot ("2", "yes", "ok", "no", "LHR") are not
+# frustration (review fix): only short replies that answer nothing count.
+_ANSWER_LIKE = re.compile(r"^(\d+|y|n|yes|yep|yup|no|nope|ok|okay|k|sure|si|da|nu|[a-z]{3})[.!]?$", re.I)
+
+
+def _short_answer(message: str) -> bool:
+    m = (message or "").strip()
+    return 0 < len(m) <= 3 and not _ANSWER_LIKE.match(m)
+
+
 def frustration_signal(message: str, recent_user_messages: list[str]) -> bool:
     if _FRUSTRATION.search(message or ""):
         return True
-    # Three short answers in a row (this one included): the client is done typing.
+    # Three short non-answers in a row (this one included): "?", "..", "??".
     last = [m for m in (recent_user_messages or [])][-2:] + [message or ""]
-    return len(last) == 3 and all(0 < len(m.strip()) <= 3 for m in last)
+    return len(last) == 3 and all(_short_answer(m) for m in last)
 
 
 def frustration_message(lead: Optional[dict], site: Optional[str]) -> str:
@@ -248,19 +268,27 @@ async def _lock(conversation_id: str, reason: str) -> dict:
     return conv
 
 
+_UNSET = object()
+
+
 async def chat_door(*, conversation_id: Optional[str], raw_message: str, clean_message: str,
-                    ip: str, visitor_id: Optional[str], site: Optional[str]) -> Optional[str]:
+                    ip: str, visitor_id: Optional[str], site: Optional[str],
+                    metadata=_UNSET, human_handled: bool = False) -> Optional[str]:
     """Before the pipeline, after the routing checks. Returns the reply to
     send instead of calling the model, or None to carry on.
 
+    `metadata` is the conversation's metadata the caller already read (no
+    second round-trip on every message); the lock itself re-reads fresh.
     Saves the client's message first on every path that answers (rule 4)."""
     if not conversation_id:
         return None
     from app.db import supabase as db
     from app.services import conversation_service as cs
 
-    conv = await db.get_conversation_simple(conversation_id) or {}
-    meta = dict(conv.get("metadata") or {})
+    if metadata is _UNSET:
+        conv = await db.get_conversation_simple(conversation_id) or {}
+        metadata = conv.get("metadata")
+    meta = dict(metadata or {})
     lock_on = enforced("CHAT_ATTACK_ENFORCE")
 
     if lock_on and is_locked(meta):
@@ -271,6 +299,10 @@ async def chat_door(*, conversation_id: Optional[str], raw_message: str, clean_m
         return reply
 
     kind = chat_attack(raw_message)
+    if kind and human_handled:
+        # An operator is in the chat: they decide. Counted, never locked.
+        record("chat_lock_human_mode", ip=ip, conversation_id=conversation_id, visitor_id=visitor_id or "")
+        return None
     if kind:
         record("chat_lock", ip=ip, conversation_id=conversation_id, visitor_id=visitor_id or "",
                enforced_now=lock_on)
@@ -308,18 +340,34 @@ async def _maybe_block(conv: dict, visitor_id: Optional[str], ip: str) -> None:
         BEHAVIOR_HEALTH["lock_escalated_to_block"] += 1
 
 
+def _human_handled(conv: Optional[dict]) -> bool:
+    """An operator has the conversation: the bot's lanes stand aside."""
+    c = conv or {}
+    return c.get("mode") == "human" or bool(c.get("assigned_agent_id"))
+
+
 async def frustration_door(*, conversation_id: Optional[str], message: str,
-                           site: Optional[str]) -> Optional[str]:
+                           site: Optional[str], conv: Optional[dict] = None) -> Optional[str]:
     """The frustration lane. Shadow (FRUSTRATION_LANE_ENFORCE off, 7 days):
     counted only. On: no model — a reply built from the saved lead, the
-    conversation goes to needs_agent and the lead to the CRM now."""
-    if not conversation_id:
+    conversation goes to needs_agent and the lead to the CRM now.
+
+    Never in a conversation an operator handles (review fix: it would post a
+    bot template into the operator's chat)."""
+    if not conversation_id or _human_handled(conv):
         return None
     from app.db import supabase as db
 
-    recent = await db.get_recent_messages(conversation_id, limit=6)
-    users = [m.get("content") or "" for m in (recent or []) if m.get("role") == "user"]
-    if not frustration_signal(message, users[-2:]):
+    # The history is read only when the short-answers rule could apply; the
+    # phrase rule needs none (no extra round-trip on an ordinary message).
+    if frustration_signal(message, []):
+        pass
+    elif _short_answer(message):
+        recent = await db.get_recent_messages(conversation_id, limit=6)
+        users = [m.get("content") or "" for m in (recent or []) if m.get("role") == "user"]
+        if not frustration_signal(message, users[-2:]):
+            return None
+    else:
         return None
     if not enforced("FRUSTRATION_LANE_ENFORCE"):
         BEHAVIOR_HEALTH["frustration_would"] += 1
@@ -340,8 +388,10 @@ async def frustration_door(*, conversation_id: Optional[str], message: str,
             from types import SimpleNamespace
             from app.services.crm import push_lead_to_crm
 
+            from app.security.form_trap import holds_crm
+
             conv = await db.get_conversation_simple(conversation_id) or {}
-            if not is_locked(conv.get("metadata")):
+            if not is_locked(conv.get("metadata")) and not holds_crm(conv.get("metadata")):
                 await push_lead_to_crm(
                     lead,
                     SimpleNamespace(name=conv.get("visitor_name") or "", email=conv.get("visitor_email") or "",

@@ -57,9 +57,11 @@ async def verify_or_raise(token: Optional[str], remote_ip: Optional[str]) -> Non
         return
     TURNSTILE_HEALTH["checked"] += 1
     if not token:
+        # No token is not a failed check: an ad-blocker, a widget cached from
+        # before Turnstile, a site without the key. Counted, let through —
+        # only Cloudflare saying "no" closes the door (review fix).
         TURNSTILE_HEALTH["missing"] += 1
-        TURNSTILE_HEALTH["failed"] += 1
-        raise HTTPException(status_code=403, detail="Please reload the page and try again")
+        return
     ok = await _siteverify(secret, token, remote_ip)
     if ok is None:
         TURNSTILE_HEALTH["unavailable"] += 1

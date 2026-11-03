@@ -182,6 +182,7 @@ async def test_decoy_key_bans_a_week(monkeypatch):
     from config.settings import settings
     monkeypatch.setattr(settings, "decoy_bundle_key", "bbc_live_DECOYKEY_abcdef")
     monkeypatch.setenv("FAIL2BAN_ENFORCE", "true")
+    client_ip.CLIENT_IP_HEALTH["ip_verified"] = True   # a passed IP self-test
     mw = ban_guard.BanGuardMiddleware(_App())
     await _run(mw, _scope("/api/leads", {"x-api-key": "bbc_live_DECOYKEY_abcdef"}))
     assert ban_guard.FAIL2BAN_HEALTH["by_jail"]["decoy_key"] == 1

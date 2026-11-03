@@ -208,10 +208,15 @@ def _router_override(tier: str, tunnel: str, conversation_id: Optional[str]) -> 
     from app.ai import ledger
     from app.ai.router import decide, SALES_REPLY, SUPPORT_REPLY
 
+    from app.flags import flag
+
     family_55 = _family_55_active(conversation_id)
     frac = ledger.budget_fraction()
-    # Nothing to change: 4.x family and under 80% budget → today's behaviour.
-    if not family_55 and frac < 0.8:
+    # Nothing to change on the 4.x family: today's behaviour, byte-identical.
+    # The 80% downshift to Haiku is a change of production models, so on the
+    # legacy family it waits for BUDGET_DOWNSHIFT_ENABLED (review fix); the
+    # 100% template stays with budget_remaining upstream, as before.
+    if not family_55 and (frac < 0.8 or not flag("BUDGET_DOWNSHIFT_ENABLED", False)):
         return {}
     task = SUPPORT_REPLY if tunnel != "sales" else SALES_REPLY
     route = decide(task, decisive=(tier == "opus"), family_55=family_55, budget_fraction=frac)

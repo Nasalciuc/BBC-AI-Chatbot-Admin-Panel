@@ -21,8 +21,10 @@ from app.flags import flag
 
 logger = logging.getLogger(__name__)
 
-BATCH = 500
-MAX_BATCHES = 20
+# 100 ids per delete: the ids travel in the URL (in.(…)); 500 UUIDs are
+# ~18 KB and risk a 414 from the proxy (review fix).
+BATCH = 100
+MAX_BATCHES = 50
 THIRTEEN_MONTHS = timedelta(days=396)
 
 RETENTION_HEALTH: dict = {"last_run": None, "enabled": False, "tables": {}}

@@ -16,9 +16,10 @@ ADD COLUMN IF NOT EXISTS flagged_reason text;
 DO $$
 DECLARE
     constraint_name text;
+    constraint_def  text;
 BEGIN
-    SELECT conname
-    INTO constraint_name
+    SELECT conname, pg_get_constraintdef(c.oid)
+    INTO constraint_name, constraint_def
     FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
     JOIN pg_namespace n ON n.oid = t.relnamespace
@@ -32,6 +33,13 @@ BEGIN
       AND (c.conname = 'users_role_check'
            OR pg_get_constraintdef(c.oid) ~* '\mrole\M[^a-z_]*(=\s*ANY|\s+IN\s*\()')
     LIMIT 1;
+
+    -- Review fix: on a database that already accepts these roles (production
+    -- does, and has project_manager from 021 too), re-running this file must
+    -- change nothing — rewriting the list would drop the roles added later.
+    IF constraint_name IS NOT NULL AND constraint_def ILIKE '%''supervisor''%' THEN
+        RETURN;
+    END IF;
 
     IF constraint_name IS NOT NULL THEN
         EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', constraint_name);

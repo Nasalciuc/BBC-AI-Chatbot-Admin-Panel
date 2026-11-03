@@ -60,6 +60,13 @@ class LoginResponse(BaseModel):
     mfa_token: Optional[str] = None
 
 
+def _mask_email(email: str) -> str:
+    """For logs (rule 7: no PII at INFO or above): the domain and a hint."""
+    e = (email or "").strip().lower()
+    local, _, domain = e.partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "***"
+
+
 def _public_user(user: dict) -> dict:
     return {
         "id": user["id"],
@@ -243,11 +250,14 @@ async def mfa_verify(req: MfaCodeRequest, request: Request, _rate: None = Depend
     if wait:
         raise HTTPException(429, "Too many attempts — please wait and try again.",
                             headers={"Retry-After": str(wait)})
-    secret = _mfa.decrypt(user.get("totp_secret_enc") or "")
-    if not secret or not _mfa.is_enrolled(user):
+    if not _mfa.is_enrolled(user):
         raise HTTPException(401, "This step expired — please sign in again")
+    # A secret that no longer decrypts (MFA_ENCRYPTION_KEY changed, or differs
+    # between environments) must not lock an enrolled owner out: the recovery
+    # codes are bcrypt hashes and do not depend on the key (review fix).
+    secret = _mfa.decrypt(user.get("totp_secret_enc") or "")
 
-    ok = _mfa.verify_code(secret, req.code)
+    ok = bool(secret) and _mfa.verify_code(secret, req.code)
     if not ok and _mfa.looks_like_recovery(req.code):
         for row in await unused_recovery_codes(user["id"]):
             if _mfa.recovery_matches(req.code, row.get("code_hash", "")):
@@ -385,7 +395,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         from app.flags import flag
         if flag("ROLE_GATES_ENFORCE", False):
             raise HTTPException(400, "Staff accounts must use a company email address")
-        logger.warning(f"[domain-gate] would refuse non-company invite email: {req.email}")
+        logger.warning(f"[domain-gate] would refuse non-company invite email: {_mask_email(req.email)}")
     if req.role == "owner" and current_user.get("role") != "owner":
         raise HTTPException(403, "Only an owner can grant the owner role")
 
@@ -422,7 +432,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
             # inbox. Reuse a token created seconds ago instead.
             _recent = await db.find_recent_invite_token(existing["id"], "set_password", 5)
             if _recent:
-                logger.info(f"Invite de-duplicated for {req.email} (token <5s old)")
+                logger.info(f"Invite de-duplicated for {_mask_email(req.email)} (token <5s old)")
                 return {"success": True, "data": {
                     "id": existing["id"], "email": req.email, "name": req.name,
                     "role": update_payload["role"], "reactivated": True,
@@ -453,12 +463,12 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
                 settings.invite_link_expiry_minutes,
             )
             if not email_sent:
-                logger.warning(f"Reactivation email failed for {req.email} — user still reactivated")
+                logger.warning(f"Reactivation email failed for {_mask_email(req.email)} — user still reactivated")
 
             logger.info(
                 f"User REACTIVATED | email={req.email} "
                 f"role={update_payload['role']} "
-                f"by={current_user.get('email', 'admin')}"
+                f"by={current_user.get('id', 'admin')}"
             )
 
             return {
@@ -500,7 +510,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
                 invite_url,
                 settings.invite_link_expiry_minutes,
             )
-            logger.info(f"Reinvite sent to {req.email} (email_sent={email_sent})")
+            logger.info(f"Reinvite sent to {_mask_email(req.email)} (email_sent={email_sent})")
             return {
                 "success": True,
                 "data": {
@@ -527,7 +537,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
     if not user:
         raise HTTPException(500, "Failed to create user")
 
-    logger.info(f"User invited | email={req.email} role={req.role} by={current_user.get('email', 'admin')}")
+    logger.info(f"User invited | email={_mask_email(req.email)} role={req.role} by={current_user.get('id', 'admin')}")
 
     # No dedup check here: the user row was created microseconds ago, so a
     # prior token cannot exist. The double-click case is the RESEND path.
@@ -554,7 +564,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         settings.invite_link_expiry_minutes,
     )
     if not email_sent:
-        logger.warning(f"Invite email failed for {req.email} — user still created")
+        logger.warning(f"Invite email failed for {_mask_email(req.email)} — user still created")
 
     return {"success": True, "data": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "email_sent": email_sent}}
 

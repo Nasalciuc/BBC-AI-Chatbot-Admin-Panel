@@ -78,3 +78,20 @@ def test_cache_ttl_flag(monkeypatch):
 def test_closing_4x_is_opus_55_is_sonnet():
     assert router.decide(router.CLOSING).model == settings.claude_opus_model
     assert router.decide(router.CLOSING, family_55=True).model == settings.claude_sonnet_55_model
+
+
+def test_legacy_family_keeps_its_models_past_80_percent_until_the_flag(monkeypatch):
+    """Review fix: on the 4.x family the override is empty (today's models)
+    even at 85% of the budget, unless BUDGET_DOWNSHIFT_ENABLED is on."""
+    from app import flags
+    from app.ai import ledger
+    from app.pipeline import generator
+
+    flags._reset_for_tests()
+    monkeypatch.setattr(ledger, "budget_fraction", lambda: 0.85)
+    monkeypatch.setattr(generator, "_family_55_active", lambda cid: False)
+    assert generator._router_override("opus", "sales", "c1") == {}
+    monkeypatch.setenv("BUDGET_DOWNSHIFT_ENABLED", "true")
+    flags._reset_for_tests()
+    ov = generator._router_override("opus", "sales", "c1")
+    assert ov["model"] == settings.claude_haiku_model

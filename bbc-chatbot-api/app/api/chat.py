@@ -475,10 +475,13 @@ async def chat(
             conversation_id=req.conversation_id, raw_message=req.message,
             clean_message=clean_message, ip=client_ip(request) or "",
             visitor_id=req.visitor_id, site=_site,
+            metadata=(conv_info or {}).get("metadata"),
+            human_handled=_bh._human_handled(conv_info),
         )
         if _door is None:
             _door = await _bh.frustration_door(
                 conversation_id=req.conversation_id, message=clean_message, site=_site,
+                conv=conv_info,
             )
         if _door is not None:
             return ChatResponse(

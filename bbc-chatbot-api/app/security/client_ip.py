@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 CLIENT_IP_HEALTH: dict[str, Any] = {
     "header_missing": 0,
     "ip_trusted": True,
+    # True only after the self-test PASSED (a forged X-Forwarded-For did not
+    # come through). "Skipped" (no PUBLIC_API_URL) leaves it False.
+    "ip_verified": False,
     "last_selftest": None,
 }
 _alerted_missing = False
@@ -101,4 +104,4 @@ def ip_trusted() -> bool:
 def _reset_for_tests() -> None:
     global _alerted_missing
     _alerted_missing = False
-    CLIENT_IP_HEALTH.update(header_missing=0, ip_trusted=True, last_selftest=None)
+    CLIENT_IP_HEALTH.update(header_missing=0, ip_trusted=True, ip_verified=False, last_selftest=None)

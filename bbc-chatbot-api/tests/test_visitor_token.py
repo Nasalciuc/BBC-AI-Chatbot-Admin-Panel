@@ -168,3 +168,13 @@ def test_form_trap_off(monkeypatch):
     monkeypatch.setenv("FORM_TRAP_MODE", "off")
     meta: dict = {}
     assert form_trap.apply({"website": "x"}, meta) is None
+
+
+
+@pytest.mark.asyncio
+async def test_turnstile_missing_token_passes_and_counts(monkeypatch):
+    """Review fix: a missing token (ad-blocker, cached widget) is not a 403."""
+    monkeypatch.setenv("TURNSTILE_ENABLED", "true")
+    monkeypatch.setattr(settings, "turnstile_secret", "ts-secret", raising=False)
+    await turnstile.verify_or_raise(None, "1.2.3.4")
+    assert turnstile.TURNSTILE_HEALTH["missing"] == 1

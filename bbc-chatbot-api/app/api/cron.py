@@ -857,7 +857,7 @@ async def ai_cost_report(request: Request):
         # Our ledger total for this day+model is only meaningful for our own key.
         ledger_cost = float(r.get("ledger_cost_usd", 0) or 0)
         if chatbot_key and api_key_id == chatbot_key:
-            ledger_cost = _ledger_cost_for(day, model)
+            ledger_cost = await _ledger_cost_for(day, model)
         diff = round(billed - ledger_cost, 6)
         record = {
             "day": day, "api_key_id": api_key_id, "model": model,
