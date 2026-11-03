@@ -986,8 +986,12 @@ async def sse_stream(
     except (ValueError, AttributeError, TypeError):
         return {"success": False, "error": "invalid conversation_id"}
 
+    # ?v=2: the widget knows the `typing` event (PR-10). Older cached widgets
+    # do not send it and never receive typing events.
+    _v2 = request.query_params.get("v") == "2"
+
     async def event_generator():
-        queue = await manager.connect(conversation_id)
+        queue = await manager.connect(conversation_id, v2=_v2)
         try:
             while True:
                 if await request.is_disconnected():

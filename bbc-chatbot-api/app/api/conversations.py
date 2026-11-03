@@ -64,16 +64,28 @@ async def list_conversations(
     ),
     limit:  int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    with_counts: bool = Query(False),
     user: dict = Depends(get_current_user),
 ):
+    counts_task = None
     try:
         tunnel = _enforce_tunnel(user, tunnel)
+        # PR-10: the tab badges ride the list the panel already polls every
+        # 5 s, instead of a second /conversations/counts poll every 10 s.
+        if with_counts:
+            import asyncio as _asyncio
+            counts_task = _asyncio.ensure_future(
+                db.get_conversation_counts(agent_id=user.get("id", ""), tunnel=tunnel)
+            )
 
         # Phase 2 team scoping (supervisor/PM): restrict to their team(s).
         # Fail closed — a scoped caller with no team sees an empty list.
         team_ids = await _resolve_team_scope(user)
         if team_ids is not None and len(team_ids) == 0:
-            return {"success": True, "data": [], "count": 0}
+            out = {"success": True, "data": [], "count": 0}
+            if counts_task is not None:
+                out["counts"] = await _counts_or_none(counts_task)
+            return out
 
         # AI-outcome tags are supervisor/oversight only — a queue-health
         # signal, not something an agent needs filtering their own queue.
@@ -148,13 +160,29 @@ async def list_conversations(
         if user.get("role") == "supervisor":
             from app.security.pii import mask_visitor_row
             rows = [mask_visitor_row(dict(c)) for c in rows]
-        return {"success": True, "data": rows, "count": total}
+        out = {"success": True, "data": rows, "count": total}
+        if counts_task is not None:
+            out["counts"] = await _counts_or_none(counts_task)
+        return out
     except HTTPException:
         # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.
+        if counts_task is not None:
+            counts_task.cancel()
         raise
     except Exception as e:
+        if counts_task is not None:
+            counts_task.cancel()
         logger.error(f"list_conversations unexpected error: {e}", exc_info=True)
         return {"success": False, "data": [], "count": 0, "error": str(e)}
+
+
+async def _counts_or_none(task) -> Optional[dict]:
+    """The badges are a garnish on the list: a failed count never fails it."""
+    try:
+        return await task
+    except Exception as e:
+        logger.warning(f"[conversations] counts alongside list failed: {type(e).__name__}: {e}")
+        return None
 
 
 @router.get("/conversations/counts")
@@ -494,13 +522,18 @@ async def set_agent_typing_status(
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
 
+    from app.realtime.manager import manager as _sse
     from app.realtime.typing_indicator import typing_manager
     if body.text.strip():
         sender = await db.get_user_by_id(user.get("id"))
         name = (sender or {}).get("name") or "Consultant"
         await typing_manager.set_agent_typing(conversation_id, name)
+        # Pushed on every refresh (the panel throttles), so the widget's own
+        # short expiry keeps the indicator honest if the operator walks off.
+        await _sse.push_typing(conversation_id, True, name)
     else:
         await typing_manager.clear_agent_typing(conversation_id)
+        await _sse.push_typing(conversation_id, False)
     return {"success": True}
 
 
@@ -515,8 +548,10 @@ async def clear_agent_typing_status(
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
 
+    from app.realtime.manager import manager as _sse
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_agent_typing(conversation_id)
+    await _sse.push_typing(conversation_id, False)
     return {"success": True}
 
 

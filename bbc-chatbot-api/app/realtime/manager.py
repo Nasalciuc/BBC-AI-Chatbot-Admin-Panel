@@ -18,12 +18,18 @@ logger = logging.getLogger(__name__)
 class ConnectionManager:
     def __init__(self) -> None:
         self._subs: Dict[str, Set[asyncio.Queue]] = {}
+        # Subscribers that understand event types added after v1 (PR-10:
+        # `typing`). A widget cached before the change would render an unknown
+        # event as an empty message, so it never receives them.
+        self._v2: Set[asyncio.Queue] = set()
 
-    async def connect(self, conv_id: str) -> asyncio.Queue:
+    async def connect(self, conv_id: str, *, v2: bool = False) -> asyncio.Queue:
         """Register one subscriber for conv_id. Returns ITS queue; pass it back
         to disconnect() so only this subscriber is removed."""
         q: asyncio.Queue = asyncio.Queue(maxsize=500)
         self._subs.setdefault(conv_id, set()).add(q)
+        if v2:
+            self._v2.add(q)
         logger.info(
             f"[sse] connected conv={conv_id} subs={len(self._subs[conv_id])} "
             f"conversations={len(self._subs)}"
@@ -32,6 +38,7 @@ class ConnectionManager:
 
     def disconnect(self, conv_id: str, queue: asyncio.Queue) -> None:
         """Remove ONE subscriber. The conversation entry goes when the last leaves."""
+        self._v2.discard(queue)
         subs = self._subs.get(conv_id)
         if not subs:
             return
@@ -56,8 +63,10 @@ class ConnectionManager:
     # stepped in. The operator simply never saw the reply.
     _CHUNK_HIGH_WATER = 0.8
 
-    def _fanout(self, conv_id: str, payload: dict, *, is_chunk: bool = False) -> None:
+    def _fanout(self, conv_id: str, payload: dict, *, is_chunk: bool = False, v2_only: bool = False) -> None:
         for q in tuple(self._subs.get(conv_id, ())):
+            if v2_only and q not in self._v2:
+                continue
             if is_chunk and q.qsize() >= int(q.maxsize * self._CHUNK_HIGH_WATER):
                 continue  # chunk backpressure: keep headroom for terminal events
             try:
@@ -84,6 +93,16 @@ class ConnectionManager:
 
     async def push_stream_end(self, conv_id: str, message: dict) -> None:
         self._fanout(conv_id, {"event": "stream_end", **message})
+
+    async def push_typing(self, conv_id: str, is_typing: bool, name: str = "") -> None:
+        """Operator typing → the widget, only to v2 subscribers (PR-10). Dropped
+        like a chunk on a busy queue: the next refresh or the message fixes it."""
+        self._fanout(
+            conv_id,
+            {"event": "typing", "is_typing": bool(is_typing), "name": name if is_typing else ""},
+            is_chunk=True,
+            v2_only=True,
+        )
 
 
 # Module-level singleton — import this instance everywhere

@@ -299,3 +299,35 @@ async def test_human_mode_chat_pushes_the_visitor_row_insert_then_push_then_retu
     got = q.get_nowait()
     assert got["role"] == "user"
     assert got["id"] == _USER_ROW["id"]
+
+
+# ── PR-10: typing events reach only v2 subscribers ────────────
+
+@pytest.mark.asyncio
+async def test_typing_reaches_v2_widget_only():
+    m = ConnectionManager()
+    old = await m.connect(_CONV)          # a cached v1 widget, or the panel
+    new = await m.connect(_CONV, v2=True)  # the new widget (?v=2)
+    await m.push_typing(_CONV, True, "Ana")
+    assert old.qsize() == 0
+    ev = new.get_nowait()
+    assert ev == {"event": "typing", "is_typing": True, "name": "Ana"}
+    await m.push_typing(_CONV, False, "Ana")
+    assert new.get_nowait() == {"event": "typing", "is_typing": False, "name": ""}
+
+
+@pytest.mark.asyncio
+async def test_disconnect_forgets_v2():
+    m = ConnectionManager()
+    q = await m.connect(_CONV, v2=True)
+    m.disconnect(_CONV, q)
+    assert q not in m._v2
+
+
+@pytest.mark.asyncio
+async def test_messages_still_reach_both():
+    m = ConnectionManager()
+    old = await m.connect(_CONV)
+    new = await m.connect(_CONV, v2=True)
+    await m.push(_CONV, {"id": "1", "role": "agent", "content": "hi"})
+    assert old.qsize() == 1 and new.qsize() == 1
