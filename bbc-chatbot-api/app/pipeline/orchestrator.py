@@ -302,8 +302,19 @@ async def process_message(
     # persist a fallback ONLY if this is still False (no duplicate post-save).
     _persist_state = {"ai_persisted": False}
     try:
-        return await asyncio.wait_for(
-            _pipeline(
+        # PR-5: flow control may run through the LangGraph engine. The graph's
+        # single node calls this same _pipeline, so behaviour is identical; the
+        # timeout and fallback below wrap whichever engine runs.
+        from app.graph.engine import run_turn_graph, use_graph
+
+        if use_graph(conversation_id):
+            _run = run_turn_graph(
+                conversation_id, message, tunnel, visitor, metadata,
+                visitor_id=visitor_id, persist_state=_persist_state,
+                skip_user_save=skip_user_save,
+            )
+        else:
+            _run = _pipeline(
                 conversation_id,
                 message,
                 tunnel,
@@ -312,9 +323,8 @@ async def process_message(
                 visitor_id=visitor_id,
                 _persist_state=_persist_state,
                 skip_user_save=skip_user_save,
-            ),
-            timeout=settings.pipeline_timeout,
-        )
+            )
+        return await asyncio.wait_for(_run, timeout=settings.pipeline_timeout)
     except asyncio.TimeoutError:
         cid = conversation_id or "unknown"
         logger.error(

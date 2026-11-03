@@ -13,3 +13,9 @@ python-dotenv==1.0.1
 PyJWT==2.9.0
 bcrypt==4.2.0
 redis==5.2.1
+
+# LangGraph — flow control for a chat turn (PR-5). Pinned exactly; the graph
+# runs today's pipeline unchanged at PIPELINE_ENGINE=legacy (the default).
+langgraph==1.2.19
+langgraph-checkpoint==4.3.1
+langchain-core==1.7.4
