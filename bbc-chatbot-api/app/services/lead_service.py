@@ -107,7 +107,8 @@ async def ensure_lead(conversation_id: str, visitor=None) -> Optional[dict]:
             ins = await _run_sync(
                 lambda: db_client.table("leads")
                 .insert({"conversation_id": conversation_id, "intent_signals": {}})
-                .execute()
+                .execute(),
+                idempotent=False,
             )
             if ins.data:
                 logger.info(f"[{conversation_id}] ensure_lead: created lead row")
@@ -271,7 +272,8 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lead_res = await _run_sync(
                 lambda: db_client.table("leads")
                 .insert({"conversation_id": conversation_id})
-                .execute()
+                .execute(),
+                idempotent=False,
             )
             if not lead_res.data:
                 return

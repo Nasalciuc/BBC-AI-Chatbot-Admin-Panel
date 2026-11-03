@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 
 from supabase import create_client, Client
+from supabase.lib.client_options import ClientOptions
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -217,7 +218,13 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
 def get_client() -> Client:
     global _client
     if _client is None:
-        _client = create_client(settings.supabase_url, settings.supabase_key)
+        # PostgREST default read timeout is 120s (postgrest 0.16.11). A wedged
+        # query must not hold a turn for two minutes — cap it at 10s (PR-9).
+        _client = create_client(
+            settings.supabase_url,
+            settings.supabase_key,
+            options=ClientOptions(postgrest_client_timeout=10),
+        )
     return _client
 
 
