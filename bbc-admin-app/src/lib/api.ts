@@ -29,6 +29,7 @@ import type {
   TasksResponse,
   UserAccessAuditItem,
   AgentSseEvent,
+  LeadDetails,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -62,6 +63,17 @@ function authHeaders(): Record<string, string> {
 }
 
 // ── Auth ──────────────────────────────────────────────────────
+export async function getConversationDetails(conversationId: string): Promise<LeadDetails | null> {
+  const res = await fetch(`${BASE}/api/conversations/${conversationId}/details`, {
+    headers: authHeaders(),
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!res.ok) return null
+  const body = await res.json().catch(() => null)
+  return (body && body.data) as LeadDetails | null
+}
+
+
 export async function loginUser(
   email: string,
   password: string,

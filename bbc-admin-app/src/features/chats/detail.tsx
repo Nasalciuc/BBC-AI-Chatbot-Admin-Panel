@@ -5,9 +5,10 @@ import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
   Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe,
 } from 'lucide-react'
-import type { Message, Lead } from '@/lib/types'
+import type { Message, Lead, LeadDetails } from '@/lib/types'
 import {
   getConversation,
+  getConversationDetails,
   sendAgentMessage,
   apiFetch,
   openAgentStream,
@@ -70,6 +71,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [blocking, setBlocking] = useState(false)
   const [blockResult, setBlockResult] = useState<string | null>(null)
   const [input, setInput]             = useState('')
+  const [leadDetails, setLeadDetails] = useState<LeadDetails | null>(null)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
   // Below xl the lead panel is an overlay toggled from the header — the
@@ -207,6 +209,11 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
           case 'stream_chunk':
             // The panel renders whole messages; the widget owns the typewriter.
             break
+          case 'lead_details': {
+            const { event: _ev, ...details } = e
+            setLeadDetails(details as LeadDetails)
+            break
+          }
           case 'stream_end': {
             const { event: _ev, ...row } = e
             queryClient.setQueryData(
@@ -223,6 +230,16 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     )
     return () => h.close()
   }, [conversationId, activeTab, dormant, usingMock, queryClient])
+
+  // Operator card (PR-7): first load pulls the lead's slots; the op:{cid} SSE
+  // channel pushes updates as the client gives the operator more.
+  useEffect(() => {
+    setLeadDetails(null)
+    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock) return
+    let alive = true
+    getConversationDetails(conversationId).then((d) => { if (alive) setLeadDetails(d) }).catch(() => {})
+    return () => { alive = false }
+  }, [conversationId, activeTab, dormant, usingMock])
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {
@@ -553,6 +570,36 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             </button>
           </div>
         </div>
+
+        {/* Operator card: what the client has given and the next thing to ask.
+            Fed by the op:{cid} SSE channel + the first-load /details fetch. */}
+        {leadDetails && (leadDetails.missing?.length || leadDetails.route) ? (
+          <div className="mx-4 mt-3 rounded-lg border border-[#C9A54E]/40 bg-[#C9A54E]/5 p-3 text-xs">
+            <div className="flex items-center gap-1.5 font-semibold text-foreground mb-1.5">
+              <Info className="w-3.5 h-3.5 text-[#C9A54E]" /> Trip details so far
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-foreground/80">
+              <span>Route: <strong>{leadDetails.route ?? '—'}</strong></span>
+              <span>Depart: <strong>{leadDetails.departure_date ?? '—'}</strong></span>
+              <span>Return: <strong>{leadDetails.return_date ?? '—'}</strong></span>
+              <span>Travelers: <strong>{leadDetails.passengers ?? '—'}</strong></span>
+            </div>
+            {leadDetails.missing?.length ? (
+              <div className="mt-1.5 text-foreground/70">
+                Missing: <strong className="text-[#0B1829] dark:text-white">{leadDetails.missing.join(', ')}</strong>
+              </div>
+            ) : null}
+            {leadDetails.suggested_question ? (
+              <button
+                type="button"
+                onClick={() => setInput(leadDetails.suggested_question ?? '')}
+                className="mt-2 inline-flex items-center gap-1 rounded-md bg-[#0B1829] text-white px-2.5 py-1 text-[11px] hover:opacity-90"
+              >
+                <Send className="w-3 h-3" /> Ask: "{leadDetails.suggested_question}"
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-4 bg-muted">

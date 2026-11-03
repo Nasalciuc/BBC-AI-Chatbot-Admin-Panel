@@ -298,7 +298,20 @@ export type AgentSseEvent =
       widget_last_close_reason?: string; widget_last_event_at?: string }
   | { event: 'stream_chunk'; delta: string }
   | ({ event: 'stream_end' } & SseMessageRow)
+  | ({ event: 'lead_details' } & LeadDetails)
   | SseMessageRow   // plain message row (agent / system / ai)
+
+export type LeadDetails = {
+  type?: 'lead_details'
+  route: string | null
+  departure_date: string | null
+  return_date: string | null
+  trip_type: string | null
+  passengers: number | null
+  notes: Record<string, unknown>
+  missing: string[]
+  suggested_question: string | null
+}
 
 export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (!raw || typeof raw !== 'object') return null
@@ -307,6 +320,7 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
+  if (r.type === 'lead_details') return { ...(r as object), event: 'lead_details' } as AgentSseEvent
   if (typeof r.id === 'string') {
     if (ev === 'stream_end') return { ...(r as object), event: 'stream_end' } as AgentSseEvent
     // A message row has NO event field. An unknown event that happens to carry
