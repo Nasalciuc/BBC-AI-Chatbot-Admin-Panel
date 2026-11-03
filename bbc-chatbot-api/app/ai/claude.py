@@ -176,6 +176,14 @@ def _sampling_params(model: str, **params) -> dict:
     return params
 
 
+def _family_call_kwargs(model: str, temperature: float, max_tokens: int, effort: str = "low") -> dict:
+    """The model-specific call kwargs. 5.5 takes effort, no sampling knobs, and
+    needs room for thinking inside max_tokens; 4.x keeps temperature."""
+    if _is_55(model):
+        return {"max_tokens": max(max_tokens, 512), "output_config": {"effort": effort}}
+    return {"max_tokens": max_tokens, **_sampling_params(model, temperature=temperature)}
+
+
 # ── API calls ─────────────────────────────────────────────────
 
 def call_haiku(system_prompt, user_message: str, task: str = "haiku") -> tuple[Optional[str], float]:
@@ -474,32 +482,35 @@ def travel_tool() -> dict:
 
 
 def call_haiku_with_tools(
-    system_prompt, user_message: str
+    system_prompt, user_message: str, *, model: Optional[str] = None,
+    max_tokens: Optional[int] = None, effort: str = "low",
 ) -> tuple[Optional[str], float, dict]:
     """Call Haiku with travel extraction tool. Returns (text, cost, entities)."""
     return _call_model_with_tools(
-        settings.claude_haiku_model, system_prompt, user_message,
-        max_tokens=HAIKU_TOOL_MAX_TOKENS, temperature=0.3,
+        model or settings.claude_haiku_model, system_prompt, user_message,
+        max_tokens=max_tokens or HAIKU_TOOL_MAX_TOKENS, temperature=0.3, effort=effort,
     )
 
 
 def call_sonnet_with_tools(
-    system_prompt, user_message: str
+    system_prompt, user_message: str, *, model: Optional[str] = None,
+    max_tokens: Optional[int] = None, effort: str = "low",
 ) -> tuple[Optional[str], float, dict]:
     """Call Sonnet with travel extraction tool. Returns (text, cost, entities)."""
     return _call_model_with_tools(
-        settings.claude_sonnet_model, system_prompt, user_message,
-        max_tokens=SONNET_MAX_TOKENS, temperature=0.6,
+        model or settings.claude_sonnet_model, system_prompt, user_message,
+        max_tokens=max_tokens or SONNET_MAX_TOKENS, temperature=0.6, effort=effort,
     )
 
 
 def call_opus_with_tools(
-    system_prompt, user_message: str
+    system_prompt, user_message: str, *, model: Optional[str] = None,
+    max_tokens: Optional[int] = None, effort: str = "medium",
 ) -> tuple[Optional[str], float, dict]:
     """Call Opus with travel extraction tool. Returns (text, cost, entities)."""
     return _call_model_with_tools(
-        settings.claude_opus_model, system_prompt, user_message,
-        max_tokens=OPUS_MAX_TOKENS, temperature=0.6,
+        model or settings.claude_opus_model, system_prompt, user_message,
+        max_tokens=max_tokens or OPUS_MAX_TOKENS, temperature=0.6, effort=effort,
     )
 
 
@@ -524,6 +535,7 @@ def _validate_with_reprompt(
     max_tokens: int,
     temperature: float,
     raw_entities: dict,
+    effort: str = "low",
 ) -> tuple[dict, float]:
     """Typed gate on tool arguments. Returns (entities_to_use, extra_cost).
 
@@ -546,8 +558,7 @@ def _validate_with_reprompt(
         )
         response = _get_client().messages.create(
             model=model,
-            max_tokens=max_tokens,
-            **_sampling_params(model, temperature=temperature),
+            **_family_call_kwargs(model, temperature, max_tokens, effort),
             system=_build_system(system_prompt),
             messages=_build_messages(retry_message),
             tools=[travel_tool()],
@@ -578,6 +589,7 @@ def _call_model_with_tools(
     max_tokens: int,
     temperature: float,
     _is_fallback: bool = False,
+    effort: str = "low",
 ) -> tuple[Optional[str], float, dict]:
     """Internal: one generation call carrying the travel extraction tool.
 
@@ -591,8 +603,7 @@ def _call_model_with_tools(
     try:
         response = _get_client().messages.create(
             model=model,
-            max_tokens=max_tokens,
-            **_sampling_params(model, temperature=temperature),
+            **_family_call_kwargs(model, temperature, max_tokens, effort),
             system=_build_system(system_prompt),
             messages=_build_messages(user_message),
             tools=[travel_tool()],
@@ -623,8 +634,7 @@ def _call_model_with_tools(
         try:
             response = _get_client().messages.create(
                 model=model,
-                max_tokens=max_tokens,
-                **_sampling_params(model, temperature=temperature),
+                **_family_call_kwargs(model, temperature, max_tokens, effort),
                 system=_build_system(system_prompt),
                 messages=_build_messages(user_message),
                 tools=[travel_tool()],
@@ -666,38 +676,35 @@ def _call_model_with_tools(
 
 
 def stream_haiku_with_tools(
-    system_prompt,
-    user_message: str,
-    on_chunk=None,
+    system_prompt, user_message: str, on_chunk=None, *, model: Optional[str] = None,
+    max_tokens: Optional[int] = None, effort: str = "low",
 ) -> tuple[Optional[str], float, dict]:
     """Stream Haiku with tool support. Calls on_chunk(text) per delta."""
     return _stream_model_with_tools(
-        settings.claude_haiku_model, system_prompt, user_message,
-        max_tokens=HAIKU_TOOL_MAX_TOKENS, temperature=0.3, on_chunk=on_chunk,
+        model or settings.claude_haiku_model, system_prompt, user_message,
+        max_tokens=max_tokens or HAIKU_TOOL_MAX_TOKENS, temperature=0.3, on_chunk=on_chunk, effort=effort,
     )
 
 
 def stream_sonnet_with_tools(
-    system_prompt,
-    user_message: str,
-    on_chunk=None,
+    system_prompt, user_message: str, on_chunk=None, *, model: Optional[str] = None,
+    max_tokens: Optional[int] = None, effort: str = "low",
 ) -> tuple[Optional[str], float, dict]:
     """Stream Sonnet with tool support. Calls on_chunk(text) per delta."""
     return _stream_model_with_tools(
-        settings.claude_sonnet_model, system_prompt, user_message,
-        max_tokens=SONNET_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
+        model or settings.claude_sonnet_model, system_prompt, user_message,
+        max_tokens=max_tokens or SONNET_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk, effort=effort,
     )
 
 
 def stream_opus_with_tools(
-    system_prompt,
-    user_message: str,
-    on_chunk=None,
+    system_prompt, user_message: str, on_chunk=None, *, model: Optional[str] = None,
+    max_tokens: Optional[int] = None, effort: str = "medium",
 ) -> tuple[Optional[str], float, dict]:
     """Stream Opus with tool support. Calls on_chunk(text) per delta."""
     return _stream_model_with_tools(
-        settings.claude_opus_model, system_prompt, user_message,
-        max_tokens=OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
+        model or settings.claude_opus_model, system_prompt, user_message,
+        max_tokens=max_tokens or OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk, effort=effort,
     )
 
 
@@ -708,6 +715,7 @@ def _stream_model_with_tools(
     max_tokens: int,
     temperature: float,
     on_chunk=None,
+    effort: str = "low",
 ) -> tuple[Optional[str], float, dict]:
     """Internal: streamed generation carrying the travel extraction tool.
 
@@ -719,8 +727,7 @@ def _stream_model_with_tools(
     try:
         with _get_client().messages.stream(
             model=model,
-            max_tokens=max_tokens,
-            **_sampling_params(model, temperature=temperature),
+            **_family_call_kwargs(model, temperature, max_tokens, effort),
             system=_build_system(system_prompt),
             messages=_build_messages(user_message),
             tools=[travel_tool()],
@@ -842,6 +849,7 @@ def _stream_model(
     max_tokens: int,
     temperature: float,
     on_chunk=None,
+    effort: str = "low",
 ) -> tuple[Optional[str], float]:
     """Internal: streamed generation without tools. Returns (text, cost).
 
@@ -855,8 +863,7 @@ def _stream_model(
         try:
             with _get_client().messages.stream(
                 model=model,
-                max_tokens=max_tokens,
-                **_sampling_params(model, temperature=temperature),
+                **_family_call_kwargs(model, temperature, max_tokens, effort),
                 system=_build_system(system_prompt),
                 messages=_build_messages(user_message),
                 timeout=settings.claude_timeout,

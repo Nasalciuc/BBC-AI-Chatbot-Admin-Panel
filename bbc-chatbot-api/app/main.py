@@ -130,6 +130,7 @@ async def startup() -> None:
     from app.ai import ledger
 
     app.state.ledger_task = ledger.start_flusher()
+    await ledger.seed_budget()
 
     if settings.internal_scheduler_enabled:
         from app.services.scheduler import start as start_scheduler

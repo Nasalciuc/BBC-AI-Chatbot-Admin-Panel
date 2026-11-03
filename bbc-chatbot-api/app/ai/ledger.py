@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from app.ai.prices import cost_from_usage, rates_for
 from app.flags import flag
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,61 @@ LEDGER_HEALTH: dict[str, Any] = {
     "reconcile": None,    # last reconciliation diff, set by the cron route
 }
 _warned_missing = False
+
+# ── Today's spend, in-process (PR-6 BudgetState) ──────────────
+# Seeded once at startup from the ai_calls sum for the UTC day, then advanced
+# in-process on every record_ai_call. Replaces get_today_cost (capped at 500
+# rows) for the router's budget decisions. One process (ADR-5).
+import datetime as _dt
+
+_budget: dict = {"day": None, "total": 0.0}
+
+
+def _today_utc() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+
+
+def _advance_budget(cost: float) -> None:
+    today = _today_utc()
+    if _budget["day"] != today:
+        _budget["day"] = today
+        _budget["total"] = 0.0
+    _budget["total"] = round(_budget["total"] + max(0.0, cost), 6)
+
+
+def today_cost() -> float:
+    if _budget["day"] != _today_utc():
+        return 0.0
+    return _budget["total"]
+
+
+def budget_fraction() -> float:
+    try:
+        cap = float(settings.daily_budget)
+    except (TypeError, ValueError):  # noqa: silent — a misconfigured cap yields fraction 0, never a crash
+        return 0.0
+    if cap <= 0:
+        return 0.0
+    return today_cost() / cap
+
+
+async def seed_budget() -> None:
+    """Sum today's ai_calls once at startup so a restart does not reset spend."""
+    from app.db.supabase import _run_sync, get_client
+
+    try:
+        day = _today_utc()
+        res = await _run_sync(
+            lambda: get_client().table("ai_calls").select("cost_usd")
+            .gte("created_at", f"{day}T00:00:00+00:00").execute(),
+            label="ai_calls",
+        )
+        total = round(sum(float(r.get("cost_usd", 0) or 0) for r in (getattr(res, "data", None) or [])), 6)
+        _budget["day"] = day
+        _budget["total"] = total
+        logger.info(f"[budget] seeded today's spend: ${total:.4f}")
+    except Exception as e:
+        logger.warning(f"[budget] seed skipped: {type(e).__name__}: {e}")
 
 
 def _tally(task: str, model: str, cost: float, cache_read: int, cache_write: int) -> None:
@@ -81,6 +137,10 @@ def record_ai_call(
         cache_write, cache_read, _, _ = _breakdown(usage)
     if cost is None:
         cost = cost_from_usage(model, usage) if usage is not None else 0.0
+
+    # Track spend even when the ai_calls write is disabled: the budget guard
+    # must still see today's cost.
+    _advance_budget(cost)
 
     if not flag("AI_LEDGER_ENABLED", True):
         return cost
@@ -186,3 +246,5 @@ def _reset_for_tests() -> None:
         recorded=0, dropped=0, flushed=0, flush_errors=0, table_missing=False,
         by_task={}, by_model={}, cache_read_tokens=0, cache_write_tokens=0, reconcile=None,
     )
+    _budget["day"] = None
+    _budget["total"] = 0.0
