@@ -444,17 +444,30 @@ async def agent_stream(
 
     async def event_generator():
         queue = await manager.connect(conversation_id)
+        # Operator-only channel (PR-7): lead_details rides here, never on the
+        # conversation channel, so the widget (which renders any non-user event)
+        # never shows it.
+        op_queue = await manager.connect(f"op:{conversation_id}")
         try:
             while True:
                 if await request.is_disconnected():
                     break
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=25.0)
-                    yield f"data: {json.dumps(msg)}\n\n"
-                except asyncio.TimeoutError:  # noqa: silent — not a failure: 25s of quiet is the normal state of an open chat, and the keepalive below is the whole point of the timeout (proxies close idle connections)
+                get_main = asyncio.ensure_future(queue.get())
+                get_op = asyncio.ensure_future(op_queue.get())
+                done, pending = await asyncio.wait(
+                    {get_main, get_op}, timeout=25.0, return_when=asyncio.FIRST_COMPLETED
+                )
+                for fut in pending:
+                    fut.cancel()
+                if not done:
                     yield ": keepalive\n\n"
+                    continue
+                for fut in done:
+                    msg = fut.result()
+                    yield f"data: {json.dumps(msg)}\n\n"
         finally:
             manager.disconnect(conversation_id, queue)
+            manager.disconnect(f"op:{conversation_id}", op_queue)
 
     return StreamingResponse(
         event_generator(),

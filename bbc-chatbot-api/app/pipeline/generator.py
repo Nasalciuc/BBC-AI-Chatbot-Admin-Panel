@@ -253,7 +253,20 @@ def _run_tiered_generation(
         if not ai_text or not str(ai_text).strip():
             ai_text = "Let me find the best options for your trip!"
 
+    # One question per turn while details are missing (PR-7, SLOT_POLICY_ENABLED).
+    ai_text = _apply_slot_question(ai_text, lead, tunnel)
     return ai_text, ai_cost, tool_entities, tier, reason
+
+
+def _apply_slot_question(text, lead, tunnel):
+    from app.flags import flag
+    if tunnel != "sales" or not flag("SLOT_POLICY_ENABLED", False):
+        return text
+    try:
+        from app.pipeline.slots import ensure_one_question, next_slot, question_for
+        return ensure_one_question(text, question_for(next_slot(lead or {})))
+    except Exception:  # noqa: silent — the slot nudge must never break a reply
+        return text
 
 
 def generate_response(

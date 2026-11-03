@@ -441,6 +441,13 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     # backstop below), so silence costs the client nothing and the lie costs
     # them their patience.
     _silent = (_was_unannounced and not _promised_recently) or not _agent
+    # PR-7 (FALLBACK_MSG_ONCE): never apologise after the chat is closed or the
+    # client has said goodbye — the DB claim already makes it once per convo.
+    from app.flags import flag as _flag
+    if _flag("FALLBACK_MSG_ONCE", False) and not _silent:
+        _status = (await db.get_conversation_simple(conversation_id) or {}).get("status")
+        if _status in ("closed", "completed"):
+            _silent = True
     if not _silent:
         # Two nets, in order: the row-level claim decides WHO speaks, the
         # content cooldown still guards against a repeat later in the shift.

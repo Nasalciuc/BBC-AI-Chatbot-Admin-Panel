@@ -243,6 +243,24 @@ async def get_conversation_messages(
     return {"success": True, "data": msgs}
 
 
+@router.get("/conversations/{conversation_id}/details")
+async def get_conversation_details(
+    conversation_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Operator card first-load (PR-7): the lead's slots, what is missing and
+    the suggested question. The live updates arrive on the op:{cid} SSE channel."""
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _enforce_tunnel(user, conv.get("tunnel"))
+    from app.services import lead_service
+    from app.pipeline.operator_card import build_details_payload
+
+    lead = await lead_service.get_or_create_lead(conversation_id)
+    return {"success": True, "data": build_details_payload(lead or {}, conv), "count": 1}
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
