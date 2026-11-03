@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
+import { shouldSendTyping, sseRetryDelay, AGENT_TYPING_EXPIRE_MS } from './realtime-policy'
 import { apiFetch, getVisitorId } from './api'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
@@ -56,6 +57,10 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   const initialized = useRef(false)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSentRef = useRef<number>(0)
+  const lastTypingTextRef = useRef<string>('')
+  // True while the SSE stream is open: the 1 s typing poll stands down (PR-10).
+  const sseUpRef = useRef(false)
+  const agentTypingExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeSentRef = useRef(false)
   // Last time the client actually DID something in the chat. A tab left
   // open on a desk is visible, not present — the ping stops after a
@@ -262,24 +267,53 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       } catch { /* non-fatal */ }
     }
 
-    // Polling fallback — activated permanently after 3 SSE errors
+    // Polling fallback — runs only while SSE is down (PR-10). After 3 SSE
+    // errors the stream is closed and retried with backoff; the moment it
+    // reopens, the poll stops.
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryAttempt = 0
+    let disposed = false
     const startPolling = () => {
       if (fallbackInterval) return
       fallbackInterval = setInterval(catchUpPoll, 1000)
     }
+    const stopPolling = () => {
+      if (!fallbackInterval) return
+      clearInterval(fallbackInterval)
+      fallbackInterval = null
+    }
 
-    // SSE stream — primary real-time channel
+    // SSE stream — primary real-time channel. v=2: this widget understands
+    // the `typing` event; the server sends it only to streams that ask.
     const startSSE = () => {
-      source = new EventSource(`${apiUrl}/api/chat/stream/${convId}?vid=${encodeURIComponent(getVisitorId() || '')}`)
+      source = new EventSource(`${apiUrl}/api/chat/stream/${convId}?vid=${encodeURIComponent(getVisitorId() || '')}&v=2`)
 
       source.onopen = () => {
         errorCount = 0        // reset error counter on successful connect
+        retryAttempt = 0
+        sseUpRef.current = true
+        stopPolling()
         catchUpPoll()         // sync messages missed during connect/reconnect
       }
 
       source.onmessage = (e: MessageEvent) => {
         try {
           const parsed = JSON.parse(e.data)
+
+          // Operator typing (PR-10). Handled BEFORE the generic branch below,
+          // which would otherwise render this frame as an empty message.
+          if (parsed.event === 'typing') {
+            if (agentTypingExpiryRef.current) clearTimeout(agentTypingExpiryRef.current)
+            const on = Boolean(parsed.is_typing)
+            setAgentTyping({ is_typing: on, name: on ? (parsed.name || '') : '' })
+            if (on) {
+              agentTypingExpiryRef.current = setTimeout(
+                () => setAgentTyping({ is_typing: false, name: '' }),
+                AGENT_TYPING_EXPIRE_MS,
+              )
+            }
+            return
+          }
 
           if (parsed.event === 'stream_chunk') {
             setStreamingText(prev => prev + (parsed.delta || ''))
@@ -317,11 +351,20 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
       source.onerror = () => {
         errorCount++
+        sseUpRef.current = false
         if (errorCount >= MAX_ERRORS) {
-          // SSE not reliable in this environment — fall back to polling
+          // The browser's own retries failed: poll meanwhile, and try SSE
+          // again later — 5 s, 10 s, 20 s … capped at 60 s.
           source?.close()
           source = null
           startPolling()
+          if (retryTimer || disposed) return
+          retryTimer = setTimeout(() => {
+            retryTimer = null
+            if (disposed) return
+            errorCount = 0
+            startSSE()
+          }, sseRetryDelay(retryAttempt++))
         }
         // else: browser retries EventSource connection automatically
       }
@@ -332,7 +375,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
     return () => {
       notifySessionClose('minimized', true)
+      disposed = true
+      sseUpRef.current = false
       source?.close()
+      if (retryTimer) clearTimeout(retryTimer)
+      if (agentTypingExpiryRef.current) clearTimeout(agentTypingExpiryRef.current)
       if (fallbackInterval) clearInterval(fallbackInterval)
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
       stopPing()
@@ -343,13 +390,16 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     }
   }, [convId, apiUrl])
 
-  // Operator → visitor typing indicator. The backend key has a short TTL, so a
-  // stopped operator stops the indicator on its own; the poll only reads.
+  // Operator → visitor typing indicator. Primary path: the `typing` frame on
+  // the SSE stream (PR-10). This 1 s poll only asks while the stream is down.
+  // The backend key has a short TTL, so a stopped operator stops the
+  // indicator on its own; the poll only reads.
   useEffect(() => {
     if (!convId) return
     let cancelled = false
 
     const poll = async () => {
+      if (sseUpRef.current) return
       if (document.visibilityState !== 'visible') return
       try {
         const res = await fetch(`${apiUrl}/api/chat/agent-typing/${convId}`, {
@@ -408,24 +458,37 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
         clearTimeout(typingTimeoutRef.current)
         typingTimeoutRef.current = null
       }
+      lastTypingTextRef.current = ''
       apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
         method: 'DELETE',
       }).catch(() => {})
       return
     }
 
-    // Throttle POST — at most every 200ms while typing.
-    // This also refreshes the backend Redis TTL so the indicator
-    // persists across natural typing pauses.
+    // At most once a second, and only when the text changed (PR-10; was
+    // every 200 ms). A trailing send makes sure the operator sees the last
+    // keystrokes of a burst, not the text as it was a second earlier.
     const now = Date.now()
-    if (now - lastTypingSentRef.current > 200) {
-      lastTypingSentRef.current = now
-      apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      }).catch(() => {})
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+      typingTimeoutRef.current = null
     }
+    if (!shouldSendTyping(text, lastTypingTextRef.current, lastTypingSentRef.current, now)) {
+      if (text !== lastTypingTextRef.current) {
+        typingTimeoutRef.current = setTimeout(() => {
+          typingTimeoutRef.current = null
+          sendTypingEvent(text)
+        }, Math.max(50, 1000 - (now - lastTypingSentRef.current)))
+      }
+      return
+    }
+    lastTypingSentRef.current = now
+    lastTypingTextRef.current = text
+    apiFetch(`${apiUrl}/api/chat/typing/${convId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).catch(() => {})
 
     // NO auto-clear timer — removed to fix the "text disappears when
     // client pauses" bug. See the comment block at top of this function.
@@ -437,6 +500,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     // Clear typing indicator immediately when sending
     if (convId) {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
+      typingTimeoutRef.current = null
+      lastTypingTextRef.current = ''
       apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
     }
     setSending(true)
