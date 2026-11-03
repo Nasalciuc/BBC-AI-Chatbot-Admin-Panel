@@ -24,6 +24,7 @@ from app.api.cron import router as cron_router
 from app.api.canary import router as canary_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
+from app.security.ban_guard import BanGuardMiddleware
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -60,6 +61,11 @@ app.add_middleware(
 
 # ── Request Logger ────────────────────────────────────────────
 app.add_middleware(RequestLoggerMiddleware)
+
+# ── fail2ban (PR-11) ──────────────────────────────────────────
+# Added LAST so it wraps everything (Starlette applies middleware outermost-
+# last). Pure ASGI — it must see a request before any router or the logger.
+app.add_middleware(BanGuardMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────
 # Health: PUBLIC (no auth — Railway healthcheck needs it)
