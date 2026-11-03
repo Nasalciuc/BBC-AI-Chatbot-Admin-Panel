@@ -124,21 +124,36 @@ test('an unparseable frame costs one event, not the stream', async () => {
   }
 })
 
-test('it gives up after three consecutive failures so polling can resume', async () => {
-  const f = withFetch(async () => ({ ok: false, status: 503, body: null }))
+test('after three failures polling resumes, and the reader keeps trying', async () => {
+  let n = 0
+  const f = withFetch(async () => {
+    n += 1
+    // Five failures, then the server is back.
+    return n <= 5 ? { ok: false, status: 503, body: null } : streamOf(['data: {"id":"back"}\n\n'])
+  })
   const states: string[] = []
+  const seen: any[] = []
   let gaveUp = 0
   try {
-    openSse('u', {}, () => {}, (s) => states.push(s), () => { gaveUp += 1 })
-    // 1s + 2s of backoff between the three attempts.
-    await new Promise((r) => setTimeout(r, 3_500))
-    assert.equal(f.calls.length, 3, 'three attempts, then it stops trying')
-    assert.equal(gaveUp, 1)
-    assert.equal(states.at(-1), 'closed')
-    assert.deepEqual(states.slice(0, 2), ['reconnecting', 'reconnecting'])
+    const h = openSse('u', {}, (e) => seen.push(e), (s) => states.push(s), () => { gaveUp += 1 }, () => 5)
+    await new Promise((r) => setTimeout(r, 120))
+    h.close()
+    assert.ok(f.calls.length >= 6, `kept trying: ${f.calls.length} attempts`)
+    assert.equal(gaveUp, 1, 'polling is resumed once, not on every failure')
+    assert.ok(states.includes('open'), 'the stream came back and said so')
+    assert.deepEqual(seen.slice(0, 1), [{ id: 'back' }])
   } finally {
     f.restore()
   }
+})
+
+test('the backoff doubles and is capped at 30 s', async () => {
+  const { sseBackoff, SSE_BACKOFF_CAP_MS } = await import('../src/lib/sse-reader.ts')
+  assert.equal(sseBackoff(1), 1_000)
+  assert.equal(sseBackoff(2), 2_000)
+  assert.equal(sseBackoff(5), 16_000)
+  assert.equal(sseBackoff(6), SSE_BACKOFF_CAP_MS)
+  assert.equal(sseBackoff(50), SSE_BACKOFF_CAP_MS)
 })
 
 test('close() stops the loop and never gives up on the caller', async () => {

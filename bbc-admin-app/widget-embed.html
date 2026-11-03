@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>BuyBusinessClass chat</title>
+    <style>html,body{margin:0;height:100%;background:#f9fafb}</style>
+  </head>
+  <body>
+    <!--
+      PR-10: the CRM iframe and the test page load ONLY the Preact widget —
+      not the whole admin panel (React, router, query client, ~1 MB) just to
+      inject one script tag. /widget-embed is rewritten here in vercel.json.
+      ?embedded=1 → the CRM dock: panel open, no bubble.
+    -->
+    <script>
+      ;(function () {
+        var s = document.createElement('script')
+        s.src = '/widget/bbc-widget.js'
+        // Replaced by Vite at build; a build without it keeps the old default.
+        var api = '%VITE_API_URL%'
+        if (!api || api.charAt(0) === '%') api = 'https://admin-panel-error-production.up.railway.app'
+        s.setAttribute('data-api', api)
+        if (new URLSearchParams(location.search).get('embedded') === '1') {
+          s.setAttribute('data-mode', 'embedded')
+        }
+        s.async = true
+        document.body.appendChild(s)
+      })()
+    </script>
+  </body>
+</html>

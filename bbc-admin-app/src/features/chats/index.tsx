@@ -163,7 +163,9 @@ export function Chats() {
 
   // Conversation list — cached per tab, polls every 30s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
-  const listParams: Record<string, string> = { ...tab.params, limit: '50' }
+  // with_counts: the tab badges ride this 5 s poll (PR-10) instead of a
+  // separate /conversations/counts request every 10 s.
+  const listParams: Record<string, string> = { ...tab.params, limit: '50', with_counts: 'true' }
   if (debouncedSearch) listParams.search = debouncedSearch
   if (tunnelFilter) listParams.tunnel = tunnelFilter
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
@@ -205,8 +207,11 @@ export function Chats() {
   )
   const showNudge = !dormant && idleCount >= 3 && !nudgeDismissed
 
-  // Counts — 1 request for tab badges, polls every 10s
-  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
+  // Counts — from the list response (PR-10). The standalone counts query
+  // only runs when the list did not carry them (an older backend, or a
+  // count that failed), and then at its old 10 s cadence.
+  const listCounts = convResponse?.counts
+  const { data: fallbackCounts } = useQuery({
     queryKey: ['conversation-counts', tunnelFilter],
     queryFn: async () => {
       const qs = tunnelFilter ? `?tunnel=${tunnelFilter}` : ''
@@ -215,8 +220,12 @@ export function Chats() {
       )
       return { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, ...res.data }
     },
+    enabled: !!convResponse && !listCounts,
     refetchInterval: dormant ? false : 10_000,
   })
+  const counts = listCounts
+    ? { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, ...listCounts }
+    : (fallbackCounts ?? { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 })
 
   // Sound handled globally by notify-assignment.ts (loop ring via heartbeat)
 

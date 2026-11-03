@@ -24,10 +24,13 @@ const HEARTBEAT_INTERVAL_MS = 5_000
  * the other reads it — one full-list fetch per interval instead of two.
  *
  * MUST stay in sync with the list's queryKey in features/chats/index.tsx
- * (['conversations', tab, search, tunnel, handledBy]) and its params.
+ * (['conversations', tab, search, tunnel, handledBy, tag]) and its params.
+ * PR-10: the key had drifted to five parts while the list grew a sixth (the
+ * tag filter), so the two never shared a cache entry and the same list went
+ * out twice every five seconds. tests/attention-key.test.ts pins them.
  */
-export const ATTENTION_QUERY_KEY = ['conversations', 'my_active', '', '', 'all']
-const ATTENTION_PARAMS = { assigned_to: 'me', status: 'active', limit: '50' }
+export const ATTENTION_QUERY_KEY = ['conversations', 'my_active', '', '', 'all', 'all']
+export const ATTENTION_PARAMS = { assigned_to: 'me', status: 'active', limit: '50', with_counts: 'true' }
 
 type HeartbeatResponse = {
   is_ready?: boolean
@@ -303,6 +306,20 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       }
     }
   }, [intervalMs, role, setReady, viewingConversationId, queryClient])
+
+  // The worker was handed the token once, at start. A refreshed session (a
+  // new login in another tab, a token renewal) left it pinging with the old
+  // one until a 401 (PR-10). Hand it every new token as it changes.
+  useEffect(
+    () =>
+      useAuthStore.subscribe((state, prev) => {
+        const next = state.auth.accessToken
+        if (next && next !== prev.auth.accessToken) {
+          workerRef.current?.postMessage({ type: 'updateToken', token: next })
+        }
+      }),
+    [],
+  )
 
   const dormant = usePanelModeStore((s) => s.dormant)
   const queueCount = useQueueStore((s) => s.queueCount)
