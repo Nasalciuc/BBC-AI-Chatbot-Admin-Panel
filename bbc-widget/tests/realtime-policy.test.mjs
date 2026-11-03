@@ -52,3 +52,8 @@ test('the widget asks for v2 frames and the poll stands down while SSE is up', (
   assert.match(chatWindow, /stopPolling\(\)/)
   assert.match(chatWindow, /sseRetryDelay\(retryAttempt\+\+\)/)
 })
+
+test('an EventSource the browser closed for good falls back at once', () => {
+  assert.match(chatWindow, /source\?\.readyState === EventSource\.CLOSED/)
+  assert.match(chatWindow, /if \(closedForGood \|\| errorCount >= MAX_ERRORS\)/)
+})
