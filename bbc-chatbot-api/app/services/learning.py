@@ -331,15 +331,15 @@ def _parse_json(raw: Optional[str]) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _call_json(system: str, payload: str) -> tuple[Optional[dict], float]:
+def _call_json(system: str, payload: str, task: str = "learn") -> tuple[Optional[dict], float]:
     """One LLM call that must return JSON. One retry, then give up on this chunk."""
-    text, cost = call_sonnet_learning(system, payload)
+    text, cost = call_sonnet_learning(system, payload, task=task)
     parsed = _parse_json(text)
     if parsed is not None:
         return parsed, cost
 
     retry_text, retry_cost = call_sonnet_learning(
-        system, f"{payload}\n\nYour previous output was not valid JSON — return ONLY the JSON."
+        system, f"{payload}\n\nYour previous output was not valid JSON — return ONLY the JSON.", task=task
     )
     parsed = _parse_json(retry_text)
     if parsed is None:
@@ -678,7 +678,7 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                     logger.warning(f"Learning: budget cap ${budget} hit — stopping MAP early")
                     break
                 chunk = cards[start:start + CHUNK_SIZE]
-                parsed, chunk_cost = _call_json(_MAP_SYSTEM, json.dumps(chunk, default=str))
+                parsed, chunk_cost = _call_json(_MAP_SYSTEM, json.dumps(chunk, default=str), task="learn_map")
                 cost += chunk_cost
                 if parsed is None:
                     skipped_chunks += 1
@@ -703,7 +703,7 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                 },
                 default=str,
             )
-            reduced, reduce_cost = _call_json(_REDUCE_SYSTEM, reduce_payload)
+            reduced, reduce_cost = _call_json(_REDUCE_SYSTEM, reduce_payload, task="learn_reduce")
             cost += reduce_cost
             if reduced is None:
                 skipped_chunks += 1

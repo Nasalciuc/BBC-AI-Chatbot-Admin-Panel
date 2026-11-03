@@ -30,7 +30,7 @@ async def extract_iata_via_claude(message: str) -> dict:
     """
     try:
         text, cost = await asyncio.to_thread(
-            call_haiku, IATA_SYSTEM_PROMPT, message
+            call_haiku, IATA_SYSTEM_PROMPT, message, "iata"
         )
         if not text:
             return {}

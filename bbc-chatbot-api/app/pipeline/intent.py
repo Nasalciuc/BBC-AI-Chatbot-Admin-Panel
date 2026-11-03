@@ -71,7 +71,7 @@ def _parse_claude_intent(raw: str) -> Intent:
     return _INTENT_MAP.get(cleaned, Intent.GENERAL_QUESTION)
 
 
-def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count: int = 0) -> Intent:
+def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count: int = 0, use_llm: bool = True) -> Intent:
     """Detect visitor intent from message text.
 
     1. Check metadata.quick_reply_intent (instant, free)
@@ -115,6 +115,10 @@ def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count:
         return Intent.GENERAL_QUESTION
 
     # 3. Claude Haiku fallback
+    if not use_llm:
+        # Caller only wants the regex verdict (e.g. the cache-key decision):
+        # no second paid classify on a turn that already classified once.
+        return Intent.GENERAL_QUESTION
     logger.debug("No regex match — calling Claude classifier")
     raw, _cls_cost = claude_classify(message)
     if raw:

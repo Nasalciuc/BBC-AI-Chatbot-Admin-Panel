@@ -10,6 +10,8 @@ from config.settings import settings
 from app.ai.prompts import CLASSIFIER_PROMPT
 from app.flags import flag
 from app.models.extraction import salvage_tool_entities, validate_tool_entities
+from app.ai.prices import cost_from_usage
+from app.ai.ledger import record_ai_call
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,8 @@ FAMILY_COSTS: dict[str, dict[str, float]] = {
 
 
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Legacy two-counter estimate. Kept only for callers that have no usage
+    object; prefer prices.cost_from_usage, which also counts the cache tokens."""
     rates = COSTS.get(model)
     if rates is None:
         rates = next(
@@ -174,7 +178,7 @@ def _sampling_params(model: str, **params) -> dict:
 
 # ── API calls ─────────────────────────────────────────────────
 
-def call_haiku(system_prompt, user_message: str) -> tuple[Optional[str], float]:
+def call_haiku(system_prompt, user_message: str, task: str = "haiku") -> tuple[Optional[str], float]:
     """Call Claude Haiku (cheap, fast). Returns (text, cost) — (None, 0) on failure."""
     return _call_model(
         model=settings.claude_haiku_model,
@@ -182,6 +186,7 @@ def call_haiku(system_prompt, user_message: str) -> tuple[Optional[str], float]:
         user_message=user_message,
         max_tokens=150,
         temperature=0.3,
+        task=task,
     )
 
 
@@ -193,6 +198,7 @@ def call_sonnet(system_prompt, user_message: str) -> tuple[Optional[str], float]
         user_message=user_message,
         max_tokens=SONNET_MAX_TOKENS,
         temperature=0.6,
+        task="sales_reply",
     )
 
 
@@ -204,10 +210,11 @@ def call_opus(system_prompt, user_message: str) -> tuple[Optional[str], float]:
         user_message=user_message,
         max_tokens=OPUS_MAX_TOKENS,
         temperature=0.6,
+        task="opus",
     )
 
 
-def call_sonnet_learning(system_prompt, user_message: str) -> tuple[Optional[str], float]:
+def call_sonnet_learning(system_prompt, user_message: str, task: str = "learn") -> tuple[Optional[str], float]:
     """Call Sonnet for offline pattern synthesis (the daily learning loop).
 
     Separate from call_sonnet because synthesis needs room the chat caps deny,
@@ -220,6 +227,7 @@ def call_sonnet_learning(system_prompt, user_message: str) -> tuple[Optional[str
         user_message=user_message,
         max_tokens=LEARNING_MAX_TOKENS,
         temperature=0.2,
+        task=task,
     )
 
 
@@ -231,8 +239,41 @@ def classify_intent(message: str) -> tuple[Optional[str], float]:
         user_message=message,
         max_tokens=20,
         temperature=0,
+        task="classify",
     )
     return text, cost
+
+
+def _is_55(model: str) -> bool:
+    return "-5-5" in model
+
+
+def _text_from_blocks(response) -> str:
+    """Concatenate the text blocks. On a 5.5 model the first block can be
+    `thinking`, so response.content[0].text is not safe there."""
+    parts = []
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            parts.append(getattr(block, "text", "") or "")
+    if parts:
+        return "".join(parts).strip()
+    # Pre-5.5 shape, or a response with a single text block.
+    try:
+        return response.content[0].text.strip()
+    except (AttributeError, IndexError, TypeError):  # noqa: silent — no text block; '' is the right empty answer
+        return ""
+
+
+_UTILITY_TASKS = frozenset({"classify", "iata", "summary"})
+
+
+def _utility_model(model: str, task: str) -> str:
+    """Route a utility task (classify/iata/summary) to Haiku 5.5 when the flag
+    is on — the quick win on the legacy engine, before the full router. Scoped
+    by task, never by the wrapper: call_haiku also serves customer replies."""
+    if task in _UTILITY_TASKS and flag("UTILITY_MODEL_55", False) and model == settings.claude_haiku_model:
+        return settings.claude_haiku_55_model
+    return model
 
 
 def _call_model(
@@ -242,28 +283,48 @@ def _call_model(
     max_tokens: int,
     temperature: float,
     _is_fallback: bool = False,
+    task: str = "other",
 ) -> tuple[Optional[str], float]:
     """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost)."""
+    model = _utility_model(model, task)
     start = time.time()
-    logger.info(f"Claude START | model={model} max_tokens={max_tokens}")
+    logger.info(f"Claude START | model={model} max_tokens={max_tokens} task={task}")
 
     for attempt in range(2):
         try:
+            # 5.5 takes no temperature/top_p/top_k and needs room for thinking
+            # inside max_tokens; effort replaces the sampling knobs.
+            if _is_55(model):
+                params = dict(output_config={"effort": "low"})
+                call_max = max(max_tokens, 512)
+            else:
+                params = _sampling_params(model, temperature=temperature)
+                call_max = max_tokens
             response = _get_client().messages.create(
                 model=model,
-                max_tokens=max_tokens,
-                **_sampling_params(model, temperature=temperature),
+                max_tokens=call_max,
+                **params,
                 system=_build_system(system_prompt),
                 messages=_build_messages(user_message),
                 timeout=settings.claude_timeout,
             )
 
             elapsed = round(time.time() - start, 3)
-            input_tokens = response.usage.input_tokens
-            output_tokens = response.usage.output_tokens
-            cost = _estimate_cost(model, input_tokens, output_tokens)
-            text = response.content[0].text.strip()
+            usage = response.usage
+            input_tokens = usage.input_tokens
+            output_tokens = usage.output_tokens
+            cost = cost_from_usage(model, usage)
+            if getattr(response, "stop_reason", None) == "refusal":
+                record_ai_call(task=task, model=model, usage=usage,
+                               latency_ms=int(elapsed * 1000), status="refusal",
+                               request_id=getattr(response, "id", None))
+                logger.warning(f"Claude refusal | model={model} task={task}")
+                return None, cost
+            text = _text_from_blocks(response)
 
+            record_ai_call(task=task, model=model, usage=usage,
+                           latency_ms=int(elapsed * 1000), status="ok",
+                           request_id=getattr(response, "id", None))
             logger.info(
                 f"Claude SUCCESS | model={model} in={input_tokens} out={output_tokens} "
                 f"cost=${cost:.6f} time={elapsed}s"
@@ -274,21 +335,26 @@ def _call_model(
             logger.error(f"Claude timeout ({settings.claude_timeout}s) model={model} attempt={attempt + 1}/2")
             if attempt == 0:
                 continue  # retry once — timeouts never trigger the fallback model
+            record_ai_call(task=task, model=model, cost=0.0, status="timeout")
             return None, 0.0
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e} | model={model} | status={getattr(e, 'status_code', 'N/A')}")
             if _is_payload_error(e):
                 _record_payload_error(model, e)
+                record_ai_call(task=task, model=model, cost=0.0, status="error")
                 return None, 0.0
             if not _is_fallback and model != settings.fallback_model:
                 _record_fallback(model, e)
+                record_ai_call(task=task, model=model, cost=0.0, status="fallback")
                 return _call_model(
                     settings.fallback_model, system_prompt, user_message,
-                    max_tokens, temperature, _is_fallback=True,
+                    max_tokens, temperature, _is_fallback=True, task=task,
                 )
+            record_ai_call(task=task, model=model, cost=0.0, status="error")
             return None, 0.0
         except Exception as e:
             logger.error(f"Claude unexpected error: {type(e).__name__}: {e} | model={model}")
+            record_ai_call(task=task, model=model, cost=0.0, status="error")
             return None, 0.0
 
     return None, 0.0
@@ -487,9 +553,9 @@ def _validate_with_reprompt(
             tools=[travel_tool()],
             timeout=settings.claude_timeout,
         )
-        extra_cost = _estimate_cost(
-            model, response.usage.input_tokens, response.usage.output_tokens
-        )
+        extra_cost = cost_from_usage(model, response.usage)
+        record_ai_call(task="sales_reply", model=model, usage=response.usage,
+                       status="ok", request_id=getattr(response, "id", None))
         _text2, raw2 = _parse_tool_response(response)
         if raw2:
             validated2, verr2 = validate_tool_entities(raw2)
@@ -534,9 +600,10 @@ def _call_model_with_tools(
         )
 
         elapsed = round(time.time() - start, 3)
-        cost = _estimate_cost(
-            model, response.usage.input_tokens, response.usage.output_tokens
-        )
+        cost = cost_from_usage(model, response.usage)
+        record_ai_call(task="sales_reply", model=model, usage=response.usage,
+                       latency_ms=int(elapsed * 1000), status="ok",
+                       request_id=getattr(response, "id", None))
 
         text, raw_entities = _parse_tool_response(response)
         tool_entities, extra_cost = _validate_with_reprompt(
@@ -564,9 +631,10 @@ def _call_model_with_tools(
                 timeout=settings.claude_timeout,
             )
             elapsed = round(time.time() - start, 3)
-            cost = _estimate_cost(
-                model, response.usage.input_tokens, response.usage.output_tokens
-            )
+            cost = cost_from_usage(model, response.usage)
+            record_ai_call(task="sales_reply", model=model, usage=response.usage,
+                           latency_ms=int(elapsed * 1000), status="ok",
+                           request_id=getattr(response, "id", None))
             text, raw_entities = _parse_tool_response(response)
             tool_entities, extra_cost = _validate_with_reprompt(
                 model, system_prompt, user_message, max_tokens, temperature,
@@ -681,9 +749,10 @@ def _stream_model_with_tools(
             pass  # Non-critical logging
 
         elapsed = round(time.time() - start, 3)
-        cost = _estimate_cost(
-            model, final.usage.input_tokens, final.usage.output_tokens
-        )
+        cost = cost_from_usage(model, final.usage)
+        record_ai_call(task="sales_reply", model=model, usage=final.usage,
+                       latency_ms=int(elapsed * 1000), status="ok",
+                       request_id=getattr(final, "id", None))
 
         raw_entities: dict = {}
         for block in final.content:
@@ -814,7 +883,10 @@ def _stream_model(
             except Exception:
                 pass  # Non-critical logging
 
-            cost = _estimate_cost(model, final.usage.input_tokens, final.usage.output_tokens)
+            cost = cost_from_usage(model, final.usage)
+            record_ai_call(task="closing", model=model, usage=final.usage,
+                           latency_ms=int((time.time() - start) * 1000), status="ok",
+                           request_id=getattr(final, "id", None))
             logger.info(
                 f"Claude STREAM SUCCESS | model={model} text={len(full_text)}ch cost=${cost:.6f} "
                 f"time={round(time.time() - start, 3)}s"

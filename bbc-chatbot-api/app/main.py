@@ -120,6 +120,11 @@ async def startup() -> None:
         logger.warning(f"[flags] first read took over 5 s ({type(e).__name__}) — continuing on env/defaults")
     app.state.flags_task = runtime_flags.start_refresher()
 
+    # AI cost ledger: drain the record queue into ai_calls in the background.
+    from app.ai import ledger
+
+    app.state.ledger_task = ledger.start_flusher()
+
     if settings.internal_scheduler_enabled:
         from app.services.scheduler import start as start_scheduler
 
@@ -133,5 +138,8 @@ async def shutdown() -> None:
     flags_task = getattr(app.state, "flags_task", None)
     if flags_task is not None:
         flags_task.cancel()
+    ledger_task = getattr(app.state, "ledger_task", None)
+    if ledger_task is not None:
+        ledger_task.cancel()
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()

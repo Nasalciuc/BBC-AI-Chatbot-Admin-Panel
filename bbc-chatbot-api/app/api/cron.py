@@ -802,3 +802,90 @@ async def run_queue_stall_alert() -> dict:
     except Exception as e:
         logger.error(f"[queue-alert] failed: {e}", exc_info=True)
         return {"state": "error"}
+
+
+# ── AI cost reconciliation (PR-2) ─────────────────────────────────────────
+# The admin key that can read the org's usage report is NOT on this service
+# (it was breached twice). A private scheduled job holds it, calls Anthropic's
+# usage/cost API, and POSTs the daily aggregates here with the CRON_SECRET.
+# We compare the chatbot key's billed cost to the sum of ai_calls for that day
+# and store the diff in ai_cost_daily; other keys' rows are kept so the owner
+# can see how much of the bill is not the chatbot.
+@router.post("/cron/ai-cost-report")
+async def ai_cost_report(request: Request):
+    _require_cron(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="Expected {'rows': [...]}")
+
+    from app.ai.ledger import LEDGER_HEALTH
+
+    chatbot_key = (settings.anthropic_api_key_id or "").strip()
+    stored = 0
+    max_diff_pct = 0.0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        day = str(r.get("day", "")).strip()
+        api_key_id = str(r.get("api_key_id", "")).strip()
+        model = str(r.get("model", "")).strip()
+        if not (day and api_key_id and model):
+            continue
+        billed = float(r.get("billed_cost_usd", 0) or 0)
+        # Our ledger total for this day+model is only meaningful for our own key.
+        ledger_cost = float(r.get("ledger_cost_usd", 0) or 0)
+        if chatbot_key and api_key_id == chatbot_key:
+            ledger_cost = _ledger_cost_for(day, model)
+        diff = round(billed - ledger_cost, 6)
+        record = {
+            "day": day, "api_key_id": api_key_id, "model": model,
+            "billed_input_tokens": int(r.get("billed_input_tokens", 0) or 0),
+            "billed_output_tokens": int(r.get("billed_output_tokens", 0) or 0),
+            "billed_cost_usd": billed,
+            "ledger_cost_usd": ledger_cost,
+            "diff_usd": diff,
+        }
+        try:
+            await db._run_sync(
+                lambda rec=record: db.get_client().table("ai_cost_daily").upsert(
+                    rec, on_conflict="day,api_key_id,model"
+                ).execute(),
+                idempotent=False, label="ai_cost_daily",
+            )
+            stored += 1
+        except Exception as e:
+            logger.warning(f"[cost-report] upsert failed for {day}/{model}: {type(e).__name__}: {e}")
+        if chatbot_key and api_key_id == chatbot_key and billed > 0:
+            max_diff_pct = max(max_diff_pct, abs(diff) / billed * 100.0)
+
+    LEDGER_HEALTH["reconcile"] = {"stored": stored, "max_diff_pct": round(max_diff_pct, 2)}
+    if max_diff_pct > 15:
+        from app.services.email import send_ops_alert_email
+
+        await send_ops_alert_email(
+            "AI cost reconciliation off",
+            f"The chatbot key's billed cost differs from the ledger by {max_diff_pct:.1f}% "
+            "on at least one model/day. See ai_cost_daily.",
+        )
+    return {"success": True, "data": {"stored": stored, "max_diff_pct": round(max_diff_pct, 2)}}
+
+
+async def _ledger_cost_for(day: str, model: str) -> float:
+    """Sum of ai_calls.cost_usd for one UTC day and model."""
+    try:
+        res = await db._run_sync(
+            lambda: db.get_client().table("ai_calls").select("cost_usd")
+            .gte("created_at", f"{day}T00:00:00+00:00")
+            .lt("created_at", f"{day}T23:59:59.999+00:00")
+            .eq("model", model).execute(),
+            label="ai_calls",
+        )
+        return round(sum(float(r.get("cost_usd", 0) or 0) for r in (res.data or [])), 6)
+    except Exception as e:
+        logger.warning(f"[cost-report] ledger sum failed for {day}/{model}: {type(e).__name__}: {e}")
+        return 0.0

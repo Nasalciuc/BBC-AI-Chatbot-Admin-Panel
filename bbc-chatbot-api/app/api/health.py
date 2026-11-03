@@ -98,11 +98,14 @@ async def health_detail(full: bool = False) -> dict:
     from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
     from app.api.cron import _DB_ALERT
 
+    from app.ai.ledger import LEDGER_HEALTH
+
     if not full:
         return {
             "status": "ok",
             "flags": dict(FLAGS_HEALTH),
             "client_ip": dict(CLIENT_IP_HEALTH),
+            "cost": dict(LEDGER_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
@@ -166,6 +169,7 @@ async def health_detail(full: bool = False) -> dict:
         "services": services,
         "flags": dict(FLAGS_HEALTH),
         "client_ip": dict(CLIENT_IP_HEALTH),
+        "cost": dict(LEDGER_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),

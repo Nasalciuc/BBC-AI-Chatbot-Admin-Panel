@@ -1879,7 +1879,7 @@ async def _pipeline(
                     )
                     from app.ai.claude import call_haiku as _summarize
                     summary_text, sum_cost = await asyncio.to_thread(
-                        _summarize, summary_prompt, msg_text
+                        _summarize, summary_prompt, msg_text, "summary"
                     )
                     if summary_text:
                         await db.update_conversation(cid, {"summary": summary_text})

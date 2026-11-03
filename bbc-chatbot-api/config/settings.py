@@ -59,12 +59,18 @@ class Settings(BaseSettings):
 
     # Claude
     anthropic_api_key: str = ""  # Optional for dev — required only for AI pipeline
+    # Which usage-report key id is the chatbot's, for reconciliation (PR-2).
+    anthropic_api_key_id: str = ""
     # Model tiers: haiku = utility (classification, extraction, support),
     # sonnet = sales default, opus = premium turns. Env-overridable so a tier
     # can be rolled back to an older model without a deploy.
     claude_haiku_model: str = "claude-haiku-4-5-20251001"
     claude_sonnet_model: str = "claude-sonnet-4-6"
     claude_opus_model: str = "claude-opus-4-8"
+    # 5.5 family — used by the router (PR-6) and by UTILITY_MODEL_55 on legacy.
+    claude_haiku_55_model: str = "claude-haiku-5-5"
+    claude_sonnet_55_model: str = "claude-sonnet-5-5"
+    claude_opus_55_model: str = "claude-opus-5-5"
     claude_timeout: int = 15
     # Emergency fallback: on a non-timeout API error (overloaded/rate-limit)
     # the call retries ONCE on this cheaper model. The collection never dies

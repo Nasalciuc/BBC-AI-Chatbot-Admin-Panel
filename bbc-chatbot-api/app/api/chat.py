@@ -667,7 +667,7 @@ async def chat(
         _fire_and_forget(_mark_client_active(response.conversation_id))
 
     # Cache store for FAQ/greeting (Sprint 3) — skip streaming (message empty until SSE ends)
-    _result_intent = detect_intent(clean_message, _meta).value
+    _result_intent = detect_intent(clean_message, _meta, use_llm=False).value
     if response.message and not response.streaming and _result_intent:
         set_cached(
             clean_message,
