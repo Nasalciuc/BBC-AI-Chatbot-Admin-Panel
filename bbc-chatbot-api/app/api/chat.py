@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from app.deps.ownership import require_visitor_ownership
 from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
 from app.security.client_ip import client_ip
+from app.security.metadata import allowed_widget_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ async def chat_init(
     _rate: None = Depends(check_rate_limit),
 ):
     """Create conversation instantly for SSE pre-connect. No pipeline."""
-    _meta = dict(payload.metadata or {})
+    _meta = allowed_widget_metadata(payload.metadata)
     _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
@@ -118,7 +119,7 @@ class ChatStartResponse(BaseModel):
 def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id: Optional[str]) -> dict:
     """Metadata enrichment shared with the first-message path: IP, UA,
     referrer, CF country, visitor id — same spread, same precedence."""
-    _meta = dict(metadata or {})
+    _meta = allowed_widget_metadata(metadata)
     _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
@@ -606,7 +607,7 @@ async def chat(
 
     # 4. AI mode or new conversation → run pipeline
     # Enrich metadata with client IP + User-Agent
-    _meta = dict(req.metadata or {})
+    _meta = allowed_widget_metadata(req.metadata)
     _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
@@ -675,6 +676,7 @@ async def chat(
             _result_intent,
             site=_cache_site,
             tunnel=req.tunnel,
+            model_used=response.model_used,
         )
 
     return response

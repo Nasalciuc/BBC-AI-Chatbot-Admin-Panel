@@ -412,6 +412,11 @@ async def add_message(
     """Insert a message. Never loses a message."""
     try:
         db = get_client()
+        if role == "ai":
+            # Output guard: strip any non-brand contact from a bot reply before
+            # it is stored (PR-4). 'log' mode leaves the text unchanged.
+            from app.ai.output_guard import guard_ai_text
+            content = await guard_ai_text(content)
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
@@ -2157,6 +2162,37 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
     except Exception as e:
         logger.error(f"update_user error: {e}")
         return None
+
+
+async def bump_token_version(user_id: str) -> None:
+    """Invalidate a user's live sessions (role/scope change, deactivation).
+
+    Uses the atomic increment RPC when present; falls back to read+write.
+    A missing token_version column is tolerated (feature inert until 039)."""
+    try:
+        db = get_client()
+        # Read+write (bumps are rare and admin-initiated; the tiny race is
+        # harmless — the worst case is one more login).
+        cur = await _run_sync(
+            lambda: db.table("users").select("token_version").eq("id", user_id).limit(1).execute()
+        )
+        rows = getattr(cur, "data", None) or []
+        nxt = int((rows[0].get("token_version") if rows else 0) or 0) + 1
+        await _run_sync(
+            lambda: db.table("users").update({"token_version": nxt}).eq("id", user_id).execute(),
+            idempotent=False,
+        )
+    except Exception as e:
+        if _is_missing_column_error(e):
+            logger.warning("[token-version] users.token_version missing — apply 039")
+            return
+        logger.error(f"bump_token_version error: {type(e).__name__}: {e}")
+    finally:
+        try:
+            from app.security.token_version import invalidate_cache
+            invalidate_cache(user_id)
+        except Exception as _e:  # noqa: silent — cache invalidation is best-effort
+            logger.debug(f"token_version cache invalidate skipped: {type(_e).__name__}")
 
 
 async def create_user_access_audit(payload: dict) -> Optional[dict]:

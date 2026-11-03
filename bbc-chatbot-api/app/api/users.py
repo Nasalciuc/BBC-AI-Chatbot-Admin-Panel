@@ -217,6 +217,9 @@ async def update_user(user_id: str, body: UserUpdate, request: Request, user: di
 
         _changes = {f: {"from": existing.get(f), "to": result.get(f)} for f in changed_fields}
         await alert_role_change(user, user_id, _changes, client_ip(request))
+        # Invalidate the target's live sessions: a demotion or deactivation
+        # must take effect now, not at token expiry (S2-4).
+        await db.bump_token_version(user_id)
 
     return {"success": True, "data": result, "count": 1}
 

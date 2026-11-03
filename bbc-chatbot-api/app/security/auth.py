@@ -82,8 +82,21 @@ def get_current_user(request: Request) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        _sub = payload.get("sub", "unknown")
+        # token_version: a role change or deactivation bumps it, logging the
+        # user out within the 60s cache window (S2-4). Inert until a bump.
+        from app.security.token_version import matches
+
+        if not matches(_sub, payload.get("token_version")):
+            logger.warning(f"Stale token_version | path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session no longer valid — please login again",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         return {
-            "id": payload.get("sub", "unknown"),
+            "id": _sub,
             "email": payload.get("email", ""),
             "role": payload.get("role", "sales"),
             "name": payload.get("name", ""),

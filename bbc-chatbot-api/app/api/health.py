@@ -99,7 +99,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.cron import _DB_ALERT
 
     from app.ai.ledger import LEDGER_HEALTH
+    from app.ai.output_guard import OUTPUT_GUARD_HEALTH
     from app.security.decoys import DECOY_HEALTH
+    from app.security.gates import GATE_HEALTH
 
     if not full:
         return {
@@ -108,6 +110,8 @@ async def health_detail(full: bool = False) -> dict:
             "client_ip": dict(CLIENT_IP_HEALTH),
             "cost": dict(LEDGER_HEALTH),
             "decoys": dict(DECOY_HEALTH),
+            "role_gates": dict(GATE_HEALTH),
+            "output_guard": dict(OUTPUT_GUARD_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
@@ -173,6 +177,8 @@ async def health_detail(full: bool = False) -> dict:
         "client_ip": dict(CLIENT_IP_HEALTH),
         "cost": dict(LEDGER_HEALTH),
         "decoys": dict(DECOY_HEALTH),
+        "role_gates": dict(GATE_HEALTH),
+        "output_guard": dict(OUTPUT_GUARD_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),

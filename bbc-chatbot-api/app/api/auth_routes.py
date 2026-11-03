@@ -35,6 +35,7 @@ def _issue_jwt(user: dict) -> str:
         "tunnel_scope": user.get("tunnel_scope", "sales"),
         "avatar_url": user.get("avatar_url") or None,
         "phone": user.get("phone") or None,
+        "token_version": int(user.get("token_version") or 0),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
     }
@@ -182,11 +183,28 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
     )
 
 
+# Staff accounts live only on the company's own domains. An invite or
+# reactivation to any other domain is refused (PR-4 domain gate).
+_STAFF_EMAIL_DOMAINS = ("buybusinessclass.com", "businessclass-tickets.com")
+
+
+def _staff_email_ok(email: str) -> bool:
+    domain = (email or "").lower().strip().split("@")[-1]
+    return any(domain == d or domain.endswith("." + d) for d in _STAFF_EMAIL_DOMAINS)
+
+
 @router.post("/invite")
 async def invite_user(req: InviteRequest, current_user: dict = Depends(get_current_user)):
     """Create new user with temporary password. Owner/admin only."""
     if current_user.get("role") not in ("owner", "admin", "dev"):
         raise HTTPException(403, "Only owner/admin can invite users")
+    if not _staff_email_ok(req.email):
+        from app.flags import flag
+        if flag("ROLE_GATES_ENFORCE", False):
+            raise HTTPException(400, "Staff accounts must use a company email address")
+        logger.warning(f"[domain-gate] would refuse non-company invite email: {req.email}")
+    if req.role == "owner" and current_user.get("role") != "owner":
+        raise HTTPException(403, "Only an owner can grant the owner role")
 
     # Check email not taken — or reactivate if inactive
     from app.services.email import generate_invite_token, send_invite_email
