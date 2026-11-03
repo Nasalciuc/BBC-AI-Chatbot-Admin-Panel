@@ -102,6 +102,20 @@ async def startup() -> None:
     if not settings.ops_alert_email:
         logger.warning("ops alerts fall back to super@ — set OPS_ALERT_EMAIL")
 
+    # Runtime switches (app/flags.py): read once now so the first requests see
+    # the database's values, then every 30 s in the background.
+    # Bounded: a slow database must not hold the healthcheck; the refresher
+    # retries in the background either way.
+    import asyncio
+
+    from app import flags as runtime_flags
+
+    try:
+        await asyncio.wait_for(runtime_flags.refresh(), timeout=5)
+    except asyncio.TimeoutError as e:
+        logger.warning(f"[flags] first read took over 5 s ({type(e).__name__}) — continuing on env/defaults")
+    app.state.flags_task = runtime_flags.start_refresher()
+
     if settings.internal_scheduler_enabled:
         from app.services.scheduler import start as start_scheduler
 
@@ -112,5 +126,8 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    flags_task = getattr(app.state, "flags_task", None)
+    if flags_task is not None:
+        flags_task.cancel()
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()
