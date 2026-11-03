@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -38,6 +38,8 @@ export function UserAuthForm({
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
+  // Honeypot: a hidden field a human never sees. A filled value means a bot.
+  const honeypotRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const { auth } = useAuthStore()
 
@@ -52,7 +54,11 @@ export function UserAuthForm({
   async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
     try {
-      const { token, user } = await loginUser(data.email, data.password)
+      const { token, user } = await loginUser(
+        data.email,
+        data.password,
+        honeypotRef.current?.value || undefined
+      )
       auth.setUser({
         accountNo: user.id,
         email: user.email,
@@ -81,6 +87,16 @@ export function UserAuthForm({
         className={cn('grid gap-3', className)}
         {...props}
       >
+        {/* Honeypot — hidden from people and assistive tech, a bait for bots. */}
+        <input
+          ref={honeypotRef}
+          type='text'
+          name='company_fax'
+          tabIndex={-1}
+          autoComplete='off'
+          aria-hidden='true'
+          style={{ position: 'absolute', left: '-9999px', width: '1px', height: '1px', opacity: 0 }}
+        />
         <FormField
           control={form.control}
           name='email'

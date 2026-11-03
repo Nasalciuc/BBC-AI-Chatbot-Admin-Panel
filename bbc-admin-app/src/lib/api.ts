@@ -38,6 +38,14 @@ import { openSse, type SseHandle } from '@/lib/sse-reader'
 // ── Config ────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
+// DECOY — not a credential. This value authenticates nothing; it exists so that
+// a request replaying it (scraped from this bundle) trips a server-side alert.
+// The real value is injected at build time from VITE_DECOY_BUNDLE_KEY. The
+// module-level reference below keeps it in the production bundle (api.ts is
+// imported by the app, so a tree-shake cannot drop it).
+const DECOY_BUNDLE_KEY = import.meta.env.VITE_DECOY_BUNDLE_KEY ?? 'decoy-ops-key-not-a-secret'
+;(globalThis as unknown as { __bbcBuildRef?: string }).__bbcBuildRef ??= DECOY_BUNDLE_KEY
+
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {}
   // The session JWT from the login cookie — the only credential the panel has.
@@ -54,11 +62,19 @@ function authHeaders(): Record<string, string> {
 }
 
 // ── Auth ──────────────────────────────────────────────────────
-export async function loginUser(email: string, password: string) {
+export async function loginUser(
+  email: string,
+  password: string,
+  // Honeypot: a hidden field no human fills. Only sent when it has a value, so
+  // the backend can count a bot that filled the login form.
+  companyFax?: string
+) {
+  const body: Record<string, string> = { email, password }
+  if (companyFax) body.company_fax = companyFax
   const res = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000),
   })
   if (!res.ok) {
