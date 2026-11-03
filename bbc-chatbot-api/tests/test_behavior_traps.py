@@ -318,3 +318,9 @@ async def test_report_counts_a_real_client_caught_in_shadow(monkeypatch):
     assert rep["chat_lock"]["real_clients_caught"] == 1
     assert rep["chat_lock"]["verdict"] == "keep off"
     assert rep["scanner_ua"]["verdict"] == "can be turned on"
+
+
+def test_the_widget_ships_the_same_bait_route():
+    from pathlib import Path
+    api = (Path(__file__).resolve().parents[2] / "bbc-widget" / "src" / "api.ts").read_text()
+    assert f"'{bh.WIDGET_BAIT_PATH}'" in api
