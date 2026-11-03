@@ -971,7 +971,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                     {new Date(lead.return_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </span></p>
                 )}
-                {lead.flexible_dates && (
+                {(lead.dates_flexibility === 'flexible' || lead.dates_flexibility === 'window') && (
                   <p className="text-xs text-green-600">Flexible dates</p>
                 )}
               </div>
