@@ -179,7 +179,10 @@ class TestHealthSurface:
             patch("app.api.health.get_scheduler_health", return_value={"ok": True}),
         ):
             fake_settings.debug = False
-            resp = TestClient(app).get("/health")
+            fake_settings.cron_secret = "test-cron-secret"
+            resp = TestClient(app).get(
+                "/health/detail", headers={"Authorization": "Bearer test-cron-secret"}
+            )
         assert resp.status_code == 200
         body = resp.json()
         assert "supervisor_columns" in body

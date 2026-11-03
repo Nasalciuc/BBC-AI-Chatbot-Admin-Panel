@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from config.settings import settings
 from app.db import supabase as db
 from app.security.crm_token import PURPOSE_PRESENCE, verify_crm_token
+from app.security.client_ip import client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +61,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
 
 def _client_ip(request: Optional[Request]) -> str:
-    if request is None:
-        return "unknown"
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return client_ip(request, prefer_cf=False) or "unknown"
 
 
 async def check_presence_rate_limit(request: Request = None) -> None:  # type: ignore[assignment]

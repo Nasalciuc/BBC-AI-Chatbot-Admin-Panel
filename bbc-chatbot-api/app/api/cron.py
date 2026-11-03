@@ -3,6 +3,7 @@ Cron endpoint — process abandoned conversations.
 Auth: CRON_SECRET header (not JWT).
 """
 
+import hmac
 import logging
 from datetime import datetime, timezone
 
@@ -306,7 +307,7 @@ async def run_abandoned_crm() -> dict:
                     "assigned_agent_id": None,
                 })
                 logger.info(f"[cron][{cid}] Closed existing CRM lead ({name})")
-                results.append({"id": cid, "status": "closed_existing_crm", "name": name})
+                results.append({"id": cid, "status": "closed_existing_crm"})
                 continue
 
             # The `if not lead:` recreate-and-push branch that used to live here
@@ -356,7 +357,7 @@ async def run_abandoned_crm() -> dict:
                     f"{' + closed' if _may_close else ' (left open — human/closed)'}"
                 )
                 _pushed_today.add(cid)
-                results.append({"id": cid, "status": "success", "name": name})
+                results.append({"id": cid, "status": "success"})
             else:
                 logger.error(f"[cron][{cid}] CRM fail: {crm_result.error}")
                 # A gate refusal becomes work-list state; a transient HTTP
@@ -458,16 +459,21 @@ async def run_attention_emails() -> dict:
     return {"sent": sent, "skipped": skipped, "candidates": len(candidates)}
 
 
+def _require_cron(request: Request) -> None:
+    """CRON_SECRET bearer, compared in constant time."""
+    secret = (settings.cron_secret or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
+    auth = request.headers.get("Authorization", "")
+    if not hmac.compare_digest(auth.encode("utf-8"), f"Bearer {secret}".encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid cron token")
+
+
 @router.post("/cron/abandoned-crm")
 async def process_abandoned_conversations(request: Request):
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
 
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
+    _require_cron(request)
 
     return await run_abandoned_crm()
 
@@ -478,12 +484,7 @@ async def agent_response_sweep(request: Request):
     within the response deadline. Covers the window when no agents are online
     (heartbeats don't run → stale cleanup doesn't run → conversations pile up).
     Auth: same Bearer CRON_SECRET as abandoned-crm."""
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
+    _require_cron(request)
 
     return await run_agent_sweep()
 
@@ -499,12 +500,7 @@ async def daily_learning(
     `?force=true`: bypass the already-ran guard. Evidence-unsafe — chunks that
     succeeded in a prior partial will be reinforced again. Rare, deliberate.
     Auth: same Bearer CRON_SECRET as abandoned-crm."""
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
+    _require_cron(request)
 
     from app.services.learning import run_learning
 

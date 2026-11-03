@@ -6,13 +6,15 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 from typing import Optional
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from config.settings import settings
 from app.db import supabase as db
 from app.security.auth import get_current_user
+from app.security.client_ip import client_ip
 from app.security.crm_token import PURPOSE_LOGIN, verify_crm_token
+from app.security import login_guard
 from app.security.rate_limiter import check_rate_limit
 from app.services.storage import upload_avatar
 
@@ -33,6 +35,7 @@ def _issue_jwt(user: dict) -> str:
         "tunnel_scope": user.get("tunnel_scope", "sales"),
         "avatar_url": user.get("avatar_url") or None,
         "phone": user.get("phone") or None,
+        "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -62,24 +65,43 @@ class SetPasswordRequest(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(req: LoginRequest, _rate: None = Depends(check_rate_limit)):
+async def login(req: LoginRequest, request: Request, _rate: None = Depends(check_rate_limit)):
     """Authenticate user with email + password, return JWT."""
-    user = await db.get_user_by_email(req.email.lower().strip())
+    _email = req.email.lower().strip()
+    _ip = client_ip(request, prefer_cf=False) or "unknown"
+
+    # Progressive backoff on the email+IP pair. A generic 429 either way, so a
+    # throttle never tells an attacker whether the email exists.
+    _wait = login_guard.retry_after(_email, _ip)
+    if _wait:
+        raise HTTPException(
+            429, "Too many attempts — please wait and try again.",
+            headers={"Retry-After": str(_wait)},
+        )
+
+    async def _reject() -> None:
+        await login_guard.record_failure(_email, _ip)
+
+    user = await db.get_user_by_email(_email)
     if not user:
+        await _reject()
         raise HTTPException(401, "Invalid email or password")
 
     # Check password
     stored_hash = user.get("password_hash")
     if not stored_hash:
-        raise HTTPException(401, "Account not activated — contact admin")
+        await _reject()
+        raise HTTPException(401, "Invalid email or password")
 
     if not bcrypt.checkpw(req.password.encode("utf-8"), stored_hash.encode("utf-8")):
+        await _reject()
         raise HTTPException(401, "Invalid email or password")
 
     # Check active
     if not user.get("is_active", True):
         raise HTTPException(403, "Account disabled — contact admin")
 
+    login_guard.clear(_email, _ip)
     token = _issue_jwt(user)
 
     logger.info(f"Login OK | email={user['email']} role={user.get('role')}")

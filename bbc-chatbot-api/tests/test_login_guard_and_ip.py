@@ -1,0 +1,170 @@
+"""PR-1 — login backoff keyed on email+IP, and the spoofable-IP self-test."""
+
+import asyncio
+import os
+import sys
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+
+from app import flags
+from app.security import client_ip as cip
+from app.security import login_guard
+
+
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    flags._reset_for_tests()
+    login_guard._reset_for_tests()
+    cip._reset_for_tests()
+    # memory backend, not a real Redis
+    monkeypatch.setattr("app.services.response_cache._get_redis", lambda: None)
+    yield
+    login_guard._reset_for_tests()
+    cip._reset_for_tests()
+
+
+def _fail(email, ip, n):
+    for _ in range(n):
+        asyncio.run(login_guard.record_failure(email, ip))
+
+
+def test_four_failures_do_not_throttle():
+    _fail("a@b.com", "1.1.1.1", 4)
+    assert login_guard.retry_after("a@b.com", "1.1.1.1") == 0
+
+
+def test_fifth_failure_throttles():
+    _fail("a@b.com", "1.1.1.1", 5)
+    wait = login_guard.retry_after("a@b.com", "1.1.1.1")
+    assert 0 < wait <= 60
+
+
+def test_backoff_grows():
+    _fail("a@b.com", "1.1.1.1", 5)
+    first = login_guard.retry_after("a@b.com", "1.1.1.1")
+    _fail("a@b.com", "1.1.1.1", 3)
+    assert login_guard.retry_after("a@b.com", "1.1.1.1") > first
+
+
+def test_same_email_other_ip_is_free():
+    _fail("victim@bbc.com", "9.9.9.9", 8)
+    assert login_guard.retry_after("victim@bbc.com", "9.9.9.9") > 0
+    assert login_guard.retry_after("victim@bbc.com", "2.2.2.2") == 0
+
+
+def test_a_correct_password_clears_the_pair():
+    _fail("a@b.com", "1.1.1.1", 6)
+    assert login_guard.retry_after("a@b.com", "1.1.1.1") > 0
+    login_guard.clear("a@b.com", "1.1.1.1")
+    assert login_guard.retry_after("a@b.com", "1.1.1.1") == 0
+
+
+def test_tenth_failure_alerts_once():
+    with patch("app.services.email.send_ops_alert_email", new=AsyncMock()) as alert:
+        _fail("a@b.com", "1.1.1.1", 12)
+    assert alert.await_count == 1
+
+
+def test_disabled_flag_never_throttles(monkeypatch):
+    monkeypatch.setenv("LOGIN_BACKOFF_ENABLED", "false")
+    _fail("a@b.com", "1.1.1.1", 9)
+    assert login_guard.retry_after("a@b.com", "1.1.1.1") == 0
+
+
+# ── client_ip header choice ───────────────────────────────────────────────
+
+def _req(headers, peer="203.0.0.1"):
+    r = MagicMock()
+    r.headers = headers
+    r.client = MagicMock()
+    r.client.host = peer
+    return r
+
+
+def test_legacy_prefers_cf_then_xff_then_peer():
+    assert cip.client_ip(_req({"cf-connecting-ip": "1.1.1.1", "x-forwarded-for": "2.2.2.2"})) == "1.1.1.1"
+    assert cip.client_ip(_req({"x-forwarded-for": "2.2.2.2, 3.3.3.3"})) == "2.2.2.2"
+    assert cip.client_ip(_req({})) == "203.0.0.1"
+
+
+def test_rate_limiter_legacy_ignores_cf():
+    # prefer_cf=False: the rate limiter never trusted cf-connecting-ip
+    assert cip.client_ip(_req({"cf-connecting-ip": "1.1.1.1", "x-forwarded-for": "2.2.2.2"}), prefer_cf=False) == "2.2.2.2"
+
+
+def test_configured_header_wins_when_present(monkeypatch):
+    monkeypatch.setenv("CLIENT_IP_HEADER", "x-real-ip")
+    r = _req({"x-real-ip": "5.5.5.5", "x-forwarded-for": "9.9.9.9"})
+    assert cip.client_ip(r) == "5.5.5.5"
+
+
+def test_missing_configured_header_falls_back_and_counts(monkeypatch):
+    monkeypatch.setenv("CLIENT_IP_HEADER", "x-real-ip")
+    with patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+        got = cip.client_ip(_req({"x-forwarded-for": "9.9.9.9"}))
+    assert got == "9.9.9.9"  # legacy order
+    assert cip.CLIENT_IP_HEALTH["header_missing"] == 1
+
+
+# ── IP self-test ──────────────────────────────────────────────────────────
+
+def test_selftest_clears_trust_when_spoof_echoes(monkeypatch):
+    from app.services import ip_selftest
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "public_api_url", "https://api.test")
+    monkeypatch.setattr(settings, "cron_secret", "s")
+
+    class _Resp:
+        def json(self):
+            return {"client_ip": "203.0.113.7"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_Client()), \
+         patch("app.services.email.send_ops_alert_email", new=AsyncMock()) as alert:
+        out = asyncio.run(ip_selftest.run_ip_selftest())
+    assert out["spoofable"] is True
+    assert cip.ip_trusted() is False
+    assert alert.await_count == 1
+
+
+def test_selftest_keeps_trust_when_spoof_is_dropped(monkeypatch):
+    from app.services import ip_selftest
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "public_api_url", "https://api.test")
+    monkeypatch.setattr(settings, "cron_secret", "s")
+
+    class _Resp:
+        def json(self):
+            return {"client_ip": "198.51.100.9"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_Client()):
+        out = asyncio.run(ip_selftest.run_ip_selftest())
+    assert out["spoofable"] is False
+    assert cip.ip_trusted() is True

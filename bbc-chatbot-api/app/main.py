@@ -30,6 +30,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx logs the full URL of every Supabase request at INFO — PostgREST puts
+# filters and looked-up values in the query string, so that is PII at INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # ── App ───────────────────────────────────────────────────────

@@ -2,8 +2,10 @@
 
 import sys
 import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, AsyncMock
-import base64
+
+import jwt as _jwt
 import pytest
 from httpx import AsyncClient, ASGITransport
 
@@ -11,34 +13,38 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-key")
-# Auth enabled: set credentials so 401 test works
-os.environ["API_USER"] = "testadmin"
-os.environ["API_PASS"] = "testpass"
 
 # Mock supabase client before app import
 with patch("app.db.supabase.get_client"):
     from app.main import app
 
 # ── Auth header ──────────────────────────────────────────────
+# A real session token, the only credential the API accepts.
+_JWT_SECRET = "test-jwt-secret-leads"
 AUTH_HEADERS = {
-    "Authorization": "Basic " + base64.b64encode(b"testadmin:testpass").decode()
+    "Authorization": "Bearer " + _jwt.encode(
+        {
+            "sub": "owner-1", "email": "owner@bbc.test", "name": "Owner",
+            "role": "owner", "tunnel_scope": "all",
+            "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+        },
+        _JWT_SECRET, algorithm="HS256",
+    )
 }
 
 
 @pytest.fixture(autouse=True)
-def _basic_auth_credentials():
-    """Force the credentials onto the settings object, not onto os.environ.
+def _jwt_auth():
+    """Force the secret onto the settings object, not onto os.environ.
 
     `settings` is a module-level singleton built the first time anything
-    imports it. Under the full suite that has already happened long before
-    this file's `os.environ[...]` lines run, so those writes reach nothing and
-    every request here answered 401. It passed locally only because the
-    developer `.env` sets DEBUG=true, which turns on the dev auth bypass —
-    a mask that CI does not have and production must never have.
+    imports it, long before this file runs under the full suite. debug=False
+    so the dev bypass (debug + no secret) can never mask a 401.
     """
     from config.settings import settings
 
-    with patch.object(settings, "api_user", "testadmin"),          patch.object(settings, "api_pass", "testpass"),          patch.object(settings, "debug", False):
+    with patch.object(settings, "jwt_secret", _JWT_SECRET), \
+         patch.object(settings, "debug", False):
         yield
 
 # ── Sample data ──────────────────────────────────────────────
@@ -179,8 +185,6 @@ async def test_list_leads_401():
     this exercises the real production contract: no auth → 401.
     """
     with patch("config.settings.settings.debug", False), \
-         patch("config.settings.settings.api_user", "admin"), \
-         patch("config.settings.settings.api_pass", "secret"), \
          patch("app.db.supabase.get_leads", new_callable=AsyncMock, return_value=([], 0)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             r = await c.get("/api/leads")  # no headers

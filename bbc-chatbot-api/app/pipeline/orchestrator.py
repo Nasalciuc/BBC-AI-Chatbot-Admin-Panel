@@ -536,7 +536,14 @@ async def _pipeline(
 
     # ── STEP 3: INTENT DETECTION ─────────────────────────────
     _user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
-    intent = detect_intent(message, metadata, user_msg_count=_user_msg_count)
+    # detect_intent can call the Haiku classifier synchronously; off the loop so
+    # one slow classify never freezes /health or another turn. Not to_thread —
+    # test_pipeline_fallback_persistence patches orchestrator.asyncio.to_thread
+    # for generation, and that mock would come back here as the intent.
+    intent = await asyncio.get_running_loop().run_in_executor(
+        None,
+        functools.partial(detect_intent, message, metadata, user_msg_count=_user_msg_count),
+    )
     logger.info(f"[{cid}] Intent: {intent.value}")
 
     # Confirm override: if summary was shown and client confirms,

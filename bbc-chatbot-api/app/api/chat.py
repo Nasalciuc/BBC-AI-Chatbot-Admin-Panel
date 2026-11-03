@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.deps.ownership import require_visitor_ownership
 from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
+from app.security.client_ip import client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +61,7 @@ async def chat_init(
 ):
     """Create conversation instantly for SSE pre-connect. No pipeline."""
     _meta = dict(payload.metadata or {})
-    _client_ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
     _ua = request.headers.get("user-agent")
@@ -122,11 +119,7 @@ def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id:
     """Metadata enrichment shared with the first-message path: IP, UA,
     referrer, CF country, visitor id — same spread, same precedence."""
     _meta = dict(metadata or {})
-    _client_ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
     _ua = request.headers.get("user-agent")
@@ -409,7 +402,7 @@ async def chat(
                 await conversation_service.add_message(
                     conversation_id=req.conversation_id,
                     role="user",
-                    content=clean_me,)
+                    content=clean_message,)
 
                 if has_closing_been_sent(_meta):
                     # Post-sale: closing already sent — discriminate message type
@@ -614,11 +607,7 @@ async def chat(
     # 4. AI mode or new conversation → run pipeline
     # Enrich metadata with client IP + User-Agent
     _meta = dict(req.metadata or {})
-    _client_ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
     _ua = request.headers.get("user-agent")
@@ -888,8 +877,8 @@ async def public_get_conversation_status(conversation_id: str):
             },
         }
     except Exception as e:
-        logger.error(f"public_get_conversation_status error: {e}")
-        return {"success": False, "data": None, "error": str(e)}
+        logger.error(f"public_get_conversation_status error: {type(e).__name__}: {e}")
+        return {"success": False, "data": None, "error": "status unavailable"}
 
 
 @router.get("/chat/messages/{conversation_id}")
@@ -908,8 +897,8 @@ async def public_get_messages(
         msgs = await db.get_messages_after(conversation_id, after)
         return {"success": True, "data": await _with_agent_identity(conversation_id, msgs)}
     except Exception as e:
-        logger.error(f"public_get_messages error: {e}")
-        return {"success": False, "data": [], "error": str(e)}
+        logger.error(f"public_get_messages error: {type(e).__name__}: {e}")
+        return {"success": False, "data": [], "error": "messages unavailable"}
 
 
 async def _with_agent_identity(conversation_id: str, msgs: list) -> list:

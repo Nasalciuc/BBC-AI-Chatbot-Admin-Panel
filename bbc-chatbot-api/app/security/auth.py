@@ -3,13 +3,15 @@
 /api/chat is public (customer widget). /api/cron uses CRON_SECRET (not this).
 
 Auth contract (hardened for a CRM-embedded, shared-team session):
-  1. Bearer JWT (the ONLY real user path): Authorization: Bearer <jwt>, signed
+  1. Bearer JWT (the ONLY user path): Authorization: Bearer <jwt>, signed
      with JWT_SECRET (HS256). Role + tunnel_scope come from the token claims —
      never defaulted to owner. This is what /api/auth/login issues.
-  2. Basic Auth (ops escape hatch): Authorization: Basic base64(user:pass),
-     checked against API_USER/API_PASS. Returns owner. Independent of JWT_SECRET.
-  3. Debug bypass: ONLY when debug=True AND jwt_secret is empty — explicit,
+  2. Debug bypass: ONLY when debug=True AND jwt_secret is empty — explicit,
      logged, never silent. Never happens in production (debug=False there).
+
+There is no second door. A shared-credential path that minted an owner
+identity without a user behind it was removed; `Authorization: Basic …` is
+now an unsupported header like any other (401).
 
 Production requires JWT_SECRET. The Bearer path fails CLOSED (500) if it is
 missing, so a misconfigured server can never silently accept unverified tokens.
@@ -18,9 +20,7 @@ Bearer == API_PASS → owner"; the `if jwt_secret:` conditional that let JWT
 decode be skipped.
 """
 
-import base64
 import logging
-import secrets
 
 import jwt as _jwt
 from fastapi import HTTPException, Request, status
@@ -44,37 +44,6 @@ def get_current_user(request: Request) -> dict:
         return {"id": "dev", "role": "owner", "name": "dev", "tunnel_scope": "all"}
 
     auth = request.headers.get("Authorization", "")
-
-    # ── Basic Auth (ops escape hatch — independent of JWT_SECRET) ──
-    if auth.startswith("Basic ") and settings.api_user and settings.api_pass:
-        try:
-            decoded = base64.b64decode(auth[6:]).decode("utf-8")
-            user, pwd = decoded.split(":", 1)
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Malformed Basic credentials",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-
-        correct_user = secrets.compare_digest(
-            user.encode("utf-8"),
-            settings.api_user.encode("utf-8"),
-        )
-        correct_pass = secrets.compare_digest(
-            pwd.encode("utf-8"),
-            settings.api_pass.encode("utf-8"),
-        )
-
-        if not (correct_user and correct_pass):
-            logger.warning(f"Invalid Basic credentials | user={user}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-
-        return {"id": "admin", "role": "owner", "name": user, "tunnel_scope": "all"}
 
     # ── Bearer JWT (the only accepted token path) ──────────────
     if auth.startswith("Bearer "):

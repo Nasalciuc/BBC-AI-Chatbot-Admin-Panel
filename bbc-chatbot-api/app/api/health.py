@@ -1,10 +1,20 @@
-"""GET /health — System status check."""
+"""Health.
 
+GET /health          public, for the Railway healthcheck and uptime pings:
+                     `{"status": "ok"}` and nothing else.
+GET /health/detail   the counters (and, with ?full=true, the live DB checks).
+                     CRON_SECRET bearer, or a session of owner/admin/dev.
+GET /health/ip-echo  what client_ip() sees for this request — the production
+                     IP test and the hourly self-test. CRON_SECRET only.
+"""
+
+import hmac
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from config.settings import settings
+from app.security.client_ip import CLIENT_IP_HEALTH, client_ip
 from app.db.supabase import check_connection, supervisor_columns_status
 from app.services.scheduler import get_scheduler_health
 
@@ -12,10 +22,49 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+_OPS_ROLES = frozenset({"owner", "admin", "dev"})
+
+
+def _is_cron_bearer(request: Request) -> bool:
+    secret = (settings.cron_secret or "").strip()
+    if not secret:
+        return False
+    auth = request.headers.get("Authorization", "")
+    return hmac.compare_digest(auth.encode("utf-8"), f"Bearer {secret}".encode("utf-8"))
+
+
+def require_cron(request: Request) -> None:
+    if not _is_cron_bearer(request):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def require_ops(request: Request) -> None:
+    """CRON_SECRET, or a logged-in owner/admin/dev."""
+    if _is_cron_bearer(request):
+        return
+    from app.security.auth import get_current_user
+
+    user = get_current_user(request)  # 401 on anything that is not a session
+    if user.get("role") not in _OPS_ROLES:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
 
 @router.get("/health")
 async def health() -> dict:
-    """Return system health status and service availability."""
+    """Liveness only. Everything internal moved to /health/detail."""
+    return {"status": "ok"}
+
+
+@router.get("/health/ip-echo", dependencies=[Depends(require_cron)])
+async def ip_echo(request: Request) -> dict:
+    return {"client_ip": client_ip(request)}
+
+
+@router.get("/health/detail", dependencies=[Depends(require_ops)])
+async def health_detail(full: bool = False) -> dict:
+    """Counters by default (no DB calls, safe to poll); live checks with ?full=true."""
+    from app.flags import FLAGS_HEALTH
+
     scheduler = get_scheduler_health()
     # Always surface: a sticky False here freezes activity clocks and poisons
     # derived tags (false no_engagement). Ops must see it without log diving.
@@ -49,9 +98,11 @@ async def health() -> dict:
     from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
     from app.api.cron import _DB_ALERT
 
-    if not settings.debug:
+    if not full:
         return {
             "status": "ok",
+            "flags": dict(FLAGS_HEALTH),
+            "client_ip": dict(CLIENT_IP_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
@@ -113,6 +164,8 @@ async def health() -> dict:
         "status": status,
         "version": "1.0.0",
         "services": services,
+        "flags": dict(FLAGS_HEALTH),
+        "client_ip": dict(CLIENT_IP_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),

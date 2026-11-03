@@ -1,8 +1,9 @@
 """Auth hardening — JWT is the only real user path; unsafe fallbacks removed.
 
-Covers: valid JWT keeps its role/scope (not owner); Bearer==API_PASS is
-rejected; fail-closed 500 when no jwt_secret in prod; explicit debug bypass;
-expired/malformed 401; and the guardrail that login-issued tokens still work.
+Covers: valid JWT keeps its role/scope (not owner); a Bearer that is not a
+JWT is rejected; a Basic header is rejected; fail-closed 500 when no
+jwt_secret in prod; explicit debug bypass; expired/malformed 401; and the
+guardrail that login-issued tokens still work.
 """
 
 import base64
@@ -77,15 +78,13 @@ def test_valid_jwt_qa_role_preserved():
     assert user["tunnel_scope"] == "all"
 
 
-# ── 2. Bearer == API_PASS but not a valid JWT → 401 (fallback removed) ─
+# ── 2. A Bearer that is a password, not a JWT → 401 ───────────────
 
 
-def test_bearer_equal_api_pass_is_rejected():
+def test_bearer_that_is_not_a_jwt_is_rejected():
     with (
         patch.object(settings, "debug", False),
         patch.object(settings, "jwt_secret", _SECRET),
-        patch.object(settings, "api_pass", "super-secret-pass"),
-        patch.object(settings, "api_user", "admin"),
     ):
         with pytest.raises(HTTPException) as exc:
             get_current_user(_req("Bearer super-secret-pass"))
@@ -193,20 +192,26 @@ def test_login_issued_token_still_works():
     assert user["tunnel_scope"] == "sales"
 
 
-# ── Basic Auth escape hatch still works (no lockout of ops) ─────────
+# ── Basic is not a way in, whatever it carries ────────────────────
 
 
-def test_basic_auth_escape_hatch_still_works():
+@pytest.mark.parametrize("creds", [b"admin:secret", b"admin:", b":", b"not-even-a-pair"])
+def test_basic_header_is_401(creds):
     with (
         patch.object(settings, "debug", False),
         patch.object(settings, "jwt_secret", _SECRET),
-        patch.object(settings, "api_user", "admin"),
-        patch.object(settings, "api_pass", "secret"),
     ):
-        creds = base64.b64encode(b"admin:secret").decode()
-        user = get_current_user(_req(f"Basic {creds}"))
-    assert user["role"] == "owner"
-    assert user["name"] == "admin"
+        with pytest.raises(HTTPException) as exc:
+            get_current_user(_req(f"Basic {base64.b64encode(creds).decode()}"))
+    assert exc.value.status_code == 401
+
+
+def test_the_shared_credential_path_is_gone_from_the_code():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "app" / "security" / "auth.py").read_text()
+    assert "api_user" not in source and "api_pass" not in source
+    assert not hasattr(settings, "api_user") and not hasattr(settings, "api_pass")
 
 
 def test_no_auth_header_401():

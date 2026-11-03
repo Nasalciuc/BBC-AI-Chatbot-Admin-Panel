@@ -84,10 +84,6 @@ class Settings(BaseSettings):
     # Redis (optional — empty = skip rate limiting)
     redis_url: str = ""
 
-    # Auth (required in production — empty = no auth in dev)
-    api_user: str = ""
-    api_pass: str = ""
-
     # JWT
     # REQUIRED in production; the Bearer path in auth.py fails closed (500) if
     # empty and debug=False. Do NOT hard-crash on import — Railway needs /health.
@@ -290,6 +286,8 @@ class Settings(BaseSettings):
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"
     admin_panel_url: str = "https://chat.buybusinessclass.com"
+    # Where the service reaches itself for the hourly IP self-test (ip_selftest).
+    public_api_url: str = ""
     super_alert_email: str = "super@buybusinessclass.com"
     super_alert_cooldown_minutes: int = 1440  # 1 email/conv/24h (Postmark limit)
     # 48h: a 24h link that lands in a Friday inbox is dead by Monday
