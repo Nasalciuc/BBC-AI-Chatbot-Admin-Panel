@@ -294,6 +294,10 @@ class Settings(BaseSettings):
     admin_panel_url: str = "https://chat.buybusinessclass.com"
     # Where the service reaches itself for the hourly IP self-test (ip_selftest).
     public_api_url: str = ""
+    # Decoys (PR-3). Values set by the owner; empty = that tripwire is inert.
+    decoy_bundle_key: str = ""
+    canary_aws_key_id: str = ""
+    canary_aws_secret: str = ""
     super_alert_email: str = "super@buybusinessclass.com"
     super_alert_cooldown_minutes: int = 1440  # 1 email/conv/24h (Postmark limit)
     # 48h: a 24h link that lands in a Friday inbox is dead by Monday

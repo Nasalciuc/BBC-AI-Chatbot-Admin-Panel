@@ -682,6 +682,48 @@ def _downgrade_queued_at(err: Exception) -> None:
     _queued_at_downgraded_at = time.time()
 
 
+# ── Decoy filtering (038) ─────────────────────────────────────
+# A decoy row (users/leads/conversations.is_decoy = true) is filtered out of
+# every server-side list so no operator or job ever touches it. The column may
+# not exist yet (migration not applied): on a real missing-column error the
+# probe downgrades and re-probes, running WITHOUT the filter meanwhile — which
+# is safe, because no decoy row exists until the owner seeds it after 038.
+_decoy_ok: dict[str, bool] = {}
+_decoy_downgraded_at: dict[str, float] = {}
+
+
+def _decoy_filterable(table: str) -> bool:
+    from app.flags import flag
+
+    if not flag("DECOYS_ENABLED", True):
+        return False
+    if _decoy_ok.get(table) is not False:
+        return True
+    at = _decoy_downgraded_at.get(table)
+    if at is None:
+        return True
+    return time.time() - at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_decoy(table: str, err: Exception) -> None:
+    if not _is_missing_column_error(err):
+        return
+    if _decoy_ok.get(table) is not False:
+        logger.error(
+            f"{table}.is_decoy is missing — apply migrations/038_decoys.sql. "
+            "Running WITHOUT the decoy filter (no rows are hidden) and re-probing in 60s."
+        )
+    _decoy_ok[table] = False
+    _decoy_downgraded_at[table] = time.time()
+
+
+def _hide_decoys(q, table: str):
+    """Append the is_decoy=false filter when the column is usable."""
+    if _decoy_filterable(table):
+        return q.eq("is_decoy", False)
+    return q
+
+
 def supervisor_columns_status() -> dict:
     """Surface for /health — ops must see a freeze without reading logs."""
     downgraded_at = None
@@ -1290,10 +1332,12 @@ async def get_leads(
                 q = q.is_("conversations.assigned_agent_id", "null")
             elif assigned_to and assigned_to != "all":
                 q = q.eq("conversations.assigned_agent_id", assigned_to)
+            q = _hide_decoys(q, "leads")
             return q.range(offset, offset + limit - 1).execute()
         try:
             res = await _run_sync(_query)
         except Exception as col_err:
+            _downgrade_decoy("leads", col_err)
             # 030 not applied → the work-list degrades to gold orphans only.
             if crm_pending and _is_missing_column_error(col_err):
                 logger.warning(
@@ -1301,6 +1345,9 @@ async def get_leads(
                     "reasons unavailable (apply migrations/030_crm_lead_id.sql)"
                 )
                 res = await _run_sync(lambda: _query(with_030_cols=False))
+            elif _is_missing_column_error(col_err) and not _decoy_filterable("leads"):
+                # leads.is_decoy missing (038 not applied) — retry unfiltered.
+                res = await _run_sync(_query)
             else:
                 raise
         rows = []
@@ -1737,12 +1784,14 @@ async def get_users(
                 f"name.ilike.%{search}%,"
                 f"email.ilike.%{search}%"
             )
+        q = _hide_decoys(q, "users")
         return q.range(offset, offset + limit - 1).execute()
     try:
         res = await _run_sync(_query)
     except Exception as _e:
         _downgrade_chat_enabled(_e)
-        if _chat_enabled_column_available():
+        _downgrade_decoy("users", _e)
+        if _chat_enabled_column_available() and _decoy_filterable("users"):
             raise           # not a missing-column error — surface it
         res = await _run_sync(lambda: _query(False))
     return res.data or [], res.count or 0

@@ -44,6 +44,9 @@ def _issue_jwt(user: dict) -> str:
 class LoginRequest(BaseModel):
     email: str
     password: str
+    # Honeypot (PR-3): a hidden field no human ever fills. A value means a bot
+    # filled the form. Counted here (alert-only); PR-11 feeds it to the jail.
+    company_fax: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -69,6 +72,11 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
     """Authenticate user with email + password, return JWT."""
     _email = req.email.lower().strip()
     _ip = client_ip(request, prefer_cf=False) or "unknown"
+
+    if (req.company_fax or "").strip():
+        from app.security.decoys import DECOY_HEALTH
+        DECOY_HEALTH["form_honeypot"] = DECOY_HEALTH.get("form_honeypot", 0) + 1
+        logger.warning(f"[decoy] login honeypot filled from {_ip}")
 
     # Progressive backoff on the email+IP pair. A generic 429 either way, so a
     # throttle never tells an attacker whether the email exists.

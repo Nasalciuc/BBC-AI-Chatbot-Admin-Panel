@@ -15,6 +15,16 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         request.state.request_id = request_id
         start = time.perf_counter()
 
+        # Decoy key replayed in a header or query value → alert, once per hour
+        # per IP. Body is NOT read here (SSE/uploads); PR-11's ASGI middleware
+        # covers the body. Never blocks the request in PR-3 (alert-only).
+        try:
+            from app.security.decoys import scan_headers_and_query
+
+            await scan_headers_and_query(request)
+        except Exception as _e:  # noqa: silent — a tripwire must never break a real request
+            logger.debug(f"decoy scan skipped: {type(_e).__name__}")
+
         response = await call_next(request)
 
         elapsed = int((time.perf_counter() - start) * 1000)

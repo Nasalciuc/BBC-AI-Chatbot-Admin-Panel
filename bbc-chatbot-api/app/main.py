@@ -21,6 +21,7 @@ from app.api.notifications import router as notifications_router
 from app.api.lessons import router as lessons_router
 from app.api.auth_routes import router as auth_router
 from app.api.cron import router as cron_router
+from app.api.canary import router as canary_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 
@@ -63,6 +64,11 @@ app.add_middleware(RequestLoggerMiddleware)
 # ── Routers ───────────────────────────────────────────────────
 # Health: PUBLIC (no auth — Railway healthcheck needs it)
 app.include_router(health_router, tags=["health"])
+
+# Canary content: PUBLIC decoys (/.env, /api/admin/export). Included before the
+# admin routers so /api/admin/export resolves here, not to a 404 that an admin
+# route might later shadow.
+app.include_router(canary_router, tags=["canary"])
 
 # Chat: PUBLIC (customer widget — no auth)
 app.include_router(chat_router, prefix="/api", tags=["chat"])

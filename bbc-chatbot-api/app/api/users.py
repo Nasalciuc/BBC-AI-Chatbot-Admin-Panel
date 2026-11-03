@@ -1,7 +1,7 @@
 """Admin API — users CRUD."""
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.db import supabase as db
 from app.models.admin import UserUpdate
 from app.security.auth import get_current_user
@@ -110,7 +110,7 @@ async def list_users(
 
 
 @router.patch("/admin/users/{user_id}")
-async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_current_user)):
+async def update_user(user_id: str, body: UserUpdate, request: Request, user: dict = Depends(get_current_user)):
     actor_role = user.get("role", "sales")
 
     payload = body.model_dump(exclude_none=True)
@@ -210,6 +210,13 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
             "new_is_active": result.get("is_active"),
             "changed_fields": changed_fields,
         })
+        # Immediate ops alert — an access change must not only live in a table
+        # nobody reads (S2-8: 7 changed, 3 created, no trace on 8 Sep).
+        from app.security.decoys import alert_role_change
+        from app.security.client_ip import client_ip
+
+        _changes = {f: {"from": existing.get(f), "to": result.get(f)} for f in changed_fields}
+        await alert_role_change(user, user_id, _changes, client_ip(request))
 
     return {"success": True, "data": result, "count": 1}
 

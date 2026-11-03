@@ -99,6 +99,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.cron import _DB_ALERT
 
     from app.ai.ledger import LEDGER_HEALTH
+    from app.security.decoys import DECOY_HEALTH
 
     if not full:
         return {
@@ -106,6 +107,7 @@ async def health_detail(full: bool = False) -> dict:
             "flags": dict(FLAGS_HEALTH),
             "client_ip": dict(CLIENT_IP_HEALTH),
             "cost": dict(LEDGER_HEALTH),
+            "decoys": dict(DECOY_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
@@ -170,6 +172,7 @@ async def health_detail(full: bool = False) -> dict:
         "flags": dict(FLAGS_HEALTH),
         "client_ip": dict(CLIENT_IP_HEALTH),
         "cost": dict(LEDGER_HEALTH),
+        "decoys": dict(DECOY_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),
