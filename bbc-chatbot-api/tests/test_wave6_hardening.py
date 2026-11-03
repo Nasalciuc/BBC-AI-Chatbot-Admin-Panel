@@ -405,11 +405,23 @@ class TestPresenceTruth:
 
     def test_widget_timers_are_untouched(self):
         """Owner-locked: this pack adds a ping, it does not retune
-        auto-open/auto-close."""
+        auto-open/auto-close.
+
+        PR-12 touches Widget.tsx (the visitor token, the form's trap), so the
+        lock is pinned on what it protects — no changed line may touch a
+        timer, a delay or the auto-open state — rather than on the whole
+        file being byte-identical to master."""
+        import re
         import subprocess
 
         diff = subprocess.run(
             ["git", "diff", "master", "--", "bbc-widget/src/Widget.tsx"],
             cwd=os.path.join(ROOT, ".."), capture_output=True, text=True, timeout=60,
         )
-        assert diff.stdout.strip() == ""
+        changed = [
+            line[1:] for line in diff.stdout.splitlines()
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        ]
+        timer = re.compile(r"setTimeout|setInterval|clearTimeout|Timer|autoOpened|\b\d{3,}\b")
+        touched = [line for line in changed if timer.search(line)]
+        assert touched == [], touched

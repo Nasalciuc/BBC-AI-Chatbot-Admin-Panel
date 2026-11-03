@@ -1574,6 +1574,9 @@ async def _pipeline(
                         # (the panel's Push); nothing goes out on its own.
                         from app.services.crm import CRMResult as _CRMResult
                         logger.info(f"[{cid}] CRM hold: suspect=form_trap")
+                        # Visible state: the lead joins the panel's "CRM
+                        # pending" work-list with its reason, like any gate.
+                        await db.update_lead_crm_push_state(_lead_fresh["id"], gate_reason="form_trap")
                         _crm = _CRMResult(success=False, error="hold:form_trap")
                     else:
                         _crm = await submit_to_crm(
