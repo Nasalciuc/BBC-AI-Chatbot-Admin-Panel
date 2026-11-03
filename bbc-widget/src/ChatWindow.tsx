@@ -364,7 +364,12 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
       source.onerror = () => {
         errorCount++
         sseUpRef.current = false
-        if (errorCount >= MAX_ERRORS) {
+        // An HTTP error (a restart's 502, a 401/403) makes the browser CLOSE
+        // the EventSource for good after this one event — it will not retry
+        // and onerror never fires again. Treat that as the give-up point at
+        // once, or neither the poll nor the retry below would ever start.
+        const closedForGood = source?.readyState === EventSource.CLOSED
+        if (closedForGood || errorCount >= MAX_ERRORS) {
           // The browser's own retries failed: poll meanwhile, and try SSE
           // again later — 5 s, 10 s, 20 s … capped at 60 s.
           source?.close()
