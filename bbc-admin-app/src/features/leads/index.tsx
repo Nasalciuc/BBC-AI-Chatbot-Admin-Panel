@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Search, Filter, Phone, Mail, Plane, ChevronDown, RefreshCw, Check, X } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Lead } from '@/lib/types'
-import { apiFetch, getLeads, updateLeadStatus, reviewLead } from '@/lib/api'
+import { getLeads, updateLeadStatus, reviewLead, pushLeadToCrm, isLockedPushRefusal } from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/header-actions'
 import { Main } from '@/components/layout/main'
@@ -139,16 +139,22 @@ export function Leads() {
     'Action',
   ]
 
-  const handlePushToCrm = async (lead: Lead) => {
+  const handlePushToCrm = async (lead: Lead, confirmLocked = false) => {
     if (pushingId) return
     setPushingId(lead.id)
     try {
-      // 20s: the server's CRM call can take up to 10s — the default 8s
-      // abort would "fail" a push that actually succeeded (double-push bait).
-      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' }, 20_000)
+      await pushLeadToCrm(lead.id, confirmLocked)
       toast.success(`Pushed to CRM — ${lead.visitor_name ?? 'lead'}`)
       await fetchLeads()
     } catch (e) {
+      // PR-15: a conversation locked for abuse needs the operator's yes.
+      if (isLockedPushRefusal(e)) {
+        toast.warning('This conversation was locked for abuse.', {
+          duration: 10_000,
+          action: { label: 'Push anyway', onClick: () => { void handlePushToCrm(lead, true) } },
+        })
+        return
+      }
       // The endpoint performs the real push; a 422 carries the CRM's
       // refusal or the gate reason — show it verbatim.
       const message = e instanceof Error ? e.message : 'CRM push failed'

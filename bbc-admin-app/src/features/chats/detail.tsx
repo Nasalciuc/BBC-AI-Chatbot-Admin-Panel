@@ -15,6 +15,9 @@ import {
   blockConversationVisitor,
   postAgentTyping,
   clearAgentTyping,
+  pushLeadToCrm,
+  isLockedPushRefusal,
+  unlockConversation,
 } from '@/lib/api'
 import type { ApiError } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -387,17 +390,23 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }
 
-  const handleMarkLeadCreated = async () => {
+  const handleMarkLeadCreated = async (confirmLocked = false) => {
     if (!lead?.id || markingLead) return
     setMarkingLead(true)
     setMarkLeadError(null)
     try {
-      // 20s: the server's CRM call can take up to 10s — the default 8s
-      // abort would "fail" a push that actually succeeded (double-push bait).
-      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' }, 20_000)
+      await pushLeadToCrm(lead.id, confirmLocked)
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       onConversationChange?.()
     } catch (err) {
+      // PR-15: a conversation locked for abuse needs the operator's yes.
+      if (isLockedPushRefusal(err)) {
+        toast.warning('This conversation was locked for abuse.', {
+          duration: 10_000,
+          action: { label: 'Push anyway', onClick: () => { void handleMarkLeadCreated(true) } },
+        })
+        return
+      }
       // The endpoint now performs the REAL push — a 422 carries the CRM's
       // refusal (gate reason or CRM error body). Show it verbatim.
       const msg = (err as ApiError)?.message ?? 'CRM push failed. Please try again.'
@@ -495,6 +504,27 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             <div className="flex items-center gap-2 flex-wrap">
               {conv.chat_number != null && (
                 <span className="text-xs font-mono text-[#C9A54E] shrink-0">#{conv.chat_number}</span>
+              )}
+              {(conv.metadata as { locked?: unknown } | undefined)?.locked === 'abuse' && (
+                <span className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800">
+                  Blocked — abuse
+                  {permissions.canManageTeams && (
+                    <button
+                      type="button"
+                      data-testid="unlock-conversation"
+                      className="underline"
+                      onClick={async () => {
+                        try {
+                          await unlockConversation(conversationId)
+                          toast.success('Unlocked — the bot answers this client again')
+                          queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+                        } catch {
+                          toast.error('Unlock failed')
+                        }
+                      }}
+                    >Unlock</button>
+                  )}
+                </span>
               )}
               <h2 className="text-base font-semibold text-white truncate">
                 {/* The visitor's NAME stays after closing — 1292 identical
@@ -793,7 +823,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
                         </p>
                       ) : (
                         <button
-                          onClick={handleMarkLeadCreated}
+                          onClick={() => { void handleMarkLeadCreated() }}
                           className="w-full py-2 rounded-lg bg-[#C9A54E] text-white text-xs font-semibold hover:bg-[#C9A54E]/90 transition-all"
                         >
                           Push to CRM

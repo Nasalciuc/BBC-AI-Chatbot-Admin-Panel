@@ -680,3 +680,25 @@ export async function unbanBan(id: string): Promise<void> {
   const body = await res.json()
   if (!body.success) throw new ApiError(500, body.error ?? 'Unban failed')
 }
+
+// ── PR-15: the chat lock and the guarded CRM push ─────────────
+
+/** Push a lead to the CRM. A conversation locked for abuse answers 409
+ *  until the operator confirms (confirmLocked). */
+export async function pushLeadToCrm(leadId: string, confirmLocked = false): Promise<void> {
+  const qs = confirmLocked ? '?confirm_locked=true' : ''
+  // 20s: the server's CRM call can take up to 10s — the default 8s abort
+  // would "fail" a push that actually succeeded (double-push bait).
+  await apiFetch(`/api/leads/${leadId}/mark-crm-created${qs}`, { method: 'PATCH' }, 20_000)
+}
+
+export function isLockedPushRefusal(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409
+}
+
+export async function unlockConversation(conversationId: string): Promise<void> {
+  const res = await apiFetch<{ success: boolean; error?: string }>(
+    `/api/admin/conversations/${conversationId}/unlock`, { method: 'POST' },
+  )
+  if (!res.success) throw new ApiError(500, res.error ?? 'Unlock failed')
+}
