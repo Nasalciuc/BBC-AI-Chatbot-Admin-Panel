@@ -218,7 +218,8 @@ test('a user row without event is appended to messages-incremental', () => {
 
 test('the reader is transport: it never sees a token', () => {
   const src = read('src/lib/sse-reader.ts')
-  assert.match(src, /headers: \{ \.\.\.headers, Accept: 'text\/event-stream' \}/)
+  assert.match(src, /headers: \{ \.\.\.current, Accept: 'text\/event-stream' \}/)
+  assert.match(src, /typeof headers === 'function' \? headers\(\) : headers/)
   assert.doesNotMatch(src, /\btoken\b/)
   assert.doesNotMatch(src, /new EventSource/)
 })
@@ -226,7 +227,7 @@ test('the reader is transport: it never sees a token', () => {
 test('openAgentStream owns auth via authHeaders and validates frames', () => {
   const src = read('src/lib/api.ts')
   assert.match(src, /export function openAgentStream/)
-  assert.match(src, /authHeaders\(\)/)
+  assert.match(src, /\(\) => authHeaders\(\)/)
   assert.match(src, /parseAgentSseEvent\(raw\)/)
   assert.match(src, /\$\{BASE\}\/api\/agent\/stream\/\$\{conversationId\}/)
 })
@@ -250,5 +251,21 @@ test('features/ never imports sse-reader and never reads the access token', () =
     const src = readFileSync(file, 'utf-8')
     assert.doesNotMatch(src, /from '@\/lib\/sse-reader'/, file)
     assert.doesNotMatch(src, /accessToken/, file)
+  }
+})
+
+
+test('every reconnect re-reads the headers (a renewed token is used)', async () => {
+  let n = 0
+  const f = withFetch(async () => ({ ok: false, status: 401, body: null }))
+  try {
+    const h = openSse('u', () => ({ Authorization: `Bearer t${++n}` }), () => {}, () => {}, () => {}, () => 5)
+    await new Promise((r) => setTimeout(r, 40))
+    h.close()
+    const auths = f.calls.map((c) => c.init.headers.Authorization)
+    assert.ok(auths.length >= 2)
+    assert.notEqual(auths[0], auths[1])
+  } finally {
+    f.restore()
   }
 })

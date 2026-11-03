@@ -155,7 +155,7 @@ export function openAgentStream(
 ): SseHandle {
   return openSse(
     `${BASE}/api/agent/stream/${conversationId}`,
-    authHeaders(),
+    () => authHeaders(),
     (raw) => { const e = parseAgentSseEvent(raw); if (e) onEvent(e) },
     onStateChange,
     onGiveUp,

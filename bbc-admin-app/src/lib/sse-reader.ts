@@ -22,7 +22,9 @@ export interface SseHandle {
 
 export function openSse(
   url: string,
-  headers: Record<string, string>,
+  // A function is re-read on every (re)connect, so renewed credentials are
+  // picked up instead of retrying with expired ones forever (review fix).
+  headers: Record<string, string> | (() => Record<string, string>),
   onEvent: (data: unknown) => void,
   onStateChange: (state: 'open' | 'reconnecting' | 'closed') => void,
   onGiveUp: () => void,
@@ -37,8 +39,9 @@ export function openSse(
     while (!closed) {
       ctrl = new AbortController()
       try {
+        const current = typeof headers === 'function' ? headers() : headers
         const res = await fetch(url, {
-          headers: { ...headers, Accept: 'text/event-stream' },
+          headers: { ...current, Accept: 'text/event-stream' },
           signal: ctrl.signal,
         })
         if (!res.ok || !res.body) throw new Error(`sse ${res.status}`)
