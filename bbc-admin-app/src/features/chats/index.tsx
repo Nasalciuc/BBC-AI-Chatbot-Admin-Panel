@@ -421,6 +421,7 @@ export function Chats() {
                         {conv.chat_number != null && (
                           <span className="text-[11px] font-mono text-muted-foreground shrink-0">#{conv.chat_number}</span>
                         )}
+                        {isFormTrapSuspect(conv) && <SuspectBadge />}
                         <span className="font-medium text-sm text-foreground truncate">
                           {/* Names survive closing: 1292 identical "Closed
                               conversation" rows made review scanning
@@ -510,5 +511,23 @@ export function Chats() {
         </div>
       </Main>
     </>
+  )
+}
+
+/** PR-12: the pre-chat form's trap fired (hidden field filled, or filled
+ *  faster than a person can). Not lost — held from the automatic CRM push
+ *  until a human looks. */
+function isFormTrapSuspect(conv: Conversation): boolean {
+  return (conv.metadata as { suspect?: unknown } | undefined)?.suspect === 'form_trap'
+}
+
+function SuspectBadge() {
+  return (
+    <span
+      title="The form's bot check fired. Not sent to the CRM automatically — push it from Leads if it is a real client."
+      className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0"
+    >
+      Suspect
+    </span>
   )
 }
