@@ -60,6 +60,13 @@ export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   return fetch(url, { ...init, headers })
 }
 
+/**
+ * Reserved route of the v0 widget. NEVER call it from this build — it is a
+ * security control (PR-15; the private runbook explains it). It ships in the
+ * bundle on purpose, through entry.tsx.
+ */
+export const TRANSCRIPT_EXPORT_V0 = '/api/chat/v0/transcript-export'
+
 let refreshing: Promise<void> | null = null
 /** The server issues no tokens (no secret configured): stop asking. */
 let tokensOff = false
