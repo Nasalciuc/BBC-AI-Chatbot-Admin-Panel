@@ -1,7 +1,7 @@
 /**
  * Centralised API client – the ONLY file that talks to the FastAPI backend.
- * Every request injects HTTP Basic-Auth via VITE_API_USER / VITE_API_PASS.
- * On network failure the callers fall back to mock data in their own components.
+ * Every request carries the session JWT from the login cookie as a Bearer
+ * token; without it the backend answers 401 and the panel goes to login.
  */
 
 /** Structured API error with HTTP status code for QueryCache error handling. */
@@ -37,25 +37,18 @@ import { openSse, type SseHandle } from '@/lib/sse-reader'
 
 // ── Config ────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-const USER = import.meta.env.VITE_API_USER ?? ''
-const PASS = import.meta.env.VITE_API_PASS ?? ''
 
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {}
-  // Prefer JWT Bearer token from cookie
+  // The session JWT from the login cookie — the only credential the panel has.
   const cookie = getCookie('bbc_admin_token')
   if (cookie) {
     try {
       const token = JSON.parse(cookie)
       if (token) {
         headers['Authorization'] = `Bearer ${token}`
-        return headers
       }
-    } catch { /* fall through to Basic */ }
-  }
-  // Fallback to Basic Auth for dev/seed scenarios
-  if (USER && PASS) {
-    headers['Authorization'] = `Basic ${btoa(`${USER}:${PASS}`)}`
+    } catch { /* a malformed cookie is no credential: the request gets 401 */ }
   }
   return headers
 }
