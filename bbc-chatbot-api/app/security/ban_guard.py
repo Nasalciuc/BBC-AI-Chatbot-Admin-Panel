@@ -9,8 +9,15 @@ Fail-open by design: if Redis is down or IP_TRUSTED is false (the edge lets a
 client forge its IP, PR-1 self-test), nobody is banned and /health reports
 degraded — a tripwire must never lock out real customers.
 
+A tripwire request itself gets its normal answer (the canary body for /.env,
+the ordinary 404, the ordinary 401 for Basic): the attacker learns nothing.
+The ban takes effect from the next request, which gets a generic 403.
+
 FAIL2BAN_ENFORCE off (the merge default, 3 shadow days): jails are evaluated
-and counted but nothing is blocked. On → a banned identity gets a generic 404.
+and counted but nothing is blocked.
+
+Never banned: a request with a valid JWT (staff — its tripwires alert), the
+exact IPs in BAN_IGNORE_IPS (office, CRM), the excluded paths.
 Chat-body bans are NOT here (they need the parsed body); they stay on the
 existing blocklist. Session revocation (revoked_before) lives here too but is
 read in auth.get_current_user (sync path).
@@ -30,6 +37,11 @@ FAIL2BAN_HEALTH = {
     "degraded": False,
     "would_ban": 0,
     "banned": 0,
+    "blocked": 0,
+    "staff_alerts": 0,
+    "rows_written": 0,
+    "row_errors": 0,
+    "table_missing": False,
     "poisoned_skipped": 0,
     "by_jail": {},
 }
@@ -61,6 +73,12 @@ _EXCLUDED_EXACT = {"/health", "/health/detail", "/health/ip-echo"}
 
 _BAN_24H = 24 * 3600
 _BAN_WEEK = 7 * 24 * 3600
+_BAN_1H = 3600
+_SCAN_THRESHOLD = 5
+_SCAN_WINDOW = 5 * 60
+# 404s here, without a valid JWT, are a scan.
+_SCAN_PATH_PREFIXES = ("/api/",)
+_SCAN_PATH_EXACT = {"/openapi.json", "/docs", "/redoc"}
 _SCANNER_UAS = ("sqlmap", "nikto", "nuclei", "zgrab", "masscan", "gobuster",
                 "dirbuster", "ffuf", "wfuzz", "feroxbuster", "nmap", "acunetix", "wpscan")
 
@@ -102,17 +120,35 @@ class BanGuardMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        ctx: dict = {}
         try:
-            blocked = await self._should_block(scope)
+            blocked = await self._should_block(scope, ctx)
         except Exception as e:  # noqa: silent — a tripwire must never break a real request
             logger.debug(f"[ban-guard] skipped: {type(e).__name__}: {e}")
             blocked = False
+            ctx = {}
         if blocked:
             await self._deny(send)
             return
-        await self.app(scope, receive, send)
+        if not ctx.get("watch_404"):
+            await self.app(scope, receive, send)
+            return
 
-    async def _should_block(self, scope) -> bool:
+        status_box = {"status": 0}
+
+        async def _send(message):
+            if message.get("type") == "http.response.start":
+                status_box["status"] = message.get("status", 0)
+            await send(message)
+
+        await self.app(scope, receive, _send)
+        if status_box["status"] == 404:
+            try:
+                await self._scan_strike(ctx)
+            except Exception as e:  # noqa: silent — the scan count is best-effort, the reply already went
+                logger.debug(f"[ban-guard] scan strike failed: {type(e).__name__}")
+
+    async def _should_block(self, scope, ctx: dict) -> bool:
         if not flag("FAIL2BAN_ENABLED", True):
             return False
         path = scope.get("path", "")
@@ -130,14 +166,23 @@ class BanGuardMiddleware:
         FAIL2BAN_HEALTH["degraded"] = False
 
         ip = self._ip_from(scope, headers)
-        # Already banned?
-        if ip and await store.is_banned(ip):
+        if ip and ip in _ignored_ips():
+            return False
+        staff = _has_valid_jwt(headers)
+
+        # Already banned? (staff with a valid session is never locked out by IP)
+        if ip and not staff and await store.is_banned(ip):
             return self._enforce("existing", ip)
 
-        # A Basic header is an instant ban (the old door; PR-1 removed it).
+        # The decoy key from the bundle, anywhere in the request → a week.
+        if _carries_decoy_key(headers, scope.get("query_string", b"")):
+            await self._trip(store, ip, "decoy_key", _BAN_WEEK, alert=True, staff=staff)
+            return False
+
+        # A Basic header: the old door (PR-1 removed it).
         if headers.get("authorization", "").startswith("Basic "):
-            await self._ban(store, ip, "basic", _BAN_24H, alert=True)
-            return self._enforce("basic", ip)
+            await self._trip(store, ip, "basic", _BAN_24H, alert=True, staff=staff)
+            return False
 
         hit = _classify_path(path)
         if hit:
@@ -145,9 +190,31 @@ class BanGuardMiddleware:
             if _is_poisoned(headers):
                 FAIL2BAN_HEALTH["poisoned_skipped"] += 1
                 return False
-            await self._ban(store, ip, jail, secs, alert=alert)
-            return self._enforce(jail, ip)
+            await self._trip(store, ip, jail, secs, alert=alert, staff=staff)
+            return False
+
+        if not staff and ip and (path in _SCAN_PATH_EXACT or _seg_match_prefix(path, _SCAN_PATH_PREFIXES)):
+            ctx.update(watch_404=True, ip=ip, store=store)
         return False
+
+    async def _scan_strike(self, ctx: dict) -> None:
+        store, ip = ctx["store"], ctx["ip"]
+        n = await store.strike(f"scan:{ip}", _SCAN_WINDOW)
+        if n >= _SCAN_THRESHOLD:
+            await self._trip(store, ip, "scan", _BAN_1H, alert=False, staff=False)
+
+    async def _trip(self, store, ip: str, jail: str, seconds: int, *, alert: bool, staff: bool) -> None:
+        """A tripwire fired. Staff (valid JWT) is never banned — it alerts."""
+        FAIL2BAN_HEALTH["by_jail"][jail] = FAIL2BAN_HEALTH["by_jail"].get(jail, 0) + 1
+        if staff:
+            FAIL2BAN_HEALTH["staff_alerts"] += 1
+            await self._alert(f"staff tripwire jail={jail} ip={ip}")
+            return
+        if flag("FAIL2BAN_ENFORCE", False):
+            FAIL2BAN_HEALTH["banned"] += 1
+            await self._ban(store, ip, jail, seconds, alert=alert)
+        else:
+            FAIL2BAN_HEALTH["would_ban"] += 1
 
     def _ip_from(self, scope, headers) -> str:
         class _R:
@@ -160,32 +227,161 @@ class BanGuardMiddleware:
         return client_ip(r, prefer_cf=False) or ""
 
     def _enforce(self, jail: str, ip: str) -> bool:
-        FAIL2BAN_HEALTH["by_jail"][jail] = FAIL2BAN_HEALTH["by_jail"].get(jail, 0) + 1
+        """An identity already banned came back."""
         if flag("FAIL2BAN_ENFORCE", False):
-            FAIL2BAN_HEALTH["banned"] += 1
+            FAIL2BAN_HEALTH["blocked"] += 1
             return True
-        FAIL2BAN_HEALTH["would_ban"] += 1
         return False
 
     async def _ban(self, store, ip: str, jail: str, seconds: int, *, alert: bool) -> None:
         if not ip:
             return
+        eff = seconds
         try:
-            await store.ban(ip, jail, seconds)
+            eff = await store.ban(ip, jail, seconds) or seconds
         except Exception as e:  # noqa: silent — a failed ban write must not block the response
             logger.debug(f"[ban-guard] ban write failed: {type(e).__name__}")
+        await record_ban_row(ip, jail, eff)
         if alert:
-            try:
-                from app.services.email import send_ops_alert_email
-                await send_ops_alert_email("fail2ban", f"jail={jail} ip={ip} banned {seconds}s")
-            except Exception as e:  # noqa: silent — the alert is best-effort
-                logger.debug(f"[ban-guard] alert failed: {type(e).__name__}")
+            await self._alert(f"jail={jail} ip={ip} banned {seconds}s")
+
+    async def _alert(self, text: str) -> None:
+        try:
+            from app.services.email import send_ops_alert_email
+            await send_ops_alert_email("fail2ban", text)
+        except Exception as e:  # noqa: silent — the alert is best-effort
+            logger.debug(f"[ban-guard] alert failed: {type(e).__name__}")
 
     async def _deny(self, send) -> None:
-        await send({"type": "http.response.start", "status": 404,
+        await send({"type": "http.response.start", "status": 403,
                     "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": b'{"detail":"Not Found"}'})
+        await send({"type": "http.response.body", "body": b'{"detail":"Forbidden"}'})
+
+
+def _ignored_ips() -> set[str]:
+    from config.settings import settings
+    raw = getattr(settings, "ban_ignore_ips", "") or ""
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def _has_valid_jwt(headers: dict) -> bool:
+    auth = headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    from config.settings import settings
+    if not settings.jwt_secret:
+        return False
+    import jwt as _jwt
+    try:
+        _jwt.decode(auth[7:].strip(), settings.jwt_secret, algorithms=["HS256"])
+        return True
+    except _jwt.InvalidTokenError:  # noqa: silent — an invalid token simply means "not staff" here
+        return False
+
+
+def _carries_decoy_key(headers: dict, query_string: bytes) -> bool:
+    from app.security.decoys import _decoy_keys
+    keys = _decoy_keys()
+    if not keys:
+        return False
+    hay = " ".join(headers.values()) + " " + (query_string or b"").decode("latin-1")
+    return any(k in hay for k in keys)
+
+
+# ── The audit trail (security_bans) ───────────────────────────
+_table_missing = False
+
+
+async def record_ban_row(identity: str, jail: str, seconds: int) -> None:
+    """Best-effort row for the panel's Security → Bans page. A missing table
+    (042 not applied) logs once and stays quiet; the ban itself is in Redis."""
+    global _table_missing
+    if _table_missing:
+        return
+    import datetime as _dt
+    from app.db.supabase import _run_sync, get_client
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    row = {
+        "identity": identity,
+        "jail": jail,
+        "last_seen_at": now.isoformat(),
+        "expires_at": (now + _dt.timedelta(seconds=seconds)).isoformat(),
+    }
+    try:
+        await _run_sync(
+            lambda: get_client().table("security_bans").insert(row).execute(),
+            idempotent=False,
+            label="security_bans",
+        )
+        FAIL2BAN_HEALTH["rows_written"] += 1
+    except Exception as e:
+        text = str(e).lower()
+        if "security_bans" in text and ("does not exist" in text or "could not find" in text or "42p01" in text):
+            _table_missing = True
+            FAIL2BAN_HEALTH["table_missing"] = True
+            logger.warning(f"[ban-guard] security_bans missing — history off until 042 is applied: {type(e).__name__}")
+            return
+        FAIL2BAN_HEALTH["row_errors"] += 1
+        logger.warning(f"[ban-guard] security_bans write failed: {type(e).__name__}: {e}")
+
+
+# ── The auth-attack jail (called from the login route) ────────
+_DECOY_LOGIN_LOCALS = {"admin", "test", "root", "administrator", "support"}
+_AUTH_WINDOW = 10 * 60
+_AUTH_DISTINCT_EMAILS = 3
+
+
+def _is_decoy_login(email: str) -> bool:
+    e = (email or "").strip().lower()
+    local = e.split("@", 1)[0]
+    if local in _DECOY_LOGIN_LOCALS:
+        return True
+    from config.settings import settings
+    decoy = (getattr(settings, "decoy_account_email", "") or "").strip().lower()
+    return bool(decoy) and e == decoy
+
+
+async def note_login_failure(ip: str, email: str, *, form_trap: bool = False) -> None:
+    """A failed login. A real account's own failures stay on the email+IP pair
+    (login_guard) and never ban the IP — anyone could otherwise lock out a
+    staff member whose address is public. Spraying (a 4th distinct email from
+    one IP in 10 min), a decoy account, or the filled company_fax trap → the
+    IP is banned 1 h with an alert. Never raises."""
+    try:
+        if not ip or ip == "unknown" or not flag("FAIL2BAN_ENABLED", True):
+            return
+        from app.security.ban_store import get_store
+        from app.security.client_ip import ip_trusted
+
+        store = get_store()
+        if store is None or not ip_trusted() or ip in _ignored_ips():
+            return
+        guard = BanGuardMiddleware(None)
+        if form_trap or _is_decoy_login(email):
+            await guard._trip(store, ip, "auth_attack", _BAN_1H, alert=True, staff=False)
+            return
+        seen = store._auth_emails.setdefault(ip, {}) if store._redis is None else None
+        if seen is not None:
+            now = time.time()
+            for k in [k for k, t in seen.items() if t < now - _AUTH_WINDOW]:
+                seen.pop(k, None)
+            seen[(email or "").strip().lower()] = now
+            distinct = len(seen)
+        else:
+            key = f"authmail:{ip}"
+            await store._redis.sadd(key, (email or "").strip().lower())
+            await store._redis.expire(key, _AUTH_WINDOW)
+            distinct = int(await store._redis.scard(key))
+        if distinct > _AUTH_DISTINCT_EMAILS:
+            await guard._trip(store, ip, "auth_attack", _BAN_1H, alert=True, staff=False)
+    except Exception as e:  # noqa: silent — the jail must never change a login's answer
+        logger.debug(f"[ban-guard] auth jail skipped: {type(e).__name__}: {e}")
 
 
 def _reset_for_tests() -> None:
-    FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, poisoned_skipped=0, by_jail={})
+    global _table_missing
+    _table_missing = False
+    FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, blocked=0, staff_alerts=0,
+                           rows_written=0, row_errors=0, table_missing=False,
+                           poisoned_skipped=0, by_jail={})

@@ -24,6 +24,8 @@ class BanStore:
         self._redis = redis_client
         self._mem: dict[str, float] = {}      # ip -> expires_at (epoch)
         self._counts: dict[str, int] = {}     # ip -> ban count (memory mode)
+        self._strikes: dict[str, list[float]] = {}  # key -> hit times (memory mode)
+        self._auth_emails: dict[str, dict[str, float]] = {}  # ip -> {email: last seen}
 
     async def is_banned(self, ip: str) -> bool:
         if not ip:
@@ -62,6 +64,24 @@ class BanStore:
         eff = min(seconds * (2 ** (n - 1)), _MAX_BAN)
         self._mem[ip] = time.time() + eff
         return eff
+
+    async def strike(self, key: str, window: int) -> int:
+        """Count one strike for key inside a sliding-ish fixed window; returns
+        the count so far (0 on a Redis failure — fail-open)."""
+        if self._redis is not None:
+            try:
+                n = await self._redis.incr(f"strike:{key}")
+                if int(n) == 1:
+                    await self._redis.expire(f"strike:{key}", window)
+                return int(n)
+            except Exception as e:
+                logger.debug(f"[ban-store] strike redis failed: {type(e).__name__}")
+                return 0
+        now = time.time()
+        hits = [t for t in self._strikes.get(key, []) if t > now - window]
+        hits.append(now)
+        self._strikes[key] = hits
+        return len(hits)
 
     async def unban(self, ip: str) -> None:
         if self._redis is not None:

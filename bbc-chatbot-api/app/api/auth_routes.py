@@ -78,6 +78,8 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
         from app.security.decoys import DECOY_HEALTH
         DECOY_HEALTH["form_honeypot"] = DECOY_HEALTH.get("form_honeypot", 0) + 1
         logger.warning(f"[decoy] login honeypot filled from {_ip}")
+        from app.security.ban_guard import note_login_failure
+        await note_login_failure(_ip, _email, form_trap=True)
 
     # Progressive backoff on the email+IP pair. A generic 429 either way, so a
     # throttle never tells an attacker whether the email exists.
@@ -90,6 +92,8 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
 
     async def _reject() -> None:
         await login_guard.record_failure(_email, _ip)
+        from app.security.ban_guard import note_login_failure
+        await note_login_failure(_ip, _email)
 
     user = await db.get_user_by_email(_email)
     if not user:

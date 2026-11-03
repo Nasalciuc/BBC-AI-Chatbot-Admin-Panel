@@ -89,6 +89,10 @@ class Settings(BaseSettings):
 
     # Redis (optional — empty = skip rate limiting)
     redis_url: str = ""
+    # Exact IPs fail2ban never bans (office, CRM). Comma-separated.
+    ban_ignore_ips: str = ""
+    # The PR-3 decoy staff account; a login attempt on it bans the IP.
+    decoy_account_email: str = ""
 
     # JWT
     # REQUIRED in production; the Bearer path in auth.py fails closed (500) if

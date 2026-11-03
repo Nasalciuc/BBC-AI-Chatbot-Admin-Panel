@@ -22,6 +22,7 @@ from app.api.lessons import router as lessons_router
 from app.api.auth_routes import router as auth_router
 from app.api.cron import router as cron_router
 from app.api.canary import router as canary_router
+from app.api.security_bans import router as security_bans_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 from app.security.ban_guard import BanGuardMiddleware
@@ -103,6 +104,7 @@ app.include_router(agent_router,         prefix="/api", tags=["agent"],         
 app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         dependencies=admin_deps)
 app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)
 app.include_router(lessons_router,       prefix="/api", tags=["lessons"],       dependencies=admin_deps)
+app.include_router(security_bans_router, prefix="/api", tags=["security"],      dependencies=admin_deps)
 
 
 # ── Startup / shutdown ────────────────────────────────────────
