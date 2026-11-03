@@ -186,7 +186,8 @@ async def test_decoy_key_bans_a_week(monkeypatch):
     await _run(mw, _scope("/api/leads", {"x-api-key": "bbc_live_DECOYKEY_abcdef"}))
     assert ban_guard.FAIL2BAN_HEALTH["by_jail"]["decoy_key"] == 1
     store = ban_store.get_store()
-    assert store._mem["203.0.113.9"] - __import__("time").time() > 6 * 24 * 3600
+    # PR-15: the decoy key never waits — it bans under the always: identity.
+    assert store._mem["always:203.0.113.9"] - __import__("time").time() > 6 * 24 * 3600
 
 
 @pytest.mark.asyncio

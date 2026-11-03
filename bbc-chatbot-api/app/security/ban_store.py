@@ -26,6 +26,7 @@ class BanStore:
         self._counts: dict[str, int] = {}     # ip -> ban count (memory mode)
         self._strikes: dict[str, list[float]] = {}  # key -> hit times (memory mode)
         self._auth_emails: dict[str, dict[str, float]] = {}  # ip -> {email: last seen}
+        self._distinct: dict[str, dict[str, float]] = {}     # key -> {member: last seen}
 
     async def is_banned(self, ip: str) -> bool:
         if not ip:
@@ -44,13 +45,17 @@ class BanStore:
             return False
         return True
 
-    async def ban(self, ip: str, jail: str, seconds: int) -> int:
-        """Ban ip; each repeat within 30d doubles, capped at a week. Returns the
-        effective seconds."""
+    async def ban(self, ip: str, jail: str, seconds: int, *, permanent: bool = False) -> int:
+        """Ban an identity; each repeat within 30d doubles, capped at a week.
+        permanent=True (PR-15: a visitor id that hit the widget's bait route)
+        keeps `seconds` as given — never an IP. Returns the effective seconds."""
         if not ip:
             return 0
         if self._redis is not None:
             try:
+                if permanent:
+                    await self._redis.setex(f"ban:{ip}", seconds, jail)
+                    return seconds
                 n = await self._redis.incr(f"bancount:{ip}")
                 await self._redis.expire(f"bancount:{ip}", 30 * 24 * 3600)
                 eff = min(seconds * (2 ** (int(n) - 1)), _MAX_BAN)
@@ -59,6 +64,9 @@ class BanStore:
             except Exception as e:
                 logger.debug(f"[ban-store] ban redis failed: {type(e).__name__}")
                 return 0
+        if permanent:
+            self._mem[ip] = time.time() + seconds
+            return seconds
         n = self._counts.get(ip, 0) + 1
         self._counts[ip] = n
         eff = min(seconds * (2 ** (n - 1)), _MAX_BAN)
@@ -82,6 +90,24 @@ class BanStore:
         hits.append(now)
         self._strikes[key] = hits
         return len(hits)
+
+    async def distinct(self, key: str, member: str, window: int) -> int:
+        """How many different members were seen under key in the window (the
+        enumeration trap: conversation ids asked about from one IP)."""
+        if self._redis is not None:
+            try:
+                await self._redis.sadd(f"distinct:{key}", member)
+                await self._redis.expire(f"distinct:{key}", window)
+                return int(await self._redis.scard(f"distinct:{key}"))
+            except Exception as e:
+                logger.debug(f"[ban-store] distinct redis failed: {type(e).__name__}")
+                return 0
+        now = time.time()
+        seen = self._distinct.setdefault(key, {})
+        for k in [k for k, t in seen.items() if t < now - window]:
+            seen.pop(k, None)
+        seen[member] = now
+        return len(seen)
 
     async def unban(self, ip: str) -> None:
         if self._redis is not None:

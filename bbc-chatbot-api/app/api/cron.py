@@ -173,7 +173,8 @@ async def run_aaa_backfill(days: int = 30) -> dict:
             if not conv.get("last_user_message_at"):
                 conv["_no_engagement"] = True
             from app.security.form_trap import holds_crm
-            if holds_crm(conv.get("metadata")):
+            from app.security.behavior import is_locked as _is_locked
+            if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 skipped += 1
                 continue
             result = await submit_abandoned_to_crm(conv, lead)
@@ -330,7 +331,8 @@ async def run_abandoned_crm() -> dict:
                 continue
 
             from app.security.form_trap import holds_crm
-            if holds_crm(conv.get("metadata")):
+            from app.security.behavior import is_locked as _is_locked
+            if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 # PR-12: a form_trap conversation waits for a human push.
                 results.append({"id": cid, "status": "hold_form_trap"})
                 continue
@@ -559,7 +561,8 @@ async def run_crm_orphan_backstop() -> dict:
                 phone=conv.get("visitor_phone") or "",
             )
             from app.security.form_trap import holds_crm
-            if holds_crm(conv.get("metadata")):
+            from app.security.behavior import is_locked as _is_locked
+            if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 continue  # PR-12: waits for a human push from the panel
             result = await push_lead_to_crm(
                 lead,

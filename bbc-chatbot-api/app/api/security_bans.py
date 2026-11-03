@@ -65,3 +65,38 @@ async def unban(ban_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning(f"[bans] unban failed: {type(e).__name__}: {e}")
         return {"success": False, "data": None, "count": 0, "error": "Unban failed"}
+
+
+
+# ── PR-15: the guard report and the chat lock ─────────────────
+
+@router.get("/admin/security/trap-report")
+async def trap_report(user: dict = Depends(get_current_user)):
+    """What the shadow traps would have caught, and how many were real
+    clients. The owner turns a trap's *_ENFORCE on only where that is 0."""
+    if not enforce_or_log(MANAGEMENT, user, "trap_report"):
+        return {"success": False, "data": {}, "count": 0, "error": "Forbidden"}
+    from app.security.behavior import BEHAVIOR_HEALTH, build_trap_report
+
+    report = await build_trap_report()
+    return {"success": True, "data": {"traps": report, "counters": BEHAVIOR_HEALTH}, "count": len(report)}
+
+
+@router.post("/admin/conversations/{conversation_id}/unlock")
+async def unlock_conversation(conversation_id: str, user: dict = Depends(get_current_user)):
+    """Lift a chat lock (metadata.locked = "abuse"), re-reading the fresh
+    metadata so nothing else written meanwhile is lost."""
+    if not enforce_or_log(MANAGEMENT, user, "unlock", f"conv={conversation_id}"):
+        return {"success": False, "data": None, "count": 0, "error": "Forbidden"}
+    from app.db import supabase as db
+
+    conv = await db.get_conversation_simple(conversation_id)
+    if not conv:
+        return {"success": False, "data": None, "count": 0, "error": "Not found"}
+    meta = dict(conv.get("metadata") or {})
+    for k in ("locked", "locked_reason", "locked_at"):
+        meta.pop(k, None)
+    meta["unlocked_by"] = user.get("email") or user.get("id") or "unknown"
+    meta["unlocked_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    await db.update_conversation(conversation_id, {"metadata": meta})
+    return {"success": True, "data": {"id": conversation_id}, "count": 1}

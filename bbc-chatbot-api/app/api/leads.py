@@ -221,7 +221,11 @@ async def check_existing_lead(
 
 
 @router.patch("/leads/{lead_id}/mark-crm-created")
-async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_current_user)):
+async def mark_lead_created_in_crm(
+    lead_id: str,
+    confirm_locked: bool = Query(False),
+    user: dict = Depends(get_current_user),
+):
     """PUSH the lead to the CRM — the button does what it says (#1372 Jia:
     the old endpoint only flipped the flag; the CRM never saw the lead).
 
@@ -243,6 +247,14 @@ async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_curren
             return {"success": True, "data": lead, "already": True}
         conv_id = lead.get("conversation_id")
         conv = await db.get_conversation_simple(conv_id) if conv_id else None
+        # PR-15: a conversation locked for abuse goes to the CRM only when the
+        # operator confirms it (the panel asks, then resends with confirm=1).
+        from app.security.behavior import is_locked
+        if conv and is_locked(conv.get("metadata")) and not confirm_locked:
+            raise HTTPException(
+                status_code=409,
+                detail="This conversation was locked for abuse. Confirm to push it anyway.",
+            )
         _tag = db.derive_conversation_tag(conv, lead=lead) if conv else None
         if _tag in ("abandoned", "no_engagement"):
             # BUSINESS RULE (owner, explicit): every captured contact is

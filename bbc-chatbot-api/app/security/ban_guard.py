@@ -26,10 +26,12 @@ read in auth.get_current_user (sync path).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Optional
 
 from app.flags import flag
+from app.security.behavior import WIDGET_BAIT_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,17 @@ def _is_poisoned(headers: dict) -> bool:
     return False
 
 
+_CHAT_OWNED = re.compile(r"^/api/chat/(typing|session|messages|agent-typing|stream|status)/")
+_ENUM = re.compile(r"^/api/chat/(status/([^/]+)|visitor/([^/]+)/active-conversation)$")
+_CONV_IN_PATH = re.compile(r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)")
+_OPS_STATUS = "/api/agents/ops-status"
+_CRM_ID = re.compile(r"^/api/leads/[^/]+/crm-id$")
+_STREAM_MAX = 5
+_OPEN_STREAMS: dict[str, int] = {}
+_LAST_CHAT_POST: dict[str, float] = {}
+_SEEN_FOREIGN_ORIGINS: set[str] = set()
+
+
 class BanGuardMiddleware:
     def __init__(self, app):
         self.app = app
@@ -130,8 +143,13 @@ class BanGuardMiddleware:
         if blocked:
             await self._deny(send)
             return
-        if not ctx.get("watch_404"):
-            await self.app(scope, receive, send)
+        stream_ip = ctx.get("stream_ip")
+        if not (ctx.get("watch_404") or ctx.get("watch_owned")):
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                if stream_ip:
+                    _OPEN_STREAMS[stream_ip] = max(0, _OPEN_STREAMS.get(stream_ip, 1) - 1)
             return
 
         status_box = {"status": 0}
@@ -141,20 +159,30 @@ class BanGuardMiddleware:
                 status_box["status"] = message.get("status", 0)
             await send(message)
 
-        await self.app(scope, receive, _send)
-        if status_box["status"] == 404:
-            try:
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            if stream_ip:
+                _OPEN_STREAMS[stream_ip] = max(0, _OPEN_STREAMS.get(stream_ip, 1) - 1)
+        try:
+            if status_box["status"] == 404 and ctx.get("watch_404"):
                 await self._scan_strike(ctx)
-            except Exception as e:  # noqa: silent — the scan count is best-effort, the reply already went
-                logger.debug(f"[ban-guard] scan strike failed: {type(e).__name__}")
+            if status_box["status"] in (403, 404) and ctx.get("watch_owned"):
+                await self._owned_strike(ctx)
+        except Exception as e:  # noqa: silent — the strike count is best-effort, the reply already went
+            logger.debug(f"[ban-guard] strike failed: {type(e).__name__}")
 
     async def _should_block(self, scope, ctx: dict) -> bool:
         if not flag("FAIL2BAN_ENABLED", True):
             return False
         path = scope.get("path", "")
+        method = (scope.get("method") or "GET").upper()
+        if method == "OPTIONS":
+            return False  # a preflight is never a trap
         if path in _EXCLUDED_EXACT or _seg_match_prefix(path, _EXCLUDED_PREFIXES):
             return False
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        query = (scope.get("query_string") or b"").decode("latin-1")
 
         from app.security.client_ip import ip_trusted
         from app.security.ban_store import get_store
@@ -169,14 +197,26 @@ class BanGuardMiddleware:
         if ip and ip in _ignored_ips():
             return False
         staff = _has_valid_jwt(headers)
+        vid = headers.get("x-visitor-id") or _query_param(query, "vid")
+        conv = (_CONV_IN_PATH.search(path) or [None, ""])[1] if _CONV_IN_PATH.search(path) else ""
+        ctx.update(ip=ip, store=store, vid=vid, conv=conv)
+
+        # The two that never wait (PR-15): the bundle's decoy key and the
+        # widget's bait route. Banned identities are refused even in shadow.
+        if not staff and ((ip and await store.is_banned(f"always:{ip}")) or (vid and await store.is_banned(f"vid:{vid}"))):
+            FAIL2BAN_HEALTH["blocked"] += 1
+            return True
 
         # Already banned? (staff with a valid session is never locked out by IP)
         if ip and not staff and await store.is_banned(ip):
             return self._enforce("existing", ip)
 
-        # The decoy key from the bundle, anywhere in the request → a week.
         if _carries_decoy_key(headers, scope.get("query_string", b"")):
-            await self._trip(store, ip, "decoy_key", _BAN_WEEK, alert=True, staff=staff)
+            await self._trip(store, ip, "decoy_key", _BAN_WEEK, alert=True, staff=staff, mode="always", ctx=ctx)
+            return False
+
+        if path == WIDGET_BAIT_PATH:
+            await self._trip(store, ip, "widget_bait", _BAN_WEEK, alert=True, staff=staff, mode="always", ctx=ctx)
             return False
 
         # A Basic header: the old door (PR-1 removed it).
@@ -193,8 +233,58 @@ class BanGuardMiddleware:
             await self._trip(store, ip, jail, secs, alert=alert, staff=staff)
             return False
 
+        # ── PR-15: behaviour traps (shadow until BEHAVIOR_TRAPS_ENFORCE) ──
+        from app.security import behavior as bh
+
+        raw_path = (scope.get("raw_path") or b"").decode("latin-1")
+        shape = bh.request_shape_trap(method, path, raw_path, query, headers.get("user-agent", ""))
+        if shape:
+            await self._trip(store, ip, shape[0], shape[1], alert=False, staff=staff, mode="behavior", ctx=ctx)
+            return False
+
+        if path == _OPS_STATUS:
+            await self._operator_trap("ops_status", headers, ip, revoke=True)
+        elif method == "PATCH" and _CRM_ID.match(path):
+            # Until Dan confirms whether the CRM calls it (0.7): counted + alert only.
+            await self._operator_trap("crm_id_patch", headers, ip, revoke=False)
+
+        if path.startswith("/api/chat") and not staff:
+            origin = headers.get("origin", "")
+            if method == "POST" and not origin:
+                await self._trip(store, ip, "chat_no_origin", _BAN_1H, alert=False, staff=False, mode="behavior", ctx=ctx)
+            elif origin and origin not in _allowed_origins():
+                bh.BEHAVIOR_HEALTH["foreign_origin"] += 1
+                if origin not in _SEEN_FOREIGN_ORIGINS and len(_SEEN_FOREIGN_ORIGINS) < 500:
+                    _SEEN_FOREIGN_ORIGINS.add(origin)
+                    await self._alert(f"chat call from a foreign Origin: {origin[:120]} ip={ip}")
+
+            if method == "POST" and path == "/api/chat" and ip:
+                now = time.monotonic()
+                last = _LAST_CHAT_POST.get(ip)
+                _LAST_CHAT_POST[ip] = now
+                if len(_LAST_CHAT_POST) > 50_000:
+                    _LAST_CHAT_POST.clear()
+                if last is not None and now - last < 0.3:
+                    await self._trip(store, ip, "chat_too_fast", _BAN_1H, alert=False, staff=False, mode="behavior", ctx=ctx)
+
+            m = _ENUM.match(path)
+            if m and ip:
+                ident = m.group(2) or m.group(3) or ""
+                n = await store.distinct(f"enum:{ip}", ident, 10 * 60)
+                if n > 3:
+                    await self._trip(store, ip, "enumeration", 6 * 3600, alert=False, staff=False, mode="behavior", ctx=ctx)
+
+            if path.startswith("/api/chat/stream/") and ip:
+                _OPEN_STREAMS[ip] = _OPEN_STREAMS.get(ip, 0) + 1
+                ctx["stream_ip"] = ip
+                if _OPEN_STREAMS[ip] > _STREAM_MAX:
+                    await self._trip(store, ip, "stream_flood", _BAN_1H, alert=False, staff=False, mode="behavior", ctx=ctx)
+
+            if _CHAT_OWNED.match(path) and ip:
+                ctx["watch_owned"] = True
+
         if not staff and ip and (path in _SCAN_PATH_EXACT or _seg_match_prefix(path, _SCAN_PATH_PREFIXES)):
-            ctx.update(watch_404=True, ip=ip, store=store)
+            ctx.update(watch_404=True)
         return False
 
     async def _scan_strike(self, ctx: dict) -> None:
@@ -203,18 +293,64 @@ class BanGuardMiddleware:
         if n >= _SCAN_THRESHOLD:
             await self._trip(store, ip, "scan", _BAN_1H, alert=False, staff=False)
 
-    async def _trip(self, store, ip: str, jail: str, seconds: int, *, alert: bool, staff: bool) -> None:
-        """A tripwire fired. Staff (valid JWT) is never banned — it alerts."""
+    async def _owned_strike(self, ctx: dict) -> None:
+        """Two 403/404s on routes a visitor owns, inside 10 minutes: someone
+        is trying conversation ids that are not theirs."""
+        store, ip = ctx["store"], ctx["ip"]
+        n = await store.strike(f"owned:{ip}", 10 * 60)
+        if n >= 2:
+            await self._trip(store, ip, "ownership_probe", _BAN_1H, alert=False, staff=False, mode="behavior", ctx=ctx)
+
+    async def _operator_trap(self, trap: str, headers: dict, ip: str, *, revoke: bool) -> None:
+        """A route the panel never calls, hit with a staff session."""
+        from app.security import behavior as bh
+
+        bh.BEHAVIOR_HEALTH["operator_traps"][trap] = bh.BEHAVIOR_HEALTH["operator_traps"].get(trap, 0) + 1
+        sub = _jwt_sub(headers)
+        enforce = revoke and bh.enforced("BEHAVIOR_TRAPS_ENFORCE")
+        bh.record(trap, ip=ip, enforced_now=enforce)
+        if enforce and sub:
+            from app.security.ban_store import get_store
+            store = get_store()
+            if store is not None:
+                await store.revoke_sessions(sub)
+        await self._alert(f"operator trap {trap} user={sub or '-'} ip={ip} "
+                          f"{'sessions revoked' if enforce and sub else 'counted'}")
+
+    async def _trip(self, store, ip: str, jail: str, seconds: int, *, alert: bool, staff: bool,
+                    mode: str = "fail2ban", ctx: Optional[dict] = None) -> None:
+        """A tripwire fired. Staff (valid JWT) is never banned — it alerts.
+
+        mode: "fail2ban" (FAIL2BAN_ENFORCE), "behavior" (PR-15,
+        BEHAVIOR_TRAPS_ENFORCE), "always" (the decoy key, the widget bait —
+        no shadow)."""
         FAIL2BAN_HEALTH["by_jail"][jail] = FAIL2BAN_HEALTH["by_jail"].get(jail, 0) + 1
         if staff:
             FAIL2BAN_HEALTH["staff_alerts"] += 1
             await self._alert(f"staff tripwire jail={jail} ip={ip}")
             return
-        if flag("FAIL2BAN_ENFORCE", False):
-            FAIL2BAN_HEALTH["banned"] += 1
-            await self._ban(store, ip, jail, seconds, alert=alert)
+        if mode == "always":
+            enforce = True
+        elif mode == "behavior":
+            from app.security import behavior as bh
+            enforce = bh.enforced("BEHAVIOR_TRAPS_ENFORCE")
+            c = ctx or {}
+            bh.record(jail, ip=ip, conversation_id=c.get("conv", ""), visitor_id=c.get("vid", ""),
+                      enforced_now=enforce)
         else:
+            enforce = bool(flag("FAIL2BAN_ENFORCE", False))
+        if not enforce:
             FAIL2BAN_HEALTH["would_ban"] += 1
+            return
+        FAIL2BAN_HEALTH["banned"] += 1
+        if mode == "always":
+            vid = (ctx or {}).get("vid", "")
+            if ip:
+                await self._ban(store, f"always:{ip}", jail, seconds, alert=alert)
+            if vid:
+                await store.ban(f"vid:{vid}", jail, 365 * 24 * 3600, permanent=True)
+            return
+        await self._ban(store, ip, jail, seconds, alert=alert)
 
     def _ip_from(self, scope, headers) -> str:
         class _R:
@@ -227,8 +363,9 @@ class BanGuardMiddleware:
         return client_ip(r, prefer_cf=False) or ""
 
     def _enforce(self, jail: str, ip: str) -> bool:
-        """An identity already banned came back."""
-        if flag("FAIL2BAN_ENFORCE", False):
+        """An identity already banned came back. Refused while either kind of
+        enforcement is on; turning both off is a full rollback."""
+        if flag("FAIL2BAN_ENFORCE", False) or flag("BEHAVIOR_TRAPS_ENFORCE", False):
             FAIL2BAN_HEALTH["blocked"] += 1
             return True
         return False
@@ -256,6 +393,34 @@ class BanGuardMiddleware:
         await send({"type": "http.response.start", "status": 403,
                     "headers": [(b"content-type", b"application/json")]})
         await send({"type": "http.response.body", "body": b'{"detail":"Forbidden"}'})
+
+
+def _query_param(query: str, name: str) -> str:
+    from urllib.parse import parse_qs
+    try:
+        return (parse_qs(query).get(name) or [""])[0]
+    except ValueError:  # noqa: silent — a malformed query string simply has no such parameter
+        return ""
+
+
+def _allowed_origins() -> set[str]:
+    from config.settings import settings
+    return {o.rstrip("/") for o in (settings.cors_origins or [])}
+
+
+def _jwt_sub(headers: dict) -> str:
+    auth = headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return ""
+    from config.settings import settings
+    if not settings.jwt_secret:
+        return ""
+    import jwt as _jwt
+    try:
+        payload = _jwt.decode(auth[7:].strip(), settings.jwt_secret, algorithms=["HS256"])
+    except _jwt.InvalidTokenError:  # noqa: silent — no valid session, no user to name
+        return ""
+    return "" if payload.get("scope") else str(payload.get("sub") or "")
 
 
 def _ignored_ips() -> set[str]:
@@ -383,6 +548,9 @@ async def note_login_failure(ip: str, email: str, *, form_trap: bool = False) ->
 def _reset_for_tests() -> None:
     global _table_missing
     _table_missing = False
+    _OPEN_STREAMS.clear()
+    _LAST_CHAT_POST.clear()
+    _SEEN_FOREIGN_ORIGINS.clear()
     FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, blocked=0, staff_alerts=0,
                            rows_written=0, row_errors=0, table_missing=False,
                            poisoned_skipped=0, by_jail={})
