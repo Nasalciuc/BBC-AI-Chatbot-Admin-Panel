@@ -273,8 +273,9 @@ def _has_valid_jwt(headers: dict) -> bool:
         return False
     import jwt as _jwt
     try:
-        _jwt.decode(auth[7:].strip(), settings.jwt_secret, algorithms=["HS256"])
-        return True
+        payload = _jwt.decode(auth[7:].strip(), settings.jwt_secret, algorithms=["HS256"])
+        # A limited token (PR-13: second factor still pending) is not staff.
+        return not payload.get("scope")
     except _jwt.InvalidTokenError:  # noqa: silent — an invalid token simply means "not staff" here
         return False
 

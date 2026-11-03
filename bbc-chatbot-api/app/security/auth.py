@@ -83,6 +83,14 @@ def get_current_user(request: Request) -> dict:
             )
 
         _sub = payload.get("sub", "unknown")
+        # PR-13: a limited token (second factor pending, or enrolment only)
+        # carries a scope and reaches the MFA routes alone — never these.
+        if payload.get("scope"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Second factor required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         # token_version: a role change or deactivation bumps it, logging the
         # user out within the 60s cache window (S2-4). Inert until a bump.
         from app.security.token_version import matches

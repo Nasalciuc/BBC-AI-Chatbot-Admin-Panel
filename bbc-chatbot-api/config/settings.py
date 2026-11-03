@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     ban_ignore_ips: str = ""
     # PR-12: HMAC secret for the widget's visitor token; Turnstile's secret.
     visitor_token_secret: str = ""
+    # PR-13: the key the TOTP secrets are encrypted with (any long random string).
+    mfa_encryption_key: str = ""
     turnstile_secret: str = ""
     # The PR-3 decoy staff account; a login attempt on it bans the IP.
     decoy_account_email: str = ""
