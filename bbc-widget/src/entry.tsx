@@ -2,6 +2,7 @@ import { render } from 'preact'
 import { Widget } from './Widget'
 import { captureUtm } from './utm'
 import brand from './config'
+import { setTurnstileSiteKey } from './turnstile'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
@@ -15,6 +16,8 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     || document.querySelector('script[src*="-widget"]') as HTMLScriptElement | null
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
+  // PR-12: invisible Turnstile only when the site opts in with its key.
+  setTurnstileSiteKey(script?.getAttribute('data-turnstile-sitekey'))
 
   // CRM/embedded mode: no floating bubble, panel open by default, fills the
   // iframe. Opt-in via script attr (data-mode="embedded" / data-embedded="1")

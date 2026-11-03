@@ -47,7 +47,7 @@ test('the typing frame is handled before the branch that renders messages', () =
 })
 
 test('the widget asks for v2 frames and the poll stands down while SSE is up', () => {
-  assert.match(chatWindow, /&v=2`\)/)
+  assert.match(chatWindow, /&v=2`/)
   assert.match(chatWindow, /if \(sseUpRef\.current\) return/)
   assert.match(chatWindow, /stopPolling\(\)/)
   assert.match(chatWindow, /sseRetryDelay\(retryAttempt\+\+\)/)

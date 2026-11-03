@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { shouldSendTyping, sseRetryDelay, AGENT_TYPING_EXPIRE_MS } from './realtime-policy'
-import { apiFetch, getVisitorId } from './api'
+import { apiFetch, ensureVisitorToken, getVisitorId, getVisitorToken, saveVisitorToken } from './api'
+import { getTurnstileToken } from './turnstile'
+import type { FormCheck } from './TunnelForm'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
 
@@ -29,6 +31,8 @@ interface Props {
   tunnel: 'sales' | 'support'
   visitor: { name?: string; email?: string; phone?: string; country_code?: string }
   metadata?: { booking_id?: string }
+  /** PR-12: the pre-chat form's trap, sent with the first /chat/start. */
+  formCheck?: FormCheck
   onClose: () => void
   apiUrl: string
   /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
@@ -41,7 +45,7 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
-export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedded = false }: Props) {
+export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false }: Props) {
   const savedConvId = getCachedConvId()
 
   const [messages, setMessages] = useState<Message[]>([])
@@ -103,6 +107,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   // personalized opening as the first bubble. No fake client message.
   const startConversation = async () => {
     try {
+      const turnstile_token = await getTurnstileToken()
       const res = await apiFetch(`${apiUrl}/api/chat/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,10 +121,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
           },
           metadata: metadata || {},
           visitor_id: getVisitorId(),
+          turnstile_token,
+          form_check: formCheck,
         }),
       })
       if (!res.ok) throw new Error('start failed')
       const data = await res.json()
+      saveVisitorToken(data.visitor_token)
       if (!data.conversation_id) return
       setConvId(data.conversation_id)
       apiFetch(`${apiUrl}/api/chat/session/${data.conversation_id}/open`, { method: 'POST' }).catch(() => {})
@@ -240,9 +248,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
         const after = lastMsgTime.current
           ? `?after=${encodeURIComponent(lastMsgTime.current)}`
           : ''
-        const res = await fetch(`${apiUrl}/api/chat/messages/${convId}${after}`, {
-          headers: { 'X-Visitor-Id': getVisitorId() || '' },
-        })
+        const res = await apiFetch(`${apiUrl}/api/chat/messages/${convId}${after}`)
         if (!res.ok) return
         const json = await res.json()
         if (json.success && json.data && json.data.length > 0) {
@@ -286,7 +292,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     // SSE stream — primary real-time channel. v=2: this widget understands
     // the `typing` event; the server sends it only to streams that ask.
     const startSSE = () => {
-      source = new EventSource(`${apiUrl}/api/chat/stream/${convId}?vid=${encodeURIComponent(getVisitorId() || '')}&v=2`)
+      // PR-12: EventSource cannot send headers, so the visitor token rides
+      // the URL (?vt=). It is short-lived and names only this visitor.
+      const vt = getVisitorToken()
+      source = new EventSource(
+        `${apiUrl}/api/chat/stream/${convId}?vid=${encodeURIComponent(getVisitorId() || '')}&v=2`
+        + (vt ? `&vt=${encodeURIComponent(vt)}` : ''),
+      )
 
       source.onopen = () => {
         errorCount = 0        // reset error counter on successful connect
@@ -363,7 +375,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
             retryTimer = null
             if (disposed) return
             errorCount = 0
-            startSSE()
+            ensureVisitorToken(apiUrl, getTurnstileToken).then(() => { if (!disposed) startSSE() })
           }, sseRetryDelay(retryAttempt++))
         }
         // else: browser retries EventSource connection automatically
@@ -371,7 +383,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     }
 
     catchUpPoll()  // instant load — don't wait for SSE onopen (1-2s delay)
-    startSSE()
+    // A token near expiry is refreshed first: the stream carries it once,
+    // in its URL. ensureVisitorToken never throws and is instant when fresh.
+    ensureVisitorToken(apiUrl, getTurnstileToken).then(() => { if (!disposed) startSSE() })
 
     return () => {
       notifySessionClose('minimized', true)
@@ -402,9 +416,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       if (sseUpRef.current) return
       if (document.visibilityState !== 'visible') return
       try {
-        const res = await fetch(`${apiUrl}/api/chat/agent-typing/${convId}`, {
-          headers: { 'X-Visitor-Id': getVisitorId() || '' },
-        })
+        const res = await apiFetch(`${apiUrl}/api/chat/agent-typing/${convId}`)
         if (!res.ok || cancelled) return
         const json = await res.json()
         if (cancelled) return
@@ -520,6 +532,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       let activeConvId = convId
       if (!activeConvId) {
         try {
+          const turnstile_token = await getTurnstileToken()
           const initRes = await apiFetch(`${apiUrl}/api/chat/init`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -533,10 +546,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
               },
               metadata: metadata || {},
               visitor_id: getVisitorId(),
+              turnstile_token,
+              form_check: formCheck,
             }),
           })
           if (initRes.ok) {
             const initData = await initRes.json()
+            saveVisitorToken(initData.visitor_token)
             const newConvId = initData.conversation_id as string
             activeConvId = newConvId
             setConvId(newConvId)
