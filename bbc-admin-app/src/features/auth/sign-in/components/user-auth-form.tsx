@@ -6,7 +6,8 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { loginUser } from '@/lib/api'
+import { loginUser, type LoginUser } from '@/lib/api'
+import { MfaStep } from './mfa-step'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -51,33 +52,55 @@ export function UserAuthForm({
     },
   })
 
+  // PR-13: the privileged roles finish signing in with a second factor.
+  const [mfa, setMfa] = useState<{ mode: 'required' | 'enroll'; token: string } | null>(null)
+
+  function finishLogin(token: string, user: LoginUser) {
+    auth.setUser({
+      accountNo: user.id,
+      email: user.email,
+      name: user.name || '',
+      role: user.role || 'sales',
+      tunnelScope: user.tunnel_scope || '',
+      exp: Date.now() + 24 * 60 * 60 * 1000,
+      avatar_url: user.avatar_url ?? null,
+      phone: user.phone ?? '',
+    })
+    auth.setAccessToken(token)
+    toast.success(`Welcome back, ${user.name || user.email}!`)
+    navigate({ to: redirectTo || '/', replace: true })
+  }
+
   async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
     try {
-      const { token, user } = await loginUser(
+      const res = await loginUser(
         data.email,
         data.password,
         honeypotRef.current?.value || undefined
       )
-      auth.setUser({
-        accountNo: user.id,
-        email: user.email,
-        name: user.name || '',
-        role: user.role || 'sales',
-        tunnelScope: user.tunnel_scope || '',
-        exp: Date.now() + 24 * 60 * 60 * 1000,
-        avatar_url: user.avatar_url ?? null,
-        phone: user.phone ?? '',
-      })
-      auth.setAccessToken(token)
-      toast.success(`Welcome back, ${user.name || user.email}!`)
-      navigate({ to: redirectTo || '/', replace: true })
+      if (res.mfa && res.mfa_token) {
+        setMfa({ mode: res.mfa, token: res.mfa_token })
+        return
+      }
+      finishLogin(res.token, res.user)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Login failed'
       toast.error(message)
     } finally {
       setIsLoading(false)
     }
+  }
+
+  if (mfa) {
+    return (
+      <MfaStep
+        mode={mfa.mode}
+        mfaToken={mfa.token}
+        onDone={finishLogin}
+        onCancel={() => { setMfa(null); form.reset({ email: form.getValues('email'), password: '' }) }}
+      />
+    )
   }
 
   return (

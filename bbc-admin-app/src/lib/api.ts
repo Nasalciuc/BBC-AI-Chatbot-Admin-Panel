@@ -80,7 +80,7 @@ export async function loginUser(
   // Honeypot: a hidden field no human fills. Only sent when it has a value, so
   // the backend can count a bot that filled the login form.
   companyFax?: string
-) {
+): Promise<LoginResult> {
   const body: Record<string, string> = { email, password }
   if (companyFax) body.company_fax = companyFax
   const res = await fetch(`${BASE}/api/auth/login`, {
@@ -94,6 +94,52 @@ export async function loginUser(
     throw new Error(body.detail || 'Login failed')
   }
   return res.json()
+}
+
+// ── Second factor (PR-13) ─────────────────────────────────────
+// After the password, owner/admin/dev get no session yet: `mfa` says what is
+// missing and `mfa_token` is a short-lived token that can do only that step.
+export type LoginUser = {
+  id: string; email: string; name?: string; role?: string
+  tunnel_scope?: string; phone?: string; avatar_url?: string | null
+}
+export type LoginResult = {
+  token: string
+  user: LoginUser
+  mfa?: 'required' | 'enroll' | null
+  mfa_token?: string | null
+}
+
+async function postAuth<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Something went wrong' }))
+    throw new ApiError(res.status, typeof err.detail === 'string' ? err.detail : 'Something went wrong')
+  }
+  return res.json()
+}
+
+export function verifyMfa(mfaToken: string, code: string): Promise<LoginResult> {
+  return postAuth<LoginResult>('/api/auth/mfa', { mfa_token: mfaToken, code })
+}
+
+export async function startMfaEnroll(mfaToken: string): Promise<{ otpauth_uri: string; qr_svg: string }> {
+  return (await postAuth<{ data: { otpauth_uri: string; qr_svg: string } }>(
+    '/api/auth/mfa/enroll/start', { mfa_token: mfaToken },
+  )).data
+}
+
+export async function confirmMfaEnroll(
+  mfaToken: string, code: string,
+): Promise<{ recovery_codes: string[]; token?: string; user?: LoginUser }> {
+  return (await postAuth<{ data: { recovery_codes: string[]; token?: string; user?: LoginUser } }>(
+    '/api/auth/mfa/enroll/confirm', { mfa_token: mfaToken, code },
+  )).data
 }
 
 /** The panel's live channel for one conversation. Auth comes from the same
