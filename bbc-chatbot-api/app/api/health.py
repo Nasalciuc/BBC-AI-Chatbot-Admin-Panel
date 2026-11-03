@@ -104,6 +104,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.gates import GATE_HEALTH
     from app.pipeline.slots import SLOTS_HEALTH
     from app.security.ban_guard import FAIL2BAN_HEALTH
+    from app.security.visitor_token import VISITOR_TOKEN_HEALTH
+    from app.security.turnstile import TURNSTILE_HEALTH
+    from app.security.form_trap import FORM_TRAP_HEALTH
 
     if not full:
         return {
@@ -116,6 +119,9 @@ async def health_detail(full: bool = False) -> dict:
             "output_guard": dict(OUTPUT_GUARD_HEALTH),
             "slots": dict(SLOTS_HEALTH),
             "fail2ban": dict(FAIL2BAN_HEALTH),
+            "visitor_token": dict(VISITOR_TOKEN_HEALTH),
+            "turnstile": dict(TURNSTILE_HEALTH),
+            "form_trap": dict(FORM_TRAP_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
@@ -185,6 +191,9 @@ async def health_detail(full: bool = False) -> dict:
         "output_guard": dict(OUTPUT_GUARD_HEALTH),
         "slots": dict(SLOTS_HEALTH),
         "fail2ban": dict(FAIL2BAN_HEALTH),
+        "visitor_token": dict(VISITOR_TOKEN_HEALTH),
+        "turnstile": dict(TURNSTILE_HEALTH),
+        "form_trap": dict(FORM_TRAP_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),

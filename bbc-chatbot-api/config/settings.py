@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     redis_url: str = ""
     # Exact IPs fail2ban never bans (office, CRM). Comma-separated.
     ban_ignore_ips: str = ""
+    # PR-12: HMAC secret for the widget's visitor token; Turnstile's secret.
+    visitor_token_secret: str = ""
+    turnstile_secret: str = ""
     # The PR-3 decoy staff account; a login attempt on it bans the IP.
     decoy_account_email: str = ""
 

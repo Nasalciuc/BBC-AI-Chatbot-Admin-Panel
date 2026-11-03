@@ -171,6 +171,10 @@ async def run_aaa_backfill(days: int = 30) -> dict:
                 continue
             if not conv.get("last_user_message_at"):
                 conv["_no_engagement"] = True
+            from app.security.form_trap import holds_crm
+            if holds_crm(conv.get("metadata")):
+                skipped += 1
+                continue
             result = await submit_abandoned_to_crm(conv, lead)
             if result.success and result.request_id:
                 _marked = await db.mark_lead_created_in_crm(
@@ -322,6 +326,12 @@ async def run_abandoned_crm() -> dict:
                 # orphan the row silently).
                 await _persist_refusal(lead["id"], "gate:duplicate_contact")
                 results.append({"id": cid, "status": "dedup_twin"})
+                continue
+
+            from app.security.form_trap import holds_crm
+            if holds_crm(conv.get("metadata")):
+                # PR-12: a form_trap conversation waits for a human push.
+                results.append({"id": cid, "status": "hold_form_trap"})
                 continue
 
             crm_result = await submit_abandoned_to_crm(conv, lead)
@@ -547,6 +557,9 @@ async def run_crm_orphan_backstop() -> dict:
                 email=conv.get("visitor_email") or "",
                 phone=conv.get("visitor_phone") or "",
             )
+            from app.security.form_trap import holds_crm
+            if holds_crm(conv.get("metadata")):
+                continue  # PR-12: waits for a human push from the panel
             result = await push_lead_to_crm(
                 lead,
                 visitor,
