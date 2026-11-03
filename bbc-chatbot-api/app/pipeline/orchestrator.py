@@ -17,6 +17,7 @@ from app.pipeline.generator import generate_response, GeneratedResponse
 from app.pipeline.validator import validate_response
 from app.ai.templates import get_template
 from app.realtime.manager import manager
+from app.flags import flag
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +395,40 @@ async def reprocess_last_user_message(conversation_id: str) -> None:
             f"[{conversation_id}] reprocess_last_user_message failed: {e}",
             exc_info=True,
         )
+
+
+def _bounded_int(val, lo: int, hi: int) -> Optional[int]:
+    """The tool's number if it is a whole number in [lo, hi], else None."""
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, str) and val.strip().isdigit():
+        val = int(val.strip())
+    elif isinstance(val, float) and val.is_integer():
+        val = int(val)
+    return val if isinstance(val, int) and lo <= val <= hi else None
+
+
+def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
+    """PR-0: children/infants from the tool, mapped onto the lead's own keys.
+
+    Returns (updates, inconsistent). Inconsistent = fewer travelers than
+    minors: the whole triple is untrustworthy and nothing of it is kept. A
+    count the regex already set this turn wins over the tool, the same rule
+    STEP 6.1 applies to passengers and cabin_class.
+    """
+    children = _bounded_int(te.get("children"), 0, 8)
+    infants = _bounded_int(te.get("infants"), 0, 8)
+    if children is None and infants is None:
+        return {}, False
+    passengers = _bounded_int(te.get("passengers"), 1, 9)
+    if passengers is not None and passengers < (children or 0) + (infants or 0):
+        return {}, True
+    updates: dict = {}
+    if children is not None and not entities.get("_children_count"):
+        updates["_children_count"] = children
+    if infants is not None and not entities.get("_infant_count"):
+        updates["_infant_count"] = infants
+    return updates, False
 
 
 async def _pipeline(
@@ -1401,6 +1436,12 @@ async def _pipeline(
             _tool_blocked.add("return_date")
         if _multi_city_declared:
             _tool_blocked.add("trip_type")
+        _pax_updates: dict = {}
+        if flag("PAX_TOOL_FIELDS", False):
+            _pax_updates, _pax_inconsistent = _tool_pax_breakdown(_te, entities)
+            if _pax_inconsistent:
+                _tool_blocked.add("passengers")
+                logger.info(f"[{cid}] [pax-merge] inconsistent tool counts — triple ignored")
         for key in [
             "origin",
             "destination",
@@ -1451,6 +1492,9 @@ async def _pipeline(
                 )
                 continue
             entities[key] = val
+            _merged = True
+        if _pax_updates:
+            entities.update(_pax_updates)
             _merged = True
 
         if _merged:

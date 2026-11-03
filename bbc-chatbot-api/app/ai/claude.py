@@ -8,6 +8,7 @@ import anthropic
 
 from config.settings import settings
 from app.ai.prompts import CLASSIFIER_PROMPT
+from app.flags import flag
 from app.models.extraction import salvage_tool_entities, validate_tool_entities
 
 logger = logging.getLogger(__name__)
@@ -351,6 +352,61 @@ TRAVEL_TOOL = {
 }
 
 
+# PR-0: the tool had nowhere to put the travelers. The model would write
+# "2 travelers" in its reply and the lead kept passengers NULL — the merge in
+# orchestrator STEP 6.1 already accepted passengers and cabin_class, but the
+# schema never offered them. Behind PAX_TOOL_FIELDS so the old schema stays
+# byte-for-byte what it was until the owner turns it on.
+_PAX_RULES = (
+    "\n7. PASSENGERS: the total number of travelers, children and infants included. "
+    "A senior is an adult. 'only me', 'just me', 'solo', 'myself' = 1. "
+    "'my wife and I', 'me and my husband' = 2. 'N tickets' = N. "
+    "Omit it when the customer has not said a number or is undecided ('2 maybe 3') — never guess. "
+    "Also call the tool when the customer gives only the number of travelers or the cabin.\n"
+    "8. CABIN: only when the customer names it."
+)
+
+_PAX_PROPERTIES = {
+    "passengers": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9,
+        "description": "Total travelers (adults + children + infants), only when the customer said it.",
+    },
+    "children": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 8,
+        "description": "Children aged 2-11, already counted in passengers.",
+    },
+    "infants": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 8,
+        "description": "Infants under 2, already counted in passengers.",
+    },
+    "cabin_class": {
+        "type": "string",
+        "enum": ["business", "first", "premium_economy"],
+        "description": "Cabin, only when the customer names it.",
+    },
+}
+
+
+def travel_tool() -> dict:
+    """The tool schema for this call: today's, or today's plus the travelers."""
+    if not flag("PAX_TOOL_FIELDS", False):
+        return TRAVEL_TOOL
+    return {
+        **TRAVEL_TOOL,
+        "description": TRAVEL_TOOL["description"] + _PAX_RULES,
+        "input_schema": {
+            **TRAVEL_TOOL["input_schema"],
+            "properties": {**TRAVEL_TOOL["input_schema"]["properties"], **_PAX_PROPERTIES},
+        },
+    }
+
+
 def call_haiku_with_tools(
     system_prompt, user_message: str
 ) -> tuple[Optional[str], float, dict]:
@@ -428,7 +484,7 @@ def _validate_with_reprompt(
             **_sampling_params(model, temperature=temperature),
             system=_build_system(system_prompt),
             messages=_build_messages(retry_message),
-            tools=[TRAVEL_TOOL],
+            tools=[travel_tool()],
             timeout=settings.claude_timeout,
         )
         extra_cost = _estimate_cost(
@@ -473,7 +529,7 @@ def _call_model_with_tools(
             **_sampling_params(model, temperature=temperature),
             system=_build_system(system_prompt),
             messages=_build_messages(user_message),
-            tools=[TRAVEL_TOOL],
+            tools=[travel_tool()],
             timeout=settings.claude_timeout,
         )
 
@@ -504,7 +560,7 @@ def _call_model_with_tools(
                 **_sampling_params(model, temperature=temperature),
                 system=_build_system(system_prompt),
                 messages=_build_messages(user_message),
-                tools=[TRAVEL_TOOL],
+                tools=[travel_tool()],
                 timeout=settings.claude_timeout,
             )
             elapsed = round(time.time() - start, 3)
@@ -599,7 +655,7 @@ def _stream_model_with_tools(
             **_sampling_params(model, temperature=temperature),
             system=_build_system(system_prompt),
             messages=_build_messages(user_message),
-            tools=[TRAVEL_TOOL],
+            tools=[travel_tool()],
             timeout=settings.claude_timeout,
         ) as stream:
             full_text = ""

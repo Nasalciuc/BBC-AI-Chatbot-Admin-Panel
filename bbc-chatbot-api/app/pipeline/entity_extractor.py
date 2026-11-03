@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+from app.flags import flag
+
 logger = logging.getLogger(__name__)
 
 
@@ -196,6 +198,32 @@ PAX_WORD_RE = re.compile(
     r'\b(one|two|three|four|five|six|seven|eight|nine)\s*'
     r'(?:travell?ers?|passengers?|persons?|people|pax)?\b', re.I
 )
+# PR-0 (PAX_REGEX_V2): the phrasings the 3 Nov reading found lost. "2 seniors"
+# and "3 tickets" carry the count with a unit the old list did not know; "my
+# husband and I" carries it with no number at all. Old patterns stay as they
+# are; the v2 ones are chosen per call while the flag is off by default.
+_PAX_UNITS_V2 = r'passengers?|people|persons?|travell?ers?|pax|of us|adults?|seniors?|elderly|tickets?|seats?'
+PAX_RE_V2 = re.compile(r'(\d+)\s*(?:' + _PAX_UNITS_V2 + r')\b', re.I)
+PAX_WORD_RE_V2 = re.compile(
+    r'\b(one|two|three|four|five|six|seven|eight|nine)\s*'
+    r'(?:travell?ers?|passengers?|persons?|people|pax|seniors?|elderly|tickets?|seats?)?\b', re.I
+)
+_PAX_WORD_UNIT_V2 = re.compile(r'travell?er|passenger|person|people|pax|senior|elderly|ticket|seat', re.I)
+# "my wife and I", "our son and me": two people, no digit anywhere. Not vetoed
+# by SOLO_VETO_RE — children are added by CHILD_RE below, as for "me and my".
+MY_X_AND_I_RE = re.compile(
+    r"\b(?:my|our)\s+(?:wife|husband|partner|spouse|mom|mother|dad|father|son|daughter|"
+    r"friend|colleague|boss|sister|brother|fianc[eé]e?|girlfriend|boyfriend)\s+and\s+(?:I|me)\b",
+    re.I,
+)
+# "a 9-year-old", "my 15 year old": the age, not the count, names a minor.
+AGE_RE = re.compile(r'\b(\d{1,2})[\s-]?(?:years?|yrs?)[\s-]?old\b', re.I)
+# "we are a family of four" — FAMILY_RE only knew digits.
+FAMILY_WORD_RE = re.compile(
+    r'\b(?:family|group|party)\s+of\s+(one|two|three|four|five|six|seven|eight|nine)\b', re.I
+)
+# A whole answer that is just "myself" / "just me" — never "I'll book it myself".
+SOLO_SHORT_RE = re.compile(r'\s*(?:just\s+|only\s+)?(?:myself|me)\s*[.!]*\s*', re.I)
 # Leading digit followed by punctuation (catches "2. Both over 65", "3, all adults")
 # Hyphen excluded when followed by digit (avoids "2-3 options" false positive).
 PAX_LEADING_RE = re.compile(r'^\s*(\d{1,2})\s*(?:[.,;:!)\]]|\-(?!\d))', re.I)
@@ -1326,8 +1354,13 @@ def extract_entities(
                     entities.destination_code = dest_iata
 
     # 6. Passengers
-    m = PAX_RE.search(text)
+    _pax_v2 = flag("PAX_REGEX_V2", False)
+    # True when the count names adults only ("2 adults", "my wife and I"), so a
+    # child named by age is added to it rather than already inside it.
+    _pax_adults_only = False
+    m = (PAX_RE_V2 if _pax_v2 else PAX_RE).search(text)
     if m:
+        _pax_adults_only = bool(re.search(r'adults?', m.group(0), re.I))
         n = int(m.group(1))
         if 1 <= n <= 9:
             entities.passengers = n
@@ -1337,15 +1370,21 @@ def extract_entities(
         entities.passengers = 1
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
+        _pax_adults_only = bool(re.search(r'\bme and my\b', text, re.I))
+    elif _pax_v2 and MY_X_AND_I_RE.search(text):
+        entities.passengers = 2
+        _pax_adults_only = True
 
     # Word numbers: "one" as a short answer, "two travelers" anywhere.
     # Bare word-numbers only count in short answers, and never "one way".
     if not entities.passengers:
-        wm = PAX_WORD_RE.search(text)
+        wm = (PAX_WORD_RE_V2 if _pax_v2 else PAX_WORD_RE).search(text)
         if wm:
-            _has_unit = bool(re.search(
-                r'travell?er|passenger|person|people|pax', wm.group(0), re.I
-            ))
+            _has_unit = bool(
+                _PAX_WORD_UNIT_V2.search(wm.group(0)) if _pax_v2 else re.search(
+                    r'travell?er|passenger|person|people|pax', wm.group(0), re.I
+                )
+            )
             _short_answer = len(text.split()) <= 3
             _trip_phrase = re.search(r'\bone[\s-]?way\b', text, re.I)
             if _has_unit or (_short_answer and not _trip_phrase):
@@ -1356,6 +1395,12 @@ def extract_entities(
     infant_m = INFANT_RE.search(text)
     children_count = int(child_m.group(1)) if child_m else 0
     infant_count = int(infant_m.group(1)) if infant_m else 0
+    if _pax_v2 and not child_m and not infant_m and (not entities.passengers or _pax_adults_only):
+        # "2 adults + a 9-year-old": the child is named by an age, not a count.
+        # 2–11 is a child fare, under 2 an infant; 12+ is already an adult.
+        _ages = [int(a) for a in AGE_RE.findall(text)]
+        children_count = sum(1 for a in _ages if 2 <= a <= 11)
+        infant_count = sum(1 for a in _ages if a < 2)
 
     if children_count or infant_count:
         adult_count = entities.passengers or 0
@@ -1370,6 +1415,12 @@ def extract_entities(
         fm = FAMILY_RE.search(text)
         if fm:
             entities.passengers = min(9, max(1, int(fm.group(1))))
+    if not entities.passengers and _pax_v2:
+        fwm = FAMILY_WORD_RE.search(text)
+        if fwm:
+            entities.passengers = WORD_NUMBERS[fwm.group(1).lower()]
+    if not entities.passengers and _pax_v2 and SOLO_SHORT_RE.fullmatch(text):
+        entities.passengers = 1
     if not entities.passengers:
         gm = GROUP_RE.search(text)
         if gm:
