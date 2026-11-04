@@ -322,6 +322,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
             return
           }
 
+          // The stream also carries events that are not messages: the visitor's
+          // own typing echoed back ({event:'typing'}), presence, and the like.
+          // They have no id and no text; taken as messages they rendered as
+          // blank bubbles and, since the redesign, crashed the render (the
+          // send button never lit up). Only stored message rows go on.
+          if (parsed.event || typeof parsed.id !== 'string' || typeof parsed.content !== 'string') return
+
           const msg = parsed as Message
           // The server now fans out the visitor's own message too (so the
           // operator's panel sees it). The widget already rendered it locally
@@ -624,7 +631,10 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   }
 
   // ── Presentation ─────────────────────────────────────────────────────────
-  const visible = messages.filter(m => m.role !== 'system' || m.content)
+  // Only rows with an id and some text are drawn (a defence in depth: nothing
+  // malformed from the server may ever break the render).
+  const visible = messages.filter(m =>
+    m && typeof m.id === 'string' && typeof m.content === 'string' && m.content.trim() !== '')
   const speaker = (m: Message) =>
     m.role === 'user' ? 'out' : m.role === 'agent' ? `agent:${(m.agent_name || '').trim()}` : m.role
   const timeOf = (iso: string) => {

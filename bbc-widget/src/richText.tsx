@@ -22,6 +22,7 @@ function trimTrailing(token: string): string {
 }
 
 export function richText(text: string): (string | JSX.Element)[] {
+  if (typeof text !== 'string' || !text) return []
   const out: (string | JSX.Element)[] = []
   let cursor = 0
   TOKEN_RE.lastIndex = 0
