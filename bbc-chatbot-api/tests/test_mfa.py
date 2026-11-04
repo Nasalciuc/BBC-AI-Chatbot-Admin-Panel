@@ -233,3 +233,20 @@ async def test_weekly_security_report_counts_without_pii(monkeypatch):
     assert r.status_code == 200
     assert r.json()["data"]["bans_by_jail"] == {"honeypot": 2, "scan": 1}
     assert "honeypot=2" in sent["body"] and "@" not in sent["body"]
+
+
+
+@pytest.mark.asyncio
+async def test_a_changed_key_still_lets_a_recovery_code_in(monkeypatch):
+    """Review fix: the TOTP secret no longer decrypts (key rotated), but the
+    bcrypt recovery codes do not depend on the key."""
+    _, u = _enrolled_user()
+    monkeypatch.setattr(settings, "mfa_encryption_key", "a-completely-different-key-0987654321")
+    code = "abcde-fghjk"
+    row = {"id": "r1", "code_hash": mfa.hash_recovery(code)}
+    body = (await _login(u)).json()
+    with patch("app.api.auth_routes.db.get_user_by_id", new=AsyncMock(return_value=u)), \
+         patch("app.security.mfa_store.unused_recovery_codes", new=AsyncMock(return_value=[row])), \
+         patch("app.security.mfa_store.use_recovery_code", new=AsyncMock(return_value=True)):
+        r = await _post("/api/auth/mfa", {"mfa_token": body["mfa_token"], "code": code})
+    assert r.status_code == 200 and r.json()["token"]

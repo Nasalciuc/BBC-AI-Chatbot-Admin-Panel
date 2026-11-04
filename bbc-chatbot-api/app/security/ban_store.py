@@ -94,13 +94,16 @@ class BanStore:
 
     async def revoke_sessions(self, user_id: str) -> None:
         ts = int(time.time())
+        # Always in memory too (one process, ADR-5): the read path is sync and
+        # goes through response_cache's client, which may be down even when
+        # this async one works — a revocation must never be silently missed
+        # (review fix).
+        _MEM_REVOKED[user_id] = ts
         if self._redis is not None:
             try:
                 await self._redis.set(f"revoked_before:{user_id}", ts)
             except Exception as e:
-                logger.debug(f"[ban-store] revoke redis failed: {type(e).__name__}")
-            return
-        _MEM_REVOKED[user_id] = ts
+                logger.warning(f"[ban-store] revoke redis failed (memory still holds it): {type(e).__name__}")
 
 
 # Session revocation read path is SYNC (auth.get_current_user runs under a
@@ -109,15 +112,18 @@ _MEM_REVOKED: dict[str, int] = {}
 
 
 def revoked_before_sync(user_id: str) -> Optional[int]:
+    """The latest revocation mark for the user, from Redis and from memory."""
+    marks = [v for v in (_MEM_REVOKED.get(user_id),) if v]
     try:
         from app.services.response_cache import _get_redis
         r = _get_redis()
         if r is not None:
             v = r.get(f"revoked_before:{user_id}")
-            return int(v) if v else None
+            if v:
+                marks.append(int(v))
     except Exception as e:
-        logger.debug(f"[ban-store] revoked_before_sync failed: {type(e).__name__}")
-    return _MEM_REVOKED.get(user_id)
+        logger.debug(f"[ban-store] revoked_before_sync redis read failed: {type(e).__name__}")
+    return max(marks) if marks else None
 
 
 def get_store() -> Optional[BanStore]:
