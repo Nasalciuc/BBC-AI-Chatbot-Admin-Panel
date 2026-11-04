@@ -31,6 +31,7 @@ async def run_ip_selftest() -> dict:
     secret = (settings.cron_secret or "").strip()
     CLIENT_IP_HEALTH["last_selftest"] = _time.time()
     if not base or not secret:
+        CLIENT_IP_HEALTH["ip_verified"] = None  # never run: unverified, not safe
         return {"skipped": "PUBLIC_API_URL or CRON_SECRET not set"}
 
     try:
@@ -45,13 +46,18 @@ async def run_ip_selftest() -> dict:
                     "X-Real-IP": _SPOOF,
                 },
             )
-        seen = (resp.json() or {}).get("client_ip", "")
+        body = resp.json() or {}
+        # The configured source alone, never the fallback (see source_ip):
+        # otherwise a detected edge reads as fixed on the next run.
+        seen = body.get("source_ip") or body.get("client_ip", "")
     except Exception as e:
+        CLIENT_IP_HEALTH["ip_verified"] = False  # the test failed: nothing proven
         logger.warning(f"[ip-selftest] could not reach ip-echo: {type(e).__name__}: {e}")
         return {"error": type(e).__name__}
 
     spoofable = seen == _SPOOF
     CLIENT_IP_HEALTH["ip_trusted"] = not spoofable
+    CLIENT_IP_HEALTH["ip_verified"] = not spoofable
     if spoofable and not _alerted:
         _alerted = True
         from app.services.email import send_ops_alert_email
