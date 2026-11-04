@@ -26,7 +26,10 @@ and is counted: if it were trusted blindly and the edge stopped sending it,
 every visitor would share the proxy's address and one rate-limit bucket.
 
 `IP_TRUSTED` is cleared by the hourly self-test (app/services/ip_selftest.py)
-when a spoofed value comes back. While it is False nothing may ban by IP.
+when a spoofed value comes back. While it is False nothing may ban by IP, and
+the legacy order reads the rightmost X-Forwarded-For element instead of the
+forgeable leftmost one. `ip_verified` is True only after a test has passed;
+a skipped or failed test leaves it unset (None or False), never True.
 """
 
 from __future__ import annotations
@@ -42,6 +45,10 @@ logger = logging.getLogger(__name__)
 CLIENT_IP_HEALTH: dict[str, Any] = {
     "header_missing": 0,
     "ip_trusted": True,
+    # None until a self-test has actually run and passed: "not proven
+    # forgeable" (ip_trusted) is not "proven safe" (ip_verified).
+    "ip_verified": None,
+    "spoofable_fallback": 0,
     "last_selftest": None,
 }
 _alerted_missing = False
@@ -101,6 +108,30 @@ def client_ip(request: Optional[Any], *, prefer_cf: bool = True) -> str:
     if request is None:
         return ""
     mode = str(flag("CLIENT_IP_HEADER", "legacy")).strip().lower()
+    if mode in ("", "legacy") and not ip_trusted():
+        # The self-test saw a forged leftmost X-Forwarded-For come back:
+        # the edge appends instead of replacing. Its own entry is the
+        # rightmost one, which a client cannot write past, so the rate
+        # limiter and the login backoff key on that until the edge is fixed
+        # or a mode is configured. (Safe only when the edge appends that
+        # entry and cannot be bypassed: step 0.8 of the plan records it.)
+        right = _from_right(request, 1)
+        if right:
+            CLIENT_IP_HEALTH["spoofable_fallback"] += 1
+            return right
+    return source_ip(request, prefer_cf=prefer_cf)
+
+
+def source_ip(request: Optional[Any], *, prefer_cf: bool = True) -> str:
+    """What the configured source alone reads, WITHOUT the spoofable fallback.
+
+    The self-test judges this, not client_ip(): judging the fallback would
+    see the edge's own (non-forged) entry, call the source safe, switch the
+    fallback off and flip back on the next run, alternating for as long as
+    the edge is unchanged."""
+    if request is None:
+        return ""
+    mode = str(flag("CLIENT_IP_HEADER", "legacy")).strip().lower()
     if mode in ("", "legacy"):
         return _legacy(request, prefer_cf)
     if mode.startswith("xff-hops:"):
@@ -119,10 +150,17 @@ def client_ip(request: Optional[Any], *, prefer_cf: bool = True) -> str:
 
 
 def ip_trusted() -> bool:
+    """False once the self-test has seen a forged IP come back."""
     return bool(CLIENT_IP_HEALTH["ip_trusted"])
+
+
+def ip_verified() -> bool:
+    """True only after a self-test ran and the forged IP did NOT come back."""
+    return CLIENT_IP_HEALTH["ip_verified"] is True
 
 
 def _reset_for_tests() -> None:
     global _alerted_missing
     _alerted_missing = False
-    CLIENT_IP_HEALTH.update(header_missing=0, ip_trusted=True, last_selftest=None)
+    CLIENT_IP_HEALTH.update(header_missing=0, ip_trusted=True, ip_verified=None,
+                            spoofable_fallback=0, last_selftest=None)
