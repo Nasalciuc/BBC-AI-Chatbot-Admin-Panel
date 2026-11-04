@@ -74,7 +74,6 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   const [blocking, setBlocking] = useState(false)
   const [blockResult, setBlockResult] = useState<string | null>(null)
   const [input, setInput]             = useState('')
-  const [leadDetails, setLeadDetails] = useState<LeadDetails | null>(null)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
   // Below xl the lead panel is an overlay toggled from the header — the
@@ -214,7 +213,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             break
           case 'lead_details': {
             const { event: _ev, ...details } = e
-            setLeadDetails(details as LeadDetails)
+            // A push is newer than any first-load fetch still in flight:
+            // cancel that fetch first so its older answer cannot land on top.
+            const key = ['conversation-details', conversationId]
+            void queryClient
+              .cancelQueries({ queryKey: key })
+              .finally(() => queryClient.setQueryData(key, details as LeadDetails))
             break
           }
           case 'stream_end': {
@@ -235,14 +239,13 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   }, [conversationId, activeTab, dormant, usingMock, queryClient])
 
   // Operator card (PR-7): first load pulls the lead's slots; the op:{cid} SSE
-  // channel pushes updates as the client gives the operator more.
-  useEffect(() => {
-    setLeadDetails(null)
-    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock) return
-    let alive = true
-    getConversationDetails(conversationId).then((d) => { if (alive) setLeadDetails(d) }).catch(() => {})
-    return () => { alive = false }
-  }, [conversationId, activeTab, dormant, usingMock])
+  // channel pushes updates into the same cache entry (see 'lead_details').
+  const { data: leadDetails = null } = useQuery<LeadDetails | null>({
+    queryKey: ['conversation-details', conversationId],
+    queryFn: () => getConversationDetails(conversationId),
+    enabled: !!conversationId && activeTab === 'my_active' && !dormant && !usingMock,
+    staleTime: Infinity, // the stream keeps it fresh; no refetch on focus
+  })
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {

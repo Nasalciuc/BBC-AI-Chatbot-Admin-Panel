@@ -4,6 +4,7 @@ import os
 import sys
 
 import pytest
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
@@ -33,11 +34,21 @@ def test_order_after_route_is_departure():
 
 
 def test_trip_type_default_does_not_satisfy():
-    # round_trip is the NOT NULL default; without a client source it's still missing
+    # round_trip is the NOT NULL default; without a client source it's still
+    # missing. trip_notes={} is the column's own default (040 applied).
     lead = {"origin_code": "JFK", "destination_code": "LHR", "departure_date": "2026-06-01",
-            "trip_type": "round_trip", "passengers": 2}
+            "trip_type": "round_trip", "trip_notes": {}, "passengers": 2}
     assert "trip_type" in slots.ordered_missing(lead)
     assert slots.next_slot(lead) == "trip_type"
+
+
+def test_trip_type_without_trip_notes_column_keeps_todays_rule():
+    # 040 not applied: nothing can record the client's answer, so the strict
+    # rule would ask the trip type forever. A stored trip type counts.
+    lead = {"origin_code": "JFK", "destination_code": "LHR", "departure_date": "2026-06-01",
+            "trip_type": "one_way", "passengers": 2}
+    assert "trip_type" not in slots.ordered_missing(lead)
+    assert slots.next_slot(lead) is None
 
 
 def test_client_stated_trip_type_satisfies():
@@ -82,8 +93,57 @@ def test_operator_card_payload():
 def test_get_missing_fields_gate(monkeypatch):
     from app.models.lead import get_missing_fields
     lead = {"origin_code": "JFK", "destination_code": "LHR", "departure_date": "2026-06-01",
-            "trip_type": "round_trip", "passengers": 2}
+            "trip_type": "round_trip", "trip_notes": {}, "passengers": 2}
     # flag off: today's behaviour — trip_type default counts, so no return/one-way asked
     assert not any("return" in m for m in get_missing_fields(lead))
     monkeypatch.setenv("SLOT_POLICY_ENABLED", "true")
     assert any("return" in m for m in get_missing_fields(lead))
+
+
+def test_get_missing_fields_flag_on_without_trip_notes_column(monkeypatch):
+    # 040 not applied: the strict rule cannot be satisfied, so keep today's.
+    from app.models.lead import get_missing_fields
+    monkeypatch.setenv("SLOT_POLICY_ENABLED", "true")
+    lead = {"origin_code": "JFK", "destination_code": "LHR", "departure_date": "2026-06-01",
+            "trip_type": "one_way", "passengers": 2}
+    assert not any("return" in m for m in get_missing_fields(lead))
+
+
+# ── The messages that do NOT enter the new branches (CLAUDE.md rule 5) ──
+
+_TWO_Q = "Where to? And when?"
+
+
+def test_apply_slot_question_leaves_support_unchanged(monkeypatch):
+    from app.pipeline.generator import _apply_slot_question
+    monkeypatch.setenv("SLOT_POLICY_ENABLED", "true")
+    assert _apply_slot_question(_TWO_Q, {}, "support") == _TWO_Q
+
+
+def test_apply_slot_question_flag_off_unchanged(monkeypatch):
+    from app.pipeline.generator import _apply_slot_question
+    monkeypatch.delenv("SLOT_POLICY_ENABLED", raising=False)
+    assert _apply_slot_question(_TWO_Q, {}, "sales") == _TWO_Q
+
+
+@pytest.mark.asyncio
+async def test_extract_and_push_inert_when_flag_off(monkeypatch):
+    from app.pipeline import operator_card
+    monkeypatch.delenv("EXTRACT_EVERY_MESSAGE", raising=False)
+    with patch("app.pipeline.entity_extractor.extract_entities",
+               side_effect=AssertionError("extractor ran")):
+        await operator_card.extract_and_push("conv-1", "JFK to LHR on June 1")
+
+
+@pytest.mark.asyncio
+async def test_extract_and_push_saves_but_does_not_push_without_card_flag(monkeypatch):
+    from app.pipeline import operator_card
+    monkeypatch.setenv("EXTRACT_EVERY_MESSAGE", "true")
+    monkeypatch.delenv("OPERATOR_DETAILS_CARD", raising=False)
+    upd = AsyncMock()
+    push = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", upd), \
+         patch("app.realtime.manager.manager.push", push):
+        await operator_card.extract_and_push("conv-1", "one way from JFK to LHR")
+    assert upd.await_count == 1
+    push.assert_not_awaited()

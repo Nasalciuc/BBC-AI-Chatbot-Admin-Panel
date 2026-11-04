@@ -39,7 +39,9 @@ def mask_pii(text: Optional[str], names: Iterable[Optional[str]] = ()) -> str:
     out = _GREETING_NAME.sub(lambda m: f"{m.group(1)}{m.group(2)}[name]", out)
     out = _EMAIL.sub("[email]", out)
     out = _PNR.sub("[ref]", out)
+    # Dates before phones: an ISO date (2026-06-15) is eight digits joined by
+    # '-', which _PHONE would otherwise take as a number.
+    out = _DATE.sub("[date]", out)
     out = _PHONE.sub("[phone]", out)
     out = _PHONE_PARTIAL.sub("[phone]", out)
-    out = _DATE.sub("[date]", out)
     return out
