@@ -112,6 +112,38 @@ def test_missing_configured_header_falls_back_and_counts(monkeypatch):
     assert cip.CLIENT_IP_HEALTH["header_missing"] == 1
 
 
+def test_xff_hops_reads_from_the_right(monkeypatch):
+    # The client prepends a forged value; the edge appends the real one.
+    monkeypatch.setenv("CLIENT_IP_HEADER", "xff-hops:1")
+    r = _req({"x-forwarded-for": "203.0.113.7, 4.4.4.4"})
+    assert cip.client_ip(r, prefer_cf=False) == "4.4.4.4"
+    monkeypatch.setenv("CLIENT_IP_HEADER", "xff-hops:2")
+    flags._reset_for_tests()
+    r = _req({"x-forwarded-for": "203.0.113.7, 4.4.4.4, 10.0.0.2"})
+    assert cip.client_ip(r, prefer_cf=False) == "4.4.4.4"
+
+
+def test_xff_hops_with_too_few_elements_falls_back_and_counts(monkeypatch):
+    monkeypatch.setenv("CLIENT_IP_HEADER", "xff-hops:2")
+    with patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+        got = cip.client_ip(_req({"x-forwarded-for": "4.4.4.4"}), prefer_cf=False)
+    assert got == "4.4.4.4"
+    assert cip.CLIENT_IP_HEALTH["header_missing"] == 1
+
+
+def test_untrusted_ip_keys_the_backoff_on_the_email():
+    # A forged X-Forwarded-For per attempt must not reset the backoff.
+    cip.CLIENT_IP_HEALTH["ip_trusted"] = False
+    for i in range(5):
+        asyncio.run(login_guard.record_failure("victim@bbc.com", f"198.51.100.{i}"))
+    assert login_guard.retry_after("victim@bbc.com", "198.51.100.99") > 0
+
+
+def test_trusted_ip_keeps_the_pair():
+    _fail("victim@bbc.com", "9.9.9.9", 5)
+    assert login_guard.retry_after("victim@bbc.com", "2.2.2.2") == 0
+
+
 # ── IP self-test ──────────────────────────────────────────────────────────
 
 def test_selftest_clears_trust_when_spoof_echoes(monkeypatch):

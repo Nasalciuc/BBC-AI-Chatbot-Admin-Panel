@@ -4,10 +4,16 @@ These are Anthropic's public published rates (USD per token), the same kind of
 number the old COSTS dict in claude.py held — not any BBC fare or markup data.
 Costing a call from the four usage counters (input, cache-write, cache-read,
 output) instead of two is what makes the ledger match the invoice: a cache
-write costs 1.25x (5m) or 2x (1h) input, a read 0.1x (0.05x on the 5.5 models),
-and none of that was being counted.
+write costs 1.25x (5m) or 2x (1h) input, a read 0.1x (0.05x on Sonnet 5.5 and
+Opus 5.5; Haiku 5.5 keeps 0.1x), and none of that was being counted.
 
-Haiku 5.5 has two input tiers by prompt size (<=100k and >100k tokens).
+Haiku 5.5 has two price tiers by prompt size: up to 100k tokens, and over
+100k, where every line costs 5x. The prompt size counts ALL its input tokens,
+cache reads and cache writes included (Anthropic's pricing page), so the tier
+is chosen on input + cache_write + cache_read, not on input alone.
+
+Checked against https://platform.claude.com/docs/en/about-claude/pricing
+on 2026-11-04.
 `cost_from_usage` reads whichever `cache_creation` breakdown the API returns.
 """
 
@@ -37,15 +43,15 @@ PRICES: dict[str, dict[str, float]] = {
     "claude-sonnet-4-20250514": _rates(3.0, 3.75, 6.0, 0.30, 15.0),
     "claude-sonnet-4-6": _rates(3.0, 3.75, 6.0, 0.30, 15.0),
     "claude-opus-4-8": _rates(5.0, 6.25, 10.0, 0.50, 25.0),
-    # 5.5 family: cache read is 0.05x input.
+    # Sonnet / Opus 5.5: cache read is 0.05x input.
     "claude-sonnet-5-5": _rates(2.0, 2.5, 4.0, 0.10, 10.0),
     "claude-opus-5-5": _rates(4.0, 5.0, 8.0, 0.20, 20.0),
-    # Haiku 5.5, prompts <= 100k tokens.
+    # Haiku 5.5, prompts up to 100k tokens: cache read 0.1x input.
     "claude-haiku-5-5": _rates(0.10, 0.125, 0.20, 0.01, 0.50),
 }
 
-# Haiku 5.5 second tier: prompts over 100k input tokens.
-_HAIKU_55_BIG = _rates(0.20, 0.25, 0.40, 0.02, 1.0)
+# Haiku 5.5, prompts over 100k tokens: 5x on every line.
+_HAIKU_55_BIG = _rates(0.50, 0.625, 1.0, 0.05, 2.50)
 _HAIKU_55_BIG_THRESHOLD = 100_000
 
 _FAMILY = {
@@ -57,9 +63,11 @@ _FAMILY = {
 _warned: set[str] = set()
 
 
-def rates_for(model: str, input_tokens: int = 0) -> tuple[dict[str, float], bool]:
-    """(rates, is_exact). Unknown model → family rates (+warn once) → zeros (+warn)."""
-    if model == "claude-haiku-5-5" and input_tokens > _HAIKU_55_BIG_THRESHOLD:
+def rates_for(model: str, prompt_tokens: int = 0) -> tuple[dict[str, float], bool]:
+    """(rates, is_exact). Unknown model → family rates (+warn once) → zeros (+warn).
+
+    prompt_tokens: the whole prompt (input + cache writes + cache reads)."""
+    if model == "claude-haiku-5-5" and prompt_tokens > _HAIKU_55_BIG_THRESHOLD:
         return _HAIKU_55_BIG, True
     exact = PRICES.get(model)
     if exact is not None:
@@ -109,8 +117,8 @@ def cost_from_usage(model: str, usage: Any) -> float:
         return 0.0
     input_tokens = _int(usage, "input_tokens")
     output_tokens = _int(usage, "output_tokens")
-    rates, _ = rates_for(model, input_tokens)
     total_write, read, w5, w1h = _breakdown(usage)
+    rates, _ = rates_for(model, input_tokens + total_write + read)
     if w5 is not None or w1h is not None:
         write_cost = (w5 or 0) * rates["cache_write_5m"] + (w1h or 0) * rates["cache_write_1h"]
     else:
