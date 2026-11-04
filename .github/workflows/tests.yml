@@ -175,6 +175,9 @@ jobs:
     name: db-replay
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # It runs the PR's own scripts: read access only, no token left behind.
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:16
@@ -193,6 +196,8 @@ jobs:
       PGDATABASE: replay
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Replay every migration on a clean database
         working-directory: bbc-chatbot-api
         run: ci/replay_migrations.sh
