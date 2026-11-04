@@ -111,8 +111,88 @@ def _scrub(text: str) -> tuple[str, list[str]]:
     return out, removed
 
 
-async def guard_ai_text(text: Optional[str]) -> Optional[str]:
-    """Scrub a stored AI reply. In 'log' mode the text is returned unchanged."""
+_ALERT_COOLDOWN = 3600.0
+_last_alert_at = 0.0
+
+
+async def _visitor_contact(conversation_id: Optional[str]) -> set[str]:
+    """The conversation's own phone digits and email: the bot repeating the
+    client's contact back in a summary is not a leak (review fix)."""
+    if not conversation_id:
+        return set()
+    try:
+        from app.db.supabase import get_conversation_simple
+
+        conv = await get_conversation_simple(conversation_id) or {}
+    except Exception as e:
+        logger.warning(f"[output-guard] contact lookup failed: {type(e).__name__}: {e}")
+        return set()
+    out = set()
+    if conv.get("visitor_phone"):
+        out.add(_digits(str(conv["visitor_phone"])))
+    if conv.get("visitor_email"):
+        out.add(str(conv["visitor_email"]).strip().lower())
+    return {x for x in out if x}
+
+
+def _is_own(snippet: str, own: set[str]) -> bool:
+    if not own:
+        return False
+    if "@" in snippet:
+        return snippet.strip().lower() in own
+    d = _digits(snippet)
+    return bool(d) and any(d == o or o.endswith(d) or d.endswith(o) for o in own if o.isdigit())
+
+
+def _alert_later(mode: str, kinds: dict) -> None:
+    """Off the chat path, at most once an hour, counts only — never the
+    removed values (they are customer contacts)."""
+    global _last_alert_at
+    import asyncio
+    import time as _time
+
+    now = _time.monotonic()
+    if now - _last_alert_at < _ALERT_COOLDOWN:
+        return
+    _last_alert_at = now
+    OUTPUT_GUARD_HEALTH["alerts"] += 1
+
+    async def _send() -> None:
+        try:
+            from app.services.email import send_ops_alert_email
+
+            await send_ops_alert_email(
+                "Output guard found a non-brand contact in a bot reply",
+                f"mode={mode} kinds={kinds} total_so_far={OUTPUT_GUARD_HEALTH['would_remove']} "
+                "(values are not included; see /health/detail.output_guard)",
+            )
+        except Exception as e:  # noqa: silent — an alert must never fail anything
+            logger.warning(f"[output-guard] alert failed: {type(e).__name__}")
+
+    try:
+        task = asyncio.get_running_loop().create_task(_send())
+        _ALERT_TASKS.add(task)
+        task.add_done_callback(_ALERT_TASKS.discard)
+    except RuntimeError as e:  # noqa: silent — no running loop (a sync caller): skip the alert, the counter moved
+        logger.debug(f"[output-guard] no loop for the alert: {type(e).__name__}")
+
+
+_ALERT_TASKS: set = set()
+
+
+def _kind(snippet: str) -> str:
+    if "@" in snippet:
+        return "email"
+    if re.match(r"^(https?:|www\.)", snippet, re.I):
+        return "url"
+    return "phone"
+
+
+async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = None) -> Optional[str]:
+    """Scrub a stored AI reply. In 'log' mode the text is returned unchanged.
+
+    The conversation's own contact is never a finding. Logs and alerts carry
+    counts and kinds, never the values (rule 7: no PII at INFO or above)."""
     if not text:
         return text
     mode = str(flag("OUTPUT_GUARD_MODE", "log")).strip().lower()
@@ -120,22 +200,25 @@ async def guard_ai_text(text: Optional[str]) -> Optional[str]:
     clean, removed = _scrub(text)
     if not removed:
         return text
-    OUTPUT_GUARD_HEALTH["would_remove"] += len(removed)
-    logger.warning(f"[output-guard] {mode}: would remove {removed}")
-    if OUTPUT_GUARD_HEALTH["would_remove"] % 3 == 0:
-        OUTPUT_GUARD_HEALTH["alerts"] += 1
-        try:
-            from app.services.email import send_ops_alert_email
-
-            await send_ops_alert_email(
-                "Output guard removed a non-brand contact",
-                f"mode={mode} removed={removed}",
-            )
-        except Exception as e:  # noqa: silent — an alert must never fail the reply
-            logger.warning(f"[output-guard] alert failed: {type(e).__name__}")
+    own = await _visitor_contact(conversation_id)
+    foreign = [r for r in removed if not _is_own(r, own)]
+    if not foreign:
+        return text
+    kinds: dict = {}
+    for r in foreign:
+        kinds[_kind(r)] = kinds.get(_kind(r), 0) + 1
+    OUTPUT_GUARD_HEALTH["would_remove"] += len(foreign)
+    logger.warning(f"[output-guard] {mode}: {len(foreign)} non-brand contact(s) {kinds} conv={conversation_id}")
+    _alert_later(mode, kinds)
     if mode == "enforce":
-        OUTPUT_GUARD_HEALTH["removed"] += len(removed)
-        return clean
+        OUTPUT_GUARD_HEALTH["removed"] += len(foreign)
+        if len(foreign) == len(removed):
+            return clean
+        # Keep the client's own contact; scrub only the foreign ones.
+        out = text
+        for r in foreign:
+            out = out.replace(r, "[removed]")
+        return out
     return text
 
 
@@ -156,4 +239,6 @@ def scrub_stream_buffer(buffer: str) -> tuple[str, str]:
 
 
 def _reset_for_tests() -> None:
+    global _last_alert_at
+    _last_alert_at = 0.0
     OUTPUT_GUARD_HEALTH.update(scanned=0, would_remove=0, removed=0, alerts=0)

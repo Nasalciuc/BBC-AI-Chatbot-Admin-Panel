@@ -88,6 +88,17 @@ def test_allowlist_keeps_attribution_drops_the_rest():
         assert forbidden not in out
 
 
+def test_allowlist_keeps_a_known_brand_and_the_booking_id():
+    """Review fix: `site` decides the brand (prompts, phone, CRM base); the
+    server derives it nowhere, so a configured brand id is kept. An unknown
+    one ('evil' above) is still dropped."""
+    out = allowed_widget_metadata({"site": "bct", "booking_id": " BK-123 "})
+    assert out == {"site": "bct", "booking_id": "BK-123"}
+    assert "site" not in allowed_widget_metadata({"site": "bbc-but-not-really"})
+    assert "booking_id" not in allowed_widget_metadata({"booking_id": "x" * 65})
+    assert "booking_id" not in allowed_widget_metadata({"booking_id": {"$ne": 1}})
+
+
 # ── cache: templates only ────────────────────────────────────────────────
 
 def test_cache_rejects_generated_reply():
@@ -135,3 +146,32 @@ def test_token_version_mismatch_after_bump(monkeypatch):
     token_version.invalidate_cache("u1")
     assert token_version.matches("u1", 2) is False
     assert token_version.matches("u1", 3) is True
+
+
+# ── review fixes: the output guard never logs or mails a customer contact ──
+
+@pytest.mark.asyncio
+async def test_guard_ignores_the_clients_own_contact_and_logs_no_values(monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+    from app.ai import output_guard as og
+
+    og._reset_for_tests()
+    monkeypatch.setattr("app.db.supabase.get_conversation_simple",
+                        AsyncMock(return_value={"visitor_phone": "+1 415 555 0134", "visitor_email": "ana@example.com"}))
+    sent = AsyncMock()
+    monkeypatch.setattr("app.services.email.send_ops_alert_email", sent)
+    text = "Confirming: ana@example.com, +1 415 555 0134. Call me at +44 20 7946 0999 or x@evil.io"
+    with caplog.at_level("WARNING"):
+        out = await og.guard_ai_text(text, conversation_id="c1")
+    assert out == text                                   # log mode: unchanged
+    assert og.OUTPUT_GUARD_HEALTH["would_remove"] == 2   # only the foreign two
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    for value in ("ana@example.com", "x@evil.io", "7946", "555"):
+        assert value not in logged
+
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    from app import flags
+    flags._reset_for_tests()
+    out = await og.guard_ai_text(text, conversation_id="c1")
+    assert "ana@example.com" in out and "+1 415 555 0134" in out
+    assert "x@evil.io" not in out and "7946" not in out
