@@ -1,6 +1,8 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from './countries'
 import brand from './config'
+import { PanelTop } from './PanelTop'
+import { IconAlert, IconArrowRight } from './icons'
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -11,219 +13,231 @@ interface Props {
   embedded?: boolean
 }
 
+type Field = 'name' | 'phone' | 'email' | 'contact' | 'booking'
+type Errors = Partial<Record<Field, string>>
+
+// Letters in any alphabet (José, Ștefan, Zoë), spaces, apostrophes, hyphens and dots; 2 to 40 characters.
+// The server does not restrict names; the old 20-letter A-Z rule turned real customers away.
+const NAME_RE = /^[\p{L}][\p{L}\p{M}' .-]*$/u
+
+function Err({ id, text }: { id: string; text?: string }) {
+  if (!text) return null
+  return <div class="bw-error" id={id}><IconAlert />{text}</div>
+}
+
 export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded = false }: Props) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('+')
   const [detectedCountry, setDetectedCountry] = useState<Country>(COUNTRIES[0])
-  const [phoneError, setPhoneError] = useState(false)
-  const [nameError, setNameError] = useState(false)
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
-  const [error, setError] = useState('')
+  const [errors, setErrors] = useState<Errors>({})
+  const firstRef = useRef<HTMLInputElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+
+  // Focus the first field on computers; on touch screens a focused field would throw up the keyboard
+  // before the visitor has read the panel.
+  useEffect(() => {
+    try {
+      if (window.matchMedia('(pointer: fine)').matches) firstRef.current?.focus({ preventScroll: true })
+    } catch { /* matchMedia unavailable — leave focus where it is */ }
+  }, [])
+
+  const clear = (f: Field) => setErrors(prev => (prev[f] ? { ...prev, [f]: undefined } : prev))
+
+  const normalizePhone = (value: string): string => {
+    const trimmed = value.trim()
+    const raw = trimmed === '+' ? '' : trimmed
+    const digits = raw.replace(/\D/g, '')
+    if (digits.length < 7) return ''
+    const withCountry = digits.length === 10 ? `1${digits}` : digits
+    return `+${withCountry}`
+  }
+
+  const phoneProblem = (value: string): string | undefined => {
+    const normalized = normalizePhone(value)
+    if (!normalized || normalized.length < 8) return 'Enter your phone number with the country code'
+    const country = detectCountryFromPhone(normalized) || detectedCountry
+    if (!validatePhone(normalized, country)) return `This doesn't look like a ${country.name} number`
+    return undefined
+  }
+
+  const focusFirstError = (errs: Errors) => {
+    const order: Field[] = ['name', 'phone', 'email', 'contact', 'booking']
+    const first = order.find(f => errs[f])
+    if (!first) return
+    formRef.current?.querySelector<HTMLInputElement>(`[data-field="${first}"]`)?.focus()
+  }
 
   const handleSubmit = (e: Event) => {
     e.preventDefault()
-    setError('')
-    setNameError(false)
-    setPhoneError(false)
+    const errs: Errors = {}
     if (tunnel === 'sales') {
-      const normalizedName = name.trim()
-      const nameRegex = /^[A-Za-z' -]+$/
-      if (!normalizedName) return setError('Please enter your name')
-      const invalidName = normalizedName.length < 2 || normalizedName.length > 20 || /\d/.test(normalizedName)
-      if (invalidName || !nameRegex.test(normalizedName)) {
-        setNameError(true)
-        return setError('Name must be 2-20 letters, no numbers')
+      const normalizedName = name.trim().replace(/\s+/g, ' ')
+      if (!normalizedName) errs.name = 'Enter your name'
+      else if (normalizedName.length < 2 || normalizedName.length > 40 || !NAME_RE.test(normalizedName)) {
+        errs.name = 'Use letters only, 2 to 40 characters'
       }
-
-      const phoneTrimmed = phone.trim()
-      const rawPhone = phoneTrimmed === '+' ? '' : phoneTrimmed
-      const digits = rawPhone.replace(/\D/g, '')
-      let normalizedPhone = ''
-      if (digits.length >= 7) {
-        const withCountry = digits.length === 10 ? `1${digits}` : digits
-        normalizedPhone = `+${withCountry}`
-      }
-      if (!normalizedPhone || normalizedPhone.length < 8) {
-        setPhoneError(true)
-        return setError('Please enter your phone number')
-      }
-      if (!validatePhone(normalizedPhone, detectedCountry)) {
-        setPhoneError(true)
-        return setError(`Invalid phone number for ${detectedCountry.name}`)
-      }
-
-      if (!email.trim() || !email.includes('@')) return setError('Please enter a valid email')
+      const pErr = phoneProblem(phone)
+      if (pErr) errs.phone = pErr
+      if (!email.trim()) errs.email = 'Enter your email'
+      else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) errs.email = 'Check your email address'
+      setErrors(errs)
+      if (Object.values(errs).some(Boolean)) return focusFirstError(errs)
+      const normalizedPhone = normalizePhone(phone)
       onSubmit({
         name: normalizedName,
         email: email.trim(),
         phone: normalizedPhone || undefined,
-        country_code: detectedCountry.code,
+        country_code: (detectCountryFromPhone(normalizedPhone) || detectedCountry).code,
       })
     } else {
-      if (!email.trim() && !phone.trim()) return setError('Please enter your email or phone')
-      if (!bookingId.trim()) return setError('Please enter your ticket number')
+      if (!email.trim() && !(phone.trim() && phone.trim() !== '+')) errs.contact = 'Enter your email or phone'
+      if (!bookingId.trim()) errs.booking = 'Enter your ticket number'
+      setErrors(errs)
+      if (Object.values(errs).some(Boolean)) return focusFirstError(errs)
       onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: detectedCountry.code, booking_id: bookingId.trim() })
     }
   }
 
-  const inputStyle = {
-    width: '100%', padding: '10px 14px', borderRadius: 10,
-    border: '1px solid #e5e7eb', fontSize: 14, outline: 'none',
-    boxSizing: 'border-box' as const,
-  }
+  const heading = tunnel === 'sales' ? brand.formHeading : brand.supportHeading
+  const lead = tunnel === 'sales' ? brand.formLead : brand.supportLead
+  const phoneShown = phone.length > 1 && phone !== '+'
 
   return (
-    <div style={embedded ? {
-      // CRM iframe mode: the panel IS the page — fill it, no floating-card chrome.
-      width: '100%', minHeight: '100%',
-      background: '#fff', overflow: 'hidden',
-    } : {
-      position: 'fixed', bottom: 24, right: 24, width: 360,
-      maxWidth: 'calc(100vw - 16px)',
-      background: '#fff', borderRadius: 16,
-      boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
-      zIndex: 2147483000, overflow: 'hidden',
-    }}>
-      <div style={{
-        background: 'var(--bbc-header)', color: 'var(--bbc-header-text)', padding: '16px 20px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img
-            src={brand.logoUrl}
-            alt={brand.logoAlt}
-            width={28}
-            height={28}
-            style={{ borderRadius: 6, objectFit: 'contain' }}
-          />
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 15 }}>
-              {tunnel === 'sales' ? brand.formTitle : 'Support'}
-            </div>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>
-              {tunnel === 'sales' ? brand.formSubtitle : "We'll look into your booking"}
-            </div>
-          </div>
+    <div
+      class={`bw-panel bw-panel--form${embedded ? ' bw-panel--embedded' : ''}`}
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="bw-form-title"
+    >
+      <PanelTop subtitle={brand.tagline} onClose={embedded ? undefined : onBack}>
+        <div class="bw-intro">
+          <h2 class="bw-intro__title" id="bw-form-title">
+            {heading[0]} <em>{heading[1]}</em>
+          </h2>
+          <p class="bw-intro__lead">{lead}</p>
         </div>
-        {!embedded && (
-          <button onClick={onBack} aria-label="Close" style={{
-            background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
-            width: 28, height: 28, borderRadius: '50%', cursor: 'pointer', fontSize: 14,
-          }}>✕</button>
-        )}
-      </div>
+      </PanelTop>
 
-      <form onSubmit={handleSubmit} style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <form ref={formRef} class="bw-form" onSubmit={handleSubmit} noValidate>
         {tunnel === 'sales' ? (
           <>
-            <input style={inputStyle} placeholder="Your name *" value={name} onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value) }} />
-            {nameError && (
-              <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '-6px' }}>
-                Name must be 2-20 letters, no numbers
-              </div>
-            )}
+            <div class="bw-field">
+              <label class="bw-label" for="bw-name">Name</label>
+              <input
+                ref={firstRef}
+                id="bw-name"
+                data-field="name"
+                class="bw-input"
+                type="text"
+                autoComplete="name"
+                autoCapitalize="words"
+                enterkeyhint="next"
+                value={name}
+                aria-invalid={errors.name ? 'true' : undefined}
+                aria-describedby={errors.name ? 'bw-name-err' : undefined}
+                onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value); clear('name') }}
+              />
+              <Err id="bw-name-err" text={errors.name} />
+            </div>
 
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
-                Phone <span style={{ color: '#ef4444' }}>*</span>
-              </label>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  background: '#ffffff',
-                  border: `1px solid ${phoneError ? '#ef4444' : '#e5e7eb'}`,
-                  borderRadius: '10px',
-                  overflow: 'hidden',
-                  transition: 'border-color 0.2s',
-                }}
-              >
-                <div
-                  style={{
-                    padding: '10px 12px',
-                    borderRight: '1px solid #e5e7eb',
-                    fontSize: '18px',
-                    lineHeight: 1,
-                    minWidth: '48px',
-                    textAlign: 'center',
-                    userSelect: 'none',
-                  }}
-                >
-                  {detectedCountry.flag}
-                </div>
-
+            <div class="bw-field">
+              <label class="bw-label" for="bw-phone">Phone</label>
+              <div class="bw-phone" data-invalid={errors.phone ? 'true' : undefined}>
+                {phoneShown && (
+                  <span class="bw-phone__cc" aria-hidden="true">{detectedCountry.code} {detectedCountry.dial}</span>
+                )}
                 <input
+                  id="bw-phone"
+                  data-field="phone"
+                  class="bw-input"
                   type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  enterkeyhint="next"
                   value={phone}
-                  placeholder="+1 (555) 000-0000"
+                  aria-invalid={errors.phone ? 'true' : undefined}
+                  aria-describedby={errors.phone ? 'bw-phone-err' : 'bw-phone-hint'}
                   onInput={(e) => {
                     const raw = (e.target as HTMLInputElement).value
                     const trimmed = raw.trim()
                     const val = /^\d/.test(trimmed) ? `+${trimmed}` : (trimmed || '+')
                     setPhone(val)
-
                     const country = detectCountryFromPhone(val)
-                    if (country) {
-                      setDetectedCountry(country)
-                    } else if (val.startsWith('+')) {
-                      // Prevent stale country state (e.g. previously RU) when
-                      // the new prefix no longer matches any known dial code.
-                      setDetectedCountry(COUNTRIES[0])
-                    }
-
-                    const activeCountry = country || (val.startsWith(detectedCountry.dial) ? detectedCountry : null)
-
-                    if (val.length > 1) {
-                      const isValid = validatePhone(val, activeCountry)
-                      setPhoneError(val.length > 4 && !isValid)
-                    } else {
-                      setPhoneError(false)
-                    }
-
+                    if (country) setDetectedCountry(country)
+                    else if (val.startsWith('+')) setDetectedCountry(COUNTRIES[0])
+                    // A shown error clears as soon as the number becomes valid; a new one waits for blur or submit.
+                    if (errors.phone && !phoneProblem(val)) clear('phone')
                     onInteraction?.()
                   }}
-                  style={{
-                    flex: 1,
-                    background: 'transparent',
-                    border: 'none',
-                    outline: 'none',
-                    color: '#111827',
-                    fontSize: '14px',
-                    padding: '10px 12px',
-                    fontFamily: 'inherit',
-                  }}
+                  onBlur={() => { if (phoneShown) setErrors(prev => ({ ...prev, phone: phoneProblem(phone) })) }}
                 />
               </div>
-
-              {phone.length > 1 && phone !== '+' && (
-                <div style={{ fontSize: '11px', color: '#9ba8b8', marginTop: '4px', paddingLeft: '2px' }}>
-                  {detectedCountry.flag} {detectedCountry.name} ({detectedCountry.dial})
-                </div>
-              )}
-
-              {phoneError && (
-                <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px', paddingLeft: '2px' }}>
-                  Invalid phone number for {detectedCountry.name}
-                </div>
-              )}
+              {errors.phone
+                ? <Err id="bw-phone-err" text={errors.phone} />
+                : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'Start with your country code, for example +1'}</div>}
             </div>
 
-            <input style={inputStyle} placeholder="Email address *" type="email" value={email} onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value) }} />
+            <div class="bw-field">
+              <label class="bw-label" for="bw-email">Email</label>
+              <input
+                id="bw-email"
+                data-field="email"
+                class="bw-input"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                autoCapitalize="off"
+                spellcheck={false}
+                enterkeyhint="go"
+                value={email}
+                aria-invalid={errors.email ? 'true' : undefined}
+                aria-describedby={errors.email ? 'bw-email-err' : undefined}
+                onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value); clear('email') }}
+              />
+              <Err id="bw-email-err" text={errors.email} />
+            </div>
           </>
         ) : (
           <>
-            <input style={inputStyle} placeholder="Email or phone *" value={email} onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value) }} />
-            <input style={inputStyle} placeholder="Ticket Number *" value={bookingId} onInput={e => { onInteraction?.(); setBookingId((e.target as HTMLInputElement).value) }} />
+            <div class="bw-field">
+              <label class="bw-label" for="bw-contact">Email or phone</label>
+              <input
+                ref={firstRef}
+                id="bw-contact"
+                data-field="contact"
+                class="bw-input"
+                type="text"
+                autoComplete="email"
+                autoCapitalize="off"
+                value={email}
+                aria-invalid={errors.contact ? 'true' : undefined}
+                aria-describedby={errors.contact ? 'bw-contact-err' : undefined}
+                onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value); clear('contact') }}
+              />
+              <Err id="bw-contact-err" text={errors.contact} />
+            </div>
+            <div class="bw-field">
+              <label class="bw-label" for="bw-booking">Ticket number</label>
+              <input
+                id="bw-booking"
+                data-field="booking"
+                class="bw-input"
+                type="text"
+                autoCapitalize="characters"
+                spellcheck={false}
+                value={bookingId}
+                aria-invalid={errors.booking ? 'true' : undefined}
+                aria-describedby={errors.booking ? 'bw-booking-err' : undefined}
+                onInput={e => { onInteraction?.(); setBookingId((e.target as HTMLInputElement).value); clear('booking') }}
+              />
+              <Err id="bw-booking-err" text={errors.booking} />
+            </div>
           </>
         )}
-        {error && <p style={{ color: '#ef4444', fontSize: 12, margin: 0 }}>{error}</p>}
-        <button type="submit" style={{
-          width: '100%', padding: '12px', borderRadius: 12,
-          background: 'var(--bbc-send-btn)', color: 'var(--bbc-send-btn-text)', border: 'none',
-          fontWeight: 600, fontSize: 14, cursor: 'pointer',
-        }}>
-          Start Chat →
+        <button type="submit" class="bw-cta">
+          {brand.ctaSubmit} <IconArrowRight />
         </button>
       </form>
     </div>
