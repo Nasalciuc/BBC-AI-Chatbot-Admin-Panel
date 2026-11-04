@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
-  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound,
+  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound, GraduationCap,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 import type { Permissions } from '@/lib/bbc/types'
@@ -32,6 +32,7 @@ export function getSidebarData(
         ],
       },
       ...(permissions.canViewUsers || permissions.canViewKB || permissions.canAssignTasks || permissions.canManageTeams
+        || permissions.canReviewLearning
         ? [{
             title: 'Management',
             items: [
@@ -48,6 +49,12 @@ export function getSidebarData(
                 : []),
               ...(permissions.canAssignTasks
                 ? [{ title: 'Tasks', url: '/tasks' as const, icon: ListChecks }]
+                : []),
+              // The learning loop's human gate — owner/admin/dev only, the same
+              // set the backend allows (CAN_REVIEW_LESSONS). Not canManageTeams:
+              // a project manager has that and would land on a page of 403s.
+              ...(permissions.canReviewLearning
+                ? [{ title: 'Learning', url: '/learning' as const, icon: GraduationCap }]
                 : []),
             ],
           }]

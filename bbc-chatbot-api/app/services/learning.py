@@ -73,15 +73,12 @@ FORCE_RERUN_WARNING = (
 # ever (owner's 02-Jul rule).
 
 def mask_pii(text: Optional[str], names: tuple[Optional[str], ...] = ()) -> str:
-    """Replace emails, phones and known visitor names with placeholders."""
-    if not text:
-        return ""
-    masked = _EMAIL_RE.sub("[email]", text)
-    masked = _PHONE_RE.sub("[phone]", masked)
-    for name in names:
-        if name and len(name.strip()) >= 3:
-            masked = re.sub(re.escape(name.strip()), "[name]", masked, flags=re.I)
-    return masked
+    """Replace emails, phones, partial phones, PNRs, dates and names with
+    placeholders. Delegates to the hardened masker (PR-5, app/privacy/mask.py)
+    so the first names and partial numbers the 3 Nov reading found leaking are
+    caught here too."""
+    from app.privacy.mask import mask_pii as _mask
+    return _mask(text, names)
 
 
 def sanitize_lesson(title: str, content: str) -> tuple[str, str, bool]:
@@ -634,6 +631,46 @@ async def _send_regression_alert(summary: dict) -> bool:
 
 # ── The run ───────────────────────────────────────────────────
 
+def learning_tag(conv: dict, lead: Optional[dict], outcomes: Optional[list] = None) -> str:
+    """The v2 learning tag for a conversation (III.4). Richer than the panel's
+    derive_conversation_tag, which stays untouched.
+
+    complete / partial:<missing> / no_engagement / lost_after_question:<slot> /
+    template_instead_of_question / operator_missing:<slot>.
+    """
+    from app.pipeline.slots import ordered_missing
+
+    lead = lead or {}
+    # Travel-detail completeness only (route/date/trip/return/pax) — contact
+    # fields come from the form, not the conversation.
+    missing = ordered_missing(lead)
+    msg_count = int(conv.get("message_count") or 0) if isinstance(conv, dict) else 0
+    if not missing:
+        return "complete"
+    if msg_count <= 1:
+        return "no_engagement"
+    for o in (outcomes or []):
+        if o.get("answered") is False:
+            return f"lost_after_question:{o.get('slot')}"
+    return "partial:" + ",".join(missing[:3])
+
+
+async def run_learning_tick() -> dict:
+    """Scheduler tick (hourly): run the daily learning once per UTC day at
+    LEARNING_HOUR_UTC, and otherwise do nothing. Gated by LEARNING_ENABLED."""
+    from datetime import datetime, timezone
+    from app.flags import flag
+
+    if not flag("LEARNING_ENABLED", True):
+        return {"skipped": "disabled"}
+    now = datetime.now(timezone.utc)
+    if now.hour != int(flag("LEARNING_HOUR_UTC", 7)):
+        return {"skipped": "not the hour"}
+    if await _run_exists_today(now.date()):
+        return {"skipped": "already ran today"}
+    return await run_learning()
+
+
 async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
     """One pass of the loop. Never raises — a failed run is recorded, not thrown.
 
@@ -840,3 +877,122 @@ def render_lessons_section(lessons: list[dict]) -> Optional[str]:
         lines.append(line)
 
     return "\n".join(lines) if len(lines) > 1 else None
+
+
+# ── Question variants + report (PR-8) ─────────────────────────
+async def get_question_variants(slot: Optional[str] = None) -> list[dict]:
+    """Variants with outcome stats (shows, answered, rate, P(best) per slot).
+
+    A missing table (041 unapplied) is "no variants"; any other failed read
+    raises after logging, so an empty list never means "the read failed"
+    (CLAUDE.md rule 7)."""
+    from app.db import supabase as _db
+    from app.learning.bandit import VariantStats, prob_best
+
+    try:
+        client = _db.get_client()
+        q = client.table("question_variants").select("*")
+        if slot:
+            q = q.eq("slot", slot)
+        vres = await _db._run_sync(lambda: q.execute(), label="question_variants")
+        variants = getattr(vres, "data", None) or []
+        ores = await _db._run_sync(
+            lambda: client.table("question_outcomes").select("variant_id,answered").execute(),
+            label="question_outcomes",
+        )
+        outcomes = getattr(ores, "data", None) or []
+    except Exception as e:
+        if "PGRST205" in str(e) or "42P01" in str(e):
+            # Migration 041 not applied: no variants yet is the normal case.
+            return []
+        logger.warning(f"[variants] fetch failed: {type(e).__name__}: {e}")
+        raise
+
+    stats: dict[str, dict] = {}
+    for o in outcomes:
+        vid = o.get("variant_id")
+        if not vid or o.get("answered") is None:
+            continue
+        s = stats.setdefault(vid, {"answered": 0, "not_answered": 0})
+        s["answered" if o.get("answered") else "not_answered"] += 1
+
+    by_slot: dict[str, list] = {}
+    for v in variants:
+        s = stats.get(v["id"], {"answered": 0, "not_answered": 0})
+        v["shows"] = s["answered"] + s["not_answered"]
+        v["answered"] = s["answered"]
+        v["answer_rate"] = (s["answered"] / v["shows"]) if v["shows"] else None
+        by_slot.setdefault(v["slot"], []).append(v)
+
+    out: list[dict] = []
+    for slot_name, group in by_slot.items():
+        vs = [VariantStats(g["id"], g["answered"], g["shows"] - g["answered"]) for g in group]
+        probs = prob_best(vs) if len(vs) > 1 else {g["id"]: 1.0 for g in group}
+        for g in group:
+            g["prob_best"] = round(probs.get(g["id"], 0.0), 3)
+        out.extend(group)
+    return out
+
+
+async def set_question_variant_status(variant_id: str, status: str) -> bool:
+    from app.db import supabase as _db
+    from datetime import datetime, timezone
+
+    payload = {"status": status}
+    if status == "retired":
+        payload["retired_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        res = await _db._run_sync(
+            lambda: _db.get_client().table("question_variants").update(payload).eq("id", variant_id).execute(),
+            idempotent=False, label="question_variants",
+        )
+        return bool(getattr(res, "data", None))
+    except Exception as e:
+        logger.warning(f"[variants] status update failed: {type(e).__name__}: {e}")
+        return False
+
+
+async def build_learning_report() -> dict:
+    """Treatment vs control complete-detail proxy from question_outcomes."""
+    from app.db import supabase as _db
+
+    try:
+        res = await _db._run_sync(
+            lambda: _db.get_client().table("question_outcomes")
+            .select("slot,answered,control").not_.is_("answered", "null").execute(),
+            label="question_outcomes",
+        )
+        rows = getattr(res, "data", None) or []
+    except Exception as e:
+        logger.warning(f"[report] fetch failed: {type(e).__name__}: {e}")
+        # Same keys as the success shape, plus `error`, so a caller can tell
+        # "no data yet" from "the read failed" (CLAUDE.md rule 7).
+        return {
+            "treatment_answer_rate": None,
+            "control_answer_rate": None,
+            "treatment_n": 0,
+            "control_n": 0,
+            "by_slot": {},
+            "error": "fetch_failed",
+        }
+
+    def _rate(subset):
+        if not subset:
+            return None
+        return round(sum(1 for r in subset if r.get("answered")) / len(subset), 3)
+
+    treatment = [r for r in rows if not r.get("control")]
+    control = [r for r in rows if r.get("control")]
+    by_slot: dict[str, dict] = {}
+    for slot_name in {r["slot"] for r in rows}:
+        by_slot[slot_name] = {
+            "treatment": _rate([r for r in treatment if r["slot"] == slot_name]),
+            "control": _rate([r for r in control if r["slot"] == slot_name]),
+        }
+    return {
+        "treatment_answer_rate": _rate(treatment),
+        "control_answer_rate": _rate(control),
+        "treatment_n": len(treatment),
+        "control_n": len(control),
+        "by_slot": by_slot,
+    }

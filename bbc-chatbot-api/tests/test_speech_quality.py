@@ -44,7 +44,7 @@ class TestSalesGreetingLive:
         }
         captured = {}
 
-        def _fake_tiered(intent, lead, tunnel, system_parts, raw_message, on_chunk=None):
+        def _fake_tiered(intent, lead, tunnel, system_parts, raw_message, on_chunk=None, conversation_id=None):
             static, dynamic = system_parts
             captured["prompt"] = static + dynamic
             captured["tunnel"] = tunnel

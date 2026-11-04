@@ -170,7 +170,7 @@ def _chain(result_data, insert_data=None):
     return t
 
 
-async def _fake_run_sync(fn):
+async def _fake_run_sync(fn, *args, **kwargs):
     return fn()
 
 

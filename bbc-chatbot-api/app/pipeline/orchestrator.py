@@ -302,8 +302,19 @@ async def process_message(
     # persist a fallback ONLY if this is still False (no duplicate post-save).
     _persist_state = {"ai_persisted": False}
     try:
-        return await asyncio.wait_for(
-            _pipeline(
+        # PR-5: flow control may run through the LangGraph engine. The graph's
+        # single node calls this same _pipeline, so behaviour is identical; the
+        # timeout and fallback below wrap whichever engine runs.
+        from app.graph.engine import run_turn_graph, use_graph
+
+        if use_graph(conversation_id):
+            _run = run_turn_graph(
+                conversation_id, message, tunnel, visitor, metadata,
+                visitor_id=visitor_id, persist_state=_persist_state,
+                skip_user_save=skip_user_save,
+            )
+        else:
+            _run = _pipeline(
                 conversation_id,
                 message,
                 tunnel,
@@ -312,9 +323,8 @@ async def process_message(
                 visitor_id=visitor_id,
                 _persist_state=_persist_state,
                 skip_user_save=skip_user_save,
-            ),
-            timeout=settings.pipeline_timeout,
-        )
+            )
+        return await asyncio.wait_for(_run, timeout=settings.pipeline_timeout)
     except asyncio.TimeoutError:
         cid = conversation_id or "unknown"
         logger.error(
@@ -1255,6 +1265,13 @@ async def _pipeline(
     if has_useful or has_signals:
         await lead_service.update_lead_from_entities(cid, entities)
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
+        # Reward loop (PR-8): a detail just landed — resolve any open "did this
+        # question get answered?" rows. Best-effort, never blocks the turn.
+        try:
+            from app.learning.outcomes import resolve_outcomes
+            _fire_and_forget(resolve_outcomes(cid))
+        except Exception as _e:  # noqa: silent — the learning signal is never load-bearing
+            logger.debug(f"[{cid}] outcomes resolve skipped: {type(_e).__name__}")
 
     logger.info(f"[{cid}] [PERF] extraction: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()

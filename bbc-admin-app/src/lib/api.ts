@@ -29,6 +29,10 @@ import type {
   TasksResponse,
   UserAccessAuditItem,
   AgentSseEvent,
+  LeadDetails,
+  AdminEnvelope,
+  QuestionVariant,
+  LearningReport,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -62,6 +66,17 @@ function authHeaders(): Record<string, string> {
 }
 
 // ── Auth ──────────────────────────────────────────────────────
+export async function getConversationDetails(conversationId: string): Promise<LeadDetails | null> {
+  const res = await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/details`, {
+    headers: authHeaders(),
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!res.ok) return null
+  const body = await res.json().catch(() => null)
+  return (body && body.data) as LeadDetails | null
+}
+
+
 export async function loginUser(
   email: string,
   password: string,
@@ -564,4 +579,30 @@ export function deleteTask(id: string) {
   return apiFetch<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
+}
+
+// ── Learning loop (PR-8) ──────────────────────────────────────
+// Admin envelope: { success, data, count, error? }.
+export async function listQuestionVariants(): Promise<QuestionVariant[]> {
+  const res = await apiFetch<AdminEnvelope<QuestionVariant[]>>('/api/admin/question-variants')
+  return res.data ?? []
+}
+
+export async function setVariantStatus(id: string, status: QuestionVariant['status']): Promise<void> {
+  await apiFetch<AdminEnvelope<{ id: string; status: string }>>(
+    `/api/admin/question-variants/${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    },
+  )
+}
+
+export async function getLearningReport(): Promise<LearningReport> {
+  const res = await apiFetch<AdminEnvelope<LearningReport>>('/api/admin/learning/report')
+  // A failed read comes back as success:false with the same keys — surface
+  // it as an error, never as an empty report.
+  if (!res.success) throw new ApiError(502, res.error || 'Failed to load report')
+  return res.data
 }

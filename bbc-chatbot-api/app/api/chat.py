@@ -31,6 +31,10 @@ from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
 from app.security.client_ip import client_ip
 from app.security.metadata import allowed_widget_metadata
 
+
+class _SkipGreetingGen(Exception):
+    """Internal: the template-greeting arm already produced the opening."""
+
 logger = logging.getLogger(__name__)
 
 
@@ -217,7 +221,24 @@ async def chat_start(
     from app.pipeline.intent import Intent
 
     text, model_used, cost = None, "template", 0.0
+    # Greeting A/B (PR-6, ⤑1): a stable bucket gets the one-line template
+    # greeting (cost 0, asks the opening question immediately) instead of the
+    # AI greeting. Default percent 0 = today's AI greeting for everyone.
+    from app.flags import flag as _flag
+    from app.experiments import in_arm as _in_arm
+    _greeting_template = (payload.tunnel == "sales") and _in_arm(
+        "greeting_template", conv_id, int(_flag("GREETING_TEMPLATE_PERCENT", 0))
+    )
+    if _greeting_template:
+        _first = (getattr(payload.visitor, "name", "") or "").strip().split(" ")[0]
+        text = (
+            f"Welcome, {_first}! Where are you flying from and to?" if _first
+            else "Welcome! Where are you flying from and to?"
+        )
+        model_used, cost = "template", 0.0
     try:
+        if text:
+            raise _SkipGreetingGen
         _entities = {
             "_raw_message": _GREETING_KICKOFF,
             "_metadata": _meta,
@@ -235,6 +256,8 @@ async def chat_start(
         )
         if gen and gen.text and gen.text.strip():
             text, model_used, cost = gen.text.strip(), gen.model_used, gen.cost
+    except _SkipGreetingGen:  # noqa: silent — the template-greeting arm already produced the opening
+        pass
     except Exception as e:
         logger.error(f"[start] Greeting generation failed (conv={conv_id}): {e}")
 
@@ -502,6 +525,10 @@ async def chat(
                     role="user",
                     content=clean_message,
                 )
+                # PR-7: the client often gives the operator the route/date/pax.
+                # Extract it and push the operator card; never speak to the client.
+                from app.pipeline.operator_card import extract_and_push
+                await extract_and_push(req.conversation_id, clean_message)
                 from app.services.handoff import _handoff_phrase_recently_sent
 
                 already = await _handoff_phrase_recently_sent(req.conversation_id)

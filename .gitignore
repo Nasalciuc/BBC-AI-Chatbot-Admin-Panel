@@ -65,3 +65,7 @@ pnpm-lock.yaml
 .impeccable/live/deferred-svelte-component-accepts.json
 .impeccable/live/*.png
 # impeccable-ignore-end
+
+# PR-5: eval/replay output — real masked data, never committed.
+out/
+bbc-chatbot-api/out/

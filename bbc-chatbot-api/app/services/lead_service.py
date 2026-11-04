@@ -107,7 +107,8 @@ async def ensure_lead(conversation_id: str, visitor=None) -> Optional[dict]:
             ins = await _run_sync(
                 lambda: db_client.table("leads")
                 .insert({"conversation_id": conversation_id, "intent_signals": {}})
-                .execute()
+                .execute(),
+                idempotent=False,
             )
             if ins.data:
                 logger.info(f"[{conversation_id}] ensure_lead: created lead row")
@@ -244,14 +245,12 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         from app.db.supabase import get_client, _run_sync
         db_client = get_client()
 
-        # RT 1: Select lead (travel fields only — visitor_* live on conversations)
+        # RT 1: Select lead. "*" rather than a column list so trip_notes comes
+        # back when migration 040 is applied and is simply absent when it is
+        # not (naming a missing column would fail the whole read).
         res = await _run_sync(
             lambda: db_client.table("leads")
-            .select(
-                "id,score,origin_code,destination_code,departure_date,"
-                "passengers,cabin_class,return_date,trip_type,"
-                "children_count,infant_count,intent_signals,notes"
-            )
+            .select("*")
             .eq("conversation_id", conversation_id)
             .limit(1)
             .execute()
@@ -271,7 +270,8 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lead_res = await _run_sync(
                 lambda: db_client.table("leads")
                 .insert({"conversation_id": conversation_id})
-                .execute()
+                .execute(),
+                idempotent=False,
             )
             if not lead_res.data:
                 return
@@ -315,6 +315,14 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lead_payload["return_date"] = None
         if entities.get("trip_type"):
             lead_payload["trip_type"] = entities["trip_type"]
+            # The slot policy counts trip type as answered only when the
+            # client said it; record that, when the column exists.
+            if "trip_notes" in lead_data:
+                _tn = lead_data.get("trip_notes")
+                _tn = dict(_tn) if isinstance(_tn, dict) else {}
+                if _tn.get("trip_type_source") != "client":
+                    _tn["trip_type_source"] = "client"
+                    lead_payload["trip_notes"] = _tn
         # `is not None`: an explicit 0 (a correction) clears a stale count.
         if entities.get("_children_count") is not None:
             lead_payload["children_count"] = entities["_children_count"]
