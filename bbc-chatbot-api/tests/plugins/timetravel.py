@@ -20,6 +20,10 @@ def pytest_configure(config):
     global _freezer
     as_of = config.getoption("--as-of")
     if as_of:
+        # Import pydantic.v1 before the freezer patches datetime: fastapi 0.134
+        # imports it lazily at the first route, and its `class PastDate(date)`
+        # then subclasses freezegun's FakeDate (metaclass conflict).
+        import pydantic.v1  # noqa: F401
         from freezegun import freeze_time
 
         # Import the heavy third-party trees (langgraph → pydantic.v1) BEFORE

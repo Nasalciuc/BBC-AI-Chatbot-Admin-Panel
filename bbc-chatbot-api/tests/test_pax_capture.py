@@ -12,7 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -131,14 +131,43 @@ def test_no_minors_no_updates():
     assert _tool_pax_breakdown({"passengers": 2}, {}) == ({}, False)
 
 
+def test_adults_only_regex_total_takes_the_tools_total():
+    # "my husband and I and three children": regex 2 (the adults), tool 5 / 3.
+    updates, bad = _tool_pax_breakdown({"passengers": 5, "children": 3}, {"passengers": 2})
+    assert (updates, bad) == ({"_children_count": 3, "passengers": 5}, False)
+
+
+def test_saved_total_below_minors_without_a_tool_total_keeps_nothing():
+    updates, bad = _tool_pax_breakdown({"children": 3}, {"passengers": 2})
+    assert (updates, bad) == ({}, True)
+
+
+def test_a_regex_total_that_holds_the_minors_is_kept():
+    updates, bad = _tool_pax_breakdown({"passengers": 4, "children": 2}, {"passengers": 4})
+    assert (updates, bad) == ({"_children_count": 2}, False)
+
+
+def test_an_explicit_zero_reaches_the_lead():
+    # A correction to "no children" must clear a stale count, not be skipped.
+    updates, bad = _tool_pax_breakdown({"passengers": 2, "children": 0}, {"_children_count": None})
+    assert (updates, bad) == ({"_children_count": 0}, False)
+
+
 _CID = "aaaaaaaa-bbbb-cccc-dddd-000000000000"
 _CONV = {"id": _CID, "mode": "ai", "status": "active", "tunnel": "sales", "metadata": {}}
 _LEAD = {"id": "lead-pax", "conversation_id": _CID, "origin_code": "JFK",
          "destination_code": "LHR", "trip_type": "round_trip", "notes": ""}
 
 
+class _StopAfterMerge(Exception):
+    """Raised by the patched validate_response: the pipeline reached STEP 7."""
+
+
 async def _merged_entities(message, tool_entities):
-    """Run the pipeline up to STEP 6.1 and return what it hands the lead."""
+    """Run the pipeline up to STEP 6.1 and return what it hands the lead.
+
+    Only the deliberate stop is swallowed: a failure before STEP 7 fails the
+    test instead of passing it with an empty result."""
     from contextlib import ExitStack
 
     update = AsyncMock()
@@ -158,17 +187,15 @@ async def _merged_entities(message, tool_entities):
         stack.enter_context(patch("app.pipeline.intent.claude_classify", return_value=(None, 0.0)))
         stack.enter_context(patch(
             "app.pipeline.orchestrator.validate_response",
-            side_effect=RuntimeError("stop after the merge"),
+            side_effect=_StopAfterMerge("stop after the merge"),
         ))
         stack.enter_context(patch(
             "app.pipeline.orchestrator.generate_response",
             return_value=GeneratedResponse(text="Got it.", model_used="sonnet", tool_entities=tool_entities),
         ))
-        try:
+        with pytest.raises(_StopAfterMerge):
             await _pipeline(_CID, message, "sales", VisitorInfo(name="Pax"), None,
                             _persist_state={"ai_persisted": False})
-        except Exception:  # the stop above, or a later step we did not patch
-            pass
     calls = [c.args[1] for c in update.await_args_list]
     return calls[-1] if calls else {}
 
@@ -202,3 +229,31 @@ async def test_inconsistent_triple_keeps_nothing(monkeypatch):
     ents = await _merged_entities("hello there", {"passengers": 1, "children": 2})
     assert ents.get("passengers") in (None, 0)
     assert not ents.get("_children_count")
+
+
+@pytest.mark.asyncio
+async def test_adults_only_regex_and_a_consistent_tool_triple(monkeypatch):
+    monkeypatch.setenv("PAX_TOOL_FIELDS", "true")
+    monkeypatch.setenv("PAX_REGEX_V2", "true")
+    ents = await _merged_entities("my husband and I", {"passengers": 5, "children": 3})
+    assert ents.get("passengers") == 5 and ents.get("_children_count") == 3
+
+
+@pytest.mark.asyncio
+async def test_a_tool_zero_clears_the_lead_count():
+    from app.services import lead_service
+
+    client = MagicMock()
+    sel = client.table.return_value.select.return_value.eq.return_value.limit.return_value
+    sel.execute.return_value = MagicMock(data=[{"id": "lead-pax", "children_count": 2, "infant_count": 1}])
+
+    async def _run(fn, **kw):
+        return fn()
+
+    with patch("app.db.supabase.get_client", return_value=client), \
+         patch("app.db.supabase._run_sync", new=_run):
+        await lead_service.update_lead_from_entities(_CID, {"_children_count": 0, "_infant_count": None})
+    payloads = [c.args[0] for c in client.table.return_value.update.call_args_list]
+    lead = next(p for p in payloads if "children_count" in p)
+    assert lead["children_count"] == 0
+    assert "infant_count" not in lead

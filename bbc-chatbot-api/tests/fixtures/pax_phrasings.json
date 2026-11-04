@@ -314,6 +314,45 @@
       }
     },
     {
+      "text": "me and my 9-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "me and my son, 9 years old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "me and my son and his 5 year old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
       "text": "we have 2 adults and 1 infant",
       "legacy": {
         "passengers": 3,

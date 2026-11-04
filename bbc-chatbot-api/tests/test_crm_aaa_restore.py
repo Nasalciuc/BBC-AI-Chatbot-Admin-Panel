@@ -250,7 +250,10 @@ class TestCronSelect:
         with open(os.path.join(APP, "api", "cron.py"), encoding="utf-8") as f:
             src = f.read()
         assert 'reason": "name_invalid' not in src
-        assert 'or "Customer"' in src
+        # The default lives where the payload is built (cron no longer reads
+        # the name at all — it only ever reached an INFO log line).
+        with open(os.path.join(APP, "services", "crm.py"), encoding="utf-8") as f:
+            assert 'or "Customer"' in f.read()
 
 
 # ════════════════════════════════════════════════════════════

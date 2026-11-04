@@ -36,7 +36,39 @@ _ALLOWED_EMAILS: set[str] = set()
 _KEEP_NUMBERS = {"14531683", "99910753"}
 
 _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{7,}\d")
-_URL_RE = re.compile(r"\b(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)+(?:/[^\s]*)?", re.I)
+# The last label must be alphabetic (a TLD): "$1,200.50", "2.5" and
+# "12.05.2026" are a price, a decimal and a date, not hosts.
+_URL_RE = re.compile(
+    r"\b(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)*\.[a-z]{2,}\b(?:/[^\s]*)?", re.I
+)
+# A date, or a range of them ("2026-05-14", "12.05.2026", "2026-05-14 - 2026-05-21"),
+# is a run of digits and separators that _PHONE_RE would otherwise take. Each
+# part must be a real calendar date, so "12.34.5678" is still a phone.
+_ISO_DATE = re.compile(r"(\d{4})[-.](\d{1,2})[-.](\d{1,2})")
+_DMY_DATE = re.compile(r"(\d{1,2})[-.](\d{1,2})[-.](\d{2}|\d{4})")
+_RANGE_SPLIT = re.compile(r"\s*[-–]\s+|\s+[-–]\s*")
+
+
+def _is_date(part: str) -> bool:
+    m = _ISO_DATE.fullmatch(part)
+    if m:
+        y, mo, d = (int(g) for g in m.groups())
+        return 1900 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31
+    m = _DMY_DATE.fullmatch(part)
+    if m:
+        a, b, y = (int(g) for g in m.groups())
+        if len(m.group(3)) == 4 and not 1900 <= y <= 2100:
+            return False
+        # day-month or month-day: one of the two must be a month
+        return 1 <= a <= 31 and 1 <= b <= 31 and (a <= 12 or b <= 12)
+    return False
+
+
+def _is_dates(s: str) -> bool:
+    parts = [p for p in _RANGE_SPLIT.split(s.strip()) if p]
+    return bool(parts) and all(_is_date(p) for p in parts)
+
+
 _EMAIL_RE = re.compile(r"\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b", re.I)
 
 
@@ -100,6 +132,8 @@ def _scrub(text: str) -> tuple[str, list[str]]:
             if ok(s):
                 return s
             if pattern is _PHONE_RE and len(_digits(s)) < 7:
+                return s
+            if pattern is _PHONE_RE and _is_dates(s):
                 return s
             removed.append(s.strip())
             return "[removed]"

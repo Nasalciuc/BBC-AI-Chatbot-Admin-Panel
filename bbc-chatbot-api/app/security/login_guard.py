@@ -34,6 +34,14 @@ _mem_lock = Lock()
 
 
 def _key(email: str, ip: str) -> str:
+    # While the self-test has seen the edge accept a forged IP, a new
+    # X-Forwarded-For per attempt would be a new pair per attempt and no
+    # backoff at all. The email alone is then the key: a lockout risk the
+    # owner is alerted to, instead of an unlimited password guess.
+    from app.security.client_ip import ip_trusted
+
+    if not ip_trusted():
+        return f"login_fail:{(email or '').strip().lower()}|*"
     return f"login_fail:{(email or '').strip().lower()}|{ip or 'unknown'}"
 
 

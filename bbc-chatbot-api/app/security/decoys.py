@@ -28,7 +28,7 @@ from app.security.client_ip import client_ip
 
 logger = logging.getLogger(__name__)
 
-DECOY_HEALTH = {"key_hits": 0, "canary_hits": 0, "alerts": 0, "form_honeypot": 0}
+DECOY_HEALTH = {"key_hits": 0, "canary_hits": 0, "alerts": 0, "alerts_suppressed": 0, "form_honeypot": 0}
 
 _CANARY_PATHS = {"/.env", "/api/admin/export"}
 # Dead-code bait paths planted in the bundles (a widget export used only by a
@@ -37,6 +37,13 @@ _CANARY_PATHS = {"/.env", "/api/admin/export"}
 _BAIT_PATHS = {"/api/internal/backup_v2", "/api/chat/debug-transcript"}
 _last_alert: dict[tuple[str, str], float] = {}
 _ALERT_COOLDOWN = 3600.0
+# The IP is client-controlled until the edge is proven (client_ip.py): a
+# scanner rotating X-Forwarded-For would get a fresh per-IP key every
+# request. One mail per reason per 5 minutes, whatever the IP, and a bounded
+# key table, keep that from flooding ops or growing without limit.
+_GLOBAL_COOLDOWN = 300.0
+_last_global: dict[str, float] = {}
+_MAX_KEYS = 10_000
 
 
 def _decoy_keys() -> list[str]:
@@ -52,10 +59,16 @@ async def _alert(reason: str, ip: str, detail: str) -> None:
     DECOY_HEALTH["alerts"] += 1
     key = (reason, ip or "?")
     now = time.time()
-    last = _last_alert.get(key, 0.0)
-    if now - last < _ALERT_COOLDOWN:
+    if now - _last_alert.get(key, 0.0) < _ALERT_COOLDOWN or now - _last_global.get(reason, 0.0) < _GLOBAL_COOLDOWN:
+        DECOY_HEALTH["alerts_suppressed"] += 1
         return
+    if len(_last_alert) >= _MAX_KEYS:
+        for k in [k for k, t in _last_alert.items() if now - t >= _ALERT_COOLDOWN]:
+            del _last_alert[k]
+        if len(_last_alert) >= _MAX_KEYS:
+            _last_alert.clear()
     _last_alert[key] = now
+    _last_global[reason] = now
     from app.services.email import send_ops_alert_email
 
     await send_ops_alert_email(
@@ -173,4 +186,5 @@ async def alert_role_change(actor: dict, target_id: str, changes: dict, ip: str)
 
 def _reset_for_tests() -> None:
     _last_alert.clear()
-    DECOY_HEALTH.update(key_hits=0, canary_hits=0, alerts=0, form_honeypot=0)
+    _last_global.clear()
+    DECOY_HEALTH.update(key_hits=0, canary_hits=0, alerts=0, alerts_suppressed=0, form_honeypot=0)

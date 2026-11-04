@@ -7,9 +7,19 @@ order of headers. `CLIENT_IP_HEADER` (app/flags.py) chooses the source:
   the metadata sites read `cf-connecting-ip`, then the first `X-Forwarded-For`
   element, then the socket peer; the rate limiter and the integration gate read
   `X-Forwarded-For`, then the peer (`prefer_cf=False`).
+- `xff-hops:N` — the Nth `X-Forwarded-For` element counted from the RIGHT,
+  N being the number of proxies that append to it (1 = the edge alone). A
+  client can prepend anything; it cannot write to the right of what the edge
+  appends, so this is the mode for an edge that appends instead of replacing.
 - any other value is a header name (e.g. `x-real-ip`) set by the platform's
   edge. It is switched on only after the production test (step 0.8 of the
   plan) shows the edge sets it and a client cannot.
+
+`legacy` stays the default because it is what production runs today: moving
+every visitor to a source the edge has not been shown to set would put them
+all behind one proxy address and one rate-limit bucket. Until the self-test
+below says the edge cannot be forged, nothing keys a lockout on the IP alone
+(login_guard falls back to the email while `ip_trusted()` is False).
 
 A configured header that is missing from a request falls back to `legacy`
 and is counted: if it were trusted blindly and the edge stopped sending it,
@@ -47,6 +57,13 @@ def _peer(request: Any) -> str:
 
 def _first_forwarded(request: Any) -> str:
     return (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+
+
+def _from_right(request: Any, hops: int) -> str:
+    parts = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()]
+    if hops < 1 or len(parts) < hops:
+        return ""
+    return parts[-hops]
 
 
 def _legacy(request: Any, prefer_cf: bool) -> str:
@@ -89,7 +106,14 @@ def client_ip(request: Optional[Any], *, prefer_cf: bool = True) -> str:
     mode = str(flag("CLIENT_IP_HEADER", "legacy")).strip().lower()
     if mode in ("", "legacy"):
         return _legacy(request, prefer_cf)
-    value = (request.headers.get(mode) or "").split(",")[0].strip()
+    if mode.startswith("xff-hops:"):
+        try:
+            hops = int(mode.split(":", 1)[1])
+        except ValueError:  # noqa: silent — a malformed hop count reads as 0: legacy order, counted as header_missing
+            hops = 0
+        value = _from_right(request, hops)
+    else:
+        value = (request.headers.get(mode) or "").split(",")[0].strip()
     if value:
         return value
     CLIENT_IP_HEALTH["header_missing"] += 1

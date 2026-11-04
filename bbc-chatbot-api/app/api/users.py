@@ -219,7 +219,25 @@ async def update_user(user_id: str, body: UserUpdate, request: Request, user: di
         await alert_role_change(user, user_id, _changes, client_ip(request))
         # Invalidate the target's live sessions: a demotion or deactivation
         # must take effect now, not at token expiry (S2-4).
-        await db.bump_token_version(user_id)
+        try:
+            await db.bump_token_version(user_id)
+        except Exception as e:
+            # The change is saved; the old sessions are not revoked. Say so
+            # to the caller and to ops instead of answering a clean success.
+            from app.security.token_version import TOKEN_VERSION_HEALTH
+            from app.services.email import send_ops_alert_email
+
+            TOKEN_VERSION_HEALTH["bump_failed"] += 1
+            logger.error(f"[token-version] sessions of {user_id} NOT invalidated: {type(e).__name__}: {e}")
+            await send_ops_alert_email(
+                "Session invalidation failed",
+                f"An access change for user {user_id} was saved, but their live sessions were not "
+                "revoked and stay valid until the token expires.",
+            )
+            return {
+                "success": True, "data": result, "count": 1,
+                "error": "sessions_not_invalidated",
+            }
 
     return {"success": True, "data": result, "count": 1}
 
