@@ -69,6 +69,7 @@ async def _run_forever(job_name: str, job_fn, interval_seconds: int):
 
 def start(app_state, settings) -> list[asyncio.Task]:
     """Called from startup. Returns tasks so shutdown can cancel them."""
+    from app.services.ip_selftest import run_ip_selftest
     from app.api.cron import (
         run_abandoned_crm,
         run_agent_sweep,
@@ -100,6 +101,8 @@ def start(app_state, settings) -> list[asyncio.Task]:
         # Every 60s: the two-minute stall must be noticed inside the client's
         # attention window, not on the shared cadence.
         ("queue_stall_alert", run_queue_stall_alert, 60),
+        # Hourly: does the edge let a client forge its IP? (ip_selftest)
+        ("ip_selftest", run_ip_selftest, 3600),
     ]
     tasks = [
         asyncio.create_task(

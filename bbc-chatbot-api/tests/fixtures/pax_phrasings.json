@@ -1,0 +1,395 @@
+{
+  "_about": "Synthetic passenger phrasings (no real conversation, rule R7). 'legacy' is what master 02e0737 extracts; 'v2' is the target with PAX_REGEX_V2 on. Values are [passengers, children_count, infant_count]; null = not extracted.",
+  "phrasings": [
+    {
+      "text": "2 seniors",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "two seniors",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "only me",
+      "legacy": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "just me",
+      "legacy": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "myself",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "Just myself.",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "solo",
+      "legacy": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "my husband and I",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "me and my wife",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "my wife and I and our 2 kids",
+      "legacy": {
+        "passengers": 3,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "two tickets",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "3 tickets",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "one adult",
+      "legacy": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "2 adults + a 9-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "we are a family of four",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 4,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "2 maybe 3",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "one way",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "2-3 options",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "seat 14A",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "flight 2 of 3",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "I'll book it myself",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "3 of us, my son is 9 years old",
+      "legacy": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "2 travellers",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "me and my wife and our 9 year old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "me and my 9-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "me and my son, 9 years old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "me and my son and his 5 year old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "we have 2 adults and 1 infant",
+      "legacy": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      }
+    },
+    {
+      "text": "family of 5",
+      "legacy": {
+        "passengers": 5,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 5,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "just me and 3 friends",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    }
+  ]
+}

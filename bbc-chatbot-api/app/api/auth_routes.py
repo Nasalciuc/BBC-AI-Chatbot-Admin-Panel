@@ -6,13 +6,15 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 from typing import Optional
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from config.settings import settings
 from app.db import supabase as db
 from app.security.auth import get_current_user
+from app.security.client_ip import client_ip
 from app.security.crm_token import PURPOSE_LOGIN, verify_crm_token
+from app.security import login_guard
 from app.security.rate_limiter import check_rate_limit
 from app.services.storage import upload_avatar
 
@@ -33,6 +35,8 @@ def _issue_jwt(user: dict) -> str:
         "tunnel_scope": user.get("tunnel_scope", "sales"),
         "avatar_url": user.get("avatar_url") or None,
         "phone": user.get("phone") or None,
+        "token_version": int(user.get("token_version") or 0),
+        "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -41,6 +45,9 @@ def _issue_jwt(user: dict) -> str:
 class LoginRequest(BaseModel):
     email: str
     password: str
+    # Honeypot (PR-3): a hidden field no human ever fills. A value means a bot
+    # filled the form. Counted here (alert-only); PR-11 feeds it to the jail.
+    company_fax: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -62,24 +69,48 @@ class SetPasswordRequest(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(req: LoginRequest, _rate: None = Depends(check_rate_limit)):
+async def login(req: LoginRequest, request: Request, _rate: None = Depends(check_rate_limit)):
     """Authenticate user with email + password, return JWT."""
-    user = await db.get_user_by_email(req.email.lower().strip())
+    _email = req.email.lower().strip()
+    _ip = client_ip(request, prefer_cf=False) or "unknown"
+
+    if (req.company_fax or "").strip():
+        from app.security.decoys import DECOY_HEALTH
+        DECOY_HEALTH["form_honeypot"] = DECOY_HEALTH.get("form_honeypot", 0) + 1
+        logger.warning(f"[decoy] login honeypot filled from {_ip}")
+
+    # Progressive backoff on the email+IP pair. A generic 429 either way, so a
+    # throttle never tells an attacker whether the email exists.
+    _wait = login_guard.retry_after(_email, _ip)
+    if _wait:
+        raise HTTPException(
+            429, "Too many attempts — please wait and try again.",
+            headers={"Retry-After": str(_wait)},
+        )
+
+    async def _reject() -> None:
+        await login_guard.record_failure(_email, _ip)
+
+    user = await db.get_user_by_email(_email)
     if not user:
+        await _reject()
         raise HTTPException(401, "Invalid email or password")
 
     # Check password
     stored_hash = user.get("password_hash")
     if not stored_hash:
-        raise HTTPException(401, "Account not activated — contact admin")
+        await _reject()
+        raise HTTPException(401, "Invalid email or password")
 
     if not bcrypt.checkpw(req.password.encode("utf-8"), stored_hash.encode("utf-8")):
+        await _reject()
         raise HTTPException(401, "Invalid email or password")
 
     # Check active
     if not user.get("is_active", True):
         raise HTTPException(403, "Account disabled — contact admin")
 
+    login_guard.clear(_email, _ip)
     token = _issue_jwt(user)
 
     logger.info(f"Login OK | email={user['email']} role={user.get('role')}")
@@ -152,11 +183,30 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
     )
 
 
+# Staff accounts live only on the company's own domains. An invite or
+# reactivation to any other domain is refused (PR-4 domain gate).
+_STAFF_EMAIL_DOMAINS = ("buybusinessclass.com", "businessclass-tickets.com")
+
+
+def _staff_email_ok(email: str) -> bool:
+    domain = (email or "").lower().strip().split("@")[-1]
+    return any(domain == d or domain.endswith("." + d) for d in _STAFF_EMAIL_DOMAINS)
+
+
 @router.post("/invite")
 async def invite_user(req: InviteRequest, current_user: dict = Depends(get_current_user)):
     """Create new user with temporary password. Owner/admin only."""
     if current_user.get("role") not in ("owner", "admin", "dev"):
         raise HTTPException(403, "Only owner/admin can invite users")
+    if not _staff_email_ok(req.email):
+        from app.flags import flag
+        if flag("ROLE_GATES_ENFORCE", False):
+            raise HTTPException(400, "Staff accounts must use a company email address")
+        # The domain only: no address at WARNING (CLAUDE.md rule 7).
+        _domain = (req.email or "").lower().strip().rsplit("@", 1)[-1]
+        logger.warning(f"[domain-gate] would refuse non-company invite domain: {_domain}")
+    if req.role == "owner" and current_user.get("role") != "owner":
+        raise HTTPException(403, "Only an owner can grant the owner role")
 
     # Check email not taken — or reactivate if inactive
     from app.services.email import generate_invite_token, send_invite_email

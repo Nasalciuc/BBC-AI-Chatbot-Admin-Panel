@@ -1,7 +1,7 @@
 /**
  * Centralised API client – the ONLY file that talks to the FastAPI backend.
- * Every request injects HTTP Basic-Auth via VITE_API_USER / VITE_API_PASS.
- * On network failure the callers fall back to mock data in their own components.
+ * Every request carries the session JWT from the login cookie as a Bearer
+ * token; without it the backend answers 401 and the panel goes to login.
  */
 
 /** Structured API error with HTTP status code for QueryCache error handling. */
@@ -37,35 +37,44 @@ import { openSse, type SseHandle } from '@/lib/sse-reader'
 
 // ── Config ────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-const USER = import.meta.env.VITE_API_USER ?? ''
-const PASS = import.meta.env.VITE_API_PASS ?? ''
+
+// DECOY — not a credential. This value authenticates nothing; it exists so that
+// a request replaying it (scraped from this bundle) trips a server-side alert.
+// The real value is injected at build time from VITE_DECOY_BUNDLE_KEY. The
+// module-level reference below keeps it in the production bundle (api.ts is
+// imported by the app, so a tree-shake cannot drop it).
+const DECOY_BUNDLE_KEY = import.meta.env.VITE_DECOY_BUNDLE_KEY ?? 'decoy-ops-key-not-a-secret'
+;(globalThis as unknown as { __bbcBuildRef?: string }).__bbcBuildRef ??= DECOY_BUNDLE_KEY
 
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {}
-  // Prefer JWT Bearer token from cookie
+  // The session JWT from the login cookie — the only credential the panel has.
   const cookie = getCookie('bbc_admin_token')
   if (cookie) {
     try {
       const token = JSON.parse(cookie)
       if (token) {
         headers['Authorization'] = `Bearer ${token}`
-        return headers
       }
-    } catch { /* fall through to Basic */ }
-  }
-  // Fallback to Basic Auth for dev/seed scenarios
-  if (USER && PASS) {
-    headers['Authorization'] = `Basic ${btoa(`${USER}:${PASS}`)}`
+    } catch { /* a malformed cookie is no credential: the request gets 401 */ }
   }
   return headers
 }
 
 // ── Auth ──────────────────────────────────────────────────────
-export async function loginUser(email: string, password: string) {
+export async function loginUser(
+  email: string,
+  password: string,
+  // Honeypot: a hidden field no human fills. Only sent when it has a value, so
+  // the backend can count a bot that filled the login form.
+  companyFax?: string
+) {
+  const body: Record<string, string> = { email, password }
+  if (companyFax) body.company_fax = companyFax
   const res = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000),
   })
   if (!res.ok) {

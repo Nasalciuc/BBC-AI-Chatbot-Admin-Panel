@@ -123,3 +123,40 @@ jobs:
       - name: Build
         working-directory: bbc-widget
         run: npm run build
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # gitleaks scans history, not just the tip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bbc-admin-app/package-lock.json
+
+      # A VITE_* secret is inlined into the bundle at build time, so the only
+      # honest place to catch it is a real build, not a grep of the source.
+      - name: Build bundles
+        run: |
+          (cd bbc-widget && npm ci && npm run build)
+          (cd bbc-admin-app && npm ci && npm run build)
+
+      - name: Scan bundles for secrets
+        run: python3 scripts/scan_bundle_secrets.py bbc-admin-app/dist bbc-widget/dist
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          # On pull_request the action lists the PR's commits through the API
+          # and refuses to run without a token. The job's own GITHUB_TOKEN is
+          # enough (read-only below); nothing else is exposed to the step.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

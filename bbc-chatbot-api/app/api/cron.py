@@ -3,6 +3,7 @@ Cron endpoint — process abandoned conversations.
 Auth: CRON_SECRET header (not JWT).
 """
 
+import hmac
 import logging
 from datetime import datetime, timezone
 
@@ -251,7 +252,6 @@ async def run_abandoned_crm() -> dict:
             if email and "@" not in email:
                 results.append({"id": cid, "status": "skipped", "reason": "email_invalid"})
                 continue
-            name = (conv.get("visitor_name") or "").strip() or "Customer"
 
             if _day_guard_blocks(cid):
                 logger.warning(
@@ -305,8 +305,8 @@ async def run_abandoned_crm() -> dict:
                     "mode": "ai",
                     "assigned_agent_id": None,
                 })
-                logger.info(f"[cron][{cid}] Closed existing CRM lead ({name})")
-                results.append({"id": cid, "status": "closed_existing_crm", "name": name})
+                logger.info(f"[cron][{cid}] Closed existing CRM lead")
+                results.append({"id": cid, "status": "closed_existing_crm"})
                 continue
 
             # The `if not lead:` recreate-and-push branch that used to live here
@@ -352,11 +352,11 @@ async def run_abandoned_crm() -> dict:
                         "assigned_agent_id": None,
                     })
                 logger.info(
-                    f"[cron][{cid}] Success: CRM submitted ({name})"
+                    f"[cron][{cid}] Success: CRM submitted"
                     f"{' + closed' if _may_close else ' (left open — human/closed)'}"
                 )
                 _pushed_today.add(cid)
-                results.append({"id": cid, "status": "success", "name": name})
+                results.append({"id": cid, "status": "success"})
             else:
                 logger.error(f"[cron][{cid}] CRM fail: {crm_result.error}")
                 # A gate refusal becomes work-list state; a transient HTTP
@@ -458,16 +458,21 @@ async def run_attention_emails() -> dict:
     return {"sent": sent, "skipped": skipped, "candidates": len(candidates)}
 
 
+def _require_cron(request: Request) -> None:
+    """CRON_SECRET bearer, compared in constant time."""
+    secret = (settings.cron_secret or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
+    auth = request.headers.get("Authorization", "")
+    if not hmac.compare_digest(auth.encode("utf-8"), f"Bearer {secret}".encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid cron token")
+
+
 @router.post("/cron/abandoned-crm")
 async def process_abandoned_conversations(request: Request):
     """Find conversations abandoned >30 min, submit to CRM with defaults, close."""
 
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
+    _require_cron(request)
 
     return await run_abandoned_crm()
 
@@ -478,12 +483,7 @@ async def agent_response_sweep(request: Request):
     within the response deadline. Covers the window when no agents are online
     (heartbeats don't run → stale cleanup doesn't run → conversations pile up).
     Auth: same Bearer CRON_SECRET as abandoned-crm."""
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
+    _require_cron(request)
 
     return await run_agent_sweep()
 
@@ -499,12 +499,7 @@ async def daily_learning(
     `?force=true`: bypass the already-ran guard. Evidence-unsafe — chunks that
     succeeded in a prior partial will be reinforced again. Rare, deliberate.
     Auth: same Bearer CRON_SECRET as abandoned-crm."""
-    if not settings.cron_secret or not settings.cron_secret.strip():
-        raise HTTPException(status_code=503, detail="Cron endpoint not configured")
-
-    auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {settings.cron_secret}":
-        raise HTTPException(status_code=401, detail="Invalid cron token")
+    _require_cron(request)
 
     from app.services.learning import run_learning
 
@@ -806,3 +801,118 @@ async def run_queue_stall_alert() -> dict:
     except Exception as e:
         logger.error(f"[queue-alert] failed: {e}", exc_info=True)
         return {"state": "error"}
+
+
+# ── AI cost reconciliation (PR-2) ─────────────────────────────────────────
+# The admin key that can read the org's usage report is NOT on this service
+# (it was breached twice). A private scheduled job holds it, calls Anthropic's
+# usage/cost API, and POSTs the daily aggregates here with the CRON_SECRET.
+# We compare the chatbot key's billed cost to the sum of ai_calls for that day
+# and store the diff in ai_cost_daily; other keys' rows are kept so the owner
+# can see how much of the bill is not the chatbot.
+@router.post("/cron/ai-cost-report")
+async def ai_cost_report(request: Request):
+    _require_cron(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="Expected {'rows': [...]}")
+
+    from app.ai.ledger import LEDGER_HEALTH
+
+    chatbot_key = (settings.anthropic_api_key_id or "").strip()
+    stored = 0
+    ledger_failed = 0
+    max_diff_pct = 0.0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        day = str(r.get("day", "")).strip()
+        api_key_id = str(r.get("api_key_id", "")).strip()
+        model = str(r.get("model", "")).strip()
+        if not (day and api_key_id and model):
+            continue
+        billed = float(r.get("billed_cost_usd", 0) or 0)
+        # Our ledger total for this day+model is only meaningful for our own key.
+        ledger_cost = float(r.get("ledger_cost_usd", 0) or 0)
+        if chatbot_key and api_key_id == chatbot_key:
+            try:
+                ledger_cost = await _ledger_cost_for(day, model)
+            except Exception as e:
+                # A failed read is not a 100% mismatch: skip the row rather
+                # than overwrite a good one with ledger_cost_usd = 0.
+                ledger_failed += 1
+                logger.warning(f"[cost-report] ledger sum failed for {day}/{model}, row skipped: {type(e).__name__}: {e}")
+                continue
+        diff = round(billed - ledger_cost, 6)
+        record = {
+            "day": day, "api_key_id": api_key_id, "model": model,
+            "billed_input_tokens": int(r.get("billed_input_tokens", 0) or 0),
+            "billed_output_tokens": int(r.get("billed_output_tokens", 0) or 0),
+            "billed_cost_usd": billed,
+            "ledger_cost_usd": ledger_cost,
+            "diff_usd": diff,
+        }
+        try:
+            await db._run_sync(
+                lambda rec=record: db.get_client().table("ai_cost_daily").upsert(
+                    rec, on_conflict="day,api_key_id,model"
+                ).execute(),
+                idempotent=False, label="ai_cost_daily",
+            )
+            stored += 1
+        except Exception as e:
+            logger.warning(f"[cost-report] upsert failed for {day}/{model}: {type(e).__name__}: {e}")
+        if chatbot_key and api_key_id == chatbot_key and billed > 0:
+            max_diff_pct = max(max_diff_pct, abs(diff) / billed * 100.0)
+
+    LEDGER_HEALTH["reconcile"] = {
+        "stored": stored, "ledger_failed": ledger_failed, "max_diff_pct": round(max_diff_pct, 2),
+    }
+    if max_diff_pct > 15:
+        from app.services.email import send_ops_alert_email
+
+        await send_ops_alert_email(
+            "AI cost reconciliation off",
+            f"The chatbot key's billed cost differs from the ledger by {max_diff_pct:.1f}% "
+            "on at least one model/day. See ai_cost_daily.",
+        )
+    return {"success": True, "data": {
+        "stored": stored, "ledger_failed": ledger_failed, "max_diff_pct": round(max_diff_pct, 2),
+    }}
+
+
+_LEDGER_PAGE = 1000  # PostgREST's default max rows per response
+
+
+async def _ledger_cost_for(day: str, model: str) -> float:
+    """Sum of ai_calls.cost_usd for one UTC day and model.
+
+    Reads every page over the half-open day [day, day+1). A failure raises:
+    the caller skips the row instead of storing a false 0.
+    """
+    from datetime import date, timedelta
+
+    start = date.fromisoformat(day)
+    end = start + timedelta(days=1)
+    total = 0.0
+    offset = 0
+    while True:
+        res = await db._run_sync(
+            lambda o=offset: db.get_client().table("ai_calls").select("cost_usd")
+            .gte("created_at", f"{start.isoformat()}T00:00:00+00:00")
+            .lt("created_at", f"{end.isoformat()}T00:00:00+00:00")
+            .eq("model", model).order("id")
+            .range(o, o + _LEDGER_PAGE - 1).execute(),
+            label="ai_calls",
+        )
+        rows = getattr(res, "data", None) or []
+        total += sum(float(r.get("cost_usd", 0) or 0) for r in rows)
+        if len(rows) < _LEDGER_PAGE:
+            break
+        offset += _LEDGER_PAGE
+    return round(total, 6)

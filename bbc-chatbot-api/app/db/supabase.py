@@ -412,6 +412,11 @@ async def add_message(
     """Insert a message. Never loses a message."""
     try:
         db = get_client()
+        if role == "ai":
+            # Output guard: strip any non-brand contact from a bot reply before
+            # it is stored (PR-4). 'log' mode leaves the text unchanged.
+            from app.ai.output_guard import guard_ai_text
+            content = await guard_ai_text(content, conversation_id=conversation_id)
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
@@ -647,7 +652,9 @@ def _chat_enabled_column_available() -> bool:
 def _downgrade_chat_enabled(err: Exception) -> None:
     """Flip the flag ONLY for a real missing-column error. Never silent."""
     global _chat_enabled_ok, _chat_enabled_downgraded_at
-    if not _is_missing_column_error(err):
+    # Only when the error names THIS column: a missing 030/038 column on the
+    # same query must not switch the chat_enabled filter off.
+    if not _is_missing_column_error(err) or "chat_enabled" not in str(err):
         return
     if _chat_enabled_ok is not False:
         logger.error(
@@ -680,6 +687,50 @@ def _downgrade_queued_at(err: Exception) -> None:
         )
     _queued_at_ok = False
     _queued_at_downgraded_at = time.time()
+
+
+# ── Decoy filtering (038) ─────────────────────────────────────
+# A decoy row (users/leads/conversations.is_decoy = true) is filtered out of
+# every server-side list so no operator or job ever touches it. The column may
+# not exist yet (migration not applied): on a real missing-column error the
+# probe downgrades and re-probes, running WITHOUT the filter meanwhile — which
+# is safe, because no decoy row exists until the owner seeds it after 038.
+_decoy_ok: dict[str, bool] = {}
+_decoy_downgraded_at: dict[str, float] = {}
+
+
+def _decoy_filterable(table: str) -> bool:
+    from app.flags import flag
+
+    if not flag("DECOYS_ENABLED", True):
+        return False
+    if _decoy_ok.get(table) is not False:
+        return True
+    at = _decoy_downgraded_at.get(table)
+    if at is None:
+        return True
+    return time.time() - at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_decoy(table: str, err: Exception) -> None:
+    # Only when the error names is_decoy: a missing chat_enabled (033) or
+    # crm_push_gate_reason (030) column must not unhide the decoy rows.
+    if not _is_missing_column_error(err) or "is_decoy" not in str(err):
+        return
+    if _decoy_ok.get(table) is not False:
+        logger.error(
+            f"{table}.is_decoy is missing — apply migrations/038_decoys.sql. "
+            "Running WITHOUT the decoy filter (no rows are hidden) and re-probing in 60s."
+        )
+    _decoy_ok[table] = False
+    _decoy_downgraded_at[table] = time.time()
+
+
+def _hide_decoys(q, table: str):
+    """Append the is_decoy=false filter when the column is usable."""
+    if _decoy_filterable(table):
+        return q.eq("is_decoy", False)
+    return q
 
 
 def supervisor_columns_status() -> dict:
@@ -1290,10 +1341,12 @@ async def get_leads(
                 q = q.is_("conversations.assigned_agent_id", "null")
             elif assigned_to and assigned_to != "all":
                 q = q.eq("conversations.assigned_agent_id", assigned_to)
+            q = _hide_decoys(q, "leads")
             return q.range(offset, offset + limit - 1).execute()
         try:
             res = await _run_sync(_query)
         except Exception as col_err:
+            _downgrade_decoy("leads", col_err)
             # 030 not applied → the work-list degrades to gold orphans only.
             if crm_pending and _is_missing_column_error(col_err):
                 logger.warning(
@@ -1301,6 +1354,9 @@ async def get_leads(
                     "reasons unavailable (apply migrations/030_crm_lead_id.sql)"
                 )
                 res = await _run_sync(lambda: _query(with_030_cols=False))
+            elif _is_missing_column_error(col_err) and not _decoy_filterable("leads"):
+                # leads.is_decoy missing (038 not applied) — retry unfiltered.
+                res = await _run_sync(_query)
             else:
                 raise
         rows = []
@@ -1737,12 +1793,14 @@ async def get_users(
                 f"name.ilike.%{search}%,"
                 f"email.ilike.%{search}%"
             )
+        q = _hide_decoys(q, "users")
         return q.range(offset, offset + limit - 1).execute()
     try:
         res = await _run_sync(_query)
     except Exception as _e:
         _downgrade_chat_enabled(_e)
-        if _chat_enabled_column_available():
+        _downgrade_decoy("users", _e)
+        if _chat_enabled_column_available() and _decoy_filterable("users"):
             raise           # not a missing-column error — surface it
         res = await _run_sync(lambda: _query(False))
     return res.data or [], res.count or 0
@@ -2108,6 +2166,40 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
     except Exception as e:
         logger.error(f"update_user error: {e}")
         return None
+
+
+async def bump_token_version(user_id: str) -> None:
+    """Invalidate a user's live sessions (role/scope change, deactivation).
+
+    Uses the atomic increment RPC when present; falls back to read+write.
+    A missing token_version column is tolerated (feature inert until 039);
+    any other failure raises, so the caller can say the sessions are still
+    live instead of reporting a clean demotion."""
+    try:
+        db = get_client()
+        # Read+write (bumps are rare and admin-initiated; the tiny race is
+        # harmless — the worst case is one more login).
+        cur = await _run_sync(
+            lambda: db.table("users").select("token_version").eq("id", user_id).limit(1).execute()
+        )
+        rows = getattr(cur, "data", None) or []
+        nxt = int((rows[0].get("token_version") if rows else 0) or 0) + 1
+        await _run_sync(
+            lambda: db.table("users").update({"token_version": nxt}).eq("id", user_id).execute(),
+            idempotent=False,
+        )
+    except Exception as e:
+        if _is_missing_column_error(e):
+            logger.warning("[token-version] users.token_version missing — apply 039")
+            return
+        logger.error(f"bump_token_version error: {type(e).__name__}: {e}")
+        raise
+    finally:
+        try:
+            from app.security.token_version import invalidate_cache
+            invalidate_cache(user_id)
+        except Exception as _e:  # noqa: silent — cache invalidation is best-effort
+            logger.debug(f"token_version cache invalidate skipped: {type(_e).__name__}")
 
 
 async def create_user_access_audit(payload: dict) -> Optional[dict]:
