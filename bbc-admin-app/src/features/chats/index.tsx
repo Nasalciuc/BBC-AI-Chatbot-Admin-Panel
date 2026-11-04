@@ -518,7 +518,11 @@ export function Chats() {
  *  faster than a person can). Not lost — held from the automatic CRM push
  *  until a human looks. */
 function isFormTrapSuspect(conv: Conversation): boolean {
-  return (conv.metadata as { suspect?: unknown } | undefined)?.suspect === 'form_trap'
+  // The list lifts metadata.suspect to the top level (it carries no metadata);
+  // a full conversation object still has it inside metadata.
+  const lifted = conv.suspect
+  const nested = (conv.metadata as { suspect?: unknown } | undefined)?.suspect
+  return (lifted ?? nested) === 'form_trap'
 }
 
 function SuspectBadge() {

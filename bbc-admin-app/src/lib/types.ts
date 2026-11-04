@@ -48,6 +48,8 @@ export interface Conversation {
   metadata?: Record<string, unknown>
   has_flagged_content?: boolean
   flagged_reason?: string | null
+  /** metadata.suspect lifted by the list (PR-12 form trap): 'form_trap' when held. */
+  suspect?: string | null
 }
 
 export interface ConversationsResponse {

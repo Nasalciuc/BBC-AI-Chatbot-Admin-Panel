@@ -27,13 +27,23 @@ export function MfaStep({
   const [busy, setBusy] = useState(false)
   const [qr, setQr] = useState<{ otpauth_uri: string; qr_svg: string } | null>(null)
   const [recovery, setRecovery] = useState<{ codes: string[]; token: string; user: LoginUser } | null>(null)
+  // A failed set-up or code stays on the form (role='alert'), not only in a
+  // toast that disappears; the set-up failing also ends the spinner.
+  const [error, setError] = useState<string | null>(null)
+  const [setupFailed, setSetupFailed] = useState(false)
 
   useEffect(() => {
     if (mode !== 'enroll') return
     let alive = true
     startMfaEnroll(mfaToken)
       .then((d) => { if (alive) setQr(d) })
-      .catch((e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not start the set-up'))
+      .catch((e: unknown) => {
+        if (!alive) return
+        const msg = e instanceof Error ? e.message : 'Could not start the set-up'
+        setSetupFailed(true)
+        setError(msg)
+        toast.error(msg)
+      })
     return () => { alive = false }
   }, [mode, mfaToken])
 
@@ -41,6 +51,7 @@ export function MfaStep({
     e.preventDefault()
     if (!code.trim()) return
     setBusy(true)
+    setError(null)
     try {
       if (mode === 'required') {
         const r: LoginResult = await verifyMfa(mfaToken, code.trim())
@@ -50,7 +61,9 @@ export function MfaStep({
         if (r.token && r.user) setRecovery({ codes: r.recovery_codes, token: r.token, user: r.user })
       }
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'That code did not work')
+      const msg = err instanceof Error ? err.message : 'That code did not work'
+      setError(msg)
+      toast.error(msg)
       setCode('')
     } finally {
       setBusy(false)
@@ -95,7 +108,7 @@ export function MfaStep({
               className='mx-auto h-48 w-48 rounded-md bg-background'
               src={`data:image/svg+xml;utf8,${encodeURIComponent(qr.qr_svg)}`}
             />
-          ) : (
+          ) : setupFailed ? null : (
             <div className='mx-auto flex h-48 w-48 items-center justify-center'>
               <Loader2 className='animate-spin text-muted-foreground' />
             </div>
@@ -117,9 +130,16 @@ export function MfaStep({
         autoComplete='one-time-code'
         placeholder={mode === 'enroll' ? '123456' : '123456 or abcde-fghjk'}
         value={code}
-        onChange={(e) => setCode(e.target.value)}
+        onChange={(e) => { setCode(e.target.value); if (error && !setupFailed) setError(null) }}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? 'mfa-error' : undefined}
         data-testid='mfa-code'
       />
+      {error && (
+        <p id='mfa-error' role='alert' className='text-sm text-destructive' data-testid='mfa-error'>
+          {error}
+        </p>
+      )}
       <Button disabled={busy || (mode === 'enroll' && !qr)} data-testid='mfa-submit'>
         {busy ? <Loader2 className='animate-spin' /> : <ShieldCheck />}
         {mode === 'enroll' ? 'Turn on and sign in' : 'Verify'}

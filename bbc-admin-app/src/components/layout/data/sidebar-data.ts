@@ -56,7 +56,10 @@ export function getSidebarData(
               ...(permissions.canReviewLearning
                 ? [{ title: 'Learning', url: '/learning' as const, icon: GraduationCap }]
                 : []),
-              ...(permissions.canManageTeams
+              // The ban list and unban — owner/admin/dev, the backend's
+              // MANAGEMENT set (app/security/gates.py). Not canManageTeams for
+              // the same reason as Learning: a project manager would get 403s.
+              ...(permissions.canManageBans
                 ? [{ title: 'Security · Bans', url: '/security/bans' as const, icon: ShieldAlert }]
                 : []),
             ],

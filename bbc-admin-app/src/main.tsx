@@ -19,6 +19,17 @@ import { routeTree } from './routeTree.gen'
 // Styles
 import './styles/index.css'
 
+// The last refresh-failure toast per query (queryHash -> ms): a failing
+// background poll says so at most once a minute instead of never or always.
+const REFRESH_TOAST_EVERY_MS = 60_000
+const lastRefreshToast = new Map<string, number>()
+function shouldNotifyRefreshFailure(queryHash: string, now: number): boolean {
+  const last = lastRefreshToast.get(queryHash)
+  if (last !== undefined && now - last < REFRESH_TOAST_EVERY_MS) return false
+  lastRefreshToast.set(queryHash, now)
+  return true
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -67,8 +78,10 @@ const queryClient = new QueryClient({
             if (import.meta.env.PROD) {
               router.navigate({ to: '/500' })
             }
-          } else if (query.state.fetchFailureCount <= 1) {
-            toast.error('Could not refresh — retrying in the background')
+          } else if (shouldNotifyRefreshFailure(query.queryHash, Date.now())) {
+            // Once per query per minute, whatever the retry count: onError
+            // runs after the retries, so a count-based guard never fired.
+            toast.error('Could not refresh — retrying in the background', { id: 'refresh-failed' })
           }
         }
         if (error.status === 403) {
