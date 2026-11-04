@@ -143,6 +143,8 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   )
   const [showAttention, setShowAttention] = useState(false)
   const [focusLauncher, setFocusLauncher] = useState(false)
+  /** The chat replaced the form in an open panel: no second entrance, only the conversation fades in. */
+  const [swapped, setSwapped] = useState(false)
   /** The panel is on its way out (a short exit animation before it unmounts). */
   const [closing, setClosing] = useState(false)
   const closingRef = useRef(false)
@@ -270,6 +272,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
     setVisitor(vis)
     setMetadata(meta)
+    setSwapped(true)
     setStep('chat')
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor: vis, metadata: meta }))
     try { localStorage.setItem('bbc_conv_tunnel', tunnel) } catch {}
@@ -284,6 +287,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
     animateClose(() => {
       setFocusLauncher(true)
+      setSwapped(false)
       setStep('buttons')
       clearWidgetStorage()
     })
@@ -293,6 +297,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return  // panel is always open inside the CRM iframe
     animateClose(() => {
       setFocusLauncher(true)
+      setSwapped(false)
       setStep('buttons')
     })
     // Keep localStorage intact (visitor_id, conv_id, visitor_key) — "X → reopen"
@@ -310,6 +315,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       if (e.key === 'Escape' && step !== 'buttons') {
         animateClose(() => {
           setFocusLauncher(true)
+          setSwapped(false)
           setStep('buttons')
         })
         safeRemove('bbc_widget')
@@ -343,7 +349,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
         />
       )}
       {step === 'chat' && (
-        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} />
+        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} swapped={swapped} />
       )}
     </div>
   )

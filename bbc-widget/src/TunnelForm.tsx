@@ -3,6 +3,7 @@ import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from '
 import brand from './config'
 import { PanelTop } from './PanelTop'
 import { IconAlert, IconArrowRight } from './icons'
+import { useIsPhone } from './phoneSheet'
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -34,6 +35,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
   const [errors, setErrors] = useState<Errors>({})
   const firstRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
+  const isPhone = useIsPhone()
 
   // Focus the first field on computers; on touch screens a focused field would throw up the keyboard
   // before the visitor has read the panel.
@@ -120,7 +122,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
     <div
       class={`bw-panel bw-panel--form${embedded ? ' bw-panel--embedded' : ''}`}
       role="dialog"
-      aria-modal="false"
+      aria-modal={isPhone && !embedded ? 'true' : 'false'}
       aria-labelledby="bw-form-title"
     >
       <PanelTop subtitle={brand.tagline} onClose={embedded ? undefined : onBack}>
