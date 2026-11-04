@@ -1,5 +1,6 @@
 """PR-11 — the ASGI fail2ban guard: jails, fail-open, poisoned-ban, enforce."""
 
+import asyncio
 import os
 import sys
 
@@ -316,6 +317,51 @@ async def test_parallel_trips_write_one_row_and_one_alert(monkeypatch):
         await ban_guard._ban_identity(store, "3.3.3.3", "honeypot", 3600, alert=True)
     assert rows.await_count == 1 and alert.await_count == 1
     assert ban_guard.FAIL2BAN_HEALTH["ban_already_held"] == 2
+
+
+class _NxRedis:
+    """Just enough Redis for ban(): every call yields to the loop first, so
+    concurrent bans really interleave; SET NX is the only gate."""
+
+    def __init__(self):
+        self.keys: dict = {}
+        self.incrs = 0
+
+    async def set(self, key, value, nx=False, ex=None):
+        await asyncio.sleep(0)
+        if nx and key in self.keys:
+            return None
+        self.keys[key] = value
+        return True
+
+    async def ttl(self, key):
+        await asyncio.sleep(0)
+        return 3500
+
+    async def incr(self, key):
+        await asyncio.sleep(0)
+        self.incrs += 1
+        return self.incrs
+
+    async def expire(self, key, seconds):
+        await asyncio.sleep(0)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_trips_write_one_row_and_one_alert(monkeypatch):
+    fake = _NxRedis()
+    store = ban_store.BanStore(redis_client=fake)
+    rows = AsyncMock()
+    monkeypatch.setattr(ban_guard, "record_ban_row", rows)
+    alert = AsyncMock()
+    monkeypatch.setattr(ban_guard, "_ops_alert", alert)
+    await asyncio.gather(*(
+        ban_guard._ban_identity(store, "6.6.6.6", "honeypot", 3600, alert=True) for _ in range(5)
+    ))
+    assert rows.await_count == 1 and alert.await_count == 1
+    assert fake.incrs == 1  # only the claimer counts the repeat
+    assert ban_guard.FAIL2BAN_HEALTH["ban_already_held"] == 4
 
 
 @pytest.mark.asyncio
