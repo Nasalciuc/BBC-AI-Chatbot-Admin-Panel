@@ -330,3 +330,16 @@ async def test_missing_bans_table_logs_once_and_stays_quiet(monkeypatch):
     await real("203.0.113.9", "honeypot", 60)
     assert calls["n"] == 1
     assert ban_guard.FAIL2BAN_HEALTH["table_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_revocation_is_seen_even_when_the_sync_redis_is_down(monkeypatch):
+    """Review fix: revoke_sessions also keeps the mark in memory, so the sync
+    reader sees it when response_cache's Redis client is unavailable."""
+    from unittest.mock import AsyncMock as _AM
+
+    fake = _AM()
+    store = ban_store.BanStore(redis_client=fake)
+    monkeypatch.setattr("app.services.response_cache._get_redis", lambda: None)
+    await store.revoke_sessions("u-77")
+    assert ban_store.revoked_before_sync("u-77") is not None

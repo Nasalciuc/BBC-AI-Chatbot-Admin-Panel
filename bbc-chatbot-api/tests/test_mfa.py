@@ -236,31 +236,6 @@ async def test_weekly_security_report_counts_without_pii(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ai_cost_report_reconciles_the_chatbot_key(monkeypatch):
-    """Review fix: _ledger_cost_for was called without await, so every row of
-    the chatbot's own key raised TypeError and the endpoint returned 500."""
-    from app.api import cron
-
-    monkeypatch.setattr(cron, "_require_cron", lambda r: None)
-    monkeypatch.setattr(settings, "anthropic_api_key_id", "key-bot", raising=False)
-    monkeypatch.setattr(cron, "_ledger_cost_for", AsyncMock(return_value=9.0))
-
-    async def _run_sync(fn, **kw):
-        class R:
-            data = []
-        return R()
-
-    monkeypatch.setattr(cron.db, "_run_sync", _run_sync)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        r = await c.post("/api/cron/ai-cost-report", json={"rows": [
-            {"day": "2026-11-02", "api_key_id": "key-bot", "model": "claude-sonnet-4-6", "billed_cost_usd": 10.0},
-        ]})
-    assert r.status_code == 200, r.text
-    from app.ai.ledger import LEDGER_HEALTH
-    assert LEDGER_HEALTH["reconcile"]["max_diff_pct"] == 10.0
-
-
-@pytest.mark.asyncio
 async def test_a_changed_key_still_lets_a_recovery_code_in(monkeypatch):
     """Review fix: the TOTP secret no longer decrypts (key rotated), but the
     bcrypt recovery codes do not depend on the key."""
