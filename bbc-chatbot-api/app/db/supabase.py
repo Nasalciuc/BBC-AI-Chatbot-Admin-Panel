@@ -564,7 +564,10 @@ _LIST_COLUMNS_BASE = (
     # updated_at while the detail showed the real thing.
     "widget_presence:metadata->>widget_presence,"
     "widget_last_event_at:metadata->>widget_last_event_at,"
-    "widget_pings:metadata->>widget_pings"
+    "widget_pings:metadata->>widget_pings,"
+    # The form-trap hold flag (PR-12), for the list's Suspect badge: the list
+    # carries no metadata, so the badge had nothing to read.
+    "suspect:metadata->>suspect"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a

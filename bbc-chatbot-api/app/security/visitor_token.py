@@ -85,7 +85,9 @@ def parse(token: str, *, now: Optional[int] = None, grace: int = 0) -> tuple[Opt
         return None, "invalid"
     _, vid, iat_s, exp_s, sig = parts
     body = ".".join(parts[:4])
-    if not hmac.compare_digest(sig, _sign(body, secret)):
+    # Bytes, not str: compare_digest raises TypeError on a non-ASCII str, and
+    # the signature is untrusted input (?vt= can carry percent-encoded Unicode).
+    if not hmac.compare_digest(sig.encode("utf-8", "surrogatepass"), _sign(body, secret).encode("utf-8")):
         return None, "invalid"
     try:
         exp = int(exp_s)

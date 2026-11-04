@@ -19,7 +19,7 @@ bcrypt==4.2.0
 redis==5.2.1
 # PR-13: TOTP second factor, its encrypted secret and its enrolment QR.
 pyotp==2.9.0
-cryptography==43.0.3
+cryptography==50.0.2  # newest release; 43.0.3 carried OSV HIGH advisories (bundled OpenSSL GHSA-537c-gmf6-5ccf, GHSA-r6ph-v2qm-q3c2, GHSA-jwv3-5hgf-82ww)
 qrcode==7.4.2
 
 # LangGraph — flow control for a chat turn (PR-5). Pinned exactly; the graph
