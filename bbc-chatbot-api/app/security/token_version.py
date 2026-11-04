@@ -5,7 +5,10 @@ version is a claim in the JWT; every request compares it to the users row,
 cached 60s. A mismatch is a 401, so a bump logs the user out within a minute.
 
 This is naturally inert until something bumps: a missing column, a missing
-claim and a fresh user all read as 0, so 0 == 0 passes. The read is sync
+claim and a fresh user all read as 0, so 0 == 0 passes. A failed read is not
+0: it fails closed (the request is a 401) unless this process already holds a
+version for the user. That entry cannot predate a bump, because a bump drops
+it (invalidate_cache) in this same process (ADR-5, one process). The read is sync
 (get_current_user runs under a threadpool Depends) and cached, so it adds at
 most one cheap query per user per minute.
 """
@@ -24,9 +27,15 @@ _cache: dict[str, tuple[int, float]] = {}
 _lock = Lock()
 _missing_column = False
 
+TOKEN_VERSION_HEALTH: dict[str, int] = {"read_failed": 0, "refused_unreadable": 0, "bump_failed": 0}
 
-def current_version(user_id: str) -> int:
-    """The user's stored token_version, cached for 60s. 0 on any trouble."""
+
+def current_version(user_id: str) -> Optional[int]:
+    """The user's stored token_version, cached for 60s.
+
+    None when it cannot be read and nothing is cached for the user: the
+    caller must refuse, not guess 0 (a guessed 0 validates a revoked token).
+    """
     if not user_id:
         return 0
     now = time.time()
@@ -35,12 +44,19 @@ def current_version(user_id: str) -> int:
         if hit and now - hit[1] < _TTL:
             return hit[0]
     version = _read(user_id)
+    if version is None:
+        # Keep serving the last version read in this process (a bump would
+        # have dropped it); with none, refuse.
+        if hit is not None:
+            return hit[0]
+        TOKEN_VERSION_HEALTH["refused_unreadable"] += 1
+        return None
     with _lock:
         _cache[user_id] = (version, now)
     return version
 
 
-def _read(user_id: str) -> int:
+def _read(user_id: str) -> Optional[int]:
     global _missing_column
     try:
         from app.db.supabase import get_client
@@ -59,13 +75,15 @@ def _read(user_id: str) -> int:
                 _missing_column = True
                 logger.warning("[token-version] column missing — apply 039; check is inert until then")
             return 0
-        logger.warning(f"[token-version] read failed, treating as 0: {type(e).__name__}: {e}")
-        return 0
+        TOKEN_VERSION_HEALTH["read_failed"] += 1
+        logger.warning(f"[token-version] read failed: {type(e).__name__}: {e}")
+        return None
 
 
 def matches(user_id: str, claim: Optional[int]) -> bool:
     """True when the token's version claim matches the stored version."""
-    return int(claim or 0) == current_version(user_id)
+    version = current_version(user_id)
+    return version is not None and int(claim or 0) == version
 
 
 def invalidate_cache(user_id: str) -> None:
@@ -78,3 +96,5 @@ def _reset_for_tests() -> None:
     with _lock:
         _cache.clear()
     _missing_column = False
+    for k in TOKEN_VERSION_HEALTH:
+        TOKEN_VERSION_HEALTH[k] = 0

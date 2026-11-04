@@ -425,6 +425,12 @@ def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
     minors: the whole triple is untrustworthy and nothing of it is kept. A
     count the regex already set this turn wins over the tool, the same rule
     STEP 6.1 applies to passengers and cabin_class.
+
+    The check runs against the total that will be SAVED, not only the
+    tool's: "my husband and I and three children" can leave the regex at 2
+    (the adults) while the tool says 5 with 3 children. A regex total below
+    the minors is then the adults alone, and the tool's consistent total
+    replaces it, so a lead never holds fewer travelers than minors.
     """
     children = _bounded_int(te.get("children"), 0, 8)
     infants = _bounded_int(te.get("infants"), 0, 8)
@@ -434,10 +440,20 @@ def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
     if passengers is not None and passengers < (children or 0) + (infants or 0):
         return {}, True
     updates: dict = {}
-    if children is not None and not entities.get("_children_count"):
+    if children is not None and entities.get("_children_count") is None:
         updates["_children_count"] = children
-    if infants is not None and not entities.get("_infant_count"):
+    if infants is not None and entities.get("_infant_count") is None:
         updates["_infant_count"] = infants
+    minors = sum(
+        (updates.get(k) if updates.get(k) is not None else entities.get(k)) or 0
+        for k in ("_children_count", "_infant_count")
+    )
+    saved_total = entities.get("passengers") or passengers
+    if saved_total is not None and saved_total < minors:
+        if passengers is not None and passengers >= minors and entities.get("passengers"):
+            updates["passengers"] = passengers
+        else:
+            return {}, True
     return updates, False
 
 
@@ -1109,8 +1125,10 @@ async def _pipeline(
         "return_date": None if _suppress_return_date else extracted.return_date,
         "trip_type": "multi_city" if _multi_city_declared else extracted.trip_type,
         "itinerary": extracted.itinerary,
-        "_children_count": extracted.children_count or 0,
-        "_infant_count": extracted.infant_count or 0,
+        # None = not said this turn; 0 = said "no children" (a correction
+        # to zero must reach the lead, so the two are kept apart).
+        "_children_count": extracted.children_count,
+        "_infant_count": extracted.infant_count,
         # Sales-methodology signals — merged into the lead's intent_signals and
         # handed to the consultant; _metadata carries SITE CONTEXT to the prompt.
         "occasion": extracted.occasion,

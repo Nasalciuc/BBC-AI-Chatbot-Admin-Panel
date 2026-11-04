@@ -112,6 +112,30 @@ async def test_alert_cooldown_is_once_per_ip_hour():
 
 
 @pytest.mark.asyncio
+async def test_a_rotating_forwarded_ip_cannot_flood_ops():
+    with patch("app.services.email.send_ops_alert_email", new=AsyncMock()) as alert:
+        for i in range(50):
+            req = MagicMock()
+            req.headers = {"x-api-key": settings.decoy_bundle_key, "user-agent": "curl",
+                           "x-forwarded-for": f"198.51.100.{i}"}
+            req.url = MagicMock(); req.url.query = ""; req.url.path = "/x"
+            req.client = MagicMock(); req.client.host = "9.9.9.9"
+            await decoys.scan_headers_and_query(req)
+    assert alert.await_count == 1  # one mail per reason per 5 minutes
+    assert decoys.DECOY_HEALTH["alerts_suppressed"] == 49
+
+
+@pytest.mark.asyncio
+async def test_the_cooldown_table_stays_bounded(monkeypatch):
+    monkeypatch.setattr(decoys, "_MAX_KEYS", 10)
+    monkeypatch.setattr(decoys, "_GLOBAL_COOLDOWN", 0.0)
+    with patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+        for i in range(25):
+            await decoys._alert("key_replay", f"198.51.100.{i}", "x")
+    assert len(decoys._last_alert) <= 10
+
+
+@pytest.mark.asyncio
 async def test_role_change_alert():
     with patch("app.services.email.send_ops_alert_email", new=AsyncMock()) as alert:
         await decoys.alert_role_change({"email": "admin@bbc"}, "u-1",

@@ -155,6 +155,18 @@ async def shutdown() -> None:
         flags_task.cancel()
     ledger_task = getattr(app.state, "ledger_task", None)
     if ledger_task is not None:
+        # The final flush runs inside the task's CancelledError handler: wait
+        # for it, or the loop closes first and the last ~2 s of ai_calls rows
+        # are lost on every deploy. A batch already mid-insert when the
+        # cancel lands is not retried (its thread may still write it).
+        import asyncio
+
         ledger_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(ledger_task, return_exceptions=True), timeout=5)
+        except asyncio.TimeoutError as e:
+            logger.warning(
+                f"[ledger] final flush did not finish within 5 s; queued ai_calls rows may be lost: {type(e).__name__}"
+            )
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()

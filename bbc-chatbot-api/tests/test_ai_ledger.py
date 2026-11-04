@@ -61,6 +61,26 @@ def test_haiku_55_second_tier_over_100k():
     assert big["input"] > small["input"]
 
 
+def test_haiku_55_rates_match_the_published_table():
+    # platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-04
+    small, _ = rates_for("claude-haiku-5-5", 50_000)
+    big, _ = rates_for("claude-haiku-5-5", 150_000)
+    per_m = {k: round(v * 1_000_000, 4) for k, v in small.items()}
+    assert per_m == {"input": 0.10, "cache_write_5m": 0.125, "cache_write_1h": 0.20,
+                     "cache_read": 0.01, "output": 0.50}
+    per_m = {k: round(v * 1_000_000, 4) for k, v in big.items()}
+    assert per_m == {"input": 0.50, "cache_write_5m": 0.625, "cache_write_1h": 1.0,
+                     "cache_read": 0.05, "output": 2.50}
+
+
+def test_haiku_55_tier_counts_cache_reads_and_writes():
+    # 20k fresh input over a 90k cache hit is a 110k prompt: the high tier.
+    usage = SimpleNamespace(input_tokens=20_000, output_tokens=1_000,
+                            cache_read_input_tokens=90_000, cache_creation_input_tokens=0)
+    expected = round(20_000 * 0.50 / 1e6 + 1_000 * 2.50 / 1e6 + 90_000 * 0.05 / 1e6, 6)
+    assert cost_from_usage("claude-haiku-5-5", usage) == expected
+
+
 def test_unknown_model_uses_family_then_zero():
     r, exact = rates_for("claude-sonnet-9-9")
     assert exact is False and r["input"] > 0

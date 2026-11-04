@@ -1,9 +1,11 @@
 """STEP 3 runs the classifier off the event loop — a slow classify can't freeze /health."""
 
 import asyncio
+import threading
 import os
 import sys
-from unittest.mock import patch
+from contextlib import ExitStack
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -16,28 +18,51 @@ import app.pipeline.orchestrator as orch
 from app.pipeline.intent import Intent
 
 
+_CID = "aaaaaaaa-bbbb-cccc-dddd-0000000000aa"
+
+
+class _StopAfterIntent(Exception):
+    """Raised by the patched classifier: STEP 3 ran, nothing after it is needed."""
+
+
 @pytest.mark.asyncio
-async def test_detect_intent_does_not_block_the_loop():
+async def test_step3_runs_detect_intent_off_the_event_loop():
+    """Through the production call path (_pipeline), not a copy of its shape:
+    the classifier must run in a worker thread while the loop keeps ticking."""
     import time
 
+    from app.models.chat import VisitorInfo
+
+    seen = {}
+
     def _slow(*a, **k):
+        seen["thread"] = threading.get_ident()
         time.sleep(0.4)  # a blocking classify
-        return Intent.GENERAL_QUESTION
+        raise _StopAfterIntent()
 
     async def _ticker():
-        # If STEP 3 blocked the loop, these ticks would not advance during the sleep.
         ticks = 0
-        for _ in range(8):
+        for _ in range(6):
             await asyncio.sleep(0.05)
             ticks += 1
         return ticks
 
-    with patch.object(orch, "detect_intent", _slow):
+    conv = {"id": _CID, "mode": "ai", "status": "active", "tunnel": "sales", "metadata": {}}
+    with ExitStack() as stack:
+        for target, value in (
+            ("app.services.conversation_service.get_or_create_conversation", AsyncMock(return_value=conv)),
+            ("app.services.conversation_service.add_message", AsyncMock(return_value={"id": "m1"})),
+            ("app.pipeline.orchestrator.db.get_recent_messages", AsyncMock(return_value=[])),
+            ("app.services.moderation.moderate_message", AsyncMock()),
+            ("app.pipeline.orchestrator.db.update_conversation", AsyncMock()),
+        ):
+            stack.enter_context(patch(target, new=value))
+        stack.enter_context(patch.object(orch, "detect_intent", _slow))
         loop = asyncio.get_running_loop()
-        started = loop.time()
         ticker = asyncio.create_task(_ticker())
-        intent = await loop.run_in_executor(None, _slow)  # mirrors the call shape
+        with pytest.raises(_StopAfterIntent):
+            await orch._pipeline(_CID, "hello", "sales", VisitorInfo(name="T"), None,
+                                 _persist_state={"ai_persisted": False})
         ticks = await ticker
-        assert intent == Intent.GENERAL_QUESTION
-        assert ticks == 8, "the loop kept ticking while the classify ran in a thread"
-        assert loop.time() - started < 0.7
+    assert seen["thread"] != threading.main_thread().ident, "detect_intent ran on the event loop's thread"
+    assert ticks == 6, "the loop kept ticking while the classify ran in a thread"

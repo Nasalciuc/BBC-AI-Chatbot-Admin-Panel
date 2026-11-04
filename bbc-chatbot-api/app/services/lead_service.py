@@ -323,9 +323,10 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 if _tn.get("trip_type_source") != "client":
                     _tn["trip_type_source"] = "client"
                     lead_payload["trip_notes"] = _tn
-        if entities.get("_children_count"):
+        # `is not None`: an explicit 0 (a correction) clears a stale count.
+        if entities.get("_children_count") is not None:
             lead_payload["children_count"] = entities["_children_count"]
-        if entities.get("_infant_count"):
+        if entities.get("_infant_count") is not None:
             lead_payload["infant_count"] = entities["_infant_count"]
         if entities.get("origin") and entities.get("destination"):
             lead_payload["route_display"] = f"{entities['origin']} → {entities['destination']}"

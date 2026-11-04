@@ -257,7 +257,6 @@ async def run_abandoned_crm() -> dict:
             if email and "@" not in email:
                 results.append({"id": cid, "status": "skipped", "reason": "email_invalid"})
                 continue
-            name = (conv.get("visitor_name") or "").strip() or "Customer"
 
             if _day_guard_blocks(cid):
                 logger.warning(
@@ -311,7 +310,7 @@ async def run_abandoned_crm() -> dict:
                     "mode": "ai",
                     "assigned_agent_id": None,
                 })
-                logger.info(f"[cron][{cid}] Closed existing CRM lead ({name})")
+                logger.info(f"[cron][{cid}] Closed existing CRM lead")
                 results.append({"id": cid, "status": "closed_existing_crm"})
                 continue
 
@@ -364,7 +363,7 @@ async def run_abandoned_crm() -> dict:
                         "assigned_agent_id": None,
                     })
                 logger.info(
-                    f"[cron][{cid}] Success: CRM submitted ({name})"
+                    f"[cron][{cid}] Success: CRM submitted"
                     f"{' + closed' if _may_close else ' (left open — human/closed)'}"
                 )
                 _pushed_today.add(cid)
@@ -841,6 +840,7 @@ async def ai_cost_report(request: Request):
 
     chatbot_key = (settings.anthropic_api_key_id or "").strip()
     stored = 0
+    ledger_failed = 0
     max_diff_pct = 0.0
     for r in rows:
         if not isinstance(r, dict):
@@ -854,7 +854,14 @@ async def ai_cost_report(request: Request):
         # Our ledger total for this day+model is only meaningful for our own key.
         ledger_cost = float(r.get("ledger_cost_usd", 0) or 0)
         if chatbot_key and api_key_id == chatbot_key:
-            ledger_cost = await _ledger_cost_for(day, model)
+            try:
+                ledger_cost = await _ledger_cost_for(day, model)
+            except Exception as e:
+                # A failed read is not a 100% mismatch: skip the row rather
+                # than overwrite a good one with ledger_cost_usd = 0.
+                ledger_failed += 1
+                logger.warning(f"[cost-report] ledger sum failed for {day}/{model}, row skipped: {type(e).__name__}: {e}")
+                continue
         diff = round(billed - ledger_cost, 6)
         record = {
             "day": day, "api_key_id": api_key_id, "model": model,
@@ -877,7 +884,9 @@ async def ai_cost_report(request: Request):
         if chatbot_key and api_key_id == chatbot_key and billed > 0:
             max_diff_pct = max(max_diff_pct, abs(diff) / billed * 100.0)
 
-    LEDGER_HEALTH["reconcile"] = {"stored": stored, "max_diff_pct": round(max_diff_pct, 2)}
+    LEDGER_HEALTH["reconcile"] = {
+        "stored": stored, "ledger_failed": ledger_failed, "max_diff_pct": round(max_diff_pct, 2),
+    }
     if max_diff_pct > 15:
         from app.services.email import send_ops_alert_email
 
@@ -886,23 +895,41 @@ async def ai_cost_report(request: Request):
             f"The chatbot key's billed cost differs from the ledger by {max_diff_pct:.1f}% "
             "on at least one model/day. See ai_cost_daily.",
         )
-    return {"success": True, "data": {"stored": stored, "max_diff_pct": round(max_diff_pct, 2)}}
+    return {"success": True, "data": {
+        "stored": stored, "ledger_failed": ledger_failed, "max_diff_pct": round(max_diff_pct, 2),
+    }}
+
+
+_LEDGER_PAGE = 1000  # PostgREST's default max rows per response
 
 
 async def _ledger_cost_for(day: str, model: str) -> float:
-    """Sum of ai_calls.cost_usd for one UTC day and model."""
-    try:
+    """Sum of ai_calls.cost_usd for one UTC day and model.
+
+    Reads every page over the half-open day [day, day+1). A failure raises:
+    the caller skips the row instead of storing a false 0.
+    """
+    from datetime import date, timedelta
+
+    start = date.fromisoformat(day)
+    end = start + timedelta(days=1)
+    total = 0.0
+    offset = 0
+    while True:
         res = await db._run_sync(
-            lambda: db.get_client().table("ai_calls").select("cost_usd")
-            .gte("created_at", f"{day}T00:00:00+00:00")
-            .lt("created_at", f"{day}T23:59:59.999+00:00")
-            .eq("model", model).execute(),
+            lambda o=offset: db.get_client().table("ai_calls").select("cost_usd")
+            .gte("created_at", f"{start.isoformat()}T00:00:00+00:00")
+            .lt("created_at", f"{end.isoformat()}T00:00:00+00:00")
+            .eq("model", model).order("id")
+            .range(o, o + _LEDGER_PAGE - 1).execute(),
             label="ai_calls",
         )
-        return round(sum(float(r.get("cost_usd", 0) or 0) for r in (res.data or [])), 6)
-    except Exception as e:
-        logger.warning(f"[cost-report] ledger sum failed for {day}/{model}: {type(e).__name__}: {e}")
-        return 0.0
+        rows = getattr(res, "data", None) or []
+        total += sum(float(r.get("cost_usd", 0) or 0) for r in rows)
+        if len(rows) < _LEDGER_PAGE:
+            break
+        offset += _LEDGER_PAGE
+    return round(total, 6)
 
 
 # ── Weekly security report (PR-13) ────────────────────────────────────────
