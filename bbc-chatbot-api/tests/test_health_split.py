@@ -83,7 +83,21 @@ def test_ip_echo_needs_the_cron_secret():
     assert c.get("/health/ip-echo").status_code == 401
     assert c.get("/health/ip-echo", headers={"Authorization": f"Bearer {_token('owner')}"}).status_code == 401
     r = c.get("/health/ip-echo", headers={"Authorization": f"Bearer {_CRON}", "X-Forwarded-For": "198.51.100.4"})
-    assert r.status_code == 200 and r.json() == {"client_ip": "198.51.100.4"}
+    assert r.status_code == 200 and r.json() == {"client_ip": "198.51.100.4", "source_ip": "198.51.100.4"}
+
+
+def test_ip_echo_shows_the_source_apart_from_the_fallback():
+    from app.security import client_ip as cip
+
+    cip._reset_for_tests()
+    cip.CLIENT_IP_HEALTH["ip_trusted"] = False  # a forged value came back before
+    try:
+        r = _client().get("/health/ip-echo", headers={
+            "Authorization": f"Bearer {_CRON}", "X-Forwarded-For": "203.0.113.7, 198.51.100.4",
+        })
+    finally:
+        cip._reset_for_tests()
+    assert r.json() == {"client_ip": "198.51.100.4", "source_ip": "203.0.113.7"}
 
 
 def test_no_cron_secret_configured_never_matches_an_empty_bearer():

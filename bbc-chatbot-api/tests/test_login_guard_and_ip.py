@@ -249,3 +249,34 @@ def test_a_skipped_or_failed_selftest_never_marks_the_ip_verified(monkeypatch):
         asyncio.run(ip_selftest.run_ip_selftest())
     assert cip.CLIENT_IP_HEALTH["ip_verified"] is False and cip.ip_verified() is False
 
+
+def test_a_detected_edge_stays_detected_while_it_is_unchanged(monkeypatch):
+    """The fallback must not make the next self-test read the edge as fixed:
+    the test judges source_ip (the leftmost, still forged), not client_ip."""
+    from app.services import ip_selftest
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "public_api_url", "https://api.test")
+    monkeypatch.setattr(settings, "cron_secret", "s")
+    cip.CLIENT_IP_HEALTH["ip_trusted"] = False
+
+    class _Resp:
+        def json(self):  # what /health/ip-echo answers while the fallback is on
+            return {"client_ip": "198.51.100.4", "source_ip": "203.0.113.7"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_Client()), \
+         patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+        for _ in range(3):
+            out = asyncio.run(ip_selftest.run_ip_selftest())
+            assert out["spoofable"] is True and cip.ip_trusted() is False
+
