@@ -25,9 +25,20 @@ interface AuthState {
   }
 }
 
+/** The token in the shared cookie now ('' when absent or unreadable). */
+export function readCookieToken(): string {
+  const raw = getCookie(ACCESS_TOKEN)
+  if (!raw) return ''
+  try {
+    const v = JSON.parse(raw)
+    return typeof v === 'string' ? v : ''
+  } catch {
+    return ''
+  }
+}
+
 export const useAuthStore = create<AuthState>()((set) => {
-  const cookieState = getCookie(ACCESS_TOKEN)
-  const initToken = cookieState ? JSON.parse(cookieState) : ''
+  const initToken = readCookieToken()
   return {
     auth: {
       user: null,
@@ -55,3 +66,14 @@ export const useAuthStore = create<AuthState>()((set) => {
     },
   }
 })
+
+/** Another tab that signs in writes the shared cookie but not this tab's
+ *  store. Pull the cookie's token into the store when it differs, so every
+ *  subscriber (the heartbeat worker among them) gets the new session. */
+export function syncAccessTokenFromCookie(): void {
+  const fromCookie = readCookieToken()
+  const { auth } = useAuthStore.getState()
+  if (fromCookie && fromCookie !== auth.accessToken) {
+    useAuthStore.setState((state) => ({ ...state, auth: { ...state.auth, accessToken: fromCookie } }))
+  }
+}

@@ -72,6 +72,13 @@ def test_forged_signature_is_invalid(monkeypatch):
     assert vt.check(tok, VID) == "invalid"
 
 
+def test_a_non_ascii_signature_is_invalid_not_a_500():
+    tok = vt.issue(VID)
+    head = tok.rsplit(".", 1)[0]
+    assert vt.parse(head + ".é")[1] == "invalid"
+    assert vt.check(head + ".\udcff", VID) == "invalid"
+
+
 def test_no_secret_disables_everything(monkeypatch):
     monkeypatch.setattr(settings, "visitor_token_secret", "")
     monkeypatch.setenv("VISITOR_TOKEN_ENFORCE", "true")

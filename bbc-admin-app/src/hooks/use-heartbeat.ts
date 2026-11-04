@@ -12,7 +12,7 @@ import { useAttentionStore } from '@/stores/attention-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bridge'
-import { useAuthStore } from '@/stores/auth-store'
+import { syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
 const HEARTBEAT_INTERVAL_MS = 5_000
@@ -282,7 +282,15 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       worker.postMessage({ type: 'start', apiBase, token, viewingConversationId: viewingConversationId || null })
 
       worker.onmessage = (e: MessageEvent) => {
-        if (!active.current || e.data.type !== 'heartbeat') return
+        if (!active.current) return
+        // A 401 from the worker may only mean its token is older than the
+        // cookie (another tab signed in): reconcile, and the subscription
+        // hands the worker the new one.
+        if (e.data.type === 'error' && e.data.status === 401) {
+          syncAccessTokenFromCookie()
+          return
+        }
+        if (e.data.type !== 'heartbeat') return
         processResponse(e.data.data as HeartbeatResponse)
       }
     } else {
@@ -320,6 +328,21 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       }),
     [],
   )
+
+  // A sign-in in ANOTHER tab only rewrites the shared cookie: this tab's
+  // store (and so the subscription above) never hears of it. Reconcile the
+  // cookie whenever the panel comes back into view or focus.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncAccessTokenFromCookie()
+    }
+    window.addEventListener('focus', syncAccessTokenFromCookie)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', syncAccessTokenFromCookie)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
 
   const dormant = usePanelModeStore((s) => s.dormant)
   const queueCount = useQueueStore((s) => s.queueCount)

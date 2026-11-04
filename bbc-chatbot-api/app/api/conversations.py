@@ -70,6 +70,17 @@ async def list_conversations(
     counts_task = None
     try:
         tunnel = _enforce_tunnel(user, tunnel)
+
+        # Phase 2 team scoping (supervisor/PM): restrict to their team(s).
+        # Fail closed — a scoped caller with no team sees an empty list, and
+        # empty badges: the unfiltered count must not even run for them.
+        team_ids = await _resolve_team_scope(user)
+        if team_ids is not None and len(team_ids) == 0:
+            out = {"success": True, "data": [], "count": 0}
+            if with_counts:
+                out["counts"] = dict(_ZERO_COUNTS)
+            return out
+
         # PR-10: the tab badges ride the list the panel already polls every
         # 5 s, instead of a second /conversations/counts poll every 10 s.
         if with_counts:
@@ -77,15 +88,6 @@ async def list_conversations(
             counts_task = _asyncio.ensure_future(
                 db.get_conversation_counts(agent_id=user.get("id", ""), tunnel=tunnel)
             )
-
-        # Phase 2 team scoping (supervisor/PM): restrict to their team(s).
-        # Fail closed — a scoped caller with no team sees an empty list.
-        team_ids = await _resolve_team_scope(user)
-        if team_ids is not None and len(team_ids) == 0:
-            out = {"success": True, "data": [], "count": 0}
-            if counts_task is not None:
-                out["counts"] = await _counts_or_none(counts_task)
-            return out
 
         # AI-outcome tags are supervisor/oversight only — a queue-health
         # signal, not something an agent needs filtering their own queue.
@@ -174,6 +176,9 @@ async def list_conversations(
             counts_task.cancel()
         logger.error(f"list_conversations unexpected error: {e}", exc_info=True)
         return {"success": False, "data": [], "count": 0, "error": str(e)}
+
+
+_ZERO_COUNTS = {"my_active": 0, "queue": 0, "my_closed": 0, "all_active": 0, "all_closed": 0}
 
 
 async def _counts_or_none(task) -> Optional[dict]:

@@ -171,7 +171,7 @@ def test_selftest_clears_trust_when_spoof_echoes(monkeypatch):
          patch("app.services.email.send_ops_alert_email", new=AsyncMock()) as alert:
         out = asyncio.run(ip_selftest.run_ip_selftest())
     assert out["spoofable"] is True
-    assert cip.ip_trusted() is False
+    assert cip.ip_trusted() is False and cip.ip_verified() is False
     assert alert.await_count == 1
 
 
@@ -199,4 +199,84 @@ def test_selftest_keeps_trust_when_spoof_is_dropped(monkeypatch):
     with patch("httpx.AsyncClient", return_value=_Client()):
         out = asyncio.run(ip_selftest.run_ip_selftest())
     assert out["spoofable"] is False
-    assert cip.ip_trusted() is True
+    assert cip.ip_trusted() is True and cip.ip_verified() is True
+
+
+# ── CodeRabbit #226 follow-up: limits that hold before the edge is proven ─
+
+def test_the_email_wide_ceiling_holds_across_ips():
+    # Trusted IP, a fresh address per attempt: 19 pairs of one failure each
+    # are below the email ceiling (4x the pair ladder), the 20th is not.
+    for i in range(19):
+        asyncio.run(login_guard.record_failure("victim@bbc.com", f"198.51.100.{i}"))
+    assert login_guard.retry_after("victim@bbc.com", "198.51.100.200") == 0
+    asyncio.run(login_guard.record_failure("victim@bbc.com", "198.51.100.19"))
+    assert login_guard.retry_after("victim@bbc.com", "198.51.100.200") > 0
+    assert login_guard.LOGIN_GUARD_HEALTH["email_throttled"] == 1
+
+
+def test_a_correct_password_clears_the_email_ceiling_too():
+    for i in range(20):
+        asyncio.run(login_guard.record_failure("victim@bbc.com", f"198.51.100.{i}"))
+    login_guard.clear("victim@bbc.com", "198.51.100.200")
+    assert login_guard.retry_after("victim@bbc.com", "198.51.100.200") == 0
+
+
+def test_a_spoofable_edge_moves_legacy_to_the_rightmost_hop():
+    cip.CLIENT_IP_HEALTH["ip_trusted"] = False
+    r = _req({"x-forwarded-for": "203.0.113.7, 4.4.4.4"})
+    assert cip.client_ip(r, prefer_cf=False) == "4.4.4.4"
+    assert cip.CLIENT_IP_HEALTH["spoofable_fallback"] == 1
+
+
+def test_an_unproven_edge_keeps_legacy():
+    r = _req({"x-forwarded-for": "2.2.2.2, 4.4.4.4"})
+    assert cip.client_ip(r, prefer_cf=False) == "2.2.2.2"
+    assert cip.ip_verified() is False  # not run yet: unverified, not "safe"
+
+
+def test_a_skipped_or_failed_selftest_never_marks_the_ip_verified(monkeypatch):
+    from app.services import ip_selftest
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "public_api_url", "", raising=False)
+    asyncio.run(ip_selftest.run_ip_selftest())
+    assert cip.CLIENT_IP_HEALTH["ip_verified"] is None
+
+    monkeypatch.setattr(settings, "public_api_url", "https://api.test")
+    monkeypatch.setattr(settings, "cron_secret", "s")
+    with patch("httpx.AsyncClient", side_effect=RuntimeError("unreachable")):
+        asyncio.run(ip_selftest.run_ip_selftest())
+    assert cip.CLIENT_IP_HEALTH["ip_verified"] is False and cip.ip_verified() is False
+
+
+def test_a_detected_edge_stays_detected_while_it_is_unchanged(monkeypatch):
+    """The fallback must not make the next self-test read the edge as fixed:
+    the test judges source_ip (the leftmost, still forged), not client_ip."""
+    from app.services import ip_selftest
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "public_api_url", "https://api.test")
+    monkeypatch.setattr(settings, "cron_secret", "s")
+    cip.CLIENT_IP_HEALTH["ip_trusted"] = False
+
+    class _Resp:
+        def json(self):  # what /health/ip-echo answers while the fallback is on
+            return {"client_ip": "198.51.100.4", "source_ip": "203.0.113.7"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_Client()), \
+         patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+        for _ in range(3):
+            out = asyncio.run(ip_selftest.run_ip_selftest())
+            assert out["spoofable"] is True and cip.ip_trusted() is False
+

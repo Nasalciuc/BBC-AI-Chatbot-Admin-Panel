@@ -3,6 +3,8 @@
 import os
 import sys
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -245,6 +247,21 @@ async def test_poisoned_cross_site_is_counted_not_banned(monkeypatch):
     assert ban_guard.FAIL2BAN_HEALTH["poisoned_skipped"] == 1
 
 
+@pytest.mark.parametrize("mode", ["cors", "navigate", "same-origin", ""])
+@pytest.mark.asyncio
+async def test_any_cross_site_mode_is_counted_not_banned(monkeypatch, mode):
+    # fetch() is cors, a link or redirect is navigate: the browser sends both.
+    monkeypatch.setenv("FAIL2BAN_ENFORCE", "true")
+    app = _App()
+    mw = ban_guard.BanGuardMiddleware(app)
+    headers = {"sec-fetch-site": "cross-site"}
+    if mode:
+        headers["sec-fetch-mode"] = mode
+    sent = await _run(mw, _scope("/.env", headers))
+    assert app.called is True and _status(sent) == 200
+    assert ban_guard.FAIL2BAN_HEALTH["poisoned_skipped"] == 1
+
+
 @pytest.mark.asyncio
 async def test_excluded_paths_never_ban(monkeypatch):
     monkeypatch.setenv("FAIL2BAN_ENFORCE", "true")
@@ -270,12 +287,58 @@ async def test_fail_open_when_ip_untrusted(monkeypatch):
 @pytest.mark.asyncio
 async def test_ban_doubles_capped_at_week():
     store = ban_store.BanStore(None)
-    a = await store.ban("1.1.1.1", "honeypot", 3600)
-    b = await store.ban("1.1.1.1", "honeypot", 3600)
-    assert b == 2 * a
+    a, _ = await store.ban("1.1.1.1", "honeypot", 3600)
+    store._mem.pop("1.1.1.1")  # the first ban ran out; the identity comes back
+    b, created = await store.ban("1.1.1.1", "honeypot", 3600)
+    assert created and b == 2 * a
     for _ in range(10):
-        last = await store.ban("1.1.1.1", "honeypot", 3600)
+        store._mem.pop("1.1.1.1", None)
+        last, _ = await store.ban("1.1.1.1", "honeypot", 3600)
     assert last == 7 * 24 * 3600
+
+
+@pytest.mark.asyncio
+async def test_a_ban_already_held_is_neither_doubled_nor_recorded_twice():
+    store = ban_store.BanStore(None)
+    first = await store.ban("2.2.2.2", "honeypot", 3600)
+    again = await store.ban("2.2.2.2", "honeypot", 3600)
+    assert first == (3600, True)
+    assert again[1] is False and again[0] <= 3600
+    assert store._counts["2.2.2.2"] == 1
+
+
+@pytest.mark.asyncio
+async def test_parallel_trips_write_one_row_and_one_alert(monkeypatch):
+    store = ban_store.BanStore(None)
+    rows = AsyncMock()
+    monkeypatch.setattr(ban_guard, "record_ban_row", rows)
+    alert = AsyncMock()
+    monkeypatch.setattr(ban_guard, "_ops_alert", alert)
+    for _ in range(3):
+        await ban_guard._ban_identity(store, "3.3.3.3", "honeypot", 3600, alert=True)
+    assert rows.await_count == 1 and alert.await_count == 1
+    assert ban_guard.FAIL2BAN_HEALTH["ban_already_held"] == 2
+
+
+@pytest.mark.asyncio
+async def test_redis_ban_claims_with_nx_and_only_the_winner_counts():
+    fake = AsyncMock()
+    fake.set.side_effect = [True, None]
+    fake.incr.return_value = 1
+    fake.ttl.return_value = 3500
+    store = ban_store.BanStore(redis_client=fake)
+    assert await store.ban("4.4.4.4", "honeypot", 3600) == (3600, True)
+    assert await store.ban("4.4.4.4", "honeypot", 3600) == (3500, False)
+    assert fake.incr.await_count == 1
+    assert fake.set.await_args_list[0].kwargs == {"nx": True, "ex": 3600}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_live_unban_is_reported():
+    fake = AsyncMock()
+    fake.delete.side_effect = RuntimeError("redis down")
+    assert await ban_store.BanStore(redis_client=fake).unban("5.5.5.5") is False
+    assert await ban_store.BanStore(None).unban("5.5.5.5") is True
 
 
 @pytest.mark.asyncio
@@ -343,3 +406,26 @@ async def test_revocation_is_seen_even_when_the_sync_redis_is_down(monkeypatch):
     monkeypatch.setattr("app.services.response_cache._get_redis", lambda: None)
     await store.revoke_sessions("u-77")
     assert ban_store.revoked_before_sync("u-77") is not None
+
+
+@pytest.mark.asyncio
+async def test_unban_endpoint_records_nothing_when_the_live_ban_stays(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.api import security_bans
+
+    monkeypatch.setattr(security_bans, "enforce_or_log", lambda *a, **k: True)
+    fake_store = MagicMock()
+    fake_store.unban = AsyncMock(return_value=False)
+    monkeypatch.setattr("app.security.ban_store.get_store", lambda: fake_store)
+    calls = []
+
+    async def _run(fn, **kw):
+        calls.append(kw.get("label"))
+        return MagicMock(data=[{"identity": "6.6.6.6"}])
+
+    monkeypatch.setattr(security_bans, "_run_sync", _run)
+    monkeypatch.setattr(security_bans, "get_client", MagicMock())
+    res = await security_bans.unban("ban-1", user={"id": "u0", "role": "owner"})
+    assert res["success"] is False and res["error"] == "Unban failed"
+    assert calls == ["security_bans"], "the row was stamped unbanned although the ban is live"

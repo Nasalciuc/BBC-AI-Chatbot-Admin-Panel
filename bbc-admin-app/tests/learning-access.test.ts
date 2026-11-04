@@ -22,3 +22,12 @@ test('a project manager manages teams but is not a learning reviewer', () => {
   assert.equal(pm.canManageTeams, true)
   assert.equal(pm.canReviewLearning, false)
 })
+
+test('canManageBans matches the backend MANAGEMENT set (owner, admin, dev)', () => {
+  for (const role of ['owner', 'admin', 'dev'] as const) {
+    assert.equal(getPermissions(role).canManageBans, true, role)
+  }
+  for (const role of ['project_manager', 'supervisor', 'qa', 'sales', 'support'] as const) {
+    assert.equal(getPermissions(role).canManageBans, false, role)
+  }
+})

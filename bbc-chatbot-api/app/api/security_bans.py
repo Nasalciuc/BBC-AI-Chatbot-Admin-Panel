@@ -52,8 +52,10 @@ async def unban(ban_id: str, user: dict = Depends(get_current_user)):
             return {"success": False, "data": None, "count": 0, "error": "Not found"}
         identity = rows[0]["identity"]
         store = get_store()
-        if store is not None:
-            await store.unban(identity)
+        if store is not None and not await store.unban(identity):
+            # The live ban is still there: recording it as lifted would hide
+            # the Unban button and leave the customer blocked for up to a week.
+            return {"success": False, "data": None, "count": 0, "error": "Unban failed"}
         now = _dt.datetime.now(_dt.timezone.utc).isoformat()
         actor = user.get("email") or user.get("id") or "unknown"
         await _run_sync(

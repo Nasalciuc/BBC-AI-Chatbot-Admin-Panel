@@ -45,26 +45,40 @@ class BanStore:
             return False
         return True
 
-    async def ban(self, ip: str, jail: str, seconds: int) -> int:
-        """Ban an identity; each repeat within 30d doubles, capped at a week.
-        Returns the effective seconds."""
+    async def ban(self, ip: str, jail: str, seconds: int) -> tuple[int, bool]:
+        """Ban ip; each repeat within 30d doubles, capped at a week.
+
+        Returns (effective seconds, created). A scanner's parallel requests
+        can all pass is_banned before the first ban lands; only the one that
+        claims the ban (SET NX) counts the repeat, sets the length and gets
+        created=True, so the others neither double the ban nor write a
+        second row or alert. (0, False) on a Redis failure."""
         if not ip:
-            return 0
+            return 0, False
         if self._redis is not None:
             try:
+                claimed = await self._redis.set(f"ban:{ip}", jail, nx=True, ex=max(1, int(seconds)))
+                if not claimed:
+                    ttl = await self._redis.ttl(f"ban:{ip}")
+                    return max(0, int(ttl or 0)), False
                 n = await self._redis.incr(f"bancount:{ip}")
                 await self._redis.expire(f"bancount:{ip}", 30 * 24 * 3600)
                 eff = min(seconds * (2 ** (int(n) - 1)), _MAX_BAN)
-                await self._redis.setex(f"ban:{ip}", eff, jail)
-                return eff
+                if eff != seconds:
+                    await self._redis.expire(f"ban:{ip}", eff)
+                return eff, True
             except Exception as e:
-                logger.debug(f"[ban-store] ban redis failed: {type(e).__name__}")
-                return 0
+                logger.warning(f"[ban-store] ban redis failed: {type(e).__name__}")
+                return 0, False
+        now = time.time()
+        exp = self._mem.get(ip)
+        if exp is not None and exp > now:
+            return int(exp - now), False
         n = self._counts.get(ip, 0) + 1
         self._counts[ip] = n
         eff = min(seconds * (2 ** (n - 1)), _MAX_BAN)
-        self._mem[ip] = time.time() + eff
-        return eff
+        self._mem[ip] = now + eff
+        return eff, True
 
     async def strike(self, key: str, window: int) -> int:
         """Count one strike for key inside a sliding-ish fixed window; returns
@@ -102,14 +116,38 @@ class BanStore:
         seen[member] = now
         return len(seen)
 
-    async def unban(self, ip: str) -> None:
+    async def note_auth_email(self, ip: str, email: str, window: int) -> int:
+        """Record a failed login's email for ip; the distinct emails seen from
+        it within window (0 on a Redis failure — fail-open)."""
+        address = (email or "").strip().lower()
+        if self._redis is not None:
+            try:
+                key = f"authmail:{ip}"
+                await self._redis.sadd(key, address)
+                await self._redis.expire(key, window)
+                return int(await self._redis.scard(key))
+            except Exception as e:
+                logger.warning(f"[ban-store] auth-email redis failed: {type(e).__name__}")
+                return 0
+        now = time.time()
+        seen = self._auth_emails.setdefault(ip, {})
+        for k in [k for k, t in seen.items() if t < now - window]:
+            seen.pop(k, None)
+        seen[address] = now
+        return len(seen)
+
+    async def unban(self, ip: str) -> bool:
+        """False when the live ban could not be lifted: the caller must not
+        record an unban that did not happen (the identity stays blocked)."""
         if self._redis is not None:
             try:
                 await self._redis.delete(f"ban:{ip}")
             except Exception as e:
-                logger.debug(f"[ban-store] unban redis failed: {type(e).__name__}")
-            return
+                logger.warning(f"[ban-store] unban redis failed: {type(e).__name__}")
+                return False
+            return True
         self._mem.pop(ip, None)
+        return True
 
     async def revoke_sessions(self, user_id: str) -> None:
         ts = int(time.time())

@@ -57,7 +57,11 @@ async def health() -> dict:
 
 @router.get("/health/ip-echo", dependencies=[Depends(require_cron)])
 async def ip_echo(request: Request) -> dict:
-    return {"client_ip": client_ip(request)}
+    from app.security.client_ip import source_ip
+
+    # source_ip: the configured header alone, which the self-test judges;
+    # client_ip may be the spoofable fallback and would hide the problem.
+    return {"client_ip": client_ip(request), "source_ip": source_ip(request)}
 
 
 @router.get("/health/detail", dependencies=[Depends(require_ops)])
