@@ -1,4 +1,4 @@
-import { useEffect } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 
 const PHONE = '(max-width: 767px)'
 
@@ -60,4 +60,18 @@ export function usePhoneSheet(open: boolean, embedded: boolean, ink: string) {
       root?.style.removeProperty('--bw-vvt')
     }
   }, [open, embedded])
+}
+
+/** True while the viewport is phone-sized (the panel is a full-screen, modal sheet there). */
+export function useIsPhone(): boolean {
+  const get = () => { try { return window.matchMedia(PHONE).matches } catch { return false } }
+  const [phone, setPhone] = useState(get)
+  useEffect(() => {
+    let mq: MediaQueryList
+    try { mq = window.matchMedia(PHONE) } catch { return }
+    const on = () => setPhone(mq.matches)
+    mq.addEventListener?.('change', on)
+    return () => mq.removeEventListener?.('change', on)
+  }, [])
+  return phone
 }

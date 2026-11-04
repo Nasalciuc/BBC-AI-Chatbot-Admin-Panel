@@ -5,6 +5,7 @@ import { promoteTemp, reconcileBatch } from './reconcile'
 import { PanelTop } from './PanelTop'
 import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
+import { useIsPhone } from './phoneSheet'
 
 interface Message {
   id: string
@@ -35,6 +36,8 @@ interface Props {
   apiUrl: string
   /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
   embedded?: boolean
+  /** The chat took the form's place in an open panel: the panel does not enter again. */
+  swapped?: boolean
 }
 
 /** Read cached conv_id from localStorage. Widget.tsx has already verified
@@ -43,7 +46,8 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
-export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedded = false }: Props) {
+export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedded = false, swapped = false }: Props) {
+  const isPhone = useIsPhone()
   const savedConvId = getCachedConvId()
 
   const [messages, setMessages] = useState<Message[]>([])
@@ -727,9 +731,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
   return (
     <div
-      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}`}
+      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}${swapped ? ' bw-panel--swap' : ''}`}
       role="dialog"
-      aria-modal="false"
+      aria-modal={isPhone && !embedded ? 'true' : 'false'}
       aria-labelledby="bw-chat-title"
     >
       <PanelTop

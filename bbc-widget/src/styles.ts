@@ -287,6 +287,11 @@ export const WIDGET_CSS = `
 }
 #bbc-widget-root .bw-panel--embedded { animation: none; }
 
+/* The chat replacing the form in an open panel: the frame stays, the conversation fades in. */
+#bbc-widget-root .bw-panel.bw-panel--swap { animation: none; }
+#bbc-widget-root .bw-panel--swap .bw-logwrap,
+#bbc-widget-root .bw-panel--swap .bw-compose { animation: bw-fade 0.26s var(--bw-ease) both; }
+@keyframes bw-fade { from { opacity: 0; } to { opacity: 1; } }
 #bbc-widget-root .bw-closing .bw-panel { animation: bw-panel-out 0.2s cubic-bezier(0.4, 0, 1, 1) both; }
 @media (max-width: 767px) {
   #bbc-widget-root .bw-closing .bw-panel { animation: bw-sheet-out 0.22s cubic-bezier(0.4, 0, 1, 1) both; }
