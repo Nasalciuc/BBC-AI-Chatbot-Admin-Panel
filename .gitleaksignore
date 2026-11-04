@@ -1,0 +1,3 @@
+# Fingerprints gitleaks may skip. Each one is checked by hand and fake.
+# decoys.py: the JWT_SECRET line of the bait .env served to scanners (PR-3)
+4e9f73e91e63af19ae583e110bf953e686f42fd5:bbc-chatbot-api/app/security/decoys.py:generic-api-key:141
