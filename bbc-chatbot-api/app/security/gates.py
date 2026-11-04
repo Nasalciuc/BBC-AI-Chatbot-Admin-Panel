@@ -1,10 +1,13 @@
 """Role gates with a log-first rollout (PR-4).
 
-`enforce_or_log(allowed, user, action, detail)` returns True when the action
-may proceed. When the caller's role is not in `allowed`:
+`enforce_or_log(allowed, user, action, detail)` returns True when the caller's
+role is in `allowed`. When it is not:
   - ROLE_GATES_ENFORCE on  → raise 403;
-  - ROLE_GATES_ENFORCE off → log what it WOULD refuse and allow, so a day of
-    watching cannot lock anyone out (the merge default).
+  - ROLE_GATES_ENFORCE off → log what it WOULD refuse and return False. The
+    caller decides what False means: the existing routes carry on (minus the
+    PII fields, for PATCH /conversations), so a day of watching cannot lock
+    anyone out; the new management-only routes (Bans, trap report, unlock)
+    answer Forbidden.
 
 The counters feed /health/detail so the owner can see the would-refuse rate
 before turning enforcement on.
