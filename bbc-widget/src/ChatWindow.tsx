@@ -38,7 +38,49 @@ interface Props {
   embedded?: boolean
   /** The chat took the form's place in an open panel: the panel does not enter again. */
   swapped?: boolean
+  /**
+   * Shown or tucked away. Closing the chat no longer unmounts it: the conversation keeps its connection,
+   * finishes what it was sending and keeps receiving, so nothing is lost and a reply that lands while
+   * it is closed can be announced on the corner button.
+   */
+  visible?: boolean
+  /** Typed into the message box of a new conversation, from the page the visitor is on (never sent). */
+  draft?: string
+  /** Messages the visitor has not seen (chat closed or tab in the background), for the corner button. */
+  onUnread?: (u: Unread) => void
 }
+
+export interface Unread {
+  count: number
+  /** True when the count just grew from a message that arrived live (not history loaded with the page). */
+  fresh: boolean
+  preview?: { name: string; text: string; initials: string; avatar?: string | null; isAgent: boolean }
+}
+
+// Tab-scoped memory of what the visitor typed but did not send yet, and of messages waiting their turn:
+// both survive closing the chat and moving to another page of the site.
+const DRAFT_KEY = 'bbc_draft'
+const QUEUE_KEY = 'bbc_queue'
+// Up to which moment this conversation has been seen in an open chat (per conversation, across pages).
+const SEEN_KEY = 'bbc_seen'
+function ssGet(k: string): string | null { try { return sessionStorage.getItem(k) } catch { return null } }
+function ssSet(k: string, v: string | null) {
+  try { if (v === null || v === '') sessionStorage.removeItem(k); else sessionStorage.setItem(k, v) } catch { /* storage off */ }
+}
+function readSeen(convId: string | null): number | null {
+  if (!convId) return null
+  try {
+    const v = localStorage.getItem(SEEN_KEY)
+    if (!v) return null
+    const [cid, ts] = v.split('|')
+    return cid === convId ? Number(ts) || 0 : null
+  } catch { return null }
+}
+function writeSeen(convId: string | null, ts: number) {
+  if (!convId) return
+  try { localStorage.setItem(SEEN_KEY, `${convId}|${ts}`) } catch { /* storage off */ }
+}
+const timeOfMsg = (m: { created_at: string }) => Date.parse(m.created_at) || 0
 
 /** Read cached conv_id from localStorage. Widget.tsx has already verified
  *  it with the backend on mount — ChatWindow trusts the cache. */
@@ -46,12 +88,18 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
-export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedded = false, swapped = false }: Props) {
+export function ChatWindow({
+  tunnel, visitor, metadata, onClose, apiUrl, embedded = false, swapped = false,
+  visible = true, draft = '', onUnread,
+}: Props) {
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const mountedAtRef = useRef(Date.now())
   const isPhone = useIsPhone()
   const savedConvId = getCachedConvId()
 
   const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState<string>(() => ssGet(DRAFT_KEY) ?? (savedConvId ? '' : draft))
   const [sending, setSending] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -75,7 +123,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     name: '',
   })
   /** Messages written while the assistant was still answering: they go out, in order, as soon as it finishes. */
-  const [queued, setQueued] = useState<{ id: string; text: string }[]>([])
+  const [queued, setQueued] = useState<{ id: string; text: string }[]>(() => {
+    try { return JSON.parse(ssGet(QUEUE_KEY) || '[]') } catch { return [] }
+  })
   /** The greeting is on its way (fresh sessions): the log shows the assistant typing instead of nothing. */
   const [starting, setStarting] = useState(!savedConvId)
   /** The visitor scrolled up to read: new messages no longer pull the log down; a button offers to. */
@@ -127,12 +177,103 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     else setHasUnseen(true)
   }, [messages.length, streamingText, sending, agentTyping.is_typing, queued.length])
 
-  // The composer takes focus on computers; on touch screens the keyboard waits for a tap.
+  // ── Open and closed (the chat stays mounted) ─────────────────────────────
+  // Closing tells the server the client minimized the chat (no heartbeat until it opens again) and
+  // clears the operator's live preview of an unsent draft; opening marks the client back, then shows
+  // the end of the conversation and puts the cursor in the message box.
+  const wasVisibleRef = useRef(visible)
   useEffect(() => {
-    try {
-      if (window.matchMedia('(pointer: fine)').matches) composerRef.current?.focus({ preventScroll: true })
-    } catch { /* matchMedia unavailable — leave focus where it is */ }
+    const was = wasVisibleRef.current
+    wasVisibleRef.current = visible
+    if (visible === was) return
+    if (visible) {
+      if (convId) {
+        closeSentRef.current = false
+        apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
+      }
+      lastInteractionRef.current = Date.now()
+      requestAnimationFrame(() => { scrollToEnd(false); fitComposer(); focusComposer() })
+    } else {
+      notifySessionClose('minimized', true)
+      if (convId) apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible])
+
+  // ── Unread: messages that arrived while the chat was closed or the tab was in the background ─────
+  const [docVisible, setDocVisible] = useState(() => {
+    try { return document.visibilityState === 'visible' } catch { return true }
+  })
+  useEffect(() => {
+    const on = () => setDocVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', on)
+    return () => document.removeEventListener('visibilitychange', on)
   }, [])
+  const lastUnreadRef = useRef(0)
+  useEffect(() => {
+    if (!onUnread) return
+    const rows = messages.filter(m =>
+      m && typeof m.id === 'string' && typeof m.content === 'string' && m.content.trim() !== '')
+    if (!rows.length) return
+    const latest = Math.max(...rows.map(timeOfMsg))
+    if (visible && docVisible) {
+      writeSeen(convId, latest)
+      if (lastUnreadRef.current !== 0) {
+        lastUnreadRef.current = 0
+        onUnread({ count: 0, fresh: false })
+      }
+      return
+    }
+    let seen = readSeen(convId)
+    if (seen === null) {
+      // Nothing recorded for this conversation: what is already here counts as read.
+      writeSeen(convId, latest)
+      seen = latest
+    }
+    // Only words from the assistant or a person count (not notes like "Lana joined the chat").
+    const unseen = rows.filter(m => (m.role === 'ai' || m.role === 'agent') && timeOfMsg(m) > (seen as number))
+    const count = unseen.length
+    // Fresh = a message that just arrived (not history loaded with the page): it earns the chime.
+    const fresh = count > lastUnreadRef.current && Date.now() - mountedAtRef.current > 2500
+    lastUnreadRef.current = count
+    const last = unseen[unseen.length - 1]
+    const name = !last ? '' : last.role === 'agent'
+      ? ((last.agent_name || '').trim() || CONSULTANT_LABEL)
+      : 'Assistant'
+    onUnread({
+      count,
+      fresh,
+      preview: last ? {
+        name,
+        text: last.content,
+        initials: agentInitials(name),
+        avatar: last.role === 'agent' ? (last.agent_avatar_url || null) : null,
+        isAgent: last.role === 'agent',
+      } : undefined,
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, visible, docVisible, convId])
+
+  // The composer takes focus on computers; on touch screens the keyboard waits for a tap.
+  const focusComposer = () => {
+    try {
+      if (!window.matchMedia('(pointer: fine)').matches) return
+      const el = composerRef.current
+      if (!el) return
+      el.focus({ preventScroll: true })
+      el.setSelectionRange(el.value.length, el.value.length)
+    } catch { /* matchMedia unavailable — leave focus where it is */ }
+  }
+  useEffect(() => {
+    if (visible) focusComposer()
+    fitComposer()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // What the visitor typed and what waits its turn are kept for this tab: closing the chat, a reload or
+  // another page of the site never loses them.
+  useEffect(() => { ssSet(DRAFT_KEY, input) }, [input])
+  useEffect(() => { ssSet(QUEUE_KEY, queued.length ? JSON.stringify(queued) : null) }, [queued])
 
   /** Grow the composer with its text, up to its max height (CSS). */
   const fitComposer = () => {
@@ -199,7 +340,11 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   // Verify restored session is still active (runs once at mount)
   useEffect(() => {
     if (!savedConvId) return
-    apiFetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
+    // Presence: the client is "at the widget" only when the chat is open. A conversation kept alive
+    // behind a closed chat (another page of the site) does not claim it.
+    if (visibleRef.current) {
+      apiFetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
+    }
     fetch(`${apiUrl}/api/chat/status/${savedConvId}`)
       .then(r => r.json())
       .then(data => {
@@ -232,6 +377,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     // bfcache return (back button, mobile app-switch): pagehide fired 'left'
     // on the way out — mark the client back and re-arm the close beacon.
     const handlePageReturn = () => {
+      if (!visibleRef.current) return
       closeSentRef.current = false
       apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
     }
@@ -253,6 +399,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     let pingInterval: ReturnType<typeof setInterval> | null = null
     const sendPing = () => {
       if (document.visibilityState !== 'visible') return
+      // A closed chat is not a present client: no heartbeat until it opens again.
+      if (!visibleRef.current) return
       if (Date.now() - lastInteractionRef.current > PING_IDLE_CUTOFF_MS) return
       apiFetch(`${apiUrl}/api/chat/session/${convId}/ping`, { method: 'POST' }).catch(() => {})
     }
@@ -417,6 +565,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
     const poll = async () => {
       if (document.visibilityState !== 'visible') return
+      if (!visibleRef.current) return  // the typing dots are only drawn in an open chat
       try {
         const res = await fetch(`${apiUrl}/api/chat/agent-typing/${convId}`, {
           headers: { 'X-Visitor-Id': getVisitorId() || '' },
@@ -696,7 +845,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   // ── Presentation ─────────────────────────────────────────────────────────
   // Only rows with an id and some text are drawn (a defence in depth: nothing
   // malformed from the server may ever break the render).
-  const visible = messages.filter(m =>
+  const shown = messages.filter(m =>
     m && typeof m.id === 'string' && typeof m.content === 'string' && m.content.trim() !== '')
   const speaker = (m: Message) =>
     m.role === 'user' ? 'out' : m.role === 'agent' ? `agent:${(m.agent_name || '').trim()}` : m.role
@@ -705,21 +854,21 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   }
   const startsGroup = (i: number) => {
     if (i === 0) return true
-    const prev = visible[i - 1]
-    const cur = visible[i]
+    const prev = shown[i - 1]
+    const cur = shown[i]
     if (speaker(prev) !== speaker(cur)) return true
     return new Date(cur.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60_000
   }
-  const endsGroup = (i: number) => i === visible.length - 1 || startsGroup(i + 1)
-  const lastAgent = [...visible].reverse().find(m => m.role === 'agent')
+  const endsGroup = (i: number) => i === shown.length - 1 || startsGroup(i + 1)
+  const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
   const lastAgentName = (lastAgent?.agent_name || '').trim()
   const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : brand.tagline
   const brandAvatar = <img class="bw-ava bw-ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
-  const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && visible.length === 0)
+  const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).
   const dayKey = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toDateString() }
   const today = new Date().toDateString()
-  const showDays = visible.some(m => dayKey(m.created_at) && dayKey(m.created_at) !== today)
+  const showDays = shown.some(m => dayKey(m.created_at) && dayKey(m.created_at) !== today)
   const dayLabel = (iso: string) => {
     const d = new Date(iso)
     const yesterday = new Date(Date.now() - 86_400_000).toDateString()
@@ -731,7 +880,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
   return (
     <div
-      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}${swapped ? ' bw-panel--swap' : ''}`}
+      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}${swapped ? ' bw-panel--swap' : ''}${visible ? '' : ' bw-panel--hidden'}`}
+      aria-hidden={visible ? undefined : 'true'}
       role="dialog"
       aria-modal={isPhone && !embedded ? 'true' : 'false'}
       aria-labelledby="bw-chat-title"
@@ -745,8 +895,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
       <div class="bw-logwrap">
       <div ref={logRef} class="bw-log" role="log" aria-live="polite" aria-label="Conversation" onScroll={onLogScroll}>
-        {visible.map((msg, i) => {
-          const newDay = showDays && (i === 0 || dayKey(visible[i - 1].created_at) !== dayKey(msg.created_at))
+        {shown.map((msg, i) => {
+          const newDay = showDays && (i === 0 || dayKey(shown[i - 1].created_at) !== dayKey(msg.created_at))
           const day = newDay && dayKey(msg.created_at)
             ? <div key={`day-${msg.id}`} class="bw-day">{dayLabel(msg.created_at)}</div>
             : null
@@ -788,7 +938,7 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
               <div class="bw-msg">{richText(msg.content)}</div>
               {out && last && (() => {
                 // A send that failed shows the error note after it; say so here instead of "Sending".
-                const failed = msg.id.startsWith('temp-') && visible.slice(i + 1).some(m => m.id.startsWith('err-'))
+                const failed = msg.id.startsWith('temp-') && shown.slice(i + 1).some(m => m.id.startsWith('err-'))
                 if (failed) {
                   return (
                     <button type="button" class="bw-meta bw-meta--failed bw-retry" onClick={() => retry(msg)}>
@@ -803,8 +953,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
         })}
 
         {streamingText && (
-          <div class={`bw-row bw-row--in${visible.length && speaker(visible[visible.length - 1]) === 'ai' ? '' : ' bw-row--first'}`}>
-            {!(visible.length && speaker(visible[visible.length - 1]) === 'ai') && (
+          <div class={`bw-row bw-row--in${shown.length && speaker(shown[shown.length - 1]) === 'ai' ? '' : ' bw-row--first'}`}>
+            {!(shown.length && speaker(shown[shown.length - 1]) === 'ai') && (
               <div class="bw-who">{brandAvatar}<span><b>Assistant</b></span></div>
             )}
             <div class="bw-msg">{streamingText}</div>
