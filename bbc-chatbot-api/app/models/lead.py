@@ -40,9 +40,11 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for
         _slot_policy = bool(_flag("SLOT_POLICY_ENABLED", False))
     except Exception:  # noqa: silent — flags unavailable means today's behaviour, never a crash
         _slot_policy = False
-    if _slot_policy:
+    if _slot_policy and "trip_notes" in lead_dict:
         has_return_or_oneway = bool(lead_dict.get("return_date") or _client_trip_type)
     else:
+        # Flag off, or no trip_notes column yet (040 unapplied): nothing can
+        # record the client's answer, so the strict rule would ask forever.
         has_return_or_oneway = bool(
             lead_dict.get("return_date")
             or lead_dict.get("trip_type") in ("one_way", "round_trip", "multi_city", "open_jaw")

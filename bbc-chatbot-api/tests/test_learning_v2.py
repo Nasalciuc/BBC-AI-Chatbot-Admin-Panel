@@ -125,3 +125,123 @@ async def test_resolve_sets_answered_from_lead():
     assert n == 2
     # route resolved True, passengers False
     assert {"answered": True} in updates and {"answered": False} in updates
+
+
+# ── trip_type outcome follows the slot policy ─────────────────────────────
+
+def test_trip_type_default_is_not_an_answer():
+    # trip_notes present (040 applied) but no client source: round_trip is the
+    # column default, so the ask is not answered.
+    lead = {"trip_type": "round_trip", "trip_notes": {}}
+    assert outcomes._slot_filled("trip_type", lead) is False
+
+
+def test_trip_type_client_source_is_an_answer():
+    lead = {"trip_type": "one_way", "trip_notes": {"trip_type_source": "client"}}
+    assert outcomes._slot_filled("trip_type", lead) is True
+
+
+def test_unknown_slot_is_never_filled():
+    assert outcomes._slot_filled("nope", {"nope": 1}) is False
+
+
+# ── the paths that do NOT run the main branch (CLAUDE.md rule 5) ─────────
+
+@pytest.mark.asyncio
+async def test_record_ask_inert_when_learning_disabled(monkeypatch):
+    monkeypatch.setenv("LEARNING_ENABLED", "false")
+    with patch("app.db.supabase._run_sync", side_effect=AssertionError("DB touched")):
+        await outcomes.record_ask("conv-x", "m1", "route", None)
+
+
+@pytest.mark.asyncio
+async def test_record_ask_inert_without_slot():
+    with patch("app.db.supabase._run_sync", side_effect=AssertionError("DB touched")):
+        await outcomes.record_ask("conv-x", "m1", "", None)
+
+
+@pytest.mark.asyncio
+async def test_record_ask_insert_is_not_retried():
+    calls = []
+
+    async def _run(fn, idempotent=True, *, label="other"):
+        calls.append(idempotent)
+
+    with patch("app.db.supabase._run_sync", _run), \
+         patch("app.db.supabase.get_client", lambda: None):
+        await outcomes.record_ask("conv-x", "m1", "route", "v1")
+    assert calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_resolve_is_inert_when_learning_disabled(monkeypatch):
+    monkeypatch.setenv("LEARNING_ENABLED", "false")
+    with patch("app.db.supabase.get_client", side_effect=AssertionError("DB touched")):
+        assert await outcomes.resolve_outcomes("conv-x", {}) == 0
+
+
+@pytest.mark.asyncio
+async def test_learning_tick_skips_when_disabled(monkeypatch):
+    from app.services import learning
+    monkeypatch.setenv("LEARNING_ENABLED", "false")
+    with patch.object(learning, "run_learning", AsyncMock(side_effect=AssertionError("ran"))):
+        assert await learning.run_learning_tick() == {"skipped": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_learning_tick_skips_outside_the_hour(monkeypatch):
+    from datetime import datetime, timezone
+    from app.services import learning
+    other_hour = (datetime.now(timezone.utc).hour + 1) % 24
+    monkeypatch.setenv("LEARNING_HOUR_UTC", str(other_hour))
+    with patch.object(learning, "run_learning", AsyncMock(side_effect=AssertionError("ran"))):
+        assert await learning.run_learning_tick() == {"skipped": "not the hour"}
+
+
+@pytest.mark.asyncio
+async def test_learning_tick_skips_when_already_ran(monkeypatch):
+    from datetime import datetime, timezone
+    from app.services import learning
+    monkeypatch.setenv("LEARNING_HOUR_UTC", str(datetime.now(timezone.utc).hour))
+    with patch.object(learning, "_run_exists_today", AsyncMock(return_value=True)), \
+         patch.object(learning, "run_learning", AsyncMock(side_effect=AssertionError("ran"))):
+        assert await learning.run_learning_tick() == {"skipped": "already ran today"}
+
+
+# ── report and variants: failure is not "no data" (CLAUDE.md rule 7) ─────
+
+@pytest.mark.asyncio
+async def test_report_failure_keeps_the_success_keys():
+    from app.services import learning
+
+    async def _boom(*a, **k):
+        raise RuntimeError("down")
+
+    with patch("app.db.supabase._run_sync", _boom), patch("app.db.supabase.get_client", lambda: None):
+        rep = await learning.build_learning_report()
+    assert rep["error"] == "fetch_failed"
+    for k in ("treatment_answer_rate", "control_answer_rate", "treatment_n", "control_n", "by_slot"):
+        assert k in rep
+
+
+@pytest.mark.asyncio
+async def test_variants_read_failure_raises_but_missing_table_is_empty():
+    from app.services import learning
+
+    async def _boom(*a, **k):
+        raise RuntimeError("connection reset")
+
+    async def _missing(*a, **k):
+        raise RuntimeError("{'code': 'PGRST205', 'message': 'table not found'}")
+
+    class _C:
+        def table(self, *a):
+            return self
+        def select(self, *a):
+            return self
+
+    with patch("app.db.supabase._run_sync", _boom), patch("app.db.supabase.get_client", lambda: _C()):
+        with pytest.raises(RuntimeError):
+            await learning.get_question_variants()
+    with patch("app.db.supabase._run_sync", _missing), patch("app.db.supabase.get_client", lambda: _C()):
+        assert await learning.get_question_variants() == []
