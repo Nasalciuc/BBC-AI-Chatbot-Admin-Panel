@@ -696,6 +696,36 @@ async def request_invite(req: RequestInviteRequest, _rate: None = Depends(check_
     return generic
 
 
+async def _self_update_trap(user: dict, request: Request, extra: list[str]) -> None:
+    from app.security import behavior as bh
+    from app.security.ban_store import get_store
+    from app.services.email import send_ops_alert_email
+
+    ip = client_ip(request, prefer_cf=False) or ""
+    enforce = bh.enforced("BEHAVIOR_TRAPS_ENFORCE")
+    bh.BEHAVIOR_HEALTH["operator_traps"]["auth_me_fields"] = bh.BEHAVIOR_HEALTH["operator_traps"].get("auth_me_fields", 0) + 1
+    bh.record("auth_me_fields", ip=ip, enforced_now=enforce)
+    fields = ",".join(f[:30] for f in extra[:5])
+    try:
+        await send_ops_alert_email(
+            "operator trap: PATCH /api/auth/me",
+            f"user={user.get('id')} fields={fields} ip={ip} {'revoked+banned' if enforce else 'counted'}",
+        )
+    except Exception as e:  # noqa: silent — the alert is best-effort
+        logger.warning(f"[trap] alert failed: {type(e).__name__}")
+    if not enforce:
+        return
+    store = get_store()
+    if store is not None:
+        await store.revoke_sessions(user["id"])
+        if ip:
+            # Through the guard's ban path: a security_bans row the Bans page
+            # shows and can lift (review fix: it was a Redis-only ban).
+            from app.security.ban_guard import _ban_identity
+            await _ban_identity(store, ip, "auth_me_fields", 24 * 3600, alert=False)
+    raise HTTPException(status_code=401, detail="Session no longer valid — please login again")
+
+
 class SelfUpdateRequest(BaseModel):
     name: str | None = None
     phone: str | None = None
@@ -706,12 +736,26 @@ class SelfUpdateRequest(BaseModel):
 @router.patch("/me")
 async def update_own_profile(
     payload: SelfUpdateRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """Self-service profile update — any authenticated role.
 
     Whitelisted fields only. Re-issues JWT so claims reflect changes on refresh.
     """
+    # PR-15 operator trap: the panel only ever sends name/phone/avatar_url.
+    # Anything else (role, is_active, tunnel_scope…) is someone testing
+    # whether the whitelist holds. Shadow: counted + alert; enforced
+    # (BEHAVIOR_TRAPS_ENFORCE): sessions revoked, IP banned, 401.
+    try:
+        _raw = await request.json()
+    except Exception as e:  # noqa: silent — pydantic already parsed the body; a re-read failure just skips the trap
+        logger.debug(f"[trap] PATCH /me body re-read skipped: {type(e).__name__}")
+        _raw = {}
+    _extra = sorted(set(_raw) - {"name", "phone", "avatar_url"}) if isinstance(_raw, dict) else []
+    if _extra:
+        await _self_update_trap(current_user, request, _extra)
+
     updates: dict = {}
 
     if payload.name is not None:
@@ -758,6 +802,7 @@ async def update_own_profile(
 
 @router.post("/me/avatar")
 async def upload_own_avatar(
+    request: Request,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
@@ -777,6 +822,21 @@ async def upload_own_avatar(
         raise HTTPException(status_code=422, detail="Image too large (max 2MB)")
     if not data:
         raise HTTPException(status_code=422, detail="Empty file")
+
+    # PR-15: the declared type was the only check. The first bytes must agree
+    # with it (PNG, JPEG, WEBP), and the file must be at least 1 KB.
+    from app.security import behavior as bh
+    _declared = (file.content_type or "").split(";")[0].strip().lower()
+    # An unsupported declared type keeps its 422 from upload_avatar; a
+    # supported one must be what it says.
+    if _declared in ("image/png", "image/jpeg", "image/webp") and not bh.upload_matches(_declared, data):
+        bh.BEHAVIOR_HEALTH["upload_mismatch"] += 1
+        # The client IP goes in `ip` (the report looks it up in conversations);
+        # the staff member in `user_id` (review fix: the id sat in `ip`).
+        bh.record("upload_mismatch", ip=client_ip(request, prefer_cf=False) or "",
+                  user_id=str(current_user.get("id") or ""))
+        logger.warning(f"[trap] avatar upload type mismatch user={current_user.get('id')} declared={(file.content_type or '')[:40]}")
+        raise HTTPException(status_code=415, detail="That file is not the image type it says it is")
 
     try:
         url = await upload_avatar(

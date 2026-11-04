@@ -235,7 +235,6 @@ async def test_weekly_security_report_counts_without_pii(monkeypatch):
     assert "honeypot=2" in sent["body"] and "@" not in sent["body"]
 
 
-
 @pytest.mark.asyncio
 async def test_a_changed_key_still_lets_a_recovery_code_in(monkeypatch):
     """Review fix: the TOTP secret no longer decrypts (key rotated), but the

@@ -57,6 +57,8 @@ async def run_ip_selftest() -> dict:
 
     spoofable = seen == _SPOOF
     CLIENT_IP_HEALTH["ip_trusted"] = not spoofable
+    # Positive proof (review fix): only a passed self-test lets the bans that
+    # never wait land on an IP — a skipped test is not proof.
     CLIENT_IP_HEALTH["ip_verified"] = not spoofable
     if spoofable and not _alerted:
         _alerted = True

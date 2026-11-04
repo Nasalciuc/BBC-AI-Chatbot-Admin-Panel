@@ -68,7 +68,9 @@ export interface Lead {
   trip_type: 'one_way' | 'round_trip' | 'multi_city' | 'open_jaw' | 'tour'
   cabin_class: 'business' | 'first' | 'economy' | 'mixed'
   passengers: number | null
-  flexible_dates: boolean
+  /** exact | flexible | window | unknown (PR-7); replaces flexible_dates,
+   *  which migration 050 drops. */
+  dates_flexibility?: 'exact' | 'flexible' | 'window' | 'unknown' | null
   origin_code: string | null
   destination_code: string | null
   departure_date: string | null

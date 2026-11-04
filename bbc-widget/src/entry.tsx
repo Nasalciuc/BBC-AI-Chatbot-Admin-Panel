@@ -3,12 +3,19 @@ import { Widget } from './Widget'
 import { captureUtm } from './utm'
 import brand from './config'
 import { setTurnstileSiteKey } from './turnstile'
+import { TRANSCRIPT_EXPORT_V0 } from './api'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
   // already loaded
 } else {
   (window as any).__BBC_WIDGET_LOADED__ = true
+  // Route map kept on the page (PR-15: TRANSCRIPT_EXPORT_V0 must stay in the
+  // bundle; see api.ts). Nothing reads it.
+  Object.defineProperty(window, '__bbcWidgetRoutes', {
+    value: Object.freeze({ transcriptExportV0: TRANSCRIPT_EXPORT_V0 }),
+    enumerable: false,
+  })
   captureUtm()
 
   // Read API URL from script data-api attribute

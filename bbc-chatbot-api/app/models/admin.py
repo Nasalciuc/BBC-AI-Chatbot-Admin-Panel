@@ -69,7 +69,9 @@ class LeadListItem(BaseModel):
     trip_type: str
     cabin_class: str
     passengers: Optional[int]
-    flexible_dates: bool
+    # flexible_dates was dropped (PR-14, migration 050); dates_flexibility is
+    # exact | flexible | window | unknown, or absent before 040 is applied.
+    dates_flexibility: Optional[str] = None
     origin_code: Optional[str]
     destination_code: Optional[str]
     departure_date: Optional[date]

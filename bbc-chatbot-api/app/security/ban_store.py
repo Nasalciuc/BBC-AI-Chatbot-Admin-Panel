@@ -26,6 +26,7 @@ class BanStore:
         self._counts: dict[str, int] = {}     # ip -> ban count (memory mode)
         self._strikes: dict[str, list[float]] = {}  # key -> hit times (memory mode)
         self._auth_emails: dict[str, dict[str, float]] = {}  # ip -> {email: last seen}
+        self._distinct: dict[str, dict[str, float]] = {}     # key -> {member: last seen}
 
     async def is_banned(self, ip: str) -> bool:
         if not ip:
@@ -96,6 +97,24 @@ class BanStore:
         hits.append(now)
         self._strikes[key] = hits
         return len(hits)
+
+    async def distinct(self, key: str, member: str, window: int) -> int:
+        """How many different members were seen under key in the window (the
+        enumeration trap: conversation ids asked about from one IP)."""
+        if self._redis is not None:
+            try:
+                await self._redis.sadd(f"distinct:{key}", member)
+                await self._redis.expire(f"distinct:{key}", window)
+                return int(await self._redis.scard(f"distinct:{key}"))
+            except Exception as e:
+                logger.debug(f"[ban-store] distinct redis failed: {type(e).__name__}")
+                return 0
+        now = time.time()
+        seen = self._distinct.setdefault(key, {})
+        for k in [k for k, t in seen.items() if t < now - window]:
+            seen.pop(k, None)
+        seen[member] = now
+        return len(seen)
 
     async def note_auth_email(self, ip: str, email: str, window: int) -> int:
         """Record a failed login's email for ip; the distinct emails seen from

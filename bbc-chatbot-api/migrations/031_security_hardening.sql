@@ -34,10 +34,20 @@ ALTER TABLE public.blocklist ENABLE ROW LEVEL SECURITY;
 --    service_role hold their own ACL entries and survive the revoke;
 --    they are re-granted explicitly so a fresh environment behaves the
 --    same and RLS policy evaluation never loses EXECUTE.
-REVOKE EXECUTE ON FUNCTION public.user_role()          FROM PUBLIC, anon;
-REVOKE EXECUTE ON FUNCTION public.user_tunnel_scope()  FROM PUBLIC, anon;
-GRANT  EXECUTE ON FUNCTION public.user_role()          TO authenticated, service_role;
-GRANT  EXECUTE ON FUNCTION public.user_tunnel_scope()  TO authenticated, service_role;
+-- PR-14 repair: user_role() and user_tunnel_scope() were created outside
+-- this repository, so on a clean replay they do not exist and a bare REVOKE
+-- fails. The same statements now run only when their function is there.
+DO $$
+BEGIN
+    IF to_regprocedure('public.user_role()') IS NOT NULL THEN
+        REVOKE EXECUTE ON FUNCTION public.user_role()          FROM PUBLIC, anon;
+        GRANT  EXECUTE ON FUNCTION public.user_role()          TO authenticated, service_role;
+    END IF;
+    IF to_regprocedure('public.user_tunnel_scope()') IS NOT NULL THEN
+        REVOKE EXECUTE ON FUNCTION public.user_tunnel_scope()  FROM PUBLIC, anon;
+        GRANT  EXECUTE ON FUNCTION public.user_tunnel_scope()  TO authenticated, service_role;
+    END IF;
+END $$;
 
 -- 3. Pin search_path per function ------------------------------
 -- NOTE on 'public' — NOT '': the trigger bodies reference unqualified
@@ -47,15 +57,37 @@ GRANT  EXECUTE ON FUNCTION public.user_tunnel_scope()  TO authenticated, service
 -- proconfig. Any future migration that replaces one of these MUST
 -- re-apply its SET search_path (see update_conv_presence below, which
 -- carries it inline for exactly that reason).
-ALTER FUNCTION public.fn_update_timestamp()             SET search_path = 'public';
-ALTER FUNCTION public.fn_increment_message_count()      SET search_path = 'public';
-ALTER FUNCTION public.fn_accumulate_ai_cost()           SET search_path = 'public';
-ALTER FUNCTION public.fn_sync_lead_derived()            SET search_path = 'public';
-ALTER FUNCTION public.log_message_delete()              SET search_path = 'public';
-ALTER FUNCTION public.log_conversation_delete()         SET search_path = 'public';
-ALTER FUNCTION public.user_role()                       SET search_path = 'public';
-ALTER FUNCTION public.user_tunnel_scope()               SET search_path = 'public';
-ALTER FUNCTION public.update_conv_presence(uuid, jsonb) SET search_path = 'public';
+-- PR-14 repair: same reason — each pin runs only when its function exists.
+DO $$
+BEGIN
+    IF to_regprocedure('public.fn_update_timestamp()') IS NOT NULL THEN
+        ALTER FUNCTION public.fn_update_timestamp() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.fn_increment_message_count()') IS NOT NULL THEN
+        ALTER FUNCTION public.fn_increment_message_count() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.fn_accumulate_ai_cost()') IS NOT NULL THEN
+        ALTER FUNCTION public.fn_accumulate_ai_cost() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.fn_sync_lead_derived()') IS NOT NULL THEN
+        ALTER FUNCTION public.fn_sync_lead_derived() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.log_message_delete()') IS NOT NULL THEN
+        ALTER FUNCTION public.log_message_delete() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.log_conversation_delete()') IS NOT NULL THEN
+        ALTER FUNCTION public.log_conversation_delete() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.user_role()') IS NOT NULL THEN
+        ALTER FUNCTION public.user_role() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.user_tunnel_scope()') IS NOT NULL THEN
+        ALTER FUNCTION public.user_tunnel_scope() SET search_path = 'public';
+    END IF;
+    IF to_regprocedure('public.update_conv_presence(uuid, jsonb)') IS NOT NULL THEN
+        ALTER FUNCTION public.update_conv_presence(uuid, jsonb) SET search_path = 'public';
+    END IF;
+END $$;
 
 -- 4. Presence PATCH — the heartbeat must not clobber other writers
 --    The widget pings every 30s. Reading the whole metadata blob and
