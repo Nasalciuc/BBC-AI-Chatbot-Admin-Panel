@@ -286,7 +286,10 @@ def _call_model(
     task: str = "other",
 ) -> tuple[Optional[str], float]:
     """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost)."""
-    model = _utility_model(model, task)
+    # Never on the fallback: fallback_model is the old Haiku, and routing it
+    # back to Haiku 5.5 would retry the model that just failed.
+    if not _is_fallback:
+        model = _utility_model(model, task)
     start = time.time()
     logger.info(f"Claude START | model={model} max_tokens={max_tokens} task={task}")
 

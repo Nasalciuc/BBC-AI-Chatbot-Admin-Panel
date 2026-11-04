@@ -202,7 +202,9 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         from app.flags import flag
         if flag("ROLE_GATES_ENFORCE", False):
             raise HTTPException(400, "Staff accounts must use a company email address")
-        logger.warning(f"[domain-gate] would refuse non-company invite email: {req.email}")
+        # The domain only: no address at WARNING (CLAUDE.md rule 7).
+        _domain = (req.email or "").lower().strip().rsplit("@", 1)[-1]
+        logger.warning(f"[domain-gate] would refuse non-company invite domain: {_domain}")
     if req.role == "owner" and current_user.get("role") != "owner":
         raise HTTPException(403, "Only an owner can grant the owner role")
 

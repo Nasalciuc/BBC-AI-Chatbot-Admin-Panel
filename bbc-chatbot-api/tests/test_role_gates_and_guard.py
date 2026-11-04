@@ -141,6 +141,39 @@ def test_token_version_matches_zero_by_default(monkeypatch):
     assert token_version.matches("u1", 0) is True
 
 
+def test_token_version_unreadable_and_uncached_fails_closed(monkeypatch):
+    monkeypatch.setattr(token_version, "_read", lambda uid: None)
+    assert token_version.matches("u1", 0) is False
+    assert token_version.TOKEN_VERSION_HEALTH["refused_unreadable"] == 1
+
+
+def test_token_version_unreadable_keeps_the_version_this_process_read(monkeypatch):
+    monkeypatch.setattr(token_version, "_read", lambda uid: 2)
+    assert token_version.matches("u1", 2) is True
+    monkeypatch.setattr(token_version.time, "time", lambda: 10**10)  # past the 60s TTL
+    monkeypatch.setattr(token_version, "_read", lambda uid: None)
+    assert token_version.matches("u1", 2) is True
+    token_version.invalidate_cache("u1")  # what a bump does
+    assert token_version.matches("u1", 2) is False
+
+
+def test_a_generic_read_error_is_not_version_zero():
+    real_read = token_version._read.real
+    client = MagicMock()
+    client.table.side_effect = RuntimeError("connection reset")
+    with patch("app.db.supabase.get_client", return_value=client):
+        assert real_read("u1") is None
+    assert token_version.TOKEN_VERSION_HEALTH["read_failed"] == 1
+
+
+def test_a_missing_column_still_reads_zero():
+    real_read = token_version._read.real
+    client = MagicMock()
+    client.table.side_effect = RuntimeError("column users.token_version does not exist (42703)")
+    with patch("app.db.supabase.get_client", return_value=client):
+        assert real_read("u1") == 0
+
+
 def test_token_version_mismatch_after_bump(monkeypatch):
     monkeypatch.setattr(token_version, "_read", lambda uid: 3)
     token_version.invalidate_cache("u1")
@@ -175,3 +208,39 @@ async def test_guard_ignores_the_clients_own_contact_and_logs_no_values(monkeypa
     out = await og.guard_ai_text(text, conversation_id="c1")
     assert "ana@example.com" in out and "+1 415 555 0134" in out
     assert "x@evil.io" not in out and "7946" not in out
+
+
+# ── CodeRabbit #226: the domain gate logs the domain, never the address ───
+
+@pytest.mark.asyncio
+async def test_domain_gate_warning_names_the_domain_not_the_address(caplog):
+    import logging
+
+    from app.api import auth_routes
+
+    req = auth_routes.InviteRequest(name="Test", email="someone.private@gmail.com", role="sales")
+    with patch.object(auth_routes.db, "get_user_by_email", new=AsyncMock(side_effect=RuntimeError("stop"))), \
+         caplog.at_level(logging.WARNING, logger="app.api.auth_routes"):
+        with pytest.raises(RuntimeError):
+            await auth_routes.invite_user(req, current_user={"role": "owner", "id": "u0"})
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "domain-gate" in text and "gmail.com" in text
+    assert "someone.private" not in text
+
+
+# ── CodeRabbit #226: prices, decimals and dates are not contacts ──────────
+
+@pytest.mark.parametrize("text", [
+    "Fares from $1,200.50 one way",
+    "Depart 2026-05-14, back 12.05.2026",
+    "Dates: 2026-05-14 - 2026-05-21",
+    "The flight is about 2.5 hours",
+])
+def test_prices_decimals_and_dates_survive_the_guard(text):
+    out, removed = output_guard._scrub(text)
+    assert out == text and removed == []
+
+
+def test_a_phone_shaped_like_a_bad_date_is_still_removed():
+    out, removed = output_guard._scrub("call 12.34.5678 now")
+    assert removed == ["12.34.5678"]

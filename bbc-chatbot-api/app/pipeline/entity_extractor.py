@@ -216,6 +216,18 @@ MY_X_AND_I_RE = re.compile(
     r"friend|colleague|boss|sister|brother|fianc[eé]e?|girlfriend|boyfriend)\s+and\s+(?:I|me)\b",
     re.I,
 )
+# "me and my 9-year-old", "me and my son": the one companion "me and my"
+# counts may be the minor the age names, not an extra traveller.
+ME_AND_MY_MINOR_RE = re.compile(
+    r"\bme and my\s+(?:"
+    r"\d{1,2}[\s-]?(?:years?|yrs?)[\s-]?old"
+    r"|(?:little\s+|baby\s+)?(?:kid|child|baby|toddler|infant)"
+    # a son or daughter is a minor only when the age follows: "my son, 9"
+    r"|(?:son|daughter|boy|girl|grandson|granddaughter|nephew|niece)[\s,(]+"
+    r"(?:(?:who\s+is|who's|he's|she's|he\s+is|she\s+is|aged?)\s+)?\d{1,2}\b(?!\s*(?:pm|am|h|:))"
+    r")\b",
+    re.I,
+)
 # "a 9-year-old", "my 15 year old": the age, not the count, names a minor.
 AGE_RE = re.compile(r'\b(\d{1,2})[\s-]?(?:years?|yrs?)[\s-]?old\b', re.I)
 # "we are a family of four" — FAMILY_RE only knew digits.
@@ -1358,6 +1370,9 @@ def extract_entities(
     # True when the count names adults only ("2 adults", "my wife and I"), so a
     # child named by age is added to it rather than already inside it.
     _pax_adults_only = False
+    # True when "me and my" names the minor as the companion: the count is
+    # then one adult plus the minors the ages name, not two adults plus them.
+    _pax_minor_companion = False
     m = (PAX_RE_V2 if _pax_v2 else PAX_RE).search(text)
     if m:
         _pax_adults_only = bool(re.search(r'adults?', m.group(0), re.I))
@@ -1371,6 +1386,7 @@ def extract_entities(
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
         _pax_adults_only = bool(re.search(r'\bme and my\b', text, re.I))
+        _pax_minor_companion = _pax_v2 and bool(ME_AND_MY_MINOR_RE.search(text))
     elif _pax_v2 and MY_X_AND_I_RE.search(text):
         entities.passengers = 2
         _pax_adults_only = True
@@ -1404,6 +1420,8 @@ def extract_entities(
 
     if children_count or infant_count:
         adult_count = entities.passengers or 0
+        if _pax_minor_companion:
+            adult_count = 1  # "me": the companion is one of the minors
         if not adult_count and (children_count or infant_count):
             adult_count = 1
         entities.passengers = adult_count + children_count + infant_count

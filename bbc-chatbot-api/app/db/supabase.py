@@ -652,7 +652,9 @@ def _chat_enabled_column_available() -> bool:
 def _downgrade_chat_enabled(err: Exception) -> None:
     """Flip the flag ONLY for a real missing-column error. Never silent."""
     global _chat_enabled_ok, _chat_enabled_downgraded_at
-    if not _is_missing_column_error(err):
+    # Only when the error names THIS column: a missing 030/038 column on the
+    # same query must not switch the chat_enabled filter off.
+    if not _is_missing_column_error(err) or "chat_enabled" not in str(err):
         return
     if _chat_enabled_ok is not False:
         logger.error(
@@ -711,7 +713,9 @@ def _decoy_filterable(table: str) -> bool:
 
 
 def _downgrade_decoy(table: str, err: Exception) -> None:
-    if not _is_missing_column_error(err):
+    # Only when the error names is_decoy: a missing chat_enabled (033) or
+    # crm_push_gate_reason (030) column must not unhide the decoy rows.
+    if not _is_missing_column_error(err) or "is_decoy" not in str(err):
         return
     if _decoy_ok.get(table) is not False:
         logger.error(
@@ -2168,7 +2172,9 @@ async def bump_token_version(user_id: str) -> None:
     """Invalidate a user's live sessions (role/scope change, deactivation).
 
     Uses the atomic increment RPC when present; falls back to read+write.
-    A missing token_version column is tolerated (feature inert until 039)."""
+    A missing token_version column is tolerated (feature inert until 039);
+    any other failure raises, so the caller can say the sessions are still
+    live instead of reporting a clean demotion."""
     try:
         db = get_client()
         # Read+write (bumps are rare and admin-initiated; the tiny race is
@@ -2187,6 +2193,7 @@ async def bump_token_version(user_id: str) -> None:
             logger.warning("[token-version] users.token_version missing — apply 039")
             return
         logger.error(f"bump_token_version error: {type(e).__name__}: {e}")
+        raise
     finally:
         try:
             from app.security.token_version import invalidate_cache
