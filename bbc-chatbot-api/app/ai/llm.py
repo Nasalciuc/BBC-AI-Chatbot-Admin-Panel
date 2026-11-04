@@ -23,6 +23,7 @@ import anthropic
 from config.settings import settings
 from app.ai.ledger import record_ai_call
 from app.ai.prices import cost_from_usage
+from app.ai.claude import _sampling_params
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,9 @@ def _build_params(model: str, system, messages, tools, effort: str, max_tokens: 
         params["output_config"] = {"effort": effort}
     else:
         params["max_tokens"] = max_tokens
-        params["temperature"] = 0.6
+        # Same denylist as the sync path: claude-opus-4-8 answers 400 to a
+        # non-default temperature, so the parameter is left out there.
+        params.update(_sampling_params(model, temperature=0.6))
     if tools:
         params["tools"] = tools
     return params

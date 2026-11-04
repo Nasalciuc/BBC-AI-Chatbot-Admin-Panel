@@ -282,6 +282,12 @@ async def get_conversation_details(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
+    # Same team scope as the messages and the agent stream: the card carries
+    # route, dates and trip_notes. Fail closed.
+    if user.get("role") in ("supervisor", "project_manager"):
+        team_ids = await _resolve_team_scope(user)
+        if not team_ids or conv.get("team_id") not in team_ids:
+            raise HTTPException(status_code=403, detail="Outside your team")
     from app.services import lead_service
     from app.pipeline.operator_card import build_details_payload
 

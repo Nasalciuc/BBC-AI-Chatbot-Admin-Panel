@@ -56,6 +56,11 @@ DROP POLICY IF EXISTS question_outcomes_service_role_all ON public.question_outc
 CREATE POLICY question_outcomes_service_role_all ON public.question_outcomes
   FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+-- One row per (slot, text): the seed below can then be re-run safely, and a
+-- duplicate phrasing can never compete with itself in the bandit.
+CREATE UNIQUE INDEX IF NOT EXISTS question_variants_slot_text_uniq
+  ON public.question_variants (slot, text);
+
 -- Seed the measured default questions as active variants.
 INSERT INTO public.question_variants (slot, text, status, origin) VALUES
   ('route',          'Where are you flying from and to?',       'active', 'seed'),
@@ -63,4 +68,4 @@ INSERT INTO public.question_variants (slot, text, status, origin) VALUES
   ('trip_type',      'Is this a round trip, or one way?',        'active', 'seed'),
   ('return_date',    'When would you like to fly back?',         'active', 'seed'),
   ('passengers',     'How many travelers will be on this trip?', 'active', 'seed')
-ON CONFLICT DO NOTHING;
+ON CONFLICT (slot, text) DO NOTHING;

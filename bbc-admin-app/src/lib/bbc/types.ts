@@ -176,5 +176,7 @@ export interface Permissions {
   canAssignTasks: boolean
   canViewTeams: boolean
   canManageTeams: boolean
+  /** The learning loop's review gate (owner/admin/dev — backend CAN_REVIEW_LESSONS). */
+  canReviewLearning: boolean
   visibleTunnels: Tunnel[]
 }

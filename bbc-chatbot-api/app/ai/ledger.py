@@ -45,16 +45,27 @@ LEDGER_HEALTH: dict[str, Any] = {
     "cache_read_tokens": 0,
     "cache_write_tokens": 0,
     "reconcile": None,    # last reconciliation diff, set by the cron route
+    "budget_durable": None,  # False: AI_LEDGER_ENABLED off, cap resets on restart
 }
 _warned_missing = False
 
 # ── Today's spend, in-process (PR-6 BudgetState) ──────────────
 # Seeded once at startup from the ai_calls sum for the UTC day, then advanced
 # in-process on every record_ai_call. Replaces get_today_cost (capped at 500
-# rows) for the router's budget decisions. One process (ADR-5).
+# rows) for the router's budget decisions. One process (ADR-5), but the sync
+# Claude wrappers run in worker threads (asyncio.to_thread / run_in_executor),
+# so every read and write of _budget goes through _budget_lock.
+#
+# Durability: the total survives a restart only because seed_budget re-sums
+# the day's ai_calls rows. With AI_LEDGER_ENABLED=false no rows are written,
+# so the cap is in-memory only and a restart that day starts again from 0;
+# LEDGER_HEALTH["budget_durable"] says which case is live.
 import datetime as _dt
+import threading
 
 _budget: dict = {"day": None, "total": 0.0}
+_budget_lock = threading.Lock()
+_SEED_PAGE = 1000  # PostgREST's default max rows per response
 
 
 def _today_utc() -> str:
@@ -63,16 +74,19 @@ def _today_utc() -> str:
 
 def _advance_budget(cost: float) -> None:
     today = _today_utc()
-    if _budget["day"] != today:
-        _budget["day"] = today
-        _budget["total"] = 0.0
-    _budget["total"] = round(_budget["total"] + max(0.0, cost), 6)
+    with _budget_lock:
+        if _budget["day"] != today:
+            _budget["day"] = today
+            _budget["total"] = 0.0
+        _budget["total"] = round(_budget["total"] + max(0.0, cost), 6)
 
 
 def today_cost() -> float:
-    if _budget["day"] != _today_utc():
-        return 0.0
-    return _budget["total"]
+    today = _today_utc()
+    with _budget_lock:
+        if _budget["day"] != today:
+            return 0.0
+        return _budget["total"]
 
 
 def budget_fraction() -> float:
@@ -86,19 +100,43 @@ def budget_fraction() -> float:
 
 
 async def seed_budget() -> None:
-    """Sum today's ai_calls once at startup so a restart does not reset spend."""
+    """Sum today's ai_calls once at startup so a restart does not reset spend.
+
+    Reads every page: one PostgREST response stops at 1,000 rows, and a
+    partial sum would leave the router under the downshift threshold.
+    """
     from app.db.supabase import _run_sync, get_client
 
+    durable = bool(flag("AI_LEDGER_ENABLED", True))
+    LEDGER_HEALTH["budget_durable"] = durable
+    if not durable:
+        logger.warning("[budget] AI_LEDGER_ENABLED=false: the daily cap is in-memory only and resets on restart")
     try:
         day = _today_utc()
-        res = await _run_sync(
-            lambda: get_client().table("ai_calls").select("cost_usd")
-            .gte("created_at", f"{day}T00:00:00+00:00").execute(),
-            label="ai_calls",
-        )
-        total = round(sum(float(r.get("cost_usd", 0) or 0) for r in (getattr(res, "data", None) or [])), 6)
-        _budget["day"] = day
-        _budget["total"] = total
+        total = 0.0
+        offset = 0
+        while True:
+            start = offset
+            res = await _run_sync(
+                lambda: get_client().table("ai_calls").select("cost_usd")
+                .gte("created_at", f"{day}T00:00:00+00:00")
+                .order("created_at").order("id")
+                .range(start, start + _SEED_PAGE - 1).execute(),
+                label="ai_calls",
+            )
+            rows = getattr(res, "data", None) or []
+            total += sum(float(r.get("cost_usd", 0) or 0) for r in rows)
+            if len(rows) < _SEED_PAGE:
+                break
+            offset += _SEED_PAGE
+        total = round(total, 6)
+        with _budget_lock:
+            # Calls recorded while the seed ran are already in memory; keep
+            # the larger figure rather than double-count or drop them.
+            if _budget["day"] == day:
+                total = max(total, _budget["total"])
+            _budget["day"] = day
+            _budget["total"] = total
         logger.info(f"[budget] seeded today's spend: ${total:.4f}")
     except Exception as e:
         logger.warning(f"[budget] seed skipped: {type(e).__name__}: {e}")
@@ -245,6 +283,7 @@ def _reset_for_tests() -> None:
     LEDGER_HEALTH.update(
         recorded=0, dropped=0, flushed=0, flush_errors=0, table_missing=False,
         by_task={}, by_model={}, cache_read_tokens=0, cache_write_tokens=0, reconcile=None,
+        budget_durable=None,
     )
     _budget["day"] = None
     _budget["total"] = 0.0

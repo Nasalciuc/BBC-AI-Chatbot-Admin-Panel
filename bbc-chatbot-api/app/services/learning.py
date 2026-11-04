@@ -881,7 +881,11 @@ def render_lessons_section(lessons: list[dict]) -> Optional[str]:
 
 # ── Question variants + report (PR-8) ─────────────────────────
 async def get_question_variants(slot: Optional[str] = None) -> list[dict]:
-    """Variants with outcome stats (shows, answered, rate, P(best) per slot)."""
+    """Variants with outcome stats (shows, answered, rate, P(best) per slot).
+
+    A missing table (041 unapplied) is "no variants"; any other failed read
+    raises after logging, so an empty list never means "the read failed"
+    (CLAUDE.md rule 7)."""
     from app.db import supabase as _db
     from app.learning.bandit import VariantStats, prob_best
 
@@ -898,8 +902,11 @@ async def get_question_variants(slot: Optional[str] = None) -> list[dict]:
         )
         outcomes = getattr(ores, "data", None) or []
     except Exception as e:
+        if "PGRST205" in str(e) or "42P01" in str(e):
+            # Migration 041 not applied: no variants yet is the normal case.
+            return []
         logger.warning(f"[variants] fetch failed: {type(e).__name__}: {e}")
-        return []
+        raise
 
     stats: dict[str, dict] = {}
     for o in outcomes:
@@ -958,7 +965,16 @@ async def build_learning_report() -> dict:
         rows = getattr(res, "data", None) or []
     except Exception as e:
         logger.warning(f"[report] fetch failed: {type(e).__name__}: {e}")
-        return {"treatment": None, "control": None, "by_slot": {}}
+        # Same keys as the success shape, plus `error`, so a caller can tell
+        # "no data yet" from "the read failed" (CLAUDE.md rule 7).
+        return {
+            "treatment_answer_rate": None,
+            "control_answer_rate": None,
+            "treatment_n": 0,
+            "control_n": 0,
+            "by_slot": {},
+            "error": "fetch_failed",
+        }
 
     def _rate(subset):
         if not subset:

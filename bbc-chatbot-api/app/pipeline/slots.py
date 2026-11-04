@@ -27,12 +27,20 @@ DEFAULT_QUESTIONS = {
 _ORDER = ["route", "departure_date", "trip_type", "return_date", "passengers"]
 
 
+_TRIP_TYPES = ("one_way", "round_trip", "multi_city", "open_jaw")
+
+
 def _trip_type_from_client(lead: dict) -> bool:
-    notes = lead.get("trip_notes") or {}
-    if isinstance(notes, dict) and notes.get("trip_type_source") == "client":
-        return True
     # A real return_date is itself proof the client described a round trip.
-    return bool(lead.get("return_date"))
+    if lead.get("return_date"):
+        return True
+    if "trip_notes" not in lead:
+        # Migration 040 not applied (or a caller that did not select the
+        # column): nothing can record the client's answer, so the strict rule
+        # would ask forever. Keep today's rule — any stored trip type counts.
+        return lead.get("trip_type") in _TRIP_TYPES
+    notes = lead.get("trip_notes") or {}
+    return isinstance(notes, dict) and notes.get("trip_type_source") == "client"
 
 
 def ordered_missing(lead: dict) -> list[str]:

@@ -104,8 +104,12 @@ async def list_question_variants(
     _assert_reviewer(user)
     from app.services.learning import get_question_variants
 
-    data = await get_question_variants(slot)
-    return {"variants": data, "count": len(data)}
+    try:
+        data = await get_question_variants(slot)
+    except Exception as e:
+        logger.warning(f"[variants] list failed: {type(e).__name__}: {e}")
+        raise HTTPException(502, "Could not load question variants") from e
+    return {"success": True, "data": data, "count": len(data)}
 
 
 @router.patch("/admin/question-variants/{variant_id}")
@@ -132,4 +136,7 @@ async def learning_report(user: dict = Depends(get_current_user)):
     _assert_reviewer(user)
     from app.services.learning import build_learning_report
 
-    return await build_learning_report()
+    report = await build_learning_report()
+    if report.get("error"):
+        return {"success": False, "data": report, "count": 0, "error": report["error"]}
+    return {"success": True, "data": report, "count": 1}

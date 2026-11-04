@@ -41,7 +41,15 @@ def is_control(conversation_id: Optional[str]) -> bool:
 
 def _slot_filled(slot: str, lead: dict) -> bool:
     fields = _SLOT_LEAD_FIELD.get(slot, ())
-    return bool(fields) and all(lead.get(f) for f in fields)
+    if not fields:
+        return False
+    if slot == "trip_type":
+        # The column defaults to 'round_trip', so a stored value is not an
+        # answer: use the slot policy's own rule (the client said it).
+        from app.pipeline.slots import _trip_type_from_client
+
+        return _trip_type_from_client(lead or {})
+    return all((lead or {}).get(f) for f in fields)
 
 
 async def record_ask(conversation_id: str, message_id: Optional[str], slot: str,

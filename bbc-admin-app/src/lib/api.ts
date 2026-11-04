@@ -30,6 +30,9 @@ import type {
   UserAccessAuditItem,
   AgentSseEvent,
   LeadDetails,
+  AdminEnvelope,
+  QuestionVariant,
+  LearningReport,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -64,7 +67,7 @@ function authHeaders(): Record<string, string> {
 
 // ── Auth ──────────────────────────────────────────────────────
 export async function getConversationDetails(conversationId: string): Promise<LeadDetails | null> {
-  const res = await fetch(`${BASE}/api/conversations/${conversationId}/details`, {
+  const res = await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/details`, {
     headers: authHeaders(),
     signal: AbortSignal.timeout(8000),
   })
@@ -625,35 +628,29 @@ export function deleteTask(id: string) {
 }
 
 // ── Learning loop (PR-8) ──────────────────────────────────────
-export type QuestionVariant = {
-  id: string; slot: string; text: string; status: string; origin: string
-  shows: number; answered: number; answer_rate: number | null; prob_best: number
-}
-export type LearningReport = {
-  treatment_answer_rate: number | null; control_answer_rate: number | null
-  treatment_n: number; control_n: number
-  by_slot: Record<string, { treatment: number | null; control: number | null }>
-}
-
+// Admin envelope: { success, data, count, error? }.
 export async function listQuestionVariants(): Promise<QuestionVariant[]> {
-  const res = await fetch(`${BASE}/api/admin/question-variants`, { headers: authHeaders() })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to load variants')
-  return (await res.json()).variants ?? []
+  const res = await apiFetch<AdminEnvelope<QuestionVariant[]>>('/api/admin/question-variants')
+  return res.data ?? []
 }
 
-export async function setVariantStatus(id: string, status: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/admin/question-variants/${id}`, {
-    method: 'PATCH',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to update variant')
+export async function setVariantStatus(id: string, status: QuestionVariant['status']): Promise<void> {
+  await apiFetch<AdminEnvelope<{ id: string; status: string }>>(
+    `/api/admin/question-variants/${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    },
+  )
 }
 
 export async function getLearningReport(): Promise<LearningReport> {
-  const res = await fetch(`${BASE}/api/admin/learning/report`, { headers: authHeaders() })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to load report')
-  return res.json()
+  const res = await apiFetch<AdminEnvelope<LearningReport>>('/api/admin/learning/report')
+  // A failed read comes back as success:false with the same keys — surface
+  // it as an error, never as an empty report.
+  if (!res.success) throw new ApiError(502, res.error || 'Failed to load report')
+  return res.data
 }
 
 // ── Security → Bans (PR-11) ───────────────────────────────────

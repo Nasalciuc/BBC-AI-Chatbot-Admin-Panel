@@ -3,7 +3,7 @@ fastapi==0.116.2
 starlette>=0.47.2,<0.49
 uvicorn[standard]==0.30.6
 supabase==2.7.4
-anthropic>=0.50.0,<1.0.0
+anthropic>=0.77.0,<1.0.0  # 0.77.0: first SDK whose messages.create/stream accept output_config (5.5 effort)
 pydantic==2.8.2
 pydantic-settings==2.4.0
 python-multipart>=0.0.18  # CVE-2024-53981

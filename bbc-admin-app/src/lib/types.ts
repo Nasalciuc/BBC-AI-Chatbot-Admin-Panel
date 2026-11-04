@@ -304,6 +304,36 @@ export type AgentSseEvent =
   | ({ event: 'lead_details' } & LeadDetails)
   | SseMessageRow   // plain message row (agent / system / ai)
 
+// ── Learning loop (PR-8) ──────────────────────────────────────
+/** Every admin endpoint answers { success, data, count, error? }. */
+export type AdminEnvelope<T> = {
+  success: boolean
+  data: T
+  count: number
+  error?: string
+}
+
+export type QuestionVariant = {
+  id: string
+  slot: string
+  text: string
+  status: 'proposed' | 'active' | 'retired'
+  origin: string
+  shows: number
+  answered: number
+  answer_rate: number | null
+  prob_best: number
+}
+
+export type LearningReport = {
+  treatment_answer_rate: number | null
+  control_answer_rate: number | null
+  treatment_n: number
+  control_n: number
+  by_slot: Record<string, { treatment: number | null; control: number | null }>
+  error?: string
+}
+
 export type LeadDetails = {
   type?: 'lead_details'
   route: string | null
