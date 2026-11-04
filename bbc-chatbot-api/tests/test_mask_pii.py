@@ -27,7 +27,14 @@ def test_pnr_reference():
 
 
 def test_exact_date():
-    assert "2026-06-15" not in mask_pii("Departing 2026-06-15")
+    out = mask_pii("Departing 2026-06-15")
+    assert "2026-06-15" not in out
+    assert "[date]" in out and "[phone]" not in out
+
+
+def test_phone_still_masked_next_to_a_date():
+    out = mask_pii("Call +1 555 123 4567 before 2026-06-15")
+    assert "[phone]" in out and "[date]" in out
 
 
 def test_first_name_after_greeting():
