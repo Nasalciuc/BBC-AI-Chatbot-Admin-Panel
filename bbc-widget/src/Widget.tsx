@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'preact/hooks'
 import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm, type FormCheck } from './TunnelForm'
 import { ChatWindow } from './ChatWindow'
-import { apiFetch, clearVisitorToken, getVisitorId } from './api'
+import { apiFetch, clearVisitorToken, ensureVisitorToken, getVisitorId } from './api'
 import { getUtm } from './utm'
 import brand from './config'
 
@@ -158,8 +158,17 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (!visitorId) return
 
     let cancelled = false
-    apiFetch(`${apiUrl}/api/chat/visitor/${encodeURIComponent(visitorId)}/active-conversation`)
-      .then(r => r.json())
+    // Refresh the visitor token first: a returning visitor's may be past its
+    // 24 h, and with VISITOR_TOKEN_ENFORCE on the check would be refused, which
+    // reads like "no active conversation" and drops a live chat.
+    ensureVisitorToken(apiUrl)
+      .then(() => apiFetch(`${apiUrl}/api/chat/visitor/${encodeURIComponent(visitorId)}/active-conversation`))
+      .then(r => {
+        // A refusal or a server error says nothing about the conversation:
+        // keep the optimistic UI, as on a network error.
+        if (!r.ok) throw new Error(`verify failed: ${r.status}`)
+        return r.json()
+      })
       .then(data => {
         if (cancelled) return
         if (data.success && data.conversation_id) {

@@ -17,16 +17,41 @@ type TurnstileApi = {
   remove?: (id: string) => void
 }
 
+const TURNSTILE_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js'
+const LOAD_TIMEOUT_MS = 5000
+
+function hasApi(): boolean {
+  return !!(window as unknown as { turnstile?: TurnstileApi }).turnstile
+}
+
+/** Load api.js once. Races a timeout (a stalled script fires neither load
+ *  nor error, and the chat must still start), reuses a tag the host page
+ *  already added, checks the global really exists, and forgets a failure so
+ *  the next chat can try again. */
 function load(): Promise<boolean> {
   if (loader) return loader
   loader = new Promise<boolean>((resolve) => {
-    if ((window as unknown as { turnstile?: TurnstileApi }).turnstile) return resolve(true)
-    const s = document.createElement('script')
-    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-    s.async = true
-    s.onload = () => resolve(true)
-    s.onerror = () => resolve(false)
-    document.head.appendChild(s)
+    if (hasApi()) return resolve(true)
+    let settled = false
+    const done = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(ok && hasApi())
+    }
+    const timer = setTimeout(() => done(false), LOAD_TIMEOUT_MS)
+    let s = document.querySelector<HTMLScriptElement>(`script[src^="${TURNSTILE_SRC}"]`)
+    if (!s) {
+      s = document.createElement('script')
+      s.src = `${TURNSTILE_SRC}?render=explicit`
+      s.async = true
+      document.head.appendChild(s)
+    }
+    s.addEventListener('load', () => done(true), { once: true })
+    s.addEventListener('error', () => done(false), { once: true })
+  }).then((ok) => {
+    if (!ok) loader = null
+    return ok
   })
   return loader
 }
