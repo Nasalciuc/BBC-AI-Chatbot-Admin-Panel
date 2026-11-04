@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm } from './TunnelForm'
-import { ChatWindow } from './ChatWindow'
+import { ChatWindow, type Unread } from './ChatWindow'
+import { armChime, playChime } from './chime'
+import { readPageContext } from './pageContext'
 import { getVisitorId } from './api'
 import { getUtm } from './utm'
 import brand from './config'
@@ -122,6 +124,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     } catch { return null }
   })()
 
+  // A conversation this visitor already has (conversation id and identity cached): it is kept connected
+  // in the background on every page, so nothing it says is missed.
+  const sessionActive = !!(hasOptimisticSession && savedVisitor)
+
   // Embedded (CRM iframe): no bubble step — mount straight on the form
   // (or chat when a session restores).
   // On the site the panel opens on load only when this tab had it open (sessionStorage), so a visitor who
@@ -143,6 +149,12 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   )
   const [showAttention, setShowAttention] = useState(false)
   const [focusLauncher, setFocusLauncher] = useState(false)
+  /** What the visitor is looking at (the page's h1): the greeting speaks to it, the chat starts from it. */
+  const [pageCtx] = useState(readPageContext)
+  /** Messages that arrived while the chat was closed (or the tab hidden), with the latest for a preview. */
+  const [unread, setUnread] = useState<Unread>({ count: 0, fresh: false })
+  /** Bumped when the backend says the cached conversation is over, so the kept-alive chat unmounts. */
+  const [, setSessionTick] = useState(0)
   /** The chat replaced the form in an open panel: no second entrance, only the conversation fades in. */
   const [swapped, setSwapped] = useState(false)
   /** The panel is on its way out (a short exit animation before it unmounts). */
@@ -188,6 +200,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           // No active conversation — clear cache and fall back
           try { localStorage.removeItem('bbc_conv_id') } catch {}
           try { localStorage.removeItem('bbc_conv_ts') } catch {}
+          setSessionTick(t => t + 1)
           // Only fall back if user hasn't navigated away from chat already.
           // Embedded: there is no bubble to fall back to — show the form.
           setStep(prev => prev === 'chat' ? (embedded ? 'form' : 'buttons') : prev)
@@ -204,19 +217,35 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // Once per visit (sessionStorage), 10 s after load, a short note appears beside the corner button. It covers
   // nothing and opens the chat only when tapped (it replaced the form that opened by itself after 10 s on
   // computers and 3 min on phones, and the mouse-dwell opener: the site's rule is that nothing opens on load).
+  // A visitor already in a conversation gets news of it on the button instead (unread), never this.
+  // On computers the greeting also comes early when the pointer leaves the page through the top
+  // (towards the tabs or the address bar): the moment a visitor is about to go.
   useEffect(() => {
-    if (embedded || step !== 'buttons') return
+    if (embedded || step !== 'buttons' || sessionActive) return
     if (autoOpenedRef.current || formFlowStartedRef.current) return
     if (safeGet('bbc_attention_shown') === '1') return
 
-    const attentionTimer = setTimeout(() => {
-      if (formFlowStartedRef.current) return
+    const show = () => {
+      if (formFlowStartedRef.current || autoOpenedRef.current) return
       autoOpenedRef.current = true
       safeSet('bbc_attention_shown', '1')
       setShowAttention(true)
-    }, 10_000)
+    }
+    const attentionTimer = setTimeout(show, 10_000)
+    const loadedAt = Date.now()
+    const onLeave = (e: MouseEvent) => {
+      if (e.relatedTarget || e.clientY > 8 || Date.now() - loadedAt < 3000) return
+      show()
+    }
+    let fine = false
+    try { fine = window.matchMedia('(pointer: fine)').matches } catch { /* old browser */ }
+    if (fine) document.documentElement.addEventListener('mouseleave', onLeave)
 
-    return () => clearTimeout(attentionTimer)
+    return () => {
+      clearTimeout(attentionTimer)
+      document.documentElement.removeEventListener('mouseleave', onLeave)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
 
   // Keep an open chat open across this tab's pages (also when it was restored by a tap on the button).
@@ -329,14 +358,46 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   usePhoneSheet(step !== 'buttons', embedded, brand.colors.ink)
 
+  // A conversation in progress stays connected for the whole visit, open or closed, on every page of
+  // the site: what is being sent finishes, replies keep arriving, and the corner button can announce them.
+  const chatMounted = step === 'chat' || (!embedded && sessionActive)
+  useEffect(() => { if (chatMounted) armChime() }, [chatMounted])
+
+  const handleUnread = (u: Unread) => {
+    setUnread(u)
+    if (u.fresh) playChime()
+  }
+
+  // A tab in the background says so in its title: "(1) New message · <the page's own title>".
+  const baseTitleRef = useRef<string | null>(null)
+  useEffect(() => {
+    const apply = () => {
+      try {
+        const hidden = document.visibilityState !== 'visible'
+        if (unread.count > 0 && hidden) {
+          if (baseTitleRef.current === null) baseTitleRef.current = document.title
+          document.title = `(${unread.count}) New message · ${baseTitleRef.current}`
+        } else if (baseTitleRef.current !== null) {
+          document.title = baseTitleRef.current
+          baseTitleRef.current = null
+        }
+      } catch { /* no document title to touch */ }
+    }
+    apply()
+    document.addEventListener('visibilitychange', apply)
+    return () => document.removeEventListener('visibilitychange', apply)
+  }, [unread.count])
+
   return (
     <div class={closing ? 'bw-closing' : undefined} style={{ display: 'contents' }}>
       {step === 'buttons' && !embedded && (
         <FloatingButtons
           onSelect={handleTunnelSelect}
-          showAttention={showAttention}
+          showAttention={showAttention && !sessionActive}
           onDismissAttention={() => setShowAttention(false)}
           autoFocus={focusLauncher}
+          context={pageCtx}
+          unread={unread}
         />
       )}
       {step === 'form' && (
@@ -348,8 +409,19 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           embedded={embedded}
         />
       )}
-      {step === 'chat' && (
-        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} swapped={swapped} />
+      {chatMounted && (
+        <ChatWindow
+          tunnel={tunnel}
+          visitor={visitor}
+          metadata={metadata}
+          onClose={handleCloseChat}
+          apiUrl={apiUrl}
+          embedded={embedded}
+          swapped={swapped}
+          visible={step === 'chat'}
+          draft={pageCtx.draft}
+          onUnread={handleUnread}
+        />
       )}
     </div>
   )

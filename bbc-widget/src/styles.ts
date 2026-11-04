@@ -63,19 +63,49 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-launch:focus-visible { outline-offset: 3px; }
 #bbc-widget-root .bw-launch img { width: 30px; height: 30px; pointer-events: none; }
 
+#bbc-widget-root .bw-launch__badge {
+  position: absolute; top: -4px; right: -4px;
+  display: flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+  background: #C8261C; color: #FFFFFF; box-shadow: 0 0 0 2px #FFFFFF;
+  font-size: 12px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;
+  animation: bw-pop 0.36s var(--bw-ease) both;
+}
+#bbc-widget-root .bw-launch__pulse {
+  position: absolute; inset: -2px; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 2px var(--bw-launcher-ring);
+  animation: bw-pulse 1.1s cubic-bezier(0.22, 1, 0.36, 1) 2 both;
+}
+
+/* The greeting and the preview of a new message: a short message card beside the button. */
 #bbc-widget-root .bw-nudge {
   position: absolute; right: calc(100% + 14px); bottom: -2px;
-  display: flex; align-items: stretch; width: max-content; max-width: 290px;
+  display: flex; align-items: flex-start; width: 300px;
   background: var(--bw-paper); color: var(--bw-text);
-  box-shadow: 0 12px 32px rgba(10, 27, 65, 0.18), 0 0 0 1px rgba(10, 27, 65, 0.06);
+  box-shadow: 0 16px 40px rgba(10, 27, 65, 0.2), 0 0 0 1px rgba(10, 27, 65, 0.06);
   animation: bw-rise 0.5s var(--bw-ease) both;
 }
-#bbc-widget-root .bw-nudge__open { display: block; padding: 12px 4px 12px 16px; text-align: left; }
-#bbc-widget-root .bw-nudge__q { display: block; font-size: 14px; line-height: 1.4; color: var(--bw-text-2); }
-#bbc-widget-root .bw-nudge__a { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 15px; font-weight: 600; line-height: 1.35; color: var(--bw-ink); }
-#bbc-widget-root .bw-nudge__a svg { width: 16px; height: 16px; transition: transform 0.2s var(--bw-ease); }
-#bbc-widget-root .bw-nudge__open:hover .bw-nudge__a svg { transform: translateX(3px); }
-#bbc-widget-root .bw-nudge__x { display: flex; justify-content: center; width: 40px; padding-top: 12px; color: var(--bw-muted); }
+#bbc-widget-root .bw-nudge__open { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; padding: 14px 4px 16px 16px; text-align: left; }
+#bbc-widget-root .bw-nudge__who { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; line-height: 1.3; color: var(--bw-muted); }
+#bbc-widget-root .bw-nudge__who b { font-weight: 600; color: var(--bw-text); }
+#bbc-widget-root .bw-nudge__ava { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+#bbc-widget-root .bw-nudge__ava--brand { box-shadow: 0 0 0 1px var(--bw-line-strong); }
+#bbc-widget-root .bw-nudge__ava--initials { display: flex; align-items: center; justify-content: center; background: var(--bw-ink); color: #FFFFFF; font-size: 12px; font-weight: 600; }
+#bbc-widget-root .bw-nudge__title { font-size: 16px; font-weight: 600; line-height: 1.35; color: var(--bw-text); }
+#bbc-widget-root .bw-nudge__text {
+  margin-top: 2px; font-size: 14px; line-height: 1.45; color: var(--bw-text-2);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+#bbc-widget-root .bw-nudge__a { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 14px; font-weight: 600; color: var(--bw-ink); }
+#bbc-widget-root .bw-nudge__cta {
+  display: flex; align-items: center; gap: 8px; margin-top: 14px; height: 40px; padding: 0 16px;
+  background: var(--bw-ink); color: #FFFFFF; font-size: 14px; font-weight: 600;
+  transition: background-color 0.18s var(--bw-ease);
+}
+#bbc-widget-root .bw-nudge__open:hover .bw-nudge__cta { background: #203359; }
+#bbc-widget-root .bw-nudge__a svg, #bbc-widget-root .bw-nudge__cta svg { width: 16px; height: 16px; transition: transform 0.2s var(--bw-ease); }
+#bbc-widget-root .bw-nudge__open:hover .bw-nudge__a svg, #bbc-widget-root .bw-nudge__open:hover .bw-nudge__cta svg { transform: translateX(3px); }
+#bbc-widget-root .bw-nudge__x { display: flex; justify-content: center; width: 44px; height: 44px; padding-top: 14px; color: var(--bw-muted); }
 #bbc-widget-root .bw-nudge__x:hover { color: var(--bw-text); }
 #bbc-widget-root .bw-nudge__x svg { width: 16px; height: 16px; }
 
@@ -90,6 +120,7 @@ export const WIDGET_CSS = `
   transform-origin: 100% 100%;
   animation: bw-panel-in 0.38s var(--bw-ease) both;
 }
+#bbc-widget-root .bw-panel.bw-panel--hidden { display: none !important; }
 #bbc-widget-root .bw-panel--form { height: auto; max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); }
 #bbc-widget-root .bw-panel--embedded {
   position: absolute; inset: 0; right: 0; bottom: 0; width: 100%; max-width: none;
@@ -278,7 +309,7 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--form .bw-form { flex: 0 0 auto; overflow: visible; padding: 24px 20px max(24px, env(safe-area-inset-bottom)); }
   #bbc-widget-root .bw-compose { padding: 10px 12px max(10px, env(safe-area-inset-bottom)); }
   #bbc-widget-root .bw-msg { font-size: 16px; }
-  #bbc-widget-root .bw-nudge { right: 0; bottom: calc(100% + 12px); max-width: min(300px, calc(100vw - 32px)); }
+  #bbc-widget-root .bw-nudge { right: 0; bottom: calc(100% + 12px); width: min(300px, calc(100vw - 32px)); }
 }
 @media (max-width: 767px) and (max-height: 620px) {
   #bbc-widget-root .bw-head { min-height: 60px; padding-top: 8px; padding-bottom: 8px; }
@@ -301,6 +332,8 @@ export const WIDGET_CSS = `
 @keyframes bw-unseen-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes bw-panel-in { from { opacity: 0; transform: translateY(16px) scale(0.97); } to { opacity: 1; transform: none; } }
 @keyframes bw-sheet-in { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes bw-pop { from { transform: scale(0.4); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes bw-pulse { from { transform: scale(1); opacity: 0.9; } to { transform: scale(1.55); opacity: 0; } }
 @keyframes bw-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes bw-msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes bw-dot { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
