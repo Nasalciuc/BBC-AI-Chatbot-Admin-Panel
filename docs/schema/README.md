@@ -25,10 +25,11 @@ production has and no migration wrote (`pipeline_runs.tunnel`,
 
        supabase db dump --schema public -f /tmp/baseline_public.sql
 
-   Then restore it into a scratch database and run, with `PG*` pointing at it:
+   Then restore it into a scratch database and run, from the repository
+   root, with `PG*` pointing at it:
 
-       python ci/check_code_columns.py
-       python ci/schema_dictionary.py --source "live dump of YYYY-MM-DD" \
+       python bbc-chatbot-api/ci/check_code_columns.py
+       python bbc-chatbot-api/ci/schema_dictionary.py --source "live dump of YYYY-MM-DD" \
            --out docs/schema/DICTIONARY_LIVE.md
 
    and diff `DICTIONARY_LIVE.md` against `DICTIONARY.md`. Every difference is
@@ -39,7 +40,15 @@ production has and no migration wrote (`pipeline_runs.tunnel`,
 2. **Running the new files in the SQL editor**, in this order, each one
    alone (none is applied):
    - `044_reconcile_schema.sql` (expected to change nothing live)
-   - `045`–`047` index files, one statement at a time (`CONCURRENTLY`)
+   - `045`–`047` index files, one statement at a time (`CONCURRENTLY`).
+     A concurrent build that fails or is cancelled leaves an `INVALID` index
+     that `IF NOT EXISTS` then skips silently, so after each file:
+
+         SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE NOT i.indisvalid;
+
+     must return nothing. If it names one: `DROP INDEX CONCURRENTLY <name>;`
+     and run the statement again.
    - `048_drop_redundant_indexes.sql` — after checking the four definitions
      live (`\d+ messages`, `\d+ leads`, `\d+ conversations`)
    - `049_rls_everywhere.sql` — the API uses service_role, which bypasses
