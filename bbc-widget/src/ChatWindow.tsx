@@ -3,7 +3,7 @@ import { apiFetch, getVisitorId } from './api'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
 import { PanelTop } from './PanelTop'
-import { IconArrowUp } from './icons'
+import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 
 interface Message {
@@ -70,6 +70,13 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     is_typing: false,
     name: '',
   })
+  /** Messages written while the assistant was still answering: they go out, in order, as soon as it finishes. */
+  const [queued, setQueued] = useState<{ id: string; text: string }[]>([])
+  /** The greeting is on its way (fresh sessions): the log shows the assistant typing instead of nothing. */
+  const [starting, setStarting] = useState(!savedConvId)
+  /** The visitor scrolled up to read: new messages no longer pull the log down; a button offers to. */
+  const atBottomRef = useRef(true)
+  const [hasUnseen, setHasUnseen] = useState(false)
   /** Operator photos that failed to load → show initials instead of a broken image. */
   const [brokenAvatars, setBrokenAvatars] = useState<Record<string, boolean>>({})
 
@@ -95,11 +102,26 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
 
   // Keep the newest message in view. Scrolls the log itself, never the host page (scrollIntoView would
   // also scroll the site behind the panel on some phones).
-  useEffect(() => {
+  // A visitor reading back up the conversation is never yanked down: the log follows new messages only
+  // while it is at the bottom, and otherwise shows a "New message" button.
+  const scrollToEnd = (smooth = true) => {
     const el = logRef.current
     if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: messages.length > 1 ? 'smooth' : 'auto' })
-  }, [messages.length, streamingText, sending, agentTyping.is_typing])
+    atBottomRef.current = true
+    setHasUnseen(false)
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+  }
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 72
+    atBottomRef.current = near
+    if (near) setHasUnseen(false)
+  }
+  useEffect(() => {
+    if (atBottomRef.current) scrollToEnd(messages.length > 1)
+    else setHasUnseen(true)
+  }, [messages.length, streamingText, sending, agentTyping.is_typing, queued.length])
 
   // The composer takes focus on computers; on touch screens the keyboard waits for a tap.
   useEffect(() => {
@@ -156,6 +178,8 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
     } catch {
       // Fail quiet — the client can still type; their first message flows
       // through the normal send path and creates the conversation.
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -345,6 +369,15 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
       }
 
       source.onerror = () => {
+        // An HTTP error status (a 502 or 503 while the API redeploys) closes an
+        // EventSource for good: the browser never retries and onerror fires once,
+        // so the counter below would never reach MAX_ERRORS and operator messages
+        // would stop arriving until a reload. Poll instead, at once.
+        if (source && source.readyState === EventSource.CLOSED) {
+          source = null
+          startPolling()
+          return
+        }
         errorCount++
         if (errorCount >= MAX_ERRORS) {
           // SSE not reliable in this environment — fall back to polling
@@ -612,13 +645,39 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   }
 
   const handleSend = () => {
-    if (!input.trim() || sending) return
-    sendMessage(input.trim())
+    const text = input.trim()
+    if (!text) return
+    atBottomRef.current = true
+    if (sending) {
+      // The assistant is still answering: one message at a time reaches the server, so this one waits
+      // its turn on screen and goes out by itself when the answer is in.
+      setQueued(q => [...q, { id: `queued-${Date.now()}`, text }])
+      sendTypingEvent('')
+    } else {
+      sendMessage(text)
+    }
     setInput('')
     requestAnimationFrame(() => {
       const el = composerRef.current
       if (el) el.style.height = ''
     })
+  }
+
+  // Send what waited, in order, as soon as the assistant has finished.
+  useEffect(() => {
+    if (sending || queued.length === 0) return
+    const [next, ...rest] = queued
+    setQueued(rest)
+    sendMessage(next.text)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sending, queued])
+
+  /** A send that failed: take it and its error note away, and send the text again. */
+  const retry = (msg: Message) => {
+    setMessages(prev => prev.filter(m => m.id !== msg.id && !m.id.startsWith('err-')))
+    atBottomRef.current = true
+    if (sending) setQueued(q => [...q, { id: `queued-${Date.now()}`, text: msg.content }])
+    else sendMessage(msg.content)
   }
 
   const handleQuickReply = (text: string) => {
@@ -652,7 +711,18 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
   const lastAgentName = (lastAgent?.agent_name || '').trim()
   const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : brand.tagline
   const brandAvatar = <img class="bw-ava bw-ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
-  const aiWaiting = (sending || isStreaming) && !streamingText
+  const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && visible.length === 0)
+  // Day dividers, only for a conversation that is not all from today (a restored one).
+  const dayKey = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toDateString() }
+  const today = new Date().toDateString()
+  const showDays = visible.some(m => dayKey(m.created_at) && dayKey(m.created_at) !== today)
+  const dayLabel = (iso: string) => {
+    const d = new Date(iso)
+    const yesterday = new Date(Date.now() - 86_400_000).toDateString()
+    if (d.toDateString() === today) return 'Today'
+    if (d.toDateString() === yesterday) return 'Yesterday'
+    return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
+  }
   const dots = <span class="bw-dots" aria-hidden="true"><i /><i /><i /></span>
 
   return (
@@ -669,23 +739,28 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
         onClose={embedded ? undefined : () => { notifySessionClose('minimized', true); onClose() }}
       />
 
-      <div ref={logRef} class="bw-log" role="log" aria-live="polite" aria-label="Conversation">
+      <div class="bw-logwrap">
+      <div ref={logRef} class="bw-log" role="log" aria-live="polite" aria-label="Conversation" onScroll={onLogScroll}>
         {visible.map((msg, i) => {
+          const newDay = showDays && (i === 0 || dayKey(visible[i - 1].created_at) !== dayKey(msg.created_at))
+          const day = newDay && dayKey(msg.created_at)
+            ? <div key={`day-${msg.id}`} class="bw-day">{dayLabel(msg.created_at)}</div>
+            : null
           if (msg.role === 'system') {
-            return (
+            return [day,
               <div key={msg.id} class={`bw-note${msg.id.startsWith('err-') ? ' bw-note--error' : ''}`}>
                 {richText(msg.content)}
-              </div>
-            )
+              </div>,
+            ]
           }
           const out = msg.role === 'user'
           const first = startsGroup(i)
           const last = endsGroup(i)
           const isOperator = msg.role === 'agent'
           const operatorName = (msg.agent_name || '').trim() || CONSULTANT_LABEL
-          return (
-            <div key={msg.id} class={`bw-row ${out ? 'bw-row--out' : 'bw-row--in'}${first ? ' bw-row--first' : ''}`}>
-              {!out && first && (
+          return [day,
+            <div key={msg.id} class={`bw-row ${out ? 'bw-row--out' : 'bw-row--in'}${first || newDay ? ' bw-row--first' : ''}`}>
+              {!out && (first || newDay) && (
                 <div class="bw-who">
                   {isOperator
                     ? (msg.agent_avatar_url && !brokenAvatars[msg.id]
@@ -710,14 +785,17 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
               {out && last && (() => {
                 // A send that failed shows the error note after it; say so here instead of "Sending".
                 const failed = msg.id.startsWith('temp-') && visible.slice(i + 1).some(m => m.id.startsWith('err-'))
-                return (
-                  <div class={`bw-meta${failed ? ' bw-meta--failed' : ''}`}>
-                    {failed ? 'Not sent' : msg.id.startsWith('temp-') ? 'Sending' : timeOf(msg.created_at)}
-                  </div>
-                )
+                if (failed) {
+                  return (
+                    <button type="button" class="bw-meta bw-meta--failed bw-retry" onClick={() => retry(msg)}>
+                      Not sent. <u>Retry</u>
+                    </button>
+                  )
+                }
+                return <div class="bw-meta">{msg.id.startsWith('temp-') ? 'Sending' : timeOf(msg.created_at)}</div>
               })()}
-            </div>
-          )
+            </div>,
+          ]
         })}
 
         {streamingText && (
@@ -746,6 +824,19 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
             {dots}
           </div>
         )}
+
+        {queued.map((q, i) => (
+          <div key={q.id} class={`bw-row bw-row--out bw-row--queued${i === 0 ? ' bw-row--first' : ''}`}>
+            <div class="bw-msg">{q.text}</div>
+            {i === queued.length - 1 && <div class="bw-meta">Sends when the reply is in</div>}
+          </div>
+        ))}
+      </div>
+      {hasUnseen && (
+        <button type="button" class="bw-unseen" onClick={() => scrollToEnd(true)}>
+          New message <IconArrowDown />
+        </button>
+      )}
       </div>
 
       {/* Quick replies — shown after the welcome message, hidden after a tap */}
@@ -782,9 +873,9 @@ export function ChatWindow({ tunnel, visitor, metadata, onClose, apiUrl, embedde
           type="button"
           class="bw-send"
           onClick={handleSend}
-          disabled={!input.trim() || sending}
-          aria-label="Send message"
-          title="Send"
+          disabled={!input.trim()}
+          aria-label={sending ? 'Send after the reply' : 'Send message'}
+          title={sending ? 'Sends when the reply is in' : 'Send'}
         >
           <IconArrowUp />
         </button>

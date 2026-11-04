@@ -5,6 +5,7 @@ import { ChatWindow } from './ChatWindow'
 import { getVisitorId } from './api'
 import { getUtm } from './utm'
 import brand from './config'
+import { usePhoneSheet } from './phoneSheet'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -142,6 +143,24 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   )
   const [showAttention, setShowAttention] = useState(false)
   const [focusLauncher, setFocusLauncher] = useState(false)
+  /** The panel is on its way out (a short exit animation before it unmounts). */
+  const [closing, setClosing] = useState(false)
+  const closingRef = useRef(false)
+
+  /** Close with the exit animation; reduced motion and the CRM iframe close at once. */
+  const animateClose = (done: () => void) => {
+    if (closingRef.current) return
+    let instant = embedded
+    try { instant = instant || window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { /* old browser */ }
+    if (instant) return done()
+    closingRef.current = true
+    setClosing(true)
+    setTimeout(() => {
+      closingRef.current = false
+      setClosing(false)
+      done()
+    }, 220)
+  }
 
   // Auto-open refs
   const autoOpenedRef = useRef(false)
@@ -263,15 +282,19 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleBack = () => {
     if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
-    setFocusLauncher(true)
-    setStep('buttons')
-    clearWidgetStorage()
+    animateClose(() => {
+      setFocusLauncher(true)
+      setStep('buttons')
+      clearWidgetStorage()
+    })
   }
 
   const handleCloseChat = () => {
     if (embedded) return  // panel is always open inside the CRM iframe
-    setFocusLauncher(true)
-    setStep('buttons')
+    animateClose(() => {
+      setFocusLauncher(true)
+      setStep('buttons')
+    })
     // Keep localStorage intact (visitor_id, conv_id, visitor_key) — "X → reopen"
     // will use the optimistic path to restore the session. Only clear sessionStorage.
     safeRemove('bbc_widget')
@@ -285,8 +308,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
-        setFocusLauncher(true)
-        setStep('buttons')
+        animateClose(() => {
+          setFocusLauncher(true)
+          setStep('buttons')
+        })
         safeRemove('bbc_widget')
         formFlowStartedRef.current = false
         autoOpenedRef.current = false
@@ -296,8 +321,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     return () => window.removeEventListener('keydown', handler)
   }, [step])
 
+  usePhoneSheet(step !== 'buttons', embedded, brand.colors.ink)
+
   return (
-    <>
+    <div class={closing ? 'bw-closing' : undefined} style={{ display: 'contents' }}>
       {step === 'buttons' && !embedded && (
         <FloatingButtons
           onSelect={handleTunnelSelect}
@@ -318,6 +345,6 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       {step === 'chat' && (
         <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} />
       )}
-    </>
+    </div>
   )
 }

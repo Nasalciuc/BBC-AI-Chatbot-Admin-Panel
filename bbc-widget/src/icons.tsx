@@ -33,3 +33,7 @@ export const IconArrowRight = (p: IconProps) => (
 export const IconAlert = (p: IconProps) => (
   <Svg {...p}><circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" /></Svg>
 )
+
+export const IconArrowDown = (p: IconProps) => (
+  <Svg {...p}><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></Svg>
+)

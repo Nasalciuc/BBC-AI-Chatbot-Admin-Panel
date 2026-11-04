@@ -36,3 +36,11 @@ test('the render draws only rows with an id and text', () => {
 test('richText survives a missing text', () => {
   assert.match(richText, /if \(typeof text !== 'string' \|\| !text\) return \[\]/)
 })
+
+test('a stream closed for good by an HTTP error falls back to polling at once', () => {
+  const onError = chatWindow.slice(chatWindow.indexOf('source.onerror = () => {'))
+  const closedCheck = onError.indexOf('source.readyState === EventSource.CLOSED')
+  assert.ok(closedCheck > -1, 'onerror must notice a closed stream')
+  assert.ok(closedCheck < onError.indexOf('errorCount++'), 'before counting retries that will never come')
+  assert.ok(onError.slice(closedCheck, closedCheck + 200).includes('startPolling()'), 'and start polling')
+})

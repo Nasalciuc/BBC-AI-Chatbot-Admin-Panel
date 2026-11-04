@@ -100,6 +100,18 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
     }
   }
 
+  // The keyboard's "next" key moves to the following field instead of submitting a half-filled form
+  // (on a phone it is the same Enter that would otherwise send the form and flash every error).
+  const nextOnEnter = (e: KeyboardEvent) => {
+    if (e.key !== 'Enter') return
+    const fields = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>('input') || [])
+    const i = fields.indexOf(e.target as HTMLInputElement)
+    if (i > -1 && i < fields.length - 1) {
+      e.preventDefault()
+      fields[i + 1].focus()
+    }
+  }
+
   const heading = tunnel === 'sales' ? brand.formHeading : brand.supportHeading
   const lead = tunnel === 'sales' ? brand.formLead : brand.supportLead
   const phoneShown = phone.length > 1 && phone !== '+'
@@ -128,6 +140,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
               <input
                 ref={firstRef}
                 id="bw-name"
+                onKeyDown={nextOnEnter}
                 data-field="name"
                 class="bw-input"
                 type="text"
@@ -150,6 +163,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
                 )}
                 <input
                   id="bw-phone"
+                onKeyDown={nextOnEnter}
                   data-field="phone"
                   class="bw-input"
                   type="tel"
@@ -206,6 +220,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
               <input
                 ref={firstRef}
                 id="bw-contact"
+                onKeyDown={nextOnEnter}
                 data-field="contact"
                 class="bw-input"
                 type="text"
