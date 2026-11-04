@@ -83,6 +83,14 @@ def get_current_user(request: Request) -> dict:
             )
 
         _sub = payload.get("sub", "unknown")
+        # PR-13: a limited token (second factor pending, or enrolment only)
+        # carries a scope and reaches the MFA routes alone — never these.
+        if payload.get("scope"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Second factor required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         # token_version: a role change or deactivation bumps it, logging the
         # user out within the 60s cache window (S2-4). Inert until a bump.
         from app.security.token_version import matches
@@ -94,6 +102,28 @@ def get_current_user(request: Request) -> dict:
                 detail="Session no longer valid — please login again",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        # Session revocation (PR-11): a token issued before the user's
+        # revoked_before mark is dead. A token with no iat counts as issued at 0.
+        from app.security.ban_store import revoked_before_sync
+
+        _revoked = revoked_before_sync(_sub)
+        if _revoked is not None:
+            import datetime as _dt
+            _iat = payload.get("iat")
+            _iat_ts = 0
+            if isinstance(_iat, (int, float)):
+                _iat_ts = int(_iat)
+            elif isinstance(_iat, str):
+                try:
+                    _iat_ts = int(_dt.datetime.fromisoformat(_iat).timestamp())
+                except (ValueError, TypeError):  # noqa: silent — an unparseable iat counts as issued at 0 (revoked)
+                    _iat_ts = 0
+            if _iat_ts < _revoked:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Session revoked — please login again",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
         return {
             "id": _sub,

@@ -1,5 +1,6 @@
 """Auth endpoints — login + invite."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -51,8 +52,68 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    token: str
+    # Empty while a second factor is pending (PR-13): the panel then reads
+    # `mfa` ("required" → ask for a code, "enroll" → enrol first) and sends
+    # `mfa_token` to /api/auth/mfa or /api/auth/mfa/enroll/*.
+    token: str = ""
     user: dict
+    mfa: Optional[str] = None
+    mfa_token: Optional[str] = None
+
+
+def _mask_email(email: str) -> str:
+    """For logs (rule 7: no PII at INFO or above): the domain and a hint."""
+    e = (email or "").strip().lower()
+    local, _, domain = e.partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "***"
+
+
+def _public_user(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "name": user.get("name", ""),
+        "role": user.get("role", "sales"),
+        "tunnel_scope": user.get("tunnel_scope", "sales"),
+        "phone": user.get("phone", ""),
+        "avatar_url": user.get("avatar_url") or None,
+    }
+
+
+def _login_place(request: Request, ip: str) -> str:
+    """Country when the edge says it (CF-IPCountry), else the network the IP
+    sits in (/24 for IPv4, /48 for IPv6). No ASN database is configured."""
+    cc = (request.headers.get("cf-ipcountry") or "").strip().upper()
+    if cc and cc not in ("XX", "T1"):
+        return f"country:{cc}"
+    if not ip or ip == "unknown":
+        return ""
+    if ":" in ip:
+        return "net:" + ":".join(ip.split(":")[:3]) + "::/48"
+    parts = ip.split(".")
+    return "net:" + ".".join(parts[:3]) + ".0/24" if len(parts) == 4 else ""
+
+
+async def _complete_login(user: dict, request: Request, ip: str) -> LoginResponse:
+    """The session token, plus the new-place alert (PR-13). Never logs PII."""
+    from app.security import mfa as _mfa
+    from app.security.mfa_store import note_login_place
+
+    place = _login_place(request, ip)
+    is_new = await note_login_place(user["id"], place) if _mfa.available(user) else None
+    if is_new:
+        _mfa.MFA_HEALTH["new_place_alerts"] += 1
+        try:
+            from app.services.email import send_ops_alert_email
+            await send_ops_alert_email(
+                "login from a new place",
+                f"user={user['id']} role={user.get('role')} place={place}",
+            )
+        except Exception as e:  # noqa: silent — the alert is best-effort, the login stands
+            logger.warning(f"[mfa] new-place alert failed: {type(e).__name__}")
+    token = _issue_jwt(user)
+    logger.info(f"Login OK | user={user['id']} role={user.get('role')}")
+    return LoginResponse(token=token, user=_public_user(user))
 
 
 class InviteRequest(BaseModel):
@@ -78,6 +139,8 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
         from app.security.decoys import DECOY_HEALTH
         DECOY_HEALTH["form_honeypot"] = DECOY_HEALTH.get("form_honeypot", 0) + 1
         logger.warning(f"[decoy] login honeypot filled from {_ip}")
+        from app.security.ban_guard import note_login_failure
+        await note_login_failure(_ip, _email, form_trap=True)
 
     # Progressive backoff on the email+IP pair. A generic 429 either way, so a
     # throttle never tells an attacker whether the email exists.
@@ -90,6 +153,8 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
 
     async def _reject() -> None:
         await login_guard.record_failure(_email, _ip)
+        from app.security.ban_guard import note_login_failure
+        await note_login_failure(_ip, _email)
 
     user = await db.get_user_by_email(_email)
     if not user:
@@ -111,22 +176,153 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
         raise HTTPException(403, "Account disabled — contact admin")
 
     login_guard.clear(_email, _ip)
-    token = _issue_jwt(user)
 
-    logger.info(f"Login OK | email={user['email']} role={user.get('role')}")
+    # PR-13: the privileged roles need a second factor. Not enrolled yet →
+    # a token that can only enrol (nobody is locked out at merge).
+    from app.security import mfa as _mfa
+    if _mfa.applies_to(user):
+        if _mfa.is_enrolled(user):
+            _mfa.MFA_HEALTH["challenged"] += 1
+            return LoginResponse(user=_public_user(user), mfa="required",
+                                 mfa_token=_mfa.issue_limited(user, _mfa.SCOPE_PENDING))
+        _mfa.MFA_HEALTH["enroll_required"] += 1
+        return LoginResponse(user=_public_user(user), mfa="enroll",
+                             mfa_token=_mfa.issue_limited(user, _mfa.SCOPE_ENROLL))
 
-    return LoginResponse(
-        token=token,
-        user={
-            "id": user["id"],
-            "email": user["email"],
-            "name": user.get("name", ""),
-            "role": user.get("role", "sales"),
-            "tunnel_scope": user.get("tunnel_scope", "sales"),
-            "phone": user.get("phone", ""),
-            "avatar_url": user.get("avatar_url") or None,
-        },
-    )
+    return await _complete_login(user, request, _ip)
+
+
+# ── Second factor (PR-13) ─────────────────────────────────────
+
+class MfaCodeRequest(BaseModel):
+    mfa_token: str = Field(..., min_length=20, max_length=2048)
+    code: str = Field(..., min_length=6, max_length=32)
+
+
+class MfaEnrollStartRequest(BaseModel):
+    mfa_token: Optional[str] = Field(default=None, max_length=2048)
+
+
+class MfaEnrollConfirmRequest(BaseModel):
+    mfa_token: Optional[str] = Field(default=None, max_length=2048)
+    code: str = Field(..., min_length=6, max_length=12)
+
+
+async def _user_for(token: Optional[str], request: Request, scopes: tuple[str, ...]) -> dict:
+    """The user a limited token names — or, for enrolment from the profile
+    page, the caller's full session."""
+    from app.security import mfa as _mfa
+    from app.security.token_version import matches
+
+    payload = _mfa.decode_limited(token or "", scopes)
+    if payload is None:
+        if not token:
+            # Enrolment from a full session (Profile → Security).
+            current = get_current_user(request)
+            user = await db.get_user_by_id(current["id"])
+            if user:
+                return user
+        raise HTTPException(401, "This step expired — please sign in again")
+    if not matches(payload["sub"], payload.get("token_version")):
+        raise HTTPException(401, "This step expired — please sign in again")
+    user = await db.get_user_by_id(payload["sub"])
+    if not user or not user.get("is_active", True):
+        raise HTTPException(401, "This step expired — please sign in again")
+    return user
+
+
+async def _mfa_failed(user: dict, ip: str) -> None:
+    from app.security import mfa as _mfa
+    _mfa.MFA_HEALTH["failed"] += 1
+    # Counted with the password failures: the same email+IP backoff.
+    await login_guard.record_failure((user.get("email") or "").lower(), ip)
+    raise HTTPException(401, "That code did not work")
+
+
+@router.post("/mfa", response_model=LoginResponse)
+async def mfa_verify(req: MfaCodeRequest, request: Request, _rate: None = Depends(check_rate_limit)):
+    """Second step of a login: a TOTP code, or one of the recovery codes."""
+    from app.security import mfa as _mfa
+    from app.security.mfa_store import unused_recovery_codes, use_recovery_code
+
+    ip = client_ip(request, prefer_cf=False) or "unknown"
+    user = await _user_for(req.mfa_token, request, (_mfa.SCOPE_PENDING,))
+    wait = login_guard.retry_after((user.get("email") or "").lower(), ip)
+    if wait:
+        raise HTTPException(429, "Too many attempts — please wait and try again.",
+                            headers={"Retry-After": str(wait)})
+    if not _mfa.is_enrolled(user):
+        raise HTTPException(401, "This step expired — please sign in again")
+    # A secret that no longer decrypts (MFA_ENCRYPTION_KEY changed, or differs
+    # between environments) must not lock an enrolled owner out: the recovery
+    # codes are bcrypt hashes and do not depend on the key (review fix).
+    secret = _mfa.decrypt(user.get("totp_secret_enc") or "")
+
+    ok = bool(secret) and _mfa.verify_code(secret, req.code)
+    if not ok and _mfa.looks_like_recovery(req.code):
+        for row in await unused_recovery_codes(user["id"]):
+            # bcrypt is ~50-100 ms of CPU a check: off the event loop.
+            if await asyncio.to_thread(_mfa.recovery_matches, req.code, row.get("code_hash", "")):
+                ok = await use_recovery_code(row["id"])
+                if ok:
+                    _mfa.MFA_HEALTH["recovery_used"] += 1
+                break
+    if not ok:
+        await _mfa_failed(user, ip)
+    _mfa.MFA_HEALTH["passed"] += 1
+    login_guard.clear((user.get("email") or "").lower(), ip)
+    return await _complete_login(user, request, ip)
+
+
+@router.post("/mfa/enroll/start")
+async def mfa_enroll_start(req: MfaEnrollStartRequest, request: Request, _rate: None = Depends(check_rate_limit)):
+    """A new TOTP secret for this account: the QR (SVG) and the otpauth link
+    for manual entry. Not active until /mfa/enroll/confirm sees a code."""
+    from app.security import mfa as _mfa
+    from app.security.mfa_store import set_pending_secret
+
+    user = await _user_for(req.mfa_token, request, (_mfa.SCOPE_ENROLL,))
+    if not _mfa.available(user):
+        raise HTTPException(503, "Two-factor sign-in is not available yet")
+    if _mfa.is_enrolled(user):
+        # Never re-enrol in place: clearing mfa_enrolled_at would drop the
+        # second factor until the confirm. Resetting a lost device is an
+        # owner action, not a self-service one.
+        raise HTTPException(409, "Two-factor sign-in is already set up")
+    secret = _mfa.new_secret()
+    if not await set_pending_secret(user["id"], _mfa.encrypt(secret)):
+        raise HTTPException(503, "Two-factor sign-in is not available yet")
+    uri = _mfa.provisioning_uri(secret, user.get("email") or "")
+    return {"success": True, "data": {"otpauth_uri": uri, "qr_svg": _mfa.qr_svg(uri)}, "count": 1}
+
+
+@router.post("/mfa/enroll/confirm")
+async def mfa_enroll_confirm(req: MfaEnrollConfirmRequest, request: Request, _rate: None = Depends(check_rate_limit)):
+    """The first code from the app turns MFA on. Returns the 10 recovery
+    codes ONCE (only their hashes are stored) and, on the login path, the
+    session token."""
+    from app.security import mfa as _mfa
+    from app.security.mfa_store import mark_enrolled, replace_recovery_codes
+
+    ip = client_ip(request, prefer_cf=False) or "unknown"
+    user = await _user_for(req.mfa_token, request, (_mfa.SCOPE_ENROLL,))
+    secret = _mfa.decrypt(user.get("totp_secret_enc") or "")
+    if not secret:
+        raise HTTPException(409, "Start the set-up again")
+    if not _mfa.verify_code(secret, req.code):
+        await _mfa_failed(user, ip)
+    codes = _mfa.new_recovery_codes()
+    hashes = await asyncio.to_thread(lambda: [_mfa.hash_recovery(c) for c in codes])
+    if not await replace_recovery_codes(user["id"], hashes):
+        raise HTTPException(503, "Could not save the recovery codes — try again")
+    if not await mark_enrolled(user["id"]):
+        raise HTTPException(503, "Could not finish the set-up — try again")
+    _mfa.MFA_HEALTH["enrolled"] += 1
+    out: dict = {"recovery_codes": codes}
+    if req.mfa_token:
+        session = await _complete_login(user, request, ip)
+        out.update(token=session.token, user=session.user)
+    return {"success": True, "data": out, "count": 1}
 
 
 class CrmExchangeRequest(BaseModel):
@@ -160,14 +356,14 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
 
     user = await db.get_user_by_email(email.lower().strip())
     if not user:
-        logger.warning(f"CRM SSO exchange: unknown email {email}")
+        logger.warning(f"CRM SSO exchange: unknown email {_mask_email(email)}")
         raise HTTPException(401, "No matching BBC account for this user")
     if not user.get("is_active", True):
-        logger.warning(f"CRM SSO exchange: inactive account {email}")
+        logger.warning(f"CRM SSO exchange: inactive account {_mask_email(email)}")
         raise HTTPException(403, "Account disabled — contact admin")
 
     token = _issue_jwt(user)  # role/tunnel_scope from OUR db, not the CRM payload
-    logger.info(f"CRM SSO exchange login | email={user['email']} role={user.get('role')}")
+    logger.info(f"CRM SSO exchange login | user={user.get('id')} role={user.get('role')}")
 
     return LoginResponse(
         token=token,
@@ -241,7 +437,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
             # inbox. Reuse a token created seconds ago instead.
             _recent = await db.find_recent_invite_token(existing["id"], "set_password", 5)
             if _recent:
-                logger.info(f"Invite de-duplicated for {req.email} (token <5s old)")
+                logger.info(f"Invite de-duplicated for {_mask_email(req.email)} (token <5s old)")
                 return {"success": True, "data": {
                     "id": existing["id"], "email": req.email, "name": req.name,
                     "role": update_payload["role"], "reactivated": True,
@@ -272,12 +468,12 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
                 settings.invite_link_expiry_minutes,
             )
             if not email_sent:
-                logger.warning(f"Reactivation email failed for {req.email} — user still reactivated")
+                logger.warning(f"Reactivation email failed for {_mask_email(req.email)} — user still reactivated")
 
             logger.info(
-                f"User REACTIVATED | email={req.email} "
+                f"User REACTIVATED | email={_mask_email(req.email)} "
                 f"role={update_payload['role']} "
-                f"by={current_user.get('email', 'admin')}"
+                f"by={current_user.get('id', 'admin')}"
             )
 
             return {
@@ -319,7 +515,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
                 invite_url,
                 settings.invite_link_expiry_minutes,
             )
-            logger.info(f"Reinvite sent to {req.email} (email_sent={email_sent})")
+            logger.info(f"Reinvite sent to {_mask_email(req.email)} (email_sent={email_sent})")
             return {
                 "success": True,
                 "data": {
@@ -346,7 +542,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
     if not user:
         raise HTTPException(500, "Failed to create user")
 
-    logger.info(f"User invited | email={req.email} role={req.role} by={current_user.get('email', 'admin')}")
+    logger.info(f"User invited | email={_mask_email(req.email)} role={req.role} by={current_user.get('id', 'admin')}")
 
     # No dedup check here: the user row was created microseconds ago, so a
     # prior token cannot exist. The double-click case is the RESEND path.
@@ -373,7 +569,7 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
         settings.invite_link_expiry_minutes,
     )
     if not email_sent:
-        logger.warning(f"Invite email failed for {req.email} — user still created")
+        logger.warning(f"Invite email failed for {_mask_email(req.email)} — user still created")
 
     return {"success": True, "data": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "email_sent": email_sent}}
 
@@ -450,7 +646,7 @@ async def request_invite(req: RequestInviteRequest, _rate: None = Depends(check_
             _REINVITE_LAST.pop(k, None)
     last = _REINVITE_LAST.get(email)
     if last and (now - last).total_seconds() < _REINVITE_COOLDOWN_SECONDS:
-        logger.info(f"Re-invite throttled for {email}")
+        logger.info(f"Re-invite throttled for {_mask_email(email)}")
         return generic
     _REINVITE_LAST[email] = now
 
@@ -478,7 +674,7 @@ async def request_invite(req: RequestInviteRequest, _rate: None = Depends(check_
                 "created_by": user["id"],
             })
             if not token_row:
-                logger.error(f"Re-invite token creation failed for {email}")
+                logger.error(f"Re-invite token creation failed for {_mask_email(email)}")
                 return
             await db.invalidate_active_invite_tokens(
                 user["id"], purpose="set_password", except_token=token
@@ -488,9 +684,9 @@ async def request_invite(req: RequestInviteRequest, _rate: None = Depends(check_
                 email, user.get("name") or "", invite_url,
                 settings.invite_link_expiry_minutes,
             )
-            logger.info(f"Re-invite sent for {email}")
+            logger.info(f"Re-invite sent for {_mask_email(email)}")
         except Exception as e:  # noqa: BLE001 — a background task must not vanish loudly
-            logger.error(f"Re-invite failed for {email}: {e}")
+            logger.error(f"Re-invite failed for {_mask_email(email)}: {e}")
 
     import asyncio
 

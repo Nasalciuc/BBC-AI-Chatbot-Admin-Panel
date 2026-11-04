@@ -1,10 +1,14 @@
-import { useState } from 'preact/hooks'
+import { useState, useRef } from 'preact/hooks'
 import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from './countries'
 import brand from './config'
 
+/** PR-12: the trap a person never trips — a hidden field and the fill time.
+ *  Sent with the first /chat/start; the server only counts or marks. */
+export type FormCheck = { website: string; elapsed_ms: number }
+
 interface Props {
   tunnel: 'sales' | 'support'
-  onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => void
+  onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string; form_check?: FormCheck }) => void
   onBack: () => void
   onInteraction?: () => void
   /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
@@ -20,6 +24,9 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
   const [error, setError] = useState('')
+  const [website, setWebsite] = useState('')
+  const shownAt = useRef(Date.now())
+  const formCheck = (): FormCheck => ({ website, elapsed_ms: Date.now() - shownAt.current })
 
   const handleSubmit = (e: Event) => {
     e.preventDefault()
@@ -59,11 +66,12 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
         email: email.trim(),
         phone: normalizedPhone || undefined,
         country_code: detectedCountry.code,
+        form_check: formCheck(),
       })
     } else {
       if (!email.trim() && !phone.trim()) return setError('Please enter your email or phone')
       if (!bookingId.trim()) return setError('Please enter your ticket number')
-      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: detectedCountry.code, booking_id: bookingId.trim() })
+      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: detectedCountry.code, booking_id: bookingId.trim(), form_check: formCheck() })
     }
   }
 
@@ -115,6 +123,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
       </div>
 
       <form onSubmit={handleSubmit} style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* PR-12 trap: invisible to people and to screen readers, skipped by
+            Tab; a form-filling bot finds a "website" field and fills it. */}
+        <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+          <label>
+            Website
+            <input type="text" name="website" tabIndex={-1} autoComplete="off" value={website}
+              onInput={e => setWebsite((e.target as HTMLInputElement).value)} />
+          </label>
+        </div>
         {tunnel === 'sales' ? (
           <>
             <input style={inputStyle} placeholder="Your name *" value={name} onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value) }} />

@@ -12,7 +12,7 @@ import { useAttentionStore } from '@/stores/attention-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bridge'
-import { useAuthStore } from '@/stores/auth-store'
+import { syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
 const HEARTBEAT_INTERVAL_MS = 5_000
@@ -24,10 +24,13 @@ const HEARTBEAT_INTERVAL_MS = 5_000
  * the other reads it — one full-list fetch per interval instead of two.
  *
  * MUST stay in sync with the list's queryKey in features/chats/index.tsx
- * (['conversations', tab, search, tunnel, handledBy]) and its params.
+ * (['conversations', tab, search, tunnel, handledBy, tag]) and its params.
+ * PR-10: the key had drifted to five parts while the list grew a sixth (the
+ * tag filter), so the two never shared a cache entry and the same list went
+ * out twice every five seconds. tests/attention-key.test.ts pins them.
  */
-export const ATTENTION_QUERY_KEY = ['conversations', 'my_active', '', '', 'all']
-const ATTENTION_PARAMS = { assigned_to: 'me', status: 'active', limit: '50' }
+export const ATTENTION_QUERY_KEY = ['conversations', 'my_active', '', '', 'all', 'all']
+export const ATTENTION_PARAMS = { assigned_to: 'me', status: 'active', limit: '50', with_counts: 'true' }
 
 type HeartbeatResponse = {
   is_ready?: boolean
@@ -279,7 +282,15 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       worker.postMessage({ type: 'start', apiBase, token, viewingConversationId: viewingConversationId || null })
 
       worker.onmessage = (e: MessageEvent) => {
-        if (!active.current || e.data.type !== 'heartbeat') return
+        if (!active.current) return
+        // A 401 from the worker may only mean its token is older than the
+        // cookie (another tab signed in): reconcile, and the subscription
+        // hands the worker the new one.
+        if (e.data.type === 'error' && e.data.status === 401) {
+          syncAccessTokenFromCookie()
+          return
+        }
+        if (e.data.type !== 'heartbeat') return
         processResponse(e.data.data as HeartbeatResponse)
       }
     } else {
@@ -303,6 +314,35 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       }
     }
   }, [intervalMs, role, setReady, viewingConversationId, queryClient])
+
+  // The worker was handed the token once, at start. A refreshed session (a
+  // new login in another tab, a token renewal) left it pinging with the old
+  // one until a 401 (PR-10). Hand it every new token as it changes.
+  useEffect(
+    () =>
+      useAuthStore.subscribe((state, prev) => {
+        const next = state.auth.accessToken
+        if (next && next !== prev.auth.accessToken) {
+          workerRef.current?.postMessage({ type: 'updateToken', token: next })
+        }
+      }),
+    [],
+  )
+
+  // A sign-in in ANOTHER tab only rewrites the shared cookie: this tab's
+  // store (and so the subscription above) never hears of it. Reconcile the
+  // cookie whenever the panel comes back into view or focus.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncAccessTokenFromCookie()
+    }
+    window.addEventListener('focus', syncAccessTokenFromCookie)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', syncAccessTokenFromCookie)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
 
   const dormant = usePanelModeStore((s) => s.dormant)
   const queueCount = useQueueStore((s) => s.queueCount)

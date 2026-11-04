@@ -48,12 +48,17 @@ export interface Conversation {
   metadata?: Record<string, unknown>
   has_flagged_content?: boolean
   flagged_reason?: string | null
+  /** metadata.suspect lifted by the list (PR-12 form trap): 'form_trap' when held. */
+  suspect?: string | null
 }
 
 export interface ConversationsResponse {
   success: boolean
   data: Conversation[]
   count: number
+  /** Tab badges, present when the list was asked `with_counts=true` (PR-10).
+   *  null when the count failed alongside a list that did not. */
+  counts?: Partial<Record<'my_active' | 'my_closed' | 'all_active' | 'all_closed', number>> | null
 }
 
 // ── Leads ─────────────────────────────────────────────────────

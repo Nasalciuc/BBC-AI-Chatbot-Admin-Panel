@@ -11,6 +11,7 @@ import { ExportLeadsButton } from './components/export-leads-button'
 import { useAuthStore } from '@/stores/auth-store'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
+import { useDebouncedValue } from '@/hooks/use-debounced-value'
 
 const TIER_STYLES: Record<string, string> = {
   gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
@@ -60,6 +61,7 @@ export function Leads() {
   const [totalCount, setTotalCount] = useState(0)
   const [loading, setLoading]       = useState(true)
   const [search, setSearch]         = useState('')
+  const debouncedSearch             = useDebouncedValue(search.trim(), 300)
   const [statusFilter, setStatus]   = useState('')
   const [tierFilter, setTier]       = useState('')
   const [reviewFilter, setReviewFilter] = useState('all')
@@ -78,7 +80,7 @@ export function Leads() {
     setLoading(true)
     try {
       const params: Record<string, string> = { limit: String(LIMIT), offset: String(offset) }
-      if (search)       params.search = search
+      if (debouncedSearch) params.search = debouncedSearch
       if (statusFilter) params.status = statusFilter
       if (tierFilter)   params.tier = tierFilter
       if (reviewFilter !== 'all') params.reviewed = reviewFilter
@@ -93,7 +95,7 @@ export function Leads() {
       console.error('[leads] API error:', err)
       setLeads([]); setTotal(0)
     } finally { setLoading(false) }
-  }, [search, statusFilter, tierFilter, reviewFilter, crmPending, offset, activeTab])
+  }, [debouncedSearch, statusFilter, tierFilter, reviewFilter, crmPending, offset, activeTab])
 
   useEffect(() => { fetchLeads() }, [fetchLeads])
 

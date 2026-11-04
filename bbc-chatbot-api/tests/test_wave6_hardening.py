@@ -405,11 +405,41 @@ class TestPresenceTruth:
 
     def test_widget_timers_are_untouched(self):
         """Owner-locked: this pack adds a ping, it does not retune
-        auto-open/auto-close."""
+        auto-open/auto-close.
+
+        PR-12 touches Widget.tsx (the visitor token, the form's trap), so the
+        lock is pinned on what it protects — no changed line may touch a
+        timer, a delay or the auto-open state — rather than on the whole
+        file being byte-identical to master."""
+        import re
         import subprocess
 
+        repo = os.path.join(ROOT, "..")
+        # The base to compare with: TIMER_LOCK_BASE, else origin/master (what CI
+        # fetches), else a local master. A comparison that cannot run must not
+        # pass as "nothing touched": it fails in CI and is skipped locally.
+        candidates = [os.environ.get("TIMER_LOCK_BASE") or "", "origin/master", "master"]
+        base = next((
+            c for c in candidates if c and subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"{c}^{{commit}}"],
+                cwd=repo, capture_output=True, text=True, timeout=30,
+            ).returncode == 0
+        ), None)
+        if base is None:
+            msg = f"no base to diff Widget.tsx against (tried {[c for c in candidates if c]})"
+            if os.environ.get("CI"):
+                pytest.fail(msg)
+            pytest.skip(msg)
         diff = subprocess.run(
-            ["git", "diff", "master", "--", "bbc-widget/src/Widget.tsx"],
-            cwd=os.path.join(ROOT, ".."), capture_output=True, text=True, timeout=60,
+            ["git", "diff", base, "--", "bbc-widget/src/Widget.tsx"],
+            cwd=repo, capture_output=True, text=True, timeout=60,
         )
-        assert diff.stdout.strip() == ""
+        if diff.returncode != 0:
+            pytest.fail(f"git diff {base} failed: {diff.stderr.strip()[:200]}")
+        changed = [
+            line[1:] for line in diff.stdout.splitlines()
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        ]
+        timer = re.compile(r"setTimeout|setInterval|clearTimeout|Timer|autoOpened|\b\d{3,}\b")
+        touched = [line for line in changed if timer.search(line)]
+        assert touched == [], touched

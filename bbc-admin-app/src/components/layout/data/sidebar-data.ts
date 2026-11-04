@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
-  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound, GraduationCap,
+  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound, GraduationCap, ShieldAlert,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 import type { Permissions } from '@/lib/bbc/types'
@@ -55,6 +55,12 @@ export function getSidebarData(
               // a project manager has that and would land on a page of 403s.
               ...(permissions.canReviewLearning
                 ? [{ title: 'Learning', url: '/learning' as const, icon: GraduationCap }]
+                : []),
+              // The ban list and unban — owner/admin/dev, the backend's
+              // MANAGEMENT set (app/security/gates.py). Not canManageTeams for
+              // the same reason as Learning: a project manager would get 403s.
+              ...(permissions.canManageBans
+                ? [{ title: 'Security · Bans', url: '/security/bans' as const, icon: ShieldAlert }]
                 : []),
             ],
           }]

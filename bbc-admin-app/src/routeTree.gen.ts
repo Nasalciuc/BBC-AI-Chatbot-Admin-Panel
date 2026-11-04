@@ -39,6 +39,7 @@ import { Route as AuthenticatedSettingsNotificationsRouteImport } from './routes
 import { Route as AuthenticatedSettingsDisplayRouteImport } from './routes/_authenticated/settings/display'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
+import { Route as AuthenticatedSecurityBansRouteImport } from './routes/_authenticated/security/bans'
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
 
 const WidgetPreviewRoute = WidgetPreviewRouteImport.update({
@@ -198,6 +199,12 @@ const AuthenticatedSettingsAccountRoute =
     path: '/account',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedSecurityBansRoute =
+  AuthenticatedSecurityBansRouteImport.update({
+    id: '/security/bans',
+    path: '/security/bans',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedErrorsErrorRoute =
   AuthenticatedErrorsErrorRouteImport.update({
     id: '/errors/$error',
@@ -223,6 +230,7 @@ export interface FileRoutesByFullPath {
   '/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
+  '/security/bans': typeof AuthenticatedSecurityBansRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -254,6 +262,7 @@ export interface FileRoutesByTo {
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/': typeof AuthenticatedIndexRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
+  '/security/bans': typeof AuthenticatedSecurityBansRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -288,6 +297,7 @@ export interface FileRoutesById {
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
+  '/_authenticated/security/bans': typeof AuthenticatedSecurityBansRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -322,6 +332,7 @@ export interface FileRouteTypes {
     | '/503'
     | '/chat/$tunnel'
     | '/errors/$error'
+    | '/security/bans'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/display'
@@ -353,6 +364,7 @@ export interface FileRouteTypes {
     | '/chat/$tunnel'
     | '/'
     | '/errors/$error'
+    | '/security/bans'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/display'
@@ -386,6 +398,7 @@ export interface FileRouteTypes {
     | '/chat/$tunnel'
     | '/_authenticated/'
     | '/_authenticated/errors/$error'
+    | '/_authenticated/security/bans'
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/appearance'
     | '/_authenticated/settings/display'
@@ -631,6 +644,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsAccountRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/security/bans': {
+      id: '/_authenticated/security/bans'
+      path: '/security/bans'
+      fullPath: '/security/bans'
+      preLoaderRoute: typeof AuthenticatedSecurityBansRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/errors/$error': {
       id: '/_authenticated/errors/$error'
       path: '/errors/$error'
@@ -668,6 +688,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
+  AuthenticatedSecurityBansRoute: typeof AuthenticatedSecurityBansRoute
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedChatsIndexRoute: typeof AuthenticatedChatsIndexRoute
   AuthenticatedKnowledgeBaseIndexRoute: typeof AuthenticatedKnowledgeBaseIndexRoute
@@ -682,6 +703,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
+  AuthenticatedSecurityBansRoute: AuthenticatedSecurityBansRoute,
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedChatsIndexRoute: AuthenticatedChatsIndexRoute,
   AuthenticatedKnowledgeBaseIndexRoute: AuthenticatedKnowledgeBaseIndexRoute,

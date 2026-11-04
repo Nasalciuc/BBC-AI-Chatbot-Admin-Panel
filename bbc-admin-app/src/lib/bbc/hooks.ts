@@ -17,6 +17,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: true, canViewDashboardGlobal: true, canAssignTasks: true,
         canViewTeams: true, canManageTeams: true,
         canReviewLearning: true,
+        canManageBans: true,
         visibleTunnels: ['all'],
       }
     case 'qa':
@@ -28,6 +29,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: false, canViewDashboardGlobal: true, canAssignTasks: false,
         canViewTeams: true, canManageTeams: false,
         canReviewLearning: false,
+        canManageBans: false,
         visibleTunnels: ['all'],
       }
     case 'sales':
@@ -39,6 +41,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: false, canViewDashboardGlobal: false, canAssignTasks: false,
         canViewTeams: false, canManageTeams: false,
         canReviewLearning: false,
+        canManageBans: false,
         visibleTunnels: ['sales'],
       }
     case 'support':
@@ -50,6 +53,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: false, canViewDashboardGlobal: false, canAssignTasks: false,
         canViewTeams: false, canManageTeams: false,
         canReviewLearning: false,
+        canManageBans: false,
         visibleTunnels: ['support'],
       }
     case 'supervisor':
@@ -63,6 +67,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: false, canViewDashboardGlobal: false, canAssignTasks: false,
         canViewTeams: true, canManageTeams: false,
         canReviewLearning: false,
+        canManageBans: false,
         visibleTunnels: ['all'],
       }
     case 'project_manager':
@@ -79,6 +84,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: false, canViewDashboardGlobal: true, canAssignTasks: false,
         canViewTeams: true, canManageTeams: true,
         canReviewLearning: false,
+        canManageBans: false,
         visibleTunnels: ['all'],
       }
     default:
@@ -90,6 +96,7 @@ export function getPermissions(role: UserRole): Permissions {
         canViewAllSettings: false, canViewDashboardGlobal: false, canAssignTasks: false,
         canViewTeams: false, canManageTeams: false,
         canReviewLearning: false,
+        canManageBans: false,
         visibleTunnels: ['sales'],
       }
   }

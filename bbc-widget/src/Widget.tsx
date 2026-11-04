@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { FloatingButtons } from './FloatingButtons'
-import { TunnelForm } from './TunnelForm'
+import { TunnelForm, type FormCheck } from './TunnelForm'
 import { ChatWindow } from './ChatWindow'
-import { getVisitorId } from './api'
+import { apiFetch, clearVisitorToken, ensureVisitorToken, getVisitorId } from './api'
 import { getUtm } from './utm'
 import brand from './config'
 
@@ -158,8 +158,17 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (!visitorId) return
 
     let cancelled = false
-    fetch(`${apiUrl}/api/chat/visitor/${encodeURIComponent(visitorId)}/active-conversation`)
-      .then(r => r.json())
+    // Refresh the visitor token first: a returning visitor's may be past its
+    // 24 h, and with VISITOR_TOKEN_ENFORCE on the check would be refused, which
+    // reads like "no active conversation" and drops a live chat.
+    ensureVisitorToken(apiUrl)
+      .then(() => apiFetch(`${apiUrl}/api/chat/visitor/${encodeURIComponent(visitorId)}/active-conversation`))
+      .then(r => {
+        // A refusal or a server error says nothing about the conversation:
+        // keep the optimistic UI, as on a network error.
+        if (!r.ok) throw new Error(`verify failed: ${r.status}`)
+        return r.json()
+      })
       .then(data => {
         if (cancelled) return
         if (data.success && data.conversation_id) {
@@ -315,7 +324,12 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     autoOpenedRef.current = true
   }
 
-  const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => {
+  // PR-12: the form's trap (hidden field + fill time) rides the first
+  // /chat/start. Kept in memory only — it describes this one submit.
+  const [formCheck, setFormCheck] = useState<FormCheck | undefined>(undefined)
+
+  const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string; form_check?: FormCheck }) => {
+    setFormCheck(data.form_check)
     // Ensure visitor_id exists before entering chat
     ensureVisitorId()
 
@@ -333,6 +347,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       // Different visitor — new visitor_id + clear old conversation cache
       const newId = makeVisitorId()
       try { localStorage.setItem('bbc_visitor_id', newId) } catch {}
+      clearVisitorToken()  // PR-12: the old token proves the old id only
       try { localStorage.removeItem('bbc_conv_id') } catch {}
       try { localStorage.removeItem('bbc_conv_ts') } catch {}
     }
@@ -407,7 +422,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
         </div>
       )}
       {step === 'chat' && (
-        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} />
+        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} formCheck={formCheck} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} />
       )}
     </>
   )

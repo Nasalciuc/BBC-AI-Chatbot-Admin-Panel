@@ -21,6 +21,8 @@ async def require_visitor_ownership(
     conversation_id: str,
     x_visitor_id: Optional[str] = Header(None),
     vid: Optional[str] = Query(None),
+    x_visitor_token: Optional[str] = Header(None),
+    vt: Optional[str] = Query(None),
 ) -> None:
     """Strict ownership — blocks access when conv has visitor_id but caller doesn't prove it."""
     effective_id = (x_visitor_id or vid or "").strip() or None
@@ -40,3 +42,9 @@ async def require_visitor_ownership(
             f"expected={conv_visitor[:8]} got={effective_id[:8] if effective_id else 'NONE'}"
         )
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # PR-12: the id must also come with the token the server signed for it
+    # (counted only until VISITOR_TOKEN_ENFORCE; then a 401). SSE sends it
+    # as ?vt= because EventSource cannot set headers.
+    from app.security.visitor_token import check as _check_token
+    _check_token(x_visitor_token or vt, effective_id)

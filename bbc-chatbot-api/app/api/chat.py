@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from config.settings import settings
@@ -52,10 +52,52 @@ class ChatInitRequest(BaseModel):
     visitor: VisitorInfo = Field(default_factory=VisitorInfo)
     metadata: Optional[dict] = None
     visitor_id: Optional[str] = None
+    # PR-12: the invisible Turnstile pass and the pre-chat form's trap
+    # (hidden `website` field + time to fill). Neither is metadata: the
+    # metadata allowlist would drop them, and they must not be stored raw.
+    turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+    form_check: Optional[dict] = None
 
 
 class ChatInitResponse(BaseModel):
     conversation_id: str
+    visitor_token: Optional[str] = None
+
+
+async def _widget_gate(request: Request, turnstile_token: Optional[str], form_check: Optional[dict], meta: dict) -> None:
+    """The conversation-creating doors (/chat/init, /chat/start): Turnstile
+    (off at merge), then the form trap — which marks, never refuses."""
+    from app.security.form_trap import apply as _apply_form_trap
+    from app.security.turnstile import verify_or_raise
+
+    await verify_or_raise(turnstile_token, client_ip(request))
+    _apply_form_trap(form_check, meta)
+
+
+class VisitorTokenRequest(BaseModel):
+    visitor_id: str = Field(..., min_length=8, max_length=64)
+    turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+
+
+@router.post("/chat/token")
+async def chat_token(
+    payload: VisitorTokenRequest,
+    request: Request,
+    x_visitor_token: Optional[str] = Header(None),
+    _rate: None = Depends(check_rate_limit),
+):
+    """A fresh visitor token (PR-12) for a widget whose token is near expiry
+    or that predates tokens. An expired token of the same visitor is traded in
+    for up to a week; otherwise the visitor passes Turnstile again (when on)."""
+    from app.security import visitor_token as vt
+    from app.security.turnstile import verify_or_raise
+
+    if not vt.enabled():
+        return {"success": True, "visitor_token": None}
+    old_vid, reason = vt.parse(x_visitor_token or "", grace=vt.REFRESH_GRACE)
+    if not (reason == "ok" and old_vid == payload.visitor_id):
+        await verify_or_raise(payload.turnstile_token, client_ip(request))
+    return {"success": True, "visitor_token": vt.issue(payload.visitor_id)}
 
 
 @router.post("/chat/init", response_model=ChatInitResponse)
@@ -82,6 +124,8 @@ async def chat_init(
     if payload.visitor_id:
         _meta.setdefault("visitor_id", payload.visitor_id)
 
+    await _widget_gate(request, payload.turnstile_token, payload.form_check, _meta)
+
     # Blocklist — identity chokepoint. Only phone/email refuse; a blocked IP
     # alone never does (shared IPs would catch innocent visitors).
     if await is_blocked(
@@ -103,7 +147,11 @@ async def chat_init(
 
     conv_id = conv["id"]
     logger.info(f"[init] Conv {conv_id} created/found for SSE pre-connect")
-    return ChatInitResponse(conversation_id=conv_id)
+    from app.security.visitor_token import issue as _issue_token
+    return ChatInitResponse(
+        conversation_id=conv_id,
+        visitor_token=_issue_token(payload.visitor_id) if payload.visitor_id else None,
+    )
 
 
 # --- Start endpoint: the AI greets FIRST — no fake client message ---
@@ -113,11 +161,14 @@ class ChatStartRequest(BaseModel):
     visitor: VisitorInfo = Field(default_factory=VisitorInfo)
     metadata: Optional[dict] = None
     visitor_id: Optional[str] = None
+    turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+    form_check: Optional[dict] = None
 
 
 class ChatStartResponse(BaseModel):
     conversation_id: str
     message: str
+    visitor_token: Optional[str] = None
 
 
 def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id: Optional[str]) -> dict:
@@ -170,6 +221,11 @@ async def _existing_opening(conversation_id: str) -> Optional[str]:
         return None
 
 
+def _start_token(visitor_id: Optional[str]) -> Optional[str]:
+    from app.security.visitor_token import issue
+    return issue(visitor_id) if visitor_id else None
+
+
 @router.post("/chat/start", response_model=ChatStartResponse)
 async def chat_start(
     payload: ChatStartRequest,
@@ -183,6 +239,7 @@ async def chat_start(
     actually types — no_engagement is finally derivable.
     """
     _meta = _widget_request_meta(request, payload.metadata, payload.visitor_id)
+    await _widget_gate(request, payload.turnstile_token, payload.form_check, _meta)
 
     if await is_blocked(
         phone=getattr(payload.visitor, "phone", None),
@@ -212,7 +269,10 @@ async def chat_start(
     if await db.count_messages(conv_id) > 0:
         opening = await _existing_opening(conv_id)
         logger.info(f"[start] Conv {conv_id} already started — returning existing opening")
-        return ChatStartResponse(conversation_id=conv_id, message=opening or "")
+        return ChatStartResponse(
+            conversation_id=conv_id, message=opening or "",
+            visitor_token=_start_token(payload.visitor_id),
+        )
 
     # The #168 live-greeting path: full prompt (SITE CONTEXT + t0 persona/
     # frames) on Sonnet for sales; generate_response falls back to the welcome
@@ -272,7 +332,10 @@ async def chat_start(
         conv_id, "ai", text, model_used=model_used, cost=cost,
     )
     logger.info(f"[start] Conv {conv_id} opened by AI ({model_used})")
-    return ChatStartResponse(conversation_id=conv_id, message=text)
+    return ChatStartResponse(
+        conversation_id=conv_id, message=text,
+        visitor_token=_start_token(payload.visitor_id),
+    )
 
 
 async def _mark_client_active(conversation_id: str) -> None:
@@ -301,8 +364,15 @@ async def chat(
     req: ChatRequest,
     request: Request,
     _rate: None = Depends(check_rate_limit),
+    x_visitor_token: Optional[str] = Header(None),
 ) -> ChatResponse:
     """Handle a single chat message from the widget."""
+    # PR-12: a message into an existing conversation carries the visitor's
+    # signed token (counted only until VISITOR_TOKEN_ENFORCE). A first
+    # message that creates the conversation has none yet.
+    if req.conversation_id and req.visitor_id:
+        from app.security.visitor_token import check as _check_token
+        _check_token(x_visitor_token, req.visitor_id)
 
     # 0. Validate conversation_id format if provided — widgets from a prior
     # backend bug may persist literal 'unknown' or other non-UUID values.
@@ -864,10 +934,15 @@ async def mark_chat_session_close(
 # ── Public widget endpoints (no auth required — conv_id UUID is the secret) ──
 
 @router.get("/chat/visitor/{visitor_id}/active-conversation")
-async def get_active_conversation_for_visitor(visitor_id: str):
+async def get_active_conversation_for_visitor(
+    visitor_id: str,
+    x_visitor_token: Optional[str] = Header(None),
+):
     """Widget calls this on mount to find a visitor's active conversation.
     Returns conversation_id if one exists, else null — so the widget can
     reconnect across tabs/sessions without a stale localStorage ID."""
+    from app.security.visitor_token import check as _check_token
+    _check_token(x_visitor_token, visitor_id)
     try:
         client = db.get_client()
         res = await db._run_sync(
@@ -986,8 +1061,12 @@ async def sse_stream(
     except (ValueError, AttributeError, TypeError):
         return {"success": False, "error": "invalid conversation_id"}
 
+    # ?v=2: the widget knows the `typing` event (PR-10). Older cached widgets
+    # do not send it and never receive typing events.
+    _v2 = request.query_params.get("v") == "2"
+
     async def event_generator():
-        queue = await manager.connect(conversation_id)
+        queue = await manager.connect(conversation_id, v2=_v2)
         try:
             while True:
                 if await request.is_disconnected():

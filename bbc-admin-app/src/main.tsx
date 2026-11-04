@@ -19,6 +19,17 @@ import { routeTree } from './routeTree.gen'
 // Styles
 import './styles/index.css'
 
+// The last refresh-failure toast per query (queryHash -> ms): a failing
+// background poll says so at most once a minute instead of never or always.
+const REFRESH_TOAST_EVERY_MS = 60_000
+const lastRefreshToast = new Map<string, number>()
+function shouldNotifyRefreshFailure(queryHash: string, now: number): boolean {
+  const last = lastRefreshToast.get(queryHash)
+  if (last !== undefined && now - last < REFRESH_TOAST_EVERY_MS) return false
+  lastRefreshToast.set(queryHash, now)
+  return true
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -48,7 +59,7 @@ const queryClient = new QueryClient({
     },
   },
   queryCache: new QueryCache({
-    onError: (error) => {
+    onError: (error, query) => {
       if (error instanceof ApiError) {
         if (error.status === 401) {
           toast.error('Session expired!')
@@ -57,10 +68,20 @@ const queryClient = new QueryClient({
           router.navigate({ to: '/sign-in', search: { redirect } })
         }
         if (error.status === 500) {
-          toast.error('Internal Server Error!')
-          // Only navigate to error page in production to avoid disrupting HMR in development
-          if (import.meta.env.PROD) {
-            router.navigate({ to: '/500' })
+          // A background poll that fails must not throw the operator off the
+          // chat they are typing in (PR-10). Only a first load — nothing on
+          // screen yet for that query — goes to the error page; a refetch of
+          // data already shown keeps the screen and says so once.
+          const hadData = query.state.data !== undefined
+          if (!hadData) {
+            toast.error('Internal Server Error!')
+            if (import.meta.env.PROD) {
+              router.navigate({ to: '/500' })
+            }
+          } else if (shouldNotifyRefreshFailure(query.queryHash, Date.now())) {
+            // Once per query per minute, whatever the retry count: onError
+            // runs after the retries, so a count-based guard never fired.
+            toast.error('Could not refresh — retrying in the background', { id: 'refresh-failed' })
           }
         }
         if (error.status === 403) {
