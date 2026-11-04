@@ -1,9 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import {
-  listQuestionVariants, setVariantStatus, getLearningReport,
-  type QuestionVariant,
-} from '@/lib/api'
+import { listQuestionVariants, setVariantStatus, getLearningReport } from '@/lib/api'
+import type { QuestionVariant } from '@/lib/types'
 
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
@@ -17,7 +15,7 @@ export function Learning() {
   const report = useQuery({ queryKey: ['learning-report'], queryFn: getLearningReport })
 
   const mutate = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) => setVariantStatus(id, status),
+    mutationFn: ({ id, status }: { id: string; status: QuestionVariant['status'] }) => setVariantStatus(id, status),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['question-variants'] }); toast.success('Updated') },
     onError: () => toast.error('Update failed'),
   })
@@ -35,6 +33,10 @@ export function Learning() {
         </p>
       </div>
 
+      {report.isError && (
+        <LoadError what="the learning report" onRetry={() => report.refetch()} />
+      )}
+
       {report.data && (
         <div className="rounded-lg border border-border p-4 text-sm">
           <h2 className="font-semibold mb-2 text-foreground">Complete-detail answer rate</h2>
@@ -47,6 +49,9 @@ export function Learning() {
 
       {variants.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : variants.isError ? (
+        // A failed read is not "no variants": say so and offer a retry.
+        <LoadError what="the question variants" onRetry={() => variants.refetch()} />
       ) : Object.keys(bySlot).length === 0 ? (
         <p className="text-sm text-muted-foreground">No question variants yet. The daily loop proposes them.</p>
       ) : (
@@ -89,6 +94,15 @@ export function Learning() {
           </div>
         ))
       )}
+    </div>
+  )
+}
+
+function LoadError({ what, onRetry }: { what: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm text-destructive">
+      Could not load {what}.{' '}
+      <button type="button" className="underline" onClick={onRetry}>Try again</button>
     </div>
   )
 }
