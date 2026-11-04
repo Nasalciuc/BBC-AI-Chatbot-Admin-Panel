@@ -15,8 +15,19 @@ const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 test('the lock shows as a badge with Unlock for managers', () => {
   const d = read('src/features/chats/detail.tsx')
   assert.match(d, /Blocked — abuse/)
-  assert.match(d, /permissions\.canManageTeams && \(/)
+  // The endpoint is MANAGEMENT (owner, admin, dev): the same set as canManageBans.
+  assert.match(d, /!permissions\.canManageBans \? \(/)
+  assert.doesNotMatch(d, /permissions\.canManageTeams && \(\s*<button[^>]*unlock/)
   assert.match(d, /unlockConversation\(conversationId\)/)
+})
+
+test('others see Unlock disabled, with a lock and a reason (RBAC rule)', () => {
+  const d = read('src/features/chats/detail.tsx')
+  const disabled = d.slice(d.indexOf('!permissions.canManageBans ? ('), d.indexOf(') : ('))
+  assert.match(disabled, /\bdisabled\b/)
+  assert.match(disabled, /<Lock /)
+  assert.match(disabled, /title="Only an owner, admin or dev can unlock a conversation"/)
+  assert.doesNotMatch(disabled, /onClick/)
 })
 
 test('a locked push asks first, and a click is never the confirmation', () => {

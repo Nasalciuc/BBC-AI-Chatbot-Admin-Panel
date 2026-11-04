@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
-  Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe,
+  Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe, Lock,
 } from 'lucide-react'
 import type { Message, Lead, LeadDetails } from '@/lib/types'
 import {
@@ -511,7 +511,18 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
               {(conv.metadata as { locked?: unknown } | undefined)?.locked === 'abuse' && (
                 <span className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800">
                   Blocked — abuse
-                  {permissions.canManageTeams && (
+                  {/* The unlock endpoint is MANAGEMENT (owner, admin, dev) — the
+                      same set as canManageBans. Others see it disabled (RBAC rule). */}
+                  {!permissions.canManageBans ? (
+                    <button
+                      type="button"
+                      disabled
+                      data-testid="unlock-conversation"
+                      className="inline-flex items-center gap-0.5 opacity-60 cursor-not-allowed"
+                      title="Only an owner, admin or dev can unlock a conversation"
+                      aria-label="Unlock (owner, admin or dev only)"
+                    ><Lock className="h-3 w-3" aria-hidden="true" />Unlock</button>
+                  ) : (
                     <button
                       type="button"
                       data-testid="unlock-conversation"
