@@ -1,0 +1,17 @@
+# gitleaks config, read by the `security` job (gitleaks-action picks it up
+# from the repo root). The default rules stay on; only test fixtures are
+# allowlisted: every value under bbc-chatbot-api/tests/ is a made-up string
+# passed to monkeypatch, never a real key.
+#
+# The decoy bundle's bait (app/security/decoys.py) is fake on purpose and is
+# ignored by fingerprint in .gitleaksignore, so a real secret pasted into
+# that file later would still be caught.
+
+title = "bbc-ai-chatbot-admin-panel"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures (fake values only)"
+paths = ['''^bbc-chatbot-api/tests/''']
