@@ -1,5 +1,6 @@
 """Agent presence — heartbeat endpoint, and the panel's SSE stream."""
 import asyncio
+from typing import Optional
 import json
 import logging
 import time
@@ -448,6 +449,11 @@ async def agent_stream(
         # conversation channel, so the widget (which renders any non-user event)
         # never shows it.
         op_queue = await manager.connect(f"op:{conversation_id}")
+        # Held outside the loop: on a client disconnect Starlette cancels the
+        # generator inside asyncio.wait, so the in-loop cancel never runs and
+        # the two queue.get() tasks would be left pending on every disconnect.
+        get_main: Optional[asyncio.Future] = None
+        get_op: Optional[asyncio.Future] = None
         try:
             while True:
                 if await request.is_disconnected():
@@ -466,6 +472,9 @@ async def agent_stream(
                     msg = fut.result()
                     yield f"data: {json.dumps(msg)}\n\n"
         finally:
+            for fut in (get_main, get_op):
+                if fut is not None and not fut.done():
+                    fut.cancel()
             manager.disconnect(conversation_id, queue)
             manager.disconnect(f"op:{conversation_id}", op_queue)
 
