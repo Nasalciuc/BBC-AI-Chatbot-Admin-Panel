@@ -340,7 +340,10 @@ class Settings(BaseSettings):
         """Resolved CORS allowlist: env + required BCT/BBC domains."""
         return _merge_required_cors_origins(_parse_cors_origins_env(self.cors_origins_env))
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore": PR-1 removed api_user/api_pass (the Basic door). A local
+    # .env that still has API_USER/API_PASS must not stop the API from
+    # starting (pydantic-settings forbids unknown .env keys by default).
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()
