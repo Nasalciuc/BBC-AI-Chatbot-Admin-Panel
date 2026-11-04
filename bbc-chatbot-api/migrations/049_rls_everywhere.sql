@@ -58,4 +58,12 @@ BEGIN
 END $$;
 
 -- New functions created later stay closed unless a migration opens them.
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+-- Review fix: per-schema default privileges only ADD to the global ones, so
+-- a per-schema REVOKE cannot take away the built-in EXECUTE for PUBLIC — the
+-- global form does. anon and authenticated get their EXECUTE from Supabase's
+-- own per-schema defaults, so those are revoked in the schema form. Both
+-- apply to functions created by the role running this file (the owner's
+-- `postgres` in the SQL editor, the role every later migration runs as).
+ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO service_role;

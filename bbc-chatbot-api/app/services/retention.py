@@ -1,14 +1,14 @@
 """Retention (PR-14, owner's decision ⚑12).
 
   pipeline_runs, ai_calls, agent_activity_log, agent_ready_log → 13 months
-  invite_tokens used or expired                               → 30 days
+  invite_tokens used or expired more than 30 days ago         → deleted
   blocklist entries that have expired                         → removed
   conversations and messages                                  → the owner's policy; untouched here
 
 RETENTION_ENABLED off (the default): the cron only COUNTS what it would
-delete and reports it. On: it deletes in batches of 500 ids, at most 20
-batches per table per run, so a first run on a year of history is spread
-over several nights instead of one long lock.
+delete and reports it. On: it deletes in batches of BATCH ids, at most
+MAX_BATCHES batches per table per run, so a first run on a year of history
+is spread over several nights instead of one long lock.
 """
 
 from __future__ import annotations
@@ -45,9 +45,11 @@ def _filters(table: str, now: datetime):
         cutoff = (now - age).isoformat()
         return lambda q: q.lt(col, cutoff)
     if table == "invite_tokens":
-        cutoff = (now - timedelta(days=30)).isoformat()
-        # used, or expired, more than 30 days ago
-        return lambda q: q.lt("expires_at", cutoff)
+        # used, or expired, more than 30 days ago (review fix: a token used
+        # early stayed until 30 days after its expiry). Z form: no "+" to
+        # escape inside the or=(...) filter.
+        cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return lambda q: q.or_(f"used_at.lt.{cutoff},expires_at.lt.{cutoff}")
     if table == "blocklist":
         cutoff = now.isoformat()
         return lambda q: q.lt("expires_at", cutoff)  # NULL (permanent) never matches
@@ -84,11 +86,15 @@ async def run_once() -> dict:
                 ids = await _ids(table, add_filter, BATCH)
                 if not ids:
                     break
-                await _run_sync(
-                    lambda ids=ids: get_client().table(table).delete().in_("id", ids).execute(),
+                # The age filter again on the delete: a row refreshed since it
+                # was selected (a blocklist entry given a new expiry keeps its
+                # id) is no longer eligible and stays (review fix).
+                res = await _run_sync(
+                    lambda ids=ids: add_filter(get_client().table(table).delete().in_("id", ids)).execute(),
                     label=f"retention:{table}",
                 )
-                deleted += len(ids)
+                gone = getattr(res, "data", None)
+                deleted += len(gone) if isinstance(gone, list) else len(ids)
                 if len(ids) < BATCH:
                     break
             out[table] = {"deleted": deleted}

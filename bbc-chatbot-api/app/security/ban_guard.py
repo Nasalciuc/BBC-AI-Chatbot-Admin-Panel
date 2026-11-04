@@ -123,6 +123,20 @@ _OPS_STATUS = "/api/agents/ops-status"
 _CRM_ID = re.compile(r"^/api/leads/[^/]+/crm-id$")
 _STREAM_MAX = 5
 _OPEN_STREAMS: dict[str, int] = {}
+# Operator-trap alerts: one email per (trap, user) per cooldown; a hit
+# without a staff session is counted, never emailed (anyone could loop it).
+_OPERATOR_ALERT_COOLDOWN = 300.0
+_OPERATOR_ALERTED: dict[tuple[str, str], float] = {}
+
+
+def _stream_closed(ip: str) -> None:
+    """One stream of ip ended; a count that reaches zero leaves the dict, so
+    it holds only the IPs with a stream open now."""
+    n = _OPEN_STREAMS.get(ip, 1) - 1
+    if n > 0:
+        _OPEN_STREAMS[ip] = n
+    else:
+        _OPEN_STREAMS.pop(ip, None)
 _LAST_CHAT_POST: dict[str, float] = {}
 _SEEN_FOREIGN_ORIGINS: set[str] = set()
 
@@ -151,7 +165,7 @@ class BanGuardMiddleware:
                 await self.app(scope, receive, send)
             finally:
                 if stream_ip:
-                    _OPEN_STREAMS[stream_ip] = max(0, _OPEN_STREAMS.get(stream_ip, 1) - 1)
+                    _stream_closed(stream_ip)
             return
 
         status_box = {"status": 0}
@@ -165,7 +179,7 @@ class BanGuardMiddleware:
             await self.app(scope, receive, _send)
         finally:
             if stream_ip:
-                _OPEN_STREAMS[stream_ip] = max(0, _OPEN_STREAMS.get(stream_ip, 1) - 1)
+                _stream_closed(stream_ip)
         try:
             if status_box["status"] == 404 and ctx.get("watch_404"):
                 await self._scan_strike(ctx)
@@ -318,8 +332,22 @@ class BanGuardMiddleware:
             store = get_store()
             if store is not None:
                 await store.revoke_sessions(sub)
-        await self._alert(f"operator trap {trap} user={sub or '-'} ip={ip} "
-                          f"{'sessions revoked' if enforce and sub else 'counted'}")
+        if not sub:
+            # No staff session: nothing to revoke and no one to name. Counted
+            # (above) — an anonymous loop must not flood the ops inbox.
+            bh.BEHAVIOR_HEALTH["operator_traps_anonymous"] = bh.BEHAVIOR_HEALTH.get("operator_traps_anonymous", 0) + 1
+            return
+        now = time.monotonic()
+        key = (trap, sub)
+        last = _OPERATOR_ALERTED.get(key)
+        if last is not None and now - last < _OPERATOR_ALERT_COOLDOWN:
+            bh.BEHAVIOR_HEALTH["operator_alerts_suppressed"] = bh.BEHAVIOR_HEALTH.get("operator_alerts_suppressed", 0) + 1
+            return
+        if len(_OPERATOR_ALERTED) > 10_000:
+            _OPERATOR_ALERTED.clear()
+        _OPERATOR_ALERTED[key] = now
+        await self._alert(f"operator trap {trap} user={sub} ip={ip} "
+                          f"{'sessions revoked' if enforce else 'counted'}")
 
     def _always_mode(self, headers: dict) -> str:
         """The decoy key and the widget bait ban without waiting — but only
@@ -580,6 +608,7 @@ def _reset_for_tests() -> None:
     global _table_missing
     _table_missing = False
     _OPEN_STREAMS.clear()
+    _OPERATOR_ALERTED.clear()
     _LAST_CHAT_POST.clear()
     _SEEN_FOREIGN_ORIGINS.clear()
     FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, blocked=0, staff_alerts=0,

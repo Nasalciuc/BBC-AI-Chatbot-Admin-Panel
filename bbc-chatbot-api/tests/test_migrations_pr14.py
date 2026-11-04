@@ -30,8 +30,25 @@ def test_concurrently_files_have_no_transaction(name):
 
 def test_destructive_drop_column_says_why_on_the_line_above():
     lines = _read("050_drop_leads_flexible_dates.sql").splitlines()
-    i = next(k for k, l in enumerate(lines) if "DROP COLUMN" in l)
+    i = next(k for k, line in enumerate(lines) if "DROP COLUMN" in line)
     assert lines[i - 1].startswith("-- destructive: ")
+
+
+def test_050_carries_an_explicit_false_across_before_the_drop():
+    sql = _read("050_drop_leads_flexible_dates.sql")
+    upd = sql.index("SET dates_flexibility = 'exact'")
+    assert upd < sql.index("DROP COLUMN")
+    stmt = sql[upd: sql.index(";", upd)]
+    assert "dates_flexibility IS NULL" in stmt and "flexible_dates = false" in stmt
+    # `true` was the column default: it says nothing and is not mapped.
+    assert "'flexible'" not in stmt
+
+
+def test_049_closes_future_functions_with_the_global_default():
+    sql = re.sub(r"--[^\n]*", "", _read("049_rls_everywhere.sql"))
+    assert re.search(r"ALTER DEFAULT PRIVILEGES\s+REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", sql)
+    assert "IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated" in sql
+    assert "IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC" not in sql
 
 
 def test_022_index_predicate_is_immutable():
@@ -46,6 +63,8 @@ def test_011_and_013_find_the_role_check_however_postgres_renders_it():
         sql = _read(name)
         assert "ILIKE '%role IN%'" not in sql.replace("the old ILIKE '%role IN%'", "")
         assert "users_role_check" in sql and "=\\s*ANY" in sql
+        # A varchar column renders `(role)::text = ANY`: the gap allows the cast.
+        assert "\\mrole\\M[^=]{0,30}" in sql and "[^a-z_]*(=" not in sql
 
 
 def test_no_code_reads_flexible_dates_any_more():
@@ -61,7 +80,7 @@ def test_replay_tooling_is_present():
     ci = Path(__file__).resolve().parent.parent / "ci"
     assert (ci / "bootstrap_supabase.sql").exists()
     script = (ci / "replay_migrations.sh").read_text()
-    code = "\n".join(l for l in script.splitlines() if not l.lstrip().startswith("#"))
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
     assert "--single-transaction" not in code
     assert os.access(ci / "replay_migrations.sh", os.X_OK)
 

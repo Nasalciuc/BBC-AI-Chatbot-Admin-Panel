@@ -41,7 +41,10 @@ BEHAVIOR_HEALTH: dict = {
     "frustration_would": 0,
     "frustration_lane": 0,
     "operator_traps": {},
+    "operator_traps_anonymous": 0,     # trap hit with no staff session: counted, no email
+    "operator_alerts_suppressed": 0,   # same (trap, user) within the cooldown
     "upload_mismatch": 0,
+    "trap_report_lookup_failed": 0,    # a report built while a lookup failed (verdict "unknown")
 }
 
 # Every shadow (and enforced) hit, for the guard report: who would have been
@@ -56,12 +59,14 @@ def enforced(kind: str) -> bool:
 
 
 def record(trap: str, *, ip: str = "", conversation_id: str = "", visitor_id: str = "",
-           enforced_now: bool = False) -> None:
+           user_id: str = "", enforced_now: bool = False) -> None:
+    """`ip` is a client IP and nothing else: the report looks it up in
+    conversations. A staff member is named by `user_id`."""
     bucket = "banned" if enforced_now else "would_ban"
     BEHAVIOR_HEALTH[bucket][trap] = BEHAVIOR_HEALTH[bucket].get(trap, 0) + 1
     SHADOW_HITS.append({
         "trap": trap, "ip": ip, "conversation_id": conversation_id,
-        "visitor_id": visitor_id, "at": time.time(), "enforced": enforced_now,
+        "visitor_id": visitor_id, "user_id": user_id, "at": time.time(), "enforced": enforced_now,
     })
 
 
@@ -239,17 +244,22 @@ def _reset_for_tests() -> None:
     BEHAVIOR_HEALTH.update(would_ban={}, banned={}, foreign_origin=0, chat_lock_would=0,
                            chat_locked=0, chat_lock_refused_model=0, lock_escalated_to_block=0,
                            frustration_would=0, frustration_lane=0, operator_traps={},
-                           upload_mismatch=0)
+                           operator_traps_anonymous=0, operator_alerts_suppressed=0,
+                           upload_mismatch=0, trap_report_lookup_failed=0)
     SHADOW_HITS.clear()
 
 
 # ── the chat door (called from POST /chat) ────────────────────
 
 async def _ban_ip(ip: str, trap: str, seconds: int) -> None:
+    """Through the guard's own ban path: the ban gets its security_bans row
+    (the panel's Bans page shows it and can lift it), and a ban already held
+    writes nothing twice."""
+    from app.security.ban_guard import _ban_identity
     from app.security.ban_store import get_store
     store = get_store()
     if store is not None and ip:
-        await store.ban(ip, trap, seconds)
+        await _ban_identity(store, ip, trap, seconds, alert=False)
 
 
 async def _lock(conversation_id: str, reason: str) -> dict:
@@ -291,7 +301,9 @@ async def chat_door(*, conversation_id: Optional[str], raw_message: str, clean_m
     meta = dict(metadata or {})
     lock_on = enforced("CHAT_ATTACK_ENFORCE")
 
-    if lock_on and is_locked(meta):
+    # An operator who took the conversation decides; the lock refusal would
+    # swallow the client's message before the human-mode queue (review fix).
+    if lock_on and is_locked(meta) and not human_handled:
         await cs.add_message(conversation_id, "user", clean_message)
         reply = lock_message(site)
         await cs.add_message(conversation_id, "ai", reply, model_used="template", cost=0.0)
@@ -407,22 +419,31 @@ async def frustration_door(*, conversation_id: Optional[str], message: str,
 
 # ── the guard report ──────────────────────────────────────────
 
+_LEAD_CHUNK = 200   # ids per IN (...) — the URL stays short
+
+
 async def _lead_has_trip(conversation_ids: list[str]) -> set[str]:
-    """Of these conversations, the ones whose lead got a route or a date."""
+    """Of these conversations, the ones whose lead got a route or a date.
+    Every id is looked at, a chunk at a time (review fix: only the first 200
+    were, and a real client past them read as "can be turned on")."""
     if not conversation_ids:
         return set()
     from app.db.supabase import _run_sync, get_client
 
-    res = await _run_sync(
-        lambda: get_client().table("leads")
-        .select("conversation_id,origin_code,destination_code,departure_date")
-        .in_("conversation_id", conversation_ids[:200]).execute(),
-        label="trap_report",
-    )
-    return {
-        r["conversation_id"] for r in (getattr(res, "data", None) or [])
-        if (r.get("origin_code") and r.get("destination_code")) or r.get("departure_date")
-    }
+    found: set[str] = set()
+    for i in range(0, len(conversation_ids), _LEAD_CHUNK):
+        chunk = conversation_ids[i:i + _LEAD_CHUNK]
+        res = await _run_sync(
+            lambda chunk=chunk: get_client().table("leads")
+            .select("conversation_id,origin_code,destination_code,departure_date")
+            .in_("conversation_id", chunk).execute(),
+            label="trap_report",
+        )
+        found |= {
+            r["conversation_id"] for r in (getattr(res, "data", None) or [])
+            if (r.get("origin_code") and r.get("destination_code")) or r.get("departure_date")
+        }
+    return found
 
 
 async def _ip_went_on_normally(ip: str, since_iso: str) -> bool:
@@ -452,37 +473,60 @@ async def build_trap_report() -> dict:
     by_trap: dict[str, dict] = {}
     hits = list(SHADOW_HITS)
     conv_ids = sorted({h["conversation_id"] for h in hits if h.get("conversation_id")})
+    leads_failed = False
     try:
         with_trip = await _lead_has_trip(conv_ids)
     except Exception as e:
         logger.warning(f"[trap-report] lead lookup failed: {type(e).__name__}: {e}")
-        with_trip = set()
-    checked_ips: dict[tuple[str, str], bool] = {}
+        with_trip, leads_failed = set(), True
+    # Each IP once, from its earliest hit: going on normally after the first
+    # hit holds for the later ones too (review fix: one lookup per minute of
+    # a scanner's run). A failed lookup is "unknown", never "not a client".
+    first_hit: dict[str, float] = {}
     for h in hits:
-        t = by_trap.setdefault(h["trap"], {"hits": 0, "identities": set(), "real_clients": set()})
+        if h.get("ip") and not h.get("conversation_id"):
+            first_hit[h["ip"]] = min(first_hit.get(h["ip"], h["at"]), h["at"])
+    ip_normal: dict[str, Optional[bool]] = {}
+    for ip, at in first_hit.items():
+        since = datetime.fromtimestamp(at, tz=timezone.utc).isoformat()
+        try:
+            ip_normal[ip] = await _ip_went_on_normally(ip, since)
+        except Exception as e:
+            logger.warning(f"[trap-report] ip lookup failed: {type(e).__name__}: {e}")
+            ip_normal[ip] = None
+    for h in hits:
+        t = by_trap.setdefault(h["trap"], {"hits": 0, "identities": set(), "real_clients": set(),
+                                            "unknown": False})
         t["hits"] += 1
-        ident = h.get("conversation_id") or h.get("visitor_id") or h.get("ip") or "?"
+        ident = h.get("conversation_id") or h.get("visitor_id") or h.get("ip") or h.get("user_id") or "?"
         t["identities"].add(ident)
-        if h.get("conversation_id") in with_trip:
-            t["real_clients"].add(ident)
-        elif h.get("ip") and not h.get("conversation_id"):
-            since = datetime.fromtimestamp(h["at"], tz=timezone.utc).isoformat()
-            key = (h["ip"], since[:16])
-            if key not in checked_ips:
-                try:
-                    checked_ips[key] = await _ip_went_on_normally(h["ip"], since)
-                except Exception as e:
-                    logger.warning(f"[trap-report] ip lookup failed: {type(e).__name__}: {e}")
-                    checked_ips[key] = False
-            if checked_ips[key]:
+        if h.get("conversation_id"):
+            if h["conversation_id"] in with_trip:
                 t["real_clients"].add(ident)
+            elif leads_failed:
+                t["unknown"] = True
+        elif h.get("ip"):
+            seen = ip_normal.get(h["ip"])
+            if seen:
+                t["real_clients"].add(ident)
+            elif seen is None:
+                t["unknown"] = True
     out = {}
+    any_unknown = False
     for trap, t in sorted(by_trap.items()):
         real = len(t["real_clients"])
+        if real:
+            verdict = "keep off"
+        elif t["unknown"]:
+            verdict, any_unknown = "unknown — a lookup failed, run the report again", True
+        else:
+            verdict = "can be turned on"
         out[trap] = {
             "hits": t["hits"],
             "identities": len(t["identities"]),
             "real_clients_caught": real,
-            "verdict": "keep off" if real else "can be turned on",
+            "verdict": verdict,
         }
+    if any_unknown:
+        BEHAVIOR_HEALTH["trap_report_lookup_failed"] += 1
     return out

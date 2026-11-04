@@ -29,9 +29,10 @@ BEGIN
       -- PR-14 repair: Postgres renders an IN list as `role = ANY (ARRAY[...])`,
       -- so the old ILIKE '%role IN%' never matched and the ADD below collided
       -- with the existing constraint on a clean replay. Match the name, or
-      -- either rendering of the role list.
+      -- either rendering of the role list. A varchar column renders as
+      -- `(role)::text = ANY (...)`: the gap may hold the cast (review fix).
       AND (c.conname = 'users_role_check'
-           OR pg_get_constraintdef(c.oid) ~* '\mrole\M[^a-z_]*(=\s*ANY|\s+IN\s*\()')
+           OR pg_get_constraintdef(c.oid) ~* '\mrole\M[^=]{0,30}(=\s*ANY|\s+IN\s*\()')
     LIMIT 1;
 
     -- Review fix: on a database that already accepts these roles (production
