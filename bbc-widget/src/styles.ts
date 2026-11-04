@@ -182,6 +182,7 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-cta:hover svg { transform: translateX(3px); }
 
 /* ── The conversation ────────────────────────────────────────────────── */
+#bbc-widget-root .bw-logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bw-band); }
 #bbc-widget-root .bw-log {
   flex: 1; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; padding: 20px 16px 16px;
@@ -209,6 +210,20 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-meta { margin-top: 5px; font-size: 13px; line-height: 1.3; color: var(--bw-muted); font-variant-numeric: tabular-nums; }
 #bbc-widget-root .bw-note { align-self: center; max-width: 92%; margin-top: 18px; text-align: center; font-size: 13px; line-height: 1.45; color: var(--bw-muted); animation: bw-msg-in 0.32s var(--bw-ease) both; }
 #bbc-widget-root .bw-note--error { color: var(--bw-danger); }
+#bbc-widget-root .bw-day { align-self: center; margin-top: 22px; font-size: 13px; font-weight: 600; line-height: 1.3; color: var(--bw-muted); }
+#bbc-widget-root .bw-log > .bw-day:first-child { margin-top: 0; }
+#bbc-widget-root .bw-row--queued .bw-msg { opacity: 0.62; }
+#bbc-widget-root .bw-retry { display: block; margin-left: auto; text-align: right; }
+#bbc-widget-root .bw-retry u { text-decoration-thickness: 1px; text-underline-offset: 3px; }
+#bbc-widget-root .bw-retry:hover u { text-decoration-thickness: 2px; }
+#bbc-widget-root .bw-unseen {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px;
+  background: var(--bw-ink); color: #FFFFFF; font-size: 13px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 12px 32px rgba(10, 27, 65, 0.22);
+  animation: bw-unseen-in 0.28s var(--bw-ease) both;
+}
+#bbc-widget-root .bw-unseen svg { width: 15px; height: 15px; }
 #bbc-widget-root .bw-note a { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; white-space: nowrap; }
 #bbc-widget-root .bw-meta--failed { color: var(--bw-danger); }
 #bbc-widget-root .bw-dots { display: inline-flex; align-items: center; gap: 5px; padding: 16px; background: var(--bw-paper); }
@@ -240,6 +255,8 @@ export const WIDGET_CSS = `
   transition: background-color 0.18s var(--bw-ease), color 0.18s var(--bw-ease);
 }
 #bbc-widget-root .bw-send:hover:not(:disabled) { background: #203359; }
+#bbc-widget-root .bw-send:active:not(:disabled) { transform: scale(0.94); }
+#bbc-widget-root .bw-send { transition: background-color 0.18s var(--bw-ease), color 0.18s var(--bw-ease), transform 0.12s var(--bw-ease); }
 #bbc-widget-root .bw-send:disabled { background: var(--bw-band); color: #8A95A8; cursor: default; }
 #bbc-widget-root .bw-send svg { width: 20px; height: 20px; }
 
@@ -247,8 +264,8 @@ export const WIDGET_CSS = `
 @media (max-width: 767px) {
   #bbc-widget-root .bw-panel,
   #bbc-widget-root .bw-panel--form {
-    inset: 0; right: 0; bottom: 0; width: 100%; max-width: none;
-    height: 100%; height: 100dvh; max-height: none;
+    top: var(--bw-vvt, 0px); left: 0; right: 0; bottom: auto; width: 100%; max-width: none;
+    height: 100%; height: var(--bw-vvh, 100dvh); max-height: none;
     box-shadow: none; animation-name: bw-sheet-in; animation-duration: 0.34s;
   }
   #bbc-widget-root .bw-head { padding-top: max(12px, env(safe-area-inset-top)); }
@@ -270,6 +287,13 @@ export const WIDGET_CSS = `
 }
 #bbc-widget-root .bw-panel--embedded { animation: none; }
 
+#bbc-widget-root .bw-closing .bw-panel { animation: bw-panel-out 0.2s cubic-bezier(0.4, 0, 1, 1) both; }
+@media (max-width: 767px) {
+  #bbc-widget-root .bw-closing .bw-panel { animation: bw-sheet-out 0.22s cubic-bezier(0.4, 0, 1, 1) both; }
+}
+@keyframes bw-panel-out { to { opacity: 0; transform: translateY(12px) scale(0.98); } }
+@keyframes bw-sheet-out { to { transform: translateY(100%); } }
+@keyframes bw-unseen-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes bw-panel-in { from { opacity: 0; transform: translateY(16px) scale(0.97); } to { opacity: 1; transform: none; } }
 @keyframes bw-sheet-in { from { transform: translateY(100%); } to { transform: none; } }
 @keyframes bw-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
