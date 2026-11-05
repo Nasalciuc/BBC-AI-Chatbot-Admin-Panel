@@ -9,11 +9,13 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
   // already loaded
 } else {
   (window as any).__BBC_WIDGET_LOADED__ = true
-  captureUtm()
 
   // Read API URL from script data-api attribute
   const script = document.currentScript as HTMLScriptElement | null
     || document.querySelector('script[src*="-widget"]') as HTMLScriptElement | null
+  // data-attribution="off": the site loaded the chat for a visitor without marketing consent (they tapped the
+  // chat button), so no click ids, campaign tags or Analytics id are kept (utm.ts). Without it, as before.
+  captureUtm({ attribution: script?.getAttribute('data-attribution') !== 'off' })
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
 

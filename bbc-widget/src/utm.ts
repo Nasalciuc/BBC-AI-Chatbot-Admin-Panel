@@ -8,8 +8,16 @@ export type UtmFields = Partial<Record<(typeof UTM_PARAMS)[number], string>>
 /**
  * Capture UTM params from current URL into sessionStorage (first-touch).
  * Call once at widget init — before render.
+ *
+ * `attribution: false`: the site loaded the chat for a visitor who has not accepted marketing cookies (the script
+ * tag's data-attribution="off"). Then nothing is kept, no campaign tags, click ids, referrer or Analytics id, and
+ * anything an earlier page of the tab kept is dropped; the lead still names its page (getUtm).
  */
-export function captureUtm(): void {
+export function captureUtm({ attribution = true }: { attribution?: boolean } = {}): void {
+  if (!attribution) {
+    try { sessionStorage.removeItem(UTM_KEY) } catch { /* storage blocked: nothing was kept */ }
+    return
+  }
   try {
     const params = new URLSearchParams(window.location.search)
     const captured: UtmFields = {}
@@ -68,7 +76,12 @@ export function getUtm(): UtmFields & {
 } {
   try {
     const raw = sessionStorage.getItem(UTM_KEY)
-    return raw ? JSON.parse(raw) : {}
+    if (raw) return JSON.parse(raw)
+  } catch { /* storage blocked or bad value: fall through to the page alone */ }
+  // Nothing kept (attribution off, or storage blocked): the page the chat is on, without its query.
+  try {
+    const page_url = window.location.href.split('?')[0]
+    return page_url ? { page_url } : {}
   } catch {
     return {}
   }
