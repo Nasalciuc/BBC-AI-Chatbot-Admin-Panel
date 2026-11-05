@@ -3499,6 +3499,12 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
             )
             .eq("tunnel", "sales")
             .in_("status", ["active", "closed"])
+            # Same rule as get_abandoned_conversations: a chat an agent
+            # CLOSED is the agent's decision, not an orphan. Without this
+            # line the backfill pushed every operator-handled chat of the
+            # last 30 days on each deploy (72 on 4 Nov 2026, AAA defaults,
+            # many already entered in the CRM by hand).
+            .is_("metadata->>closed_by_agent_id", "null")
             .gte("created_at", cutoff)
             .or_(
                 "and(visitor_phone.not.is.null,visitor_phone.neq.),"
@@ -3521,6 +3527,42 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
     except Exception as e:
         logger.error(f"get_recent_contact_conversations error: {e}")
         return []
+
+
+_CRM_CONTACT_SCAN_CAP = 5000
+
+
+async def get_crm_contact_rows(days: int = 30) -> list[dict] | None:
+    """Contacts (phone, email) of every lead that reached the CRM in the
+    last N days — the "this human is already in the CRM" guard.
+
+    The created_in_crm flag lives on ONE conversation's lead; the same
+    human writing again from a second conversation (new tab, typo in the
+    email) has a second lead whose flag is false, and the automatic paths
+    pushed it again. Returns None when the read FAILED, so the caller can
+    tell "nobody is in the CRM" ([]) from "we could not look" (None)."""
+    try:
+        db = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        result = await _run_sync(lambda: (
+            db.table("leads")
+            .select("conversations!inner(visitor_phone, visitor_email)")
+            .eq("created_in_crm", True)
+            .gte("created_in_crm_at", cutoff)
+            .limit(_CRM_CONTACT_SCAN_CAP)
+            .execute()
+        ), label="cron")
+        rows = [r.get("conversations") or {} for r in (result.data or [])]
+        if len(rows) >= _CRM_CONTACT_SCAN_CAP:
+            logger.warning(
+                f"get_crm_contact_rows: hit the {_CRM_CONTACT_SCAN_CAP}-row cap "
+                f"— the oldest CRM contacts of the {days}-day window were NOT "
+                "loaded; a duplicate of one of them would not be caught"
+            )
+        return rows
+    except Exception as e:
+        logger.error(f"get_crm_contact_rows error: {e}")
+        return None
 
 
 async def get_last_system_message(conversation_id: str) -> dict | None:

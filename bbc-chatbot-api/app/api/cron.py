@@ -10,16 +10,16 @@ from fastapi import APIRouter, HTTPException, Request
 
 from config.settings import settings
 from app.db import supabase as db
-from app.services.crm import format_phone_international, submit_abandoned_to_crm
+from app.services.crm import (
+    CRM_PUSH_HEALTH,
+    format_phone_international,
+    submit_abandoned_to_crm,
+)
 from app.services.lead_service import get_or_create_lead
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-# One-time AAA backfill — flips after the first run in this process;
-# true idempotency is the created_in_crm flag (a second run pushes nothing).
-_AAA_BACKFILL_RAN = False
 
 # Conversations pushed to the CRM in this process today: the second guard,
 # the one that does not depend on a database write succeeding. Reset lazily on
@@ -132,6 +132,42 @@ async def _persist_refusal(lead_id: str, error: str) -> bool:
     return True
 
 
+async def _contacts_already_in_crm() -> set[str] | None:
+    """Every contact id (p:<phone>, e:<email>) that reached the CRM in the
+    last 30 days, from ANY conversation. None = the read failed.
+
+    The created_in_crm flag is per conversation. John Arana wrote twice on
+    15 Oct (same phone, a typo in the email): the second chat went to the
+    CRM that day, the first one went again on 4 Nov. One human, two rows."""
+    rows = await db.get_crm_contact_rows(days=30)
+    if rows is None:
+        return None
+    ids: set[str] = set()
+    for row in rows:
+        ids.update(_contact_ids(row))
+    return ids
+
+
+def _hold_for_crm_lookup(cid: str, in_crm: set[str] | None, where: str) -> str | None:
+    """Why an AUTOMATIC push must not happen now, or None to go ahead.
+
+    'lookup_failed' — we could not check; wait for the next tick rather
+    than risk a second CRM row (a failed read is not an empty CRM).
+    'contact_already_in_crm' — this human is already there."""
+    if in_crm is None:
+        CRM_PUSH_HEALTH["crm_contact_lookup_failed"] += 1
+        logger.warning(
+            f"[{where}][{cid}] CRM contact lookup failed — holding the push "
+            "this cycle rather than risking a duplicate"
+        )
+        return "lookup_failed"
+    return None
+
+
+def _contact_in_crm(conv: dict, in_crm: set[str]) -> bool:
+    return any(i in in_crm for i in _contact_ids(conv))
+
+
 async def run_aaa_backfill(days: int = 30) -> dict:
     """The contacts the old guards blocked — pushed once, safely.
 
@@ -140,13 +176,19 @@ async def run_aaa_backfill(days: int = 30) -> dict:
     so one human never becomes two CRM rows, and pushes the rest through
     the defaults path with normal proof discipline (2xx + crm_id only).
     A gate/contract refusal is NOT a loss: the row keeps its reason and
-    surfaces in the panel's "CRM pending" work-list for a human."""
+    surfaces in the panel's "CRM pending" work-list for a human.
+
+    ON DEMAND ONLY. It used to run on the first abandoned-CRM tick of every
+    process — i.e. after every deploy or restart — and each time it pushed
+    the operator-handled chats of the last 30 days (5 waves Sep–Nov, 72 on
+    4 Nov 2026). Nothing calls it automatically any more."""
     convs = pick_richest_by_contact(
         await db.get_recent_contact_conversations(days=days)
     )
     pushed = 0
     work_list = 0
     skipped = 0
+    in_crm = await _contacts_already_in_crm() if convs else set()
     for conv in convs:
         cid = conv["id"]
         try:
@@ -168,6 +210,14 @@ async def run_aaa_backfill(days: int = 30) -> dict:
             if lead.get("created_in_crm"):
                 skipped += 1
                 continue
+            if _hold_for_crm_lookup(cid, in_crm, "aaa-backfill"):
+                skipped += 1
+                continue
+            if _contact_in_crm(conv, in_crm):
+                CRM_PUSH_HEALTH["contact_already_in_crm"] += 1
+                await _persist_refusal(lead["id"], "gate:contact_already_in_crm")
+                work_list += 1
+                continue
             if not conv.get("last_user_message_at"):
                 conv["_no_engagement"] = True
             result = await submit_abandoned_to_crm(conv, lead)
@@ -184,6 +234,7 @@ async def run_aaa_backfill(days: int = 30) -> dict:
                     skipped += 1
                     continue
                 _pushed_today.add(cid)
+                in_crm.update(_contact_ids(conv))
                 pushed += 1
             else:
                 # Visible state, never a silent drop: a GATE refusal rides
@@ -212,13 +263,8 @@ async def run_abandoned_crm() -> dict:
     if not settings.abandoned_cron_enabled:
         logger.info("[cron] abandoned-CRM sweep disabled by settings")
         return {"disabled": True}
-    global _AAA_BACKFILL_RAN
-    if not _AAA_BACKFILL_RAN:
-        _AAA_BACKFILL_RAN = True
-        try:
-            await run_aaa_backfill()
-        except Exception as e:
-            logger.error(f"[cron] AAA backfill failed (non-fatal): {e}")
+    # The AAA backfill is NOT started from here any more: a per-process
+    # "first tick" is every deploy and every restart (see run_aaa_backfill).
 
     abandoned = await db.get_abandoned_conversations(settings.abandoned_timeout_minutes)
     logger.info(f"[cron] Found {len(abandoned)} abandoned conversations")
@@ -226,6 +272,11 @@ async def run_abandoned_crm() -> dict:
     # One human = one CRM row, in the live sweep too. Without this the
     # backfill's careful dedup is undone minutes later by the next tick.
     _push_owners = {c["id"] for c in pick_richest_by_contact(abandoned)}
+    # …and one human = one CRM row ACROSS conversations: the flag is per
+    # conversation, so a second chat from the same person looks new.
+    # Loaded lazily — only when a conversation actually reaches the push.
+    _in_crm: set[str] | None = set()
+    _in_crm_loaded = False
 
     results = []
     for conv in abandoned:
@@ -323,6 +374,20 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "dedup_twin"})
                 continue
 
+            if not _in_crm_loaded:
+                _in_crm = await _contacts_already_in_crm()
+                _in_crm_loaded = True
+            if _hold_for_crm_lookup(cid, _in_crm, "cron"):
+                results.append({"id": cid, "status": "skipped", "reason": "crm_lookup_failed"})
+                continue
+            if _contact_in_crm(conv, _in_crm):
+                # Visible in "CRM pending" with its reason; the panel button
+                # still pushes it if a human decides it is a new trip.
+                CRM_PUSH_HEALTH["contact_already_in_crm"] += 1
+                await _persist_refusal(lead["id"], "gate:contact_already_in_crm")
+                results.append({"id": cid, "status": "contact_already_in_crm"})
+                continue
+
             crm_result = await submit_abandoned_to_crm(conv, lead)
 
             if crm_result.success:
@@ -356,6 +421,8 @@ async def run_abandoned_crm() -> dict:
                     f"{' + closed' if _may_close else ' (left open — human/closed)'}"
                 )
                 _pushed_today.add(cid)
+                if _in_crm is not None:
+                    _in_crm.update(_contact_ids(conv))
                 results.append({"id": cid, "status": "success", "name": name})
             else:
                 logger.error(f"[cron][{cid}] CRM fail: {crm_result.error}")
