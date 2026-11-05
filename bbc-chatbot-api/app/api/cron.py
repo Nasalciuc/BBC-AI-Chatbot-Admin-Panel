@@ -165,6 +165,7 @@ def _hold_for_crm_lookup(cid: str, in_crm: set[str] | None, where: str) -> str |
 
 
 def _contact_in_crm(conv: dict, in_crm: set[str]) -> bool:
+    """True when this conversation's phone OR email is already in the CRM."""
     return any(i in in_crm for i in _contact_ids(conv))
 
 
@@ -536,7 +537,12 @@ async def process_abandoned_conversations(request: Request):
     if auth != f"Bearer {settings.cron_secret}":
         raise HTTPException(status_code=401, detail="Invalid cron token")
 
-    return await run_abandoned_crm()
+    # Same lock as the internal scheduler's tick: a manual run waits for a
+    # tick in progress instead of pushing the same contact alongside it.
+    from app.services.scheduler import job_lock
+
+    async with job_lock("abandoned_crm"):
+        return await run_abandoned_crm()
 
 
 @router.post("/cron/agent-response-sweep")

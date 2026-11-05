@@ -210,7 +210,8 @@ async def test_lookup_returns_none_when_the_read_fails():
 
 @pytest.mark.asyncio
 async def test_lookup_flattens_the_embedded_conversation():
-    res = MagicMock(data=[{"conversations": {"visitor_phone": "+1", "visitor_email": "a@b.c"}}])
+    res = MagicMock(data=[{"id": "L1", "conversations": {"visitor_phone": "+1", "visitor_email": "a@b.c"}}],
+                    count=1)
     with patch.object(sb, "get_client", return_value=MagicMock()), \
          patch.object(sb, "_run_sync", new=AsyncMock(return_value=res)):
         rows = await _real_get_crm_contact_rows()
@@ -220,8 +221,98 @@ async def test_lookup_flattens_the_embedded_conversation():
 @pytest.mark.asyncio
 async def test_lookup_empty_is_an_empty_list_not_none():
     with patch.object(sb, "get_client", return_value=MagicMock()), \
-         patch.object(sb, "_run_sync", new=AsyncMock(return_value=MagicMock(data=[]))):
+         patch.object(sb, "_run_sync", new=AsyncMock(return_value=MagicMock(data=[], count=0))):
         assert await _real_get_crm_contact_rows() == []
+
+
+def _pages(total, server_max_rows):
+    """Fake server: `total` rows, at most `server_max_rows` per response."""
+    data = [{"id": f"L{i}", "conversations": {"visitor_phone": f"+1{i:09d}"}} for i in range(total)]
+    offset = {"n": 0}
+
+    async def run_sync(fn, **_kw):
+        page = data[offset["n"]:offset["n"] + server_max_rows]
+        offset["n"] += len(page)
+        return MagicMock(data=page, count=total)
+
+    return run_sync
+
+
+@pytest.mark.asyncio
+async def test_lookup_reads_past_the_servers_max_rows():
+    """Supabase cuts any response to max-rows (1000 by default) without an
+    error. 743 contacts on 5 Nov 2026 — one busy month from silent misses."""
+    with patch.object(sb, "get_client", return_value=MagicMock()), \
+         patch.object(sb, "_run_sync", new=_pages(total=2500, server_max_rows=1000)):
+        rows = await _real_get_crm_contact_rows()
+    assert len(rows) == 2500
+
+
+@pytest.mark.asyncio
+async def test_lookup_is_complete_even_when_max_rows_is_below_the_page():
+    with patch.object(sb, "get_client", return_value=MagicMock()), \
+         patch.object(sb, "_run_sync", new=_pages(total=7, server_max_rows=3)):
+        rows = await _real_get_crm_contact_rows()
+    assert len(rows) == 7
+
+
+@pytest.mark.asyncio
+async def test_lookup_over_the_cap_says_so(caplog):
+    with patch.object(sb, "_CRM_CONTACT_SCAN_CAP", 4), \
+         patch.object(sb, "_CRM_CONTACT_PAGE", 2), \
+         patch.object(sb, "get_client", return_value=MagicMock()), \
+         patch.object(sb, "_run_sync", new=_pages(total=9, server_max_rows=2)):
+        rows = await _real_get_crm_contact_rows()
+    assert len(rows) == 4
+    assert any("only the newest 4 were loaded" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_lookup_without_a_count_cannot_prove_completeness():
+    with patch.object(sb, "get_client", return_value=MagicMock()), \
+         patch.object(sb, "_run_sync", new=AsyncMock(return_value=MagicMock(data=[], count=None))):
+        assert await _real_get_crm_contact_rows() is None
+
+
+# ════════════════════════════════════════════════════════════
+# a manual run never overlaps the scheduler's tick
+# ════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_manual_http_run_waits_for_the_scheduler_tick():
+    import asyncio
+
+    from app.services import scheduler
+    from app.services.scheduler import job_lock
+
+    calls = []
+
+    async def fake_sweep():
+        calls.append("http")
+        return {"processed": 0, "success": 0, "results": []}
+
+    request = MagicMock(headers={"Authorization": "Bearer s3cret"})
+    # A lock of this test's own loop: a contended asyncio.Lock binds to its
+    # loop, and the module-level one outlives this test.
+    with patch.dict(scheduler._locks, {"abandoned_crm": asyncio.Lock()}), \
+         patch.object(cron.settings, "cron_secret", "s3cret"), \
+         patch.object(cron, "run_abandoned_crm", new=fake_sweep):
+        lock = job_lock("abandoned_crm")
+        await lock.acquire()
+        try:
+            task = asyncio.create_task(cron.process_abandoned_conversations(request))
+            await asyncio.sleep(0.05)
+            assert calls == [], "the HTTP run must wait while a tick holds the lock"
+        finally:
+            lock.release()
+        out = await task
+    assert calls == ["http"] and out["processed"] == 0
+
+
+def test_scheduler_and_http_share_one_lock():
+    from app.services.scheduler import job_lock
+
+    assert job_lock("abandoned_crm") is job_lock("abandoned_crm")
 
 
 # ════════════════════════════════════════════════════════════
