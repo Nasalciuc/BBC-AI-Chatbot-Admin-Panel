@@ -3499,6 +3499,12 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
             )
             .eq("tunnel", "sales")
             .in_("status", ["active", "closed"])
+            # Same rule as get_abandoned_conversations: a chat an agent
+            # CLOSED is the agent's decision, not an orphan. Without this
+            # line the backfill pushed every operator-handled chat of the
+            # last 30 days on each deploy (72 on 4 Nov 2026, AAA defaults,
+            # many already entered in the CRM by hand).
+            .is_("metadata->>closed_by_agent_id", "null")
             .gte("created_at", cutoff)
             .or_(
                 "and(visitor_phone.not.is.null,visitor_phone.neq.),"
@@ -3521,6 +3527,82 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
     except Exception as e:
         logger.error(f"get_recent_contact_conversations error: {e}")
         return []
+
+
+_CRM_CONTACT_SCAN_CAP = 5000
+# Rows asked for per request. The server may return fewer (PostgREST
+# max-rows, 1000 by default on Supabase) — the loop advances by what it
+# actually got and stops on the exact count, never on a short page.
+_CRM_CONTACT_PAGE = 1000
+
+
+async def get_crm_contact_rows(days: int = 30) -> list[dict] | None:
+    """Contacts (phone, email) of every lead that reached the CRM in the
+    last N days — the "this human is already in the CRM" guard.
+
+    The created_in_crm flag lives on ONE conversation's lead; the same
+    human writing again from a second conversation (new tab, typo in the
+    email) has a second lead whose flag is false, and the automatic paths
+    pushed it again. Returns None when the read FAILED, so the caller can
+    tell "nobody is in the CRM" ([]) from "we could not look" (None).
+
+    Paged: a single .limit() above the server's max-rows is silently cut
+    to max-rows, and a guard that sees 1000 of 1200 contacts misses
+    duplicates without a word. Newest first, so a push landing between
+    two pages shifts rows down (one is read twice, harmless in a set)
+    instead of skipping one."""
+    try:
+        db = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        def _page(first: int, last: int, with_count: bool):
+            return (
+                db.table("leads")
+                .select(
+                    "id, conversations!inner(visitor_phone, visitor_email)",
+                    count="exact" if with_count else None,  # type: ignore[arg-type]
+                )
+                .eq("created_in_crm", True)
+                .gte("created_in_crm_at", cutoff)
+                .order("created_in_crm_at", desc=True)
+                .order("id")
+                .range(first, last)
+                .execute()
+            )
+
+        rows: list[dict] = []
+        total: int | None = None
+        offset = 0
+        while offset < _CRM_CONTACT_SCAN_CAP:
+            last = min(offset + _CRM_CONTACT_PAGE, _CRM_CONTACT_SCAN_CAP) - 1
+            res = await _run_sync(
+                lambda f=offset, l=last, c=(total is None): _page(f, l, c),
+                label="cron",
+            )
+            if total is None:
+                total = res.count if isinstance(res.count, int) else None
+                if total is None:
+                    logger.error(
+                        "get_crm_contact_rows: no exact count returned — "
+                        "cannot prove the contact list is complete"
+                    )
+                    return None
+            page = res.data or []
+            rows.extend(r.get("conversations") or {} for r in page)
+            offset += len(page)
+            if not page or offset >= total:
+                break
+
+        if total > _CRM_CONTACT_SCAN_CAP:
+            logger.warning(
+                f"get_crm_contact_rows: {total} CRM contacts in the {days}-day "
+                f"window, only the newest {_CRM_CONTACT_SCAN_CAP} were loaded — "
+                "a duplicate of an older one would not be caught"
+            )
+        return rows[:_CRM_CONTACT_SCAN_CAP]
+    except Exception as e:
+        logger.error(f"get_crm_contact_rows error: {e}")
+        return None
 
 
 async def get_last_system_message(conversation_id: str) -> dict | None:
