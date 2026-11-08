@@ -24,6 +24,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
+import { isOperatorRole } from '@/components/layout/data/sidebar-data'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   DropdownMenu,
@@ -142,6 +143,14 @@ export default function ConversationDetail({
     retryDelay: 500,
   })
 
+  // A waiting chat an agent hasn't taken is shown blind (the gate below):
+  // nothing about it is polled or streamed for them either.
+  const blindView =
+    !!conv &&
+    isOperatorRole(role) &&
+    ownerOf(conv, me?.accountNo) === 'waiting' &&
+    (conv.metadata?.engaged_agent_id as string | undefined) !== me?.accountNo
+
   // Track last message timestamp for incremental polling
   useEffect(() => {
     if (conv?.messages?.length) {
@@ -169,7 +178,7 @@ export default function ConversationDetail({
       return res.data ?? { is_typing: false, text: '' }
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 500 : false),
-    enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
+    enabled: !!conv && !blindView && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
   // Incremental message polling — ONLY new messages, ONLY on My Active tab
@@ -187,7 +196,7 @@ export default function ConversationDetail({
       return res.success ? res.data : []
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
-    enabled: !!conv && activeTab === 'my_active',
+    enabled: !!conv && !blindView && activeTab === 'my_active',
   })
 
   // Presence polling — lightweight metadata endpoint for real-time client status.
@@ -200,7 +209,7 @@ export default function ConversationDetail({
       return res.data ?? {}
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
-    enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
+    enabled: !!conv && !blindView && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
   // Push instead of ask. One stream for the conversation on screen carries
@@ -212,7 +221,7 @@ export default function ConversationDetail({
     // A dormant panel holds no stream (it asks for nothing), and a mock view
     // never opens a real authenticated channel for a conversation it does not
     // query. Both were missing: dormant panels kept server subscriptions alive.
-    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock) return
+    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock || blindView) return
     const h = openAgentStream(
       conversationId,
       (e) => {
@@ -256,7 +265,7 @@ export default function ConversationDetail({
       () => setSseLive(false)
     )
     return () => h.close()
-  }, [conversationId, activeTab, dormant, usingMock, queryClient])
+  }, [conversationId, activeTab, dormant, usingMock, blindView, queryClient])
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {
@@ -552,6 +561,44 @@ export default function ConversationDetail({
             : owner === 'mine'
               ? { text: 'This chat is yours. Open it under Mine to answer.', cls: 'bg-k-f7f7f7 text-k-444444' }
               : { text: `${conv.assigned_agent_name ?? 'An agent'} is answering. You can read along${canManage ? ', or give the chat to someone else' : ''}.`, cls: 'bg-k-f7f7f7 text-k-444444' }
+
+  // An agent takes a waiting chat blind (owner's decision, Nov 2026): who
+  // and how long, never the cities or the client's words until it's theirs.
+  // Managers still read it, to give it to the right person. The queue never
+  // opens a waiting chat; this covers a link or a selection that lands here.
+  // A chat the agent was already talking in (back with the assistant) is
+  // theirs to read: they know it.
+  if (blindView) {
+    return (
+      <section
+        aria-label='Chat'
+        className={cn(
+          'flex h-full flex-col items-center justify-center gap-4 bg-k-ffffff p-6 text-center',
+          narrow ? 'rounded-none' : 'rounded-[20px] shadow-[0_0_0_1px_var(--k-ececec)]'
+        )}
+      >
+        <ChatAvatar text={initials(conv.visitor_name)} tone={avatarClasses(owner)} dot={presence.dot} size={44} />
+        <div className='flex flex-col items-center gap-1.5'>
+          <h2 className='m-0 text-[17px] font-bold text-k-202020'>{conv.visitor_name || 'Visitor'}</h2>
+          {chip && <span className={cn('rounded-full px-2 py-0.5 text-xs font-bold', chip.cls)}>{chip.text}</span>}
+        </div>
+        <p className='m-0 max-w-[340px] text-sm leading-[1.45] text-k-555555'>
+          {conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
+          chat and the trip once you take it.
+        </p>
+        {canTake ? (
+          <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+            {taking ? 'Taking…' : 'Take'}
+          </button>
+        ) : (
+          <p className='m-0 text-sm font-bold text-k-202020'>Set yourself ready to take this chat.</p>
+        )}
+        <button type='button' onClick={onClose} className='min-h-8 text-sm font-bold text-k-5b45e0 hover:underline'>
+          Back to chats
+        </button>
+      </section>
+    )
+  }
 
   const myInitials = initials(me?.name ?? 'You')
   const agentName = conv.assigned_agent_name ?? conv.engaged_agent_name ?? null

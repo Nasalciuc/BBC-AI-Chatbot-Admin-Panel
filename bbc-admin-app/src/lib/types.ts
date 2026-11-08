@@ -49,9 +49,11 @@ export interface Conversation {
   has_flagged_content?: boolean
   flagged_reason?: string | null
   /** List rows only: the newest non-system message, trimmed to 140 chars.
-   *  Absent for supervisors and PMs, and when the preview read failed. */
+   *  Absent for supervisors and PMs, and when the preview read failed.
+   *  An agent gets null on a chat that isn't theirs (blind take). */
   last_message?: { role: Message['role']; content: string; created_at: string } | null
-  /** List rows only: the route the pipeline extracted (lead origin → destination). */
+  /** List rows only: the route the pipeline extracted (lead origin → destination).
+   *  Never sent to an agent for a chat that isn't theirs (blind take). */
   route?: { from: string; to: string } | null
   /** When the chat entered the shared queue (waiting for a person). */
   queued_at?: string | null

@@ -3,6 +3,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Conversation, Lead } from '../src/lib/types.ts'
 import {
   countdown,
@@ -17,10 +20,14 @@ import {
   ownerOf,
   presenceView,
   previewText,
+  queueLine,
   seconds,
   signalOf,
   whereRows,
 } from '../src/features/chats/view.ts'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 
 const ME = 'me-1'
 const NOW = Date.parse('2026-11-06T12:00:00Z')
@@ -164,4 +171,37 @@ test('list previews say who spoke', () => {
   assert.equal(previewText(conv({ assigned_agent_name: 'Rohan Mehta', last_message: { role: 'agent', content: 'Hi', created_at: iso(0) } })), 'Rohan: Hi')
   assert.equal(previewText(conv({ last_message: { role: 'user', content: 'Thanks.', created_at: iso(0) } })), 'Thanks.')
   assert.equal(previewText(conv({ last_message: null })), '')
+})
+
+// ── a waiting chat is taken blind (owner, Nov 2026) ─────────────────
+
+test('a waiting row says whether they asked for a person and how much they wrote — nothing else', () => {
+  assert.equal(queueLine({ status: 'needs_agent', message_count: 6 }), 'Asked for a person')
+  assert.equal(queueLine({ status: 'active', message_count: 1 }), '1 message')
+  assert.equal(queueLine({ status: 'active', message_count: 4 }), '4 messages')
+})
+
+test('the waiting line never names the cities, shows no words, and opens nothing before Take', () => {
+  const src = read('src/features/chats/components/queue-section.tsx')
+  for (const leak of ['routeText', 'route', 'previewText', 'last_message', 'onOpen']) {
+    assert.ok(!new RegExp(`\\b${leak}\\b`).test(src.replace(/\/\*[\s\S]*?\*\//g, '')), `queue-section must not use ${leak}`)
+  }
+  assert.match(src, /queueLine\(conv\)/)
+  // Both layouts take from the line directly: the rail has its own Take.
+  assert.equal(src.match(/onClick=\{\(\) => claim\(conv\)\}/g)?.length, 2)
+  const page = read('src/features/chats/index.tsx')
+  assert.ok(!/<QueueSection[^>]*onOpen/.test(page), 'the page must not wire a preview into the line')
+})
+
+test('an agent who lands on a waiting chat sees who and how long, not the chat', () => {
+  const src = read('src/features/chats/detail.tsx')
+  assert.match(src, /const blindView =\s*!!conv &&\s*isOperatorRole\(role\) &&\s*ownerOf\(conv, me\?\.accountNo\) === 'waiting' &&/)
+  assert.match(src, /engaged_agent_id as string \| undefined\) !== me\?\.accountNo/, 'a chat they were talking in stays readable')
+  // The gate returns before the thread and the details are built.
+  const gate = src.indexOf('if (blindView) {')
+  assert.ok(gate > 0 && gate < src.indexOf('const details = ('), 'the gate comes before the details')
+  assert.ok(gate < src.indexOf("aria-label='Messages'"), 'the gate comes before the thread')
+  // Nothing about it is polled or streamed for them.
+  assert.equal(src.match(/enabled: !!conv && !blindView && activeTab === 'my_active'/g)?.length, 3)
+  assert.match(src, /usingMock \|\| blindView\) return/)
 })

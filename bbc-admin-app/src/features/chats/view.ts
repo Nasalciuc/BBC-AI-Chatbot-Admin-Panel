@@ -268,6 +268,14 @@ export function routeText(c: Pick<Conversation, 'route'>): string {
   return c.route ? `${c.route.from} → ${c.route.to}` : ''
 }
 
+/** A waiting row (taken blind): whether they asked for a person and how
+ *  much they wrote. Never where they fly, never their words. */
+export function queueLine(c: Pick<Conversation, 'status' | 'message_count'>): string {
+  if (c.status === 'needs_agent') return 'Asked for a person'
+  const n = c.message_count ?? 0
+  return n === 1 ? '1 message' : `${n} messages`
+}
+
 // ── the thread ─────────────────────────────────────────────────────────
 
 export interface ThreadLine {
