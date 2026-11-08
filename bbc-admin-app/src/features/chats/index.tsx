@@ -1,86 +1,109 @@
 import { useState, useRef, useEffect, useDeferredValue, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Search, MessageSquare, ChevronRight, Inbox, UserCheck, Archive, AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Clock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
 import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
-import { Header } from '@/components/layout/header'
+import { isEmbedded } from '@/lib/crm-bridge'
+import { cn } from '@/lib/utils'
 import { HeaderActions } from '@/components/header-actions'
-import { Main } from '@/components/layout/main'
+import { PageHeader } from '@/components/layout/page-header'
+import { isOperatorRole } from '@/components/layout/data/sidebar-data'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAttentionStore } from '@/stores/attention-store'
-import { QueueSection } from './components/queue-section'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
-import { formatAge } from '@/lib/format-age'
+import { useReadyToggle } from '@/hooks/use-ready-toggle'
+import { QueueSection } from './components/queue-section'
+import { TasksBand } from './components/tasks-band'
+import { ChatAvatar } from './components/chat-avatar'
 import { idleMinutes, IDLE_BADGE_MIN, IDLE_NUDGE_MIN } from './idle'
-import { listRowDot } from './presence'
-import ConversationDetail from './detail'
+import ConversationDetail, { type ChatLayout } from './detail'
+import { ToRead } from './to-read'
+import { useReadState, useToRead } from './to-read-state'
+import { unreadCount } from './to-read-view'
+import {
+  avatarClasses,
+  initials,
+  ownerLine,
+  ownerOf,
+  presenceView,
+  previewText,
+  routeText,
+  rowTime,
+  signalClasses,
+  signalOf,
+  type Signal,
+} from './view'
 
-// Every status tint carries a dark: variant — light-only literals rendered
-// near-white-on-pastel in dark mode.
-const TUNNEL_STYLES: Record<string, string> = {
-  sales:   'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800',
-  support: 'bg-purple-50 text-purple-700 border border-purple-200 dark:bg-purple-950 dark:text-purple-300 dark:border-purple-800',
-}
 // State (tab) and outcome (tag) are orthogonal axes — a tag chip layers on
-// top of whichever state tab is active (e.g. "Abandoned" chip + "All Closed"
+// top of whichever state tab is active (e.g. "Abandoned" chip + "Closed"
 // tab is a valid, meaningful combination). See TAG_FILTERS below.
-const TAG_STYLES: Record<ConversationTag, string> = {
-  fresh: 'bg-sky-50 text-sky-700 border border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800',
-  active: 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950 dark:text-green-300 dark:border-green-800',
-  main_queue: 'bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-800',
-  completed: 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800',
-  abandoned: 'bg-slate-100 text-slate-600 border border-slate-300 dark:bg-slate-900 dark:text-slate-400 dark:border-slate-700',
-  no_engagement: 'bg-orange-50 text-orange-700 border border-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-800',
-}
-const TAG_LABELS: Record<ConversationTag, string> = {
-  fresh: 'Fresh',
-  active: 'Active',
-  main_queue: 'Main Queue',
-  completed: 'Completed',
-  abandoned: 'Abandoned',
-  no_engagement: 'No engagement',
-}
 const TAG_FILTERS: { key: ConversationTag; label: string }[] = [
   { key: 'fresh', label: 'Fresh' },
   { key: 'active', label: 'Active' },
-  { key: 'main_queue', label: 'Main Queue' },
+  { key: 'main_queue', label: 'Main queue' },
   { key: 'completed', label: 'Completed' },
   { key: 'abandoned', label: 'Abandoned' },
   { key: 'no_engagement', label: 'No engagement' },
 ]
+const TAG_LABELS = Object.fromEntries(TAG_FILTERS.map((t) => [t.key, t.label])) as Record<ConversationTag, string>
 
-type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
+type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'to_read'
 
-const AGENT_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
-  { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
-  { key: 'my_closed', label: 'My Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'me', status: 'closed' } },
+const AGENT_TABS: { key: TabKey; label: string; params: Record<string, string> }[] = [
+  { key: 'my_active', label: 'Mine', params: { assigned_to: 'me', status: 'active' } },
+  { key: 'my_closed', label: 'Closed', params: { assigned_to: 'me', status: 'closed' } },
 ]
 
-const MANAGER_TABS: { key: TabKey; label: string; icon: React.ReactNode; params: Record<string, string> }[] = [
-  { key: 'my_active', label: 'My Active', icon: <UserCheck className="w-4 h-4" />, params: { assigned_to: 'me', status: 'active' } },
-  { key: 'all_active', label: 'All Active', icon: <Inbox className="w-4 h-4" />, params: { assigned_to: 'all', status: 'active' } },
-  { key: 'all_closed', label: 'All Closed', icon: <Archive className="w-4 h-4" />, params: { assigned_to: 'all', status: 'closed' } },
+const MANAGER_TABS: { key: TabKey; label: string; params: Record<string, string> }[] = [
+  { key: 'my_active', label: 'Mine', params: { assigned_to: 'me', status: 'active' } },
+  { key: 'all_active', label: 'All active', params: { assigned_to: 'all', status: 'active' } },
+  // Supervisor and owner: this week's lost chats and last week's sample.
+  { key: 'to_read', label: 'To read', params: {} },
+  { key: 'all_closed', label: 'Closed', params: { assigned_to: 'all', status: 'closed' } },
 ]
 
-const timeAgo = (iso: string): string => formatAge(iso, new Date()) ?? ''
+/** To read: supervisors (their team) and the owner, admin, dev (everyone). */
+const READ_ROLES = ['owner', 'admin', 'dev', 'supervisor']
+
+/** Container widths where the layout changes: three columns, two, one. */
+const WIDE_MIN = 1120
+const MEDIUM_MIN = 720
+
+function useWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [w, setW] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth))
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver((entries) => setW(entries[0].contentRect.width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref])
+  return w
+}
 
 export function Chats() {
   const roleRaw = useAuthStore((s) => s.auth.user?.role)
+  const meId = useAuthStore((s) => s.auth.user?.accountNo)
   const role = Array.isArray(roleRaw) ? roleRaw[0] : (roleRaw ?? 'sales')
   const isManager = ['owner', 'admin', 'dev', 'qa', 'supervisor'].includes(role)
-  // My Active hidden for admin/supervisor/qa — they oversee the queue, don't claim conversations
+  // Mine hidden for admin/supervisor/qa — they oversee the queue, don't claim conversations
   const hideMyActive = ['admin', 'supervisor', 'qa'].includes(role)
   const canFilterHandled = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
-  // Outcome-tag chip bar: oversight roles only (team-scoped on the backend
+  // Outcome-tag chips: oversight roles only (team-scoped on the backend
   // for supervisors; no_engagement is global regardless of role).
   const canFilterTag = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
+  const canRead = READ_ROLES.includes(role)
   const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
-    (t) => !(hideMyActive && t.key === 'my_active')
+    (t) => !(hideMyActive && t.key === 'my_active') && (t.key !== 'to_read' || canRead)
   )
+  const embedded = isEmbedded()
+  const operator = isOperatorRole(role)
+  const { canBeReady, ready, toggle: toggleReady } = useReadyToggle()
 
-  // Highlight from URL param (click from bell dropdown)
+  // Highlight from URL param (click from bell dropdown, Your day, a toast)
   const urlHighlight = new URLSearchParams(window.location.search).get('highlight')
 
   const [activeTab, setActiveTab] = useState<TabKey>(hideMyActive ? 'all_active' : 'my_active')
@@ -91,9 +114,34 @@ export function Chats() {
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
   const [highlightId] = useState<string | null>(urlHighlight)
   const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
+  const deadlineSeconds = useReadyStore((s) => s.responseDeadlineSeconds)
+  const viewingGraceSeconds = useReadyStore((s) => s.viewingGraceSeconds)
   const attentionIds = useAttentionStore((s) => s.attentionIds)
   const dormant = usePanelModeStore((s) => s.dormant)
   const [idleOnly, setIdleOnly] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  // "Wider chat": the list becomes a rail of faces. Remembered per browser.
+  const [wide, setWide] = useState(() => {
+    try {
+      return localStorage.getItem('bbc_wide_chat') === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggleWide = useCallback(() => {
+    setWide((v) => {
+      try {
+        localStorage.setItem('bbc_wide_chat', v ? '0' : '1')
+      } catch {
+        /* private mode: the choice holds for this visit */
+      }
+      return !v
+    })
+  }, [])
   // Once per session, as specified. sessionStorage (not state) because the
   // banner must not come back on a remount — and not localStorage, because a
   // new shift tomorrow deserves the reminder again.
@@ -119,7 +167,7 @@ export function Chats() {
     setViewingConversationId(selectedId)
   }, [selectedId, setViewingConversationId])
 
-  // Stale conversation IDs for red highlight
+  // Stale conversation IDs (the bell's "waiting" list)
   const { data: notifData } = useQuery({
     queryKey: ['notifications'],
     queryFn: getNotifications,
@@ -129,39 +177,12 @@ export function Chats() {
   const debouncedSearch = useDeferredValue(search)
   const queryClient = useQueryClient()
 
-  // Resizable panel — persists in localStorage
-  const [leftWidth, setLeftWidth] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('bbc_panel_width')
-      return saved ? Math.min(600, Math.max(280, parseInt(saved))) : 384
-    } catch { return 384 }
-  })
-  const isResizing = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const width = useWidth(containerRef)
+  const layout: ChatLayout = width >= WIDE_MIN ? 'wide' : width >= MEDIUM_MIN ? 'medium' : 'narrow'
+  const rail = wide && layout === 'wide'
 
-  const startResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    isResizing.current = true
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isResizing.current || !containerRef.current) return
-      const rect = containerRef.current.getBoundingClientRect()
-      const newWidth = Math.min(600, Math.max(280, e.clientX - rect.left))
-      setLeftWidth(newWidth)
-    }
-    const onMouseUp = () => {
-      isResizing.current = false
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-  }, [])
-
-  useEffect(() => {
-    try { localStorage.setItem('bbc_panel_width', String(leftWidth)) } catch { /* ignore */ }
-  }, [leftWidth])
-
-  // Conversation list — cached per tab, polls every 30s
+  // Conversation list — cached per tab, polls every 5s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
   const listParams: Record<string, string> = { ...tab.params, limit: '50' }
   if (debouncedSearch) listParams.search = debouncedSearch
@@ -169,33 +190,42 @@ export function Chats() {
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
   if (canFilterTag && tagFilter !== 'all') listParams.tag = tagFilter
 
-  // On the default My Active view this key equals ATTENTION_QUERY_KEY in
+  // On the default Mine view this key equals ATTENTION_QUERY_KEY in
   // use-heartbeat.ts, so the heartbeat's attention check reuses this cache
   // instead of fetching the same list a second time every 5s. Changing the key
   // shape or the params below without updating that constant reintroduces the
   // duplicate request.
+  const reading = activeTab === 'to_read'
   const { data: convResponse, isLoading, isError } = useQuery({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter, tagFilter],
     queryFn: () => getConversations(listParams),
+    enabled: !reading,
     // Bug 3: agents need near-realtime assignment visibility
     refetchInterval: dormant ? false : 5_000,
   })
-  const conversations: Conversation[] = convResponse?.data ?? []
+  // To read: the list (shared with the tab) and what this browser has read.
+  const toRead = useToRead(canRead)
+  const [readKeys, markRead] = useReadState()
+  const toReadUnread = unreadCount(toRead.data, readKeys)
+  const conversations: Conversation[] = useMemo(() => convResponse?.data ?? [], [convResponse])
 
-  // Live conversations first, idle ones below — a stable secondary sort that
-  // keeps the server's order (and the needs-attention/stale ordering) intact
-  // inside each group.
+  // Most urgent first: no reply (red), then your turn / just taken (amber),
+  // then the rest — and idle desks below the live ones. Stable: the server's
+  // order holds inside each group.
   const ordered = useMemo(() => {
     const rows = idleOnly
       ? conversations.filter((c) => (idleMinutes(c) ?? 0) >= IDLE_NUDGE_MIN)
       : [...conversations]
-    return rows.sort((a, b) => {
-      const ai = (idleMinutes(a) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0
-      const bi = (idleMinutes(b) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0
-      return ai - bi
-    })
-  }, [conversations, idleOnly])
+    const urgency = (c: Conversation) => {
+      if (activeTab === 'my_closed' || activeTab === 'all_closed') return 3
+      const s = signalOf(c, ownerOf(c, meId), nowMs, deadlineSeconds)
+      return s ? s.urgency : 2
+    }
+    const idle = (c: Conversation) => ((idleMinutes(c) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0)
+    return rows.sort((a, b) => urgency(a) - urgency(b) || idle(a) - idle(b))
+    // nowMs: the countdown re-sorts at most once a second.
+  }, [conversations, idleOnly, activeTab, meId, nowMs, deadlineSeconds])
 
   // Counted on the WHOLE list, not the filtered view: the number must not
   // change just because the operator turned the Idle chip on.
@@ -237,269 +267,399 @@ export function Chats() {
     queryClient.invalidateQueries({ queryKey: ['conversation-counts'] })
   }
 
-  return (
-    <>
-      <Header>
-        <HeaderActions />
-      </Header>
-      <Main fixed>
-        <div ref={containerRef} className="flex h-full overflow-hidden rounded-lg border border-border">
-          {/* Left panel — tabs + list. On mobile the detail takes over the
-              whole screen (master-detail); a fixed 384px column inside a
-              375px viewport was clipping every control. */}
-          <div
-            data-panel="left"
-            className={`${selectedId ? 'hidden md:flex' : 'flex'} flex-col border-r border-border bg-card`}
-            style={selectedId ? { width: leftWidth, minWidth: 280, maxWidth: 480, flexShrink: 0 } : { flex: 1 }}
+  // A chat I just took: it is mine now — show it under Mine, keep it open.
+  const handleTaken = (id: string) => {
+    stopAssignmentAlerts()
+    if (!hideMyActive) setActiveTab('my_active')
+    setSelectedId(id)
+    queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    queryClient.invalidateQueries({ queryKey: ['conversation-counts'] })
+  }
+
+  const pick = (id: string) => {
+    stopAssignmentAlerts()
+    setSelectedId(id === selectedId ? null : id)
+  }
+
+  const filtersOn = (tunnelFilter ? 1 : 0) + (handledByFilter !== 'all' ? 1 : 0) + (tagFilter !== 'all' ? 1 : 0) + (idleOnly ? 1 : 0)
+  const chipCls = (on: boolean) =>
+    cn(
+      'min-h-11 md:min-h-8 rounded-full border px-3 text-[13px] font-bold transition-colors',
+      on ? 'border-kb-202020 bg-kb-202020 text-on-btn' : 'border-k-e3e2e2 bg-k-ffffff text-k-444444 hover:bg-k-f7f7f7'
+    )
+
+  const rows = ordered.map(conv => {
+    const owner = ownerOf(conv, meId)
+    const viewing = conv.id === selectedId
+    const sig: Signal | null = activeTab === 'my_closed' || activeTab === 'all_closed'
+      ? signalOf(conv, 'closed', nowMs, deadlineSeconds)
+      : signalOf(conv, owner, nowMs, viewing ? viewingGraceSeconds : deadlineSeconds)
+    return { conv, owner, sig }
+  })
+  const showGroups = activeTab === 'all_active' && rows.some((r) => r.sig && r.sig.urgency < 2) && rows.some((r) => !r.sig || r.sig.urgency >= 2)
+  const nWait = rows.filter((r) => r.sig && r.sig.urgency < 2).length
+  const nRed = rows.filter((r) => r.sig?.urgency === 0).length
+  const seesBothTunnels = isManager || role === 'project_manager'
+
+  const renderRow = ({ conv, owner, sig }: (typeof rows)[number]) => {
+    const on = selectedId === conv.id
+    const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
+    const idle = idleMinutes(conv)
+    const ownerTxt = activeTab === 'all_active' ? ownerLine(conv, owner) : null
+    const attention = attentionIds.includes(conv.id)
+    const preview = previewText(conv) || routeText(conv) || (conv.message_count ? `${conv.message_count} messages` : 'No messages yet')
+    return (
+      <button
+        key={conv.id}
+        type='button'
+        aria-pressed={on}
+        aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}${sig ? `, ${sig.text}` : ''}`}
+        onClick={() => pick(conv.id)}
+        className={cn(
+          'flex gap-2.5 rounded-[14px] p-2.5 text-start text-k-202020 transition-colors focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
+          on ? 'bg-k-ffffff shadow-[0_1px_3px_rgba(32,32,32,0.10)]' : attention ? 'bg-k-fff3e0/70 hover:bg-k-fff3e0' : 'hover:bg-row-hover',
+          highlightId === conv.id && !on && 'ring-2 ring-k-f2b01e'
+        )}
+      >
+        <ChatAvatar text={initials(conv.visitor_name)} tone={avatarClasses(owner)} dot={owner !== 'closed' ? p.dot : null} ring={on ? 'border-k-ffffff' : 'border-k-f7f7f7'} />
+        <span className='flex min-w-0 flex-1 flex-col gap-[3px]'>
+          <span className='flex items-baseline gap-2'>
+            <strong className={cn('min-w-0 flex-1 truncate text-sm', !conv.visitor_name && 'font-normal text-k-6b6b6b italic')}>
+              {/* Names survive closing: 1292 identical "Closed conversation"
+                  rows made review scanning impossible. */}
+              {conv.visitor_name ?? 'Anonymous visitor'}
+            </strong>
+            {conv.has_flagged_content && (
+              <span title={conv.flagged_reason || 'Contains flagged content'}>
+                <AlertTriangle aria-label='Flagged' className='size-3.5 text-k-d97a00' />
+              </span>
+            )}
+            <span className='flex-none text-xs text-k-6b6b6b'>{rowTime(conv.updated_at, new Date(nowMs))}</span>
+          </span>
+          <span className='truncate text-[13px] text-k-555555'>{preview}</span>
+          {(ownerTxt || sig || (idle !== null && idle >= IDLE_BADGE_MIN) || staleIds.has(conv.id) || (seesBothTunnels && conv.tunnel === 'support') || conv.tag) && (
+            <span className='flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-bold'>
+              {ownerTxt && <span className={ownerTxt.cls}>{ownerTxt.text}</span>}
+              {ownerTxt && sig && <span className='font-normal text-k-9a9a9a'>·</span>}
+              {sig && (
+                <span className={cn('inline-flex items-center gap-1', signalClasses(sig))}>
+                  {sig.clock && <Clock aria-hidden='true' className='size-[13px] flex-none' strokeWidth={2.4} />}
+                  {sig.text}
+                </span>
+              )}
+              {/* Both sides silent: only worth a chip when nothing louder is shown. */}
+              {!sig && idle !== null && idle >= IDLE_BADGE_MIN && (
+                <span title='No message from either side' className='rounded-full bg-k-f0f0f0 px-1.5 py-px font-normal text-k-555555'>
+                  Idle {idle}m
+                </span>
+              )}
+              {!sig && staleIds.has(conv.id) && <span className='text-k-b3261e'>Waiting too long</span>}
+              {seesBothTunnels && conv.tunnel === 'support' && (
+                <span className='rounded-full bg-k-f0f0f0 px-1.5 py-px font-normal text-k-555555'>Support</span>
+              )}
+              {canFilterTag && conv.tag && tagFilter !== 'all' && (
+                <span className='rounded-full bg-k-f0f0f0 px-1.5 py-px font-normal text-k-555555'>{TAG_LABELS[conv.tag]}</span>
+              )}
+            </span>
+          )}
+        </span>
+      </button>
+    )
+  }
+
+  const emptyText = isError
+    ? null
+    : idleOnly
+      ? 'No idle chats right now.'
+      : debouncedSearch
+        ? `No chat matches “${debouncedSearch}”.`
+        : tagFilter !== 'all'
+          ? `No ${TAG_LABELS[tagFilter].toLowerCase()} chats.`
+          : activeTab === 'my_active'
+            ? 'You have no open chats. Take one that is waiting.'
+            : activeTab === 'all_active'
+              ? 'No open chats right now. The assistant is handling the site.'
+              : 'No closed chats.'
+
+  const tabBar = (
+    <div className='flex flex-wrap gap-2'>
+      <div role='tablist' aria-label='Which chats' className='flex min-w-[180px] flex-1 gap-1 rounded-[14px] bg-k-ececec p-1'>
+        {visibleTabs.map(t => {
+          const n = t.key === 'to_read' ? toReadUnread : counts[t.key as Exclude<TabKey, 'to_read'>]
+          return (
+            <button
+              key={t.key}
+              type='button'
+              role='tab'
+              aria-selected={activeTab === t.key}
+              onClick={() => { setActiveTab(t.key); setSelectedId(null) }}
+              className={cn(
+                'flex h-[34px] flex-1 items-center justify-center gap-1.5 rounded-[10px] px-2 text-[13px] whitespace-nowrap text-k-202020 transition-colors',
+                activeTab === t.key ? 'bg-k-ffffff font-bold shadow-[0_1px_2px_rgba(32,32,32,0.10)]' : 'hover:bg-k-f4f4f4'
+              )}
+            >
+              {t.label}
+              {(t.key !== 'to_read' || n > 0) && (
+                <span className={cn('font-normal', (t.key === 'all_active' && n > 0 && !isManager) || (t.key === 'to_read' && n > 0) ? 'text-k-b3261e' : 'text-k-6b6b6b')}>{n}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+
+  const listColumn = rail ? (
+    <section aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
+      <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} rail />
+      <span className='text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'>{tab.label === 'All active' ? 'Active' : tab.label}</span>
+      {rows.map(({ conv, owner, sig }) => {
+        const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
+        return (
+          <button
+            key={conv.id}
+            type='button'
+            aria-pressed={selectedId === conv.id}
+            onClick={() => pick(conv.id)}
+            aria-label={`${conv.visitor_name ?? 'Visitor'}${sig ? `, ${sig.text}` : ''}`}
+            title={`${conv.visitor_name ?? 'Visitor'}${sig ? ` · ${sig.text}` : ''}`}
+            className='relative'
           >
-            {/* Tabs */}
-            <div className="flex border-b border-border">
-              {visibleTabs.map(tab => (
-                <button
-                  key={tab.key}
-                  onClick={() => { setActiveTab(tab.key); setSelectedId(null) }}
-                  className={`flex-1 flex items-center justify-center gap-2 px-3 py-3 text-xs font-medium transition-colors border-b-2 ${
-                    activeTab === tab.key
-                      ? 'border-[#C9A54E] text-foreground'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  {tab.icon}
-                  {tab.label}
-                  {counts[tab.key] > 0 && (
-                    <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[11px] font-bold ${
-                      tab.key === 'all_active' && counts[tab.key] > 0
-                        ? 'bg-red-500 text-white animate-pulse'
-                        : 'bg-muted text-muted-foreground'
-                    }`}>
-                      {counts[tab.key]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {/* Shared queue — waiting for ANY operator; first click wins */}
-            <QueueSection
-              onClaimed={(id) => {
-                stopAssignmentAlerts()
-                setSelectedId(id)
-              }}
+            <ChatAvatar
+              text={initials(conv.visitor_name)}
+              tone={avatarClasses(owner)}
+              dot={owner !== 'closed' ? p.dot : null}
+              ring='border-k-f7f7f7'
+              size={44}
+              className={cn(selectedId === conv.id && 'shadow-[0_0_0_2px_var(--k-f7f7f7),0_0_0_4px_var(--kl-202020)]')}
             />
-
-            {/* Search + Tunnel filter */}
-            <div className="px-4 py-3 border-b border-border space-y-2">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <input type="text" placeholder="Search visitor or #1042..." value={search} onChange={e => setSearch(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40" />
-              </div>
-              <select value={tunnelFilter} onChange={e => setTunnel(e.target.value)}
-                className="w-full pl-3 pr-7 py-1.5 text-xs rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 capitalize">
-                <option value="">All Tunnels</option>
-                <option value="sales">Sales</option>
-                <option value="support">Support</option>
-              </select>
+            {sig && sig.urgency < 2 && (
+              <span aria-hidden='true' className={cn('absolute -top-[3px] -end-[3px] size-3 rounded-full border-2 border-k-f7f7f7', sig.urgency === 0 ? 'bg-k-b3261e' : 'bg-k-d97a00')} />
+            )}
+          </button>
+        )
+      })}
+    </section>
+  ) : (
+    <section
+      aria-label='Chats'
+      className={cn(
+        'flex min-w-0 flex-col overflow-hidden',
+        layout === 'narrow' ? 'flex-1 rounded-none bg-k-ffffff' : 'w-[320px] flex-none rounded-[20px] bg-k-f7f7f7',
+        layout === 'narrow' && selectedId && 'hidden'
+      )}
+    >
+      {/* In the CRM dock there is no menu: your follow-ups show over the list. */}
+      {embedded && <TasksBand />}
+      <div className={cn('flex flex-col gap-3 pb-2.5', layout === 'narrow' ? 'px-0 pt-1' : 'px-3.5 pt-3.5')}>
+        <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
+        {tabBar}
+        <div className='flex gap-2'>
+          <label className='relative flex flex-1'>
+            <span className='sr-only'>Search chats</span>
+            <Search aria-hidden='true' className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-k-6b6b6b' />
+            <input
+              type='search'
+              placeholder='Search a name or #4810'
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className='h-10 w-full rounded-xl border-none bg-k-ffffff ps-9 pe-3 text-sm text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)] placeholder:text-k-8a8a8a focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
+            />
+          </label>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type='button'
+                aria-label={filtersOn ? `Filters, ${filtersOn} on` : 'Filters'}
+                className={cn(
+                  'relative flex size-10 flex-none items-center justify-center rounded-xl text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)]',
+                  filtersOn ? 'bg-kb-202020 text-on-btn shadow-none' : 'bg-k-ffffff hover:bg-k-f4f4f4'
+                )}
+              >
+                <SlidersHorizontal aria-hidden='true' className='size-4' />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align='end' className='flex w-[300px] flex-col gap-3 rounded-2xl p-3.5'>
+              {seesBothTunnels && (
+                <label className='flex flex-col gap-1 text-xs text-k-555555'>
+                  Tunnel
+                  <select value={tunnelFilter} onChange={e => setTunnel(e.target.value)}
+                    className='h-10 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2.5 text-sm text-k-202020'>
+                    <option value=''>Sales and support</option>
+                    <option value='sales'>Sales</option>
+                    <option value='support'>Support</option>
+                  </select>
+                </label>
+              )}
               {canFilterHandled && (
-                <select
-                  value={handledByFilter}
-                  onChange={(e) => setHandledByFilter(e.target.value)}
-                  className="w-full pl-3 pr-7 py-1.5 text-xs rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-                >
-                  <option value="all">All handling</option>
-                  <option value="ai">AI only</option>
-                  <option value="human">Human</option>
-                  <option value="fallback">Fallback</option>
-                </select>
+                <label className='flex flex-col gap-1 text-xs text-k-555555'>
+                  Who handled it
+                  <select
+                    value={handledByFilter}
+                    onChange={(e) => setHandledByFilter(e.target.value)}
+                    className='h-10 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2.5 text-sm text-k-202020'
+                  >
+                    <option value='all'>Everyone</option>
+                    <option value='ai'>Only the assistant</option>
+                    <option value='human'>A person</option>
+                    <option value='fallback'>Went back to the assistant</option>
+                  </select>
+                </label>
               )}
               {canFilterTag && (
-                <div className="flex flex-wrap gap-1.5 pt-0.5">
-                  <button
-                    onClick={() => setTagFilter('all')}
-                    className={`px-2 py-1 min-h-11 md:min-h-0 rounded-full text-[11px] font-medium border transition-colors ${
-                      tagFilter === 'all'
-                        ? 'bg-[#0B1829] text-white border-[#0B1829]'
-                        : 'bg-background text-muted-foreground border-input hover:text-foreground'
-                    }`}
-                  >
-                    All
-                  </button>
-                  {TAG_FILTERS.map((t) => (
-                    <button
-                      key={t.key}
-                      onClick={() => setTagFilter(t.key)}
-                      className={`px-2 py-1 min-h-11 md:min-h-0 rounded-full text-[11px] font-medium border transition-colors ${
-                        tagFilter === t.key
-                          ? `${TAG_STYLES[t.key]} ring-1 ring-offset-1 ring-current`
-                          : 'bg-background text-muted-foreground border-input hover:text-foreground'
-                      }`}
-                    >
-                      {t.label}
+                <div className='flex flex-col gap-1.5'>
+                  <span className='text-xs text-k-555555'>Outcome</span>
+                  <div className='flex flex-wrap gap-1.5'>
+                    <button type='button' onClick={() => setTagFilter('all')} className={chipCls(tagFilter === 'all')}>
+                      All
                     </button>
-                  ))}
+                    {TAG_FILTERS.map((t) => (
+                      <button key={t.key} type='button' onClick={() => setTagFilter(t.key)} className={chipCls(tagFilter === t.key)}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
               {/* Idle is a view, not a permission: every operator who can
                   reach it through the nudge's Review must also be able to
                   turn it off. Sales is not in canFilterTag. */}
-              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                <button
-                  onClick={() => setIdleOnly((v) => !v)}
-                  className={`px-2 py-1 min-h-11 md:min-h-0 rounded-full text-[11px] font-medium border transition-colors ${
-                    idleOnly
-                      ? 'bg-[#0B1829] text-white border-[#0B1829]'
-                      : 'bg-background text-muted-foreground border-input hover:text-foreground'
-                  }`}
-                >
-                  Idle
-                </button>
-              </div>
-            </div>
-
-            {/* A desk somebody walked away from. No close-all: only the agent
-                who owns a chat closes it, one at a time, after opening it. */}
-            {showNudge && (
-              <div className="mx-3 my-2 rounded-md border bg-muted/40 px-3 py-2 text-[12px] flex items-center justify-between gap-2">
-                <span>{idleCount} chats with no activity for over {IDLE_NUDGE_MIN} min.</span>
-                <div className="flex gap-3 shrink-0">
-                  <button
-                    className="underline"
-                    onClick={() => { setIdleOnly(true); dismissNudge() }}
-                  >
-                    Review
-                  </button>
-                  <button className="text-muted-foreground" onClick={dismissNudge}>
-                    Not now
+              <div className='flex flex-col gap-1.5'>
+                <span className='text-xs text-k-555555'>Activity</span>
+                <div className='flex flex-wrap gap-1.5'>
+                  <button type='button' onClick={() => setIdleOnly((v) => !v)} className={chipCls(idleOnly)}>
+                    Idle {IDLE_NUDGE_MIN}+ min
                   </button>
                 </div>
               </div>
-            )}
-
-            {/* Conversation list */}
-            <div className="flex-1 overflow-y-auto divide-y divide-border">
-              {isError ? (
-                // An error must never wear the empty-state's copy — "No active
-                // conversations" on a failed fetch is the panel lying.
-                <div className="flex flex-col items-center justify-center h-32 gap-1 text-red-600">
-                  <AlertTriangle className="w-5 h-5" />
-                  <p className="text-xs font-medium">Couldn&apos;t load conversations — retrying.</p>
-                </div>
-              ) : isLoading ? (
-                <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">Loading...</div>
-              ) : ordered.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                  <MessageSquare className="w-6 h-6 mb-1 opacity-30" />
-                  <p className="text-xs">
-                    {tagFilter !== 'all'
-                      ? `No ${TAG_LABELS[tagFilter].toLowerCase()} conversations`
-                      : activeTab === 'all_closed' || activeTab === 'my_closed'
-                        ? 'No closed conversations'
-                        : 'No active conversations'}
-                  </p>
-                </div>
-              ) : ordered.map(conv => (
-                <button key={conv.id}
-                  aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}`}
-                  onClick={() => {
-                    stopAssignmentAlerts()
-                    setSelectedId(conv.id === selectedId ? null : conv.id)
-                  }}
-                  className={`w-full text-left px-4 py-3 hover:bg-accent transition-colors ${selectedId === conv.id ? 'bg-[#0B1829]/5 border-l-2 border-[#C9A54E]' : staleIds.has(conv.id) ? 'bg-red-50 border-l-2 border-red-400' : attentionIds.includes(conv.id) ? 'bg-amber-50 dark:bg-amber-900/20 border-l-2 border-amber-400' : ''} ${highlightId === conv.id ? 'ring-2 ring-amber-400' : ''}`}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${listRowDot(conv.status, conv.updated_at, new Date())}`} />
-                        {conv.chat_number != null && (
-                          <span className="text-[11px] font-mono text-muted-foreground shrink-0">#{conv.chat_number}</span>
-                        )}
-                        <span className="font-medium text-sm text-foreground truncate">
-                          {/* Names survive closing: 1292 identical "Closed
-                              conversation" rows made review scanning
-                              impossible — and gained no privacy (contact
-                              details render in the detail header anyway). */}
-                          {<span className='flex items-center gap-1'>
-                                {staleIds.has(conv.id) && (
-                                  <AlertTriangle className='h-3 w-3 text-red-400 shrink-0' />
-                                )}
-                                {conv.visitor_name ?? <span className="text-muted-foreground italic text-xs">Anonymous visitor</span>}
-                                {conv.has_flagged_content && (
-                                  <span
-                                    title={conv.flagged_reason || 'Contains flagged content'}
-                                    className='text-amber-500 text-xs font-bold ml-1'
-                                  >
-                                    ⚠️
-                                  </span>
-                                )}
-                              </span>
-                          }
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        {conv.tag && (
-                          <span className={`inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${TAG_STYLES[conv.tag]}`}>
-                            {TAG_LABELS[conv.tag]}
-                          </span>
-                        )}
-                        <span className={`inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${TUNNEL_STYLES[conv.tunnel] ?? ''}`}>{conv.tunnel}</span>
-                        <span className="text-[11px] text-muted-foreground">{conv.message_count} msgs</span>
-                        {(() => {
-                          const idle = idleMinutes(conv)
-                          return idle !== null && idle >= IDLE_BADGE_MIN ? (
-                            <span
-                              title="No message from either side"
-                              className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium bg-muted text-muted-foreground"
-                            >
-                              Idle {idle}m
-                            </span>
-                          ) : null
-                        })()}
-                        {conv.agent_state === 'active' && conv.assigned_agent_name ? (
-                          <span className="text-[11px] text-green-700">● {conv.assigned_agent_name}</span>
-                        ) : conv.agent_state === 'fallback' && conv.engaged_agent_name ? (
-                          <span className="text-[11px] text-amber-700">● {conv.engaged_agent_name} → AI</span>
-                        ) : conv.mode === 'ai' ? (
-                          <span className="text-[11px] text-amber-700">● AI</span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-1 shrink-0">
-                      <span className="text-[11px] text-muted-foreground whitespace-nowrap">{timeAgo(conv.updated_at)}</span>
-                      <ChevronRight className={`w-3 h-3 text-muted-foreground transition-transform ${selectedId === conv.id ? 'rotate-90' : ''}`} />
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Drag handle */}
-          {selectedId && (
-            <div
-              onMouseDown={startResize}
-              className="hidden md:block w-1.5 shrink-0 bg-border hover:bg-[#C9A54E]/60 active:bg-[#C9A54E] transition-colors"
-              style={{ cursor: 'col-resize' }}
-              title="Drag to resize"
-            />
-          )}
-
-          {/* Right panel — detail */}
-          {selectedId ? (
-            <div className="flex-1 min-w-0 overflow-hidden">
-              <ConversationDetail
-                conversationId={selectedId}
-                onClose={() => setSelectedId(null)}
-                activeTab={activeTab}
-                onConversationChange={handleConversationChange}
-              />
-            </div>
-          ) : (
-            <div className="flex-1 hidden md:flex flex-col items-center justify-center text-muted-foreground">
-              <MessageSquare className="w-12 h-12 mb-3 opacity-20" />
-              <p className="text-sm">Select a conversation to view</p>
-            </div>
-          )}
+            </PopoverContent>
+          </Popover>
         </div>
-      </Main>
-    </>
+      </div>
+
+      {/* A desk somebody walked away from. No close-all: only the agent
+          who owns a chat closes it, one at a time, after opening it. */}
+      {showNudge && (
+        <div className='mx-3.5 mb-2 flex items-center justify-between gap-2 rounded-[14px] bg-k-ffffff px-3.5 py-2.5 text-[13px] text-k-444444 shadow-[0_1px_2px_rgba(32,32,32,0.06)]'>
+          <span>{idleCount} chats with no activity for over {IDLE_NUDGE_MIN} min.</span>
+          <div className='flex flex-none gap-3'>
+            <button type='button' className='font-bold text-k-5b45e0' onClick={() => { setIdleOnly(true); dismissNudge() }}>
+              Review
+            </button>
+            <button type='button' className='text-k-6b6b6b' onClick={dismissNudge}>
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className={cn('flex min-h-0 flex-1 flex-col overflow-y-auto pb-2.5', layout === 'narrow' ? 'gap-0 px-0 [&>button]:rounded-none [&>button]:border-b [&>button]:border-k-f0f0f0' : 'gap-0.5 px-2')}>
+        {isError ? (
+          // An error must never wear the empty-state's copy — "No active
+          // conversations" on a failed fetch is the panel lying.
+          <div role='alert' className='m-1.5 flex items-center gap-2 rounded-[14px] bg-k-fdecea p-4 text-[13px] font-bold text-k-b3261e'>
+            <AlertTriangle aria-hidden='true' className='size-4' />
+            Couldn&apos;t load conversations — retrying.
+          </div>
+        ) : isLoading ? (
+          <div className='p-4 text-sm text-k-6b6b6b'>Loading…</div>
+        ) : rows.length === 0 ? (
+          <div className='m-1.5 rounded-[14px] bg-k-ffffff p-[18px] text-sm leading-normal text-k-555555'>{emptyText}</div>
+        ) : showGroups ? (
+          <>
+            <div className='flex items-baseline gap-1.5 px-2.5 pt-1 pb-1 text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>
+              Waiting for a reply <span className={nRed ? 'text-k-b3261e' : 'text-k-8a4b00'}>{nWait}</span>
+            </div>
+            {rows.slice(0, nWait).map(renderRow)}
+            <div className='flex items-baseline gap-1.5 px-2.5 pt-3 pb-1 text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>
+              The rest <span className='text-k-6b6b6b'>{rows.length - nWait}</span>
+            </div>
+            {rows.slice(nWait).map(renderRow)}
+          </>
+        ) : (
+          rows.map(renderRow)
+        )}
+      </div>
+    </section>
+  )
+
+  const narrowThread = layout === 'narrow' && !!selectedId
+
+  return (
+    <main
+      id='content'
+      data-layout='fixed'
+      className={cn(
+        'flex min-h-0 flex-1 flex-col gap-3.5',
+        narrowThread ? 'p-0' : embedded ? 'px-3 pt-3 pb-3' : 'px-4 pt-5 pb-4 md:px-6 md:pb-6'
+      )}
+    >
+      {!narrowThread &&
+        (embedded ? (
+          <header className='flex items-center gap-2.5'>
+            <span aria-hidden='true' className='flex size-8 flex-none items-center justify-center rounded-[9px] bg-kb-202020 text-sm font-bold text-on-btn'>
+              B
+            </span>
+            <h1 className='m-0 flex-1 font-display text-lg font-semibold text-k-202020'>Chats</h1>
+            <HeaderActions compact />
+          </header>
+        ) : (
+          <PageHeader size='md' title='Conversations' menuButton={!operator} actions={<HeaderActions compact={layout === 'narrow'} />} />
+        ))}
+
+      {!narrowThread && canBeReady && !ready && (
+        <div role='status' className='flex flex-wrap items-center gap-x-3.5 gap-y-2 rounded-[14px] bg-k-f7f7f7 py-2.5 ps-4 pe-2.5 text-sm leading-[1.45] text-k-202020'>
+          <span className='min-w-[240px] flex-1'>
+            <strong>You’re not ready.</strong> No new chats come to you; the ones you have stay yours.
+          </span>
+          <button type='button' onClick={toggleReady} className='h-10 rounded-full bg-kb-202020 px-[18px] text-sm font-bold text-on-btn'>
+            I’m ready
+          </button>
+        </div>
+      )}
+
+      <div ref={containerRef} className={cn('flex min-h-0 flex-1', layout === 'narrow' ? 'gap-0' : 'gap-4')}>
+        {reading ? (
+          <ToRead
+            layout={layout}
+            tabBar={tabBar}
+            list={toRead.data}
+            isError={toRead.isError}
+            onRetry={() => toRead.refetch()}
+            read={readKeys}
+            markRead={markRead}
+            scoped={role === 'supervisor'}
+          />
+        ) : (
+        <>
+        {listColumn}
+        {selectedId ? (
+          <div className='min-w-0 flex-1'>
+            <ConversationDetail
+              conversationId={selectedId}
+              onClose={() => setSelectedId(null)}
+              activeTab={activeTab}
+              onConversationChange={handleConversationChange}
+              onTaken={handleTaken}
+              layout={layout}
+              wide={rail}
+              onToggleWide={toggleWide}
+            />
+          </div>
+        ) : (
+          layout !== 'narrow' && (
+            <section aria-label='Chat' className='flex min-w-0 flex-1 flex-col items-center justify-center gap-2.5 rounded-[20px] bg-k-ffffff p-10 text-center shadow-[0_0_0_1px_var(--k-ececec),0_8px_24px_rgba(32,32,32,0.04)]'>
+              <span aria-hidden='true' className='flex size-14 items-center justify-center rounded-full bg-k-f7f7f7'>
+                <MessageCircle className='size-6 text-k-6b6b6b' />
+              </span>
+              <div className='text-lg font-bold text-k-202020'>Pick a chat</div>
+              <div className='max-w-[360px] text-sm leading-normal text-k-555555'>Choose a chat on the left, or take one that is waiting.</div>
+            </section>
+          )
+        )}
+        </>
+        )}
+      </div>
+    </main>
   )
 }

@@ -1,101 +1,111 @@
-/* ─── BBC BRANDING: Color System ───────────────────────── */
-/* Navy primary (#0B1829) → oklch(0.17 0.03 260)           */
-/* Gold accent  (#C9A54E) → oklch(0.74 0.12 85)            */
+/* ─── BBC Chat panel: color system ─────────────────────────────────────────
+ * The palette is the design canvas's own ("BBC Chatbot Admin", the
+ * "what we can build now" pages). Token names are the canvas names: --k-XXXXXX
+ * is the LIGHT value, and every one of them flips under .dark, so
+ * `bg-k-202020` is near-black text color in light mode and near-white in dark.
+ * Read a name as "the role this color plays in the light design", not as a
+ * literal hex. Use them through Tailwind (`text-k-6b6b6b`, `bg-k-f7f7f7`…).
+ *
+ *   k-202020 ink        k-555555 / k-6b6b6b secondary text   k-ececec lines
+ *   k-f7f7f7 column bg  k-ffffff card / page                 kb-202020 buttons
+ *   k-5b45e0 links      k-4a36c4 + k-efeaff the assistant (AI)
+ *   k-0a6b35 + k-e3f6ea green   k-8a4b00 + k-fff3e0 amber   k-b3261e + k-fdecea red
+ */
 
 :root {
   --radius: 0.625rem;
 
-  /* BBC Light Mode */
-  --background: oklch(0.985 0.002 250);
-  --foreground: oklch(0.17 0.03 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.17 0.03 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.17 0.03 260);
-  --primary: oklch(0.25 0.04 260);
-  --primary-foreground: oklch(0.98 0.003 250);
-  --secondary: oklch(0.96 0.007 250);
-  --secondary-foreground: oklch(0.25 0.04 260);
-  --muted: oklch(0.96 0.007 250);
-  --muted-foreground: oklch(0.55 0.03 260);
-  --accent: oklch(0.96 0.007 250);
-  --accent-foreground: oklch(0.25 0.04 260);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.01 250);
-  --input: oklch(0.92 0.01 250);
-  --ring: oklch(0.74 0.12 85);
-  --chart-1: oklch(0.25 0.04 260);
-  --chart-2: oklch(0.74 0.12 85);
-  --chart-3: oklch(0.6 0.118 184.704);
-  --chart-4: oklch(0.55 0.03 260);
-  --chart-5: oklch(0.45 0.08 260);
+  --k-00a645: #00a645; --k-00c450: #00c450; --k-0a6b35: #0a6b35; --k-1f5fb0: #1f5fb0;
+  --k-202020: #202020; --k-3f2bb8: #3f2bb8; --k-444444: #444444; --k-4a36c4: #4a36c4;
+  --k-555555: #555555; --k-5b45e0: #5b45e0; --k-5fd394: #5fd394; --k-6b6b6b: #6b6b6b;
+  --k-6ea8ff: #6ea8ff; --k-8a4b00: #8a4b00; --k-8a8a8a: #8a8a8a; --k-9a9a9a: #9a9a9a;
+  --k-9c9c9c: #9c9c9c; --k-b3261e: #b3261e; --k-b5b5b5: #b5b5b5; --k-bdbdbd: #bdbdbd;
+  --k-c9c9c9: #c9c9c9; --k-cfcfcf: #cfcfcf; --k-d93025: #d93025; --k-d97a00: #d97a00;
+  --k-d9a400: #d9a400; --k-d9d9d9: #d9d9d9; --k-e3e2e2: #e3e2e2; --k-e3f6ea: #e3f6ea;
+  --k-e6f0fb: #e6f0fb; --k-e9e9e9: #e9e9e9; --k-ececec: #ececec; --k-efeaff: #efeaff;
+  --k-f0cdc8: #f0cdc8; --k-f0f0f0: #f0f0f0; --k-f2b01e: #f2b01e; --k-f2f2f2: #f2f2f2;
+  --k-f4f1ff: #f4f1ff; --k-f4f4f4: #f4f4f4; --k-f7f7f7: #f7f7f7; --k-fde8e6: #fde8e6;
+  --k-fdecea: #fdecea; --k-fff3e0: #fff3e0; --k-fffaf2: #fffaf2; --k-ffffff: #ffffff;
+  /* Dashboard and lead tints (owner/admin redesign, Nov 2026) */
+  --k-2a78d6: #2a78d6; --k-1baf7a: #1baf7a; --k-eb6834: #eb6834; --k-c27a00: #c27a00;
+  --k-fdf6e3: #fdf6e3; --k-f3f0ff: #f3f0ff; --k-2c2266: #2c2266; --k-fdf1d0: #fdf1d0;
+  --k-7a5300: #7a5300; --k-fde3d6: #fde3d6; --k-7a2e0e: #7a2e0e; --k-fff1dc: #fff1dc;
+  --k-c9d9f2: #c9d9f2; --k-9dbde9: #9dbde9; --k-6f9fe0: #6f9fe0; --k-4a87d9: #4a87d9;
+  /* "b" = button/strong fill, "l" = line on a light card */
+  --kb-202020: #202020; --kb-2f2f2f: #2f2f2f; --kb-333333: #333333; --kb-3a3a3a: #3a3a3a;
+  --kl-202020: #202020;
+  --t-on-btn: #ffffff; --t-row-hover: #f4f4f4;
 
-  /* BBC Gold accent tokens */
-  --bbc-gold: oklch(0.74 0.12 85);
-  --bbc-gold-hover: oklch(0.68 0.12 85);
-  --bbc-gold-light: oklch(0.92 0.06 85);
-  --bbc-navy: oklch(0.17 0.03 260);
-  --bbc-navy-light: oklch(0.25 0.04 260);
+  /* The side menu is dark in both themes. */
+  --nav-bg: #202020; --nav-fg: #c9c9c9; --nav-active: #3a3a3a; --nav-active-fg: #ffffff;
+  --nav-line: #333333; --nav-hover: rgba(255, 255, 255, 0.07); --nav-sub: #b5b5b5;
 
-  /* Sidebar: dark navy always */
-  --sidebar: oklch(0.17 0.03 260);
-  --sidebar-foreground: oklch(0.85 0.02 250);
-  --sidebar-primary: oklch(0.74 0.12 85);
-  --sidebar-primary-foreground: oklch(0.17 0.03 260);
-  --sidebar-accent: oklch(0.22 0.03 260);
-  --sidebar-accent-foreground: oklch(0.92 0.02 250);
-  --sidebar-border: oklch(0.25 0.03 260);
-  --sidebar-ring: oklch(0.74 0.12 85);
+  /* shadcn semantic tokens, mapped onto the palette */
+  --background: var(--k-ffffff);
+  --foreground: var(--k-202020);
+  --card: var(--k-ffffff);
+  --card-foreground: var(--k-202020);
+  --popover: var(--k-ffffff);
+  --popover-foreground: var(--k-202020);
+  --primary: var(--kb-202020);
+  --primary-foreground: var(--t-on-btn);
+  --secondary: var(--k-f2f2f2);
+  --secondary-foreground: var(--k-202020);
+  --muted: var(--k-f7f7f7);
+  --muted-foreground: var(--k-6b6b6b);
+  --accent: var(--k-f4f4f4);
+  --accent-foreground: var(--k-202020);
+  --destructive: var(--k-b3261e);
+  --border: var(--k-ececec);
+  --input: var(--k-e3e2e2);
+  --ring: var(--k-6ea8ff);
+  --chart-1: var(--k-5b45e0);
+  --chart-2: var(--k-00a645);
+  --chart-3: var(--k-d97a00);
+  --chart-4: var(--k-1f5fb0);
+  --chart-5: var(--k-9c9c9c);
+
+  --sidebar: var(--nav-bg);
+  --sidebar-foreground: var(--nav-fg);
+  --sidebar-primary: var(--nav-active-fg);
+  --sidebar-primary-foreground: var(--nav-bg);
+  --sidebar-accent: var(--nav-active);
+  --sidebar-accent-foreground: var(--nav-active-fg);
+  --sidebar-border: var(--nav-line);
+  --sidebar-ring: var(--k-6ea8ff);
 }
 
 .dark {
-  /* BBC Dark Mode — proper inversion */
-  --background: oklch(0.12 0.025 260);
-  --foreground: oklch(0.98 0.005 250);
-  --card: oklch(0.15 0.03 260);
-  --card-foreground: oklch(0.97 0.005 250);
-  --popover: oklch(0.18 0.03 260);
-  --popover-foreground: oklch(0.97 0.005 250);
-  --primary: oklch(0.95 0.015 250);
-  --primary-foreground: oklch(0.15 0.03 260);
-  --secondary: oklch(0.20 0.03 260);
-  --secondary-foreground: oklch(0.97 0.005 250);
-  --muted: oklch(0.25 0.035 260);
-  --muted-foreground: oklch(0.75 0.02 250);
-  --accent: oklch(0.20 0.03 260);
-  --accent-foreground: oklch(0.97 0.005 250);
-  --destructive: oklch(0.72 0.210 25);
-  --border: oklch(0.22 0.03 260);
-  --input: oklch(0.18 0.025 260);
-  --ring: oklch(0.74 0.12 85);
-  --chart-1: oklch(0.95 0.015 250);
-  --chart-2: oklch(0.70 0.15 260);
-  --chart-3: oklch(0.75 0.18 162);
-  --chart-4: oklch(0.80 0.12 260);
-  --chart-5: oklch(0.88 0.15 25);
+  color-scheme: dark;
+  --k-00a645: #2fbf68; --k-00c450: #00c450; --k-0a6b35: #6fd39a; --k-1f5fb0: #8cbcf2;
+  --k-202020: #ececec; --k-3f2bb8: #a898ff; --k-444444: #c6c6c6; --k-4a36c4: #b6a9ff;
+  --k-555555: #b5b5b5; --k-5b45e0: #9a88ff; --k-5fd394: #5fd394; --k-6b6b6b: #a3a3a3;
+  --k-6ea8ff: #6ea8ff; --k-8a4b00: #f5b35c; --k-8a8a8a: #8e8e8e; --k-9a9a9a: #9a9a9a;
+  --k-9c9c9c: #858585; --k-b3261e: #ff8a80; --k-b5b5b5: #707070; --k-bdbdbd: #6a6a6a;
+  --k-c9c9c9: #5a5a5a; --k-cfcfcf: #555555; --k-d93025: #f06055; --k-d97a00: #f39a2b;
+  --k-d9a400: #e8b020; --k-d9d9d9: #474747; --k-e3e2e2: #3a3a3a; --k-e3f6ea: #16301f;
+  --k-e6f0fb: #1b2b40; --k-e9e9e9: #333333; --k-ececec: #303030; --k-efeaff: #2a2450;
+  --k-f0cdc8: #6a2d27; --k-f0f0f0: #2c2c2c; --k-f2b01e: #f2b01e; --k-f2f2f2: #2a2a2a;
+  --k-f4f1ff: #241f40; --k-f4f4f4: #242424; --k-f7f7f7: #141414; --k-fde8e6: #3b1d1a;
+  --k-fdecea: #3b1d1a; --k-fff3e0: #362812; --k-fffaf2: #30270f; --k-ffffff: #1c1c1c;
+  --k-2a78d6: #5c9cf0; --k-1baf7a: #2fc28b; --k-eb6834: #f07a4a; --k-c27a00: #e9a23a;
+  --k-fdf6e3: #33290f; --k-f3f0ff: #241f40; --k-2c2266: #d8d0ff; --k-fdf1d0: #3d300f;
+  --k-7a5300: #f0c36b; --k-fde3d6: #3b2419; --k-7a2e0e: #ffb48e; --k-fff1dc: #362812;
+  --k-c9d9f2: #2a4466; --k-9dbde9: #3d6699; --k-6f9fe0: #5a8fd6; --k-4a87d9: #6aa0ea;
+  --kb-202020: #ececec; --kb-2f2f2f: #2f2f2f; --kb-333333: #cecece; --kb-3a3a3a: #cfcfcf;
+  --kl-202020: #ececec;
+  --t-on-btn: #1c1c1c; --t-row-hover: #242424;
 
-  /* Sidebar still dark navy, but text inverted for contrast */
-  --sidebar: oklch(0.12 0.025 260);
-  --sidebar-foreground: oklch(0.92 0.03 250);
-  --sidebar-primary: oklch(0.74 0.12 85);
-  --sidebar-primary-foreground: oklch(0.12 0.025 260);
-  --sidebar-accent: oklch(0.22 0.03 260);
-  --sidebar-accent-foreground: oklch(0.98 0.005 250);
-  --sidebar-border: oklch(0.20 0.03 260);
-  --sidebar-ring: oklch(0.74 0.12 85);
-
-  /* Gold inverted for dark mode */
-  --bbc-gold: oklch(0.74 0.12 85);
-  --bbc-gold-hover: oklch(0.80 0.12 85);
-  --bbc-gold-light: oklch(0.28 0.08 85);
-  --bbc-navy: oklch(0.95 0.015 250);
-  --bbc-navy-light: oklch(0.85 0.02 250);
+  --nav-bg: #111111; --nav-fg: #b5b5b5; --nav-active: #2c2c2c; --nav-active-fg: #ececec;
+  --nav-line: #262626; --nav-hover: rgba(255, 255, 255, 0.06); --nav-sub: #9a9a9a;
 }
 
 @theme inline {
-  /* BBC Typography: Plus Jakarta Sans (headings) + Inter (body) */
-  --font-display: 'Plus Jakarta Sans', 'Inter', 'sans-serif';
+  /* Helvetica is the design's face; the others stay selectable in Appearance. */
+  --font-helvetica: Helvetica, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, Arial, sans-serif;
   --font-inter: 'Inter', 'sans-serif';
+  --font-system: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -133,10 +143,32 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* BBC Gold utility color */
-  --color-bbc-gold: var(--bbc-gold);
-  --color-bbc-gold-hover: var(--bbc-gold-hover);
-  --color-bbc-gold-light: var(--bbc-gold-light);
-  --color-bbc-navy: var(--bbc-navy);
-  --color-bbc-navy-light: var(--bbc-navy-light);
+  /* Canvas palette as utilities: bg-k-f7f7f7, text-k-6b6b6b, … */
+  --color-k-00a645: var(--k-00a645); --color-k-00c450: var(--k-00c450); --color-k-0a6b35: var(--k-0a6b35);
+  --color-k-1f5fb0: var(--k-1f5fb0); --color-k-202020: var(--k-202020); --color-k-3f2bb8: var(--k-3f2bb8);
+  --color-k-444444: var(--k-444444); --color-k-4a36c4: var(--k-4a36c4); --color-k-555555: var(--k-555555);
+  --color-k-5b45e0: var(--k-5b45e0); --color-k-5fd394: var(--k-5fd394); --color-k-6b6b6b: var(--k-6b6b6b);
+  --color-k-6ea8ff: var(--k-6ea8ff); --color-k-8a4b00: var(--k-8a4b00); --color-k-8a8a8a: var(--k-8a8a8a);
+  --color-k-9a9a9a: var(--k-9a9a9a); --color-k-9c9c9c: var(--k-9c9c9c); --color-k-b3261e: var(--k-b3261e);
+  --color-k-b5b5b5: var(--k-b5b5b5); --color-k-bdbdbd: var(--k-bdbdbd); --color-k-c9c9c9: var(--k-c9c9c9);
+  --color-k-cfcfcf: var(--k-cfcfcf); --color-k-d93025: var(--k-d93025); --color-k-d97a00: var(--k-d97a00);
+  --color-k-d9a400: var(--k-d9a400); --color-k-d9d9d9: var(--k-d9d9d9); --color-k-e3e2e2: var(--k-e3e2e2);
+  --color-k-e3f6ea: var(--k-e3f6ea); --color-k-e6f0fb: var(--k-e6f0fb); --color-k-e9e9e9: var(--k-e9e9e9);
+  --color-k-ececec: var(--k-ececec); --color-k-efeaff: var(--k-efeaff); --color-k-f0cdc8: var(--k-f0cdc8);
+  --color-k-f0f0f0: var(--k-f0f0f0); --color-k-f2b01e: var(--k-f2b01e); --color-k-f2f2f2: var(--k-f2f2f2);
+  --color-k-f4f1ff: var(--k-f4f1ff); --color-k-f4f4f4: var(--k-f4f4f4); --color-k-f7f7f7: var(--k-f7f7f7);
+  --color-k-fde8e6: var(--k-fde8e6); --color-k-fdecea: var(--k-fdecea); --color-k-fff3e0: var(--k-fff3e0);
+  --color-k-fffaf2: var(--k-fffaf2); --color-k-ffffff: var(--k-ffffff);
+  --color-k-2a78d6: var(--k-2a78d6); --color-k-1baf7a: var(--k-1baf7a); --color-k-eb6834: var(--k-eb6834);
+  --color-k-c27a00: var(--k-c27a00); --color-k-fdf6e3: var(--k-fdf6e3); --color-k-f3f0ff: var(--k-f3f0ff);
+  --color-k-2c2266: var(--k-2c2266); --color-k-fdf1d0: var(--k-fdf1d0); --color-k-7a5300: var(--k-7a5300);
+  --color-k-fde3d6: var(--k-fde3d6); --color-k-7a2e0e: var(--k-7a2e0e); --color-k-fff1dc: var(--k-fff1dc);
+  --color-k-c9d9f2: var(--k-c9d9f2); --color-k-9dbde9: var(--k-9dbde9); --color-k-6f9fe0: var(--k-6f9fe0);
+  --color-k-4a87d9: var(--k-4a87d9);
+  --color-kb-202020: var(--kb-202020); --color-kb-2f2f2f: var(--kb-2f2f2f); --color-kb-333333: var(--kb-333333);
+  --color-kb-3a3a3a: var(--kb-3a3a3a); --color-kl-202020: var(--kl-202020);
+  --color-on-btn: var(--t-on-btn); --color-row-hover: var(--t-row-hover);
+  --color-nav: var(--nav-bg); --color-nav-fg: var(--nav-fg); --color-nav-active: var(--nav-active);
+  --color-nav-active-fg: var(--nav-active-fg); --color-nav-line: var(--nav-line); --color-nav-hover: var(--nav-hover);
+  --color-nav-sub: var(--nav-sub);
 }

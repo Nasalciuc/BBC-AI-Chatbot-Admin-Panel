@@ -65,11 +65,16 @@ owner | admin | sales | support. Restricted = disabled + lock icon + tooltip. V1
 
 ## Brand & Theme
 
-- Navy `#0B1829` → sidebar, headings, strong emphasis
-- Gold `#C9A54E` → active nav, CTA, badge (MAX 2 per screen)
+- The palette is the design canvas's ("BBC Chatbot Admin", Nov 2026), in `src/styles/theme.css`:
+  `--k-XXXXXX` tokens named after their LIGHT value, every one redefined under `.dark`.
+  Use them through Tailwind: `text-k-202020` (ink), `text-k-6b6b6b` (secondary), `bg-k-f7f7f7`
+  (columns), `bg-kb-202020 text-on-btn` (buttons), `text-k-5b45e0` (links), AI = `k-4a36c4`/`k-efeaff`,
+  green `k-0a6b35`/`k-e3f6ea`, amber `k-8a4b00`/`k-fff3e0`, red `k-b3261e`/`k-fdecea`.
+- Side menu dark in both themes (`bg-nav`). Pages: white, big title (`PageHeader`), cards with
+  20px radius. Helvetica.
 - Light mode PRIMARY. Dark supported, not default.
-- Semantic tokens: `bg-background`, `text-foreground`, `text-muted-foreground`
-- NEVER bright/neon. NEVER heavy shadows. NEVER dark-first.
+- NEVER light-only Tailwind tints (`bg-amber-50`…) in redesigned screens. NEVER heavy shadows.
+- The old navy `#0B1829` / gold `#C9A54E` survive only in pages not redesigned yet.
 
 ## Completed Work
 - Sprint 1 (5 days): 20 deliverables — infra, widget, Qdrant, drawer, prompts, templates, docs

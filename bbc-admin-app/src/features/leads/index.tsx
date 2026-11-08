@@ -1,395 +1,419 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Search, Filter, Phone, Mail, Plane, ChevronDown, RefreshCw, Check, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearch } from '@tanstack/react-router'
+import { Check, Search } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Lead } from '@/lib/types'
-import { apiFetch, getLeads, updateLeadStatus, reviewLead } from '@/lib/api'
-import { Header } from '@/components/layout/header'
-import { HeaderActions } from '@/components/header-actions'
-import { Main } from '@/components/layout/main'
-import { LeadDetailDrawer } from './components/lead-detail-drawer'
-import { ExportLeadsButton } from './components/export-leads-button'
+import { type ApiError, getLeadsView, getUsers, reviewLead } from '@/lib/api'
+import type { LeadLevel, LeadRow, LeadsOrder, LeadsView } from '@/lib/types'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
-import { usePermissions } from '@/lib/bbc/hooks'
-import type { UserRole } from '@/lib/bbc/types'
+import { HeaderActions } from '@/components/header-actions'
+import { PageHeader } from '@/components/layout/page-header'
+import { LeadPanel } from './components/lead-panel'
+import {
+  LEVELS,
+  TAB_LABEL,
+  TAB_TEXT,
+  TONE_DOT,
+  TONE_TEXT,
+  ageText,
+  chatWithText,
+  crmLine,
+  leadsCsv,
+  leadsTabsFor,
+  navText,
+  personLine,
+  reviewCards,
+  summaryCards,
+  tripLine,
+} from './view'
 
-const TIER_STYLES: Record<string, string> = {
-  gold:   'bg-yellow-100 text-yellow-800 border border-yellow-300',
-  silver: 'bg-muted text-foreground border border-border',
-  bronze: 'bg-orange-50 text-orange-700 border border-orange-300',
+const LIMIT = 50
+const ORDERS: { key: LeadsOrder; label: string }[] = [
+  { key: 'oldest', label: 'Oldest first' },
+  { key: 'closest', label: 'Closest to Ready' },
+  { key: 'newest', label: 'Newest first' },
+]
+
+const selectCls =
+  'h-10 rounded-xl border border-k-d9d9d9 bg-k-ffffff px-3 text-sm text-k-202020 focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return v
 }
-const STATUS_STYLES: Record<string, string> = {
-  new:       'bg-blue-50 text-blue-700 border border-blue-200',
-  contacted: 'bg-purple-50 text-purple-700 border border-purple-200',
-  qualified: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
-  converted: 'bg-green-50 text-green-700 border border-green-200',
-  lost:      'bg-red-50 text-red-600 border border-red-200',
-}
 
-function ScoreBadge({ score }: { score: number }) {
-  const color = score >= 80 ? 'text-yellow-700 bg-yellow-50' : score >= 50 ? 'text-muted-foreground bg-muted' : 'text-orange-600 bg-orange-50'
-  return (
-    <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-bold text-sm ${color}`}>
-      {score}
-    </span>
-  )
-}
-
-function RouteDisplay({ lead }: { lead: Lead }) {
-  if (lead.route_display) return <span className="text-sm font-medium text-foreground">{lead.route_display}</span>
-  if (lead.origin_code && lead.destination_code)
-    return (
-      <span className="text-sm font-medium text-foreground flex items-center gap-1">
-        {lead.origin_code}<Plane className="w-3 h-3 text-muted-foreground" />{lead.destination_code}
-      </span>
-    )
-  return <span className="text-sm text-muted-foreground italic">No route</span>
-}
-
-type LeadTab = 'my_leads' | 'all_leads'
-
+/**
+ * Leads: what reached the CRM and what didn't. Owner, admin and QA (the
+ * route guard). The rows, the tabs and their counts come from one server
+ * definition (GET /api/leads?view=…). QA reads it as a reviewer: To review
+ * first, with notes and "Mark reviewed and next" in the panel.
+ */
 export function Leads() {
-  const user = useAuthStore((s) => s.auth.user)
-  const permissions = usePermissions((user?.role ?? 'sales') as UserRole)
-  const isAdmin = ['owner', 'admin', 'dev', 'qa'].includes(user?.role || '')
-  const canReview = ['owner', 'admin', 'supervisor', 'qa'].includes(user?.role || '')
+  const role = useAuthStore((s) => s.auth.user?.role ?? '')
+  const meId = useAuthStore((s) => s.auth.user?.accountNo)
+  const tabs = leadsTabsFor(role)
+  const isQa = role === 'qa'
+  const params = useSearch({ strict: false }) as { view?: LeadsView; level?: LeadLevel }
+  const qc = useQueryClient()
+  const canReview = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
+  const canSend = ['owner', 'admin', 'dev'].includes(role)
+  const canLookUp = ['owner', 'admin', 'qa'].includes(role)
 
-  const [activeTab, setActiveTab] = useState<LeadTab>(isAdmin ? 'all_leads' : 'my_leads')
-  const [leads, setLeads]           = useState<Lead[]>([])
-  const [total, setTotal]           = useState(0)
-  const [reviewedCount, setReviewedCount] = useState(0)
-  const [totalCount, setTotalCount] = useState(0)
-  const [loading, setLoading]       = useState(true)
-  const [search, setSearch]         = useState('')
-  const [statusFilter, setStatus]   = useState('')
-  const [tierFilter, setTier]       = useState('')
-  const [reviewFilter, setReviewFilter] = useState('all')
-  const [offset, setOffset]         = useState(0)
-  const [updatingId, setUpdatingId] = useState<string | null>(null)
-  const [pendingId, setPendingId] = useState<string | null>(null)
-  // "CRM pending" work-list: leads the CRM never received — gold orphans
-  // and gate-refused rows. The human decides per row; nothing auto-pushes
-  // from history (dates may be past, duplicates may exist).
-  const [crmPending, setCrmPending] = useState(false)
-  const [pushingId, setPushingId] = useState<string | null>(null)
-  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
-  const LIMIT = 50
+  const [view, setView] = useState<LeadsView>(params.view && tabs.includes(params.view) ? params.view : tabs[0])
+  const [level, setLevel] = useState<LeadLevel | ''>(params.level ?? '')
+  const [withWho, setWithWho] = useState<'' | 'person' | 'ai'>('')
+  const [order, setOrder] = useState<LeadsOrder | null>(null)
+  const [search, setSearch] = useState('')
+  const [offset, setOffset] = useState(0)
+  // The opened lead is kept even when a change moves it off this page
+  // (a review takes it out of "To review"): the panel stays open.
+  const [openSnap, setOpenSnap] = useState<LeadRow | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const q = useDebounced(search.trim(), 300)
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
+  // A new tab, filter or search starts from the first page.
+  useEffect(() => setOffset(0), [view, level, withWho, order, q])
 
-  const fetchLeads = useCallback(async () => {
-    setLoading(true)
+  const list = useQuery({
+    queryKey: ['leads-view', view, level, withWho, order, q, offset],
+    queryFn: () =>
+      getLeadsView({ view, level: level || undefined, chat_with: withWho || undefined, order: order ?? undefined, search: q || undefined, limit: LIMIT, offset }),
+    placeholderData: keepPreviousData,
+  })
+  // Reviewer names for "Reviewed by …" (owner/admin can list users; QA can't).
+  const users = useQuery({
+    queryKey: ['users', 'names'],
+    queryFn: async () => (await getUsers()).data as unknown as { id: string; name: string | null; email: string }[],
+    enabled: ['owner', 'admin', 'dev'].includes(role),
+    staleTime: 5 * 60_000,
+  })
+  const userNames = useMemo(() => Object.fromEntries((users.data ?? []).map((u) => [u.id, u.name || u.email])), [users.data])
+
+  const review = useMutation({
+    mutationFn: (r: LeadRow) => reviewLead(r.id, !r.reviewed_by_qa),
+    onSuccess: (_x, r) => {
+      toast.success(r.reviewed_by_qa ? 'Review cleared.' : 'Marked as reviewed.')
+      qc.invalidateQueries({ queryKey: ['leads-view'] })
+    },
+    onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the review. Try again.'),
+  })
+
+  const data = list.data
+  const rows = data?.data ?? []
+  const counts = data?.counts
+  const shownOrder = order ?? data?.order ?? (view === 'to_review' ? 'oldest' : 'newest')
+  const openRow = openSnap
+  // QA goes from one lead to the next on this page of the list.
+  const openIndex = openSnap ? rows.findIndex((r) => r.id === openSnap.id) : -1
+  const nav =
+    openSnap && openIndex >= 0 && data
+      ? {
+          text: navText(offset + openIndex, data.count, view),
+          prev: openIndex > 0 ? () => setOpenSnap(rows[openIndex - 1]) : undefined,
+          next: openIndex < rows.length - 1 ? () => setOpenSnap(rows[openIndex + 1]) : undefined,
+        }
+      : undefined
+  const [exporting, setExporting] = useState(false)
+
+  const exportCsv = async () => {
+    setExporting(true)
     try {
-      const params: Record<string, string> = { limit: String(LIMIT), offset: String(offset) }
-      if (search)       params.search = search
-      if (statusFilter) params.status = statusFilter
-      if (tierFilter)   params.tier = tierFilter
-      if (reviewFilter !== 'all') params.reviewed = reviewFilter
-      if (crmPending)   params.crm_pending = 'true'
-      const json = await getLeads(params)
-      setLeads(json.data); setTotal(json.count)
-      if (json.review_stats) {
-        setReviewedCount(json.review_stats.reviewed)
-        setTotalCount(json.review_stats.total)
-      }
-    } catch (err) {
-      console.error('[leads] API error:', err)
-      setLeads([]); setTotal(0)
-    } finally { setLoading(false) }
-  }, [search, statusFilter, tierFilter, reviewFilter, crmPending, offset, activeTab])
-
-  useEffect(() => { fetchLeads() }, [fetchLeads])
-
-  const handleStatusUpdate = async (leadId: string, newStatus: string) => {
-    setUpdatingId(leadId)
-    try {
-      await updateLeadStatus(leadId, newStatus)
-    } catch {
-      // Silently fail — optimistic update still applies for mock mode
-    } finally {
-      // Optimistic update — works even in mock mode
-      setLeads(prev => prev.map(l => l.id === leadId ? { ...l, status: newStatus as Lead['status'] } : l))
-      setUpdatingId(null)
-    }
-  }
-
-  const toggleReview = async (lead: Lead) => {
-    if (pendingId) return
-    setPendingId(lead.id)
-    try {
-      await reviewLead(lead.id, !lead.reviewed_by_qa)
-      await fetchLeads()
+      const all = await getLeadsView({ view, level: level || undefined, chat_with: withWho || undefined, order: shownOrder, search: q || undefined, limit: 1000, offset: 0 })
+      const blob = new Blob([leadsCsv(all.data)], { type: 'text/csv;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `bbc-leads-${view}-${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(a.href)
+      toast.success(`Exported ${all.data.length} ${all.data.length === 1 ? 'lead' : 'leads'}${all.count > all.data.length ? ` of ${all.count}` : ''}.`)
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to update review status'
-      toast.error(message || 'Failed to update review status')
+      toast.error((e as ApiError)?.message ?? 'Couldn’t export. Try again.')
     } finally {
-      setPendingId(null)
-    }
-  }
-
-  const sortedLeads = [...(leads || [])].sort((a, b) => (b.score || 0) - (a.score || 0))
-  const tableHeaders = [
-    'Score',
-    ...(canReview ? ['Reviewed'] : []),
-    'Contact',
-    'Route',
-    'Tier',
-    'Status',
-    'Departure',
-    ...(crmPending ? ['CRM'] : []),
-    'Action',
-  ]
-
-  const handlePushToCrm = async (lead: Lead) => {
-    if (pushingId) return
-    setPushingId(lead.id)
-    try {
-      // 20s: the server's CRM call can take up to 10s — the default 8s
-      // abort would "fail" a push that actually succeeded (double-push bait).
-      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' }, 20_000)
-      toast.success(`Pushed to CRM — ${lead.visitor_name ?? 'lead'}`)
-      await fetchLeads()
-    } catch (e) {
-      // The endpoint performs the real push; a 422 carries the CRM's
-      // refusal or the gate reason — show it verbatim.
-      const message = e instanceof Error ? e.message : 'CRM push failed'
-      toast.error(message || 'CRM push failed')
-    } finally {
-      setPushingId(null)
+      setExporting(false)
     }
   }
 
   return (
-    <>
-      <Header>
-        <HeaderActions />
-      </Header>
-      <Main>
-        <div className="space-y-5">
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">Leads</h1>
-              <p className="text-sm text-muted-foreground mt-0.5">{total} total</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <ExportLeadsButton leads={sortedLeads} />
-              <button onClick={fetchLeads}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-foreground bg-card border border-border rounded-lg hover:bg-accent transition">
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />Refresh
-              </button>
-            </div>
-          </div>
-
-          {/* Tabs: My Leads / All Leads */}
-          <div className="flex gap-1">
+    <main id='content' className='flex flex-col gap-4 px-4 pt-6 pb-9 md:px-7 md:pt-7'>
+      <PageHeader
+        title='Leads'
+        subtitle={isQa ? 'Read the conversations and check how each lead was handled' : 'Every lead the chat collects, from first message to the CRM'}
+        actions={
+          <div className='flex items-center gap-2.5'>
             <button
-              type="button"
-              onClick={() => { setActiveTab('my_leads'); setOffset(0) }}
-              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
-                activeTab === 'my_leads'
-                  ? 'bg-[#0B1829] text-white'
-                  : 'bg-muted text-muted-foreground hover:bg-accent'
-              }`}
+              type='button'
+              onClick={exportCsv}
+              disabled={exporting || !data?.count}
+              className='h-11 rounded-full border border-kl-202020 px-5 text-sm font-bold text-k-202020 disabled:opacity-50'
             >
-              My Leads
+              {exporting ? 'Exporting…' : 'Export CSV'}
             </button>
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => { setActiveTab('all_leads'); setOffset(0) }}
-                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
-                  activeTab === 'all_leads'
-                    ? 'bg-[#0B1829] text-white'
-                    : 'bg-muted text-muted-foreground hover:bg-accent'
-                }`}
-              >
-                All Leads
-              </button>
-            )}
+            <HeaderActions className='ms-0' />
           </div>
+        }
+      />
 
-          {canReview && (
-            <div className="text-sm text-muted-foreground">
-              {reviewedCount}/{totalCount} reviewed
-              ({totalCount > 0 ? Math.round((reviewedCount / totalCount) * 100) : 0}%)
-            </div>
-          )}
-
-          {/* Filters */}
-          <div className="flex flex-wrap gap-3">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input type="text" placeholder="Search name, email, route..." value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40 focus:border-[#C9A54E]" />
-            </div>
-            <div className="relative">
-              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <select value={statusFilter} onChange={e => { setStatus(e.target.value); setOffset(0) }}
-                className="pl-9 pr-8 py-2 text-sm rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
-                <option value="">All Status</option>
-                <option value="new">New</option><option value="contacted">Contacted</option>
-                <option value="qualified">Qualified</option><option value="converted">Converted</option>
-                <option value="lost">Lost</option>
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-            </div>
-            <div className="relative">
-              <select value={tierFilter} onChange={e => { setTier(e.target.value); setOffset(0) }}
-                className="pl-3 pr-8 py-2 text-sm rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40">
-                <option value="">All Tiers</option>
-                <option value="gold">Gold</option><option value="silver">Silver</option><option value="bronze">Bronze</option>
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-            </div>
-            {canReview && (
-              <div className="relative">
-                <select
-                  value={reviewFilter}
-                  onChange={(e) => { setReviewFilter(e.target.value); setOffset(0) }}
-                  className="pl-3 pr-8 py-2 text-sm rounded-lg appearance-none border border-input bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-[#C9A54E]/40"
+      <div role='tablist' aria-label='Leads' className='flex w-fit max-w-full flex-wrap gap-1 rounded-2xl bg-k-f2f2f2 p-1'>
+        {tabs.map((key) => {
+          const n = counts?.[key]
+          return (
+            <button
+              key={key}
+              type='button'
+              role='tab'
+              aria-selected={view === key}
+              onClick={() => {
+                setView(key)
+                setOrder(null)
+                setOpenSnap(null)
+              }}
+              className={cn(
+                'flex h-10 items-center gap-2 rounded-xl px-4 text-[15px] focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
+                view === key ? 'bg-k-ffffff font-bold text-k-202020 shadow-sm' : 'text-k-444444'
+              )}
+            >
+              {TAB_LABEL[key]}
+              {n !== undefined && (
+                <span
+                  className={cn(
+                    'rounded-full px-1.5 text-xs font-bold',
+                    key === 'not_in_crm' && n > 0 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-e9e9e9 text-k-444444'
+                  )}
                 >
-                  <option value="all">All Reviews</option>
-                  <option value="false">Unreviewed</option>
-                  <option value="true">Reviewed</option>
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-              </div>
-            )}
+                  {n}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      <div className='flex flex-col gap-3 lg:flex-row lg:items-center'>
+        <p className='m-0 flex-1 text-sm leading-[1.45] text-k-444444'>{TAB_TEXT[view]}</p>
+        <div className='flex flex-wrap items-center gap-2'>
+          <label className='relative'>
+            <span className='sr-only'>Search leads</span>
+            <Search aria-hidden='true' className='pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-k-6b6b6b' />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder='Name, e-mail, route or #4810'
+              className='h-10 w-full rounded-xl bg-k-f2f2f2 ps-9 pe-3 text-sm text-k-202020 placeholder:text-k-6b6b6b sm:w-[260px]'
+            />
+          </label>
+          <label className='flex items-center gap-1.5 text-[13px] text-k-555555'>
+            Level
+            <select value={level} onChange={(e) => setLevel(e.target.value as LeadLevel | '')} className={selectCls}>
+              <option value=''>All</option>
+              {(Object.keys(LEVELS) as LeadLevel[]).map((k) => (
+                <option key={k} value={k}>
+                  {LEVELS[k].name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className='flex items-center gap-1.5 text-[13px] text-k-555555'>
+            Chat with
+            <select value={withWho} onChange={(e) => setWithWho(e.target.value as '' | 'person' | 'ai')} className={selectCls}>
+              <option value=''>Anyone</option>
+              <option value='person'>A person</option>
+              <option value='ai'>Only the AI</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {isQa && (view === 'to_review' || view === 'reviewed') && data?.review && (
+        <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
+          {reviewCards(data.review).map((c, i) => (
+            <div key={c.text} className={cn('flex items-baseline gap-2 rounded-[18px] px-4 py-3', i === 0 ? 'bg-k-fdf6e3' : 'bg-k-f7f7f7')}>
+              <span className='text-2xl font-bold text-k-202020'>{c.n}</span>
+              <span className='text-[13px] leading-[1.3] text-k-444444'>{c.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view === 'not_in_crm' && data?.summary && summaryCards(data.summary).length > 0 && (
+        <div className='grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5'>
+          {summaryCards(data.summary).map((c) => (
+            <div key={c.text} className='flex flex-col gap-1 rounded-[18px] bg-k-f7f7f7 px-4 py-3'>
+              <span className={cn('text-2xl font-bold', c.bad ? 'text-k-b3261e' : 'text-k-202020')}>{c.n}</span>
+              <span className='text-[13px] leading-[1.3] text-k-444444'>{c.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className='flex flex-wrap items-center gap-2'>
+        <span className='text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>Order</span>
+        <div role='radiogroup' aria-label='Order' className='flex gap-1 rounded-2xl bg-k-f2f2f2 p-1'>
+          {ORDERS.map((o) => (
             <button
-              type="button"
-              onClick={() => { setCrmPending(v => !v); setOffset(0) }}
-              aria-pressed={crmPending}
-              title="Leads the CRM never received — gold orphans and gate-refused rows"
-              className={`px-3 py-2 text-sm rounded-lg border transition-colors ${
-                crmPending
-                  ? 'border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-700'
-                  : 'border-input bg-background text-muted-foreground hover:bg-accent'
-              }`}
+              key={o.key}
+              type='button'
+              role='radio'
+              aria-checked={shownOrder === o.key}
+              onClick={() => setOrder(o.key)}
+              className={cn(
+                'h-8 rounded-xl px-3 text-[13px] focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
+                shownOrder === o.key ? 'bg-k-ffffff font-bold text-k-202020 shadow-sm' : 'text-k-444444'
+              )}
             >
-              CRM pending
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {list.isError ? (
+        <div role='alert' className='flex flex-wrap items-center gap-3 rounded-2xl bg-k-fff3e0 px-4 py-3 text-sm text-k-8a4b00'>
+          <span className='flex-1'>
+            <strong>Couldn’t load the leads.</strong> The list isn’t shown rather than shown empty.
+          </span>
+          <button type='button' onClick={() => list.refetch()} className='h-9 rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn'>
+            Try again
+          </button>
+        </div>
+      ) : list.isLoading ? (
+        <div className='h-64 animate-pulse rounded-[20px] bg-k-f7f7f7' aria-busy='true' />
+      ) : rows.length === 0 ? (
+        <div className='rounded-[20px] px-5 py-10 text-center text-sm text-k-555555 ring-1 ring-k-ececec'>
+          {q || level || withWho
+            ? 'No lead matches. Clear the search or the filters.'
+            : view === 'not_in_crm'
+              ? 'Every lead with a phone is in the CRM.'
+              : view === 'to_review'
+                ? 'No ready lead is waiting for review.'
+                : view === 'reviewed'
+                  ? 'No lead has been reviewed yet.'
+                  : 'No leads yet.'}
+        </div>
+      ) : (
+        <div className={cn('overflow-x-auto rounded-[20px] ring-1 ring-k-ececec', list.isFetching && 'opacity-70')}>
+          <table className='w-full min-w-[980px] border-collapse'>
+            <thead>
+              <tr className='bg-k-f7f7f7'>
+                {['Level', 'Person', 'Trip', 'Age', 'Chat with', 'CRM', ...(canReview ? ['QA'] : [])].map((h) => (
+                  <th key={h} className='px-4 py-3 text-left text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const lv = LEVELS[r.level]
+                const trip = tripLine(r)
+                const crm = crmLine(r)
+                const who = chatWithText(r)
+                return (
+                  <tr
+                    key={r.id}
+                    tabIndex={0}
+                    onClick={() => setOpenSnap(r)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setOpenSnap(r)
+                      }
+                    }}
+                    className='cursor-pointer border-t border-k-ececec hover:bg-row-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-k-6ea8ff'
+                  >
+                    <td className='px-4 py-3 align-top'>
+                      <span className={cn('rounded-full px-2.5 py-1 text-xs font-bold', lv.chipCls)}>{lv.chip}</span>
+                    </td>
+                    <td className='max-w-[240px] px-4 py-3 align-top'>
+                      <strong className='block truncate text-[15px] text-k-202020'>{r.visitor_name || 'No name'}</strong>
+                      <span className='block truncate text-xs text-k-555555'>{personLine(r) || '—'}</span>
+                    </td>
+                    <td className='px-4 py-3 align-top'>
+                      <strong className='block text-[15px] text-k-202020'>{trip.route}</strong>
+                      <span className='block text-xs text-k-555555'>{trip.detail}</span>
+                    </td>
+                    <td className='px-4 py-3 align-top text-sm whitespace-nowrap text-k-202020'>{ageText(r.created_at, nowMs)}</td>
+                    <td className={cn('px-4 py-3 align-top text-sm', who.ai ? 'text-k-5b45e0' : 'text-k-202020')}>{who.text}</td>
+                    <td className='max-w-[260px] px-4 py-3 align-top'>
+                      <span className={cn('flex items-start gap-2 text-sm', TONE_TEXT[crm.tone])}>
+                        <span aria-hidden='true' className={cn('mt-1.5 size-2 flex-none rounded-full', TONE_DOT[crm.tone])} />
+                        <span className='line-clamp-2'>{crm.text}</span>
+                      </span>
+                    </td>
+                    {canReview && (
+                      <td className='px-4 py-3 align-top'>
+                        <button
+                          type='button'
+                          aria-pressed={!!r.reviewed_by_qa}
+                          aria-label={r.reviewed_by_qa ? `Reviewed: clear the review for ${r.visitor_name ?? 'this lead'}` : `Mark ${r.visitor_name ?? 'this lead'} as reviewed`}
+                          disabled={review.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            review.mutate(r)
+                          }}
+                          className={cn(
+                            'flex size-8 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
+                            r.reviewed_by_qa ? 'bg-k-e3f6ea text-k-0a6b35' : 'text-k-9c9c9c hover:bg-k-f2f2f2'
+                          )}
+                        >
+                          {r.reviewed_by_qa ? <Check className='size-4' /> : <span aria-hidden='true'>·</span>}
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data && data.count > LIMIT && (
+        <div className='flex items-center justify-between gap-3 text-sm text-k-555555'>
+          <span>
+            Showing {offset + 1}–{Math.min(offset + LIMIT, data.count)} of {data.count}
+          </span>
+          <div className='flex gap-2'>
+            <button
+              type='button'
+              disabled={offset === 0}
+              onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}
+              className='h-9 rounded-full border border-k-c9c9c9 px-4 font-bold text-k-202020 disabled:opacity-40'
+            >
+              Previous
+            </button>
+            <button
+              type='button'
+              disabled={offset + LIMIT >= data.count}
+              onClick={() => setOffset((o) => o + LIMIT)}
+              className='h-9 rounded-full border border-k-c9c9c9 px-4 font-bold text-k-202020 disabled:opacity-40'
+            >
+              Next
             </button>
           </div>
-
-          {/* Table */}
-          <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
-            {loading ? (
-              <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">Loading leads...</div>
-            ) : leads.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
-                <Plane className="w-8 h-8 mb-2 opacity-30" /><p className="text-sm">No leads found</p>
-              </div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted">
-                    {tableHeaders.map(h => (
-                      <th key={h} className="text-left px-4 py-3 font-medium text-muted-foreground text-xs uppercase tracking-wide">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {sortedLeads.map(lead => (
-                    <tr key={lead.id} className="hover:bg-accent transition-colors cursor-pointer" onClick={() => setSelectedLeadId(lead.id)}>
-                      <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
-                      {canReview && (
-                        <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            disabled={pendingId === lead.id}
-                            onClick={() => toggleReview(lead)}
-                            className="inline-flex items-center justify-center p-1 rounded hover:bg-accent disabled:opacity-50"
-                            aria-label={lead.reviewed_by_qa ? 'Mark as unreviewed' : 'Mark as reviewed'}
-                            title={lead.reviewed_by_qa ? 'Reviewed — click to clear' : 'Not reviewed — click to mark'}
-                          >
-                            {lead.reviewed_by_qa ? (
-                              <Check className="w-4 h-4 text-green-600" aria-hidden />
-                            ) : (
-                              <X className="w-4 h-4 text-red-600" aria-hidden />
-                            )}
-                          </button>
-                        </td>
-                      )}
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-foreground">
-                          {lead.visitor_name ?? <span className="text-muted-foreground italic text-xs">Anonymous</span>}
-                        </div>
-                        {lead.visitor_phone && <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5"><Phone className="w-3 h-3" />{lead.visitor_phone}</div>}
-                        {lead.visitor_email && <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5"><Mail className="w-3 h-3" />{lead.visitor_email}</div>}
-                      </td>
-                      <td className="px-4 py-3">
-                        <RouteDisplay lead={lead} />
-                        <div className="text-xs text-muted-foreground mt-0.5 capitalize">
-                          {(lead.trip_type || 'round_trip').replace('_', '-')}{lead.passengers ? ` · ${lead.passengers} pax` : ''}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium capitalize ${TIER_STYLES[lead.tier]}`}>
-                          {lead.tier}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[lead.status]}`}>
-                          {lead.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs">{lead.departure_date ?? <span className="text-muted-foreground">—</span>}</td>
-                      {crmPending && (
-                        <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[11px] text-amber-700 dark:text-amber-400">
-                              {lead.crm_push_gate_reason
-                                ? `refused: ${lead.crm_push_gate_reason.replace(/_/g, ' ')}`
-                                : (lead.crm_push_attempts ?? 0) > 0
-                                  ? `push failed ×${lead.crm_push_attempts}`
-                                  : 'never pushed'}
-                            </span>
-                            {permissions.canEditLeads && (
-                              <button
-                                type="button"
-                                disabled={pushingId === lead.id}
-                                onClick={() => handlePushToCrm(lead)}
-                                className="self-start px-2 py-1 rounded-md bg-[#C9A54E] text-white text-[11px] font-semibold hover:bg-[#C9A54E]/90 disabled:opacity-50"
-                              >
-                                {pushingId === lead.id ? 'Pushing…' : 'Push'}
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      )}
-                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                        <select value={lead.status} disabled={updatingId === lead.id || !permissions.canEditLeads}
-                          onChange={e => handleStatusUpdate(lead.id, e.target.value)}
-                          className="text-xs rounded-md px-2 py-1 border border-input bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-[#C9A54E] disabled:opacity-50">
-                          <option value="new">New</option><option value="contacted">Contacted</option>
-                          <option value="qualified">Qualified</option><option value="converted">Converted</option>
-                          <option value="lost">Lost</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* Pagination */}
-          {total > LIMIT && (
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>Showing {offset + 1}–{Math.min(offset + LIMIT, total)} of {total}</span>
-              <div className="flex gap-2">
-                <button onClick={() => setOffset(Math.max(0, offset - LIMIT))} disabled={offset === 0}
-                  className="px-3 py-1.5 border border-border rounded-lg disabled:opacity-40 hover:bg-accent">Previous</button>
-                <button onClick={() => setOffset(offset + LIMIT)} disabled={offset + LIMIT >= total}
-                  className="px-3 py-1.5 border border-border rounded-lg disabled:opacity-40 hover:bg-accent">Next</button>
-              </div>
-            </div>
-          )}
         </div>
+      )}
 
-        <LeadDetailDrawer
-          leadId={selectedLeadId}
-          onClose={() => setSelectedLeadId(null)}
-        />
-      </Main>
-    </>
+      <LeadPanel
+        row={openRow}
+        onClose={() => setOpenSnap(null)}
+        onPatched={(leadId, patch) => setOpenSnap((s) => (s && s.id === leadId ? { ...s, ...patch } : s))}
+        canReview={canReview}
+        canSend={canSend}
+        canLookUp={canLookUp}
+        userNames={userNames}
+        nowMs={nowMs}
+        meId={meId}
+        nav={canReview ? nav : undefined}
+        reviewFirst={isQa}
+      />
+    </main>
   )
 }

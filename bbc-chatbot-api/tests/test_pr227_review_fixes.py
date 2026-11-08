@@ -22,6 +22,10 @@ _CONV = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 _SUPERVISOR = {"id": "u2", "role": "supervisor"}
 _SALES = {"id": "u1", "role": "sales", "tunnel_scope": "sales"}
 _OWNER = {"id": "u0", "role": "owner"}
+# Blind take (redesign #237) checks an operator's stream and /details first:
+# this is the operator's own chat, which they read whole.
+_OPERATORS_OWN = {"id": _CONV, "status": "active", "mode": "human", "assigned_agent_id": "u1",
+                  "engaged_agent_id": None, "queued_at": None}
 
 
 # ── /conversations/{id}/details: same team scope as the messages ──────────
@@ -61,6 +65,7 @@ async def test_details_for_an_operator_skip_the_team_lookup():
                       new=AsyncMock(side_effect=AssertionError("team lookup for an operator"))):
         with patch.object(conv_api.db, "get_conversation_simple",
                           new=AsyncMock(return_value={"id": _CONV, "tunnel": "sales"})), \
+             patch.object(conv_api.db, "get_blind_inputs", new=AsyncMock(return_value=_OPERATORS_OWN)), \
              patch("app.services.lead_service.get_or_create_lead", new=AsyncMock(return_value={})):
             res = await conv_api.get_conversation_details(_CONV, user=_SALES)
     assert res["success"] is True
@@ -110,7 +115,8 @@ async def test_cancelled_stream_leaves_no_pending_queue_gets():
     request = MagicMock()
     request.is_disconnected = AsyncMock(return_value=False)
     with patch.object(agent_api.db, "get_conversation_simple",
-                      new=AsyncMock(return_value={"id": _CONV, "tunnel": "sales"})):
+                      new=AsyncMock(return_value={"id": _CONV, "tunnel": "sales"})), \
+         patch.object(agent_api.db, "get_blind_inputs", new=AsyncMock(return_value=_OPERATORS_OWN)):
         res = await agent_api.agent_stream(_CONV, request, user=_SALES)
 
     async def _drain():

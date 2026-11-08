@@ -14,6 +14,8 @@
  *    Origins must be BBC-owned (or listed in VITE_CRM_ORIGINS).
  */
 import { useAuthStore } from '@/stores/auth-store'
+import { useSsoStore } from '@/stores/sso-store'
+import { crmEmail } from '../features/auth/view.ts'
 
 const MSG_TYPE = 'bbc-auth'
 const ACK_TYPE = 'bbc-auth-ack'
@@ -92,6 +94,13 @@ export async function tryCrmUrlTokenLogin(): Promise<boolean> {
   }
   if (!picked) return false
   const [param, token] = picked
+  // Signed out: the sign-in page shows "Signing you in from the CRM…"
+  // meanwhile, and the reason if it fails. Already signed in: the panel is
+  // open either way, so a failure here has nothing to tell anyone.
+  const signedOut = !useAuthStore.getState().auth.accessToken
+  const real = useSsoStore.getState()
+  const sso = signedOut ? real : { pending: () => {}, failed: () => {}, done: () => {} }
+  sso.pending(crmEmail(token))
 
   try {
     const res = await fetch(`${API_BASE}/api/auth/sso/crm-exchange`, {
@@ -103,6 +112,8 @@ export async function tryCrmUrlTokenLogin(): Promise<boolean> {
     if (!res.ok) {
       // eslint-disable-next-line no-console
       console.warn('CRM SSO exchange failed:', res.status)
+      const body = await res.json().catch(() => null)
+      sso.failed(res.status, typeof body?.detail === 'string' ? body.detail : null)
       return false
     }
     const data = await res.json()
@@ -110,10 +121,13 @@ export async function tryCrmUrlTokenLogin(): Promise<boolean> {
     // exact same store-application path as the postMessage receiver.
     const ok = typeof data?.token === 'string' && applyToken(data.token)
     if (ok) stripTokenFromUrl(param)
+    if (ok) sso.done()
+    else sso.failed(null, null)
     return ok
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('CRM SSO exchange error:', e)
+    sso.failed(null, null)
     return false
   }
 }

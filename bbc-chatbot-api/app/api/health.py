@@ -95,12 +95,26 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.integration import PRESENCE_GATE_HEALTH
     # Claim races: exactly one wins; the losers are counted, not punished.
     from app.api.conversations import CLAIM_HEALTH
+    # Blind take: checks that failed closed (an agent got a 503, not their
+    # chat) and streams stopped because their chat started waiting.
+    from app.api.conversations import BLIND_HEALTH
     # Sticky's only defence is the deadline — these two say if it is holding.
     from app.services.routing import STICKY_HEALTH
     # Turns we refused to speak: every count is a moment the bot was about to
     # answer a question nobody asked.
     from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
     from app.api.cron import _DB_ALERT
+    # The owner's Dashboard: one paged read a minute, shared; failures 502.
+    from app.api.dashboard import OWNER_DASHBOARD_HEALTH
+    # The Leads page's shared read: how often it reads, and how many rows.
+    from app.db.supabase import LEADS_UNIVERSE_HEALTH
+    # To read (Conversations): one shared read a minute; failures 502.
+    from app.api.conversations import TO_READ_HEALTH
+    # Team · Now: one shared read every 10 s; failures 502.
+    from app.api.teams import TEAM_NOW_HEALTH
+    # Tasks: promises caught, call-backs, moves on Not ready, and failures
+    # (schema_missing until migration 051 runs).
+    from app.db.supabase import TASKS_HEALTH
 
     from app.ai.ledger import LEDGER_HEALTH
     from app.ai.output_guard import OUTPUT_GUARD_HEALTH
@@ -126,6 +140,7 @@ async def health_detail(full: bool = False) -> dict:
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
+            "blind_take": dict(BLIND_HEALTH),
             "sticky": dict(STICKY_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
@@ -142,6 +157,11 @@ async def health_detail(full: bool = False) -> dict:
             "sse": {"subscribers": _sse.subscriber_count()},
             "presence_gate": dict(PRESENCE_GATE_HEALTH),
             "phantom_turns": dict(PIPELINE_HEALTH),
+            "owner_dashboard": dict(OWNER_DASHBOARD_HEALTH),
+            "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
+            "to_read": dict(TO_READ_HEALTH),
+            "team_now": dict(TEAM_NOW_HEALTH),
+            "tasks": dict(TASKS_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -195,6 +215,7 @@ async def health_detail(full: bool = False) -> dict:
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),
+        "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
         "queue": _queue_stats,
         "operator_load": _load,
@@ -213,4 +234,9 @@ async def health_detail(full: bool = False) -> dict:
         "sse": {"subscribers": _sse.subscriber_count()},
         "presence_gate": dict(PRESENCE_GATE_HEALTH),
         "phantom_turns": dict(PIPELINE_HEALTH),
+        "owner_dashboard": dict(OWNER_DASHBOARD_HEALTH),
+        "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
+        "to_read": dict(TO_READ_HEALTH),
+        "team_now": dict(TEAM_NOW_HEALTH),
+        "tasks": dict(TASKS_HEALTH),
     }

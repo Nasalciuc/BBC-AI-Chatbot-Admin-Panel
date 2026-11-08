@@ -332,6 +332,11 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
 
         raise HTTPException(409, "Email already in use by an active user")
 
+    # Only an owner makes an owner — the PATCH path already refuses it to
+    # admin and dev; an invite must not be the way around that.
+    if req.role == "owner" and current_user.get("role") != "owner":
+        raise HTTPException(403, "Only an owner can invite an owner")
+
     user = await db.create_user({
         "email": req.email.lower().strip(),
         "name": req.name,
@@ -505,6 +510,68 @@ class SelfUpdateRequest(BaseModel):
     phone: str | None = None
     avatar_url: str | None = None
     # SECURITY: role / tunnel_scope / is_active / email intentionally ABSENT.
+
+
+def _team_card(team: dict, supervisor: Optional[dict] = None) -> dict:
+    """What Settings › Profile says about a team: its name, shift and who
+    leads it. The supervisor's NAME only — never their e-mail or phone."""
+    return {
+        "id": team.get("id"),
+        "name": team.get("name"),
+        "shift_name": team.get("shift_name"),
+        "shift_start": team.get("shift_start"),
+        "shift_end": team.get("shift_end"),
+        "supervisor_name": (supervisor or {}).get("name") or None,
+    }
+
+
+@router.get("/me")
+async def get_own_access(current_user: dict = Depends(get_current_user)):
+    """Your access, as the database has it NOW (Settings › Profile).
+
+    The session token keeps the role it was issued with until it expires
+    (24 h), so an owner's change reaches an open session only at the next
+    sign-in. This reads the row, so the page can say both. Read-only, and
+    only about the caller."""
+    uid = current_user.get("id")
+    user = await db.get_user_by_id(uid) if uid else None
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    role = user.get("role") or "sales"
+    is_active = bool(user.get("is_active", True))
+    # Absent column (older databases) = enabled, as everywhere else.
+    chat_enabled = bool(user.get("chat_enabled", True))
+
+    team = None
+    if user.get("team_id"):
+        t = await db.get_team(user["team_id"])
+        if t:
+            sup = await db.get_user_by_id(t["supervisor_id"]) if t.get("supervisor_id") else None
+            team = _team_card(t, sup)
+
+    leads: list = []
+    if role == "supervisor":
+        leads = [_team_card(t) for t in await db.get_teams(is_active=True, supervisor_id=uid)]
+    elif role == "project_manager":
+        leads = [_team_card(t) for t in await db.get_teams(is_active=True, pm_id=uid)]
+
+    return {
+        "success": True,
+        "data": {
+            "role": role,
+            "tunnel_scope": user.get("tunnel_scope") or "sales",
+            "is_active": is_active,
+            "chat_enabled": chat_enabled,
+            # Who the queue and routing can give a chat to (_OPERATOR_ROLES).
+            "receives_chats": is_active and chat_enabled and role in db._OPERATOR_ROLES,
+            "team": team,
+            "leads_teams": leads,
+            # The role this session was signed with, for "takes effect at
+            # your next sign-in".
+            "session_role": current_user.get("role"),
+        },
+    }
 
 
 @router.patch("/me")

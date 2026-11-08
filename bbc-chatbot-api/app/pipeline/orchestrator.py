@@ -966,6 +966,14 @@ async def _pipeline(
         except Exception as e:
             logger.warning(f"[{cid}] callback dispatch failed: {e}")
 
+        # The AI is about to tell the client a consultant will call: that
+        # promise becomes someone's task (Tasks). It never delays the reply
+        # and never fails the turn (task_from_callback logs and counts).
+        if user_msg:
+            from app.services.tasks_service import task_from_callback
+
+            _fire_and_forget(task_from_callback(conv, user_msg, message))
+
         # Confirm warmly and keep collecting — deterministic, because the
         # one thing this turn must never do is ask him what he meant.
         from app.ai.templates import get_template as _cb_tpl

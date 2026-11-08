@@ -166,3 +166,122 @@ async def delete_team(team_id: str, user: dict = Depends(get_current_user)):
     if not team:
         raise HTTPException(500, "Failed to delete team")
     return {"success": True, "data": team, "count": 1}
+
+
+# ── Team · Now (owner, admin, dev, supervisor, project manager) ──
+# The floor as it is right now. A supervisor or project manager sees the
+# people of their own teams and the chats those people have, the shared queue
+# of their tunnel (the line their people take from), and how many chats the
+# AI has on its own there, as a number. Supervisors get clients' names masked;
+# nobody but owner, admin and dev gets message previews, as in Conversations.
+# No team means the "no team yet" state, never everything. One read every
+# few seconds, shared.
+
+TEAM_VIEW_ROLES = PRIVILEGED | {"supervisor", "project_manager"}
+TEAM_NOW_TTL_SECONDS = 10
+_TEAM_NOW_CACHE: dict[str, tuple[float, dict]] = {}
+TEAM_NOW_HEALTH: dict = {"reads": 0, "hits": 0, "read_failures": 0}
+
+
+async def _team_scope(user: dict) -> tuple[Optional[set[str]], Optional[str]]:
+    """(team ids or None for everything, tunnel or None for both)."""
+    role = user.get("role", "")
+    if role in PRIVILEGED:
+        return None, None
+    ids = (
+        await db.get_team_ids_for_supervisor(user.get("id", ""))
+        if role == "supervisor"
+        else await db.get_team_ids_for_pm(user.get("id", ""))
+    )
+    scope = user.get("tunnel_scope") or role
+    return set(ids), scope if scope in ("sales", "support") else None
+
+
+async def _team_now_inputs(day_start_iso: str) -> dict:
+    import time
+
+    cached = _TEAM_NOW_CACHE.get(day_start_iso)
+    if cached and time.monotonic() - cached[0] < TEAM_NOW_TTL_SECONDS:
+        TEAM_NOW_HEALTH["hits"] += 1
+        return cached[1]
+    try:
+        inputs = await db.get_team_now_inputs(day_start_iso)
+    except Exception as e:
+        TEAM_NOW_HEALTH["read_failures"] += 1
+        logger.error(f"[team_now] read failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load the floor") from e
+    TEAM_NOW_HEALTH["reads"] += 1
+    for k in [k for k, v in _TEAM_NOW_CACHE.items() if time.monotonic() - v[0] >= TEAM_NOW_TTL_SECONDS]:
+        _TEAM_NOW_CACHE.pop(k, None)
+    _TEAM_NOW_CACHE[day_start_iso] = (time.monotonic(), inputs)
+    return inputs
+
+
+@router.get("/admin/team/now")
+async def team_now(
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    user: dict = Depends(get_current_user),
+):
+    from datetime import datetime, timezone
+    from app.services.agent_day import local_day_start
+    from app.services.team_now import build_team_now
+    from config.settings import settings
+
+    role = user.get("role", "")
+    if role not in TEAM_VIEW_ROLES:
+        raise HTTPException(403, "Team is for the owner, admins, supervisors and project managers")
+    team_ids, tunnel = await _team_scope(user)
+    now = datetime.now(timezone.utc)
+    if team_ids is not None and not team_ids:
+        return {"success": True, "data": {"no_team": True, "now": now.isoformat()}, "count": 0}
+    inputs = await _team_now_inputs(local_day_start(now, tz_offset_minutes).isoformat())
+    previews: dict = {}
+    if role in PRIVILEGED:
+        ids = [c["id"] for c in inputs["conversations"] if c.get("id")]
+        try:
+            previews = await db.get_last_message_previews(ids) if ids else {}
+        except Exception as e:
+            # The floor without previews is still the floor.
+            logger.warning(f"[team_now] previews unavailable ({e}) — serving the floor without them")
+    data = build_team_now(
+        now=now, offset_minutes=tz_offset_minutes, previews=previews, team_ids=team_ids, tunnel=tunnel,
+        masked=role == "supervisor", queue_window_s=settings.queue_presence_window_seconds,
+        online_s=settings.agent_timeout_seconds, **inputs,
+    )
+    data["no_team"] = False
+    data["can_give"] = role in ("owner", "admin", "dev", "supervisor")
+    return {"success": True, "data": data, "count": len(data["people"])}
+
+
+@router.get("/admin/team/people/{user_id}/today")
+async def person_today(
+    user_id: str,
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    user: dict = Depends(get_current_user),
+):
+    from datetime import datetime, timezone
+    from app.services.agent_day import local_day_start
+    from app.services.team_now import build_person_day
+    from config.settings import settings
+
+    role = user.get("role", "")
+    if role not in TEAM_VIEW_ROLES:
+        raise HTTPException(403, "Team is for the owner, admins, supervisors and project managers")
+    now = datetime.now(timezone.utc)
+    try:
+        inputs = await db.get_person_day_inputs(user_id, local_day_start(now, tz_offset_minutes).isoformat())
+    except Exception as e:
+        TEAM_NOW_HEALTH["read_failures"] += 1
+        logger.error(f"[team_now] person {user_id} read failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load this person's day") from e
+    if not inputs:
+        raise HTTPException(404, "User not found")
+    team_ids, _ = await _team_scope(user)
+    if team_ids is not None and inputs["user"].get("team_id") not in team_ids:
+        raise HTTPException(403, "You can only see the people of your own teams")
+    data = build_person_day(
+        now=now, offset_minutes=tz_offset_minutes, masked=role == "supervisor",
+        queue_window_s=settings.queue_presence_window_seconds, online_s=settings.agent_timeout_seconds,
+        **inputs,
+    )
+    return {"success": True, "data": data, "count": 1}

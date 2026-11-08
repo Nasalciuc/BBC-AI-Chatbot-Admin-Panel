@@ -24,7 +24,12 @@ export function CommandMenu() {
   const { open, setOpen } = useSearch()
   const { auth } = useAuthStore()
   const permissions = usePermissions((auth.user?.role ?? 'sales') as UserRole)
-  const sidebarData = getSidebarData(permissions, auth.user?.name ?? '', auth.user?.email ?? '')
+  const sidebarData = getSidebarData(
+    permissions,
+    auth.user?.name ?? '',
+    auth.user?.email ?? '',
+    (auth.user?.role ?? 'sales') as UserRole
+  )
 
   const runCommand = React.useCallback(
     (command: () => unknown) => {

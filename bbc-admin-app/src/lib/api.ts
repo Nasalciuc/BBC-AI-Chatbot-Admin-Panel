@@ -15,9 +15,21 @@ export class ApiError extends Error {
 }
 
 import type {
+  AccessEvent,
   Conversation,
   ConversationsResponse,
   DashboardStats,
+  EarlierLead,
+  Handover,
+  LeadsOrder,
+  LeadsView,
+  LeadsViewResponse,
+  PersonDay,
+  Reading,
+  TeamNow,
+  ToReadList,
+  OwnerDashboard,
+  PanelUser,
   KBCategory,
   KBEntry,
   KBEntryCreate,
@@ -25,14 +37,21 @@ import type {
   LeadsResponse,
   Message,
   NotificationsResponse,
-  Task,
-  TasksResponse,
+  TaskKind,
+  TasksViewResponse,
+  TaskDetail,
+  NewTaskBody,
+  TaskPatchBody,
+  TaskRules,
+  TaskTry,
   UserAccessAuditItem,
   AgentSseEvent,
   LeadDetails,
   AdminEnvelope,
   QuestionVariant,
   LearningReport,
+  AgentDay,
+  MyAccess,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -65,6 +84,18 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
+// ── Health ────────────────────────────────────────────────────
+/** Whether the server answers /health (the status band, the maintenance
+ *  page). Never throws: no answer in time is "not reachable". */
+export async function checkHealth(timeoutMs = 8000): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────
 export async function getConversationDetails(conversationId: string): Promise<LeadDetails | null> {
   const res = await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/details`, {
@@ -93,10 +124,30 @@ export async function loginUser(
     signal: AbortSignal.timeout(8000),
   })
   if (!res.ok) {
+    // The status decides what the sign-in page says (wrong, off, too many tries).
     const body = await res.json().catch(() => ({ detail: 'Login failed' }))
-    throw new Error(body.detail || 'Login failed')
+    throw new ApiError(res.status, typeof body?.detail === 'string' ? body.detail : 'Login failed')
   }
   return res.json()
+}
+
+/** Set the password from an invite link. 400 carries why the link failed. */
+export async function setPasswordFromInvite(token: string, password: string): Promise<void> {
+  await apiFetch('/api/auth/set-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  })
+}
+
+/** Ask for a new invite link. The answer is the same whether or not the
+ *  address has an account. */
+export async function requestInviteLink(email: string): Promise<void> {
+  await apiFetch('/api/auth/request-invite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
 }
 
 /** The panel's live channel for one conversation. Auth comes from the same
@@ -153,6 +204,78 @@ export async function apiFetch<T>(
 }
 
 // ── Dashboard ─────────────────────────────────────────────────
+/** Your day: the caller's own chats. Days cut at the browser's local midnight. */
+export async function getAgentDay(days: 1 | 7 | 30): Promise<AgentDay> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: AgentDay }>(
+    `/api/agent/day?days=${days}&tz_offset_minutes=${offset}`
+  )
+  return res.data
+}
+
+/** The owner's Dashboard (owner/admin/dev). Days and hours are the browser's. */
+export async function getOwnerDashboard(days: 1 | 7 | 30): Promise<OwnerDashboard> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: OwnerDashboard }>(
+    `/api/dashboard/owner?days=${days}&tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** Supervisor, PM and QA: the same dashboard cut to their role (their
+ *  tunnel, no AI cost, no sources; supervisors' names masked). */
+export async function getTeamDashboard(days: 1 | 7 | 30): Promise<OwnerDashboard> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: OwnerDashboard }>(
+    `/api/dashboard/team?days=${days}&tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** To read: this week's lost chats and last week's sample. */
+export async function getToRead(): Promise<ToReadList> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: ToReadList }>(
+    `/api/conversations/to-read?tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** One chat for reading: messages with senders, what happened, the rules it broke. */
+export async function getReading(conversationId: string): Promise<Reading> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: Reading }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/reading?tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** Team · Now: the floor right now. */
+export async function getTeamNow(): Promise<TeamNow> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: TeamNow }>(`/api/admin/team/now?tz_offset_minutes=${offset}`, {}, 20_000)
+  return res.data
+}
+
+/** One person's day, for the panel on Team. */
+export async function getPersonDay(userId: string): Promise<PersonDay> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: PersonDay }>(
+    `/api/admin/team/people/${encodeURIComponent(userId)}/today?tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
 export function getDashboardStats(): Promise<DashboardStats> {
   return apiFetch<DashboardStats>('/api/dashboard/stats')
 }
@@ -182,6 +305,22 @@ export async function getConversation(id: string): Promise<Conversation | null> 
 }
 
 /** Claim from the shared queue — the DATABASE decides; 409 names the winner. */
+/** PUSH the lead to the CRM (the server runs the gate and the real submit).
+ *  20 s: the CRM call alone can take 10 s — the default 8 s abort would
+ *  "fail" a push that actually succeeded (double-push bait). */
+export function pushLeadToCrm(leadId: string): Promise<{ success: boolean; data: Lead }> {
+  return apiFetch(`/api/leads/${encodeURIComponent(leadId)}/mark-crm-created`, { method: 'PATCH' }, 20_000)
+}
+
+/** The operator added the client in the CRM by hand: record the CRM's lead
+ *  number as the proof. No push happens. */
+export function setLeadCrmId(leadId: string, crmId: string): Promise<{ success: boolean; data: Lead }> {
+  return apiFetch(
+    `/api/leads/${encodeURIComponent(leadId)}/crm-id?crm_id=${encodeURIComponent(crmId)}`,
+    { method: 'PATCH' }
+  )
+}
+
 export function claimConversation(id: string): Promise<{ success: boolean }> {
   return apiFetch(`/api/conversations/${encodeURIComponent(id)}/claim`, { method: 'POST' })
 }
@@ -276,6 +415,32 @@ export function getLeads(
   return apiFetch<LeadsResponse>(`/api/leads?${qs}`)
 }
 
+/** The Leads page: one tab, its filters, and every tab's count. */
+export function getLeadsView(params: {
+  view: LeadsView
+  search?: string
+  level?: string
+  chat_with?: string
+  order?: LeadsOrder
+  limit?: number
+  offset?: number
+}): Promise<LeadsViewResponse> {
+  // "Reviewed by you today" is the viewer's own day.
+  const qs = new URLSearchParams({ tz_offset_minutes: String(-new Date().getTimezoneOffset()) })
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '' && v !== null) qs.set(k, String(v))
+  }
+  return apiFetch<LeadsViewResponse>(`/api/leads?${qs.toString()}`, {}, 20_000)
+}
+
+/** Other chats with the same phone or e-mail. */
+export async function getEarlierLeads(leadId: string): Promise<EarlierLead[]> {
+  const res = await apiFetch<{ success: boolean; data: EarlierLead[] }>(
+    `/api/leads/${encodeURIComponent(leadId)}/earlier`
+  )
+  return res.data ?? []
+}
+
 export async function getLeadFull(id: string): Promise<Lead> {
   const res = await apiFetch<Lead & { success?: boolean; data?: Lead }>(`/api/leads/${encodeURIComponent(id)}`)
   if (res && typeof res === 'object' && 'data' in res && res.data) return res.data
@@ -321,15 +486,22 @@ export async function updateLead(
 }
 
 // ── Knowledge Base ────────────────────────────────────────────
-export function getKBCategories(): Promise<{ data: KBCategory[] }> {
-  return apiFetch<{ data: KBCategory[] }>('/api/kb/categories')
+/** The KB routes answer 200 with `success: false` when the database read
+ *  failed. Reject then, so a page can tell an outage from an empty list. */
+function kbRead<T>(res: { success?: boolean; data: T; error?: string }): { data: T } {
+  if (res.success === false) throw new ApiError(503, res.error || 'Couldn’t read the knowledge base')
+  return res
 }
 
-export function getKBEntries(
+export async function getKBCategories(): Promise<{ data: KBCategory[] }> {
+  return kbRead(await apiFetch<{ success?: boolean; data: KBCategory[]; error?: string }>('/api/kb/categories'))
+}
+
+export async function getKBEntries(
   params: Record<string, string> = {},
 ): Promise<{ data: KBEntry[] }> {
   const qs = new URLSearchParams(params).toString()
-  return apiFetch<{ data: KBEntry[] }>(`/api/kb/entries?${qs}`)
+  return kbRead(await apiFetch<{ success?: boolean; data: KBEntry[]; error?: string }>(`/api/kb/entries?${qs}`))
 }
 
 export async function createKBEntry(data: KBEntryCreate): Promise<KBEntry> {
@@ -365,6 +537,25 @@ export function getUsers(
 ): Promise<{ success: boolean; data: Record<string, unknown>[]; count: number }> {
   const qs = new URLSearchParams({ limit: '100', ...params }).toString()
   return apiFetch(`/api/admin/users?${qs}`)
+}
+
+/** Users & access: everyone, with how they sign in (owner/admin/dev). */
+export async function getPanelUsers(): Promise<PanelUser[]> {
+  const res = await apiFetch<{ success: boolean; data: PanelUser[] }>('/api/admin/users?limit=200')
+  return res.data ?? []
+}
+
+export async function getAccessLog(limit = 200): Promise<AccessEvent[]> {
+  const res = await apiFetch<{ success: boolean; data: AccessEvent[] }>(`/api/admin/access-log?limit=${limit}`)
+  return res.data ?? []
+}
+
+/** What deactivating someone touches: open chats, returning clients, leads. */
+export async function getUserHandover(id: string): Promise<Handover> {
+  const res = await apiFetch<{ success: boolean; data: Handover }>(
+    `/api/admin/users/${encodeURIComponent(id)}/handover`
+  )
+  return res.data
 }
 
 export async function getLiveAgents(): Promise<import('./types').LiveAgent[]> {
@@ -426,6 +617,13 @@ export async function updateSelf(payload: SelfUpdatePayload): Promise<SelfUpdate
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+/** Settings › Profile: your access as the database has it now (the
+ *  session keeps the role it signed in with until it expires). */
+export async function getMyAccess(): Promise<MyAccess> {
+  const res = await apiFetch<{ success: boolean; data: MyAccess }>('/api/auth/me')
+  return res.data
 }
 
 /** Upload a profile photo (multipart). Do NOT set Content-Type — browser sets boundary. */
@@ -538,46 +736,57 @@ export function getNotifications() {
   return apiFetch<NotificationsResponse>('/api/notifications')
 }
 
-// ── Tasks ──────────────────────────────────────────────
-export function getTasks() {
-  return apiFetch<TasksResponse>('/api/tasks')
+// ── Tasks: follow-ups ───────────────────────────────────
+export function getTasksView(params: { view?: string; kind?: TaskKind | null; conversationId?: string } = {}) {
+  const qs = new URLSearchParams()
+  if (params.view) qs.set('view', params.view)
+  if (params.kind) qs.set('kind', params.kind)
+  if (params.conversationId) qs.set('conversation_id', params.conversationId)
+  const q = qs.toString()
+  return apiFetch<TasksViewResponse>(`/api/tasks${q ? `?${q}` : ''}`)
 }
 
-export function createTask(data: {
-  title: string
-  description?: string
-  status: string
-  label: string
-  priority: string
-  assignee_id?: string
-  due_date?: string
-}) {
-  return apiFetch<{ success: boolean; data: Task }>('/api/tasks', {
+export function getTaskDetail(id: string) {
+  return apiFetch<{ success: boolean; data: TaskDetail }>(`/api/tasks/${encodeURIComponent(id)}`)
+}
+
+export function createTask(body: NewTaskBody) {
+  return apiFetch<{ success: boolean; data: { id: string } }>('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(body),
   })
 }
 
-export function updateTask(id: string, data: Partial<{
-  title: string
-  description: string
-  status: string
-  label: string
-  priority: string
-  assignee_id: string
-  due_date: string
-}>) {
-  return apiFetch<{ success: boolean; data: Task }>(`/api/tasks/${encodeURIComponent(id)}`, {
+export function updateTask(id: string, body: TaskPatchBody) {
+  return apiFetch<{ success: boolean; data: { id: string } }>(`/api/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(body),
   })
 }
 
 export function deleteTask(id: string) {
-  return apiFetch<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
+  return apiFetch<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function getTaskRules() {
+  return apiFetch<{ success: boolean; data: TaskRules }>('/api/tasks/rules')
+}
+
+export function saveTaskRules(patch: Partial<TaskRules>) {
+  return apiFetch<{ success: boolean; data: TaskRules }>('/api/tasks/rules', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
+export function tryTaskSentence(sentence: string) {
+  return apiFetch<{ success: boolean; data: TaskTry }>('/api/tasks/rules/try', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sentence }),
   })
 }
 

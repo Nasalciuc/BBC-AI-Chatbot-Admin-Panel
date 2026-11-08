@@ -2,14 +2,16 @@
   "name": "bbc-widget",
   "version": "1.0.0",
   "private": true,
-  "engines": { "node": ">=22.6" },
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "build": "vite build",
     "build:bbc": "vite build --mode bbc",
     "build:bct": "vite build --mode bct",
     "build:all": "npm run build:bbc && npm run build:bct",
     "dev": "vite",
-    "test": "node --test tests/first-contact.test.mjs tests/sse-user-frame.test.mjs && node --experimental-strip-types --test tests/reconcile.test.mjs"
+    "test": "node --test tests/first-contact.test.mjs tests/sse-user-frame.test.mjs tests/stream-events.test.mjs tests/continuity.test.mjs && node --experimental-strip-types --test tests/reconcile.test.mjs tests/attribution-off.test.mjs"
   },
   "dependencies": {
     "preact": "^10.25.0"

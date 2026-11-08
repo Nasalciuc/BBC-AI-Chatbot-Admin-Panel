@@ -1,54 +1,26 @@
-import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
-import { apiFetch } from '@/lib/api'
-import { useAuthStore } from '@/stores/auth-store'
-import { useReadyStore } from '@/stores/ready-store'
+import { cn } from '@/lib/utils'
+import { useReadyToggle } from '@/hooks/use-ready-toggle'
 
-export function ReadyToggle() {
-  const { auth } = useAuthStore()
-  const user = auth.user
-  const { isReady, setReady } = useReadyStore()
-
-  // Hide for management/read-only roles
-  if (!user || ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(user.role ?? '')) {
-    return null
-  }
-
-  // While the first heartbeat hasn't returned yet (null), optimistically show Ready
-  // so the button isn't missing on mount. It corrects itself within 5s.
-  const ready = isReady ?? true
-
-  const toggle = async () => {
-    const newStatus = !ready
-    // Optimistic update
-    setReady(newStatus)
-    try {
-      await apiFetch<{ success: boolean; is_ready: boolean }>('/api/agent/ready', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_ready: newStatus }),
-      })
-      toast.success(newStatus ? 'You are now Ready' : 'You are now Not Ready')
-    } catch {
-      // Roll back optimistic update on failure
-      setReady(!newStatus)
-      toast.error('Failed to update status')
-    }
-  }
+/** The "Ready for chats" pill. Renders nothing for roles that don't take chats. */
+export function ReadyToggle({ compact = false }: { compact?: boolean }) {
+  const { canBeReady, ready, toggle } = useReadyToggle()
+  if (!canBeReady) return null
 
   return (
-    <Button
-      variant='outline'
-      size='sm'
+    <button
+      type='button'
+      aria-pressed={ready}
       onClick={toggle}
-      className={`text-xs font-semibold border-2 transition-colors ${
+      className={cn(
+        'flex h-10 flex-none items-center gap-2 rounded-full border text-sm font-bold transition-colors focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
+        compact ? 'px-3.5' : 'px-4',
         ready
-          ? 'border-green-500 text-green-600 hover:bg-green-50'
-          : 'border-red-500 text-red-600 hover:bg-red-50'
-      }`}
+          ? 'border-transparent bg-k-00c450/12 text-k-0a6b35'
+          : 'border-k-c9c9c9 bg-k-ffffff text-k-444444'
+      )}
     >
-      <span className={`w-2 h-2 rounded-full mr-2 ${ready ? 'bg-green-500' : 'bg-red-500'}`} />
-      {ready ? 'Ready' : 'Not Ready'}
-    </Button>
+      <span aria-hidden='true' className={cn('size-2 rounded-full', ready ? 'bg-k-00a645' : 'bg-k-9c9c9c')} />
+      {compact ? (ready ? 'Ready' : 'Not ready') : ready ? 'Ready for chats' : 'Not ready'}
+    </button>
   )
 }

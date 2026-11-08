@@ -48,6 +48,20 @@ export interface Conversation {
   metadata?: Record<string, unknown>
   has_flagged_content?: boolean
   flagged_reason?: string | null
+  /** List rows only: the newest non-system message, trimmed to 140 chars.
+   *  Absent for supervisors and PMs, and when the preview read failed.
+   *  An agent gets null on a chat that isn't theirs (blind take). */
+  last_message?: { role: Message['role']; content: string; created_at: string } | null
+  /** List rows only: the route the pipeline extracted (lead origin → destination).
+   *  Never sent to an agent for a chat that isn't theirs (blind take). */
+  route?: { from: string; to: string } | null
+  /** When the chat entered the shared queue (waiting for a person). */
+  queued_at?: string | null
+  /** Presence derived on read (online / minimized / left / stale), list rows. */
+  client_presence?: string | null
+  client_presence_age_seconds?: number | null
+  /** Country of the client's phone number (detail payload). */
+  visitor_phone_country?: string | null
 }
 
 export interface ConversationsResponse {
@@ -62,7 +76,12 @@ export interface Lead {
   conversation_id: string
   trip_type: 'one_way' | 'round_trip' | 'multi_city' | 'open_jaw' | 'tour'
   cabin_class: 'business' | 'first' | 'economy' | 'mixed'
+  /** Everyone flying: adults + children + infants (the CRM takes adults as the rest). */
   passengers: number | null
+  children_count?: number | null
+  infant_count?: number | null
+  /** NOT NULL DEFAULT true and never written by the pipeline: says nothing.
+   *  The client's own answer is intent_signals.date_flexible. */
   flexible_dates: boolean
   origin_code: string | null
   destination_code: string | null
@@ -72,7 +91,9 @@ export interface Lead {
   score: number
   tier: 'gold' | 'silver' | 'bronze'
   status: 'new' | 'contacted' | 'qualified' | 'converted' | 'lost'
-  intent_signals: string[]
+  /** jsonb object from the pipeline: persona, occasion, nonstop_only,
+   *  callback_requested, airline_preference, date_flexible, … */
+  intent_signals: Record<string, unknown> | null
   notes: string
   created_at: string
   updated_at: string
@@ -181,6 +202,321 @@ export interface DashboardStats {
   funnel: Array<{ name: string; count: number; color: string }>
 }
 
+// ── Your day (GET /api/agent/day) ─────────────────────────────
+export interface AgentDayBucket {
+  took: number
+  wait_median_s: number | null
+  first_reply_median_s: number | null
+  went_back: number
+  closed: number
+  with_lead: number
+  in_crm: number
+}
+
+export interface AgentDay {
+  days: 1 | 7 | 30
+  tz_offset_minutes: number
+  now: string
+  range_start: string
+  totals: AgentDayBucket & { still_open: number }
+  /** Newest first; at least 7 rows. */
+  by_day: Array<AgentDayBucket & { date: string }>
+  went_back: Array<{ conversation_id: string; first_name: string; at: string }>
+  not_in_crm: Array<{ conversation_id: string; first_name: string; has_phone: boolean; has_email: boolean; status: string | null }>
+  waiting_on_you: Array<{ conversation_id: string; first_name: string; minutes: number; left_minutes_ago: number | null }>
+  first_reply_week: { this: number | null; previous: number | null }
+}
+
+// ── The owner's Dashboard (GET /api/dashboard/owner) ──────────
+export interface OwnerCohort {
+  started: number
+  wrote: number
+  contact_only: number
+  ready: number
+  ready_ai_only: number
+  ready_with_agent: number
+  ai_only: number
+  ai_only_ready: number
+  with_agent: number
+}
+
+/** A chat a number points at, for "Open". */
+export interface ChatRef {
+  id: string
+  first_name: string
+  chat_number: number | null
+}
+
+export type LeaveKey =
+  | 'from' | 'to' | 'route' | 'dates' | 'flexible' | 'travelers' | 'occasion' | 'contact'
+  | 'summary' | 'specialist' | 'callback' | 'goodbye' | 'phone' | 'other'
+
+export interface LeaveRow {
+  key: LeaveKey
+  label: string
+  chats: number
+  before: number
+  conversations: ChatRef[]
+}
+
+export interface SourceRow {
+  name: string
+  chats: number
+  wrote: number
+  ready: number
+  /** On the "Other" row: how many names it groups. */
+  names?: number
+}
+
+export interface AgentBlock {
+  given: number
+  first_reply_median_s: number | null
+  replies_measured: number
+  replies_over_deadline: number
+  went_back: number
+  after_yes: number
+  never_wrote: number
+}
+
+export interface AgentRow {
+  user_id: string
+  name: string
+  role: string | null
+  ready_hours: number
+  chats: number
+  first_reply_median_s: number | null
+  first_reply_before_s: number | null
+  went_back: number
+  after_yes: number
+  never_wrote: number
+  not_in_crm: number
+  not_in_crm_conversations: ChatRef[]
+}
+
+export interface HourRow {
+  hour: number
+  given: number
+  went_back: number
+  ready_people: number
+}
+
+export interface AiReviewRow {
+  key: 'phone' | 'price' | 'repeat'
+  chats: number
+  left_after: number
+  conversations: ChatRef[]
+}
+
+export interface CrmBreakdown {
+  reached: number
+  confirmed: number
+  from_agent_chats: number
+  defaults: number
+  not_in_crm: number
+  closed_by_agent: number
+  refused: number
+  refused_reasons: Record<string, number>
+  not_sent_yet: number
+}
+
+export type AttentionItem =
+  | { kind: 'agent'; level: 'urgent'; user_id: string; name: string; went_back: number; chats: number; first_reply_s: number; ready_hours: number }
+  | { kind: 'hour'; level: 'check'; hour: number; went_back: number; given: number; ready_people: number }
+  | { kind: 'review'; level: 'check'; waiting: number; waiting_long: number; last_review_at: string | null }
+  | { kind: 'ai_latency'; level: 'check'; latency_ms: number; line_ms: number }
+
+export type SourceTab = 'source' | 'site' | 'device' | 'page' | 'route'
+
+export interface OwnerDashboard {
+  days: 1 | 7 | 30
+  tz_offset_minutes: number
+  now: string
+  range_start: string
+  previous: { start: string; end: string }
+  sites: string[]
+  overview: {
+    now: OwnerCohort
+    before: OwnerCohort
+    /** Oldest first; "Today" still has 7 bars. */
+    by_day: Array<{ date: string; ready: number; other: number; contact_only: number }>
+  }
+  funnel: {
+    /** Route, + a date in the future, + travelers and the return, confirmed, ready. */
+    ai_only: number[]
+    with_agent: number[]
+    time_to_ready_median_s: number | null
+  }
+  leave: { total: number; total_before: number; rows: LeaveRow[] }
+  /** null for supervisor, PM and QA: marketing sources are the owner's. */
+  sources: Record<SourceTab, SourceRow[]> | null
+  source_spellings: string[]
+  agents: {
+    now: AgentBlock
+    before: AgentBlock
+    by_agent: AgentRow[]
+    by_hour: HourRow[]
+    ready_hours_before: Record<string, number>
+  }
+  quality: {
+    ready: number
+    reviewed: number
+    to_review: number
+    waiting_long: number
+    oldest_waiting_since: string | null
+    last_review_at: string | null
+    qa_accounts: number
+    sent_to_phone: number
+    sent_to_phone_conversations: ChatRef[]
+    ai_review: AiReviewRow[]
+    /** null for supervisor, PM and QA: the AI's cost and answers are the owner's. */
+    ai: {
+      cost: number
+      cost_per_ready: number | null
+      answers: number
+      template_answers: number
+      latency_median_ms: number | null
+      latency_line_ms: number
+    } | null
+    crm: CrmBreakdown
+  }
+  attention: AttentionItem[]
+  /** Whose chats these are. team_scoped_links: the chat links keep only the
+   *  viewer's own teams' chats (the ones Conversations opens for them). */
+  scope: { tunnel: 'all' | 'sales' | 'support'; team_scoped_links: boolean }
+}
+
+// ── Leads page (GET /api/leads?view=…) ────────────────────────
+export type LeadLevel = 'ready' | 'almost' | 'early' | 'contact'
+export type LeadsView = 'not_in_crm' | 'to_review' | 'reviewed' | 'all'
+export type LeadsOrder = 'newest' | 'oldest' | 'closest'
+export type LeadCrmState =
+  | 'in_crm' | 'no_phone' | 'refused' | 'open' | 'closed_by_agent' | 'ready_never_sent' | 'never_sent'
+
+/** A lead as the Leads page lists it: the lead, its chat's fields, and the
+ *  level / chat-with / CRM state the server derived (one definition for the
+ *  rows, the tabs and the counts). */
+export interface LeadRow {
+  id: string
+  conversation_id: string
+  chat_number: number | null
+  created_at: string
+  updated_at?: string
+  origin_code: string | null
+  destination_code: string | null
+  route_display: string | null
+  departure_date: string | null
+  return_date: string | null
+  passengers: number | null
+  children_count?: number | null
+  infant_count?: number | null
+  trip_type: Lead['trip_type'] | null
+  cabin_class: Lead['cabin_class'] | null
+  flexible_dates: boolean | null
+  score: number
+  tier: Lead['tier']
+  status: Lead['status']
+  team_id?: string | null
+  created_in_crm: boolean | null
+  created_in_crm_at: string | null
+  crm_lead_id: string | null
+  crm_push_gate_reason: string | null
+  crm_push_attempts?: number | null
+  reviewed_by_qa: boolean | null
+  reviewed_at: string | null
+  reviewed_by: string | null
+  /** QA's notes, saved with the review. */
+  qa_notes?: string | null
+  visitor_name: string | null
+  visitor_email: string | null
+  visitor_phone: string | null
+  conversation_status: string | null
+  conversation_mode: string | null
+  tunnel: string | null
+  assigned_agent_id: string | null
+  last_agent_message_at: string | null
+  conversation_closed_at: string | null
+  confirmed_at: string | null
+  closed_by_agent_id: string | null
+  level: LeadLevel
+  chat_with: 'person' | 'ai'
+  crm_state: LeadCrmState
+  agent_name: string | null
+  closed_by_name: string | null
+}
+
+export interface LeadsViewResponse {
+  success: boolean
+  data: LeadRow[]
+  count: number
+  counts: Record<LeadsView, number>
+  order: LeadsOrder
+  summary?: {
+    open: number
+    closed_by_agent: number
+    ready_never_sent: number
+    never_sent: number
+    refused: Record<string, number>
+  }
+  /** QA's cards, on To review and Reviewed. */
+  review?: { to_review: number; reviewed_today_by_me: number; ai_only_to_review: number }
+}
+
+export interface EarlierLead {
+  conversation_id: string
+  chat_number: number | null
+  created_at: string | null
+  status: string | null
+  lead_id: string | null
+  route: string | null
+  in_crm: boolean
+  crm_lead_id: string | null
+}
+
+// ── Users & access ────────────────────────────────────────────
+export interface PanelUser {
+  id: string
+  email: string
+  name: string | null
+  role: string
+  tunnel_scope: string | null
+  avatar_url: string | null
+  is_active: boolean
+  last_seen_at: string | null
+  phone: string | null
+  team_id: string | null
+  created_at: string
+  updated_at?: string
+  chat_enabled?: boolean
+  /** Owner/admin/dev only. Never the hash. */
+  has_password?: boolean
+  /** The newest set-password invite (owner/admin/dev only). */
+  invite?: { expires_at: string | null; used_at: string | null; sent_at: string | null; sent_by: string | null } | null
+}
+
+export type AccessEventKind =
+  | 'invited' | 'invite_again' | 'role' | 'tunnel' | 'deactivated' | 'reactivated'
+  | 'chats_on' | 'chats_off' | 'password_reset'
+
+export interface AccessEvent {
+  at: string
+  kind: AccessEventKind
+  actor_id: string | null
+  actor_name: string | null
+  target_id: string | null
+  target_name: string | null
+  old?: string | null
+  new?: string | null
+  /** For invites: the role it was sent for. */
+  role?: string | null
+}
+
+export interface Handover {
+  open_chats: Array<{ id: string; chat_number: number | null; tunnel: string | null; first_name: string }>
+  clients_90_days: number
+  leads: number
+  window_days: number
+}
+
 // ── Notifications ────────────────────────────────────────
 export interface StaleConversation {
   id: string
@@ -189,43 +525,198 @@ export interface StaleConversation {
   tunnel: 'sales' | 'support'
 }
 
-export interface AssignedTask {
-  id: string
-  task_number: number | null
-  title: string
-  priority: string
-  status: string
-  created_at: string
-}
-
 export interface NotificationsResponse {
   success: boolean
   stale_conversations: StaleConversation[]
-  assigned_tasks: AssignedTask[]
+  tasks: TaskAlerts
   count: number
 }
 
-// ── Tasks ──────────────────────────────────────────────
-export interface Task {
+// ── Tasks: follow-ups (migration 051) ──────────────────
+export type TaskKind = 'call' | 'email' | 'todo'
+export type TaskSource = 'caught' | 'client_asked' | 'added' | 'dashboard'
+/** Late, due today (business zone), later; done for the week's list. */
+export type TaskState = 'late' | 'today' | 'later' | 'done'
+/** How the due time was decided. */
+export type TaskDueKind = 'said' | 'default' | 'end_of_day' | 'picked' | 'day'
+
+export interface TaskRow {
   id: string
-  task_number: number | null
+  number: number | null
   title: string
-  description: string | null
-  status: 'todo' | 'in progress' | 'done' | 'canceled' | 'backlog'
-  label: 'bug' | 'feature' | 'documentation'
-  priority: 'low' | 'medium' | 'high' | 'critical'
+  kind: TaskKind
+  kind_label: string
+  source: TaskSource
+  source_label: string
+  /** The sentence from the chat (masked contacts for a supervisor), or the Dashboard line. */
+  quote: string | null
+  conversation_id: string | null
+  /** The chat message it was caught from (an agent's promise, a client's "call me"). */
+  message_id: string | null
+  lead_id: string | null
+  chat_number: number | null
+  client: string | null
+  route: string | null
+  departure_date: string | null
+  passengers: number | null
+  children_count: number | null
+  infant_count: number | null
+  /** The trip's departure city and its zone: our guess at where the client is. */
+  client_city: string | null
+  client_zone: string | null
+  due_at: string | null
+  due_kind: TaskDueKind
+  state: TaskState
   assignee_id: string | null
   assignee_name: string | null
-  created_by: string | null
-  due_date: string | null
-  created_at: string
-  updated_at: string
+  unowned_reason: 'ai_only' | 'left_shift' | null
+  unowned_from_name: string | null
+  unowned_at: string | null
+  created_by_name: string | null
+  /** The client's latest message after the task was made. */
+  client_wrote_at: string | null
+  created_at: string | null
+  done_at: string | null
+  done_by_name: string | null
 }
 
-export interface TasksResponse {
+export interface TaskPerson {
+  id: string
+  name: string
+  role: string | null
+}
+
+export interface TasksView {
+  tasks: TaskRow[]
+  done: TaskRow[]
+  counts: { late: number; today: number; later: number; unowned: number }
+  /** Of the tasks due since Monday (up to now), how many were done by their time. */
+  on_time: { on_time: number; due: number }
+  time_zone: string
+  day_end: string
+  now: string
+  view: 'mine' | 'team' | 'unowned' | 'all'
+  unowned_open: number | null
+  has_team: boolean
+  can: { assign: boolean; rules: boolean }
+  people: TaskPerson[]
+}
+
+export interface TasksViewResponse {
   success: boolean
-  data: Task[]
+  data: TasksView
   count: number
+}
+
+export interface TaskExcerptLine {
+  id: string | null
+  role: string
+  who: string
+  at: string | null
+  text: string | null
+  /** The message the task was caught from. */
+  source: boolean
+  /** A client message after the task was made. */
+  after: boolean
+}
+
+export interface TaskHistoryLine {
+  at: string | null
+  kind: string
+  text: string
+}
+
+export interface TaskDetail extends TaskRow {
+  contact: { email: string | null; phone: string | null }
+  crm: { in_crm: boolean; crm_lead_id: string | null; has_lead: boolean }
+  excerpt: TaskExcerptLine[]
+  history: TaskHistoryLine[]
+  can: { assign: boolean; edit: boolean; not_a_promise: boolean; delete: boolean }
+  time_zone: string
+}
+
+export type TaskDefaultDue = '1h' | '2h' | 'end_of_day' | 'next_morning'
+
+export interface TaskRules {
+  catch_promises: boolean
+  default_due: TaskDefaultDue
+  time_zone: string
+  day_start: string
+  day_end: string
+  leave_shift: 'unowned' | 'ready'
+  phrases: string[]
+  last_7_days?: { caught: number; not_a_promise: number }
+  /** Minutes after leaving the panel when someone counts as Not ready. */
+  left_after_minutes?: number
+}
+
+export interface TaskTry {
+  makes_task: boolean
+  reason?: string
+  kind?: TaskKind
+  kind_label?: string
+  phrase?: string
+  due_at?: string
+  due_kind?: TaskDueKind
+  due_words?: string
+}
+
+export interface TaskAlertRow {
+  id: string
+  title: string
+  kind: TaskKind
+  due_at: string | null
+  state: TaskState
+  conversation_id: string | null
+  client: string | null
+  route: string | null
+  assignee_name: string | null
+}
+
+/** The tasks part of /api/notifications: menu count, CRM dock band, reminders. */
+export interface TaskAlerts {
+  set_up: boolean
+  failed?: boolean
+  /** The business zone the times are written in (absent when the tasks part failed). */
+  time_zone?: string
+  mine: TaskAlertRow[]
+  team_late: TaskAlertRow[]
+  /** team_late: every late task a supervisor or manager sees, Unowned too (older APIs: absent). */
+  counts: { late: number; today: number; unowned: number; team_late?: number }
+}
+
+/** What an agent's reply made, in the send response ("Follow-up caught"). */
+export interface FollowUpCaught {
+  id: string
+  title: string
+  kind: TaskKind
+  due_at: string | null
+  due_kind: TaskDueKind
+  message_id: string | null
+}
+
+export interface NewTaskBody {
+  kind: TaskKind
+  title: string
+  due_at?: string | null
+  due_kind?: 'picked' | 'day'
+  assignee_id?: string | null
+  unowned?: boolean
+  conversation_id?: string | null
+  lead_id?: string | null
+  source?: 'added' | 'dashboard'
+  note?: string | null
+}
+
+export interface TaskPatchBody {
+  due_at?: string
+  due_kind?: 'picked' | 'day'
+  assignee_id?: string
+  unowned?: boolean
+  title?: string
+  kind?: TaskKind
+  done?: boolean
+  not_a_promise?: boolean
 }
 
 export interface UserOption {
@@ -299,6 +790,9 @@ export type AgentSseEvent =
   | { event: 'stream_chunk'; delta: string }
   | ({ event: 'stream_end' } & SseMessageRow)
   | ({ event: 'lead_details' } & LeadDetails)
+  /** The chat started waiting for a person and isn't yours (blind take):
+   *  the server closes the stream right after this frame. */
+  | { event: 'blind' }
   | SseMessageRow   // plain message row (agent / system / ai)
 
 // ── Learning loop (PR-8) ──────────────────────────────────────
@@ -347,6 +841,7 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const ev = r.event
+  if (ev === 'blind') return { event: 'blind' }
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
@@ -359,4 +854,210 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
     if (ev === undefined) return r as unknown as SseMessageRow
   }
   return null
+}
+
+// ── To read (GET /api/conversations/to-read, /conversations/{id}/reading) ──
+export type LostReason = 'back' | 'anyone' | 'never' | 'yes'
+
+export interface ToReadRow {
+  id: string
+  chat_number: number | null
+  kind: 'lost' | 'sample' | 'help'
+  at: string
+  /** "Olga V.", or the masked name for a supervisor. */
+  client: string
+  agent_id: string | null
+  agent_name: string | null
+  route: string | null
+  status: string | null
+  reasons: { key: LostReason; at: string; user_id: string | null; name: string | null }[]
+}
+
+export interface ToReadList {
+  week_start: string
+  sample_week: { start: string; end: string }
+  lost: ToReadRow[]
+  sample: ToReadRow[]
+  people: { id: string; name: string | null }[]
+  no_team: boolean
+}
+
+export interface ReadingEvent {
+  at: string
+  kind: 'started' | 'taken' | 'first_reply' | 'went_back' | 'closed' | 'not_ready' | 'ended'
+  user_id?: string | null
+  name?: string | null
+  seconds?: number
+}
+
+export interface Reading {
+  id: string
+  chat_number: number | null
+  client: string
+  status: string | null
+  tunnel: string | null
+  created_at: string | null
+  closed_at: string | null
+  person: { user_id: string; name: string | null } | null
+  messages: { id: string | null; role: 'user' | 'ai' | 'agent' | 'system'; at: string; text: string | null; user_id: string | null; name: string | null }[]
+  events: ReadingEvent[]
+  reasons: ToReadRow['reasons']
+  lead: {
+    id: string | null
+    route: string | null
+    origin_code: string | null
+    destination_code: string | null
+    departure_date: string | null
+    return_date: string | null
+    passengers: number | null
+    trip_type: string | null
+    cabin_class: string | null
+    level: LeadLevel
+    crm_state: LeadCrmState
+    crm_lead_id: string | null
+    crm_push_gate_reason: string | null
+    phone: string | null
+    email: string | null
+  } | null
+  week: { user_id: string; name: string | null; chats: number; went_back: number; since: string } | null
+}
+
+// ── Team · Now (GET /api/admin/team/now, /admin/team/people/{id}/today) ──
+export type FloorPresence = 'ready' | 'no_signal' | 'online' | 'offline'
+
+export interface FloorChat {
+  id: string
+  chat_number: number | null
+  tunnel: 'sales' | 'support' | string | null
+  client: string
+  route: string | null
+  messages: number | null
+  preview: string | null
+  since: string | null
+}
+
+export interface FloorPerson {
+  id: string
+  name: string | null
+  role: string
+  tunnel: 'sales' | 'support' | null
+  team_id: string | null
+  team_name: string | null
+  presence: FloorPresence
+  ready_since: string | null
+  last_seen_at: string | null
+  chats_now: number
+  took_today: number
+  first_reply_today_s: number | null
+  went_back_today: number
+}
+
+export type FloorAttention =
+  | { kind: 'client_waiting'; level: 'urgent'; user_id: string; name: string | null; conversation_id: string; client: string; chat_number: number | null; minutes: number }
+  | { kind: 'no_signal'; level: 'check'; user_id: string; name: string | null; minutes: number | null; off_after_minutes: number }
+  | { kind: 'queue_wait'; level: 'check'; tunnel: string; conversation_id: string; client: string; chat_number: number | null; minutes: number; ready: number; ready_chats: number[] }
+  | { kind: 'coverage'; level: 'check'; tunnel: string; user_id: string; name: string | null; since: string | null }
+  | { kind: 'went_back'; level: 'info'; user_id: string; name: string | null; at: string; conversation_id: string; presence: FloorPresence | null; last_seen_at: string | null }
+
+/** A team on Teams & shifts, with today's numbers and Ready per hour. */
+export interface TeamCard {
+  id: string
+  name: string | null
+  shift_start: string | null
+  shift_end: string | null
+  supervisor_name: string | null
+  pm_name: string | null
+  members: { id: string; name: string | null }[]
+  ready_now: number
+  won_today: number
+  back_today: number
+  /** 24 hours of the viewer's day: how many were Ready; null = not yet. */
+  coverage: (number | null)[]
+}
+
+export interface TeamNow {
+  no_team: boolean
+  now: string
+  day_start?: string
+  stats?: {
+    ready: number
+    no_signal: number
+    online: number
+    waiting: number
+    oldest_waiting: { client: string; since: string } | null
+    first_reply_today_s: number | null
+    replies_today: number
+    back_today: number
+  }
+  attention?: FloorAttention[]
+  queue?: (FloorChat & { asked_for_person: boolean })[]
+  with_person?: (FloorChat & { agent_id: string; agent_name: string | null; client_waiting: boolean })[]
+  ai_only?: { count: number; chats: FloorChat[] }
+  people?: FloorPerson[]
+  teams?: TeamCard[]
+  windows?: { queue_s: number; ready_off_s: number }
+  can_give?: boolean
+}
+
+export interface PersonDay {
+  user: {
+    id: string
+    name: string | null
+    email: string | null
+    role: string
+    tunnel: 'sales' | 'support' | null
+    is_active: boolean | null
+    team: { id: string; name: string | null; shift_start: string | null; shift_end: string | null } | null
+    presence: FloorPresence
+    ready_since: string | null
+    last_seen_at: string | null
+  }
+  today: {
+    chats_now: number
+    took: number
+    first_reply_median_s: number | null
+    replied_to: number
+    went_back: number
+    takes_lost: number
+    minutes_online: number
+    first_seen_at: string | null
+  }
+  ready_today: [string, string | null][]
+  week_online: { date: string; minutes_online: number }[]
+  activity: {
+    at: string
+    kind: 'ready' | 'not_ready' | 'took' | 'replied' | 'went_back' | 'closed' | 'take_lost' | 'client_waiting'
+    conversation_id?: string
+    client?: string
+    seconds?: number
+    live?: boolean
+  }[]
+  day_start: string
+}
+
+// ── Settings › Profile: your access (GET /api/auth/me) ───────────────────
+export interface AccessTeam {
+  id: string | null
+  name: string | null
+  shift_name: string | null
+  /** "12:00:00" */
+  shift_start: string | null
+  shift_end: string | null
+  /** The supervisor's name only; null for teams you lead. */
+  supervisor_name: string | null
+}
+
+export interface MyAccess {
+  /** From the database now; the session may still carry an older one. */
+  role: string
+  tunnel_scope: string
+  is_active: boolean
+  chat_enabled: boolean
+  /** The queue and routing can give you a chat. */
+  receives_chats: boolean
+  team: AccessTeam | null
+  /** Supervisor or project manager: the teams you lead. */
+  leads_teams: AccessTeam[]
+  /** The role this session signed in with. */
+  session_role: string | null
 }

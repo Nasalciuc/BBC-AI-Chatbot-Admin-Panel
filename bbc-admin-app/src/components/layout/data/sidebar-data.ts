@@ -1,82 +1,114 @@
 import {
-  LayoutDashboard, MessageSquare, Users, UserPlus, BookOpen,
-  Settings, UserCog, Wrench, Palette, Bell, Monitor, ListChecks, UsersRound, GraduationCap,
+  BookOpen,
+  CircleDot,
+  GraduationCap,
+  KeyRound,
+  LayoutGrid,
+  MessageCircle,
+  SlidersHorizontal,
+  SquareCheck,
+  Users,
 } from 'lucide-react'
+import type { Permissions, UserRole } from '@/lib/bbc/types'
+import { canSeeTeam } from '@/features/teams/view'
 import { type SidebarData } from '../types'
-import type { Permissions } from '@/lib/bbc/types'
 
+export type NavKey =
+  | 'conv'
+  | 'tasks'
+  | 'dash'
+  | 'leads'
+  | 'team'
+  | 'users'
+  | 'assist'
+  | 'learning'
+  | 'settings'
+
+export type PanelNavItem = {
+  key: NavKey
+  title: string
+  url: string
+  icon: React.ElementType
+}
+
+/** Operators: the people who take chats (sales, support). */
+export function isOperatorRole(role: string | undefined): boolean {
+  return role === 'sales' || role === 'support'
+}
+
+/**
+ * The panel menu, per role — the design canvas's menu ("what we can build
+ * now"), restricted to pages that exist in this build:
+ *   - agents: Conversations, Tasks, Dashboard (Your day) | Knowledge | Settings
+ *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant, Learning | Settings
+ *   - QA: Conversations, Dashboard, Leads | Assistant | Settings
+ *   - supervisor / PM: Conversations, Tasks, Dashboard | Team | Settings
+ * Assistant (the knowledge base editor) is the existing page, not redesigned yet.
+ * Learning (v2 PR-8, the question variants) is v2's page, also not redesigned;
+ * it shows for the roles the backend lets in (CAN_REVIEW_LESSONS =
+ * owner/admin/dev), so a project manager never lands on a page of 403s.
+ */
+export function getNavGroups(
+  role: UserRole,
+  permissions: Permissions
+): PanelNavItem[][] {
+  const op = isOperatorRole(role)
+  const g1: PanelNavItem[] = [
+    { key: 'conv', title: 'Conversations', url: '/chats', icon: MessageCircle },
+    // Tasks: what each person promised clients (QA has none to follow up).
+    ...(role !== 'qa'
+      ? [{ key: 'tasks' as const, title: 'Tasks', url: '/tasks', icon: SquareCheck }]
+      : []),
+    { key: 'dash', title: 'Dashboard', url: '/', icon: LayoutGrid },
+    ...(permissions.canViewLeads
+      ? [{ key: 'leads' as const, title: 'Leads', url: '/leads', icon: CircleDot }]
+      : []),
+  ]
+  const g2: PanelNavItem[] = [
+    ...(canSeeTeam(role)
+      ? [{ key: 'team' as const, title: 'Team', url: '/teams', icon: Users }]
+      : []),
+    ...(permissions.canViewUsers
+      ? [{ key: 'users' as const, title: 'Users & access', url: '/users', icon: KeyRound }]
+      : []),
+    ...(op
+      ? [{ key: 'assist' as const, title: 'Knowledge', url: '/knowledge', icon: BookOpen }]
+      : permissions.canViewKB
+        ? [{ key: 'assist' as const, title: 'Assistant', url: '/knowledge-base', icon: BookOpen }]
+        : []),
+    ...(permissions.canReviewLearning
+      ? [{ key: 'learning' as const, title: 'Learning', url: '/learning', icon: GraduationCap }]
+      : []),
+  ]
+  return [g1, g2].filter((g) => g.length > 0)
+}
+
+export const SETTINGS_ITEM: PanelNavItem = {
+  key: 'settings',
+  title: 'Settings',
+  url: '/settings',
+  icon: SlidersHorizontal,
+}
+
+/** Shape kept for the command menu (search). */
 export function getSidebarData(
   permissions: Permissions,
   userName: string,
   userEmail: string,
+  role: UserRole = 'sales'
 ): SidebarData {
+  const groups = getNavGroups(role, permissions)
   return {
-    user: {
-      name: userName || 'User',
-      email: userEmail || '',
-      avatar: '/avatars/01.png',
-    },
-    // Deprecated: the header no longer uses a hardcoded team. TeamSwitcher now
-    // loads real teams from the API (see components/layout/team-switcher.tsx).
-    // Kept empty to satisfy the SidebarData type without a hardcoded brand entry.
+    user: { name: userName || 'User', email: userEmail || '', avatar: '' },
     teams: [],
     navGroups: [
+      ...groups.map((items, i) => ({
+        title: i === 0 ? 'Panel' : 'More',
+        items: items.map(({ title, url, icon }) => ({ title, url, icon })),
+      })),
       {
-        title: 'Main',
-        items: [
-          { title: 'Dashboard', url: '/', icon: LayoutDashboard },
-          { title: 'Conversations', url: '/chats', icon: MessageSquare },
-          ...(permissions.canViewLeads
-            ? [{ title: 'Leads', url: '/leads' as const, icon: UserPlus }]
-            : []),
-        ],
-      },
-      ...(permissions.canViewUsers || permissions.canViewKB || permissions.canAssignTasks || permissions.canManageTeams
-        || permissions.canReviewLearning
-        ? [{
-            title: 'Management',
-            items: [
-              ...(permissions.canViewUsers
-                ? [{ title: 'Users', url: '/users' as const, icon: Users }]
-                : []),
-              // Management-only page (create/edit teams, assign people). PM/supervisor
-              // read-only view can be added later; gated on canManageTeams for now.
-              ...(permissions.canManageTeams
-                ? [{ title: 'Teams', url: '/teams' as const, icon: UsersRound }]
-                : []),
-              ...(permissions.canViewKB
-                ? [{ title: 'Knowledge Base', url: '/knowledge-base' as const, icon: BookOpen }]
-                : []),
-              ...(permissions.canAssignTasks
-                ? [{ title: 'Tasks', url: '/tasks' as const, icon: ListChecks }]
-                : []),
-              // The learning loop's human gate — owner/admin/dev only, the same
-              // set the backend allows (CAN_REVIEW_LESSONS). Not canManageTeams:
-              // a project manager has that and would land on a page of 403s.
-              ...(permissions.canReviewLearning
-                ? [{ title: 'Learning', url: '/learning' as const, icon: GraduationCap }]
-                : []),
-            ],
-          }]
-        : []),
-      {
-        title: 'System',
-        items: [
-          {
-            title: 'Settings', icon: Settings,
-            items: [
-              { title: 'Profile', url: '/settings' as const, icon: UserCog },
-              { title: 'Appearance', url: '/settings/appearance' as const, icon: Palette },
-              ...(permissions.canEditSettings
-                ? [
-                    { title: 'Account', url: '/settings/account' as const, icon: Wrench },
-                    { title: 'Notifications', url: '/settings/notifications' as const, icon: Bell },
-                    { title: 'Display', url: '/settings/display' as const, icon: Monitor },
-                  ]
-                : []),
-            ],
-          },
-        ],
+        title: 'You',
+        items: [{ title: SETTINGS_ITEM.title, url: SETTINGS_ITEM.url, icon: SETTINGS_ITEM.icon }],
       },
     ],
   }
