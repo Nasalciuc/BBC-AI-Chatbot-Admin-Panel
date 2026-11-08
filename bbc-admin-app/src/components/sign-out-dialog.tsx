@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from '@tanstack/react-router'
 import { useAuthStore } from '@/stores/auth-store'
 import { isEmbedded } from '@/lib/crm-bridge'
+import { clearDrafts } from '@/lib/chat-drafts'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
 interface SignOutDialogProps {
@@ -25,6 +26,8 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
   if (isEmbedded()) return null
 
   const handleSignOut = () => {
+    // Drafts typed for clients don't outlive a deliberate sign-out.
+    clearDrafts()
     auth.reset()
     // Preserve current location for redirect after sign-in
     const currentPath = location.href

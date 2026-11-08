@@ -31,6 +31,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { readDraft, writeDraft } from '@/lib/chat-drafts'
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
 import { DetailsPanel } from './components/details-panel'
@@ -95,7 +96,14 @@ export default function ConversationDetail({
   const [blockDialogOpen, setBlockDialogOpen] = useState(false)
   const [blocking, setBlocking] = useState(false)
   const [blockResult, setBlockResult] = useState<string | null>(null)
-  const [input, setInput]             = useState('')
+  // Each chat keeps its own draft (lib/chat-drafts.ts): text typed for one client
+  // never follows you into another chat, and survives a sign-in.
+  const [input, setInput]             = useState(() => readDraft(conversationId))
+  const [draftOf, setDraftOf]         = useState(conversationId)
+  if (draftOf !== conversationId) {
+    setDraftOf(conversationId)
+    setInput(readDraft(conversationId))
+  }
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
   const [taking, setTaking] = useState(false)
@@ -324,6 +332,10 @@ export default function ConversationDetail({
       clearAgentTyping(conversationId).catch(() => {})
     }
   }, [conversationId])
+
+  useEffect(() => {
+    writeDraft(conversationId, input)
+  }, [conversationId, input])
 
   const handleSend = async () => {
     if (!input.trim() || sending) return
