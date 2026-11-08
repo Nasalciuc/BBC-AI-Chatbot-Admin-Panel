@@ -1061,3 +1061,18 @@ export interface MyAccess {
   /** The role this session signed in with. */
   session_role: string | null
 }
+
+// ── The chat widget on the panel's own pages ──────────────────
+/** Where the widget script stands on /widget-preview, /chat/* and
+ *  /widget-embed: a load that fails, or that runs no widget, is "failed". */
+export type WidgetScriptState = 'loading' | 'ready' | 'failed'
+
+declare global {
+  interface Window {
+    /** Set by the widget bundle (bbc-widget/src/entry.tsx) once it runs. */
+    __BBC_WIDGET_LOADED__?: boolean
+    /** Set by the widget bundle once it renders: unmounts it (every effect's
+     *  cleanup runs) and removes its root, so it can be loaded again. */
+    __BBC_WIDGET_TEARDOWN__?: () => void
+  }
+}

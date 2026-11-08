@@ -6,14 +6,17 @@
  * public/widget/bbc-widget.js (scripts/sync-widget.cjs).
  */
 import { useWidgetScript } from './use-widget-script'
+import { WidgetFailed } from './widget-failed'
 
 export default function WidgetEmbed() {
-  useWidgetScript({
+  const state = useWidgetScript({
     embedded: new URLSearchParams(window.location.search).get('embedded') === '1',
   })
 
-  // Empty page — widget renders itself into #bbc-widget-root
+  // Empty page — widget renders itself into #bbc-widget-root; if it can't, say so
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#f9fafb' }} />
+    <div style={{ width: '100vw', height: '100vh', background: '#f9fafb' }}>
+      {state === 'failed' && <WidgetFailed />}
+    </div>
   )
 }
