@@ -15,9 +15,17 @@ export class ApiError extends Error {
 }
 
 import type {
+  AccessEvent,
   Conversation,
   ConversationsResponse,
   DashboardStats,
+  EarlierLead,
+  Handover,
+  LeadsOrder,
+  LeadsView,
+  LeadsViewResponse,
+  OwnerDashboard,
+  PanelUser,
   KBCategory,
   KBEntry,
   KBEntryCreate,
@@ -135,6 +143,17 @@ export async function getAgentDay(days: 1 | 7 | 30): Promise<AgentDay> {
   const offset = -new Date().getTimezoneOffset()
   const res = await apiFetch<{ success: boolean; data: AgentDay }>(
     `/api/agent/day?days=${days}&tz_offset_minutes=${offset}`
+  )
+  return res.data
+}
+
+/** The owner's Dashboard (owner/admin/dev). Days and hours are the browser's. */
+export async function getOwnerDashboard(days: 1 | 7 | 30): Promise<OwnerDashboard> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: OwnerDashboard }>(
+    `/api/dashboard/owner?days=${days}&tz_offset_minutes=${offset}`,
+    {},
+    20_000,
   )
   return res.data
 }
@@ -278,6 +297,31 @@ export function getLeads(
   return apiFetch<LeadsResponse>(`/api/leads?${qs}`)
 }
 
+/** The Leads page: one tab, its filters, and every tab's count. */
+export function getLeadsView(params: {
+  view: LeadsView
+  search?: string
+  level?: string
+  chat_with?: string
+  order?: LeadsOrder
+  limit?: number
+  offset?: number
+}): Promise<LeadsViewResponse> {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '' && v !== null) qs.set(k, String(v))
+  }
+  return apiFetch<LeadsViewResponse>(`/api/leads?${qs.toString()}`, {}, 20_000)
+}
+
+/** Other chats with the same phone or e-mail. */
+export async function getEarlierLeads(leadId: string): Promise<EarlierLead[]> {
+  const res = await apiFetch<{ success: boolean; data: EarlierLead[] }>(
+    `/api/leads/${encodeURIComponent(leadId)}/earlier`
+  )
+  return res.data ?? []
+}
+
 export async function getLeadFull(id: string): Promise<Lead> {
   const res = await apiFetch<Lead & { success?: boolean; data?: Lead }>(`/api/leads/${encodeURIComponent(id)}`)
   if (res && typeof res === 'object' && 'data' in res && res.data) return res.data
@@ -367,6 +411,25 @@ export function getUsers(
 ): Promise<{ success: boolean; data: Record<string, unknown>[]; count: number }> {
   const qs = new URLSearchParams({ limit: '100', ...params }).toString()
   return apiFetch(`/api/admin/users?${qs}`)
+}
+
+/** Users & access: everyone, with how they sign in (owner/admin/dev). */
+export async function getPanelUsers(): Promise<PanelUser[]> {
+  const res = await apiFetch<{ success: boolean; data: PanelUser[] }>('/api/admin/users?limit=200')
+  return res.data ?? []
+}
+
+export async function getAccessLog(limit = 200): Promise<AccessEvent[]> {
+  const res = await apiFetch<{ success: boolean; data: AccessEvent[] }>(`/api/admin/access-log?limit=${limit}`)
+  return res.data ?? []
+}
+
+/** What deactivating someone touches: open chats, returning clients, leads. */
+export async function getUserHandover(id: string): Promise<Handover> {
+  const res = await apiFetch<{ success: boolean; data: Handover }>(
+    `/api/admin/users/${encodeURIComponent(id)}/handover`
+  )
+  return res.data
 }
 
 export async function getLiveAgents(): Promise<import('./types').LiveAgent[]> {

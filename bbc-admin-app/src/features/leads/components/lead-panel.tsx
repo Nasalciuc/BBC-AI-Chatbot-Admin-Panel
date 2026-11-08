@@ -1,0 +1,396 @@
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { Check, MessageSquare } from 'lucide-react'
+import { toast } from 'sonner'
+import { type ApiError, getConversation, getEarlierLeads, getLeadFull, pushLeadToCrm, reviewLead, setLeadCrmId } from '@/lib/api'
+import type { LeadRow, Lead } from '@/lib/types'
+import { cn } from '@/lib/utils'
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
+import {
+  aboutOf,
+  clock,
+  dayMonth,
+  firstName,
+  initials,
+  signalsOf,
+  threadLines,
+  tripRows,
+  whereRows,
+} from '@/features/chats/view'
+import { LEVELS, TONE_DOT, TONE_TEXT, ageText, chatWithText, checklist, crmLine, historyOf, missingText } from '../view'
+
+const h3 = 'm-0 text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'
+const btn = 'h-9 rounded-full px-4 text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-k-6ea8ff disabled:opacity-60'
+
+function Rows({ rows }: { rows: { label: string; value: string; warn?: boolean }[] }) {
+  return (
+    <dl className='m-0 grid grid-cols-[120px_1fr] gap-x-3 gap-y-1.5 text-sm'>
+      {rows.map((r) => (
+        <div key={r.label} className='contents'>
+          <dt className='text-k-555555'>{r.label}</dt>
+          <dd className={cn('m-0 min-w-0 break-words text-k-202020', r.warn && 'font-bold text-k-8a4b00')}>{r.value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function fmtWhen(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const today = new Date()
+  const same = d.toDateString() === today.toDateString()
+  return same ? `Today, ${clock(iso)}` : `${dayMonth(iso.slice(0, 10))}, ${clock(iso)}`
+}
+
+export function LeadPanel({
+  row,
+  onClose,
+  onPatched,
+  canReview,
+  canSend,
+  canLookUp,
+  userNames,
+  nowMs,
+}: {
+  row: LeadRow | null
+  onClose: () => void
+  /** What changed, so the open panel shows it even if the row left the list. */
+  onPatched: (patch: Partial<LeadRow>) => void
+  canReview: boolean
+  canSend: boolean
+  canLookUp: boolean
+  userNames: Record<string, string>
+  nowMs: number
+}) {
+  const qc = useQueryClient()
+  const [wide, setWide] = useState(false)
+  const [reading, setReading] = useState(false)
+  const [manual, setManual] = useState('')
+  const open = !!row
+  const id = row?.id ?? ''
+
+  const full = useQuery({ queryKey: ['lead', id], queryFn: () => getLeadFull(id), enabled: open })
+  const conv = useQuery({
+    queryKey: ['lead-conversation', row?.conversation_id],
+    queryFn: () => getConversation(row!.conversation_id),
+    enabled: open,
+  })
+  const earlier = useQuery({ queryKey: ['lead-earlier', id], queryFn: () => getEarlierLeads(id), enabled: open && canLookUp })
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['leads-view'] })
+    qc.invalidateQueries({ queryKey: ['lead', id] })
+  }
+  const push = useMutation({
+    mutationFn: () => pushLeadToCrm(id),
+    onSuccess: (r) => {
+      toast.success(`Sent to the CRM${r.data?.crm_lead_id ? ` · lead ${r.data.crm_lead_id}` : ''}.`)
+      onPatched({ crm_state: 'in_crm', created_in_crm: true, crm_lead_id: r.data?.crm_lead_id ?? null, created_in_crm_at: new Date().toISOString() })
+      refresh()
+    },
+    onError: (e) => {
+      toast.error((e as ApiError)?.message ?? 'The CRM didn’t take it. Try again.')
+      refresh()
+    },
+  })
+  const saveManual = useMutation({
+    mutationFn: (crmId: string) => setLeadCrmId(id, crmId),
+    onSuccess: (_r, crmId) => {
+      toast.success(`Saved: CRM lead ${crmId}.`)
+      setManual('')
+      onPatched({ crm_state: 'in_crm', created_in_crm: true, crm_lead_id: crmId, created_in_crm_at: new Date().toISOString() })
+      refresh()
+    },
+    onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.'),
+  })
+  const review = useMutation({
+    mutationFn: (v: boolean) => reviewLead(id, v),
+    onSuccess: (_r, v) => {
+      toast.success(v ? 'Marked as reviewed.' : 'Review cleared.')
+      onPatched({ reviewed_by_qa: v, reviewed_at: v ? new Date().toISOString() : null })
+      refresh()
+    },
+    onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the review. Try again.'),
+  })
+
+  if (!row) return null
+  const level = LEVELS[row.level]
+  const lead = full.data as Lead | undefined
+  const signals = signalsOf(lead)
+  const about = aboutOf(signals)
+  const trip = tripRows((lead ?? row) as Lead, signals)
+  const where = whereRows(conv.data?.metadata as Record<string, unknown> | undefined, conv.data?.visitor_phone_country)
+  const first = firstName(row.visitor_name)
+  const crm = crmLine(row)
+  const chatWith = chatWithText(row)
+  const messages = conv.data?.messages ?? []
+  const reviewer = row.reviewed_by ? userNames[row.reviewed_by] : null
+  const sending = push.isPending
+  const canPushNow = canSend && row.crm_state !== 'in_crm' && row.crm_state !== 'no_phone'
+
+  return (
+    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
+      <SheetContent
+        className={cn('w-full gap-0 overflow-y-auto bg-k-ffffff p-0 sm:max-w-none [&>button]:z-20', wide ? 'sm:w-[760px]' : 'sm:w-[500px]')}
+      >
+        <div className='sticky top-0 z-10 flex flex-col gap-3 border-b border-k-ececec bg-k-ffffff px-6 pt-5 pb-4'>
+          <div className='flex items-start gap-3 pe-8'>
+            <span aria-hidden='true' className='flex size-[52px] flex-none items-center justify-center rounded-full bg-k-e6f0fb text-lg font-bold text-k-1f5fb0'>
+              {initials(row.visitor_name)}
+            </span>
+            <div className='min-w-0 flex-1'>
+              <SheetTitle className='m-0 truncate text-[22px] font-bold text-k-202020'>{row.visitor_name || 'No name'}</SheetTitle>
+              <SheetDescription className='mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-k-555555'>
+                <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-bold', level.chipCls)}>{level.name}</span>
+                {row.chat_number && <span>chat #{row.chat_number}</span>}
+                <span>· {chatWith.ai ? 'only the AI' : `chat with ${chatWith.text}`}</span>
+                <span>· {ageText(row.created_at, nowMs)} ago</span>
+              </SheetDescription>
+            </div>
+            <button
+              type='button'
+              onClick={() => setWide((w) => !w)}
+              className='hidden h-9 flex-none rounded-full border border-k-c9c9c9 px-3.5 text-[13px] font-bold text-k-202020 sm:block'
+            >
+              {wide ? 'Narrower' : 'Wider'}
+            </button>
+          </div>
+          <button
+            type='button'
+            onClick={() => setReading((v) => !v)}
+            aria-expanded={reading}
+            className='flex h-11 items-center justify-center gap-2 rounded-full bg-kb-202020 text-[15px] font-bold text-on-btn focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
+          >
+            <MessageSquare className='size-4' />
+            {reading ? 'Back to the lead' : `Read the conversation${messages.length ? ` · ${messages.length} messages` : ''}`}
+          </button>
+        </div>
+
+        {reading ? (
+          <section aria-label='Conversation' className='flex flex-col gap-2 px-6 py-5'>
+            {conv.isLoading ? (
+              <p className='text-sm text-k-6b6b6b'>Loading the conversation…</p>
+            ) : conv.isError ? (
+              <p role='alert' className='text-sm text-k-8a4b00'>Couldn’t load the conversation.</p>
+            ) : messages.length === 0 ? (
+              <p className='text-sm text-k-6b6b6b'>No messages in this chat.</p>
+            ) : (
+              threadLines(messages).map((l) => (
+                <div key={l.id} className='flex flex-col'>
+                  {l.showDay && <span className='my-2 text-center text-xs text-k-6b6b6b'>{dayMonth(l.at.slice(0, 10))}</span>}
+                  {l.kind === 'system' ? (
+                    <span className='my-1 text-center text-xs text-k-6b6b6b'>{l.text}</span>
+                  ) : (
+                    <div className={cn('flex flex-col', l.who === 'user' ? 'items-start' : 'items-end')}>
+                      {l.showLabel && (
+                        <span className='mb-0.5 text-[11px] font-bold text-k-6b6b6b'>
+                          {l.who === 'user' ? first || 'The client' : l.who === 'ai' ? 'AI' : 'Agent'} · {clock(l.at)}
+                        </span>
+                      )}
+                      <p
+                        className={cn(
+                          'm-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-[1.45] break-words whitespace-pre-wrap',
+                          l.who === 'user' ? 'bg-k-f2f2f2 text-k-202020' : l.who === 'ai' ? 'bg-k-efeaff text-k-202020' : 'bg-kb-202020 text-on-btn'
+                        )}
+                      >
+                        {l.text}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </section>
+        ) : (
+          <div className='flex flex-col gap-6 px-6 py-5'>
+            <section aria-label='Trip' className='flex flex-col gap-2'>
+              <h3 className={h3}>Trip</h3>
+              <div>
+                <p className='m-0 text-[28px] leading-tight font-bold text-k-202020'>
+                  {row.origin_code && row.destination_code ? `${row.origin_code} → ${row.destination_code}` : 'No route yet'}
+                </p>
+                {row.route_display && <p className='m-0 text-[13px] text-k-555555'>{row.route_display}</p>}
+              </div>
+              {trip.length > 0 && <Rows rows={trip} />}
+            </section>
+
+            <section aria-label='Level' className='flex flex-col gap-2'>
+              <h3 className={h3}>Level</h3>
+              <p className='m-0 text-[17px] text-k-202020'>
+                <strong>{level.name}</strong> <span className='text-[13px] text-k-555555'>{level.why}</span>
+              </p>
+              <div className='flex gap-1' aria-hidden='true'>
+                {[1, 2, 3, 4].map((n) => (
+                  <span key={n} className={cn('h-1.5 flex-1 rounded-full', n <= level.steps ? 'bg-kb-202020' : 'bg-k-ececec')} />
+                ))}
+              </div>
+              <ul className='m-0 flex list-none flex-col gap-1.5 p-0'>
+                {checklist(row).map((c) => (
+                  <li key={c.label} className='flex items-center gap-2.5 text-sm'>
+                    <span
+                      aria-hidden='true'
+                      className={cn('flex size-[18px] flex-none items-center justify-center rounded-full', c.ok ? 'bg-k-00a645 text-on-btn' : 'bg-k-e9e9e9')}
+                    >
+                      {c.ok && <Check className='size-3' strokeWidth={3} />}
+                    </span>
+                    <span className={cn('flex-1', c.ok ? 'text-k-202020' : 'text-k-8a4b00')}>{c.label}</span>
+                    {c.note && <span className='text-xs text-k-8a4b00'>{c.note}</span>}
+                    <span className='sr-only'>{c.ok ? 'done' : 'missing'}</span>
+                  </li>
+                ))}
+              </ul>
+              {missingText(row) && <p className='m-0 text-[13px] font-bold text-k-8a4b00'>{missingText(row)}</p>}
+              <p className='m-0 text-xs text-k-6b6b6b'>The level says what we know and what the client confirmed, not how likely they are to buy.</p>
+            </section>
+
+            {(about.persona || about.rows.length > 0) && (
+              <section aria-label={`About ${first}`} className='flex flex-col gap-2'>
+                <h3 className={h3}>About {first || 'the client'}</h3>
+                {about.persona && (
+                  <p className='m-0 text-sm text-k-202020'>
+                    <strong>{about.persona.label}.</strong> {about.persona.why}
+                  </p>
+                )}
+                {about.rows.length > 0 && <Rows rows={about.rows} />}
+              </section>
+            )}
+
+            <section aria-label='Contact' className='flex flex-col gap-2'>
+              <h3 className={h3}>Contact</h3>
+              <Rows
+                rows={[
+                  { label: 'Phone', value: row.visitor_phone || '—' },
+                  { label: 'E-mail', value: row.visitor_email || '—' },
+                ]}
+              />
+            </section>
+
+            {where.length > 0 && (
+              <section aria-label='Where they came from' className='flex flex-col gap-2'>
+                <h3 className={h3}>Where {first || 'they'} came from</h3>
+                <Rows rows={where} />
+              </section>
+            )}
+
+            {lead?.notes?.trim() && (
+              <section aria-label='The assistant’s notes' className='flex flex-col gap-2'>
+                <h3 className={h3}>The assistant’s notes</h3>
+                <p className='m-0 rounded-2xl bg-k-f7f7f7 px-3.5 py-2.5 text-sm whitespace-pre-wrap text-k-202020'>{lead.notes.trim()}</p>
+                <p className='m-0 text-xs text-k-6b6b6b'>Written by the assistant during the chat; they travel to the CRM with the lead.</p>
+              </section>
+            )}
+
+            <section aria-label='CRM' className='flex flex-col gap-2'>
+              <h3 className={h3}>CRM</h3>
+              <p className={cn('m-0 flex items-center gap-2 text-[15px] font-bold', TONE_TEXT[crm.tone])}>
+                <span aria-hidden='true' className={cn('size-2 rounded-full', TONE_DOT[crm.tone])} />
+                {crm.text}
+              </p>
+              {row.crm_state !== 'in_crm' && (
+                <p className='m-0 text-[13px] text-k-555555'>
+                  {row.crm_state === 'no_phone'
+                    ? 'The CRM needs a phone number. Without one the lead can’t be sent.'
+                    : 'Closing a chat doesn’t send the lead. Send it now, or add it in the CRM yourself and save the lead number here.'}
+                </p>
+              )}
+              {canPushNow && (
+                <div className='flex flex-col gap-2'>
+                  <button
+                    type='button'
+                    disabled={sending}
+                    onClick={() => push.mutate()}
+                    className={cn(btn, 'self-start bg-kb-202020 text-on-btn')}
+                  >
+                    {sending ? 'Sending…' : 'Send to CRM'}
+                  </button>
+                  <form
+                    className='flex flex-wrap items-center gap-2'
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      if (manual.trim()) saveManual.mutate(manual.trim())
+                    }}
+                  >
+                    <label htmlFor='lead-crm-id' className='text-[13px] text-k-555555'>
+                      I added {first || 'them'} in the CRM, lead number
+                    </label>
+                    <input
+                      id='lead-crm-id'
+                      value={manual}
+                      onChange={(e) => setManual(e.target.value)}
+                      inputMode='numeric'
+                      className='h-9 w-28 rounded-xl border border-k-c9c9c9 bg-k-ffffff px-3 text-sm text-k-202020'
+                    />
+                    <button type='submit' disabled={!manual.trim() || saveManual.isPending} className={cn(btn, 'border border-k-c9c9c9 text-k-202020')}>
+                      Save
+                    </button>
+                  </form>
+                </div>
+              )}
+            </section>
+
+            {canLookUp && (
+              <section aria-label='Earlier with us' className='flex flex-col gap-2'>
+                <h3 className={h3}>Earlier with us</h3>
+                {earlier.isLoading ? (
+                  <p className='m-0 text-sm text-k-6b6b6b'>Looking up the phone and e-mail…</p>
+                ) : earlier.isError ? (
+                  <p className='m-0 text-sm text-k-8a4b00'>Couldn’t look up earlier chats.</p>
+                ) : !earlier.data?.length ? (
+                  <p className='m-0 text-sm text-k-555555'>No earlier chats with this phone or e-mail.</p>
+                ) : (
+                  <ul className='m-0 flex list-none flex-col p-0'>
+                    {earlier.data.map((e) => (
+                      <li key={e.conversation_id} className='flex items-center gap-3 border-t border-k-ececec py-2 text-sm first:border-t-0'>
+                        <span className='w-16 text-k-555555'>{e.created_at ? dayMonth(e.created_at.slice(0, 10)) : ''}</span>
+                        <span className='min-w-0 flex-1 text-k-202020'>
+                          {e.route ?? 'No route'}
+                          {e.in_crm && <span className='ms-2 text-xs text-k-0a6b35'>In the CRM{e.crm_lead_id ? ` · ${e.crm_lead_id}` : ''}</span>}
+                        </span>
+                        <Link to='/chats' search={{ highlight: e.conversation_id } as never} className='text-[13px] font-bold text-k-5b45e0 hover:underline'>
+                          {e.chat_number ? `#${e.chat_number}` : 'Open'}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
+
+            <section aria-label='QA review' className='flex flex-col gap-2'>
+              <h3 className={h3}>QA review</h3>
+              <p className='m-0 text-sm text-k-202020'>
+                {row.reviewed_by_qa
+                  ? `Reviewed${reviewer ? ` by ${reviewer}` : ''}${row.reviewed_at ? ` on ${dayMonth(row.reviewed_at.slice(0, 10))}` : ''}.`
+                  : 'Not reviewed yet.'}
+              </p>
+              {canReview && (
+                <button
+                  type='button'
+                  disabled={review.isPending}
+                  onClick={() => review.mutate(!row.reviewed_by_qa)}
+                  className={cn(btn, 'self-start border border-kl-202020 text-k-202020')}
+                >
+                  {row.reviewed_by_qa ? 'Clear the review' : 'Mark as reviewed'}
+                </button>
+              )}
+            </section>
+
+            <section aria-label='History' className='flex flex-col gap-2 pb-4'>
+              <h3 className={h3}>History</h3>
+              <ul className='m-0 flex list-none flex-col gap-1.5 p-0'>
+                {historyOf(row, reviewer).map((h) => (
+                  <li key={`${h.at}-${h.text}`} className='flex gap-3 text-sm'>
+                    <span className='w-[112px] flex-none text-k-555555'>{fmtWhen(h.at)}</span>
+                    <span className='text-k-202020'>{h.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </div>
+        )}
+      </SheetContent>
+    </Sheet>
+  )
+}

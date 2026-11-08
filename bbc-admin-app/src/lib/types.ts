@@ -220,6 +220,287 @@ export interface AgentDay {
   first_reply_week: { this: number | null; previous: number | null }
 }
 
+// ── The owner's Dashboard (GET /api/dashboard/owner) ──────────
+export interface OwnerCohort {
+  started: number
+  wrote: number
+  contact_only: number
+  ready: number
+  ready_ai_only: number
+  ready_with_agent: number
+  ai_only: number
+  ai_only_ready: number
+  with_agent: number
+}
+
+/** A chat a number points at, for "Open". */
+export interface ChatRef {
+  id: string
+  first_name: string
+  chat_number: number | null
+}
+
+export type LeaveKey =
+  | 'from' | 'to' | 'route' | 'dates' | 'flexible' | 'travelers' | 'occasion' | 'contact'
+  | 'summary' | 'specialist' | 'callback' | 'goodbye' | 'phone' | 'other'
+
+export interface LeaveRow {
+  key: LeaveKey
+  label: string
+  chats: number
+  before: number
+  conversations: ChatRef[]
+}
+
+export interface SourceRow {
+  name: string
+  chats: number
+  wrote: number
+  ready: number
+  /** On the "Other" row: how many names it groups. */
+  names?: number
+}
+
+export interface AgentBlock {
+  given: number
+  first_reply_median_s: number | null
+  replies_measured: number
+  replies_over_deadline: number
+  went_back: number
+  after_yes: number
+  never_wrote: number
+}
+
+export interface AgentRow {
+  user_id: string
+  name: string
+  role: string | null
+  ready_hours: number
+  chats: number
+  first_reply_median_s: number | null
+  first_reply_before_s: number | null
+  went_back: number
+  after_yes: number
+  never_wrote: number
+  not_in_crm: number
+  not_in_crm_conversations: ChatRef[]
+}
+
+export interface HourRow {
+  hour: number
+  given: number
+  went_back: number
+  ready_people: number
+}
+
+export interface AiReviewRow {
+  key: 'phone' | 'price' | 'repeat'
+  chats: number
+  left_after: number
+  conversations: ChatRef[]
+}
+
+export interface CrmBreakdown {
+  reached: number
+  confirmed: number
+  from_agent_chats: number
+  defaults: number
+  not_in_crm: number
+  closed_by_agent: number
+  refused: number
+  refused_reasons: Record<string, number>
+  not_sent_yet: number
+}
+
+export type AttentionItem =
+  | { kind: 'agent'; level: 'urgent'; user_id: string; name: string; went_back: number; chats: number; first_reply_s: number; ready_hours: number }
+  | { kind: 'hour'; level: 'check'; hour: number; went_back: number; given: number; ready_people: number }
+  | { kind: 'review'; level: 'check'; waiting: number; waiting_long: number; last_review_at: string | null }
+  | { kind: 'ai_latency'; level: 'check'; latency_ms: number; line_ms: number }
+
+export type SourceTab = 'source' | 'site' | 'device' | 'page' | 'route'
+
+export interface OwnerDashboard {
+  days: 1 | 7 | 30
+  tz_offset_minutes: number
+  now: string
+  range_start: string
+  previous: { start: string; end: string }
+  sites: string[]
+  overview: {
+    now: OwnerCohort
+    before: OwnerCohort
+    /** Oldest first; "Today" still has 7 bars. */
+    by_day: Array<{ date: string; ready: number; other: number; contact_only: number }>
+  }
+  funnel: {
+    /** Route, + a date in the future, + travelers and the return, confirmed, ready. */
+    ai_only: number[]
+    with_agent: number[]
+    time_to_ready_median_s: number | null
+  }
+  leave: { total: number; total_before: number; rows: LeaveRow[] }
+  sources: Record<SourceTab, SourceRow[]>
+  source_spellings: string[]
+  agents: {
+    now: AgentBlock
+    before: AgentBlock
+    by_agent: AgentRow[]
+    by_hour: HourRow[]
+    ready_hours_before: Record<string, number>
+  }
+  quality: {
+    ready: number
+    reviewed: number
+    to_review: number
+    waiting_long: number
+    oldest_waiting_since: string | null
+    last_review_at: string | null
+    qa_accounts: number
+    sent_to_phone: number
+    sent_to_phone_conversations: ChatRef[]
+    ai_review: AiReviewRow[]
+    ai: {
+      cost: number
+      cost_per_ready: number | null
+      answers: number
+      template_answers: number
+      latency_median_ms: number | null
+      latency_line_ms: number
+    }
+    crm: CrmBreakdown
+  }
+  attention: AttentionItem[]
+}
+
+// ── Leads page (GET /api/leads?view=…) ────────────────────────
+export type LeadLevel = 'ready' | 'almost' | 'early' | 'contact'
+export type LeadsView = 'not_in_crm' | 'to_review' | 'all'
+export type LeadsOrder = 'newest' | 'oldest' | 'closest'
+export type LeadCrmState =
+  | 'in_crm' | 'no_phone' | 'refused' | 'open' | 'closed_by_agent' | 'ready_never_sent' | 'never_sent'
+
+/** A lead as the Leads page lists it: the lead, its chat's fields, and the
+ *  level / chat-with / CRM state the server derived (one definition for the
+ *  rows, the tabs and the counts). */
+export interface LeadRow {
+  id: string
+  conversation_id: string
+  chat_number: number | null
+  created_at: string
+  updated_at?: string
+  origin_code: string | null
+  destination_code: string | null
+  route_display: string | null
+  departure_date: string | null
+  return_date: string | null
+  passengers: number | null
+  children_count?: number | null
+  infant_count?: number | null
+  trip_type: Lead['trip_type'] | null
+  cabin_class: Lead['cabin_class'] | null
+  flexible_dates: boolean | null
+  score: number
+  tier: Lead['tier']
+  status: Lead['status']
+  team_id?: string | null
+  created_in_crm: boolean | null
+  created_in_crm_at: string | null
+  crm_lead_id: string | null
+  crm_push_gate_reason: string | null
+  crm_push_attempts?: number | null
+  reviewed_by_qa: boolean | null
+  reviewed_at: string | null
+  reviewed_by: string | null
+  visitor_name: string | null
+  visitor_email: string | null
+  visitor_phone: string | null
+  conversation_status: string | null
+  conversation_mode: string | null
+  tunnel: string | null
+  assigned_agent_id: string | null
+  last_agent_message_at: string | null
+  conversation_closed_at: string | null
+  confirmed_at: string | null
+  closed_by_agent_id: string | null
+  level: LeadLevel
+  chat_with: 'person' | 'ai'
+  crm_state: LeadCrmState
+  agent_name: string | null
+  closed_by_name: string | null
+}
+
+export interface LeadsViewResponse {
+  success: boolean
+  data: LeadRow[]
+  count: number
+  counts: Record<LeadsView, number>
+  order: LeadsOrder
+  summary?: {
+    open: number
+    closed_by_agent: number
+    ready_never_sent: number
+    never_sent: number
+    refused: Record<string, number>
+  }
+}
+
+export interface EarlierLead {
+  conversation_id: string
+  chat_number: number | null
+  created_at: string | null
+  status: string | null
+  lead_id: string | null
+  route: string | null
+  in_crm: boolean
+  crm_lead_id: string | null
+}
+
+// ── Users & access ────────────────────────────────────────────
+export interface PanelUser {
+  id: string
+  email: string
+  name: string | null
+  role: string
+  tunnel_scope: string | null
+  avatar_url: string | null
+  is_active: boolean
+  last_seen_at: string | null
+  phone: string | null
+  team_id: string | null
+  created_at: string
+  updated_at?: string
+  chat_enabled?: boolean
+  /** Owner/admin/dev only. Never the hash. */
+  has_password?: boolean
+  /** The newest set-password invite (owner/admin/dev only). */
+  invite?: { expires_at: string | null; used_at: string | null; sent_at: string | null; sent_by: string | null } | null
+}
+
+export type AccessEventKind =
+  | 'invited' | 'invite_again' | 'role' | 'tunnel' | 'deactivated' | 'reactivated'
+  | 'chats_on' | 'chats_off' | 'password_reset'
+
+export interface AccessEvent {
+  at: string
+  kind: AccessEventKind
+  actor_id: string | null
+  actor_name: string | null
+  target_id: string | null
+  target_name: string | null
+  old?: string | null
+  new?: string | null
+  /** For invites: the role it was sent for. */
+  role?: string | null
+}
+
+export interface Handover {
+  open_chats: Array<{ id: string; chat_number: number | null; tunnel: string | null; first_name: string }>
+  clients_90_days: number
+  leads: number
+  window_days: number
+}
+
 // ── Notifications ────────────────────────────────────────
 export interface StaleConversation {
   id: string

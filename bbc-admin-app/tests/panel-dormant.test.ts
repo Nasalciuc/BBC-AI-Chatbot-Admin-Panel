@@ -235,6 +235,7 @@ const INTERVALS_ON_MASTER: Record<string, number[]> = {
   'src/features/chats/index.tsx': [30_000, 5_000, 10_000],
   'src/features/chats/components/queue-section.tsx': [5_000],
   'src/features/dashboard/index.tsx': [60_000],
+  'src/features/dashboard/owner/index.tsx': [60_000],
   'src/features/dashboard/components/team-live-card.tsx': [30_000],
   'src/components/notification-bell.tsx': [30_000],
 }

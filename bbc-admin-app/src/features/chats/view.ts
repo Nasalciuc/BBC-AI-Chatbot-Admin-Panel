@@ -345,15 +345,22 @@ export function tripRows(lead: Lead | null | undefined, signals: Record<string, 
   return rows
 }
 
-/** What a lead still lacks before the assistant can call it Ready. */
-export function missingForReady(lead: Lead | null | undefined): string[] {
+/** What a lead still lacks before the assistant can call it Ready.
+ *  `confirmed`: the conversation's confirmed_at, when the caller has it. */
+export function missingForReady(lead: Lead | null | undefined, confirmed?: boolean): string[] {
   if (!lead) return []
   const out: string[] = []
   if (!lead.departure_date) out.push('a departure date')
   if (lead.trip_type !== 'one_way' && !lead.return_date) out.push('the return date')
   if (!lead.passengers) out.push('travelers')
-  if (lead.tier !== 'gold') out.push('the client’s yes')
+  if (!(confirmed ?? lead.tier === 'gold')) out.push('the client’s yes')
   return out
+}
+
+/** The conversation's YES, when its metadata is on hand; undefined otherwise. */
+export function confirmedOf(c: Pick<Conversation, 'metadata'> | null | undefined): boolean | undefined {
+  const meta = c?.metadata as Record<string, unknown> | undefined
+  return meta ? Boolean(meta.confirmed_at) : undefined
 }
 
 export function joinAnd(items: string[]): string {
@@ -369,15 +376,18 @@ export interface Level {
   chip: string
 }
 
-/** The lead's tier in words. gold = the client confirmed to the assistant. */
-export function levelOf(lead: Lead | null | undefined): Level {
+/** The lead's level in words: what the chat collected and what the client
+ *  confirmed (the server's leads_view.lead_level follows the same rule).
+ *  `confirmed`: the conversation's confirmed_at; without it, the gold tier
+ *  stands in for the YES (older payloads). */
+export function levelOf(lead: Lead | null | undefined, confirmed?: boolean): Level {
   if (!lead || (!lead.origin_code && !lead.destination_code)) {
     return { name: 'Contact only', why: 'the form, no trip yet', steps: 1, ready: false, chip: 'Contact' }
   }
-  if (lead.tier === 'gold') {
+  if (confirmed ?? lead.tier === 'gold') {
     return { name: 'Ready to quote', why: 'the client confirmed the trip to the assistant', steps: 4, ready: true, chip: 'Ready' }
   }
-  if (lead.tier === 'silver' || lead.departure_date) {
+  if (lead.departure_date) {
     return { name: 'Almost ready', why: 'from the assistant: route and dates, no yes yet', steps: 3, ready: false, chip: 'Almost' }
   }
   return { name: 'Early interest', why: 'from the assistant: route only', steps: 2, ready: false, chip: 'Early' }
@@ -474,6 +484,8 @@ const GATE: Record<string, string> = {
   low_score: 'the lead is too thin to send',
   past_date: 'the travel date is in the past',
   phone_format: 'the phone number doesn’t look valid',
+  name_too_short: 'the name is too short',
+  duplicate_contact: 'another chat with the same person was sent instead',
 }
 
 export function gateReasonText(code: string | null | undefined): string {
