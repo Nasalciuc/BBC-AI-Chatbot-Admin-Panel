@@ -945,6 +945,38 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         return None
 
 
+async def get_blind_inputs(conv_id: str) -> Optional[dict]:
+    """The five fields that decide whether an agent may read a chat yet
+    (blind take): status, mode, who has it, who was talking in it, and
+    whether it is in the shared line. One tiny row; None when it can't be
+    read (logged), which the caller treats as "can't tell"."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+
+    def _q(with_queued_at: bool):
+        return (
+            get_client().table("conversations")
+            .select(cols + (", queued_at" if with_queued_at else ""))
+            .eq("id", conv_id)
+            .limit(1)
+            .execute()
+        )
+
+    use_queued_at = _queued_at_column_available()
+    try:
+        try:
+            res = await _run_sync(lambda: _q(use_queued_at), label="blind")
+        except Exception as e:
+            if not use_queued_at or not _is_missing_column_error(e):
+                raise
+            _downgrade_queued_at(e)
+            res = await _run_sync(lambda: _q(False), label="blind")
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"get_blind_inputs({conv_id}) failed: {e}")
+        return None
+
+
 async def get_last_agent_for_visitor(
     email: Optional[str],
     phone: Optional[str],
