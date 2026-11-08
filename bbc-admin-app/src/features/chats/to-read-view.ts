@@ -51,6 +51,23 @@ function localDay(iso: string): string {
 }
 
 /** The list's three groups, for one person or everyone. */
+/** "Mark read" keeps two weeks: marks older than that are dropped when one is added. */
+export const READ_KEEP_DAYS = 14
+
+/** The marks after marking `key` (keys start with the week's Monday). */
+export function withMark(read: Set<string>, key: string): Set<string> {
+  const keep = new Date(new Date(key.slice(0, 10)).getTime() - READ_KEEP_DAYS * 86_400_000).toISOString().slice(0, 10)
+  return new Set([...read].filter((k) => k.slice(0, 10) >= keep)).add(key)
+}
+
+/** The line under the list: whose chats these are. `scoped`: the reader sees
+ *  only their team's chats, masked (a supervisor). From the role, not the rows:
+ *  a team with nothing to read is still only that team. */
+export function scopeNote(list: Pick<ToReadList, 'no_team'> | undefined, scoped: boolean): string {
+  if (list?.no_team) return 'You’re not in a team yet. Ask the owner to make you a team’s supervisor in Team › Teams & shifts.'
+  return scoped ? 'Your team only. Phone and e-mail are hidden.' : 'Every person’s lost chats and last week’s sample.'
+}
+
 export function groupsOf(list: ToReadList, who: string, nowMs: number): { today: ToReadRow[]; earlier: ToReadRow[]; sample: ToReadRow[] } {
   const mine = (r: ToReadRow) => who === 'all' || r.agent_id === who
   const today = localDay(new Date(nowMs).toISOString())
