@@ -73,3 +73,24 @@ test('chat colors are palette tokens that flip in dark mode', () => {
 test('no side-tab border-l-4 left on KPI cards', () => {
   assert.ok(!kpi.includes('border-l-4'))
 })
+
+// ── Agents' pages: a failed read is an error, never an empty page ──
+
+test('Knowledge: a failed KB read rejects, and the phone list never goes blank', () => {
+  const api = readFileSync(join(SRC, 'lib/api.ts'), 'utf8')
+  const knowledge = readFileSync(join(SRC, 'features/knowledge/index.tsx'), 'utf8')
+  // The routes answer 200 + success:false when the database read failed.
+  assert.match(api, /if \(res\.success === false\) throw new ApiError\(503/)
+  assert.match(api, /export async function getKBEntries[\s\S]*?return kbRead\(/)
+  assert.match(api, /export async function getKBCategories[\s\S]*?return kbRead\(/)
+  assert.match(knowledge, /isError \|\| cats\.isError/)
+  // A search with no matches on a phone shows the list and "Nothing matches".
+  assert.match(knowledge, /const detailOpen = showDetail && selected !== null/)
+  assert.ok(!knowledge.includes("showDetail && 'max-md:hidden'"))
+})
+
+test('Your day: the 7- and 30-day views say "Last N days", never "In N days"', () => {
+  const day = readFileSync(join(SRC, 'features/day/index.tsx'), 'utf8')
+  assert.ok(day.includes('`Last ${range} days`'))
+  assert.ok(!day.includes('`In ${range} days`'))
+})

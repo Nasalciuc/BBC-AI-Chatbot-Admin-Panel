@@ -39,8 +39,6 @@ app/api/conversations.py::send_agent_message::pass
 app/api/conversations.py::update_conversation::body
 app/api/integration.py::_seconds_since::return-sentinel
 app/api/kb.py::create_entry::body
-app/api/kb.py::list_categories::body
-app/api/kb.py::list_entries::body
 app/api/kb.py::update_entry::body
 app/api/leads.py::check_existing_lead::body
 app/api/leads.py::list_leads::body
