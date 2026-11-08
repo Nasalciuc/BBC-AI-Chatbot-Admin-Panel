@@ -234,12 +234,10 @@ const INTERVALS_ON_MASTER: Record<string, number[]> = {
   'src/features/chats/detail.tsx': [500, 2_000, 2_000],
   'src/features/chats/index.tsx': [30_000, 5_000, 10_000],
   'src/features/chats/components/queue-section.tsx': [5_000],
-  'src/features/dashboard/index.tsx': [60_000],
   'src/features/dashboard/owner/index.tsx': [60_000],
   'src/features/chats/to-read-state.ts': [60_000],
   'src/features/teams/index.tsx': [15_000],
   'src/features/teams/components/person-day.tsx': [30_000],
-  'src/features/dashboard/components/team-live-card.tsx': [30_000],
   'src/components/notification-bell.tsx': [30_000],
 }
 

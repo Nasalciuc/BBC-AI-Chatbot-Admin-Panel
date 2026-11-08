@@ -11,7 +11,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (p: string) => readFileSync(join(SRC, p), 'utf8')
 
 const FEATURES = [
-  'features/dashboard/index.tsx', 'features/chats/index.tsx',
+  'features/dashboard/owner/index.tsx', 'features/chats/index.tsx',
   'features/leads/index.tsx', 'features/knowledge-base/index.tsx',
   'features/users/index.tsx', 'features/teams/index.tsx',
   'features/settings/index.tsx', 'features/tasks/index.tsx',

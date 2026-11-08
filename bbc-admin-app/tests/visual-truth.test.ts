@@ -10,7 +10,6 @@ import { formatAge, formatDuration } from '../src/lib/format-age.ts'
 import { resolveDataState } from '../src/lib/data-state.ts'
 import { isDegenerateRoute } from '../src/lib/route-display.ts'
 import { listRowDot } from '../src/features/chats/presence.ts'
-import { lastSeenLabel, partitionLive } from '../src/features/dashboard/components/live-state.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const NOW = new Date('2026-08-10T12:00:00Z')
@@ -36,11 +35,6 @@ test('formatAge: just now, ago suffix, null on garbage', () => {
   assert.equal(formatAge(agoMin(60 * 24 * 61), NOW), '2mo ago')
   assert.equal(formatAge(null, NOW), null)
   assert.equal(formatAge('not-a-date', NOW), null)
-})
-
-test('lastSeenLabel uses the shared caps', () => {
-  assert.equal(lastSeenLabel(agoMin(1447 * 60), NOW), 'last seen 2mo ago')
-  assert.equal(lastSeenLabel(agoMin(12), NOW), 'last seen 12m ago')
 })
 
 // ── tri-state: error is never conflated with loading or zero ──
@@ -77,22 +71,6 @@ test('isDegenerateRoute: LHR → LHR is noise, real routes pass', () => {
   assert.equal(isDegenerateRoute('JFK → LHR'), false)
   assert.equal(isDegenerateRoute(null), false)
   assert.equal(isDegenerateRoute('LHR'), false)
-})
-
-// ── Team live: offline majority never dominates ──
-
-test('partitionLive splits live from offline', () => {
-  const a = (id: string, online: boolean) =>
-    ({ id, name: id, role: 'sales', is_ready: false, is_online: online, last_seen: null }) as never
-  const { live, offline } = partitionLive([a('x', true), a('y', false), a('z', false)])
-  assert.deepEqual(live.map((v: { id: string }) => v.id), ['x'])
-  assert.equal(offline.length, 2)
-})
-
-test('team live card collapses offline behind a toggle (source contract)', () => {
-  const card = readFileSync(join(SRC, 'features/dashboard/components/team-live-card.tsx'), 'utf8')
-  assert.match(card, /Show.*offline|offline.*Show/s)
-  assert.match(card, /max-h-\d+ .*overflow-y-auto|overflow-y-auto/)
 })
 
 // ── chats on a phone / in the CRM dock: one column, list OR thread ──
