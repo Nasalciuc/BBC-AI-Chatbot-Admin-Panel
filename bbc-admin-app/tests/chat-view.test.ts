@@ -25,6 +25,7 @@ import {
   previewText,
   queueLine,
   routeLine,
+  takenBlind,
   seconds,
   signalOf,
   travelersText,
@@ -200,10 +201,24 @@ test('the waiting line never names the cities, shows no words, and opens nothing
   assert.ok(!/<QueueSection[^>]*onOpen/.test(page), 'the page must not wire a preview into the line')
 })
 
+test('blind take: the same rule as the server, for agents only', () => {
+  const waiting = conv({ assigned_agent_id: null, status: 'needs_agent', mode: 'ai', queued_at: iso(60_000) })
+  for (const role of ['sales', 'support']) assert.equal(takenBlind(waiting, ME, role), true)
+  for (const role of ['owner', 'admin', 'dev', 'qa', 'supervisor', 'project_manager']) assert.equal(takenBlind(waiting, ME, role), false)
+  // Released back into the line: mode "ai", but queued — still waiting for a person.
+  assert.equal(takenBlind(conv({ assigned_agent_id: null, status: 'active', mode: 'ai', queued_at: iso(60_000) }), ME, 'sales'), true)
+  assert.equal(takenBlind(conv({ assigned_agent_id: null, status: 'active', mode: 'human', queued_at: null }), ME, 'sales'), true)
+  // Not blind: mine, someone else's, closed, the AI's with nobody waiting, or a chat I was talking in.
+  assert.equal(takenBlind(conv({ assigned_agent_id: ME, status: 'needs_agent' }), ME, 'sales'), false)
+  assert.equal(takenBlind(conv({ assigned_agent_id: 'other' }), ME, 'sales'), false)
+  assert.equal(takenBlind(conv({ assigned_agent_id: null, status: 'closed', queued_at: iso(60_000) }), ME, 'sales'), false)
+  assert.equal(takenBlind(conv({ assigned_agent_id: null, status: 'active', mode: 'ai', queued_at: null }), ME, 'sales'), false)
+  assert.equal(takenBlind(conv({ assigned_agent_id: null, status: 'needs_agent', metadata: { engaged_agent_id: ME } }), ME, 'sales'), false)
+})
+
 test('an agent who lands on a waiting chat sees who and how long, not the chat', () => {
   const src = read('src/features/chats/detail.tsx')
-  assert.match(src, /const blindView =\s*!!conv &&\s*isOperatorRole\(role\) &&\s*ownerOf\(conv, me\?\.accountNo\) === 'waiting' &&/)
-  assert.match(src, /engaged_agent_id as string \| undefined\) !== me\?\.accountNo/, 'a chat they were talking in stays readable')
+  assert.match(src, /const blindView = !!conv && takenBlind\(conv, me\?\.accountNo, role\)/)
   // The gate returns before the thread and the details are built.
   const gate = src.indexOf('if (blindView) {')
   assert.ok(gate > 0 && gate < src.indexOf('const details = ('), 'the gate comes before the details')

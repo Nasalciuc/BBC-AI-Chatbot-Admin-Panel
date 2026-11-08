@@ -24,7 +24,6 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
-import { isOperatorRole } from '@/components/layout/data/sidebar-data'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   DropdownMenu,
@@ -53,6 +52,7 @@ import {
   presenceFromMeta,
   presenceView,
   STALE_CLOSE_MIN,
+  takenBlind,
 } from './view'
 
 export type ChatLayout = 'wide' | 'medium' | 'narrow'
@@ -144,12 +144,9 @@ export default function ConversationDetail({
   })
 
   // A waiting chat an agent hasn't taken is shown blind (the gate below):
-  // nothing about it is polled or streamed for them either.
-  const blindView =
-    !!conv &&
-    isOperatorRole(role) &&
-    ownerOf(conv, me?.accountNo) === 'waiting' &&
-    (conv.metadata?.engaged_agent_id as string | undefined) !== me?.accountNo
+  // nothing about it is polled or streamed for them either, and the server
+  // sends it without the words, the lead or the contact (same rule).
+  const blindView = !!conv && takenBlind(conv, me?.accountNo, role)
 
   // Track last message timestamp for incremental polling
   useEffect(() => {
@@ -569,6 +566,8 @@ export default function ConversationDetail({
   // A chat the agent was already talking in (back with the assistant) is
   // theirs to read: they know it.
   if (blindView) {
+    const waitedMin = minutesSince(conv.queued_at ?? conv.updated_at, nowMs) ?? 0
+    const canTakeBlind = conv.status !== 'closed' && (!canBeReady || ready)
     return (
       <section
         aria-label='Chat'
@@ -577,16 +576,18 @@ export default function ConversationDetail({
           narrow ? 'rounded-none' : 'rounded-[20px] shadow-[0_0_0_1px_var(--k-ececec)]'
         )}
       >
-        <ChatAvatar text={initials(conv.visitor_name)} tone={avatarClasses(owner)} dot={presence.dot} size={44} />
+        <ChatAvatar text={initials(conv.visitor_name)} tone={avatarClasses('waiting')} dot={presence.dot} size={44} />
         <div className='flex flex-col items-center gap-1.5'>
           <h2 className='m-0 text-[17px] font-bold text-k-202020'>{conv.visitor_name || 'Visitor'}</h2>
-          {chip && <span className={cn('rounded-full px-2 py-0.5 text-xs font-bold', chip.cls)}>{chip.text}</span>}
+          <span className={cn('rounded-full px-2 py-0.5 text-xs font-bold', waitedMin > 5 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-fff3e0 text-k-8a4b00')}>
+            Waiting {minutesLabel(waitedMin)}
+          </span>
         </div>
         <p className='m-0 max-w-[340px] text-sm leading-[1.45] text-k-555555'>
           {conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
           chat and the trip once you take it.
         </p>
-        {canTake ? (
+        {canTakeBlind ? (
           <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
             {taking ? 'Taking…' : 'Take'}
           </button>
