@@ -196,7 +196,9 @@ def build_to_read(
             lost.append(row(cid, "lost", at, recent[0]["user_id"], recent))
     lost.sort(key=lambda r: r["at"], reverse=True)
 
-    week_key = last_week.strftime("%G-W%V")
+    # The reader's week, in their own calendar: Monday 00:00 at +120 is Sunday
+    # 22:00 UTC, so the UTC instant would name the ISO week before.
+    week_key = (last_week + timedelta(minutes=offset_minutes)).strftime("%G-W%V")
     mine: dict[str, list[dict]] = defaultdict(list)
     for t in takes:
         if t["user_id"] and last_week <= t["at"] < this_week:

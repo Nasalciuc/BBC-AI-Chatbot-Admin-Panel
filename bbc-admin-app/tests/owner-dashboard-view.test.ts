@@ -12,6 +12,7 @@ import {
   delta,
   hourLong,
   hourTick,
+  openChatsLine,
   overDeadlineText,
   overviewHeadline,
   qualityHeadline,
@@ -199,4 +200,13 @@ test('on a phone the Overview draws no button that opens another tab', async () 
   assert.match(overview, /tabs && \(\s*<button type='button' onClick=\{\(\) => go\('agents'\)\}/)
   // "Start reviewing" opens Leads, which a phone has: it stays.
   assert.match(overview, /canOpen=\{\(to\) => tabs \|\| to === 'review'\}/)
+})
+
+test('the list of chats says how many, and the verb agrees with the chats shown', () => {
+  assert.equal(openChatsLine(1, 3, true), '1 of 3 is your team’s; only those open for you.')
+  assert.equal(openChatsLine(2, 3, true), '2 of 3 are your team’s; only those open for you.')
+  assert.equal(openChatsLine(1, undefined, true), '1 of 1 is your team’s; only those open for you.')
+  assert.equal(openChatsLine(5, 12, false), 'The 5 newest of 12.')
+  assert.equal(openChatsLine(1, undefined, false), '1 chat.')
+  assert.equal(openChatsLine(3, 3, false), '3 chats.')
 })

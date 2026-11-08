@@ -39,6 +39,14 @@ export function phoneNote(variant: DashVariant): string {
   return `${names} open${rest.length === 1 ? 's' : ''} on a computer.`
 }
 
+/** The first line of a list of chats (OpenChats). `teamOnly`: the list keeps
+ *  only the viewer's own teams' chats; the verb agrees with those shown. */
+export function openChatsLine(shown: number, count: number | undefined, teamOnly: boolean): string {
+  if (teamOnly) return `${shown} of ${count ?? shown} ${shown === 1 ? 'is' : 'are'} your team’s; only those open for you.`
+  if (count && count > shown) return `The ${shown} newest of ${count}.`
+  return `${shown} ${shown === 1 ? 'chat' : 'chats'}.`
+}
+
 export function pct(n: number, d: number): number | null {
   return d > 0 ? Math.round((n / d) * 100) : null
 }

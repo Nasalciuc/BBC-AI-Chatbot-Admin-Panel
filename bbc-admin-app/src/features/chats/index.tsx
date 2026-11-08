@@ -625,6 +625,7 @@ export function Chats() {
             onRetry={() => toRead.refetch()}
             read={readKeys}
             markRead={markRead}
+            scoped={role === 'supervisor'}
           />
         ) : (
         <>

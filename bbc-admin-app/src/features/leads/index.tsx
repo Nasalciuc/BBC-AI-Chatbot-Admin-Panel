@@ -404,7 +404,7 @@ export function Leads() {
       <LeadPanel
         row={openRow}
         onClose={() => setOpenSnap(null)}
-        onPatched={(patch) => setOpenSnap((s) => (s ? { ...s, ...patch } : s))}
+        onPatched={(leadId, patch) => setOpenSnap((s) => (s && s.id === leadId ? { ...s, ...patch } : s))}
         canReview={canReview}
         canSend={canSend}
         canLookUp={canLookUp}
