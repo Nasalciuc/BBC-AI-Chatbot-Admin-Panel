@@ -146,6 +146,18 @@ async def list_conversations(
         if user.get("role") == "supervisor":
             from app.security.pii import mask_visitor_row
             rows = [mask_visitor_row(dict(c)) for c in rows]
+        elif user.get("role") != "project_manager":
+            # The last thing said in each chat, for the list row. Best-effort:
+            # a failed read serves the page without previews, never no page.
+            # Supervisors and PMs get none: message text carries the client's
+            # own phone and e-mail (their rows mask it), and their message
+            # access is team-scoped while a global chip can list other teams.
+            try:
+                previews = await db.get_last_message_previews([c["id"] for c in rows])
+                for c in rows:
+                    c["last_message"] = previews.get(c["id"])
+            except Exception as e:
+                logger.warning(f"list_conversations: previews unavailable ({e}) — serving the list without them")
         return {"success": True, "data": rows, "count": total}
     except HTTPException:
         # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.

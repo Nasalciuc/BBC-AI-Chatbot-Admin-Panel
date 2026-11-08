@@ -552,7 +552,10 @@ _LIST_COLUMNS_BASE = (
     # updated_at while the detail showed the real thing.
     "widget_presence:metadata->>widget_presence,"
     "widget_last_event_at:metadata->>widget_last_event_at,"
-    "widget_pings:metadata->>widget_pings"
+    "widget_pings:metadata->>widget_pings,"
+    # When the chat became this operator's — the first-reply deadline counts
+    # from here, and the list row shows the countdown the server will act on.
+    "agent_assigned_at:metadata->>agent_assigned_at"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -561,7 +564,7 @@ _LIST_COLUMNS_BASE = (
 _LIST_COLUMNS_SUPERVISOR = (
     ",created_at,chat_number,"
     "last_user_message_at,last_agent_message_at,last_reply_at,"
-    "visitor_phone,visitor_email"
+    "visitor_phone,visitor_email,queued_at"
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
 
@@ -830,6 +833,7 @@ async def get_conversations(
                 # jsonb ->> yields the STRING "true"; the derivation only
                 # needs truthiness, but None must stay falsy.
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
+                "agent_assigned_at": row.pop("agent_assigned_at", None),
             }
         rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
@@ -837,6 +841,11 @@ async def get_conversations(
             for row in rows:
                 attach_derived_tag(row, lead=lead_map.get(row["id"]))
                 attach_effective_presence(row)
+                # The route the pipeline extracted, already in hand for the
+                # tag: the list row and the waiting card show it, no query.
+                _lead = lead_map.get(row["id"]) or {}
+                if _lead.get("origin_code") and _lead.get("destination_code"):
+                    row["route"] = {"from": _lead["origin_code"], "to": _lead["destination_code"]}
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
             if no_engagement_only:
@@ -3874,6 +3883,140 @@ async def get_agent_history(user_id: str, days: int = 7) -> dict:
         "presence": pres_res.data or [],
         "ready_log": ready_res.data or [],
         "activity": acts_res.data or [],
+    }
+
+
+_PAGE = 1000          # PostgREST's default max-rows: a bigger .limit() is silently cut
+_IDS_PER_REQUEST = 100  # keeps an in.(...) filter well under URL limits
+
+
+async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> list[dict]:
+    """Every row of a read, one PostgREST page at a time.
+
+    `build()` returns a fresh query builder; this adds .range() per page. Stops
+    at a short page. Raises on failure — the caller decides what a failed read
+    means, a partial list is never passed off as the whole one."""
+    rows: list[dict] = []
+    for page in range(max_pages):
+        lo = page * _PAGE
+        res = await _run_sync(lambda lo=lo: build().range(lo, lo + _PAGE - 1).execute(), label=label)
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE:
+            return rows
+    logger.warning(f"_select_pages[{label}]: stopped at {max_pages} pages ({len(rows)} rows)")
+    return rows
+
+
+async def get_last_message_previews(conversation_ids: list[str], max_len: int = 140) -> dict[str, dict]:
+    """The newest non-system message of each conversation on a list page.
+
+    ONE request for the page: PostgREST embeds messages per conversation and
+    applies order + limit per parent (a lateral join on idx_msg_conv_created),
+    so no thread is ever loaded. Raises on failure; the list endpoint logs it
+    and serves the page without previews."""
+    ids = [i for i in conversation_ids if i]
+    if not ids:
+        return {}
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select("id, messages(role, content, created_at)")
+        .in_("id", ids)
+        .neq("messages.role", "system")
+        .order("created_at", desc=True, foreign_table="messages")
+        .limit(1, foreign_table="messages")
+        .execute(),
+        label="list_previews",
+    )
+    out: dict[str, dict] = {}
+    for row in res.data or []:
+        msgs = row.get("messages") or []
+        if not msgs:
+            continue
+        m = msgs[0]
+        text = " ".join(str(m.get("content") or "").split())
+        if len(text) > max_len:
+            text = text[: max_len - 1].rstrip() + "\u2026"
+        out[row["id"]] = {"role": m.get("role"), "content": text, "created_at": m.get("created_at")}
+    return out
+
+
+_DAY_CONV_COLUMNS = (
+    "id, chat_number, visitor_name, visitor_phone, visitor_email, status, mode, tunnel, "
+    "assigned_agent_id, metadata, last_user_message_at, last_agent_message_at"
+)
+
+
+async def get_agent_day_inputs(user_id: str, since_iso: str) -> dict:
+    """Everything "Your day" needs for one operator since `since_iso`.
+
+    Reads only: the operator's activity rows, their open chats, the rows of the
+    conversations involved, the operator messages in them (for the first reply)
+    and the leads (for the CRM). Raises on any failure — a day built from a
+    partial read would show wrong numbers as if they were right."""
+    db_client = get_client()
+    activity = await _select_pages(
+        lambda: db_client.table("agent_activity_log")
+        .select("action, conversation_id, happened_at, response_seconds")
+        .eq("user_id", user_id)
+        .gte("happened_at", since_iso)
+        .in_("action", ["claim_won", "deadline_fired", "closed"])
+        .order("happened_at"),
+        label="agent_day",
+    )
+    open_res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select(_DAY_CONV_COLUMNS)
+        .eq("assigned_agent_id", user_id)
+        .eq("status", "active")
+        .eq("mode", "human")
+        .execute(),
+        label="agent_day",
+    )
+    open_conversations = open_res.data or []
+
+    ids = list({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    conversations: dict[str, dict] = {c["id"]: c for c in open_conversations}
+    leads: dict[str, dict] = {}
+    agent_messages: list[dict] = []
+    claimed = list({a["conversation_id"] for a in activity
+                    if a.get("action") == "claim_won" and a.get("conversation_id")})
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        res = await _run_sync(
+            lambda chunk=chunk: db_client.table("conversations")
+            .select(_DAY_CONV_COLUMNS).in_("id", chunk).execute(),
+            label="agent_day",
+        )
+        for c in res.data or []:
+            conversations[c["id"]] = c
+        lead_res = await _run_sync(
+            lambda chunk=chunk: db_client.table("leads")
+            .select("conversation_id, created_in_crm, crm_lead_id")
+            .in_("conversation_id", chunk).execute(),
+            label="agent_day",
+        )
+        for row in lead_res.data or []:
+            if row.get("conversation_id"):
+                leads[row["conversation_id"]] = row
+    for i in range(0, len(claimed), _IDS_PER_REQUEST):
+        chunk = claimed[i:i + _IDS_PER_REQUEST]
+        agent_messages.extend(await _select_pages(
+            lambda chunk=chunk: db_client.table("messages")
+            .select("conversation_id, created_at")
+            .in_("conversation_id", chunk)
+            .eq("role", "agent")
+            .gte("created_at", since_iso)
+            .order("created_at"),
+            label="agent_day",
+        ))
+    return {
+        "activity": activity,
+        "agent_messages": agent_messages,
+        "conversations": conversations,
+        "leads": leads,
+        "open_conversations": open_conversations,
     }
 
 

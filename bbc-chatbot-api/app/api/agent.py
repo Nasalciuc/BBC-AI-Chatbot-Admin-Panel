@@ -6,7 +6,7 @@ import time
 from collections import deque as _deque
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.db import supabase as db
@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _HANDOFF_COOLDOWN_SECONDS = 120
+
+# While the assigned operator has the conversation open on screen (and their
+# panel pinged in the last 30s) the first-reply deadline stretches to this.
+# One constant: the sweep enforces it and the heartbeat tells the panel, so the
+# countdown an operator sees is the one the server will act on.
+VIEWING_GRACE_SECONDS = 120
 
 # The heartbeat is the hottest endpoint in the system (every agent, every 5s).
 # Its latency is the earliest signal of executor saturation — it climbs minutes
@@ -87,7 +93,7 @@ async def _enforce_response_deadline(
     count = 0
     now = datetime.now(timezone.utc)
     deadline_first = timedelta(seconds=settings.agent_first_response_timeout_seconds)
-    viewing_grace = timedelta(seconds=120)
+    viewing_grace = timedelta(seconds=VIEWING_GRACE_SECONDS)
     fresh_window = timedelta(seconds=30)
 
     def _parse(ts, *, count_bad: bool = False):
@@ -410,7 +416,42 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "queue_count": _queue_count,
         "queue_ids": _queue_ids,
         "queue_oldest": _queue_oldest,
+        # The first-reply deadline as the sweep enforces it, so the panel's
+        # countdown after Take is the server's, not a copy that can drift.
+        "response_deadline_seconds": settings.agent_first_response_timeout_seconds,
+        "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
     }
+
+
+@router.get("/agent/day")
+async def agent_day(
+    days: int = Query(1),
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    user: dict = Depends(get_current_user),
+):
+    """Your day: the caller's own chats, from data the server already keeps.
+
+    days: 1 (today), 7 or 30. tz_offset_minutes: minutes EAST of UTC (the
+    panel sends -Date#getTimezoneOffset()), so the days are the operator's."""
+    from app.services.agent_day import ALLOWED_DAYS, build_agent_day, window_start
+
+    if days not in ALLOWED_DAYS:
+        raise HTTPException(status_code=422, detail="days must be 1, 7 or 30")
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user ID in token")
+    now = datetime.now(timezone.utc)
+    since = window_start(now, tz_offset_minutes, days)
+    try:
+        inputs = await db.get_agent_day_inputs(user_id, since.isoformat())
+    except Exception as e:
+        # A day built from a partial read would show wrong numbers as if right.
+        logger.error(f"[agent_day] read failed for {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load your day") from e
+    data = build_agent_day(
+        now=now, offset_minutes=tz_offset_minutes, days=days, **inputs
+    )
+    return {"success": True, "data": data, "count": 1}
 
 
 @router.get("/agent/stream/{conversation_id}")
