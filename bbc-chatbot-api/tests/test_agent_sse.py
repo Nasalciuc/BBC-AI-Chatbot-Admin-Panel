@@ -134,8 +134,11 @@ async def _stream(user, conv):
 
     request = MagicMock()
     request.is_disconnected = AsyncMock(return_value=True)
+    # The chat is the caller's own (blind take is pinned in test_blind_take).
+    mine = {"id": _CONV, "status": "active", "mode": "human", "assigned_agent_id": user.get("id")}
     with patch.object(agent_api.db, "get_conversation_simple",
-                      new=AsyncMock(return_value=conv)):
+                      new=AsyncMock(return_value=conv)), \
+         patch.object(agent_api.db, "get_blind_inputs", new=AsyncMock(return_value=mine)):
         try:
             return await agent_api.agent_stream(_CONV, request, user=user), None
         except HTTPException as e:

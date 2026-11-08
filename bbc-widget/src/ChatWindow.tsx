@@ -5,6 +5,10 @@ import { getTurnstileToken } from './turnstile'
 import type { FormCheck } from './TunnelForm'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
+import { PanelTop } from './PanelTop'
+import { IconArrowDown, IconArrowUp } from './icons'
+import { richText } from './richText'
+import { useIsPhone } from './phoneSheet'
 
 interface Message {
   id: string
@@ -37,7 +41,51 @@ interface Props {
   apiUrl: string
   /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
   embedded?: boolean
+  /** The chat took the form's place in an open panel: the panel does not enter again. */
+  swapped?: boolean
+  /**
+   * Shown or tucked away. Closing the chat no longer unmounts it: the conversation keeps its connection,
+   * finishes what it was sending and keeps receiving, so nothing is lost and a reply that lands while
+   * it is closed can be announced on the corner button.
+   */
+  visible?: boolean
+  /** Typed into the message box of a new conversation, from the page the visitor is on (never sent). */
+  draft?: string
+  /** Messages the visitor has not seen (chat closed or tab in the background), for the corner button. */
+  onUnread?: (u: Unread) => void
 }
+
+export interface Unread {
+  count: number
+  /** True when the count just grew from a message that arrived live (not history loaded with the page). */
+  fresh: boolean
+  preview?: { name: string; text: string; initials: string; avatar?: string | null; isAgent: boolean }
+}
+
+// Tab-scoped memory of what the visitor typed but did not send yet, and of messages waiting their turn:
+// both survive closing the chat and moving to another page of the site.
+const DRAFT_KEY = 'bbc_draft'
+const QUEUE_KEY = 'bbc_queue'
+// Up to which moment this conversation has been seen in an open chat (per conversation, across pages).
+const SEEN_KEY = 'bbc_seen'
+function ssGet(k: string): string | null { try { return sessionStorage.getItem(k) } catch { return null } }
+function ssSet(k: string, v: string | null) {
+  try { if (v === null || v === '') sessionStorage.removeItem(k); else sessionStorage.setItem(k, v) } catch { /* storage off */ }
+}
+function readSeen(convId: string | null): number | null {
+  if (!convId) return null
+  try {
+    const v = localStorage.getItem(SEEN_KEY)
+    if (!v) return null
+    const [cid, ts] = v.split('|')
+    return cid === convId ? Number(ts) || 0 : null
+  } catch { return null }
+}
+function writeSeen(convId: string | null, ts: number) {
+  if (!convId) return
+  try { localStorage.setItem(SEEN_KEY, `${convId}|${ts}`) } catch { /* storage off */ }
+}
+const timeOfMsg = (m: { created_at: string }) => Date.parse(m.created_at) || 0
 
 /** Read cached conv_id from localStorage. Widget.tsx has already verified
  *  it with the backend on mount — ChatWindow trusts the cache. */
@@ -45,11 +93,18 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
-export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false }: Props) {
+export function ChatWindow({
+  tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false, swapped = false,
+  visible = true, draft = '', onUnread,
+}: Props) {
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const mountedAtRef = useRef(Date.now())
+  const isPhone = useIsPhone()
   const savedConvId = getCachedConvId()
 
   const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState<string>(() => ssGet(DRAFT_KEY) ?? (savedConvId ? '' : draft))
   const [sending, setSending] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -57,7 +112,8 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
   const [quickReplies, setQuickReplies] = useState<string[] | null>(null)
   const [pendingGreeting, setPendingGreeting] = useState(false)
   const [convId, setConvId] = useState<string | null>(savedConvId)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const logRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
   const initialized = useRef(false)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSentRef = useRef<number>(0)
@@ -75,6 +131,15 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     is_typing: false,
     name: '',
   })
+  /** Messages written while the assistant was still answering: they go out, in order, as soon as it finishes. */
+  const [queued, setQueued] = useState<{ id: string; text: string }[]>(() => {
+    try { return JSON.parse(ssGet(QUEUE_KEY) || '[]') } catch { return [] }
+  })
+  /** The greeting is on its way (fresh sessions): the log shows the assistant typing instead of nothing. */
+  const [starting, setStarting] = useState(!savedConvId)
+  /** The visitor scrolled up to read: new messages no longer pull the log down; a button offers to. */
+  const atBottomRef = useRef(true)
+  const [hasUnseen, setHasUnseen] = useState(false)
   /** Operator photos that failed to load → show initials instead of a broken image. */
   const [brokenAvatars, setBrokenAvatars] = useState<Record<string, boolean>>({})
 
@@ -98,10 +163,134 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     }).catch(() => {})
   }
 
-  // Scroll to bottom on new messages
+  // Keep the newest message in view. Scrolls the log itself, never the host page (scrollIntoView would
+  // also scroll the site behind the panel on some phones).
+  // A visitor reading back up the conversation is never yanked down: the log follows new messages only
+  // while it is at the bottom, and otherwise shows a "New message" button.
+  const scrollToEnd = (smooth = true) => {
+    const el = logRef.current
+    if (!el) return
+    atBottomRef.current = true
+    setHasUnseen(false)
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+  }
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 72
+    atBottomRef.current = near
+    if (near) setHasUnseen(false)
+  }
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length, streamingText, sending])
+    if (atBottomRef.current) scrollToEnd(messages.length > 1)
+    else setHasUnseen(true)
+  }, [messages.length, streamingText, sending, agentTyping.is_typing, queued.length])
+
+  // ── Open and closed (the chat stays mounted) ─────────────────────────────
+  // Closing tells the server the client minimized the chat (no heartbeat until it opens again) and
+  // clears the operator's live preview of an unsent draft; opening marks the client back, then shows
+  // the end of the conversation and puts the cursor in the message box.
+  const wasVisibleRef = useRef(visible)
+  useEffect(() => {
+    const was = wasVisibleRef.current
+    wasVisibleRef.current = visible
+    if (visible === was) return
+    if (visible) {
+      if (convId) {
+        closeSentRef.current = false
+        apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
+      }
+      lastInteractionRef.current = Date.now()
+      requestAnimationFrame(() => { scrollToEnd(false); fitComposer(); focusComposer() })
+    } else {
+      notifySessionClose('minimized', true)
+      if (convId) apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible])
+
+  // ── Unread: messages that arrived while the chat was closed or the tab was in the background ─────
+  const [docVisible, setDocVisible] = useState(() => {
+    try { return document.visibilityState === 'visible' } catch { return true }
+  })
+  useEffect(() => {
+    const on = () => setDocVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', on)
+    return () => document.removeEventListener('visibilitychange', on)
+  }, [])
+  const lastUnreadRef = useRef(0)
+  useEffect(() => {
+    if (!onUnread) return
+    const rows = messages.filter(m =>
+      m && typeof m.id === 'string' && typeof m.content === 'string' && m.content.trim() !== '')
+    if (!rows.length) return
+    const latest = Math.max(...rows.map(timeOfMsg))
+    if (visible && docVisible) {
+      writeSeen(convId, latest)
+      if (lastUnreadRef.current !== 0) {
+        lastUnreadRef.current = 0
+        onUnread({ count: 0, fresh: false })
+      }
+      return
+    }
+    let seen = readSeen(convId)
+    if (seen === null) {
+      // Nothing recorded for this conversation: what is already here counts as read.
+      writeSeen(convId, latest)
+      seen = latest
+    }
+    // Only words from the assistant or a person count (not notes like "Lana joined the chat").
+    const unseen = rows.filter(m => (m.role === 'ai' || m.role === 'agent') && timeOfMsg(m) > (seen as number))
+    const count = unseen.length
+    // Fresh = a message that just arrived (not history loaded with the page): it earns the chime.
+    const fresh = count > lastUnreadRef.current && Date.now() - mountedAtRef.current > 2500
+    lastUnreadRef.current = count
+    const last = unseen[unseen.length - 1]
+    const name = !last ? '' : last.role === 'agent'
+      ? ((last.agent_name || '').trim() || CONSULTANT_LABEL)
+      : 'Assistant'
+    onUnread({
+      count,
+      fresh,
+      preview: last ? {
+        name,
+        text: last.content,
+        initials: agentInitials(name),
+        avatar: last.role === 'agent' ? (last.agent_avatar_url || null) : null,
+        isAgent: last.role === 'agent',
+      } : undefined,
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, visible, docVisible, convId])
+
+  // The composer takes focus on computers; on touch screens the keyboard waits for a tap.
+  const focusComposer = () => {
+    try {
+      if (!window.matchMedia('(pointer: fine)').matches) return
+      const el = composerRef.current
+      if (!el) return
+      el.focus({ preventScroll: true })
+      el.setSelectionRange(el.value.length, el.value.length)
+    } catch { /* matchMedia unavailable — leave focus where it is */ }
+  }
+  useEffect(() => {
+    if (visible) focusComposer()
+    fitComposer()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // What the visitor typed and what waits its turn are kept for this tab: closing the chat, a reload or
+  // another page of the site never loses them.
+  useEffect(() => { ssSet(DRAFT_KEY, input) }, [input])
+  useEffect(() => { ssSet(QUEUE_KEY, queued.length ? JSON.stringify(queued) : null) }, [queued])
+
+  /** Grow the composer with its text, up to its max height (CSS). */
+  const fitComposer = () => {
+    const el = composerRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight + 2}px`
+  }
 
   // The AI greets FIRST: create the conversation and render the armed,
   // personalized opening as the first bubble. No fake client message.
@@ -147,6 +336,8 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     } catch {
       // Fail quiet — the client can still type; their first message flows
       // through the normal send path and creates the conversation.
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -162,7 +353,11 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
   // Verify restored session is still active (runs once at mount)
   useEffect(() => {
     if (!savedConvId) return
-    apiFetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
+    // Presence: the client is "at the widget" only when the chat is open. A conversation kept alive
+    // behind a closed chat (another page of the site) does not claim it.
+    if (visibleRef.current) {
+      apiFetch(`${apiUrl}/api/chat/session/${savedConvId}/open`, { method: 'POST' }).catch(() => {})
+    }
     fetch(`${apiUrl}/api/chat/status/${savedConvId}`)
       .then(r => r.json())
       .then(data => {
@@ -195,6 +390,7 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     // bfcache return (back button, mobile app-switch): pagehide fired 'left'
     // on the way out — mark the client back and re-arm the close beacon.
     const handlePageReturn = () => {
+      if (!visibleRef.current) return
       closeSentRef.current = false
       apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
     }
@@ -216,6 +412,8 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     let pingInterval: ReturnType<typeof setInterval> | null = null
     const sendPing = () => {
       if (document.visibilityState !== 'visible') return
+      // A closed chat is not a present client: no heartbeat until it opens again.
+      if (!visibleRef.current) return
       if (Date.now() - lastInteractionRef.current > PING_IDLE_CUTOFF_MS) return
       apiFetch(`${apiUrl}/api/chat/session/${convId}/ping`, { method: 'POST' }).catch(() => {})
     }
@@ -346,6 +544,13 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
             return
           }
 
+          // The stream also carries events that are not messages: the visitor's
+          // own typing echoed back ({event:'typing'}), presence, and the like.
+          // They have no id and no text; taken as messages they rendered as
+          // blank bubbles and, since the redesign, crashed the render (the
+          // send button never lit up). Only stored message rows go on.
+          if (parsed.event || typeof parsed.id !== 'string' || typeof parsed.content !== 'string') return
+
           const msg = parsed as Message
           // The server now fans out the visitor's own message too (so the
           // operator's panel sees it). The widget already rendered it locally
@@ -362,6 +567,15 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
       }
 
       source.onerror = () => {
+        // An HTTP error status (a 502 or 503 while the API redeploys) closes an
+        // EventSource for good: the browser never retries and onerror fires once,
+        // so the counter below would never reach MAX_ERRORS and operator messages
+        // would stop arriving until a reload. Poll instead, at once.
+        if (source && source.readyState === EventSource.CLOSED) {
+          source = null
+          startPolling()
+          return
+        }
         errorCount++
         sseUpRef.current = false
         // An HTTP error (a restart's 502, a 401/403) makes the browser CLOSE
@@ -420,6 +634,7 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     const poll = async () => {
       if (sseUpRef.current) return
       if (document.visibilityState !== 'visible') return
+      if (!visibleRef.current) return  // the typing dots are only drawn in an open chat
       try {
         const res = await apiFetch(`${apiUrl}/api/chat/agent-typing/${convId}`)
         if (!res.ok || cancelled) return
@@ -669,9 +884,39 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
   }
 
   const handleSend = () => {
-    if (!input.trim() || sending) return
-    sendMessage(input.trim())
+    const text = input.trim()
+    if (!text) return
+    atBottomRef.current = true
+    if (sending) {
+      // The assistant is still answering: one message at a time reaches the server, so this one waits
+      // its turn on screen and goes out by itself when the answer is in.
+      setQueued(q => [...q, { id: `queued-${Date.now()}`, text }])
+      sendTypingEvent('')
+    } else {
+      sendMessage(text)
+    }
     setInput('')
+    requestAnimationFrame(() => {
+      const el = composerRef.current
+      if (el) el.style.height = ''
+    })
+  }
+
+  // Send what waited, in order, as soon as the assistant has finished.
+  useEffect(() => {
+    if (sending || queued.length === 0) return
+    const [next, ...rest] = queued
+    setQueued(rest)
+    sendMessage(next.text)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sending, queued])
+
+  /** A send that failed: take it and its error note away, and send the text again. */
+  const retry = (msg: Message) => {
+    setMessages(prev => prev.filter(m => m.id !== msg.id && !m.id.startsWith('err-')))
+    atBottomRef.current = true
+    if (sending) setQueued(q => [...q, { id: `queued-${Date.now()}`, text: msg.content }])
+    else sendMessage(msg.content)
   }
 
   const handleQuickReply = (text: string) => {
@@ -683,243 +928,196 @@ export function ChatWindow({ tunnel, visitor, metadata, formCheck, onClose, apiU
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
   }
 
-  return (
-    <div style={embedded ? {
-      // CRM iframe mode: fill the container — no floating-card chrome.
-      width: '100%', height: '100%',
-      background: '#fff',
-      display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    } : {
-      position: 'fixed', bottom: 24, right: 24, width: 380, height: 520,
-      maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100dvh - 16px)',
-      background: '#fff', borderRadius: 16,
-      boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
-      zIndex: 2147483000, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    }}>
-      <style>{`
-        @keyframes bbcDot {
-          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-          40% { opacity: 1; transform: scale(1); }
-        }
-      `}</style>
-      <div style={{
-        background: 'var(--bbc-header)', color: 'var(--bbc-header-text)', padding: '14px 18px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img
-            src={brand.logoUrl}
-            alt={brand.logoAlt}
-            width={24}
-            height={24}
-            style={{ borderRadius: 5, objectFit: 'contain' }}
-          />
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{brand.chatTitle}</div>
-            <div style={{ fontSize: 11, opacity: 0.6, marginTop: 1 }}>
-              {visitor.name ? `Hi ${visitor.name}!` : tunnel === 'sales' ? brand.chatSubtitle : 'Booking Support'}
-            </div>
-          </div>
-        </div>
-        {!embedded && (
-          <button onClick={() => { notifySessionClose('minimized', true); onClose() }} aria-label="Close chat" style={{
-            background: 'rgba(255,255,255,0.1)', border: 'none', color: 'var(--bbc-header-text)',
-            width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', fontSize: 13,
-          }}>✕</button>
-        )}
-      </div>
+  // ── Presentation ─────────────────────────────────────────────────────────
+  // Only rows with an id and some text are drawn (a defence in depth: nothing
+  // malformed from the server may ever break the render).
+  const shown = messages.filter(m =>
+    m && typeof m.id === 'string' && typeof m.content === 'string' && m.content.trim() !== '')
+  const speaker = (m: Message) =>
+    m.role === 'user' ? 'out' : m.role === 'agent' ? `agent:${(m.agent_name || '').trim()}` : m.role
+  const timeOf = (iso: string) => {
+    try { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) } catch { return '' }
+  }
+  const startsGroup = (i: number) => {
+    if (i === 0) return true
+    const prev = shown[i - 1]
+    const cur = shown[i]
+    if (speaker(prev) !== speaker(cur)) return true
+    return new Date(cur.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60_000
+  }
+  const endsGroup = (i: number) => i === shown.length - 1 || startsGroup(i + 1)
+  const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
+  const lastAgentName = (lastAgent?.agent_name || '').trim()
+  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : brand.tagline
+  const brandAvatar = <img class="bw-ava bw-ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
+  const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
+  // Day dividers, only for a conversation that is not all from today (a restored one).
+  const dayKey = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toDateString() }
+  const today = new Date().toDateString()
+  const showDays = shown.some(m => dayKey(m.created_at) && dayKey(m.created_at) !== today)
+  const dayLabel = (iso: string) => {
+    const d = new Date(iso)
+    const yesterday = new Date(Date.now() - 86_400_000).toDateString()
+    if (d.toDateString() === today) return 'Today'
+    if (d.toDateString() === yesterday) return 'Yesterday'
+    return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
+  }
+  const dots = <span class="bw-dots" aria-hidden="true"><i /><i /><i /></span>
 
-      <div role="log" aria-live="polite" style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {messages.filter(m => m.role !== 'system' || m.content).map(msg => {
+  return (
+    <div
+      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}${swapped ? ' bw-panel--swap' : ''}${visible ? '' : ' bw-panel--hidden'}`}
+      aria-hidden={visible ? undefined : 'true'}
+      role="dialog"
+      aria-modal={isPhone && !embedded ? 'true' : 'false'}
+      aria-labelledby="bw-chat-title"
+    >
+      <PanelTop
+        titleId="bw-chat-title"
+        subtitle={subtitle}
+        closeLabel="Close chat"
+        onClose={embedded ? undefined : () => { notifySessionClose('minimized', true); onClose() }}
+      />
+
+      <div class="bw-logwrap">
+      <div ref={logRef} class="bw-log" role="log" aria-live="polite" aria-label="Conversation" onScroll={onLogScroll}>
+        {shown.map((msg, i) => {
+          const newDay = showDays && (i === 0 || dayKey(shown[i - 1].created_at) !== dayKey(msg.created_at))
+          const day = newDay && dayKey(msg.created_at)
+            ? <div key={`day-${msg.id}`} class="bw-day">{dayLabel(msg.created_at)}</div>
+            : null
+          if (msg.role === 'system') {
+            return [day,
+              <div key={msg.id} class={`bw-note${msg.id.startsWith('err-') ? ' bw-note--error' : ''}`}>
+                {richText(msg.content)}
+              </div>,
+            ]
+          }
+          const out = msg.role === 'user'
+          const first = startsGroup(i)
+          const last = endsGroup(i)
           const isOperator = msg.role === 'agent'
           const operatorName = (msg.agent_name || '').trim() || CONSULTANT_LABEL
-          return (
-          <div key={msg.id} style={{
-            alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-            maxWidth: '80%',
-          }}>
-            {isOperator && (
-              <div style={{ fontSize: 11, marginBottom: 3, marginLeft: 34, lineHeight: 1.3 }}>
-                <span style={{ fontWeight: 600, color: 'var(--bbc-header)' }}>{operatorName}</span>
-                <span style={{ color: '#9ca3af' }}> · {CONSULTANT_LABEL}</span>
-              </div>
-            )}
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
-              {isOperator && (
-                msg.agent_avatar_url && !brokenAvatars[msg.id]
-                  ? <img
-                      src={msg.agent_avatar_url}
-                      alt={operatorName}
-                      style={{
-                        width: 28, height: 28, borderRadius: '50%', objectFit: 'cover',
-                        flexShrink: 0, background: '#e5e7eb',
-                      }}
-                      onError={() => setBrokenAvatars(prev => ({ ...prev, [msg.id]: true }))}
-                    />
-                  : <div style={{
-                      width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                      background: 'var(--bbc-header)', color: 'var(--bbc-header-text)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 11, fontWeight: 600,
-                    }}>
-                      {agentInitials(operatorName)}
-                    </div>
+          return [day,
+            <div key={msg.id} class={`bw-row ${out ? 'bw-row--out' : 'bw-row--in'}${first || newDay ? ' bw-row--first' : ''}`}>
+              {!out && (first || newDay) && (
+                <div class="bw-who">
+                  {isOperator
+                    ? (msg.agent_avatar_url && !brokenAvatars[msg.id]
+                        ? <img
+                            class="bw-ava"
+                            src={msg.agent_avatar_url}
+                            alt=""
+                            width={28}
+                            height={28}
+                            onError={() => setBrokenAvatars(prev => ({ ...prev, [msg.id]: true }))}
+                          />
+                        : <span class="bw-ava bw-ava--initials" aria-hidden="true">{agentInitials(operatorName)}</span>)
+                    : brandAvatar}
+                  <span>
+                    <b>{isOperator ? operatorName : 'Assistant'}</b>
+                    {isOperator && operatorName !== CONSULTANT_LABEL ? `, ${CONSULTANT_LABEL.toLowerCase()}` : ''}
+                    {' · '}{timeOf(msg.created_at)}
+                  </span>
+                </div>
               )}
-              <div style={{
-                padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
-                ...(msg.role === 'user'
-                  ? { background: 'var(--bbc-user-bubble)', color: 'var(--bbc-header-text)', borderBottomRightRadius: 4 }
-                  : msg.role === 'system'
-                    ? { background: '#fef3c7', color: '#92400e', fontSize: 12, fontStyle: 'italic' }
-                    : { background: 'var(--bbc-ai-bubble)', color: 'var(--bbc-ai-bubble-text)', borderBottomLeftRadius: 4 }
-                ),
-              }}>
-                {msg.content}
-              </div>
-            </div>
-            <div style={{
-              fontSize: 10, color: '#9ca3af', marginTop: 2,
-              textAlign: msg.role === 'user' ? 'right' : 'left',
-              marginLeft: isOperator ? 34 : 0,
-            }}>
-              {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </div>
-          </div>
-          )
+              <div class="bw-msg">{richText(msg.content)}</div>
+              {out && last && (() => {
+                // A send that failed shows the error note after it; say so here instead of "Sending".
+                const failed = msg.id.startsWith('temp-') && shown.slice(i + 1).some(m => m.id.startsWith('err-'))
+                if (failed) {
+                  return (
+                    <button type="button" class="bw-meta bw-meta--failed bw-retry" onClick={() => retry(msg)}>
+                      Not sent. <u>Retry</u>
+                    </button>
+                  )
+                }
+                return <div class="bw-meta">{msg.id.startsWith('temp-') ? 'Sending' : timeOf(msg.created_at)}</div>
+              })()}
+            </div>,
+          ]
         })}
-        {agentTyping.is_typing && (
-          <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
-            <div style={{ fontSize: 11, marginBottom: 3, color: '#9ca3af', lineHeight: 1.3 }}>
-              {(agentTyping.name || CONSULTANT_LABEL)} is typing…
-            </div>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '12px 16px', background: 'var(--bbc-ai-bubble)',
-              borderRadius: 14, borderBottomLeftRadius: 4, width: 'fit-content',
-            }}>
-              {[0, 1, 2].map(i => (
-                <span
-                  key={i}
-                  ref={el => { if (el) {
-                    el.style.animation = 'none'
-                    el.offsetHeight // reflow
-                    el.style.animation = `bbcDot 1.4s ${i * 0.2}s infinite`
-                  }}}
-                  style={{
-                    width: 6, height: 6, borderRadius: '50%',
-                    background: '#999', display: 'inline-block',
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-        {sending && !streamingText && !isStreaming && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 4, paddingLeft: 8 }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              padding: '12px 16px',
-              background: '#f0f0f0',
-              borderRadius: 12,
-              width: 'fit-content',
-            }}>
-              {[0, 1, 2].map(i => (
-                <span
-                  key={i}
-                  ref={el => { if (el) {
-                    el.style.animation = 'none'
-                    el.offsetHeight // reflow
-                    el.style.animation = `bbcDot 1.4s ${i * 0.2}s infinite`
-                  }}}
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background: '#999',
-                    display: 'inline-block',
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+
         {streamingText && (
-          <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
-            <div style={{
-              padding: '10px 14px', borderRadius: 14, fontSize: 13, lineHeight: 1.5,
-              background: 'var(--bbc-ai-bubble)', color: 'var(--bbc-ai-bubble-text)', borderBottomLeftRadius: 4,
-            }}>
-              {streamingText}
-            </div>
+          <div class={`bw-row bw-row--in${shown.length && speaker(shown[shown.length - 1]) === 'ai' ? '' : ' bw-row--first'}`}>
+            {!(shown.length && speaker(shown[shown.length - 1]) === 'ai') && (
+              <div class="bw-who">{brandAvatar}<span><b>Assistant</b></span></div>
+            )}
+            <div class="bw-msg">{streamingText}</div>
           </div>
         )}
-        <div ref={bottomRef} />
+
+        {aiWaiting && !agentTyping.is_typing && (
+          <div class="bw-row bw-row--in bw-row--first">
+            <div class="bw-who">{brandAvatar}<span><b>Assistant</b> is typing</span></div>
+            {dots}
+            <span class="bw-sr">The assistant is typing</span>
+          </div>
+        )}
+
+        {agentTyping.is_typing && (
+          <div class="bw-row bw-row--in bw-row--first">
+            <div class="bw-who">
+              <span class="bw-ava bw-ava--initials" aria-hidden="true">{agentInitials(agentTyping.name || CONSULTANT_LABEL)}</span>
+              <span><b>{agentTyping.name || CONSULTANT_LABEL}</b> is typing</span>
+            </div>
+            {dots}
+          </div>
+        )}
+
+        {queued.map((q, i) => (
+          <div key={q.id} class={`bw-row bw-row--out bw-row--queued${i === 0 ? ' bw-row--first' : ''}`}>
+            <div class="bw-msg">{q.text}</div>
+            {i === queued.length - 1 && <div class="bw-meta">Sends when the reply is in</div>}
+          </div>
+        ))}
+      </div>
+      {hasUnseen && (
+        <button type="button" class="bw-unseen" onClick={() => scrollToEnd(true)}>
+          New message <IconArrowDown />
+        </button>
+      )}
       </div>
 
-      {/* Quick reply buttons — shown after welcome message, hidden after click */}
+      {/* Quick replies — shown after the welcome message, hidden after a tap */}
       {quickReplies && quickReplies.length > 0 && (
-        <div style={{
-          padding: '8px 14px',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 6,
-          borderTop: '1px solid #f3f4f6',
-        }}>
+        <div class="bw-chips">
           {quickReplies.map((text, i) => (
-            <button
-              key={i}
-              onClick={() => handleQuickReply(text)}
-              style={{
-                padding: '6px 12px',
-                borderRadius: 16,
-                fontSize: 12,
-                border: '1.5px solid var(--bbc-primary)',
-                background: '#fff',
-                color: 'var(--bbc-header)',
-                cursor: 'pointer',
-                fontWeight: 500,
-              }}
-            >
+            <button key={i} type="button" class="bw-chip" onClick={() => handleQuickReply(text)}>
               {text}
             </button>
           ))}
         </div>
       )}
 
-      <div style={{
-        borderTop: '1px solid #e5e7eb', padding: 12,
-        display: 'flex', gap: 8, flexShrink: 0,
-      }}>
-        <input
+      <div class="bw-compose">
+        <textarea
+          ref={composerRef}
+          id="bw-composer"
+          class="bw-input"
+          rows={1}
           value={input}
+          enterkeyhint="send"
+          placeholder="Write a message"
+          aria-label="Type a message"
           onInput={e => {
-            const val = (e.target as HTMLInputElement).value
+            const val = (e.target as HTMLTextAreaElement).value
             lastInteractionRef.current = Date.now()
             setInput(val)
             sendTypingEvent(val)
+            fitComposer()
           }}
           onKeyDown={handleKeyDown}
-          placeholder="Type a message..."
-          aria-label="Type a message"
-          disabled={sending}
-          style={{
-            flex: 1, padding: '10px 14px', borderRadius: 10,
-            border: '1px solid #e5e7eb', fontSize: 13, outline: 'none',
-          }}
         />
         <button
+          type="button"
+          class="bw-send"
           onClick={handleSend}
-          disabled={!input.trim() || sending}
-          style={{
-            padding: '10px 16px', borderRadius: 10,
-            background: !input.trim() || sending ? '#d1d5db' : 'var(--bbc-send-btn)',
-            color: 'var(--bbc-send-btn-text)', border: 'none', cursor: !input.trim() || sending ? 'default' : 'pointer',
-            fontWeight: 600, fontSize: 13, flexShrink: 0,
-          }}
+          disabled={!input.trim()}
+          aria-label={sending ? 'Send after the reply' : 'Send message'}
+          title={sending ? 'Sends when the reply is in' : 'Send'}
         >
-          Send
+          <IconArrowUp />
         </button>
       </div>
     </div>

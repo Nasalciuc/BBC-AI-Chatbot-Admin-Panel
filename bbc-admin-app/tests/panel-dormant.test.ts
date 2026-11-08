@@ -235,8 +235,10 @@ const INTERVALS_ON_MASTER: Record<string, number[]> = {
   'src/features/chats/index.tsx': [30_000, 5_000, 10_000],
   // PR-10: no timer of its own — the heartbeat's queue ids drive the key.
   'src/features/chats/components/queue-section.tsx': [],
-  'src/features/dashboard/index.tsx': [60_000],
-  'src/features/dashboard/components/team-live-card.tsx': [30_000],
+  'src/features/dashboard/owner/index.tsx': [60_000],
+  'src/features/chats/to-read-state.ts': [60_000],
+  'src/features/teams/index.tsx': [15_000],
+  'src/features/teams/components/person-day.tsx': [30_000],
   'src/components/notification-bell.tsx': [30_000],
 }
 
@@ -265,8 +267,10 @@ test('every polling site honours dormant', () => {
   }
 })
 
-test('the connection banner stops checking when nobody is looking', () => {
-  const src = read('src/components/connection-banner.tsx')
+test('the server check stops when nobody is looking', () => {
+  // One /health check for the whole panel (the band at the top), where each
+  // page's header pill used to start its own.
+  const src = read('src/components/layout/status-bands.tsx')
   assert.match(src, /if \(dormant\) return/)
   assert.match(src, /\}, \[dormant\]\)/)
   assert.match(src, /setInterval\(check, 30000\)/, 'the interval itself is unchanged')
@@ -293,7 +297,8 @@ test('the layout wires all three dormant reasons and shows the leader banner', (
   assert.match(src, /visibilitychange/)
   assert.match(src, /set\('tab_hidden', document\.hidden\)/)
   assert.match(src, /installPanelLeader\(\)/)
-  assert.match(src, /it's active in the CRM/)
+  assert.match(src, /<StatusBands \/>/)
+  assert.match(read('src/lib/bands.ts'), /The panel is active in the CRM, so chats ring there, not here/)
 })
 
 // ── The list shows what is alive, and offers no close-all ────────

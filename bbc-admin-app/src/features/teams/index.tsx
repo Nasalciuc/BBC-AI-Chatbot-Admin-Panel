@@ -1,241 +1,194 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { MoreHorizontal, Plus, UsersRound } from 'lucide-react'
-import { toast } from 'sonner'
-import type { Team } from '@/lib/bbc/types'
-import type { UserRole } from '@/lib/bbc/types'
-import { usePermissions } from '@/lib/bbc/hooks'
-import { getTeams, getUsers } from '@/lib/api'
+import { UsersRound } from 'lucide-react'
+import { getPanelUsers, getTeamNow, getTeams } from '@/lib/api'
+import type { PanelUser } from '@/lib/types'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
-import { Header } from '@/components/layout/header'
+import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { HeaderActions } from '@/components/header-actions'
-import { Main } from '@/components/layout/main'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { type TeamUser, fmtShift } from './data/types'
-import { TeamDialog } from './components/team-dialog'
-import { TeamMembersDialog } from './components/team-members-dialog'
-import { TeamDeactivateDialog } from './components/team-deactivate-dialog'
+import { PageHeader } from '@/components/layout/page-header'
+import { InviteDialog } from '@/features/users/components/invite-dialog'
+import { Floor } from './components/floor'
+import { PersonDayPanel } from './components/person-day'
+import { Roster } from './components/roster'
+import { TeamCards } from './components/team-cards'
+import { canSeeTeam, scopeLine } from './view'
 
+type Tab = 'now' | 'people' | 'teams'
+
+const PRIVILEGED = ['owner', 'admin', 'dev']
+
+function NoTeam() {
+  return (
+    <section className='flex max-w-[620px] flex-col gap-2 rounded-[20px] bg-k-f7f7f7 p-6'>
+      <span aria-hidden='true' className='flex size-11 items-center justify-center rounded-full bg-k-ffffff'>
+        <UsersRound className='size-5 text-k-444444' />
+      </span>
+      <h2 className='m-0 text-xl font-bold text-k-202020'>You’re not in a team yet</h2>
+      <p className='m-0 text-sm leading-[1.5] text-k-444444'>
+        A supervisor sees the chats and the people of their own team, and nothing else. Until the owner puts you in a team, Team, To read and
+        Conversations stay empty for you; the Dashboard still shows all the chats of your tunnel.
+      </p>
+      <p className='m-0 text-sm leading-[1.5] text-k-444444'>Ask the owner to make you a team’s supervisor in Team › Teams & shifts.</p>
+    </section>
+  )
+}
+
+/**
+ * Team: the floor right now, the people, and the teams with their shifts.
+ * Owner, admin, dev: everyone. Supervisor: their team (read-only, can give
+ * chats). Project manager: their teams (builds them, can't give chats).
+ */
 export function Teams() {
-  const role = (useAuthStore((s) => s.auth.user?.role) ?? 'sales') as UserRole
-  const permissions = usePermissions(role)
+  const role = useAuthStore((s) => s.auth.user?.role ?? '')
+  const dormant = usePanelModeStore((s) => s.dormant)
+  const privileged = PRIVILEGED.includes(role)
+  const canManage = privileged || role === 'project_manager'
+  const [tab, setTab] = useState<Tab>('now')
+  const [person, setPerson] = useState<string | null>(null)
+  const [inviting, setInviting] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
 
-  const {
-    data: teams = [],
-    isLoading: teamsLoading,
-    isError: teamsError,
-  } = useQuery({
-    queryKey: ['teams'],
-    queryFn: () => getTeams(),
-    enabled: permissions.canManageTeams,
-    meta: { errorToast: false },
+  const now = useQuery({
+    queryKey: ['team-now'],
+    queryFn: getTeamNow,
+    enabled: canSeeTeam(role),
+    refetchInterval: dormant ? false : 15_000,
   })
-
-  const { data: users = [] } = useQuery({
+  const teams = useQuery({ queryKey: ['teams'], queryFn: () => getTeams(), enabled: canSeeTeam(role) })
+  const users = useQuery({
     queryKey: ['teams-users'],
-    queryFn: async () => {
-      const res = await getUsers()
-      if (!res.success) throw new Error('Failed to load users')
-      return (res.data ?? []) as unknown as TeamUser[]
-    },
-    enabled: permissions.canManageTeams,
-    meta: { errorToast: false },
+    queryFn: getPanelUsers,
+    enabled: canSeeTeam(role),
   })
 
-  const [createOpen, setCreateOpen] = useState(false)
-  const [editTeam, setEditTeam] = useState<Team | null>(null)
-  const [membersTeam, setMembersTeam] = useState<Team | null>(null)
-  const [deactivateTeam, setDeactivateTeam] = useState<Team | null>(null)
+  const d = now.data
+  const myTeams = useMemo(() => (teams.data ?? []).filter((t) => t.is_active).map((t) => t.name), [teams.data])
+  // A supervisor's roster is their team (the server scopes it); a PM's, their teams' people.
+  const scopedIds = useMemo(() => new Set((d?.teams ?? []).map((t) => t.id)), [d?.teams])
+  const roster: PanelUser[] = useMemo(() => {
+    const all = users.data ?? []
+    if (privileged) return all
+    if (role === 'project_manager') return all.filter((u) => u.team_id && scopedIds.has(u.team_id))
+    return all
+  }, [users.data, privileged, role, scopedIds])
+  const shownTeams = (teams.data ?? []).filter((t) => privileged || scopedIds.has(t.id))
+  const personRow = roster.find((u) => u.id === person)
 
-  const usersById = useMemo(() => {
-    const map = new Map<string, TeamUser>()
-    for (const u of users) map.set(u.id, u)
-    return map
-  }, [users])
-
-  const memberCounts = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const u of users) {
-      if (u.team_id) counts.set(u.team_id, (counts.get(u.team_id) ?? 0) + 1)
-    }
-    return counts
-  }, [users])
-
-  const supervisors = useMemo(() => users.filter((u) => u.role === 'supervisor'), [users])
-  const projectManagers = useMemo(() => users.filter((u) => u.role === 'project_manager'), [users])
-
-  const nameOf = (id?: string | null) => {
-    if (!id) return '—'
-    const u = usersById.get(id)
-    return u?.name || u?.email || id
-  }
-
-  if (!permissions.canManageTeams) {
+  if (!canSeeTeam(role)) {
     return (
-      <>
-        <Header fixed>
-          <HeaderActions />
-        </Header>
-        <Main>
-          <div className='flex h-[60vh] flex-col items-center justify-center text-center'>
-            <UsersRound className='mb-3 h-10 w-10 text-muted-foreground' />
-            <h2 className='text-xl font-semibold'>Not authorized</h2>
-            <p className='text-muted-foreground'>
-              You don&apos;t have permission to manage teams.
-            </p>
-          </div>
-        </Main>
-      </>
+      <main id='content' className='flex flex-col gap-4 px-4 pt-6 pb-9 md:px-7 md:pt-7'>
+        <PageHeader title='Team' subtitle='Not for your role' actions={<HeaderActions className='ms-0' />} />
+        <p className='m-0 text-sm text-k-555555'>Team is for the owner, admins, supervisors and project managers.</p>
+      </main>
     )
   }
 
+  const tabs: { key: Tab; label: string; n?: number }[] = [
+    { key: 'now', label: 'Now' },
+    { key: 'people', label: 'People', n: roster.length || undefined },
+    { key: 'teams', label: 'Teams & shifts', n: shownTeams.length || undefined },
+  ]
+
   return (
-    <>
-      <Header fixed>
-        <HeaderActions />
-      </Header>
-
-      <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
-        <div className='flex flex-wrap items-end justify-between gap-2'>
-          <div>
-            <h2 className='text-2xl font-bold tracking-tight'>Teams</h2>
-            <p className='text-muted-foreground'>
-              Create teams, set shifts, and assign supervisors, PMs, and operators.
-            </p>
+    <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
+      <PageHeader
+        title='Team'
+        subtitle={d?.no_team ? 'No team yet' : scopeLine(role, myTeams, nowMs)}
+        actions={
+          <div className='flex items-center gap-2.5'>
+            {privileged && (
+              <button type='button' onClick={() => setInviting(true)} className='h-11 rounded-full bg-kb-202020 px-5 text-sm font-bold text-on-btn'>
+                Invite people
+              </button>
+            )}
+            <HeaderActions className='ms-0' />
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className='me-2 h-4 w-4' /> Create team
-          </Button>
-        </div>
-
-        <div className='rounded-lg border'>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Shift</TableHead>
-                <TableHead>Supervisor</TableHead>
-                <TableHead>PM</TableHead>
-                <TableHead className='text-center'>Members</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className='w-[60px]' />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {teamsLoading && (
-                <TableRow>
-                  <TableCell colSpan={7} className='h-24 text-center text-muted-foreground'>
-                    Loading teams…
-                  </TableCell>
-                </TableRow>
-              )}
-              {teamsError && !teamsLoading && (
-                <TableRow>
-                  <TableCell colSpan={7} className='h-24 text-center text-destructive'>
-                    Failed to load teams — check your connection.
-                  </TableCell>
-                </TableRow>
-              )}
-              {!teamsLoading && !teamsError && teams.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className='h-24 text-center text-muted-foreground'>
-                    No teams yet. Click “Create team” to add one.
-                  </TableCell>
-                </TableRow>
-              )}
-              {teams.map((team) => (
-                <TableRow key={team.id}>
-                  <TableCell className='font-medium'>{team.name}</TableCell>
-                  <TableCell>{fmtShift(team.shift_name, team.shift_start, team.shift_end)}</TableCell>
-                  <TableCell>{nameOf(team.supervisor_id)}</TableCell>
-                  <TableCell>{nameOf(team.pm_id)}</TableCell>
-                  <TableCell className='text-center'>{memberCounts.get(team.id) ?? 0}</TableCell>
-                  <TableCell>
-                    <Badge variant={team.is_active ? 'default' : 'secondary'}>
-                      {team.is_active ? 'Active' : 'Inactive'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant='ghost' size='icon' className='h-8 w-8'>
-                          <MoreHorizontal className='h-4 w-4' />
-                          <span className='sr-only'>Open actions</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align='end'>
-                        <DropdownMenuItem onClick={() => setEditTeam(team)}>Edit</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setMembersTeam(team)}>
-                          Manage members
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className='text-destructive'
-                          disabled={!team.is_active}
-                          onClick={() => setDeactivateTeam(team)}
-                        >
-                          Deactivate
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </Main>
-
-      <TeamDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        supervisors={supervisors}
-        projectManagers={projectManagers}
+        }
       />
-      {editTeam && (
-        <TeamDialog
-          open={!!editTeam}
-          onOpenChange={(o) => !o && setEditTeam(null)}
-          team={editTeam}
-          supervisors={supervisors}
-          projectManagers={projectManagers}
-        />
+
+      {d?.no_team ? (
+        <NoTeam />
+      ) : (
+        <>
+          <div role='tablist' aria-label='Team' className='flex w-fit max-w-full flex-wrap gap-1 rounded-2xl bg-k-f2f2f2 p-1'>
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                type='button'
+                role='tab'
+                aria-selected={tab === t.key}
+                onClick={() => setTab(t.key)}
+                className={cn(
+                  'flex h-10 items-center gap-2 rounded-xl px-4 text-[15px] focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
+                  tab === t.key ? 'bg-k-ffffff font-bold text-k-202020 shadow-sm' : 'text-k-444444'
+                )}
+              >
+                {t.label}
+                {t.n !== undefined && <span className='text-xs font-normal text-k-6b6b6b'>{t.n}</span>}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'now' &&
+            (now.isError ? (
+              <div role='alert' className='flex flex-wrap items-center gap-3 rounded-2xl bg-k-fff3e0 px-4 py-3 text-sm text-k-8a4b00'>
+                <span className='flex-1'>
+                  <strong>Couldn’t load the floor.</strong> Nothing is shown rather than people shown as free who aren’t.
+                </span>
+                <button type='button' onClick={() => now.refetch()} className='h-9 rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn'>
+                  Try again
+                </button>
+              </div>
+            ) : !d ? (
+              <div className='grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4' aria-busy='true'>
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className='h-32 animate-pulse rounded-[20px] bg-k-f7f7f7' />
+                ))}
+              </div>
+            ) : (
+              <Floor d={d} nowMs={nowMs} teamScoped={!privileged} onPerson={setPerson} />
+            ))}
+
+          {tab === 'people' && (
+            <Roster
+              users={roster}
+              people={d?.people ?? []}
+              teams={shownTeams}
+              nowMs={nowMs}
+              onPerson={setPerson}
+              loading={users.isLoading}
+              failed={users.isError}
+            />
+          )}
+
+          {tab === 'teams' && (
+            <TeamCards
+              teams={shownTeams}
+              cards={d?.teams ?? []}
+              users={users.data ?? []}
+              canManage={canManage}
+              onSeePeople={() => setTab('people')}
+            />
+          )}
+        </>
       )}
-      {membersTeam && (
-        <TeamMembersDialog
-          open={!!membersTeam}
-          onOpenChange={(o) => !o && setMembersTeam(null)}
-          team={membersTeam}
-          users={users}
-        />
-      )}
-      {deactivateTeam && (
-        <TeamDeactivateDialog
-          open={!!deactivateTeam}
-          onOpenChange={(o) => !o && setDeactivateTeam(null)}
-          team={deactivateTeam}
-          onDone={() => {
-            toast.success('Team deactivated')
-            setDeactivateTeam(null)
-          }}
-        />
-      )}
-    </>
+
+      <PersonDayPanel
+        userId={person}
+        onClose={() => setPerson(null)}
+        teams={shownTeams}
+        canMoveTeams={canManage}
+        canManageAccess={privileged}
+        chatEnabled={personRow ? personRow.chat_enabled !== false : undefined}
+        nowMs={nowMs}
+      />
+      {privileged && <InviteDialog open={inviting} onOpenChange={setInviting} myRole={role} />}
+    </main>
   )
 }

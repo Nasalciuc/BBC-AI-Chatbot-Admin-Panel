@@ -33,8 +33,9 @@ test('the attention key has the same shape as the list key, at its defaults', ()
 test('both ask for the badges in the same response', () => {
   assert.match(read('src/hooks/use-heartbeat.ts'), /with_counts: 'true'/)
   assert.match(read('src/features/chats/index.tsx'), /with_counts: 'true'/)
-  // The standalone counts poll runs only when the list did not carry them.
-  assert.match(read('src/features/chats/index.tsx'), /enabled: !!convResponse && !listCounts/)
+  // The standalone counts poll runs only when the list did not carry them —
+  // or when no list is fetched at all (the redesign's To read tab).
+  assert.match(read('src/features/chats/index.tsx'), /enabled: \(reading \|\| !!convResponse\) && !listCounts/)
 })
 
 test('the queue rows refetch when the heartbeat changes the line, not on a timer', () => {
@@ -53,8 +54,10 @@ test('a refreshed session token reaches the heartbeat worker', () => {
 test('a failed background refetch does not send the operator to /500', () => {
   const main = read('src/main.tsx')
   assert.match(main, /const hadData = query\.state\.data !== undefined/)
-  const i = main.indexOf("router.navigate({ to: '/500' })")
-  assert.ok(main.lastIndexOf('if (!hadData)', i) > 0)
+  // Since the redesign no failed query leaves the screen at all (a first
+  // load says so where it happened); a refetch toasts once a minute.
+  assert.equal(main.indexOf("router.navigate({ to: '/500' })"), -1)
+  assert.match(main, /shouldNotifyRefreshFailure\(query\.queryHash, Date\.now\(\)\)/)
 })
 
 test('/widget-embed is its own page with only the widget script', () => {

@@ -13,7 +13,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 
 test('the password step hands over to the second factor instead of logging in', () => {
-  const form = read('src/features/auth/sign-in/components/user-auth-form.tsx')
+  // The redesigned sign-in page (#240) replaced user-auth-form.tsx.
+  const form = read('src/features/auth/sign-in/index.tsx')
   const i = form.indexOf('if (res.mfa && res.mfa_token)')
   const j = form.indexOf('finishLogin(res.token, res.user)')
   assert.ok(i > 0 && j > i, 'the mfa branch must run before the session is stored')

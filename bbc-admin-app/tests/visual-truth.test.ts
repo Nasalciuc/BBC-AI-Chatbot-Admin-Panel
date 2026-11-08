@@ -10,7 +10,6 @@ import { formatAge, formatDuration } from '../src/lib/format-age.ts'
 import { resolveDataState } from '../src/lib/data-state.ts'
 import { isDegenerateRoute } from '../src/lib/route-display.ts'
 import { listRowDot } from '../src/features/chats/presence.ts'
-import { lastSeenLabel, partitionLive } from '../src/features/dashboard/components/live-state.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const NOW = new Date('2026-08-10T12:00:00Z')
@@ -36,11 +35,6 @@ test('formatAge: just now, ago suffix, null on garbage', () => {
   assert.equal(formatAge(agoMin(60 * 24 * 61), NOW), '2mo ago')
   assert.equal(formatAge(null, NOW), null)
   assert.equal(formatAge('not-a-date', NOW), null)
-})
-
-test('lastSeenLabel uses the shared caps', () => {
-  assert.equal(lastSeenLabel(agoMin(1447 * 60), NOW), 'last seen 2mo ago')
-  assert.equal(lastSeenLabel(agoMin(12), NOW), 'last seen 12m ago')
 })
 
 // ── tri-state: error is never conflated with loading or zero ──
@@ -79,30 +73,19 @@ test('isDegenerateRoute: LHR → LHR is noise, real routes pass', () => {
   assert.equal(isDegenerateRoute('LHR'), false)
 })
 
-// ── Team live: offline majority never dominates ──
+// ── chats on a phone / in the CRM dock: one column, list OR thread ──
 
-test('partitionLive splits live from offline', () => {
-  const a = (id: string, online: boolean) =>
-    ({ id, name: id, role: 'sales', is_ready: false, is_online: online, last_seen: null }) as never
-  const { live, offline } = partitionLive([a('x', true), a('y', false), a('z', false)])
-  assert.deepEqual(live.map((v: { id: string }) => v.id), ['x'])
-  assert.equal(offline.length, 2)
-})
-
-test('team live card collapses offline behind a toggle (source contract)', () => {
-  const card = readFileSync(join(SRC, 'features/dashboard/components/team-live-card.tsx'), 'utf8')
-  assert.match(card, /Show.*offline|offline.*Show/s)
-  assert.match(card, /max-h-\d+ .*overflow-y-auto|overflow-y-auto/)
-})
-
-// ── chats mobile: master-detail, no fixed column inside a 375px viewport ──
-
-test('chats index goes full-screen detail on mobile (source contract)', () => {
+test('chats goes one column below 720px of room (source contract)', () => {
   const page = readFileSync(join(SRC, 'features/chats/index.tsx'), 'utf8')
-  assert.match(page, /selectedId \? 'hidden md:flex' : 'flex'/)   // list hides under md when detail open
-  assert.match(page, /hidden md:block w-1\.5/)                    // drag handle is desktop-only
+  // The layout follows the room the page actually has (the CRM dock is 420px
+  // inside a wide window), not the window.
+  assert.match(page, /new ResizeObserver/)
+  assert.match(page, /width >= WIDE_MIN \? 'wide' : width >= MEDIUM_MIN \? 'medium' : 'narrow'/)
+  assert.match(page, /layout === 'narrow' && selectedId && 'hidden'/)   // the list steps aside for the thread
+  const detail = readFileSync(join(SRC, 'features/chats/detail.tsx'), 'utf8')
+  assert.match(detail, /aria-label='Back to the chats'/)                // …and the thread has a way back
   assert.ok(!page.includes('text-[10px]'), '10px text must not return')
-  assert.match(page, /min-h-11 md:min-h-0/)                       // 44px touch targets on mobile chips
+  assert.match(page, /min-h-11 md:min-h-8/)                              // 44px touch targets on phone chips
 })
 
 test('no 10px text anywhere in src (11px minimum)', () => {

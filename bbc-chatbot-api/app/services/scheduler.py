@@ -27,6 +27,13 @@ last_runs: dict[str, dict] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
 
+def job_lock(job_name: str) -> asyncio.Lock:
+    """The one lock a job runs under, shared by the internal loop and any
+    manual HTTP trigger of the same job, so the two can never overlap
+    inside this process (ADR-5: there is only one process)."""
+    return _locks.setdefault(job_name, asyncio.Lock())
+
+
 def get_scheduler_health() -> dict[str, dict[str, Any]]:
     """Per-job last_run_at and seconds_ago for /health canary."""
     now = datetime.now(timezone.utc)
@@ -45,12 +52,12 @@ def get_scheduler_health() -> dict[str, dict[str, Any]]:
 async def _run_forever(job_name: str, job_fn, interval_seconds: int):
     # G5: small start jitter so Railway restarts don't sync with Actions
     await asyncio.sleep(random.uniform(5, 15))
-    _locks.setdefault(job_name, asyncio.Lock())
+    lock = job_lock(job_name)
     while True:
         try:
-            # G2: no internal overlap; overlap WITH Actions is covered
-            # by job idempotency (close-if-abandoned is a no-op twice)
-            async with _locks[job_name]:
+            # G2: no internal overlap. A manual HTTP run of the same job
+            # takes this same lock (cron.py), so it waits instead of racing.
+            async with lock:
                 result = await job_fn()
             last_runs[job_name] = {
                 "at": datetime.now(timezone.utc).isoformat(),

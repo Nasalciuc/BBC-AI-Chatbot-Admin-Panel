@@ -232,13 +232,13 @@ test('openAgentStream owns auth via authHeaders and validates frames', () => {
   assert.match(src, /\$\{BASE\}\/api\/agent\/stream\/\$\{conversationId\}/)
 })
 
-test('the stream does not open for a dormant panel or a mock view', () => {
+test('the stream does not open for a dormant panel, a mock view, or a waiting chat an agent has not taken', () => {
   const src = read('src/features/chats/detail.tsx')
   assert.match(
     src,
-    /if \(!conversationId \|\| activeTab !== 'my_active' \|\| dormant \|\| usingMock\) return/,
+    /if \(!conversationId \|\| activeTab !== 'my_active' \|\| dormant \|\| usingMock \|\| blindView\) return/,
   )
-  assert.match(src, /\}, \[conversationId, activeTab, dormant, usingMock, queryClient\]\)/)
+  assert.match(src, /\}, \[conversationId, activeTab, dormant, usingMock, blindView, queryClient\]\)/)
 })
 
 test('features/ never imports sse-reader and never reads the access token', () => {

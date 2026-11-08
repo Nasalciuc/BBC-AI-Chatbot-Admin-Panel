@@ -55,6 +55,9 @@ production has and no migration wrote (`pipeline_runs.tunnel`,
      RLS; check nothing else uses the anon key against these tables first
    - `050_drop_leads_flexible_dates.sql` — **only after** this PR's code is
      deployed (older builds still read the column)
+   - `051_tasks_follow_ups.sql` is the redesign's (the Tasks page, #242), not
+     part of this list: it depends on none of 036–050, and the replay passes
+     with it before them or after them. Run it when #242 merges.
 
 3. **Retention** (⚑12) — `POST /api/cron/retention` counts what it would
    delete until `RETENTION_ENABLED=true` is set; schedule it nightly.

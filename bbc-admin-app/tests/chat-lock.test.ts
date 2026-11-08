@@ -23,19 +23,22 @@ test('the lock shows as a badge with Unlock for managers', () => {
 
 test('others see Unlock disabled, with a lock and a reason (RBAC rule)', () => {
   const d = read('src/features/chats/detail.tsx')
-  const disabled = d.slice(d.indexOf('!permissions.canManageBans ? ('), d.indexOf(') : ('))
+  const start = d.indexOf('!permissions.canManageBans ? (')
+  const disabled = d.slice(start, d.indexOf(') : (', start))
   assert.match(disabled, /\bdisabled\b/)
   assert.match(disabled, /<Lock /)
-  assert.match(disabled, /title="Only an owner, admin or dev can unlock a conversation"/)
+  assert.match(disabled, /title=['"]Only an owner, admin or dev can unlock a conversation['"]/)
   assert.doesNotMatch(disabled, /onClick/)
 })
 
 test('a locked push asks first, and a click is never the confirmation', () => {
+  // The redesign: the chat's push button lives in its details panel (onPush,
+  // called with the click event), the Leads page's in the lead panel.
   const d = read('src/features/chats/detail.tsx')
-  const l = read('src/features/leads/index.tsx')
-  assert.doesNotMatch(d, /onClick=\{handleMarkLeadCreated\}/)
-  assert.match(d, /onClick=\{\(\) => \{ void handleMarkLeadCreated\(\) \}\}/)
-  assert.match(l, /onClick=\{\(\) => handlePushToCrm\(lead\)\}/)
+  const l = read('src/features/leads/components/lead-panel.tsx')
+  assert.doesNotMatch(d, /(onClick|onPush)=\{handleMarkLeadCreated\}/)
+  assert.match(d, /onPush=\{\(\) => \{ void handleMarkLeadCreated\(\) \}\}/)
+  assert.match(l, /onClick=\{\(\) => push\.mutate\(\{ leadId: id \}\)\}/)
   for (const src of [d, l]) {
     assert.match(src, /isLockedPushRefusal\((e|err)\)/)
     assert.match(src, /label: 'Push anyway'/)
