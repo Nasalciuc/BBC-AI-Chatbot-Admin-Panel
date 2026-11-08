@@ -76,7 +76,12 @@ export interface Lead {
   conversation_id: string
   trip_type: 'one_way' | 'round_trip' | 'multi_city' | 'open_jaw' | 'tour'
   cabin_class: 'business' | 'first' | 'economy' | 'mixed'
+  /** Everyone flying: adults + children + infants (the CRM takes adults as the rest). */
   passengers: number | null
+  children_count?: number | null
+  infant_count?: number | null
+  /** NOT NULL DEFAULT true and never written by the pipeline: says nothing.
+   *  The client's own answer is intent_signals.date_flexible. */
   flexible_dates: boolean
   origin_code: string | null
   destination_code: string | null

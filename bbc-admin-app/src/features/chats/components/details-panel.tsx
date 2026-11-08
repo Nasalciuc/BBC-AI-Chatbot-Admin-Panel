@@ -14,10 +14,12 @@ import {
   joinAnd,
   noSummaryText,
   type Owner,
+  routeLine,
   signalsOf,
   summaryStamp,
   tripNote,
   tripRows,
+  tripText,
   whereRows,
   type Row,
 } from '../view'
@@ -58,21 +60,6 @@ function Fold({
   )
 }
 
-function Rows({ rows, wide }: { rows: Row[]; wide: boolean }) {
-  return (
-    <dl className='m-0 flex flex-col gap-2'>
-      {rows.map((r) => (
-        <div key={r.label} className='flex gap-3 text-[13px] leading-[1.4]'>
-          <dt className={cn('flex-none text-k-6b6b6b', wide ? 'w-[104px]' : 'w-[84px]')}>{r.label}</dt>
-          <dd className={cn('m-0 min-w-0 flex-1 [overflow-wrap:anywhere]', r.warn ? 'font-bold text-k-8a4b00' : 'text-k-202020', r.strong && 'font-bold')}>
-            {r.value}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-
 async function copyText(text: string, what: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -80,6 +67,37 @@ async function copyText(text: string, what: string) {
   } catch {
     toast.error(`Couldn’t copy the ${what.toLowerCase()}.`)
   }
+}
+
+/** The Contact card's copy button, for anything an agent pastes elsewhere. */
+function CopyButton({ text, what }: { text: string; what: string }) {
+  return (
+    <button
+      type='button'
+      aria-label={`Copy ${what.toLowerCase()}`}
+      title={`Copy ${what.toLowerCase()}`}
+      onClick={() => copyText(text, what)}
+      className='flex size-8 flex-none items-center justify-center rounded-full bg-k-f7f7f7 text-k-202020 hover:bg-k-f2f2f2 focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
+    >
+      <Copy aria-hidden='true' className='size-3.5' />
+    </button>
+  )
+}
+
+function Rows({ rows, wide }: { rows: Row[]; wide: boolean }) {
+  return (
+    <dl className='m-0 flex flex-col gap-2'>
+      {rows.map((r, i) => (
+        <div key={`${r.label}-${i}`} className={cn('flex gap-3 text-[13px] leading-[1.4]', r.copy && 'min-h-8 items-center')}>
+          <dt className={cn('flex-none text-k-6b6b6b', wide ? 'w-[104px]' : 'w-[84px]')}>{r.label}</dt>
+          <dd className={cn('m-0 min-w-0 flex-1 [overflow-wrap:anywhere]', r.warn ? 'font-bold text-k-8a4b00' : 'text-k-202020', r.strong && 'font-bold')}>
+            {r.value}
+          </dd>
+          {r.copy && <CopyButton text={r.copy.text} what={r.copy.what} />}
+        </div>
+      ))}
+    </dl>
+  )
 }
 
 export interface DetailsPanelProps {
@@ -117,14 +135,17 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const named = !!conv.visitor_name?.trim()
   const signals = signalsOf(lead)
   const trip = tripRows(lead, signals)
-  const about = aboutOf(signals)
+  const about = aboutOf(signals, lead)
   const level = levelOf(lead)
   const missing = conv.tunnel === 'support' ? [] : missingForReady(lead)
   const where = p.isSupervisor ? [] : whereRows(conv.metadata, conv.visitor_phone_country)
   const clientMsgs = p.messages.filter((m) => m.role === 'user').length
   const note = tripNote(conv, owner)
-  const big = lead?.origin_code && lead?.destination_code ? `${lead.origin_code} → ${lead.destination_code}` : lead?.origin_code || lead?.destination_code || 'Not known yet'
-  const small = lead?.route_display ?? ''
+  const route = routeLine(lead)
+  // route_display is written as "ORIG → DEST" (lead_service): shown only if
+  // someone changed it to something else.
+  const small = lead?.route_display && lead.route_display !== route ? lead.route_display : ''
+  const tripTitle = conv.tunnel === 'support' ? 'Booking' : 'Trip'
   const handoff = p.messages.find((m) => m.role === 'system' && /asked for a person|person/i.test(m.content))
   const firstAgent = p.messages.find((m) => m.role === 'agent')
   const firstReplyMin =
@@ -182,14 +203,27 @@ export function DetailsPanel(p: DetailsPanelProps) {
       </Fold>
 
       {(lead || (conv.tunnel === 'sales' && owner !== 'closed')) && (
-        <Fold id='trip' open={isOpen('trip')} onToggle={toggle} title={conv.tunnel === 'support' ? 'Booking' : 'Trip'}>
-          <div className='flex flex-col gap-0.5'>
-            <div className='text-2xl leading-[1.15] font-bold tracking-[0.02em] text-k-202020'>{big}</div>
-            {small && <div className='text-[13px] text-k-555555'>{small}</div>}
+        <Fold id='trip' open={isOpen('trip')} onToggle={toggle} title={tripTitle}>
+          <div className='flex items-center gap-2'>
+            <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
+              <div className='text-2xl leading-[1.15] font-bold tracking-[0.02em] text-k-202020'>{route || 'Not known yet'}</div>
+              {small && <div className='text-[13px] text-k-555555'>{small}</div>}
+            </div>
+            {route && <CopyButton text={route} what='Route' />}
           </div>
           {isOpen('trip') && (
             <>
               {trip.length > 0 && <Rows rows={trip} wide={p.wide} />}
+              {(route || trip.length > 0) && (
+                <button
+                  type='button'
+                  onClick={() => copyText(tripText(route, trip), tripTitle)}
+                  className='flex min-h-8 items-center gap-1.5 self-start text-[13px] font-bold text-k-5b45e0'
+                >
+                  <Copy aria-hidden='true' className='size-3.5' />
+                  Copy the {tripTitle.toLowerCase()}
+                </button>
+              )}
               {note && <p className='m-0 text-xs leading-[1.45] text-k-6b6b6b'>{note}</p>}
             </>
           )}
@@ -233,21 +267,13 @@ export function DetailsPanel(p: DetailsPanelProps) {
                 <span className={cn('flex-1', conv.visitor_phone ? 'text-k-202020' : 'text-k-6b6b6b')}>
                   {conv.visitor_phone ? <a href={`tel:${conv.visitor_phone}`} className='hover:underline'>{conv.visitor_phone}</a> : 'No phone yet'}
                 </span>
-                {conv.visitor_phone && (
-                  <button type='button' aria-label='Copy phone' onClick={() => copyText(conv.visitor_phone!, 'Phone')} className='flex size-8 flex-none items-center justify-center rounded-full bg-k-f7f7f7 text-k-202020 hover:bg-k-f2f2f2'>
-                    <Copy aria-hidden='true' className='size-3.5' />
-                  </button>
-                )}
+                {conv.visitor_phone && <CopyButton text={conv.visitor_phone} what='Phone' />}
               </div>
               <div className='flex min-h-8 items-center gap-2 text-sm'>
                 <span className={cn('min-w-0 flex-1 [overflow-wrap:anywhere]', conv.visitor_email ? 'text-k-202020' : 'text-k-6b6b6b')}>
                   {conv.visitor_email ? <a href={`mailto:${conv.visitor_email}`} className='hover:underline'>{conv.visitor_email}</a> : 'No e-mail yet'}
                 </span>
-                {conv.visitor_email && (
-                  <button type='button' aria-label='Copy e-mail' onClick={() => copyText(conv.visitor_email!, 'E-mail')} className='flex size-8 flex-none items-center justify-center rounded-full bg-k-f7f7f7 text-k-202020 hover:bg-k-f2f2f2'>
-                    <Copy aria-hidden='true' className='size-3.5' />
-                  </button>
-                )}
+                {conv.visitor_email && <CopyButton text={conv.visitor_email} what='E-mail' />}
               </div>
             </div>
           ))}

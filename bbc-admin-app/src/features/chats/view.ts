@@ -326,23 +326,90 @@ export function dayMonth(date: string | null | undefined): string {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+/** "25 Nov 2026": with the year, as the old panel showed it and a quote
+ *  needs it (a December chat about January). One line on the Trip card. */
+export function fullDate(date: string | null | undefined): string {
+  if (!date) return ''
+  const d = new Date(`${date.slice(0, 10)}T12:00:00`)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 export interface Row {
   label: string
   value: string
   strong?: boolean
   warn?: boolean
+  /** A copy button: what goes on the clipboard, and what to call it. */
+  copy?: { text: string; what: string }
 }
 
+/** Who flies. `passengers` is everyone; the CRM takes adults as the rest
+ *  (crm.py), so the split shown is the one the CRM gets. */
+export function travelersText(lead: Pick<Lead, 'passengers' | 'children_count' | 'infant_count'>): string {
+  const total = lead.passengers ?? 0
+  if (total <= 0) return ''
+  const head = total === 1 ? '1 traveler' : `${total} travelers`
+  const kids = Math.max(0, lead.children_count ?? 0)
+  const babies = Math.max(0, lead.infant_count ?? 0)
+  if (!kids && !babies) return head
+  const adults = Math.max(1, total - kids - babies)
+  const parts = [`${adults} ${adults === 1 ? 'adult' : 'adults'}`]
+  if (kids) parts.push(`${kids} ${kids === 1 ? 'child' : 'children'}`)
+  if (babies) parts.push(`${babies} ${babies === 1 ? 'infant' : 'infants'}`)
+  return `${head} · ${parts.join(', ')}`
+}
+
+export interface LeadNotes {
+  /** Multi-city: every leg, the real itinerary (lead_service). */
+  itinerary: string
+  /** null: no call asked. '': asked, no number caught. Else the number. */
+  callback: string | null
+  /** Lines a person wrote — never rewritten by the pipeline. */
+  other: string[]
+}
+
+/** lead.notes as the pipeline writes it: "Itinerary: …", the "Chat: …" line
+ *  (the signals, shown as rows instead), "CLIENT ASKED TO BE CALLED — …",
+ *  and anything a person added. The old panel showed the notes raw. */
+export function notesOf(lead: Pick<Lead, 'notes'> | null | undefined): LeadNotes {
+  const out: LeadNotes = { itinerary: '', callback: null, other: [] }
+  for (const raw of (lead?.notes ?? '').split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('Chat: ')) continue
+    if (line.startsWith('Itinerary: ')) {
+      out.itinerary = line.slice('Itinerary: '.length).trim()
+    } else if (line.startsWith('CLIENT ASKED TO BE CALLED')) {
+      const n = line.split('—').slice(1).join('—').trim()
+      out.callback = n && n !== 'number not captured' ? n : ''
+    } else {
+      out.other.push(line)
+    }
+  }
+  return out
+}
+
+const said = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+
+/** Everything the assistant collected about the trip — what the old panel
+ *  showed (route, dates with the year, travelers, class, notes) plus the
+ *  answers it keeps only in intent_signals. Dates and the itinerary copy. */
 export function tripRows(lead: Lead | null | undefined, signals: Record<string, unknown>): Row[] {
   if (!lead) return []
   const oneWay = lead.trip_type === 'one_way'
+  const notes = notesOf(lead)
   const rows: Row[] = []
-  if (lead.departure_date) rows.push({ label: oneWay ? 'When' : 'Out', value: dayMonth(lead.departure_date) })
-  if (lead.return_date) rows.push({ label: 'Back', value: dayMonth(lead.return_date) })
-  if (lead.flexible_dates || signals.date_flexible === true) rows.push({ label: 'Dates', value: 'Flexible' })
-  if (lead.passengers) {
-    rows.push({ label: 'Travelers', value: lead.passengers === 1 ? '1 adult' : `${lead.passengers} adults` })
-  }
+  if (notes.itinerary) rows.push({ label: 'Itinerary', value: notes.itinerary, copy: { text: notes.itinerary, what: 'Itinerary' } })
+  const out = fullDate(lead.departure_date)
+  if (out) rows.push({ label: oneWay ? 'When' : 'Out', value: out, copy: { text: out, what: 'Departure date' } })
+  const back = fullDate(lead.return_date)
+  if (back) rows.push({ label: 'Back', value: back, copy: { text: back, what: 'Return date' } })
+  // flexible_dates is true on every lead (column default); only the
+  // client's own answer says flexible or fixed.
+  const dates = signals.date_flexible === true ? 'Flexible' : signals.date_flexible === false || lead.flexible_dates === false ? 'Fixed' : ''
+  if (dates) rows.push({ label: 'Dates', value: dates })
+  const who = travelersText(lead)
+  if (who) rows.push({ label: 'Travelers', value: who })
   if (lead.cabin_class) rows.push({ label: 'Cabin', value: CABIN[lead.cabin_class] ?? lead.cabin_class })
   if (lead.trip_type) {
     rows.push({
@@ -350,7 +417,24 @@ export function tripRows(lead: Lead | null | undefined, signals: Record<string, 
       value: (TRIP[lead.trip_type] ?? lead.trip_type) + (signals.nonstop_only === true ? ' · direct only' : ''),
     })
   }
+  if (said(signals.airline_preference)) rows.push({ label: 'Airlines', value: said(signals.airline_preference) })
+  if (said(signals.airline_avoid)) rows.push({ label: 'Not with', value: said(signals.airline_avoid) })
+  if (said(signals.budget_hint)) rows.push({ label: 'Budget', value: said(signals.budget_hint) })
+  if (said(signals.price_seen)) rows.push({ label: 'Price seen', value: said(signals.price_seen) })
+  if (said(signals.must_haves)) rows.push({ label: 'Must have', value: said(signals.must_haves) })
+  for (const n of notes.other) rows.push({ label: 'Note', value: n, copy: { text: n, what: 'Note' } })
   return rows
+}
+
+/** The route as the Trip card's big line; '' while it isn't known. */
+export function routeLine(lead: Pick<Lead, 'origin_code' | 'destination_code'> | null | undefined): string {
+  if (lead?.origin_code && lead?.destination_code) return `${lead.origin_code} → ${lead.destination_code}`
+  return lead?.origin_code || lead?.destination_code || ''
+}
+
+/** The whole trip as plain lines: for the CRM's notes, an e-mail, a colleague. */
+export function tripText(route: string, rows: Row[]): string {
+  return [route, ...rows.map((r) => `${r.label}: ${r.value}`)].filter(Boolean).join('\n')
 }
 
 /** What a lead still lacks before the assistant can call it Ready. */
@@ -406,7 +490,12 @@ const OCCASION: Record<string, string> = {
   vacation: 'Holiday',
 }
 
-export function aboutOf(signals: Record<string, unknown>): {
+/** The person, not the trip (airlines moved to the Trip card). A call back
+ *  carries the number the client gave for it, which may not be the form's. */
+export function aboutOf(
+  signals: Record<string, unknown>,
+  lead?: Pick<Lead, 'notes'> | null
+): {
   persona: { label: string; why: string } | null
   rows: Row[]
 } {
@@ -415,10 +504,11 @@ export function aboutOf(signals: Record<string, unknown>): {
   if (typeof signals.occasion === 'string') {
     rows.push({ label: 'Occasion', value: OCCASION[signals.occasion] ?? signals.occasion })
   }
-  if (typeof signals.airline_preference === 'string' && signals.airline_preference.trim()) {
-    rows.push({ label: 'Airlines', value: signals.airline_preference })
-  }
-  if (signals.callback_requested === true) rows.push({ label: 'Asks', value: 'A call back' })
+  if (said(signals.booking_for)) rows.push({ label: 'Booking for', value: said(signals.booking_for) })
+  const callback = notesOf(lead).callback
+  if (callback) rows.push({ label: 'Asks', value: `A call back on ${callback}`, copy: { text: callback, what: 'Number' } })
+  else if (signals.callback_requested === true || callback === '') rows.push({ label: 'Asks', value: 'A call back' })
+  if (said(signals.best_call_time)) rows.push({ label: 'Best time', value: said(signals.best_call_time) })
   return { persona: p ? { label: p[0], why: p[1] } : null, rows }
 }
 
