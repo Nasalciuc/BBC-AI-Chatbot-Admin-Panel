@@ -363,3 +363,11 @@ class TestWiring:
         assert "Send to CRM" in panel
         assert "Submit to CRM" not in panel
         assert "/mark-crm-created" in api
+        # The wiring, not only the label: the panel's button runs the chat's
+        # push handler, and that handler calls the push endpoint.
+        with open(os.path.join(base, "features", "chats", "detail.tsx"), encoding="utf-8") as f:
+            chat = f.read()
+        assert "onClick={p.onPush}" in panel
+        assert "onPush={handleMarkLeadCreated}" in chat
+        assert "await pushLeadToCrm(lead.id)" in chat
+        assert "export function pushLeadToCrm" in api

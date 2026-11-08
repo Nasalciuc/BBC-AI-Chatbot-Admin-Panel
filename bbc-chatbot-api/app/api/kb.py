@@ -17,7 +17,8 @@ async def list_categories(tunnel: Optional[str] = Query(None, pattern="^(sales|s
         rows = await db.get_kb_categories(tunnel=tunnel)
         return {"success": True, "data": rows, "count": len(rows)}
     except Exception as e:
-        return {"success": False, "data": [], "count": 0, "error": str(e)}
+        logger.error(f"list_categories error: {e}")
+        return {"success": False, "data": [], "count": 0, "error": "Couldn't read the knowledge base"}
 
 
 @router.get("/kb/entries")
@@ -31,7 +32,8 @@ async def list_entries(
         rows = await db.get_kb_entries(tunnel=tunnel, category_id=category_id, is_active=is_active, limit=limit)
         return {"success": True, "data": rows, "count": len(rows)}
     except Exception as e:
-        return {"success": False, "data": [], "count": 0, "error": str(e)}
+        logger.error(f"list_entries error: {e}")
+        return {"success": False, "data": [], "count": 0, "error": "Couldn't read the knowledge base"}
 
 
 @router.post("/kb/entries", status_code=201)

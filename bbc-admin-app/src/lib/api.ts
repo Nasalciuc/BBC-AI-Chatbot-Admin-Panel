@@ -445,15 +445,22 @@ export async function updateLead(
 }
 
 // ── Knowledge Base ────────────────────────────────────────────
-export function getKBCategories(): Promise<{ data: KBCategory[] }> {
-  return apiFetch<{ data: KBCategory[] }>('/api/kb/categories')
+/** The KB routes answer 200 with `success: false` when the database read
+ *  failed. Reject then, so a page can tell an outage from an empty list. */
+function kbRead<T>(res: { success?: boolean; data: T; error?: string }): { data: T } {
+  if (res.success === false) throw new ApiError(503, res.error || 'Couldn’t read the knowledge base')
+  return res
 }
 
-export function getKBEntries(
+export async function getKBCategories(): Promise<{ data: KBCategory[] }> {
+  return kbRead(await apiFetch<{ success?: boolean; data: KBCategory[]; error?: string }>('/api/kb/categories'))
+}
+
+export async function getKBEntries(
   params: Record<string, string> = {},
 ): Promise<{ data: KBEntry[] }> {
   const qs = new URLSearchParams(params).toString()
-  return apiFetch<{ data: KBEntry[] }>(`/api/kb/entries?${qs}`)
+  return kbRead(await apiFetch<{ success?: boolean; data: KBEntry[]; error?: string }>(`/api/kb/entries?${qs}`))
 }
 
 export async function createKBEntry(data: KBEntryCreate): Promise<KBEntry> {

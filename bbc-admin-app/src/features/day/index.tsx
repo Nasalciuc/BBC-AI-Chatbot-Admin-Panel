@@ -132,7 +132,7 @@ const linkCls = 'mt-1 text-sm font-bold text-k-5b45e0 hover:underline focus-visi
 
 function DayBody({ data, range, deadline }: { data: AgentDay; range: Range; deadline: number }) {
   const t = data.totals
-  const when = range === 1 ? 'Today' : `In ${range} days`
+  const when = range === 1 ? 'Today' : `Last ${range} days`
   const wentBack = data.went_back[0]
   const notIn = data.not_in_crm
   const names = notIn.map((n) => n.first_name || 'A client')

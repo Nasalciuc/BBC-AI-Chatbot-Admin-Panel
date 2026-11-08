@@ -32,7 +32,8 @@ export function Knowledge() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showDetail, setShowDetail] = useState(false)
 
-  const { data: catData } = useQuery({ queryKey: ['kb-categories'], queryFn: getKBCategories, staleTime: 5 * 60_000 })
+  const cats = useQuery({ queryKey: ['kb-categories'], queryFn: getKBCategories, staleTime: 5 * 60_000 })
+  const catData = cats.data
   const { data: entryData, isLoading, isError, refetch } = useQuery({
     queryKey: ['kb-entries', 'read', tunnel],
     queryFn: () => getKBEntries({ ...(tunnel ? { tunnel } : {}), is_active: 'true', limit: '500' }),
@@ -53,6 +54,9 @@ export function Knowledge() {
       (!q || e.title.toLowerCase().includes(q) || e.content.toLowerCase().includes(q))
   )
   const selected = shown.find((e) => e.id === selectedId) ?? shown[0] ?? null
+  // On a phone the list hides only while an answer is open. A search with no
+  // matches leaves nothing to open, so the list (and "Nothing matches") shows.
+  const detailOpen = showDetail && selected !== null
   const counts = (id: string) => entries.filter((e) => e.category_id === id).length
 
   const copy = async (e: KBEntry) => {
@@ -98,18 +102,25 @@ export function Knowledge() {
         </div>
       </div>
 
-      {isError ? (
+      {isError || cats.isError ? (
         <div role='alert' className='flex flex-wrap items-center gap-3 rounded-2xl bg-k-fff3e0 px-4 py-3 text-sm text-k-8a4b00'>
           <span className='flex-1'>
             <strong>Couldn’t load the answers.</strong> The server didn’t answer.
           </span>
-          <button type='button' onClick={() => refetch()} className='h-9 rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn'>
+          <button
+            type='button'
+            onClick={() => {
+              if (isError) refetch()
+              if (cats.isError) cats.refetch()
+            }}
+            className='h-9 rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn'
+          >
             Try again
           </button>
         </div>
       ) : (
         <div className='flex min-h-0 gap-6'>
-          <section aria-label='Answers' className={cn('flex w-full flex-col gap-2 md:w-[400px] md:flex-none', showDetail && 'max-md:hidden')}>
+          <section aria-label='Answers' className={cn('flex w-full flex-col gap-2 md:w-[400px] md:flex-none', detailOpen && 'max-md:hidden')}>
             <span className='px-1.5 text-xs text-k-6b6b6b'>
               {isLoading ? 'Loading…' : `${shown.length} ${shown.length === 1 ? 'answer' : 'answers'}`}
             </span>
@@ -149,7 +160,7 @@ export function Knowledge() {
               aria-label={selected.title}
               className={cn(
                 'flex h-fit min-w-0 flex-1 flex-col gap-4 rounded-[20px] bg-k-ffffff p-6 shadow-[0_0_0_1px_var(--k-ececec)] md:p-8',
-                !showDetail && 'max-md:hidden'
+                !detailOpen && 'max-md:hidden'
               )}
             >
               <button type='button' onClick={() => setShowDetail(false)} className='flex items-center gap-1.5 self-start text-sm font-bold text-k-5b45e0 md:hidden'>
