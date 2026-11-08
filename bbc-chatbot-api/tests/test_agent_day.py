@@ -81,6 +81,38 @@ def test_first_reply_is_measured_from_the_take_to_the_first_operator_message():
     assert d["totals"]["wait_median_s"] == 12          # median of 9 and 15
 
 
+def test_a_reply_counts_only_inside_its_own_take():
+    # Taken, back to the assistant with no reply, taken again, answered 30 s
+    # after the second take: the first take had no reply (not ten minutes).
+    t1 = NOW - timedelta(minutes=40)
+    t2 = NOW - timedelta(minutes=30)
+    activity = [
+        {"action": "claim_won", "conversation_id": "a", "happened_at": t1.isoformat()},
+        {"action": "deadline_fired", "conversation_id": "a", "happened_at": (t1 + timedelta(seconds=90)).isoformat()},
+        {"action": "claim_won", "conversation_id": "a", "happened_at": t2.isoformat()},
+    ]
+    msgs = [{"conversation_id": "a", "created_at": (t2 + timedelta(seconds=30)).isoformat()}]
+    d = _day(activity=activity, agent_messages=msgs, leads={"a": {"created_in_crm": False}})
+    assert d["totals"]["took"] == 2
+    assert d["totals"]["first_reply_median_s"] == 30
+    assert d["totals"]["went_back"] == 1
+
+
+def test_a_reply_after_the_chat_went_back_is_not_mine():
+    # The messages read covers every operator in the chat: after it went
+    # back, someone else took it and wrote. That line isn't my first reply,
+    # and the chat isn't mine for the CRM count.
+    t1 = NOW - timedelta(minutes=40)
+    activity = [
+        {"action": "claim_won", "conversation_id": "a", "happened_at": t1.isoformat()},
+        {"action": "deadline_fired", "conversation_id": "a", "happened_at": (t1 + timedelta(seconds=90)).isoformat()},
+    ]
+    msgs = [{"conversation_id": "a", "created_at": (t1 + timedelta(minutes=5)).isoformat()}]
+    d = _day(activity=activity, agent_messages=msgs, leads={"a": {"created_in_crm": False}})
+    assert d["totals"]["first_reply_median_s"] is None
+    assert (d["totals"]["with_lead"], d["totals"]["in_crm"]) == (0, 0)
+
+
 def test_went_back_is_listed_newest_first_and_not_counted_as_yours_for_the_crm():
     activity = [
         {"action": "claim_won", "conversation_id": "sarah", "happened_at": _at(minutes_ago=16)},

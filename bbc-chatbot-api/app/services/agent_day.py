@@ -67,11 +67,19 @@ def _med(values: Iterable[float]) -> Optional[int]:
     return int(round(median(vals))) if vals else None
 
 
+_TAKE_ENDS = ("claim_won", "deadline_fired", "closed")
+
+
 def _first_reply_seconds(
-    claims: list[dict], agent_messages: list[dict]
+    claims: list[dict], agent_messages: list[dict], events: list[dict]
 ) -> dict[int, Optional[int]]:
     """For each claim (by index): seconds from the take to the first operator
-    message in that conversation at or after it, or None when none came."""
+    message inside that take, or None when none came.
+
+    A take lasts until the next take of the chat, the deadline sending it back
+    to the assistant, or the chat being closed (the same rule as the owner
+    Dashboard). Without that end, a chat that went back and was taken again
+    would hand the second take's reply to the first one."""
     by_conv: dict[str, list[datetime]] = {}
     for m in agent_messages:
         t = parse_ts(m.get("created_at"))
@@ -80,10 +88,16 @@ def _first_reply_seconds(
             by_conv.setdefault(cid, []).append(t)
     for times in by_conv.values():
         times.sort()
+    ends: dict[str, list[datetime]] = {}
+    for e in events:
+        if e.get("action") in _TAKE_ENDS:
+            ends.setdefault(e["conversation_id"], []).append(e["_at"])
     out: dict[int, Optional[int]] = {}
     for i, c in enumerate(claims):
         t0 = c["_at"]
-        first = next((t for t in by_conv.get(c["conversation_id"], []) if t >= t0), None)
+        cid = c["conversation_id"]
+        end = next((t for t in ends.get(cid, []) if t > t0), None)
+        first = next((t for t in by_conv.get(cid, []) if t >= t0 and (end is None or t <= end)), None)
         out[i] = int((first - t0).total_seconds()) if first else None
     return out
 
@@ -112,7 +126,7 @@ def build_agent_day(
     events.sort(key=lambda e: e["_at"])
 
     claims = [e for e in events if e.get("action") == "claim_won"]
-    replies = _first_reply_seconds(claims, agent_messages)
+    replies = _first_reply_seconds(claims, agent_messages, events)
     for i, c in enumerate(claims):
         c["_reply_s"] = replies.get(i)
 
