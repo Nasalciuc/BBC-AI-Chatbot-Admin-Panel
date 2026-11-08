@@ -74,6 +74,7 @@ def task_row(
         "source_label": SOURCE_LABEL.get(t.get("source") or "added", "Added"),
         "quote": mask_contacts(t.get("quote")) if masked else t.get("quote"),
         "conversation_id": t.get("conversation_id"),
+        "message_id": t.get("message_id"),
         "lead_id": t.get("lead_id") or (lead or {}).get("id"),
         "chat_number": (conv or {}).get("chat_number"),
         "client": label or None,

@@ -3322,13 +3322,17 @@ async def list_follow_ups(
     with_unowned: bool = False,
     only_unowned: bool = False,
     done_since: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> tuple[list[dict], list[dict]]:
     """(open tasks by due time, tasks done since `done_since`, newest first).
 
-    assignee_ids None = everyone's. Raises on failure."""
+    assignee_ids None = everyone's; `conversation_id`: only that chat's (in the
+    query, so the 500-row cap never hides a chat's task). Raises on failure."""
     db_client = get_client()
 
     def scoped(q):
+        if conversation_id:
+            q = q.eq("conversation_id", conversation_id)
         if only_unowned:
             return q.is_("assignee_id", "null")
         if assignee_ids is None:
@@ -3463,10 +3467,11 @@ async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
 
 
 async def get_task_people() -> list[dict]:
-    """Everyone who can hold a task: active users, with role and team. Raises."""
+    """Everyone who can hold a task: active agents, supervisors, PMs and
+    managers (QA has no Tasks page). Raises."""
     db_client = get_client()
     res = await _run_sync(lambda: db_client.table("users").select("id, name, email, role, team_id")
-                          .eq("is_active", True).execute(), label="tasks")
+                          .eq("is_active", True).neq("role", "qa").execute(), label="tasks")
     return res.data or []
 
 

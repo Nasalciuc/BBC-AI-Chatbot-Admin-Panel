@@ -51,7 +51,7 @@ async def _task_alerts(user: dict) -> dict:
         r = task_row(t, conv=convs.get(cid), lead=leads.get(cid), names=names, wrote_at=None, now=now, tz=tz, masked=reach["masked"])
         return {k: r[k] for k in ("id", "title", "kind", "due_at", "state", "conversation_id", "client", "route", "assignee_name")}
 
-    out: dict = {"set_up": True, "mine": [row(t) for t in soon], "team_late": [row(t) for t in late],
+    out: dict = {"set_up": True, "time_zone": rules["time_zone"], "mine": [row(t) for t in soon], "team_late": [row(t) for t in late],
                  "counts": {"late": 0, "today": 0, "unowned": sum(1 for t in team_open if not t.get("assignee_id"))}}
     for r in out["mine"]:
         if r["state"] in ("late", "today"):

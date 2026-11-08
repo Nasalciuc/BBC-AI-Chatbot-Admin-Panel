@@ -11,6 +11,7 @@ yet", never an empty list that reads as "no tasks". A failed read is 502.
 """
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -161,8 +162,17 @@ def _days(n: int):
 async def list_tasks(
     view: str = Query("default"),
     kind: Optional[Literal["call", "email", "todo"]] = Query(None),
+    conversation_id: Optional[str] = Query(None),
     user: dict = Depends(get_current_user),
 ):
+    """The reader's tasks. `conversation_id`: only that chat's, for the chat's
+    "Follow-up caught" line and late banner (no people list, no unowned count)."""
+    one_chat = bool(conversation_id)
+    if conversation_id:
+        try:
+            uuid.UUID(conversation_id)
+        except ValueError:
+            raise HTTPException(400, "Unknown chat")
     reach = await _reach(user)
     role = reach["role"]
     try:
@@ -173,17 +183,19 @@ async def list_tasks(
         if role in MANAGERS:
             v = view if view in ("all", "mine", "unowned") else "all"
             open_rows, done_rows = await db.list_follow_ups(
-                assignee_ids=[reach["id"]] if v == "mine" else None, only_unowned=v == "unowned", done_since=since)
+                assignee_ids=[reach["id"]] if v == "mine" else None, only_unowned=v == "unowned",
+                done_since=since, conversation_id=conversation_id)
         elif role in TEAM_LEADS:
             v = view if view in ("team", "mine", "unowned") else "team"
             open_rows, done_rows = await db.list_follow_ups(
                 assignee_ids=[reach["id"]] if v == "mine" else reach["members"],
-                with_unowned=v == "team", only_unowned=v == "unowned", done_since=since)
+                with_unowned=v == "team", only_unowned=v == "unowned", done_since=since, conversation_id=conversation_id)
         else:
             v = "mine"
-            open_rows, done_rows = await db.list_follow_ups(assignee_ids=[reach["id"]], done_since=since)
+            open_rows, done_rows = await db.list_follow_ups(
+                assignee_ids=[reach["id"]], done_since=since, conversation_id=conversation_id)
         unowned_open = None
-        if _can_assign(reach):
+        if _can_assign(reach) and not one_chat:
             unowned_open = (sum(1 for t in open_rows if not t.get("assignee_id")) if v in ("all", "team", "unowned")
                             else len((await db.list_follow_ups(only_unowned=True))[0]))
         if kind:
@@ -196,7 +208,7 @@ async def list_tasks(
         client_msgs = await db.client_messages_since(
             [t["conversation_id"] for t in open_rows if t.get("conversation_id")], min(made).isoformat()) if made else []
         names = await db.get_user_names()
-        people = await db.get_task_people() if _can_assign(reach) else []
+        people = await db.get_task_people() if _can_assign(reach) and not one_chat else []
     except db.TasksNotSetUp:
         raise HTTPException(503, NOT_SET_UP)
     except Exception as e:
@@ -294,6 +306,8 @@ class TaskIn(BaseModel):
     conversation_id: Optional[str] = None
     lead_id: Optional[str] = None
     source: Literal["added", "dashboard"] = "added"
+    # From the Dashboard: the line it was made from ("6 of his 11 chats went back…").
+    note: Optional[str] = Field(None, max_length=300)
 
 
 async def _check_assignee(reach: dict, assignee_id: str) -> None:
@@ -323,6 +337,7 @@ async def create_task(body: TaskIn, user: dict = Depends(get_current_user)):
             conversation_id = (full or {}).get("conversation_id")
         task = await db.insert_follow_up({
             "title": body.title.strip(), "kind": body.kind, "source": body.source,
+            "quote": (body.note or "").strip() or None,
             "conversation_id": conversation_id, "lead_id": lead_id,
             "due_at": due, "due_kind": body.due_kind if due else "day",
             "assignee_id": assignee, "created_by": reach["id"],

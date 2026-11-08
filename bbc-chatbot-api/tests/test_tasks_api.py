@@ -105,6 +105,16 @@ def test_the_bell_keeps_the_waiting_chats_when_tasks_fail_or_aren_t_set_up():
     assert body["stale_conversations"] == [{"id": "waiting"}] and body["tasks"]["failed"] is True
 
 
+def test_the_bell_carries_the_business_time_zone_and_only_today_s_tasks():
+    late_one = task("t2", due_at=(NOW - timedelta(minutes=10)).isoformat())
+    in_two_days = task("t3", due_at=(NOW + timedelta(days=2)).isoformat())
+    with patched(list_follow_ups=AsyncMock(return_value=([late_one, in_two_days], []))):
+        t = client("sales", "victor").get("/api/notifications").json()["tasks"]
+    # The panel shows due times and rings reminders in this zone, not the browser's.
+    assert t["time_zone"] == "America/New_York"
+    assert [r["id"] for r in t["mine"]] == ["t2"] and t["counts"]["late"] == 1
+
+
 # ── Who sees what ────────────────────────────────────────────────────────────
 
 def test_an_agent_sees_only_their_own_tasks_with_the_client_s_city():
@@ -288,3 +298,69 @@ def test_late_today_later_and_on_time_this_week():
     assert states["late"] == "late" and states["next"] == "later"
     assert v["counts"]["late"] == 1 and v["on_time"]["on_time"] == 1
     assert v["on_time"] == {"on_time": 1, "due": 2}   # the late one counts against "on time"
+
+
+# ── One chat's tasks (the chat's caught line and late banner) ────────────────
+
+CHAT = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+
+
+def test_one_chat_s_tasks_are_filtered_in_the_query_and_skip_the_page_extras():
+    lf = AsyncMock(return_value=([task("t1", conversation_id=CHAT)], []))
+    people = AsyncMock(return_value=PEOPLE)
+    with patched(list_follow_ups=lf, get_task_people=people):
+        body = client("supervisor", "irina").get(f"/api/tasks?conversation_id={CHAT}").json()["data"]
+        page = client("supervisor", "irina").get("/api/tasks").json()["data"]
+    first, second = lf.call_args_list
+    # In the query, not after it: the 500-row cap can't hide this chat's task.
+    assert first.kwargs["conversation_id"] == CHAT and second.kwargs["conversation_id"] is None
+    # Still the reader's scope: the supervisor's team and unowned.
+    assert first.kwargs["assignee_ids"] == ["irina", "rohan", "victor"] and first.kwargs["with_unowned"] is True
+    assert body["tasks"][0]["message_id"] == "m-t1" and body["people"] == [] and body["unowned_open"] is None
+    assert people.await_count == 1 and page["unowned_open"] == 0
+
+
+def test_an_agent_s_chat_view_is_still_only_their_own_and_a_bad_id_is_a_400():
+    lf = AsyncMock(return_value=([], []))
+    with patched(list_follow_ups=lf):
+        ok = client("sales", "victor").get(f"/api/tasks?conversation_id={CHAT}")
+        bad = client("sales", "victor").get("/api/tasks?conversation_id=not-a-chat")
+    assert ok.status_code == 200 and lf.call_args.kwargs["assignee_ids"] == ["victor"]
+    assert bad.status_code == 400 and lf.await_count == 1
+
+
+def test_a_task_from_the_dashboard_keeps_the_line_it_came_from():
+    ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
+    with patched(insert_follow_up=ins):
+        r = client("supervisor", "irina").post("/api/tasks", json={
+            "title": "Talk to Rohan about chats going back to the AI", "assignee_id": "rohan",
+            "source": "dashboard", "note": "  6 of his 11 chats went back to the AI today  "})
+        plain = client("sales", "victor").post("/api/tasks", json={"title": "Call the airline", "note": "   "})
+        long = client("sales", "victor").post("/api/tasks", json={"title": "x", "note": "y" * 301})
+    assert r.status_code == 200 and ins.call_args_list[0].args[0]["quote"] == "6 of his 11 chats went back to the AI today"
+    assert plain.status_code == 200 and ins.call_args_list[1].args[0]["quote"] is None
+    assert long.status_code == 422 and ins.await_count == 2
+
+
+class _Query:
+    """A stand-in for the supabase query builder: records each step."""
+
+    def __init__(self, log: list):
+        self.log = log
+
+    def __getattr__(self, name):
+        def step(*args, **_kw):
+            self.log.append((name, args))
+            return self
+        return step
+
+    def execute(self):
+        return type("Res", (), {"data": [{"id": "victor", "role": "sales"}]})()
+
+
+def test_qa_isn_t_someone_a_task_can_go_to():
+    log: list = []
+    with patch.object(db, "get_client", return_value=_Query(log)):
+        people = run(db.get_task_people())
+    assert people == [{"id": "victor", "role": "sales"}]
+    assert ("eq", ("is_active", True)) in log and ("neq", ("role", "qa")) in log
