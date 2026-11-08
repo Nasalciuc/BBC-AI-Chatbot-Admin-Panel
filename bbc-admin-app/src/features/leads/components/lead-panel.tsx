@@ -59,8 +59,9 @@ export function LeadPanel({
 }: {
   row: LeadRow | null
   onClose: () => void
-  /** What changed, so the open panel shows it even if the row left the list. */
-  onPatched: (patch: Partial<LeadRow>) => void
+  /** What changed on that lead, so the open panel shows it even if the row
+   *  left the list. A lead that is no longer open is left alone. */
+  onPatched: (leadId: string, patch: Partial<LeadRow>) => void
   canReview: boolean
   canSend: boolean
   canLookUp: boolean
@@ -80,10 +81,12 @@ export function LeadPanel({
   const [shownId, setShownId] = useState(row?.id)
   const open = !!row
   const id = row?.id ?? ''
-  // Another lead: its own notes, and back to the lead (not its chat).
+  // Another lead: its own notes, an empty CRM number (one typed for the last
+  // lead must never be saved on this one), and back to the lead (not its chat).
   if (row?.id !== shownId) {
     setShownId(row?.id)
     setNotes(row?.qa_notes ?? '')
+    setManual('')
     setReading(false)
   }
 
@@ -95,34 +98,36 @@ export function LeadPanel({
   })
   const earlier = useQuery({ queryKey: ['lead-earlier', id], queryFn: () => getEarlierLeads(id), enabled: open && canLookUp })
 
-  const refresh = () => {
+  const refresh = (leadId: string) => {
     qc.invalidateQueries({ queryKey: ['leads-view'] })
-    qc.invalidateQueries({ queryKey: ['lead', id] })
+    qc.invalidateQueries({ queryKey: ['lead', leadId] })
   }
+  // Each send, save and review names its lead: if you open another lead before
+  // the answer lands, it still goes to the lead it was for, never the open one.
   const push = useMutation({
-    mutationFn: () => pushLeadToCrm(id),
-    onSuccess: (r) => {
+    mutationFn: (leadId: string) => pushLeadToCrm(leadId),
+    onSuccess: (r, leadId) => {
       toast.success(`Sent to the CRM${r.data?.crm_lead_id ? ` · lead ${r.data.crm_lead_id}` : ''}.`)
-      onPatched({ crm_state: 'in_crm', created_in_crm: true, crm_lead_id: r.data?.crm_lead_id ?? null, created_in_crm_at: new Date().toISOString() })
-      refresh()
+      onPatched(leadId, { crm_state: 'in_crm', created_in_crm: true, crm_lead_id: r.data?.crm_lead_id ?? null, created_in_crm_at: new Date().toISOString() })
+      refresh(leadId)
     },
-    onError: (e) => {
+    onError: (e, leadId) => {
       toast.error((e as ApiError)?.message ?? 'The CRM didn’t take it. Try again.')
-      refresh()
+      refresh(leadId)
     },
   })
   const saveManual = useMutation({
-    mutationFn: (crmId: string) => setLeadCrmId(id, crmId),
-    onSuccess: (_r, crmId) => {
-      toast.success(`Saved: CRM lead ${crmId}.`)
-      setManual('')
-      onPatched({ crm_state: 'in_crm', created_in_crm: true, crm_lead_id: crmId, created_in_crm_at: new Date().toISOString() })
-      refresh()
+    mutationFn: (v: { leadId: string; crmId: string }) => setLeadCrmId(v.leadId, v.crmId),
+    onSuccess: (_r, v) => {
+      toast.success(`Saved: CRM lead ${v.crmId}.`)
+      if (v.leadId === id) setManual('')
+      onPatched(v.leadId, { crm_state: 'in_crm', created_in_crm: true, crm_lead_id: v.crmId, created_in_crm_at: new Date().toISOString() })
+      refresh(v.leadId)
     },
     onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.'),
   })
   const review = useMutation({
-    mutationFn: (v: { reviewed: boolean; notes?: string; next?: boolean }) => reviewLead(id, v.reviewed, v.notes),
+    mutationFn: (v: { leadId: string; reviewed: boolean; notes?: string; next?: boolean }) => reviewLead(v.leadId, v.reviewed, v.notes),
     onSuccess: (_r, v) => {
       toast.success(!v.reviewed ? 'Review cleared.' : v.next ? 'Reviewed. Here’s the next one.' : 'Reviewed.')
       const patch: Partial<LeadRow> = {
@@ -131,9 +136,10 @@ export function LeadPanel({
         reviewed_by: v.reviewed ? (meId ?? null) : null,
       }
       if (v.notes !== undefined) patch.qa_notes = v.notes
-      refresh()
-      if (v.next && nav?.next) nav.next()
-      else onPatched(patch)
+      refresh(v.leadId)
+      // "…and next" only from the lead still on screen.
+      if (v.next && nav?.next && v.leadId === id) nav.next()
+      else onPatched(v.leadId, patch)
     },
     onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the review. Try again.'),
   })
@@ -181,7 +187,7 @@ export function LeadPanel({
             <button
               type='button'
               disabled={review.isPending}
-              onClick={() => review.mutate({ reviewed: true, notes: notes.trim(), next: !!nav?.next })}
+              onClick={() => review.mutate({ leadId: id, reviewed: true, notes: notes.trim(), next: !!nav?.next })}
               className={cn(btn, 'h-11 bg-kb-202020 px-5 text-sm text-on-btn')}
             >
               {nav?.next ? 'Mark reviewed and next' : 'Mark reviewed'}
@@ -191,7 +197,7 @@ export function LeadPanel({
               <button
                 type='button'
                 disabled={review.isPending || !notesChanged}
-                onClick={() => review.mutate({ reviewed: true, notes: notes.trim() })}
+                onClick={() => review.mutate({ leadId: id, reviewed: true, notes: notes.trim() })}
                 className={cn(btn, 'bg-kb-202020 text-on-btn')}
               >
                 Save the notes
@@ -199,7 +205,7 @@ export function LeadPanel({
               <button
                 type='button'
                 disabled={review.isPending}
-                onClick={() => review.mutate({ reviewed: false })}
+                onClick={() => review.mutate({ leadId: id, reviewed: false })}
                 className={cn(btn, 'border border-kl-202020 text-k-202020')}
               >
                 Clear the review
@@ -412,7 +418,7 @@ export function LeadPanel({
                   <button
                     type='button'
                     disabled={sending}
-                    onClick={() => push.mutate()}
+                    onClick={() => push.mutate(id)}
                     className={cn(btn, 'self-start bg-kb-202020 text-on-btn')}
                   >
                     {sending ? 'Sending…' : 'Send to CRM'}
@@ -421,7 +427,7 @@ export function LeadPanel({
                     className='flex flex-wrap items-center gap-2'
                     onSubmit={(e) => {
                       e.preventDefault()
-                      if (manual.trim()) saveManual.mutate(manual.trim())
+                      if (manual.trim()) saveManual.mutate({ leadId: id, crmId: manual.trim() })
                     }}
                   >
                     <label htmlFor='lead-crm-id' className='text-[13px] text-k-555555'>
