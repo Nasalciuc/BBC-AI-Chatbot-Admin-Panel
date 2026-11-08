@@ -625,12 +625,16 @@ export type AgentSseEvent =
       widget_last_close_reason?: string; widget_last_event_at?: string }
   | { event: 'stream_chunk'; delta: string }
   | ({ event: 'stream_end' } & SseMessageRow)
+  /** The chat started waiting for a person and isn't yours (blind take):
+   *  the server closes the stream right after this frame. */
+  | { event: 'blind' }
   | SseMessageRow   // plain message row (agent / system / ai)
 
 export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const ev = r.event
+  if (ev === 'blind') return { event: 'blind' }
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
