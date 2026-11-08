@@ -44,3 +44,34 @@ test('the old copy of the widget is gone and nothing imports it', () => {
     assert.ok(!page.includes('bbc-chat-widget'))
   }
 })
+
+test('a script that fails, or loads without a widget, is said on the page', () => {
+  // Both listeners go on before the script goes in, and come off when the page goes.
+  const listen = hook.indexOf("script.addEventListener('error', onError)")
+  assert.ok(hook.indexOf("script.addEventListener('load', onLoad)") > 0 && listen > 0)
+  assert.ok(listen < hook.indexOf('document.body.appendChild(script)'), 'listen before appending')
+  assert.match(hook, /removeEventListener\('load', onLoad\)/)
+  assert.match(hook, /removeEventListener\('error', onError\)/)
+  // A missing bundle can come back as the app's HTML: loaded, but no widget ran.
+  assert.match(hook, /setState\(document\.getElementById\('bbc-widget-root'\) \? 'ready' : 'failed'\)/)
+  for (const page of [embed, standalone]) {
+    assert.match(page, /const state = useWidgetScript\(/)
+    assert.match(page, /state === 'failed' && <WidgetFailed \/>/)
+  }
+  assert.match(preview, /state === 'failed' && \(/)
+  assert.match(preview, /The widget didn’t load\./)
+  assert.match(read('features/widget-embed/widget-failed.tsx'), /role='alert'/)
+})
+
+test('leaving a widget page unmounts the widget before its root goes', () => {
+  // Removing the root alone runs no cleanup: a phone sheet would keep the page
+  // from scrolling, and the chat's stream and timers would keep running.
+  const drop = hook.slice(hook.indexOf('function dropWidget()'), hook.indexOf('}', hook.indexOf('function dropWidget()')))
+  const teardown = drop.indexOf('window.__BBC_WIDGET_TEARDOWN__?.()')
+  assert.ok(teardown > 0 && teardown < drop.indexOf("getElementById('bbc-widget-root')?.remove()"))
+  // Before mounting (a widget still there) and when the page goes.
+  assert.equal(hook.match(/dropWidget\(\)/g)?.length, 2 + 1, 'definition + the two calls')
+  // The window's widget fields are typed once, with the shared types.
+  assert.ok(!hook.includes('declare global'))
+  assert.match(read('lib/types.ts'), /__BBC_WIDGET_TEARDOWN__\?: \(\) => void/)
+})

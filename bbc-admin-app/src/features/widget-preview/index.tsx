@@ -7,7 +7,7 @@ import { useWidgetScript } from '../widget-embed/use-widget-script'
  * site and the CRM run, built from bbc-widget/src at the same deploy.
  */
 export default function WidgetPreview() {
-  useWidgetScript({ embedded: false })
+  const state = useWidgetScript({ embedded: false })
 
   return (
     <div className='min-h-svh bg-k-ffffff'>
@@ -29,6 +29,14 @@ export default function WidgetPreview() {
             client’s message.
           </span>
         </div>
+        {state === 'failed' && (
+          <div role='alert' className='flex gap-2.5 rounded-[14px] bg-k-fdecea px-4 py-3 text-sm leading-[1.45] text-k-b3261e'>
+            <span aria-hidden='true' className='mt-1.5 size-2 flex-none rounded-full bg-k-d93025' />
+            <span>
+              <strong>The widget didn’t load.</strong> Reload the page to try again.
+            </span>
+          </div>
+        )}
       </main>
     </div>
   )
