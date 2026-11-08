@@ -3,6 +3,7 @@ import { AlertCircle, ArrowUpRight } from 'lucide-react'
 import type { ChatRef } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { MakeTask } from '@/features/tasks/components/make-task'
 import type { AttentionView, Tone } from './view'
 
 export const linkCls =
@@ -184,18 +185,26 @@ export function AttentionList({
                   {a.title}
                 </p>
                 <p className='m-0 text-[13px] text-k-6b6b6b'>{a.sub}</p>
-                {/* On a phone the action sits under the text, not in a squeezed column. */}
+                {/* On a phone the actions sit under the text, not in a squeezed column. */}
+                {(canOpen(a.action.to) || a.task) && (
+                  <span className='mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 sm:hidden'>
+                    {canOpen(a.action.to) && (
+                      <button type='button' onClick={() => onAction(a.action.to)} className={linkCls}>
+                        {a.action.label}
+                      </button>
+                    )}
+                    {a.task && <MakeTask title={a.task.title} line={a.task.line} />}
+                  </span>
+                )}
+              </div>
+              <span className='hidden flex-none flex-col items-end gap-1 sm:flex'>
                 {canOpen(a.action.to) && (
-                  <button type='button' onClick={() => onAction(a.action.to)} className={cn(linkCls, 'mt-0.5 self-start sm:hidden')}>
+                  <button type='button' onClick={() => onAction(a.action.to)} className={linkCls}>
                     {a.action.label}
                   </button>
                 )}
-              </div>
-              {canOpen(a.action.to) && (
-                <button type='button' onClick={() => onAction(a.action.to)} className={cn(linkCls, 'hidden flex-none sm:block')}>
-                  {a.action.label}
-                </button>
-              )}
+                {a.task && <MakeTask title={a.task.title} line={a.task.line} />}
+              </span>
             </li>
           ))}
         </ul>

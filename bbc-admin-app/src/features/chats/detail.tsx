@@ -21,6 +21,9 @@ import { ReassignPanel } from '@/components/reassign-panel'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
+import { cameBackMessage, clockIn } from '@/features/tasks/view'
+import { FollowUpLine, LateBanner } from './components/follow-up'
+import { useChatTasks } from './use-chat-tasks'
 import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
@@ -88,6 +91,13 @@ export default function ConversationDetail({
   const role = (useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole)
   const me = useAuthStore((s) => s.auth.user)
   const isAdmin = ['owner', 'admin', 'dev'].includes(role)
+  // Tasks in this chat: "Follow-up caught" under a promise, the late banner, "came back".
+  const chatTasks = useChatTasks(conversationId, me?.accountNo)
+  const [taskNow, setTaskNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setTaskNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
   const canViewHistory = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const permissions = usePermissions(role)
   const canBlockVisitor = ['owner', 'admin', 'dev', 'supervisor', 'project_manager'].includes(role)
@@ -286,6 +296,10 @@ export default function ConversationDetail({
     return fresh.length > 0 ? [...base, ...fresh] : base
   }, [conv?.messages, accumMsgs])
 
+  // "{first} came back to the chat": over a promise of mine that's now late, the
+  // client's first message after a pause (not the "thanks" right after it).
+  const cameBackId = cameBackMessage(allMessages, chatTasks.lateMine?.created_at ? Date.parse(chatTasks.lateMine.created_at) : null)
+
   const presence = useMemo(() => {
     const p = presenceFromMeta((presenceData ?? conv?.metadata ?? {}) as Record<string, unknown>)
     return { ...presenceView(p.effective, p.ageSeconds), ageSeconds: p.ageSeconds }
@@ -347,6 +361,8 @@ export default function ConversationDetail({
       setInput('')
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       queryClient.invalidateQueries({ queryKey: ['messages-incremental', conversationId] })
+      // A promise in the reply ("I'll send you three options within the hour") is now a task.
+      chatTasks.refresh()
     } catch (_err) {
       // The trust-critical path: a reply to a LIVE customer must never
       // vanish silently. Input is preserved (cleared only on success).
@@ -740,6 +756,17 @@ export default function ConversationDetail({
           </button>
         )}
 
+        {canWrite && chatTasks.lateMine && (
+          <LateBanner
+            task={chatTasks.lateMine}
+            nowMs={taskNow}
+            tz={chatTasks.tz}
+            busy={chatTasks.busy}
+            onDone={() => chatTasks.done(chatTasks.lateMine!)}
+            onLater={() => chatTasks.later(chatTasks.lateMine!, 15)}
+          />
+        )}
+
         {/* Messages */}
         <div role='log' aria-live='polite' aria-label='Messages' className={cn('flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto', narrow ? 'px-3.5 py-3.5' : 'px-[22px] py-[18px]')}>
           <div className={cn('flex w-full flex-col', wide && 'mx-auto max-w-[760px]')}>
@@ -753,10 +780,20 @@ export default function ConversationDetail({
               const showDay = day !== prevDay && !Number.isNaN(new Date(msg.created_at).getTime())
               // Grouping: consecutive same-speaker turns read as one turn —
               // avatar and name once, tight gap. A new day starts a new group.
-              const grouped = !showDay && i > 0 && allMessages[i - 1].role === msg.role && msg.role !== 'system'
+              const cameBack = msg.id === cameBackId
+              // After "came back to the chat" the message gets its own name and time again.
+              const grouped = !showDay && !cameBack && i > 0 && allMessages[i - 1].role === msg.role && msg.role !== 'system'
               const who = speaker(msg.role)
+              const task = chatTasks.byMessage.get(msg.id)
               return (
                 <div key={msg.id} className={grouped ? 'mt-0.5' : 'mt-3.5 first:mt-0'}>
+                  {cameBack && (
+                    <div className='mb-3 flex items-center gap-2.5 text-xs text-k-6b6b6b'>
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
+                      {first} came back to the chat · {clockIn(Date.parse(msg.created_at), chatTasks.tz)}
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
+                    </div>
+                  )}
                   {showDay && (
                     <div className='my-3 flex items-center gap-2.5 text-xs text-k-6b6b6b' aria-hidden>
                       <span className='h-px flex-1 bg-k-f0f0f0' />
@@ -790,6 +827,15 @@ export default function ConversationDetail({
                           </span>
                         )}
                         <div className={cn('leading-[1.55] whitespace-pre-wrap text-k-202020 [overflow-wrap:anywhere]', wide ? 'text-base' : 'text-[15px]')}>{msg.content}</div>
+                        {task && (
+                          <FollowUpLine
+                            task={task}
+                            nowMs={taskNow}
+                            tz={chatTasks.tz}
+                            busy={chatTasks.busy}
+                            onNotAPromise={task.source === 'caught' && (task.assignee_id === me?.accountNo || isAdmin) ? () => chatTasks.notAPromise(task) : null}
+                          />
+                        )}
                       </div>
                     </div>
                   )}
@@ -841,6 +887,21 @@ export default function ConversationDetail({
                 <span aria-hidden='true' className='flex h-1 overflow-hidden rounded-full bg-k-d97a00/20'>
                   <span className='rounded-full bg-k-d97a00' style={{ width: `${Math.round((left / viewingDeadline) * 100)}%` }} />
                 </span>
+              </div>
+            )}
+            {canWrite && chatTasks.lateMine?.client_wrote_at && (
+              <div className='flex flex-wrap items-center justify-between gap-2 px-1 text-[13px]'>
+                <span className='text-k-b3261e'>{first} is waiting for what you promised.</span>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setInput((prev) => prev.trim() ? prev : 'I’m sending it in 10 minutes.')
+                    requestAnimationFrame(() => taRef.current?.focus())
+                  }}
+                  className='font-bold text-k-5b45e0 hover:underline'
+                >
+                  Insert “I’m sending it in 10 minutes.”
+                </button>
               </div>
             )}
             {canWrite && (

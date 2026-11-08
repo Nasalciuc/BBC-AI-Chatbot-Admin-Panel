@@ -16,6 +16,7 @@ import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
 import { QueueSection } from './components/queue-section'
+import { TasksBand } from './components/tasks-band'
 import { ChatAvatar } from './components/chat-avatar'
 import { idleMinutes, IDLE_BADGE_MIN, IDLE_NUDGE_MIN } from './idle'
 import ConversationDetail, { type ChatLayout } from './detail'
@@ -448,6 +449,8 @@ export function Chats() {
         layout === 'narrow' && selectedId && 'hidden'
       )}
     >
+      {/* In the CRM dock there is no menu: your follow-ups show over the list. */}
+      {embedded && <TasksBand />}
       <div className={cn('flex flex-col gap-3 pb-2.5', layout === 'narrow' ? 'px-0 pt-1' : 'px-3.5 pt-3.5')}>
         <QueueSection onClaimed={handleTaken} onOpen={pick} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
         {tabBar}
