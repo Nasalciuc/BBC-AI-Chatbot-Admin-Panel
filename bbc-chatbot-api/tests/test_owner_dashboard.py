@@ -560,12 +560,13 @@ def test_qa_reads_every_chat_unmasked_and_without_cost(at_fixture_time):
     assert all(a["kind"] != "ai_latency" for a in d["attention"])
 
 
-def test_a_project_manager_sees_names_and_their_teams_links():
+def test_a_project_manager_sees_names_and_their_teams_links(at_fixture_time):
     with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=_two_tunnels())), \
          patch("app.db.supabase.get_team_ids_for_pm", new=AsyncMock(return_value=["team-support"])):
         d = _team_client("project_manager", "all", uid="pm-1").get("/api/dashboard/team?days=7").json()["data"]
     assert d["scope"]["tunnel"] == "all"
-    assert {(x["id"], x["first_name"]) for x in _refs(d)} <= {("support-1", "Laura")}
+    # The clock is pinned, so the week has chats: exactly their team's, unmasked.
+    assert {(x["id"], x["first_name"]) for x in _refs(d)} == {("support-1", "Laura")}
 
 
 def test_owner_and_team_dashboards_share_one_read():

@@ -184,6 +184,19 @@ def test_the_sample_is_last_weeks_two_per_person_stable_and_without_lost_chats()
     assert {r["id"] for r in again["sample"]} == {r["id"] for r in d["sample"]}
 
 
+def test_the_sample_is_the_same_week_for_readers_in_any_time_zone():
+    """The pick is a hash of the reader's week, the person and the chat: the
+    owner in Chisinau (+120) and a supervisor in New York (-300) read the same
+    sample. Monday 00:00 at +120 is Sunday 22:00 UTC, the ISO week before."""
+    east = build_to_read(now=NOW, offset_minutes=120, **scenario())
+    west = build_to_read(now=NOW, offset_minutes=-300, **scenario())
+    assert east["sample_week"]["start"] == "2026-10-25T22:00:00+00:00"
+    assert west["sample_week"]["start"] == "2026-10-26T05:00:00+00:00"
+    pick = lambda d: sorted((r["agent_id"], r["id"], r["kind"]) for r in d["sample"])  # noqa: E731
+    assert pick(east) == pick(west)
+    assert pick(east)
+
+
 def test_a_supervisor_sees_only_their_team_masked():
     d = build(team_ids={"team-1"}, masked=True)
     ids = {r["id"] for r in d["lost"] + d["sample"]}
