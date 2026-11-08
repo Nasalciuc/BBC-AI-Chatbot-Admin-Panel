@@ -144,7 +144,7 @@ async def _list_leads_view(
         rows = [r for r in rows if r.get("team_id") in team_ids] if team_ids else []
     built = build_leads_view(
         rows, view=view, names=names, search=search, level=level, with_=chat_with,
-        order=order, limit=limit, offset=offset,
+        order=order, limit=limit, offset=offset, masked=role == "supervisor",
     )
     page = built["rows"]
     if role == "supervisor":
