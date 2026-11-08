@@ -74,6 +74,18 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
+// ── Health ────────────────────────────────────────────────────
+/** Whether the server answers /health (the status band, the maintenance
+ *  page). Never throws: no answer in time is "not reachable". */
+export async function checkHealth(timeoutMs = 8000): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────
 export async function loginUser(email: string, password: string) {
   const res = await fetch(`${BASE}/api/auth/login`, {

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { getMyAccess, updateSelf, uploadAvatar, type SelfUpdatePayload, type SelfUpdateResponse } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { initials } from '@/features/chats/view'
 import { SettingsCard } from '../components/card'
 import { fieldCls, linkBtn, pillDark, pillLine } from '../components/styles'
-import { PHOTO_TYPES, accessRows, askLine, nameError, phoneError, photoError, roleChangedNote } from '../view'
+import { PHOTO_TYPES, accessRows, askLine, nameError, phoneError, photoError, roleChangedNote, tokenExpMs } from '../view'
 
 /**
  * Your name, phone and photo (PATCH /api/auth/me, POST /api/auth/me/avatar),
@@ -26,9 +26,12 @@ export function SettingsProfile() {
   const [link, setLink] = useState('')
   const [broken, setBroken] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
-  const access = useQuery({ queryKey: ['my-access'], queryFn: getMyAccess, staleTime: 60_000 })
+  const qc = useQueryClient()
+  // Per person: someone else signing in on this tab never sees these rows.
+  const access = useQuery({ queryKey: ['my-access', user?.accountNo], queryFn: getMyAccess, staleTime: 60_000 })
 
-  // The server re-issues the session with every change: keep both in step.
+  // The server re-issues the session with every change: keep both in step,
+  // its end included, and read the access again (the new token has today's role).
   const apply = (res: SelfUpdateResponse) => {
     if (!user) return
     auth.setAccessToken(res.token)
@@ -38,10 +41,11 @@ export function SettingsProfile() {
       name: res.user.name || '',
       role: res.user.role || user.role,
       tunnelScope: res.user.tunnel_scope || user.tunnelScope,
-      exp: Date.now() + 24 * 60 * 60 * 1000,
+      exp: tokenExpMs(res.token, Date.now() + 24 * 60 * 60 * 1000),
       avatar_url: res.user.avatar_url ?? null,
       phone: res.user.phone ?? '',
     })
+    qc.invalidateQueries({ queryKey: ['my-access'] })
   }
 
   const save = useMutation({
@@ -63,7 +67,8 @@ export function SettingsProfile() {
     onSuccess: (res) => {
       if (!user) return
       auth.setAccessToken(res.token)
-      auth.setUser({ ...user, avatar_url: res.avatar_url })
+      auth.setUser({ ...user, avatar_url: res.avatar_url, exp: tokenExpMs(res.token, user.exp) })
+      qc.invalidateQueries({ queryKey: ['my-access'] })
       setBroken(false)
       setPhotoErr('')
       toast.success('Photo saved')
