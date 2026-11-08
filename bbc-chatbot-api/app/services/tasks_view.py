@@ -15,6 +15,11 @@ from app.services.airport_tz import city_and_zone
 from app.services.follow_ups import KIND_LABEL, zone
 from app.services.to_read import client_label, mask_contacts, route_of
 
+# A client message is "wrote again" only after a pause: "Great, thanks." a
+# minute after the promise isn't the client coming back for it. (The panel's
+# "came back to the chat" line uses the same 10 minutes.)
+WROTE_AGAIN_AFTER = timedelta(minutes=10)
+
 SOURCE_LABEL = {
     "caught": "Caught in chat",
     "client_asked": "Client asked",
@@ -126,7 +131,7 @@ def build_tasks_view(
         cid = t.get("conversation_id")
         if not made or not cid:
             return None
-        later = [a for a in last_client.get(cid, []) if a > made]
+        later = [a for a in last_client.get(cid, []) if a > made + WROTE_AGAIN_AFTER]
         return max(later).isoformat() if later else None
 
     def row(t: dict) -> dict:
@@ -186,11 +191,14 @@ EVENT_TEXT = {
 
 
 def when_text(at: Optional[datetime], tz) -> str:
-    """"Mon 9 Nov, 10:00" in the business zone."""
+    """"Mon 9 Nov, 10:00 New York time": named, because the panel shows each
+    person their own clock and this sentence is written once, on the server."""
     if not at:
         return "a new time"
     local = at.astimezone(tz)
-    return f"{local.strftime('%a')} {local.day} {local.strftime('%b')}, {local.strftime('%H:%M')}"
+    city = (getattr(tz, "key", None) or "").split("/")[-1].replace("_", " ")
+    when = f"{local.strftime('%a')} {local.day} {local.strftime('%b')}, {local.strftime('%H:%M')}"
+    return f"{when} {city} time" if city else when
 
 
 def history_of(events: list[dict], names: dict[str, str], *, client: str, tz=timezone.utc) -> list[dict]:
@@ -241,6 +249,6 @@ def excerpt_of(
             "at": m.get("created_at"),
             "text": mask_contacts(m.get("content")) if masked else m.get("content"),
             "source": bool(task.get("message_id")) and m.get("id") == task.get("message_id"),
-            "after": bool(role == "user" and at and made and at > made),
+            "after": bool(role == "user" and at and made and at > made + WROTE_AGAIN_AFTER),
         })
     return out

@@ -115,6 +115,17 @@ def test_the_bell_carries_the_business_time_zone_and_only_today_s_tasks():
     assert [r["id"] for r in t["mine"]] == ["t2"] and t["counts"]["late"] == 1
 
 
+def test_the_menu_number_is_the_late_tasks_and_for_a_supervisor_the_team_s_unowned_too():
+    rows = [task("t1", due_at=(NOW - timedelta(minutes=5)).isoformat()),                       # Victor's, late
+            task("t2", assignee_id=None, due_at=(NOW - timedelta(minutes=50)).isoformat()),    # Unowned, late
+            task("t3", assignee_id="rohan", due_at=(NOW + timedelta(hours=1)).isoformat())]    # Rohan's, not yet
+    with patched(list_follow_ups=AsyncMock(return_value=(rows, []))):
+        lead = client("supervisor", "irina").get("/api/notifications").json()["tasks"]["counts"]
+        agent = client("sales", "victor").get("/api/notifications").json()["tasks"]["counts"]
+    assert lead["team_late"] == 2 and lead["unowned"] == 1
+    assert agent["team_late"] == 0  # an agent gives no tasks out: their number is their own late ones
+
+
 # ── Who sees what ────────────────────────────────────────────────────────────
 
 def test_an_agent_sees_only_their_own_tasks_with_the_client_s_city():
@@ -148,20 +159,38 @@ def test_an_agent_can_t_open_someone_else_s_task():
 
 
 def test_the_task_shows_where_it_came_from():
+    made = NOW - timedelta(minutes=60)
     around = [
-        {"id": "m0", "role": "user", "content": "Can you send me a couple of options?", "created_at": (NOW - timedelta(minutes=7)).isoformat()},
-        {"id": "m-t1", "role": "agent", "content": "I’ll send you three options within the hour.", "created_at": (NOW - timedelta(minutes=5)).isoformat()},
-        {"id": "m2", "role": "user", "content": "Hi, any news?", "created_at": (NOW - timedelta(minutes=1)).isoformat()},
+        {"id": "m0", "role": "user", "content": "Can you send me a couple of options?", "created_at": (made - timedelta(minutes=2)).isoformat()},
+        {"id": "m-t1", "role": "agent", "content": "I’ll send you three options within the hour.", "created_at": made.isoformat()},
+        {"id": "m1", "role": "user", "content": "Great, thanks.", "created_at": (made + timedelta(minutes=1)).isoformat()},
+        {"id": "m2", "role": "user", "content": "Hi, any news?", "created_at": (NOW - timedelta(minutes=5)).isoformat()},
     ]
     events = [{"kind": "caught", "actor_id": "victor", "details": {"due_words": "within the hour", "due_kind": "said"},
-               "at": (NOW - timedelta(minutes=5)).isoformat()}]
-    with patched(messages_around=AsyncMock(return_value=around), get_task_events=AsyncMock(return_value=events)):
+               "at": made.isoformat()}]
+    with patched(messages_around=AsyncMock(return_value=around), get_task_events=AsyncMock(return_value=events),
+                 get_follow_up=AsyncMock(return_value=task("t1", created_at=made.isoformat()))):
         d = client("sales", "victor").get("/api/tasks/t1").json()["data"]
-    assert [m["source"] for m in d["excerpt"]] == [False, True, False] and d["excerpt"][2]["after"] is True
+    assert [m["source"] for m in d["excerpt"]] == [False, True, False, False]
+    # "Great, thanks." a minute after the promise isn't the client coming back; "any news?" 55 minutes later is.
+    assert [m["after"] for m in d["excerpt"]] == [False, False, False, True]
     assert d["crm"]["in_crm"] is True and d["contact"]["email"] == "michael.r@example.com"
     texts = [h["text"] for h in d["history"]]
     assert texts[0] == "Caught in Victor Rusu’s message. Due within the hour, as written."
-    assert "Michael wrote again in the chat." in texts and d["client_wrote_at"]
+    assert texts.count("Michael wrote again in the chat.") == 1 and d["client_wrote_at"] == around[3]["created_at"]
+
+
+def test_wrote_again_on_the_list_needs_a_pause_after_the_promise():
+    made = NOW - timedelta(minutes=60)
+    msgs = [{"conversation_id": "c1", "created_at": (made + timedelta(minutes=1)).isoformat()}]
+    with patched(list_follow_ups=AsyncMock(return_value=([task("t1", created_at=made.isoformat())], [])),
+                 client_messages_since=AsyncMock(return_value=msgs)):
+        quick = client("sales", "victor").get("/api/tasks").json()["data"]["tasks"][0]
+    msgs.append({"conversation_id": "c1", "created_at": (made + timedelta(minutes=40)).isoformat()})
+    with patched(list_follow_ups=AsyncMock(return_value=([task("t1", created_at=made.isoformat())], [])),
+                 client_messages_since=AsyncMock(return_value=msgs)):
+        back = client("sales", "victor").get("/api/tasks").json()["data"]["tasks"][0]
+    assert quick["client_wrote_at"] is None and back["client_wrote_at"] == msgs[1]["created_at"]
 
 
 # ── What each role may change ────────────────────────────────────────────────
@@ -364,3 +393,14 @@ def test_qa_isn_t_someone_a_task_can_go_to():
         people = run(db.get_task_people())
     assert people == [{"id": "victor", "role": "sales"}]
     assert ("eq", ("is_active", True)) in log and ("neq", ("role", "qa")) in log
+
+
+def test_a_time_written_into_the_history_names_its_zone():
+    # The panel shows each person their own clock; a sentence written on the server can't, so it says whose clock.
+    from zoneinfo import ZoneInfo
+
+    from app.services.tasks_view import history_of
+
+    ev = [{"kind": "due_changed", "actor_id": "victor", "details": {"due_at": "2026-11-09T15:00:00+00:00"}, "at": NOW.isoformat()}]
+    assert history_of(ev, NAMES, client="Michael", tz=ZoneInfo("America/New_York"))[0]["text"] == \
+        "Victor Rusu moved it to Mon 9 Nov, 10:00 New York time."

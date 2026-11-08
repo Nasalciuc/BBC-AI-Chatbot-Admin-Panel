@@ -52,7 +52,9 @@ async def _task_alerts(user: dict) -> dict:
         return {k: r[k] for k in ("id", "title", "kind", "due_at", "state", "conversation_id", "client", "route", "assignee_name")}
 
     out: dict = {"set_up": True, "time_zone": rules["time_zone"], "mine": [row(t) for t in soon], "team_late": [row(t) for t in late],
-                 "counts": {"late": 0, "today": 0, "unowned": sum(1 for t in team_open if not t.get("assignee_id"))}}
+                 "counts": {"late": 0, "today": 0, "unowned": sum(1 for t in team_open if not t.get("assignee_id")),
+                            # The menu's number for whoever gives tasks out: every late task they see, Unowned too.
+                            "team_late": sum(1 for t in team_open if (d := due_of(t)) and d < now)}}
     for r in out["mine"]:
         if r["state"] in ("late", "today"):
             out["counts"][r["state"]] += 1
@@ -67,7 +69,7 @@ async def get_notifications(current_user: dict = Depends(get_current_user)):
     user_id = current_user.get("id")
     agent_id = None if role in ("owner", "admin", "dev", "qa") else user_id
     stale = await db.get_pending_conversations(agent_id=agent_id)
-    tasks: dict = {"set_up": True, "mine": [], "team_late": [], "counts": {"late": 0, "today": 0, "unowned": 0}}
+    tasks: dict = {"set_up": True, "mine": [], "team_late": [], "counts": {"late": 0, "today": 0, "unowned": 0, "team_late": 0}}
     try:
         tasks = await _task_alerts(current_user)
     except db.TasksNotSetUp:  # noqa: silent — migration 051 not applied yet: _tasks_call logged and counted it; the bell still shows the waiting conversations

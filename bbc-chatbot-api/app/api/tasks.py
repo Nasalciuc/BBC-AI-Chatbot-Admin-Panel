@@ -23,7 +23,7 @@ from app.security.auth import get_current_user
 from app.services import tasks_service
 from app.services.agent_day import parse_ts
 from app.services.follow_ups import DEFAULT_DUES, LEAVE_SHIFT, rules_of, try_sentence, zone
-from app.services.tasks_view import build_tasks_view, excerpt_of, history_of, task_row, week_start
+from app.services.tasks_view import WROTE_AGAIN_AFTER, build_tasks_view, excerpt_of, history_of, task_row, week_start
 from app.services.to_read import client_label, mask_contacts
 
 logger = logging.getLogger(__name__)
@@ -261,7 +261,8 @@ async def get_task(task_id: str, user: dict = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     tz = zone(rules["time_zone"]) or timezone.utc
     made = parse_ts(task.get("created_at"))
-    later_client = [m for m in around if m.get("role") == "user" and made and (parse_ts(m.get("created_at")) or made) > made]
+    later_client = [m for m in around if m.get("role") == "user" and made
+                    and (parse_ts(m.get("created_at")) or made) > made + WROTE_AGAIN_AFTER]
     row = task_row(task, conv=conv, lead=lead, names=names,
                    wrote_at=later_client[-1]["created_at"] if later_client else None, now=now, tz=tz, masked=reach["masked"])
     name = (conv or {}).get("visitor_name")
