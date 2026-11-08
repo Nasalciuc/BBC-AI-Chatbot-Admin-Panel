@@ -55,3 +55,10 @@ export const useAuthStore = create<AuthState>()((set) => {
     },
   }
 })
+
+/** A session on this browser: the user is loaded, or the token is there and
+ *  the guard hasn't read it yet (a page outside the signed-in area, like 404). */
+export function hasSession(): boolean {
+  const a = useAuthStore.getState().auth
+  return !!a.user || !!a.accessToken
+}

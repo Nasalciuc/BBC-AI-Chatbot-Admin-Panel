@@ -268,8 +268,10 @@ test('every polling site honours dormant', () => {
   }
 })
 
-test('the connection banner stops checking when nobody is looking', () => {
-  const src = read('src/components/connection-banner.tsx')
+test('the server check stops when nobody is looking', () => {
+  // One /health check for the whole panel (the band at the top), where each
+  // page's header pill used to start its own.
+  const src = read('src/components/layout/status-bands.tsx')
   assert.match(src, /if \(dormant\) return/)
   assert.match(src, /\}, \[dormant\]\)/)
   assert.match(src, /setInterval\(check, 30000\)/, 'the interval itself is unchanged')
@@ -296,7 +298,8 @@ test('the layout wires all three dormant reasons and shows the leader banner', (
   assert.match(src, /visibilitychange/)
   assert.match(src, /set\('tab_hidden', document\.hidden\)/)
   assert.match(src, /installPanelLeader\(\)/)
-  assert.match(src, /it's active in the CRM/)
+  assert.match(src, /<StatusBands \/>/)
+  assert.match(read('src/lib/bands.ts'), /The panel is active in the CRM, so chats ring there, not here/)
 })
 
 // ── The list shows what is alive, and offers no close-all ────────

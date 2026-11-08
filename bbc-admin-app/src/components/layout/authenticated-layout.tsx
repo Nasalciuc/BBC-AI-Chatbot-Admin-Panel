@@ -18,6 +18,7 @@ import { AppSidebar } from '@/components/layout/app-sidebar'
 import { MobileTabBar } from '@/components/layout/mobile-tab-bar'
 import { isOperatorRole } from '@/components/layout/data/sidebar-data'
 import { SkipToMain } from '@/components/skip-to-main'
+import { StatusBands } from '@/components/layout/status-bands'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
@@ -67,7 +68,6 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   // One consumer per human: the embedded panel wins, a standalone tab dozes.
   useEffect(() => installPanelLeader(), [])
 
-  const notLeader = usePanelModeStore((s) => s.reasons.has('not_leader'))
   const defaultOpen = getCookie('sidebar_state') !== 'false'
   // Inside the CRM dock the panel is the chat list and nothing else: no side
   // menu. An agent on a phone gets the tab bar (Chats, Knowledge, Me).
@@ -99,11 +99,9 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
               'peer-data-[variant=inset]:has-data-[layout=fixed]:h-[calc(100svh-(var(--spacing)*4))]'
             )}
           >
-            {notLeader && (
-              <div className='border-b bg-k-f7f7f7 px-3 py-1.5 text-[12px] text-k-555555'>
-                This panel is idle — it's active in the CRM. Work from there.
-              </div>
-            )}
+            {/* Offline, server not answering, session ending, or this tab
+                paused because it's active in the CRM: one band at a time. */}
+            <StatusBands />
             {children ?? <Outlet />}
           </SidebarInset>
           {tabBar && <MobileTabBar />}

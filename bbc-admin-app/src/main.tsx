@@ -9,8 +9,10 @@ import {
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { useReadyStore } from '@/stores/ready-store'
 import { installCrmEmbedAuth } from '@/lib/crm-embed-auth'
 import { handleServerError } from '@/lib/handle-server-error'
+import { backTo } from '@/lib/bands'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -51,17 +53,17 @@ const queryClient = new QueryClient({
     onError: (error) => {
       if (error instanceof ApiError) {
         if (error.status === 401) {
-          toast.error('Session expired!')
+          // The sign-in page says the session ended and brings you back to
+          // the same place — the same chat, whose draft is kept (lib/chat-drafts.ts).
           useAuthStore.getState().auth.reset()
-          const redirect = `${router.history.location.href}`
-          router.navigate({ to: '/sign-in', search: { redirect } })
+          const loc = router.history.location
+          const redirect = backTo(loc.pathname, loc.href, useReadyStore.getState().viewingConversationId)
+          router.navigate({ to: '/sign-in', search: { redirect, session: 'ended' } })
         }
         if (error.status === 500) {
-          toast.error('Internal Server Error!')
-          // Only navigate to error page in production to avoid disrupting HMR in development
-          if (import.meta.env.PROD) {
-            router.navigate({ to: '/500' })
-          }
+          // Said where it happened, not on a page of its own: leaving the
+          // screen threw away the open chat and what was being typed.
+          toast.error('The server had a problem with that. Try again in a moment.')
         }
         if (error.status === 403) {
           // router.navigate("/forbidden", { replace: true });
