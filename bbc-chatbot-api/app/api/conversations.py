@@ -133,6 +133,12 @@ _PRESENCE_KEYS = (
 )
 
 
+# Row fields a waiting chat keeps from an agent, wherever the row goes out
+# (detail, list): the summary names the cities, and an e-mail or a phone
+# finds the lead, which names them too.
+_BLIND_FIELDS = ("summary", "visitor_email", "visitor_phone", "visitor_phone_country", "flagged_reason")
+
+
 def _blind_view(conv: dict) -> dict:
     """The chat as an agent sees it before Take: the row's shape, with the
     words, the lead, the summary, the contact and the visit's metadata
@@ -142,7 +148,7 @@ def _blind_view(conv: dict) -> dict:
     out["metadata"] = {k: meta[k] for k in _PRESENCE_KEYS if k in meta}
     out["messages"] = []
     out["lead"] = None
-    for k in ("summary", "visitor_email", "visitor_phone", "visitor_phone_country", "flagged_reason"):
+    for k in _BLIND_FIELDS:
         if k in out:
             out[k] = None
     return out
@@ -258,6 +264,12 @@ async def list_conversations(
                 for c in rows:
                     if not _known_to(c, user.get("id")):
                         c.pop("route", None)
+                    # A waiting chat's row keeps its contact out too, as its
+                    # detail does: who, never how to reach them.
+                    if _taken_blind(user, c):
+                        for k in _BLIND_FIELDS:
+                            if k in c:
+                                c[k] = None
             wanted = [c["id"] for c in rows if not blind or _known_to(c, user.get("id"))]
             try:
                 previews = await db.get_last_message_previews(wanted) if wanted else {}
@@ -524,7 +536,17 @@ async def get_conversation(
 
 
 @router.patch("/conversations/{conversation_id}")
-async def update_conversation(conversation_id: str, body: ConversationUpdate):
+async def update_conversation(
+    conversation_id: str,
+    body: ConversationUpdate,
+    user: dict = Depends(get_current_user),
+):
+    # Blind take: an agent can't change a waiting chat that isn't theirs. The
+    # answer is the whole row (summary, contact, the visit), and a new status
+    # or mode would open the chat to them without a Take. Checked before
+    # anything is written; a check that can't be made writes nothing (503).
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
     payload = body.model_dump(exclude_none=True)
     if not payload:
         return {"success": False, "data": None, "count": 0, "error": "No fields to update"}
@@ -816,6 +838,11 @@ async def close_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
+    # Blind take: a closed chat isn't waiting any more, so closing one an
+    # agent hasn't taken would open it to them. The row above is fresh, so
+    # the rule needs no second read.
+    if _taken_blind(user, conv):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
 
     from datetime import datetime, timezone
 
