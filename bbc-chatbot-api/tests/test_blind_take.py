@@ -9,8 +9,9 @@ pin that the API agrees, so the gate is not the only thing standing:
   * the detail comes back with the words, the lead, the summary, the contact
     and the visit's metadata taken out (presence stays, the gate shows it);
   * messages, typing and the stream answer 403 until Take;
-  * an open stream asks again before it sends anything (at most every 10s),
-    so a chat that starts waiting stops reaching an agent who isn't on it;
+  * an open stream asks again before every batch of words it sends, after
+    taking the batch off its queue — no interval — so a chat that starts
+    waiting stops reaching an agent who isn't on it at the very next event;
   * the agent's own chats cost one tiny read per 10 minutes, not one per poll;
   * a check that can't be made fails CLOSED (503, counted in /health) — the
     agent's own chats answer from memory, so a blip doesn't reach them;
@@ -260,8 +261,13 @@ def test_the_stream_fails_closed_at_the_door_too():
 # ── an open stream ────────────────────────────────────────────────────
 
 THEIRS = _row(assigned_agent_id=OTHER, status="active", mode="human")   # a colleague has it: readable
+MINE = _row(assigned_agent_id=ME, status="active", mode="human")
 M1 = {"id": "m1", "role": "user", "content": "Boston to Dubai, two of us"}
-M2 = {"id": "m2", "role": "ai", "content": "Great, which dates?"}
+M2 = {"id": "m2", "role": "user", "content": "Business class, back on the 28th"}
+TYPING = {"event": "typing", "is_typing": True, "text": "Do you fly to Dub"}
+PRESENCE = {"event": "presence", "widget_open": True, "widget_presence": "online"}
+CHUNK = {"event": "stream_chunk", "delta": "Dubai on the 14th"}
+END = {"event": "stream_end", "id": "m3", "role": "ai", "content": "Dubai on the 14th works."}
 
 
 def _frame(e: dict) -> str:
@@ -269,22 +275,30 @@ def _frame(e: dict) -> str:
     return f"data: {json.dumps(e)}\n\n"
 
 
-def _drive(user: dict, seen: AsyncMock, events: list, recheck: float = 0.0):
-    """Open the panel stream with `events` already waiting in its queue and
-    return every frame it sent, plus the release of its subscription."""
+def _drive(user: dict, seen: AsyncMock, *waves: list):
+    """Open the panel stream at production settings and feed it `waves` of
+    events: each wave lands in its queue after the stream finished with the
+    one before (the first is there when it opens). Returns every frame the
+    stream sent and the release of its subscription."""
     import asyncio
     from app.api import agent as agent_api
     from app.realtime.manager import manager
 
     async def go():
         q: asyncio.Queue = asyncio.Queue()
-        for e in events:
-            q.put_nowait(e)
+        pending = [list(w) for w in waves]
+
+        def next_wave() -> bool:
+            if not pending:
+                return True  # nothing left to say: the panel goes away
+            for e in pending.pop(0):
+                q.put_nowait(e)
+            return False
+
         request = MagicMock()
-        request.is_disconnected = AsyncMock(side_effect=[False] * len(events) + [True])
+        request.is_disconnected = AsyncMock(side_effect=lambda: next_wave())
         with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
              patch.object(db, "get_blind_inputs", new=seen), \
-             patch.object(agent_api, "_STREAM_RECHECK_SECONDS", recheck), \
              patch.object(manager, "connect", new=AsyncMock(return_value=q)), \
              patch.object(manager, "disconnect") as release:
             res = await agent_api.agent_stream("c1", request, user=user)
@@ -295,22 +309,46 @@ def _drive(user: dict, seen: AsyncMock, events: list, recheck: float = 0.0):
 
 
 def test_a_chat_that_starts_waiting_stops_reaching_an_agent_who_isnt_on_it():
-    # Opened while a colleague had it; the colleague let it go back to the line.
-    seen = AsyncMock(side_effect=[THEIRS, _row()])
+    # Opened while a colleague had it; between two messages the colleague let
+    # it go back to the line. No interval: the very next message is held.
+    seen = AsyncMock(side_effect=[THEIRS, THEIRS, _row()])
     before = conv_api.BLIND_HEALTH["streams_closed"]
-    frames, release = _drive(_user("sales"), seen, [M1, M2])
-    assert frames == [_frame({"event": "blind"})], "the panel is told, and nothing else goes out"
-    assert "dubai" not in "".join(frames).lower()
+    frames, release = _drive(_user("sales"), seen, [M1], [M2])
+    assert frames == [_frame(M1), _frame({"event": "blind"})], "the panel is told, and M2 never goes out"
+    assert "28th" not in "".join(frames)
     assert conv_api.BLIND_HEALTH["streams_closed"] == before + 1
     release.assert_called_once()
 
 
+def test_the_first_event_after_the_door_is_checked_too():
+    # It went back to the line between opening the stream and the first word.
+    seen = AsyncMock(side_effect=[THEIRS, _row()])
+    frames, _ = _drive(_user("sales"), seen, [M1, TYPING])
+    assert frames == [_frame({"event": "blind"})]
+    assert "dubai" not in "".join(frames).lower()
+
+
 def test_a_stream_the_agent_may_still_read_carries_every_event():
     seen = AsyncMock(return_value=THEIRS)
-    frames, release = _drive(_user("sales"), seen, [M1, M2])
-    assert frames == [_frame(M1), _frame(M2)]
-    assert seen.await_count == 3, "the door, then before each event"
+    frames, release = _drive(_user("sales"), seen, [M1], [TYPING], [M2])
+    assert frames == [_frame(M1), _frame(TYPING), _frame(M2)]
+    assert seen.await_count == 4, "the door, then once before each batch"
     release.assert_called_once()
+
+
+def test_events_waiting_together_go_out_after_one_check():
+    seen = AsyncMock(return_value=THEIRS)
+    frames, _ = _drive(_user("sales"), seen, [M1, TYPING, M2])
+    assert frames == [_frame(M1), _frame(TYPING), _frame(M2)]
+    assert seen.await_count == 2, "the door, then one check for the three"
+
+
+def test_presence_alone_asks_nothing():
+    # Presence carries no words — the gate itself shows it.
+    seen = AsyncMock(side_effect=[THEIRS])
+    frames, _ = _drive(_user("sales"), seen, [PRESENCE])
+    assert frames == [_frame(PRESENCE)]
+    assert seen.await_count == 1
 
 
 def test_a_re_check_that_cant_be_made_closes_the_stream():
@@ -323,26 +361,23 @@ def test_a_re_check_that_cant_be_made_closes_the_stream():
 
 
 def test_the_agents_own_chat_is_not_re_read_mid_stream():
-    seen = AsyncMock(return_value=_row(assigned_agent_id=ME, status="active", mode="human"))
-    frames, _ = _drive(_user("sales"), seen, [M1, M2, M1])
+    seen = AsyncMock(return_value=MINE)
+    frames, _ = _drive(_user("sales"), seen, [M1], [TYPING], [M2])
     assert len(frames) == 3
     assert seen.await_count == 1, "answered from memory"
 
 
-def test_a_managers_stream_is_never_re_checked():
+def test_an_agent_gets_whole_replies_not_the_ai_chunks():
+    # The panel renders whole messages; chunks would only cost checks.
+    frames, _ = _drive(_user("sales"), AsyncMock(return_value=MINE), [CHUNK, CHUNK, END])
+    assert frames == [_frame(END)]
+
+
+def test_a_managers_stream_is_never_re_checked_and_keeps_every_frame():
     seen = AsyncMock(return_value=_row())
-    frames, _ = _drive(_user("owner"), seen, [M1])
-    assert frames == [_frame(M1)]
+    frames, _ = _drive(_user("owner"), seen, [M1, CHUNK], [END])
+    assert frames == [_frame(M1), _frame(CHUNK), _frame(END)]
     seen.assert_not_awaited()
-
-
-def test_the_re_check_waits_its_interval():
-    # Within the interval events go out without asking: the bound on how
-    # stale "may still read it" gets is the interval, and it is pinned here.
-    seen = AsyncMock(side_effect=[THEIRS, _row()])
-    frames, _ = _drive(_user("sales"), seen, [M1], recheck=10.0)
-    assert frames == [_frame(M1)]
-    assert seen.await_count == 1
 
 
 def test_health_shows_the_blind_take_counters():
