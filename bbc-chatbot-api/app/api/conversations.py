@@ -1,6 +1,7 @@
 """Admin API — conversations CRUD."""
 import logging
 import re as _re
+import time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -54,8 +55,80 @@ def _known_to(row: dict, user_id: Optional[str]) -> bool:
     back with the assistant (sticky ownership, they were already talking)."""
     if not user_id:
         return False
-    engaged = (row.get("metadata") or {}).get("engaged_agent_id")
+    engaged = row.get("engaged_agent_id") or (row.get("metadata") or {}).get("engaged_agent_id")
     return row.get("assigned_agent_id") == user_id or engaged == user_id
+
+
+def _taken_blind(user: dict, row: dict) -> bool:
+    """An agent takes a waiting chat blind (owner's rule, Nov 2026): until
+    it is theirs they get who and how long — never the words, the trip, the
+    contact or where the client came from. Same rule as the panel's gate:
+    unassigned, open, waiting for a person or in the shared line, and not a
+    chat this agent was already talking in. Managers are never blind."""
+    if user.get("role") not in db._OPERATOR_ROLES or not row:
+        return False
+    if row.get("status") == "closed" or row.get("assigned_agent_id"):
+        return False
+    if _known_to(row, user.get("id")):
+        return False
+    return (
+        row.get("status") == "needs_agent"
+        or row.get("mode") in ("waiting_for_agent", "human")
+        or bool(row.get("queued_at"))
+    )
+
+
+# (agent, chat) pairs already known to be the agent's: their polls skip the
+# check. Only "known" is remembered — it doesn't flip back while the chat is
+# theirs — never "may read", which a chat loses the moment it starts waiting.
+_KNOWN_TTL_SECONDS = 600.0
+_KNOWN_MAX = 5000
+_known_until: dict[tuple[str, str], float] = {}
+
+
+async def _blind_guard(user: dict, conversation_id: str) -> bool:
+    """True when this agent must not read this chat yet. Costs one tiny read
+    per (agent, chat) every 10 minutes for the agent's own chats, nothing for
+    managers. A failed read is "can't tell" and lets the request through: a
+    database blip must not stop agents reading their own chats (it is logged
+    by get_blind_inputs)."""
+    if user.get("role") not in db._OPERATOR_ROLES:
+        return False
+    key = (str(user.get("id") or ""), conversation_id)
+    now = time.monotonic()
+    if _known_until.get(key, 0.0) > now:
+        return False
+    row = await db.get_blind_inputs(conversation_id)
+    if not row:
+        return False
+    if _known_to(row, user.get("id")):
+        if len(_known_until) >= _KNOWN_MAX:
+            _known_until.clear()
+        _known_until[key] = now + _KNOWN_TTL_SECONDS
+        return False
+    return _taken_blind(user, row)
+
+
+_BLIND_DETAIL = "Take the chat to read it."
+_PRESENCE_KEYS = (
+    "widget_presence", "widget_presence_effective", "widget_presence_age_seconds",
+    "widget_last_event_at", "widget_last_event", "widget_open", "widget_pings",
+)
+
+
+def _blind_view(conv: dict) -> dict:
+    """The chat as an agent sees it before Take: the row's shape, with the
+    words, the lead, the summary, the contact and the visit's metadata
+    (search terms, pages, IP) taken out. Presence stays: the gate shows it."""
+    out = dict(conv)
+    meta = conv.get("metadata") or {}
+    out["metadata"] = {k: meta[k] for k in _PRESENCE_KEYS if k in meta}
+    out["messages"] = []
+    out["lead"] = None
+    for k in ("summary", "visitor_email", "visitor_phone", "visitor_phone_country", "flagged_reason"):
+        if k in out:
+            out[k] = None
+    return out
 
 
 @router.get("/conversations")
@@ -316,6 +389,8 @@ async def get_typing_status(
 ):
     """Agent polls every 1s to see client's live typing text.
     Returns empty state if client is not typing or Redis key expired."""
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
     from app.realtime.typing_indicator import typing_manager
     state = await typing_manager.get_typing(conversation_id)
     return {
@@ -376,6 +451,8 @@ async def get_conversation_messages(
                 status_code=403,
                 detail="You can only read messages for conversations handled by your team.",
             )
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
     msgs = await db.get_messages_after(conversation_id, after)
     return {"success": True, "data": msgs}
 
@@ -420,6 +497,11 @@ async def get_conversation(
     if user.get("role") == "supervisor":
         from app.security.pii import mask_visitor_row
         conv = mask_visitor_row(dict(conv))
+
+    # An agent on a chat waiting for a person: who and how long, nothing the
+    # client said or where they fly, until they take it.
+    if _taken_blind(user, conv):
+        conv = _blind_view(conv)
 
     return {"success": True, "data": conv, "count": 1}
 

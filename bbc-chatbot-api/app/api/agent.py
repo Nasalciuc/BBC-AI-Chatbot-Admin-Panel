@@ -456,6 +456,11 @@ async def agent_stream(
         team_ids = await _resolve_team_scope(user)
         if not team_ids or conv.get("team_id") not in team_ids:
             raise HTTPException(status_code=403, detail="Outside your team")
+    # Blind take: an agent gets no stream (messages, typing) for a chat that
+    # is waiting for a person and isn't theirs yet.
+    from app.api.conversations import _blind_guard, _BLIND_DETAIL
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
 
     from app.realtime.manager import manager
 
