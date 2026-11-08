@@ -122,6 +122,22 @@ export function whenText(ms: number, nowMs: number): string {
   return `on ${d.getDate()} ${d.toLocaleString('en-GB', { month: 'short' })} at ${at}`
 }
 
+/**
+ * When a session token ends, in ms, from its own `exp` (the server re-issues
+ * the token with every profile change). Unreadable: `fallbackMs`.
+ */
+export function tokenExpMs(token: string, fallbackMs: number): number {
+  try {
+    const part = token.split('.')[1]
+    if (!part) return fallbackMs
+    const claims: unknown = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')))
+    const exp = claims && typeof claims === 'object' ? (claims as { exp?: unknown }).exp : undefined
+    return typeof exp === 'number' && Number.isFinite(exp) ? exp * 1000 : fallbackMs
+  } catch {
+    return fallbackMs
+  }
+}
+
 /** This session's end, from the token's expiry. */
 export function sessionText(expMs: number | null | undefined, nowMs: number): string {
   const tail = 'A session lasts 24 hours, then you sign in again. Sessions on other devices can’t be ended from here yet.'

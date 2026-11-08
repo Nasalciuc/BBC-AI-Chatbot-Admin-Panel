@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import {
   BURST_PAUSE_S,
   LINK_TEXT,
+  backAfterSignIn,
   crmEmail,
   crmProblem,
   emailError,
@@ -82,4 +83,18 @@ test('the CRM sign-in: who the CRM thinks you are, and why it failed', () => {
   assert.equal(crmProblem(null, null).kind, 'unknown')
   assert.match(crmProblem(401, 'No matching BBC account for this user').head, /isn’t in the chat panel/)
   assert.match(crmProblem(401, 'SSO token expired — please reload from the CRM').head, /expired/)
+})
+
+test('after signing in you go back where you were, only on this site', () => {
+  const o = 'https://admin.example.com'
+  // Search and hash kept: /chats?highlight=… reopens the chat.
+  assert.equal(backAfterSignIn('/chats?highlight=c1#m2', o), '/chats?highlight=c1#m2')
+  assert.equal(backAfterSignIn('/leads', o), '/leads')
+  assert.equal(backAfterSignIn(`${o}/tasks?task=t1`, o), '/tasks?task=t1')
+  // Anything that resolves to another site goes home instead.
+  for (const bad of ['//evil.com/x', '/\\evil.com', '/\t/evil.com', 'https://evil.com/', 'http://admin.example.com/', 'javascript:alert(1)']) {
+    assert.equal(backAfterSignIn(bad, o), null, bad)
+  }
+  assert.equal(backAfterSignIn(undefined, o), null)
+  assert.equal(backAfterSignIn('', o), null)
 })

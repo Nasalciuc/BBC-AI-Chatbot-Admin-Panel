@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useSsoStore } from '@/stores/sso-store'
 import { AuthNote, AuthShell, AuthTitle, Field, PasswordField } from '../shell'
 import { inputCls, linkCls, primaryBtn } from '../styles'
-import { BURST_PAUSE_S, SESSION_NOTICE, crmProblem, emailError, problemText, signInProblem, type SignInProblem } from '../view'
+import { BURST_PAUSE_S, SESSION_NOTICE, backAfterSignIn, crmProblem, emailError, problemText, signInProblem, type SignInProblem } from '../view'
 
 /**
  * Sign in. Every message is an answer the server really gives: wrong
@@ -60,9 +60,9 @@ export function SignIn() {
       auth.setAccessToken(token)
       sso.done()
       // Back where you were, search included (/chats?highlight=… reopens the
-      // chat). Only a path on this site; anything else goes home.
-      const back = search.redirect
-      if (back && back.startsWith('/') && !back.startsWith('//')) router.history.replace(back)
+      // chat). Only a place on this site; anything else goes home.
+      const back = backAfterSignIn(search.redirect, window.location.origin)
+      if (back) router.history.replace(back)
       else navigate({ to: '/', replace: true })
     } catch (e) {
       const p = signInProblem(e instanceof ApiError ? e.status : null, e instanceof Error ? e.message : '')

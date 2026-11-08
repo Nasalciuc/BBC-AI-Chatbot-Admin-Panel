@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link, Outlet } from '@tanstack/react-router'
 import { canReceiveAssignNotifications, notifyPermission } from '@/lib/notify-assignment'
 import { cn } from '@/lib/utils'
@@ -17,8 +18,28 @@ const SECTIONS = [
  *  Every role sees the same four parts. */
 export function Settings() {
   const role = useAuthStore((s) => s.auth.user?.role)
-  // A dot on Alerts while this browser can't show a new chat behind other windows.
-  const perm = notifyPermission()
+  // A dot on Alerts while this browser can't show a new chat behind other
+  // windows. Followed live: "Allow notifications" on Alerts clears it at once.
+  const [perm, setPerm] = useState(notifyPermission)
+  useEffect(() => {
+    const sync = () => setPerm(notifyPermission())
+    window.addEventListener('focus', sync)
+    let status: PermissionStatus | null = null
+    let gone = false
+    navigator.permissions
+      ?.query({ name: 'notifications' as PermissionName })
+      .then((s) => {
+        if (gone) return
+        status = s
+        s.addEventListener('change', sync)
+      })
+      .catch(() => undefined) // no Permissions API here: focus keeps it right
+    return () => {
+      gone = true
+      window.removeEventListener('focus', sync)
+      status?.removeEventListener('change', sync)
+    }
+  }, [])
   const alertsDot = canReceiveAssignNotifications(role) && (perm === 'default' || perm === 'denied')
   return (
     <main id='content' className='flex flex-col gap-5 px-4 pt-6 pb-9 md:px-7 md:pt-7'>

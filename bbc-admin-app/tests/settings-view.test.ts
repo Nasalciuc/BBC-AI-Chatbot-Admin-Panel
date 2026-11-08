@@ -13,6 +13,7 @@ import {
   roleChangedNote,
   sessionText,
   teamLine,
+  tokenExpMs,
   whenText,
 } from '../src/features/settings/view.ts'
 
@@ -84,4 +85,17 @@ test('the session says when it ends, in local time', () => {
   assert.match(sessionText(new Date(2026, 10, 9, 12, 2).getTime(), now), /^This session ends tomorrow at 12:02\. A session lasts 24 hours/)
   assert.match(sessionText(now - 1, now), /^This session has ended\./)
   assert.match(sessionText(undefined, now), /^A session lasts 24 hours/)
+})
+
+test('the session ends when the re-issued token says, not 24 h from the click', () => {
+  const jwt = (claims: object) => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`
+  assert.equal(tokenExpMs(jwt({ sub: 'u1', exp: 1762600000 }), 5), 1762600000000)
+  // base64url (- and _), no padding: read like the server wrote it.
+  const odd = jwt({ name: '???>>>', exp: 1762600001 })
+  assert.match(odd.split('.')[1], /[-_]/)
+  assert.equal(tokenExpMs(odd, 5), 1762600001000)
+  // Unreadable: the fallback.
+  for (const bad of ['', 'abc', 'h.%%%.s', `h.${Buffer.from('not json').toString('base64url')}.s`, jwt({ exp: 'soon' }), jwt({})]) {
+    assert.equal(tokenExpMs(bad, 5), 5, bad)
+  }
 })

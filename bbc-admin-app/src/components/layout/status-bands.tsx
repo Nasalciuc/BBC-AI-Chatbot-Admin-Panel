@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { WifiOff } from 'lucide-react'
+import { checkHealth } from '@/lib/api'
 import { backTo, bandText, pickBand, secondsToNext } from '@/lib/bands'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
@@ -8,7 +9,6 @@ import { useAuthStore } from '@/stores/auth-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useReadyStore } from '@/stores/ready-store'
 
-const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 const CHECK_MS = 30_000
 
 /**
@@ -42,12 +42,7 @@ export function StatusBands() {
   useEffect(() => {
     if (dormant) return // nothing to check for a panel nobody is looking at
     const check = async () => {
-      try {
-        const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(8000) })
-        setReachable(res.ok)
-      } catch {
-        setReachable(false)
-      }
+      setReachable(await checkHealth())
       setCheckedAt(Date.now())
     }
     checkNow.current = () => void check()

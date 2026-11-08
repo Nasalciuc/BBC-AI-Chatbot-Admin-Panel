@@ -12,7 +12,9 @@ import { darkBtn, lineBtn } from './styles'
 export function GeneralError({ error }: Partial<ErrorComponentProps>) {
   const [copied, setCopied] = useState(false)
   const details = [
-    error ? `${error.name}: ${error.message}`.slice(0, 300) : '',
+    // The error's name, never its message: a message can carry what the
+    // server said about a client.
+    error ? error.name : '',
     typeof window === 'undefined' ? '' : window.location.pathname,
     new Date().toString(),
   ]

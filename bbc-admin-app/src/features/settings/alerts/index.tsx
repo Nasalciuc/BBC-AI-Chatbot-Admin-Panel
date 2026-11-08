@@ -139,7 +139,13 @@ export function SettingsAlerts() {
                 max={100}
                 step={5}
                 value={prefs.volume}
-                onChange={(e) => setPrefs((p) => ({ ...p, volume: Number(e.target.value) }))}
+                onChange={(e) => {
+                  // Stored on every change (a screen reader's swipe has no pointer-up);
+                  // the "Saved" note waits for the release.
+                  const next = { ...prefs, volume: Number(e.target.value) }
+                  setPrefs(next)
+                  writeAlertPrefs(next)
+                }}
                 onPointerUp={() => set({ volume: prefs.volume })}
                 onKeyUp={(e) => {
                   if (/^(Arrow|Home|End|Page)/.test(e.key)) set({ volume: prefs.volume })
