@@ -538,6 +538,10 @@ async def set_ready_status(
     await db.update_user(user_id, {"is_ready": body.is_ready})
     from app.services.presence import log_ready_change
     _fire_and_forget(log_ready_change(db, user_id, body.is_ready))
+    if not body.is_ready:
+        # Leaving the shift: their open tasks go to Unowned or a Ready colleague (Tasks → Rules).
+        from app.services.tasks_service import leave_shift
+        _fire_and_forget(leave_shift(user_id))
     status_str = "ready" if body.is_ready else "not_ready"
     logger.info(f"[agent-status] {user.get('email')} -> {status_str}")
     return {"success": True, "is_ready": body.is_ready}

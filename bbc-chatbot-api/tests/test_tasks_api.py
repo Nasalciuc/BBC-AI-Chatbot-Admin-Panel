@@ -1,0 +1,290 @@
+"""Tasks: who sees which tasks, what each role may change, what happens before
+migration 051 runs, and the tasks that make themselves (a promise in an
+agent's message, a client's "call me", someone going Not ready).
+"""
+
+import asyncio
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+
+from app.api import notifications, tasks  # noqa: E402
+from app.db import supabase as db  # noqa: E402
+from app.security.auth import get_current_user  # noqa: E402
+from app.services import tasks_service  # noqa: E402
+from app.services.follow_ups import rules_of  # noqa: E402
+from app.services.tasks_view import build_tasks_view  # noqa: E402
+
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
+NAMES = {"victor": "Victor Rusu", "rohan": "Rohan Mehta", "irina": "Irina Moraru", "alex": "Alex Moore"}
+PEOPLE = [{"id": k, "name": v, "role": "sales"} for k, v in NAMES.items()]
+
+
+def task(tid: str, **over) -> dict:
+    base = {
+        "id": tid, "task_number": 1, "title": "Send Michael three options for New York → London", "kind": "email",
+        "source": "caught", "conversation_id": "c1", "lead_id": "l1", "message_id": f"m-{tid}",
+        "quote": "I’ll send you three options within the hour. Write to michael.r@example.com",
+        "due_at": (NOW + timedelta(hours=1)).isoformat(), "due_kind": "said", "assignee_id": "victor",
+        "created_by": "victor", "unowned_reason": None, "unowned_from": None, "unowned_at": None,
+        "done_at": None, "done_by": None, "dismissed_at": None, "dismissed_by": None,
+        "created_at": (NOW - timedelta(minutes=5)).isoformat(), "updated_at": None,
+    }
+    base.update(over)
+    return base
+
+
+CONVS = {"c1": {"id": "c1", "chat_number": 4810, "visitor_name": "Michael Reed", "visitor_email": "michael.r@example.com",
+                "visitor_phone": "+1 555 014 2290", "status": "active", "mode": "human", "assigned_agent_id": "victor"}}
+LEADS = {"c1": {"id": "l1", "conversation_id": "c1", "route_display": "New York → London", "origin_code": "ORD",
+                "departure_date": "2026-11-16", "passengers": 2, "created_in_crm": True, "crm_lead_id": "208131"}}
+
+
+def client(role: str, uid: str) -> TestClient:
+    app = FastAPI()
+    app.include_router(tasks.router, prefix="/api")
+    app.include_router(notifications.router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: {"id": uid, "role": role}
+    return TestClient(app)
+
+
+def patched(**extra):
+    """The DB around the tasks endpoints, with the rules cache cleared."""
+    tasks_service.forget_rules()
+    base = {
+        "get_task_rules_raw": AsyncMock(return_value=None),
+        "list_follow_ups": AsyncMock(return_value=([task("t1")], [])),
+        "get_follow_up_context": AsyncMock(return_value=(CONVS, LEADS)),
+        "client_messages_since": AsyncMock(return_value=[]),
+        "get_user_names": AsyncMock(return_value=NAMES),
+        "get_task_people": AsyncMock(return_value=PEOPLE),
+        "get_team_ids_for_supervisor": AsyncMock(return_value=["team-1"]),
+        "get_operator_ids_for_teams": AsyncMock(return_value=["victor", "rohan"]),
+        "get_follow_up": AsyncMock(return_value=task("t1")),
+        "update_follow_up": AsyncMock(side_effect=lambda tid, p: {**task(tid), **p}),
+        "insert_follow_up": AsyncMock(side_effect=lambda row: {"id": "new", **row}),
+        "add_task_event": AsyncMock(return_value=None),
+        "get_task_events": AsyncMock(return_value=[]),
+        "messages_around": AsyncMock(return_value=[]),
+        "get_pending_conversations": AsyncMock(return_value=[{"id": "waiting"}]),
+    }
+    base.update(extra)
+    return patch.multiple(db, **base)
+
+
+# ── Before migration 051, and failed reads ───────────────────────────────────
+
+def test_before_the_migration_the_page_says_so_not_an_empty_list():
+    with patched(get_task_rules_raw=AsyncMock(side_effect=db.TasksNotSetUp("column app_settings.task_rules does not exist"))):
+        r = client("sales", "victor").get("/api/tasks")
+    assert r.status_code == 503 and "migration 051" in r.json()["detail"]
+
+
+def test_a_failed_read_is_a_502():
+    with patched(list_follow_ups=AsyncMock(side_effect=RuntimeError("boom"))):
+        r = client("sales", "victor").get("/api/tasks")
+    assert r.status_code == 502
+
+
+def test_the_bell_keeps_the_waiting_chats_when_tasks_fail_or_aren_t_set_up():
+    with patched(get_task_rules_raw=AsyncMock(side_effect=db.TasksNotSetUp("42703"))):
+        body = client("sales", "victor").get("/api/notifications").json()
+    assert body["stale_conversations"] == [{"id": "waiting"}] and body["tasks"]["set_up"] is False
+    with patched(list_follow_ups=AsyncMock(side_effect=RuntimeError("boom"))):
+        body = client("sales", "victor").get("/api/notifications").json()
+    assert body["stale_conversations"] == [{"id": "waiting"}] and body["tasks"]["failed"] is True
+
+
+# ── Who sees what ────────────────────────────────────────────────────────────
+
+def test_an_agent_sees_only_their_own_tasks_with_the_client_s_city():
+    lf = AsyncMock(return_value=([task("t1")], []))
+    with patched(list_follow_ups=lf):
+        body = client("sales", "victor").get("/api/tasks?view=all").json()["data"]
+    assert lf.call_args.kwargs["assignee_ids"] == ["victor"]
+    row = body["tasks"][0]
+    assert body["view"] == "mine" and body["can"] == {"assign": False, "rules": False}
+    assert row["client"] == "Michael R." and row["client_city"] == "Chicago" and row["client_zone"] == "America/Chicago"
+    assert row["quote"].endswith("michael.r@example.com") and row["state"] in ("today", "later")  # "later" past midnight in New York
+
+
+def test_a_supervisor_sees_the_team_and_unowned_with_contacts_masked():
+    lf = AsyncMock(return_value=([task("t1"), task("t2", assignee_id=None, unowned_reason="ai_only")], []))
+    with patched(list_follow_ups=lf):
+        body = client("supervisor", "irina").get("/api/tasks").json()["data"]
+    kw = lf.call_args.kwargs
+    assert kw["assignee_ids"] == ["irina", "rohan", "victor"] and kw["with_unowned"] is True
+    row = body["tasks"][0]
+    assert "Michael" not in row["title"] and "Michael" not in (row["client"] or "")
+    assert "michael.r@example.com" not in row["quote"]
+    assert body["counts"]["unowned"] == 1 and body["unowned_open"] == 1
+    assert {p["id"] for p in body["people"]} == {"irina", "rohan", "victor"}
+
+
+def test_an_agent_can_t_open_someone_else_s_task():
+    with patched(get_follow_up=AsyncMock(return_value=task("t9", assignee_id="rohan", created_by="rohan"))):
+        r = client("sales", "victor").get("/api/tasks/t9")
+    assert r.status_code == 404
+
+
+def test_the_task_shows_where_it_came_from():
+    around = [
+        {"id": "m0", "role": "user", "content": "Can you send me a couple of options?", "created_at": (NOW - timedelta(minutes=7)).isoformat()},
+        {"id": "m-t1", "role": "agent", "content": "I’ll send you three options within the hour.", "created_at": (NOW - timedelta(minutes=5)).isoformat()},
+        {"id": "m2", "role": "user", "content": "Hi, any news?", "created_at": (NOW - timedelta(minutes=1)).isoformat()},
+    ]
+    events = [{"kind": "caught", "actor_id": "victor", "details": {"due_words": "within the hour", "due_kind": "said"},
+               "at": (NOW - timedelta(minutes=5)).isoformat()}]
+    with patched(messages_around=AsyncMock(return_value=around), get_task_events=AsyncMock(return_value=events)):
+        d = client("sales", "victor").get("/api/tasks/t1").json()["data"]
+    assert [m["source"] for m in d["excerpt"]] == [False, True, False] and d["excerpt"][2]["after"] is True
+    assert d["crm"]["in_crm"] is True and d["contact"]["email"] == "michael.r@example.com"
+    texts = [h["text"] for h in d["history"]]
+    assert texts[0] == "Caught in Victor Rusu’s message. Due within the hour, as written."
+    assert "Michael wrote again in the chat." in texts and d["client_wrote_at"]
+
+
+# ── What each role may change ────────────────────────────────────────────────
+
+def test_an_agent_adds_tasks_only_for_themselves():
+    with patched():
+        own = client("sales", "victor").post("/api/tasks", json={"title": "Call the airline", "kind": "call"})
+        other = client("sales", "victor").post("/api/tasks", json={"title": "x", "assignee_id": "rohan"})
+        unowned = client("sales", "victor").post("/api/tasks", json={"title": "x", "unowned": True})
+    assert own.status_code == 200 and own.json()["data"]["assignee_id"] == "victor"
+    assert other.status_code == 403 and unowned.status_code == 403
+
+
+def test_a_supervisor_gives_tasks_only_to_the_team():
+    with patched():
+        ok = client("supervisor", "irina").post("/api/tasks", json={"title": "Talk to Rohan", "assignee_id": "rohan", "source": "dashboard"})
+        no = client("supervisor", "irina").post("/api/tasks", json={"title": "x", "assignee_id": "alex"})
+    assert ok.status_code == 200 and ok.json()["data"]["source"] == "dashboard"
+    assert no.status_code == 403
+
+
+def test_done_snooze_and_not_a_promise():
+    upd = AsyncMock(side_effect=lambda tid, p: {**task(tid), **p})
+    ev = AsyncMock(return_value=None)
+    with patched(update_follow_up=upd, add_task_event=ev):
+        c = client("sales", "victor")
+        assert c.patch("/api/tasks/t1", json={"done": True}).json()["data"]["done_by"] == "victor"
+        later = (NOW + timedelta(hours=3)).isoformat()
+        assert c.patch("/api/tasks/t1", json={"due_at": later}).status_code == 200
+        assert c.patch("/api/tasks/t1", json={"not_a_promise": True}).json()["data"]["dismissed_by"] == "victor"
+        assert c.patch("/api/tasks/t1", json={"assignee_id": "rohan"}).status_code == 403
+    assert [call.args[1] for call in ev.call_args_list] == ["done", "due_changed", "dismissed"]
+
+
+def test_only_a_caught_task_can_be_not_a_promise():
+    with patched(get_follow_up=AsyncMock(return_value=task("t1", source="added"))):
+        r = client("sales", "victor").patch("/api/tasks/t1", json={"not_a_promise": True})
+    assert r.status_code == 400
+
+
+def test_rules_are_for_owner_admin_dev():
+    with patched(caught_stats_since=AsyncMock(return_value={"caught": 6, "not_a_promise": 1}),
+                 save_task_rules=AsyncMock(return_value=None)):
+        assert client("supervisor", "irina").get("/api/tasks/rules").status_code == 403
+        got = client("owner", "alex").get("/api/tasks/rules").json()["data"]
+        assert got["default_due"] == "2h" and got["last_7_days"] == {"caught": 6, "not_a_promise": 1}
+        saved = client("owner", "alex").put("/api/tasks/rules", json={"default_due": "end_of_day", "leave_shift": "ready"}).json()["data"]
+        assert saved["default_due"] == "end_of_day" and saved["leave_shift"] == "ready"
+        assert client("owner", "alex").put("/api/tasks/rules", json={"phrases": []}).status_code == 400
+        tried = client("owner", "alex").post("/api/tasks/rules/try", json={"sentence": "I'll e-mail you the fare rules by 5"}).json()["data"]
+        assert tried["makes_task"] and tried["kind_label"] == "E-mail"
+
+
+# ── Tasks that make themselves ───────────────────────────────────────────────
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def test_a_promise_in_an_agent_s_message_becomes_their_task():
+    ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
+    ev = AsyncMock(return_value=None)
+    msg = {"id": "m1", "content": "Of course! I’ll send you three options within the hour.", "created_at": NOW.isoformat()}
+    with patched(insert_follow_up=ins, add_task_event=ev):
+        t = run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor"))
+        none = run(tasks_service.catch_from_agent_message(CONVS["c1"], {"id": "m2", "content": "Great, thanks."}, "victor"))
+    row = ins.call_args.kwargs.get("row") or ins.call_args.args[0]
+    assert t["id"] == "new" and none is None and ins.call_count == 1
+    assert row["title"] == "Send Michael three options for New York → London"
+    assert row["assignee_id"] == "victor" and row["message_id"] == "m1" and row["due_kind"] == "said"
+    assert row["due_at"] == (NOW + timedelta(hours=1)).isoformat()
+    assert ev.call_args.args[1] == "caught"
+
+
+def test_catching_never_fails_the_send():
+    msg = {"id": "m1", "content": "I'll call you in an hour", "created_at": NOW.isoformat()}
+    before = db.TASKS_HEALTH["catch_failures"]
+    with patched(insert_follow_up=AsyncMock(side_effect=RuntimeError("db down"))):
+        assert run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor")) is None
+    assert db.TASKS_HEALTH["catch_failures"] == before + 1
+    with patched(get_task_rules_raw=AsyncMock(side_effect=db.TasksNotSetUp("42703"))):
+        assert run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor")) is None
+    # Caught already (a retry): nothing new, no event.
+    ev = AsyncMock(return_value=None)
+    with patched(insert_follow_up=AsyncMock(return_value=None), add_task_event=ev):
+        assert run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor")) is None
+    assert ev.call_count == 0
+
+
+def test_a_call_me_while_the_ai_has_the_chat_is_unowned():
+    ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
+    conv = {**CONVS["c1"], "mode": "ai", "assigned_agent_id": None}
+    with patched(insert_follow_up=ins):
+        run(tasks_service.task_from_callback(conv, {"id": "u1", "created_at": NOW.isoformat()}, "Please call me, I'd rather talk."))
+    row = ins.call_args.args[0]
+    assert row["kind"] == "call" and row["source"] == "client_asked" and row["assignee_id"] is None
+    assert row["unowned_reason"] == "ai_only" and row["title"] == "Call Michael back" and row["due_kind"] == "default"
+
+
+@pytest.mark.parametrize("rule, ready, expected_to", [
+    ("unowned", [{"id": "rohan"}], None),
+    ("ready", [{"id": "rohan"}, {"id": "ana"}], "ana"),
+    ("ready", [], None),
+])
+def test_going_not_ready_moves_open_tasks(rule, ready, expected_to):
+    upd = AsyncMock(side_effect=lambda tid, p: {**task(tid), **p})
+    with patched(get_task_rules_raw=AsyncMock(return_value={"leave_shift": rule}),
+                 open_task_ids_of=AsyncMock(return_value=["t1", "t2"]),
+                 ready_operators=AsyncMock(return_value=ready),
+                 open_task_counts=AsyncMock(return_value={"rohan": 3, "ana": 1}),
+                 update_follow_up=upd):
+        moved = run(tasks_service.leave_shift("victor"))
+    assert moved == 2
+    payload = upd.call_args.args[1]
+    assert payload["assignee_id"] == expected_to
+    if expected_to is None:
+        assert payload["unowned_reason"] == "left_shift" and payload["unowned_from"] == "victor"
+
+
+# ── The page's numbers ───────────────────────────────────────────────────────
+
+def test_late_today_later_and_on_time_this_week():
+    rules = rules_of(None)
+    NOW = datetime(2026, 11, 11, 18, 0, tzinfo=timezone.utc)   # a Wednesday afternoon in New York
+    rows = [
+        task("late", due_at=(NOW - timedelta(minutes=13)).isoformat()),
+        task("soon", due_at=(NOW + timedelta(minutes=1)).isoformat()),
+        task("next", due_at=(NOW + timedelta(days=8)).isoformat()),
+    ]
+    done = [task("ok", due_at=(NOW - timedelta(minutes=30)).isoformat(), done_at=(NOW - timedelta(minutes=40)).isoformat())]
+    v = build_tasks_view(open_rows=rows, done_rows=done, convs=CONVS, leads=LEADS, client_msgs=[], names=NAMES,
+                         now=NOW, rules=rules, masked=False)
+    states = {r["id"]: r["state"] for r in v["tasks"]}
+    assert states["late"] == "late" and states["next"] == "later"
+    assert v["counts"]["late"] == 1 and v["on_time"]["on_time"] == 1
+    assert v["on_time"] == {"on_time": 1, "due": 2}   # the late one counts against "on time"

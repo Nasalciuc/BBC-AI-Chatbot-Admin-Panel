@@ -56,6 +56,9 @@ async def health() -> dict:
     from app.api.conversations import TO_READ_HEALTH
     # Team · Now: one shared read every 10 s; failures 502.
     from app.api.teams import TEAM_NOW_HEALTH
+    # Tasks: promises caught, call-backs, moves on Not ready, and failures
+    # (schema_missing until migration 051 runs).
+    from app.db.supabase import TASKS_HEALTH
 
     if not settings.debug:
         return {
@@ -86,6 +89,7 @@ async def health() -> dict:
             "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
             "to_read": dict(TO_READ_HEALTH),
             "team_now": dict(TEAM_NOW_HEALTH),
+            "tasks": dict(TASKS_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -153,4 +157,5 @@ async def health() -> dict:
         "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
         "to_read": dict(TO_READ_HEALTH),
         "team_now": dict(TEAM_NOW_HEALTH),
+        "tasks": dict(TASKS_HEALTH),
     }

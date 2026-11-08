@@ -544,7 +544,17 @@ async def send_agent_message(
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_agent_typing(conversation_id)
 
-    return {"success": True, "data": msg}
+    # A promise in the reply ("I'll send you three options within the hour")
+    # becomes the operator's task. The message is already with the client;
+    # this never fails the send (catch_from_agent_message logs and counts).
+    follow_up = None
+    if msg:
+        from app.services.tasks_service import catch_from_agent_message
+        task = await catch_from_agent_message(conv, msg, _user_id)
+        if task:
+            follow_up = {k: task.get(k) for k in ("id", "title", "kind", "due_at", "due_kind", "message_id")}
+
+    return {"success": True, "data": msg, "follow_up": follow_up}
 
 
 class AgentTypingBody(BaseModel):

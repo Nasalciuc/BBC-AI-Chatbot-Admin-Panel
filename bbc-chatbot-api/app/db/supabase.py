@@ -3237,75 +3237,246 @@ async def has_ai_or_agent_message_since(conversation_id: str, since_iso: str) ->
 
 
 # ════════════════════════════════════════════════════════════════
-# TASKS
+# TASKS — follow-ups (migration 051)
 # ════════════════════════════════════════════════════════════════
+# What an agent promised a client, what a client asked for, or a to-do.
+# Until migration 051 runs, every read and write here raises TasksNotSetUp:
+# the page says the feature isn't set up, and catching from the chats skips
+# (counted in /health). A send never waits on it.
 
-TASK_SELECT = (
-    "id, task_number, title, description, status, label, priority, "
-    "assignee_id, created_by, due_date, created_at, updated_at"
+FOLLOW_UP_COLUMNS = (
+    "id, task_number, title, kind, source, conversation_id, lead_id, message_id, quote, "
+    "due_at, due_kind, assignee_id, created_by, unowned_reason, unowned_from, unowned_at, "
+    "done_at, done_by, dismissed_at, dismissed_by, created_at, updated_at"
 )
+TASKS_HEALTH: dict = {
+    "schema_missing": 0, "caught": 0, "client_asked": 0, "catch_failures": 0,
+    "moved_unowned": 0, "moved_to_ready": 0, "move_failures": 0,
+}
+_OPEN_LIMIT = 500
 
 
-async def get_tasks(
-    status: Optional[str] = None,
-    priority: Optional[str] = None,
-    assignee_id: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> tuple[list, int]:
-    """List tasks with optional filters. Returns (rows, total)."""
-    db_client = get_client()
-
-    def _query():
-        q = db_client.table("tasks").select(TASK_SELECT, count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
-        if status:
-            q = q.eq("status", status)
-        if priority:
-            q = q.eq("priority", priority)
-        if assignee_id:
-            q = q.eq("assignee_id", assignee_id)
-        return q.range(offset, offset + limit - 1).execute()
-
-    res = await _run_sync(_query)
-    return res.data or [], res.count or 0
+class TasksNotSetUp(RuntimeError):
+    """Migration 051 hasn't run: the tasks columns or task_events are missing."""
 
 
-async def get_task(task_id: str) -> Optional[dict]:
-    """Get a single task by ID."""
-    db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").select(TASK_SELECT).eq("id", task_id).single().execute()
+def _is_schema_missing(e: Exception) -> bool:
+    text = str(e)
+    return (
+        any(code in text for code in ("42703", "42P01", "PGRST204", "PGRST205"))
+        or ("does not exist" in text and ("column" in text or "relation" in text))
+        or "Could not find the" in text
     )
-    return res.data if res.data else None
 
 
-async def create_task(payload: dict) -> Optional[dict]:
-    """Create a new task."""
+async def _tasks_call(fn, *, idempotent: bool = True, label: str = "tasks"):
+    try:
+        return await _run_sync(fn, idempotent, label=label)
+    except Exception as e:
+        if _is_schema_missing(e):
+            TASKS_HEALTH["schema_missing"] += 1
+            logger.warning(f"[tasks] migration 051 not applied: {e}")
+            raise TasksNotSetUp(str(e)) from e
+        raise
+
+
+async def get_task_rules_raw() -> Optional[dict]:
+    """The stored Tasks → Rules (None = the defaults). Raises on failure."""
     db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").insert(payload).execute(),
-        idempotent=False,
-    )
-    return res.data[0] if res.data else None
+    res = await _tasks_call(lambda: db_client.table("app_settings").select("task_rules").eq("id", 1).limit(1).execute())
+    rows = res.data or []
+    raw = rows[0].get("task_rules") if rows else None
+    return raw if isinstance(raw, dict) else None
 
 
-async def update_task(task_id: str, payload: dict) -> Optional[dict]:
-    """Update a task by ID."""
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+async def save_task_rules(rules: dict) -> None:
     db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").update(payload).eq("id", task_id).execute()
-    )
-    return res.data[0] if res.data else None
+    now = datetime.now(timezone.utc).isoformat()
+    await _tasks_call(lambda: db_client.table("app_settings").update({"task_rules": rules, "updated_at": now}).eq("id", 1).execute())
 
 
-async def delete_task(task_id: str) -> bool:
-    """Delete a task by ID."""
+async def insert_follow_up(row: dict) -> Optional[dict]:
+    """Insert a task. None when its chat message already made one (a retry)."""
     db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").delete().eq("id", task_id).execute()
-    )
+    payload = {**row, "updated_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        res = await _tasks_call(lambda: db_client.table("tasks").insert(payload).execute(), idempotent=False)
+    except TasksNotSetUp:
+        raise
+    except Exception as e:
+        if "23505" in str(e) or "uq_tasks_message" in str(e):
+            return None
+        raise
+    return (res.data or [None])[0]
+
+
+async def add_task_event(task_id: str, kind: str, actor_id: Optional[str] = None, details: Optional[dict] = None) -> None:
+    db_client = get_client()
+    row = {"task_id": task_id, "kind": kind, "actor_id": actor_id, "details": details or {}}
+    await _tasks_call(lambda: db_client.table("task_events").insert(row).execute(), idempotent=False)
+
+
+async def list_follow_ups(
+    *,
+    assignee_ids: Optional[list[str]] = None,
+    with_unowned: bool = False,
+    only_unowned: bool = False,
+    done_since: Optional[str] = None,
+) -> tuple[list[dict], list[dict]]:
+    """(open tasks by due time, tasks done since `done_since`, newest first).
+
+    assignee_ids None = everyone's. Raises on failure."""
+    db_client = get_client()
+
+    def scoped(q):
+        if only_unowned:
+            return q.is_("assignee_id", "null")
+        if assignee_ids is None:
+            return q
+        ids = ",".join(sorted({i for i in assignee_ids if i}))
+        if with_unowned:
+            return q.or_(f"assignee_id.in.({ids}),assignee_id.is.null" if ids else "assignee_id.is.null")
+        return q.in_("assignee_id", sorted({i for i in assignee_ids if i}) or ["00000000-0000-0000-0000-000000000000"])
+
+    open_res = await _tasks_call(lambda: scoped(
+        db_client.table("tasks").select(FOLLOW_UP_COLUMNS).is_("done_at", "null").is_("dismissed_at", "null")
+    ).order("due_at", nullsfirst=False).limit(_OPEN_LIMIT).execute())
+    done: list[dict] = []
+    if done_since:
+        done_res = await _tasks_call(lambda: scoped(
+            db_client.table("tasks").select(FOLLOW_UP_COLUMNS).gte("done_at", done_since)
+        ).order("done_at", desc=True).limit(_OPEN_LIMIT).execute())
+        done = done_res.data or []
+    return open_res.data or [], done
+
+
+async def get_follow_up(task_id: str) -> Optional[dict]:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select(FOLLOW_UP_COLUMNS).eq("id", task_id).limit(1).execute())
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+async def update_follow_up(task_id: str, payload: dict) -> Optional[dict]:
+    db_client = get_client()
+    body = {**payload, "updated_at": datetime.now(timezone.utc).isoformat()}
+    res = await _tasks_call(lambda: db_client.table("tasks").update(body).eq("id", task_id).execute())
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+async def delete_follow_up(task_id: str) -> bool:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").delete().eq("id", task_id).execute())
     return bool(res.data)
+
+
+async def get_task_events(task_id: str) -> list[dict]:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("task_events").select("kind, actor_id, details, at")
+                            .eq("task_id", task_id).order("at").limit(200).execute())
+    return res.data or []
+
+
+async def get_follow_up_context(conversation_ids: list[str]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """The chats and leads behind tasks: ({conversation_id: conv}, {conversation_id: lead})."""
+    ids = sorted({i for i in conversation_ids if i})
+    if not ids:
+        return {}, {}
+    db_client = get_client()
+    convs: dict[str, dict] = {}
+    leads: dict[str, dict] = {}
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        conv_res, lead_res = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations")
+                      .select("id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, assigned_agent_id, tunnel")
+                      .in_("id", chunk).execute(), label="tasks"),
+            _run_sync(lambda chunk=chunk: db_client.table("leads")
+                      .select("id, conversation_id, route_display, origin_code, destination_code, departure_date, "
+                              "passengers, children_count, infant_count, created_in_crm, crm_lead_id")
+                      .in_("conversation_id", chunk).execute(), label="tasks"),
+        )
+        for c in conv_res.data or []:
+            convs[c["id"]] = c
+        for lead in lead_res.data or []:
+            leads.setdefault(lead["conversation_id"], lead)
+    return convs, leads
+
+
+async def client_messages_since(conversation_ids: list[str], since_iso: str) -> list[dict]:
+    """The clients' messages in these chats since `since_iso` (for "wrote again")."""
+    ids = sorted({i for i in conversation_ids if i})
+    if not ids:
+        return []
+    db_client = get_client()
+    out: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        out.extend(await _select_pages(
+            lambda chunk=chunk: db_client.table("messages").select("conversation_id, created_at")
+            .in_("conversation_id", chunk).eq("role", "user").gt("created_at", since_iso).order("created_at"),
+            label="tasks", max_pages=5,
+        ))
+    return out
+
+
+async def messages_around(conversation_id: str, at_iso: str, before: int = 2, after: int = 4) -> list[dict]:
+    """A few messages before and after a moment in a chat (the promise and its replies)."""
+    db_client = get_client()
+    cols = "id, role, content, created_at"
+    older, newer = await asyncio.gather(
+        _run_sync(lambda: db_client.table("messages").select(cols).eq("conversation_id", conversation_id)
+                  .neq("role", "system").lte("created_at", at_iso).order("created_at", desc=True).limit(before + 1).execute(), label="tasks"),
+        _run_sync(lambda: db_client.table("messages").select(cols).eq("conversation_id", conversation_id)
+                  .neq("role", "system").gt("created_at", at_iso).order("created_at").limit(after).execute(), label="tasks"),
+    )
+    return list(reversed(older.data or [])) + (newer.data or [])
+
+
+async def open_task_ids_of(user_id: str) -> list[str]:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select("id").eq("assignee_id", user_id)
+                            .is_("done_at", "null").is_("dismissed_at", "null").limit(_OPEN_LIMIT).execute())
+    return [r["id"] for r in res.data or []]
+
+
+async def ready_operators() -> list[dict]:
+    """Agents who are Ready now: id, role, tunnel_scope (for "give them to whoever is Ready")."""
+    db_client = get_client()
+    res = await _run_sync(lambda: db_client.table("users").select("id, role, tunnel_scope, last_seen_at")
+                          .eq("is_ready", True).eq("is_active", True).in_("role", list(_OPERATOR_ROLES)).execute(), label="tasks")
+    return res.data or []
+
+
+async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
+    ids = sorted({i for i in user_ids if i})
+    if not ids:
+        return {}
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select("assignee_id").in_("assignee_id", ids)
+                            .is_("done_at", "null").is_("dismissed_at", "null").limit(_OPEN_LIMIT * 4).execute())
+    counts: dict[str, int] = {i: 0 for i in ids}
+    for r in res.data or []:
+        counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
+    return counts
+
+
+async def get_task_people() -> list[dict]:
+    """Everyone who can hold a task: active users, with role and team. Raises."""
+    db_client = get_client()
+    res = await _run_sync(lambda: db_client.table("users").select("id, name, email, role, team_id")
+                          .eq("is_active", True).execute(), label="tasks")
+    return res.data or []
+
+
+async def caught_stats_since(since_iso: str) -> dict:
+    """Tasks caught from agents' messages since `since_iso`, and how many were "Not a promise"."""
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select("id, dismissed_at")
+                            .eq("source", "caught").gte("created_at", since_iso).limit(5000).execute())
+    rows = res.data or []
+    return {"caught": len(rows), "not_a_promise": sum(1 for r in rows if r.get("dismissed_at"))}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -3373,27 +3544,6 @@ async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict
 
     except Exception as e:
         logger.error(f"get_pending_conversations error: {e}")
-        return []
-
-
-async def get_assigned_tasks(user_id: str) -> list[dict]:
-    """Return active tasks assigned to *user_id* (not done/canceled)."""
-    try:
-        db_client = get_client()
-        res = await _run_sync(
-            lambda: (
-                db_client.table("tasks")
-                .select("id, task_number, title, priority, status, created_at")
-                .eq("assignee_id", user_id)
-                .not_.in_("status", '("done","canceled")')
-                .order("created_at", desc=True)
-                .limit(20)
-                .execute()
-            )
-        )
-        return res.data or []
-    except Exception as e:
-        logger.error(f"get_assigned_tasks error: {e}")
         return []
 
 
