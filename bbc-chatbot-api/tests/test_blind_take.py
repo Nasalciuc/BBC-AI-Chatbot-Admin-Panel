@@ -9,8 +9,12 @@ pin that the API agrees, so the gate is not the only thing standing:
   * the detail comes back with the words, the lead, the summary, the contact
     and the visit's metadata taken out (presence stays, the gate shows it);
   * messages, typing and the stream answer 403 until Take;
+  * an open stream asks again before it sends anything (at most every 10s),
+    so a chat that starts waiting stops reaching an agent who isn't on it;
   * the agent's own chats cost one tiny read per 10 minutes, not one per poll;
-  * a failed read lets the agent through (their own chats must keep working).
+  * a check that can't be made fails CLOSED (503, counted in /health) — the
+    agent's own chats answer from memory, so a blip doesn't reach them;
+  * a chat that doesn't exist isn't hidden ("no chat" is not "couldn't look").
 """
 
 import os
@@ -180,17 +184,49 @@ def test_a_waiting_chat_is_checked_every_time_until_take():
     assert r.status_code == 200
 
 
-def test_a_failed_check_lets_the_agent_through():
+def test_a_check_that_cant_be_made_fails_closed():
+    reader = AsyncMock(return_value=[{"id": "m1", "content": "Boston to Dubai"}])
+    before = conv_api.BLIND_HEALTH["check_failed"]
+    with patch.object(db, "get_blind_inputs", new=AsyncMock(side_effect=RuntimeError("network"))), \
+         patch.object(db, "get_messages_after", new=reader):
+        c = _client("sales")
+        r1 = c.get("/api/conversations/c1/messages")
+        r2 = c.get("/api/conversations/c1/typing")
+    assert r1.status_code == 503 and r2.status_code == 503
+    assert r1.json()["detail"] == "Couldn't check this chat. Try again in a moment."
+    assert "dubai" not in r1.text.lower()
+    reader.assert_not_awaited()
+    assert conv_api.BLIND_HEALTH["check_failed"] == before + 2, "every closed door is counted in /health"
+    assert conv_api.BLIND_HEALTH["last_failed_at"]
+
+
+def test_a_chat_that_does_not_exist_is_not_hidden():
+    # "No chat" is not "couldn't look": nothing in it to hide, so the request
+    # goes on and answers whatever it answers for a missing chat.
     reader = AsyncMock(return_value=[])
+    before = conv_api.BLIND_HEALTH["check_failed"]
     with patch.object(db, "get_blind_inputs", new=AsyncMock(return_value=None)), \
          patch.object(db, "get_messages_after", new=reader):
         r = _client("sales").get("/api/conversations/c1/messages")
     assert r.status_code == 200
     reader.assert_awaited_once()
+    assert conv_api.BLIND_HEALTH["check_failed"] == before
+
+
+def test_an_agents_own_chat_keeps_working_through_a_blip():
+    blind = AsyncMock(side_effect=[_row(assigned_agent_id=ME, status="active", mode="human"),
+                                   RuntimeError("network")])
+    with patch.object(db, "get_blind_inputs", new=blind), \
+         patch.object(db, "get_messages_after", new=AsyncMock(return_value=[])):
+        c = _client("sales")
+        assert c.get("/api/conversations/c1/messages").status_code == 200
+        assert c.get("/api/conversations/c1/messages").status_code == 200, "answered from memory"
+    assert blind.await_count == 1
 
 
 def test_managers_never_pay_for_the_check():
-    blind = AsyncMock(return_value=_row())
+    # Not even when the check would fail: they never make it.
+    blind = AsyncMock(side_effect=RuntimeError("network"))
     with patch.object(db, "get_blind_inputs", new=blind), \
          patch.object(db, "get_messages_after", new=AsyncMock(return_value=[])):
         r = _client("owner").get("/api/conversations/c1/messages")
@@ -198,16 +234,121 @@ def test_managers_never_pay_for_the_check():
     blind.assert_not_awaited()
 
 
-def test_the_stream_waits_for_take():
+def _stream_client(role="sales") -> TestClient:
     from app.api import agent as agent_api
 
     app = FastAPI()
     app.include_router(agent_api.router, prefix="/api")
-    app.dependency_overrides[get_current_user] = lambda: _user("sales")
+    app.dependency_overrides[get_current_user] = lambda: _user(role)
+    return TestClient(app)
+
+
+def test_the_stream_waits_for_take():
     with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
          patch.object(db, "get_blind_inputs", new=AsyncMock(return_value=_row())):
-        r = TestClient(app).get("/api/agent/stream/c1")
+        r = _stream_client().get("/api/agent/stream/c1")
     assert r.status_code == 403
+
+
+def test_the_stream_fails_closed_at_the_door_too():
+    with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
+         patch.object(db, "get_blind_inputs", new=AsyncMock(side_effect=RuntimeError("network"))):
+        r = _stream_client().get("/api/agent/stream/c1")
+    assert r.status_code == 503
+
+
+# ── an open stream ────────────────────────────────────────────────────
+
+THEIRS = _row(assigned_agent_id=OTHER, status="active", mode="human")   # a colleague has it: readable
+M1 = {"id": "m1", "role": "user", "content": "Boston to Dubai, two of us"}
+M2 = {"id": "m2", "role": "ai", "content": "Great, which dates?"}
+
+
+def _frame(e: dict) -> str:
+    import json
+    return f"data: {json.dumps(e)}\n\n"
+
+
+def _drive(user: dict, seen: AsyncMock, events: list, recheck: float = 0.0):
+    """Open the panel stream with `events` already waiting in its queue and
+    return every frame it sent, plus the release of its subscription."""
+    import asyncio
+    from app.api import agent as agent_api
+    from app.realtime.manager import manager
+
+    async def go():
+        q: asyncio.Queue = asyncio.Queue()
+        for e in events:
+            q.put_nowait(e)
+        request = MagicMock()
+        request.is_disconnected = AsyncMock(side_effect=[False] * len(events) + [True])
+        with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
+             patch.object(db, "get_blind_inputs", new=seen), \
+             patch.object(agent_api, "_STREAM_RECHECK_SECONDS", recheck), \
+             patch.object(manager, "connect", new=AsyncMock(return_value=q)), \
+             patch.object(manager, "disconnect") as release:
+            res = await agent_api.agent_stream("c1", request, user=user)
+            frames = [chunk async for chunk in res.body_iterator]
+        return frames, release
+
+    return asyncio.run(go())
+
+
+def test_a_chat_that_starts_waiting_stops_reaching_an_agent_who_isnt_on_it():
+    # Opened while a colleague had it; the colleague let it go back to the line.
+    seen = AsyncMock(side_effect=[THEIRS, _row()])
+    before = conv_api.BLIND_HEALTH["streams_closed"]
+    frames, release = _drive(_user("sales"), seen, [M1, M2])
+    assert frames == [_frame({"event": "blind"})], "the panel is told, and nothing else goes out"
+    assert "dubai" not in "".join(frames).lower()
+    assert conv_api.BLIND_HEALTH["streams_closed"] == before + 1
+    release.assert_called_once()
+
+
+def test_a_stream_the_agent_may_still_read_carries_every_event():
+    seen = AsyncMock(return_value=THEIRS)
+    frames, release = _drive(_user("sales"), seen, [M1, M2])
+    assert frames == [_frame(M1), _frame(M2)]
+    assert seen.await_count == 3, "the door, then before each event"
+    release.assert_called_once()
+
+
+def test_a_re_check_that_cant_be_made_closes_the_stream():
+    seen = AsyncMock(side_effect=[THEIRS, RuntimeError("network")])
+    before = conv_api.BLIND_HEALTH["check_failed"]
+    frames, release = _drive(_user("sales"), seen, [M1])
+    assert frames == [], "fail closed, without a word: the panel reconnects and is asked at the door"
+    assert conv_api.BLIND_HEALTH["check_failed"] == before + 1
+    release.assert_called_once()
+
+
+def test_the_agents_own_chat_is_not_re_read_mid_stream():
+    seen = AsyncMock(return_value=_row(assigned_agent_id=ME, status="active", mode="human"))
+    frames, _ = _drive(_user("sales"), seen, [M1, M2, M1])
+    assert len(frames) == 3
+    assert seen.await_count == 1, "answered from memory"
+
+
+def test_a_managers_stream_is_never_re_checked():
+    seen = AsyncMock(return_value=_row())
+    frames, _ = _drive(_user("owner"), seen, [M1])
+    assert frames == [_frame(M1)]
+    seen.assert_not_awaited()
+
+
+def test_the_re_check_waits_its_interval():
+    # Within the interval events go out without asking: the bound on how
+    # stale "may still read it" gets is the interval, and it is pinned here.
+    seen = AsyncMock(side_effect=[THEIRS, _row()])
+    frames, _ = _drive(_user("sales"), seen, [M1], recheck=10.0)
+    assert frames == [_frame(M1)]
+    assert seen.await_count == 1
+
+
+def test_health_shows_the_blind_take_counters():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "app" / "api" / "health.py").read_text()
+    assert src.count('"blind_take": dict(BLIND_HEALTH),') == 2, "both the light and the full payload"
 
 
 # ── the read behind the check ─────────────────────────────────────────
@@ -261,9 +402,20 @@ def test_without_the_queue_column_the_check_still_reads():
     assert "queued_at" not in q.selects[1]
 
 
-def test_a_broken_read_is_none_and_logged(caplog):
+def test_a_broken_read_raises_and_is_logged(caplog):
+    # Never None: None means "no such chat", which the guard lets through.
     q = _Q(fail_first=RuntimeError("network"))
     with patch.object(db, "_queued_at_column_available", return_value=True), \
          patch.object(db, "_is_missing_column_error", return_value=False):
-        assert _run(q) is None
+        with pytest.raises(RuntimeError):
+            _run(q)
     assert any("get_blind_inputs" in r.message for r in caplog.records)
+
+
+def test_a_missing_chat_reads_as_none():
+    class _Empty(_Q):
+        def execute(self):
+            return MagicMock(data=[])
+
+    with patch.object(db, "_queued_at_column_available", return_value=True):
+        assert _run(_Empty()) is None
