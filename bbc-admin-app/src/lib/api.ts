@@ -37,8 +37,13 @@ import type {
   LeadsResponse,
   Message,
   NotificationsResponse,
-  Task,
-  TasksResponse,
+  TaskKind,
+  TasksViewResponse,
+  TaskDetail,
+  NewTaskBody,
+  TaskPatchBody,
+  TaskRules,
+  TaskTry,
   UserAccessAuditItem,
   AgentSseEvent,
   AgentDay,
@@ -695,45 +700,56 @@ export function getNotifications() {
   return apiFetch<NotificationsResponse>('/api/notifications')
 }
 
-// ── Tasks ──────────────────────────────────────────────
-export function getTasks() {
-  return apiFetch<TasksResponse>('/api/tasks')
+// ── Tasks: follow-ups ───────────────────────────────────
+export function getTasksView(params: { view?: string; kind?: TaskKind | null; conversationId?: string } = {}) {
+  const qs = new URLSearchParams()
+  if (params.view) qs.set('view', params.view)
+  if (params.kind) qs.set('kind', params.kind)
+  if (params.conversationId) qs.set('conversation_id', params.conversationId)
+  const q = qs.toString()
+  return apiFetch<TasksViewResponse>(`/api/tasks${q ? `?${q}` : ''}`)
 }
 
-export function createTask(data: {
-  title: string
-  description?: string
-  status: string
-  label: string
-  priority: string
-  assignee_id?: string
-  due_date?: string
-}) {
-  return apiFetch<{ success: boolean; data: Task }>('/api/tasks', {
+export function getTaskDetail(id: string) {
+  return apiFetch<{ success: boolean; data: TaskDetail }>(`/api/tasks/${encodeURIComponent(id)}`)
+}
+
+export function createTask(body: NewTaskBody) {
+  return apiFetch<{ success: boolean; data: { id: string } }>('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(body),
   })
 }
 
-export function updateTask(id: string, data: Partial<{
-  title: string
-  description: string
-  status: string
-  label: string
-  priority: string
-  assignee_id: string
-  due_date: string
-}>) {
-  return apiFetch<{ success: boolean; data: Task }>(`/api/tasks/${encodeURIComponent(id)}`, {
+export function updateTask(id: string, body: TaskPatchBody) {
+  return apiFetch<{ success: boolean; data: { id: string } }>(`/api/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(body),
   })
 }
 
 export function deleteTask(id: string) {
-  return apiFetch<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
+  return apiFetch<{ success: boolean }>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function getTaskRules() {
+  return apiFetch<{ success: boolean; data: TaskRules }>('/api/tasks/rules')
+}
+
+export function saveTaskRules(patch: Partial<TaskRules>) {
+  return apiFetch<{ success: boolean; data: TaskRules }>('/api/tasks/rules', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
+export function tryTaskSentence(sentence: string) {
+  return apiFetch<{ success: boolean; data: TaskTry }>('/api/tasks/rules/try', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sentence }),
   })
 }

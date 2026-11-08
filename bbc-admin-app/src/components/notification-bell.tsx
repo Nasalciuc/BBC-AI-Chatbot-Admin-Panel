@@ -11,28 +11,30 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { getNotifications } from '@/lib/api'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
-import type { StaleConversation, AssignedTask } from '@/lib/types'
+import type { StaleConversation, TaskAlertRow } from '@/lib/types'
+import { dueMain, localZone } from '@/features/tasks/view'
 
 export function NotificationBell() {
   const navigate = useNavigate()
   const dormant = usePanelModeStore((s) => s.dormant)
 
-  const { data } = useQuery({
+  const { data, dataUpdatedAt } = useQuery({
     queryKey: ['notifications'],
     queryFn: getNotifications,
     refetchInterval: dormant ? false : 30_000,
   })
 
   const stale: StaleConversation[] = data?.stale_conversations ?? []
-  const tasks: AssignedTask[] = data?.assigned_tasks ?? []
+  // Your tasks that are late or due today; for a supervisor, teammates' 30 min late.
+  const tasks: TaskAlertRow[] = [...(data?.tasks?.mine ?? []), ...(data?.tasks?.team_late ?? [])]
   const count = stale.length + tasks.length
 
   const handleGoToChat = (convId: string) => {
     navigate({ to: '/chats', search: { highlight: convId } })
   }
 
-  const handleGoToTasks = () => {
-    navigate({ to: '/tasks' })
+  const handleGoToTask = (id: string) => {
+    navigate({ to: '/tasks', search: { task: id } as never })
   }
 
   return (
@@ -91,25 +93,25 @@ export function NotificationBell() {
         {/* Separator between sections */}
         {stale.length > 0 && tasks.length > 0 && <DropdownMenuSeparator />}
 
-        {/* Assigned tasks */}
+        {/* Tasks: late or due today */}
         {tasks.length > 0 && (
-          <DropdownMenuLabel className='text-xs text-muted-foreground'>
-            Assigned Tasks
+          <DropdownMenuLabel className='text-xs text-k-6b6b6b'>
+            Tasks
           </DropdownMenuLabel>
         )}
         {tasks.map((task) => (
           <DropdownMenuItem
             key={task.id}
             className='flex items-start gap-3 p-3 cursor-pointer'
-            onClick={handleGoToTasks}
+            onClick={() => handleGoToTask(task.id)}
           >
-            <ClipboardList className='h-4 w-4 text-k-1f5fb0 mt-0.5 shrink-0' />
+            <ClipboardList className={`h-4 w-4 mt-0.5 shrink-0 ${task.state === 'late' ? 'text-k-b3261e' : 'text-k-1f5fb0'}`} />
             <div className='min-w-0'>
-              <p className='text-sm font-medium truncate'>
-                TASK-{String(task.task_number ?? 0).padStart(4, '0')}
-              </p>
+              <p className='text-sm font-medium truncate'>{task.title}</p>
               <p className='text-xs text-k-6b6b6b truncate'>
-                {task.title} — {task.priority}
+                {task.state === 'late' ? 'Late · ' : 'Due '}
+                {task.due_at ? dueMain({ due_at: task.due_at, due_kind: 'picked' }, dataUpdatedAt, localZone()) : ''}
+                {task.assignee_name ? ` · ${task.assignee_name}` : ''}
               </p>
             </div>
           </DropdownMenuItem>

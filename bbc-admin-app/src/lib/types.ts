@@ -518,43 +518,198 @@ export interface StaleConversation {
   tunnel: 'sales' | 'support'
 }
 
-export interface AssignedTask {
-  id: string
-  task_number: number | null
-  title: string
-  priority: string
-  status: string
-  created_at: string
-}
-
 export interface NotificationsResponse {
   success: boolean
   stale_conversations: StaleConversation[]
-  assigned_tasks: AssignedTask[]
+  tasks: TaskAlerts
   count: number
 }
 
-// ── Tasks ──────────────────────────────────────────────
-export interface Task {
+// ── Tasks: follow-ups (migration 051) ──────────────────
+export type TaskKind = 'call' | 'email' | 'todo'
+export type TaskSource = 'caught' | 'client_asked' | 'added' | 'dashboard'
+/** Late, due today (business zone), later; done for the week's list. */
+export type TaskState = 'late' | 'today' | 'later' | 'done'
+/** How the due time was decided. */
+export type TaskDueKind = 'said' | 'default' | 'end_of_day' | 'picked' | 'day'
+
+export interface TaskRow {
   id: string
-  task_number: number | null
+  number: number | null
   title: string
-  description: string | null
-  status: 'todo' | 'in progress' | 'done' | 'canceled' | 'backlog'
-  label: 'bug' | 'feature' | 'documentation'
-  priority: 'low' | 'medium' | 'high' | 'critical'
+  kind: TaskKind
+  kind_label: string
+  source: TaskSource
+  source_label: string
+  /** The sentence from the chat (masked contacts for a supervisor), or the Dashboard line. */
+  quote: string | null
+  conversation_id: string | null
+  /** The chat message it was caught from (an agent's promise, a client's "call me"). */
+  message_id: string | null
+  lead_id: string | null
+  chat_number: number | null
+  client: string | null
+  route: string | null
+  departure_date: string | null
+  passengers: number | null
+  children_count: number | null
+  infant_count: number | null
+  /** The trip's departure city and its zone: our guess at where the client is. */
+  client_city: string | null
+  client_zone: string | null
+  due_at: string | null
+  due_kind: TaskDueKind
+  state: TaskState
   assignee_id: string | null
   assignee_name: string | null
-  created_by: string | null
-  due_date: string | null
-  created_at: string
-  updated_at: string
+  unowned_reason: 'ai_only' | 'left_shift' | null
+  unowned_from_name: string | null
+  unowned_at: string | null
+  created_by_name: string | null
+  /** The client's latest message after the task was made. */
+  client_wrote_at: string | null
+  created_at: string | null
+  done_at: string | null
+  done_by_name: string | null
 }
 
-export interface TasksResponse {
+export interface TaskPerson {
+  id: string
+  name: string
+  role: string | null
+}
+
+export interface TasksView {
+  tasks: TaskRow[]
+  done: TaskRow[]
+  counts: { late: number; today: number; later: number; unowned: number }
+  /** Of the tasks due since Monday (up to now), how many were done by their time. */
+  on_time: { on_time: number; due: number }
+  time_zone: string
+  day_end: string
+  now: string
+  view: 'mine' | 'team' | 'unowned' | 'all'
+  unowned_open: number | null
+  has_team: boolean
+  can: { assign: boolean; rules: boolean }
+  people: TaskPerson[]
+}
+
+export interface TasksViewResponse {
   success: boolean
-  data: Task[]
+  data: TasksView
   count: number
+}
+
+export interface TaskExcerptLine {
+  id: string | null
+  role: string
+  who: string
+  at: string | null
+  text: string | null
+  /** The message the task was caught from. */
+  source: boolean
+  /** A client message after the task was made. */
+  after: boolean
+}
+
+export interface TaskHistoryLine {
+  at: string | null
+  kind: string
+  text: string
+}
+
+export interface TaskDetail extends TaskRow {
+  contact: { email: string | null; phone: string | null }
+  crm: { in_crm: boolean; crm_lead_id: string | null; has_lead: boolean }
+  excerpt: TaskExcerptLine[]
+  history: TaskHistoryLine[]
+  can: { assign: boolean; edit: boolean; not_a_promise: boolean; delete: boolean }
+  time_zone: string
+}
+
+export type TaskDefaultDue = '1h' | '2h' | 'end_of_day' | 'next_morning'
+
+export interface TaskRules {
+  catch_promises: boolean
+  default_due: TaskDefaultDue
+  time_zone: string
+  day_start: string
+  day_end: string
+  leave_shift: 'unowned' | 'ready'
+  phrases: string[]
+  last_7_days?: { caught: number; not_a_promise: number }
+  /** Minutes after leaving the panel when someone counts as Not ready. */
+  left_after_minutes?: number
+}
+
+export interface TaskTry {
+  makes_task: boolean
+  reason?: string
+  kind?: TaskKind
+  kind_label?: string
+  phrase?: string
+  due_at?: string
+  due_kind?: TaskDueKind
+  due_words?: string
+}
+
+export interface TaskAlertRow {
+  id: string
+  title: string
+  kind: TaskKind
+  due_at: string | null
+  state: TaskState
+  conversation_id: string | null
+  client: string | null
+  route: string | null
+  assignee_name: string | null
+}
+
+/** The tasks part of /api/notifications: menu count, CRM dock band, reminders. */
+export interface TaskAlerts {
+  set_up: boolean
+  failed?: boolean
+  /** The business zone the times are written in (absent when the tasks part failed). */
+  time_zone?: string
+  mine: TaskAlertRow[]
+  team_late: TaskAlertRow[]
+  /** team_late: every late task a supervisor or manager sees, Unowned too (older APIs: absent). */
+  counts: { late: number; today: number; unowned: number; team_late?: number }
+}
+
+/** What an agent's reply made, in the send response ("Follow-up caught"). */
+export interface FollowUpCaught {
+  id: string
+  title: string
+  kind: TaskKind
+  due_at: string | null
+  due_kind: TaskDueKind
+  message_id: string | null
+}
+
+export interface NewTaskBody {
+  kind: TaskKind
+  title: string
+  due_at?: string | null
+  due_kind?: 'picked' | 'day'
+  assignee_id?: string | null
+  unowned?: boolean
+  conversation_id?: string | null
+  lead_id?: string | null
+  source?: 'added' | 'dashboard'
+  note?: string | null
+}
+
+export interface TaskPatchBody {
+  due_at?: string
+  due_kind?: 'picked' | 'day'
+  assignee_id?: string
+  unowned?: boolean
+  title?: string
+  kind?: TaskKind
+  done?: boolean
+  not_a_promise?: boolean
 }
 
 export interface UserOption {

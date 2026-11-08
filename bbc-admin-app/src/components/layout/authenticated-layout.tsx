@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Outlet, useNavigate } from '@tanstack/react-router'
 import { useHeartbeat } from '@/hooks/use-heartbeat'
+import { useTaskReminders } from '@/features/tasks/use-task-alerts'
 import { useReadyStore } from '@/stores/ready-store'
 import { getCookie } from '@/lib/cookies'
 import { requestNotifyPermission } from '@/lib/notify-assignment'
@@ -27,6 +28,8 @@ type AuthenticatedLayoutProps = {
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const viewingConversationId = useReadyStore((s) => s.viewingConversationId)
   useHeartbeat(undefined, viewingConversationId)
+  // Task reminders: 15 min before, at the due time, and 30 min late for supervisors.
+  useTaskReminders()
 
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)

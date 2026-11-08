@@ -183,6 +183,39 @@ export function playQueueChime(): void {
   }
 }
 
+/**
+ * A task reminder (Tasks): one sound and one browser notification, the way
+ * the person set alerts in Settings → Alerts. Never loops and never flashes
+ * the tab: a reminder isn't a client waiting.
+ */
+export function notifyTaskReminder(title: string, body: string, tag: string): void {
+  const prefs = readAlertPrefs()
+  if ((prefs.ring || prefs.beep) && prefs.volume > 0) {
+    try {
+      if (prefs.sound === 'classic') {
+        const a = new Audio('/notification.wav')
+        a.volume = 0.7 * (prefs.volume / 100)
+        a.play().catch(() => _playFallbackBeep(prefs.volume / 100))
+      } else {
+        _playNotes(prefs.sound, prefs.volume / 100)
+      }
+    } catch {
+      /* no audio: the notification and the menu count still show it */
+    }
+  }
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification(title, { body, tag: `bbc-task-${tag}` })
+      n.onclick = () => {
+        window.focus()
+        n.close()
+      }
+    } catch {
+      /* notifications blocked in this context */
+    }
+  }
+}
+
 export function stopAssignmentAlerts(): void {
   _alertsActive = false
   if (_ringAudio) {
