@@ -15,9 +15,12 @@ import {
   overDeadlineText,
   overviewHeadline,
   qualityHeadline,
+  phoneNote,
   rangeText,
+  scopeText,
   secondsText,
   sitesText,
+  TABS_FOR,
   sortAgents,
   sourceSentence,
   zoneText,
@@ -64,6 +67,7 @@ function dash(over: Partial<OwnerDashboard> = {}): OwnerDashboard {
       { kind: 'agent', level: 'urgent', user_id: 'rohan', name: 'Rohan Mehta', went_back: 6, chats: 11, first_reply_s: 74, ready_hours: 36 },
       { kind: 'hour', level: 'check', hour: 14, went_back: 4, given: 8, ready_people: 4 },
     ],
+    scope: { tunnel: 'all', team_scoped_links: false },
     ...over,
   }
 }
@@ -169,4 +173,17 @@ test('agents sort worst first', () => {
   assert.deepEqual(sortAgents(rows, 'went_back').map((r) => r.user_id), ['ana', 'rohan', 'victor'])
   assert.deepEqual(sortAgents(rows, 'ready_hours').map((r) => r.user_id), ['ana', 'victor', 'rohan'])
   assert.deepEqual(sortAgents(rows, 'first_reply_median_s').map((r) => r.user_id), ['rohan', 'ana', 'victor'])
+})
+
+test('each role gets its tabs and its scope line', () => {
+  assert.deepEqual(TABS_FOR.owner, ['overview', 'conversion', 'agents', 'quality'])
+  assert.deepEqual(TABS_FOR.team, ['overview', 'agents'])
+  assert.deepEqual(TABS_FOR.qa, ['quality', 'conversion', 'agents'])
+  assert.equal(scopeText(dash(), 'owner'), 'Buy Business Class and Business Class Tickets · all chats')
+  assert.equal(scopeText(dash({ scope: { tunnel: 'sales', team_scoped_links: true } }), 'team'), 'All sales chats')
+  assert.equal(scopeText(dash({ scope: { tunnel: 'all', team_scoped_links: true } }), 'team'), 'All chats')
+  assert.equal(scopeText(dash(), 'qa'), 'All chats')
+  assert.equal(phoneNote('owner'), 'Conversion, Agents and Quality open on a computer.')
+  assert.equal(phoneNote('team'), 'Agents opens on a computer.')
+  assert.equal(phoneNote('qa'), 'Conversion and Agents open on a computer.')
 })

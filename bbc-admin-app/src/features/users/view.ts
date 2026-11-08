@@ -135,9 +135,12 @@ export const CAPABILITIES: Capability[] = [
   row('Give a chat to someone else', ['n', 'n', 'y', 'n', 'n', 'y', 'y', 'y']),
   row('Block a visitor', ['n', 'n', 'y', 'y', 'n', 'y', 'y', 'y']),
   row('See a visitor’s phone and e-mail', ['y', 'y', 'n', 'y', 'y', 'y', 'y', 'y']),
-  row('See leads', ['n', 'n', 'Their team', 'n', 'y', 'y', 'n', 'y']),
+  // Supervisors: the API lists leads frozen to their team, but a lead is made
+  // before anyone takes the chat, so none carries a team (0 of 3,232, Nov
+  // 2026). They read the lead next to the chat in To read instead.
+  row('See leads', ['n', 'n', 'With the chat', 'n', 'y', 'y', 'n', 'y']),
   row('Send a lead to the CRM', ['Their chats', 'n', 'n', 'n', 'n', 'y', 'y', 'y']),
-  row('Review leads', ['n', 'n', 'Their team', 'n', 'y', 'y', 'n', 'y'], 'QA check'),
+  row('Review leads', ['n', 'n', 'n', 'n', 'y', 'y', 'n', 'y'], 'QA check'),
   row('Knowledge base', ['Read', 'Read', 'n', 'n', 'Read', 'Edit', 'Edit', 'Edit']),
   row('Team: live view and shifts', ['n', 'n', 'Their team', 'Their teams', 'n', 'y', 'y', 'y']),
   row('Build teams and move people', ['n', 'n', 'n', 'Their teams', 'n', 'y', 'y', 'y']),

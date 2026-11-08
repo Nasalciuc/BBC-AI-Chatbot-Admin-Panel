@@ -15,7 +15,46 @@ export const TAB_TEXT: Record<LeadsView, string> = {
   not_in_crm:
     'Leads with a phone that the CRM doesn’t have: refused by its check, never sent, or in a chat closed without sending. Closing a chat doesn’t send it.',
   to_review: 'Ready leads nobody has reviewed yet, oldest first. A review is saved on the lead.',
+  reviewed: 'Leads someone has reviewed, with the notes saved on the lead.',
   all: 'Every lead the chat collected. The level is what the client told the assistant and confirmed, not how likely they are to buy.',
+}
+
+/** The Leads page per role: QA reads and reviews; the owner checks the CRM. */
+export function leadsTabsFor(role: string): LeadsView[] {
+  return role === 'qa' ? ['to_review', 'reviewed', 'not_in_crm', 'all'] : ['not_in_crm', 'to_review', 'all']
+}
+
+export const TAB_LABEL: Record<LeadsView, string> = {
+  not_in_crm: 'Not in the CRM',
+  to_review: 'To review',
+  reviewed: 'Reviewed',
+  all: 'All',
+}
+
+/** QA's three cards above To review and Reviewed. */
+export function reviewCards(r: NonNullable<LeadsViewResponse['review']>): { n: number; text: string }[] {
+  return [
+    { n: r.to_review, text: 'left to review' },
+    { n: r.reviewed_today_by_me, text: 'reviewed by you today' },
+    { n: r.ai_only_to_review, text: r.ai_only_to_review === 1 ? 'of them was only with the AI' : 'of them were only with the AI' },
+  ]
+}
+
+/** "11 of 12 · To review" over the panel's arrows. */
+export function navText(index: number, total: number, view: LeadsView): string {
+  return `${index + 1} of ${total} · ${TAB_LABEL[view]}`
+}
+
+/** Who reviewed it, as the reviewer reads it. */
+export function reviewerText(
+  r: Pick<LeadRow, 'reviewed_by_qa' | 'reviewed_by' | 'reviewed_at'>,
+  meId: string | undefined,
+  names: Record<string, string>,
+): string {
+  if (!r.reviewed_by_qa) return 'Not reviewed yet.'
+  const who = r.reviewed_by && r.reviewed_by === meId ? 'you' : r.reviewed_by ? names[r.reviewed_by] : undefined
+  const when = r.reviewed_at ? ` on ${dayMonth(r.reviewed_at.slice(0, 10))}` : ''
+  return `Reviewed${who ? ` by ${who}` : ''}${when}.`
 }
 
 export type Tone = 'ok' | 'ink' | 'warn' | 'bad' | 'muted'

@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Lead, LeadRow } from '../src/lib/types.ts'
-import { ageText, checklist, crmLine, historyOf, leadsCsv, missingText, summaryCards, tripLine } from '../src/features/leads/view.ts'
+import { ageText, checklist, crmLine, historyOf, leadsCsv, leadsTabsFor, missingText, navText, reviewCards, reviewerText, summaryCards, tripLine } from '../src/features/leads/view.ts'
 import { confirmedOf, levelOf, missingForReady } from '../src/features/chats/view.ts'
 
 const NOW = Date.parse('2026-11-06T12:00:00Z')
@@ -91,4 +91,23 @@ test('the chat panel’s level follows the client’s YES, not the score', () =>
   assert.equal(confirmedOf({ metadata: { confirmed_at: '2026-11-06T10:00:00Z' } }), true)
   assert.equal(confirmedOf({ metadata: {} }), false)
   assert.equal(confirmedOf(null), undefined)
+})
+
+test('QA reads Leads as a reviewer', () => {
+  assert.deepEqual(leadsTabsFor('qa'), ['to_review', 'reviewed', 'not_in_crm', 'all'])
+  assert.deepEqual(leadsTabsFor('owner'), ['not_in_crm', 'to_review', 'all'])
+  assert.deepEqual(reviewCards({ to_review: 12, reviewed_today_by_me: 2, ai_only_to_review: 3 }).map((c) => `${c.n} ${c.text}`), [
+    '12 left to review', '2 reviewed by you today', '3 of them were only with the AI',
+  ])
+  assert.equal(reviewCards({ to_review: 1, reviewed_today_by_me: 0, ai_only_to_review: 1 })[2].text, 'of them was only with the AI')
+  assert.equal(navText(10, 12, 'to_review'), '11 of 12 · To review')
+})
+
+test('who reviewed it, as the reviewer reads it', () => {
+  const names = { 'qa-2': 'Elena Vasile' }
+  assert.equal(reviewerText(row({ reviewed_by_qa: false }), 'qa-1', names), 'Not reviewed yet.')
+  assert.equal(reviewerText(row({ reviewed_by_qa: true, reviewed_by: 'qa-1', reviewed_at: '2026-11-06T10:00:00Z' }), 'qa-1', names), 'Reviewed by you on 6 Nov.')
+  assert.equal(reviewerText(row({ reviewed_by_qa: true, reviewed_by: 'qa-2', reviewed_at: '2026-11-05T10:00:00Z' }), 'qa-1', names), 'Reviewed by Elena Vasile on 5 Nov.')
+  // QA can't list users: someone else's review still reads, without a name.
+  assert.equal(reviewerText(row({ reviewed_by_qa: true, reviewed_by: 'qa-3', reviewed_at: null }), 'qa-1', {}), 'Reviewed.')
 })

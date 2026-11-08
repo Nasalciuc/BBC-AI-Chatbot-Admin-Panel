@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, MessageSquare } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
 import { toast } from 'sonner'
 import { type ApiError, getConversation, getEarlierLeads, getLeadFull, pushLeadToCrm, reviewLead, setLeadCrmId } from '@/lib/api'
 import type { LeadRow, Lead } from '@/lib/types'
@@ -18,7 +18,7 @@ import {
   tripRows,
   whereRows,
 } from '@/features/chats/view'
-import { LEVELS, TONE_DOT, TONE_TEXT, ageText, chatWithText, checklist, crmLine, historyOf, missingText } from '../view'
+import { LEVELS, TONE_DOT, TONE_TEXT, ageText, chatWithText, checklist, crmLine, historyOf, missingText, reviewerText } from '../view'
 
 const h3 = 'm-0 text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'
 const btn = 'h-9 rounded-full px-4 text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-k-6ea8ff disabled:opacity-60'
@@ -53,6 +53,9 @@ export function LeadPanel({
   canLookUp,
   userNames,
   nowMs,
+  meId,
+  nav,
+  reviewFirst = false,
 }: {
   row: LeadRow | null
   onClose: () => void
@@ -63,13 +66,26 @@ export function LeadPanel({
   canLookUp: boolean
   userNames: Record<string, string>
   nowMs: number
+  meId?: string
+  /** "11 of 12 · To review" and the arrows: QA goes from one lead to the next. */
+  nav?: { text: string; prev?: () => void; next?: () => void }
+  /** QA: the review comes first, and under the conversation when reading it. */
+  reviewFirst?: boolean
 }) {
   const qc = useQueryClient()
   const [wide, setWide] = useState(false)
   const [reading, setReading] = useState(false)
   const [manual, setManual] = useState('')
+  const [notes, setNotes] = useState(row?.qa_notes ?? '')
+  const [shownId, setShownId] = useState(row?.id)
   const open = !!row
   const id = row?.id ?? ''
+  // Another lead: its own notes, and back to the lead (not its chat).
+  if (row?.id !== shownId) {
+    setShownId(row?.id)
+    setNotes(row?.qa_notes ?? '')
+    setReading(false)
+  }
 
   const full = useQuery({ queryKey: ['lead', id], queryFn: () => getLeadFull(id), enabled: open })
   const conv = useQuery({
@@ -106,11 +122,18 @@ export function LeadPanel({
     onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.'),
   })
   const review = useMutation({
-    mutationFn: (v: boolean) => reviewLead(id, v),
+    mutationFn: (v: { reviewed: boolean; notes?: string; next?: boolean }) => reviewLead(id, v.reviewed, v.notes),
     onSuccess: (_r, v) => {
-      toast.success(v ? 'Marked as reviewed.' : 'Review cleared.')
-      onPatched({ reviewed_by_qa: v, reviewed_at: v ? new Date().toISOString() : null })
+      toast.success(!v.reviewed ? 'Review cleared.' : v.next ? 'Reviewed. Here’s the next one.' : 'Reviewed.')
+      const patch: Partial<LeadRow> = {
+        reviewed_by_qa: v.reviewed,
+        reviewed_at: v.reviewed ? new Date().toISOString() : null,
+        reviewed_by: v.reviewed ? (meId ?? null) : null,
+      }
+      if (v.notes !== undefined) patch.qa_notes = v.notes
       refresh()
+      if (v.next && nav?.next) nav.next()
+      else onPatched(patch)
     },
     onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the review. Try again.'),
   })
@@ -126,9 +149,73 @@ export function LeadPanel({
   const crm = crmLine(row)
   const chatWith = chatWithText(row)
   const messages = conv.data?.messages ?? []
-  const reviewer = row.reviewed_by ? userNames[row.reviewed_by] : null
+  const reviewer = row.reviewed_by ? (row.reviewed_by === meId ? 'you' : userNames[row.reviewed_by]) : null
+  const notesChanged = notes.trim() !== (row.qa_notes ?? '').trim()
   const sending = push.isPending
   const canPushNow = canSend && row.crm_state !== 'in_crm' && row.crm_state !== 'no_phone'
+
+  const reviewBlock = (
+  <section
+    aria-label='QA review'
+    className={cn('flex flex-col gap-2', canReview && !row.reviewed_by_qa && 'rounded-[18px] p-4 ring-2 ring-kl-202020')}
+  >
+    <h3 className={cn(h3, 'flex items-center justify-between gap-2')}>
+      <span>QA review</span>
+      <span className='font-normal tracking-normal normal-case'>{reviewerText(row, meId, userNames)}</span>
+    </h3>
+    {canReview ? (
+      <>
+        <label className='flex flex-col gap-1.5 text-sm font-bold text-k-202020'>
+          Notes
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={4}
+            maxLength={2000}
+            placeholder='What went well, what to fix'
+            className='rounded-xl border border-k-d9d9d9 bg-k-ffffff px-3 py-2.5 text-sm font-normal text-k-202020 placeholder:text-k-8a8a8a focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
+          />
+        </label>
+        <div className='flex flex-wrap items-center gap-2'>
+          {!row.reviewed_by_qa ? (
+            <button
+              type='button'
+              disabled={review.isPending}
+              onClick={() => review.mutate({ reviewed: true, notes: notes.trim(), next: !!nav?.next })}
+              className={cn(btn, 'h-11 bg-kb-202020 px-5 text-sm text-on-btn')}
+            >
+              {nav?.next ? 'Mark reviewed and next' : 'Mark reviewed'}
+            </button>
+          ) : (
+            <>
+              <button
+                type='button'
+                disabled={review.isPending || !notesChanged}
+                onClick={() => review.mutate({ reviewed: true, notes: notes.trim() })}
+                className={cn(btn, 'bg-kb-202020 text-on-btn')}
+              >
+                Save the notes
+              </button>
+              <button
+                type='button'
+                disabled={review.isPending}
+                onClick={() => review.mutate({ reviewed: false })}
+                className={cn(btn, 'border border-kl-202020 text-k-202020')}
+              >
+                Clear the review
+              </button>
+            </>
+          )}
+        </div>
+        <p className='m-0 text-xs text-k-6b6b6b'>
+          Saved on the lead with your name and the time{row.reviewed_by_qa ? '; saving the notes again makes the review yours' : ''}.
+        </p>
+      </>
+    ) : (
+      row.qa_notes && <p className='m-0 text-sm whitespace-pre-wrap text-k-202020'>{row.qa_notes}</p>
+    )}
+  </section>
+  )
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -136,6 +223,29 @@ export function LeadPanel({
         className={cn('w-full gap-0 overflow-y-auto bg-k-ffffff p-0 sm:max-w-none [&>button]:z-20', wide ? 'sm:w-[760px]' : 'sm:w-[500px]')}
       >
         <div className='sticky top-0 z-10 flex flex-col gap-3 border-b border-k-ececec bg-k-ffffff px-6 pt-5 pb-4'>
+          {nav && (
+            <div className='flex items-center justify-end gap-2 pe-8 text-[13px] text-k-555555'>
+              <span>{nav.text}</span>
+              <button
+                type='button'
+                aria-label='Previous lead'
+                disabled={!nav.prev}
+                onClick={nav.prev}
+                className='flex size-9 items-center justify-center rounded-full border border-k-d9d9d9 text-k-202020 disabled:opacity-40'
+              >
+                <ChevronLeft className='size-4' />
+              </button>
+              <button
+                type='button'
+                aria-label='Next lead'
+                disabled={!nav.next}
+                onClick={nav.next}
+                className='flex size-9 items-center justify-center rounded-full border border-k-d9d9d9 text-k-202020 disabled:opacity-40'
+              >
+                <ChevronRight className='size-4' />
+              </button>
+            </div>
+          )}
           <div className='flex items-start gap-3 pe-8'>
             <span aria-hidden='true' className='flex size-[52px] flex-none items-center justify-center rounded-full bg-k-e6f0fb text-lg font-bold text-k-1f5fb0'>
               {initials(row.visitor_name)}
@@ -202,9 +312,11 @@ export function LeadPanel({
                 </div>
               ))
             )}
+            {canReview && <div className='mt-4'>{reviewBlock}</div>}
           </section>
         ) : (
           <div className='flex flex-col gap-6 px-6 py-5'>
+            {reviewFirst && reviewBlock}
             <section aria-label='Trip' className='flex flex-col gap-2'>
               <h3 className={h3}>Trip</h3>
               <div>
@@ -358,24 +470,7 @@ export function LeadPanel({
               </section>
             )}
 
-            <section aria-label='QA review' className='flex flex-col gap-2'>
-              <h3 className={h3}>QA review</h3>
-              <p className='m-0 text-sm text-k-202020'>
-                {row.reviewed_by_qa
-                  ? `Reviewed${reviewer ? ` by ${reviewer}` : ''}${row.reviewed_at ? ` on ${dayMonth(row.reviewed_at.slice(0, 10))}` : ''}.`
-                  : 'Not reviewed yet.'}
-              </p>
-              {canReview && (
-                <button
-                  type='button'
-                  disabled={review.isPending}
-                  onClick={() => review.mutate(!row.reviewed_by_qa)}
-                  className={cn(btn, 'self-start border border-kl-202020 text-k-202020')}
-                >
-                  {row.reviewed_by_qa ? 'Clear the review' : 'Mark as reviewed'}
-                </button>
-              )}
-            </section>
+            {!reviewFirst && reviewBlock}
 
             <section aria-label='History' className='flex flex-col gap-2 pb-4'>
               <h3 className={h3}>History</h3>

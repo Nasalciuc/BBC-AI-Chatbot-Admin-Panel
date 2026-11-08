@@ -97,7 +97,18 @@ export function Headline({ text }: { text: string }) {
 }
 
 /** "Open": the chats a number points at, each one a link to Conversations. */
-export function OpenChats({ chats, label = 'Open', count }: { chats: ChatRef[]; label?: string; count?: number }) {
+export function OpenChats({
+  chats,
+  label = 'Open',
+  count,
+  teamOnly = false,
+}: {
+  chats: ChatRef[]
+  label?: string
+  count?: number
+  /** The list keeps only the viewer's own teams' chats (supervisor, PM). */
+  teamOnly?: boolean
+}) {
   if (!chats.length) return null
   return (
     <Popover>
@@ -108,7 +119,11 @@ export function OpenChats({ chats, label = 'Open', count }: { chats: ChatRef[]; 
       </PopoverTrigger>
       <PopoverContent align='end' className='w-72 rounded-2xl p-2'>
         <p className='px-2 pt-1 pb-2 text-xs text-k-6b6b6b'>
-          {count && count > chats.length ? `The ${chats.length} newest of ${count}.` : `${chats.length} ${chats.length === 1 ? 'chat' : 'chats'}.`}{' '}
+          {teamOnly
+            ? `${chats.length} of ${count ?? chats.length} ${(count ?? chats.length) === 1 ? 'is' : 'are'} your team’s; only those open for you.`
+            : count && count > chats.length
+              ? `The ${chats.length} newest of ${count}.`
+              : `${chats.length} ${chats.length === 1 ? 'chat' : 'chats'}.`}{' '}
           Opens in Conversations.
         </p>
         <ul className='m-0 flex max-h-72 list-none flex-col overflow-y-auto p-0'>

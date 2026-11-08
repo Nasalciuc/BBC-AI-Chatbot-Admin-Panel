@@ -24,6 +24,10 @@ import type {
   LeadsOrder,
   LeadsView,
   LeadsViewResponse,
+  PersonDay,
+  Reading,
+  TeamNow,
+  ToReadList,
   OwnerDashboard,
   PanelUser,
   KBCategory,
@@ -152,6 +156,58 @@ export async function getOwnerDashboard(days: 1 | 7 | 30): Promise<OwnerDashboar
   const offset = -new Date().getTimezoneOffset()
   const res = await apiFetch<{ success: boolean; data: OwnerDashboard }>(
     `/api/dashboard/owner?days=${days}&tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** Supervisor, PM and QA: the same dashboard cut to their role (their
+ *  tunnel, no AI cost, no sources; supervisors' names masked). */
+export async function getTeamDashboard(days: 1 | 7 | 30): Promise<OwnerDashboard> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: OwnerDashboard }>(
+    `/api/dashboard/team?days=${days}&tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** To read: this week's lost chats and last week's sample. */
+export async function getToRead(): Promise<ToReadList> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: ToReadList }>(
+    `/api/conversations/to-read?tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** One chat for reading: messages with senders, what happened, the rules it broke. */
+export async function getReading(conversationId: string): Promise<Reading> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: Reading }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/reading?tz_offset_minutes=${offset}`,
+    {},
+    20_000,
+  )
+  return res.data
+}
+
+/** Team · Now: the floor right now. */
+export async function getTeamNow(): Promise<TeamNow> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: TeamNow }>(`/api/admin/team/now?tz_offset_minutes=${offset}`, {}, 20_000)
+  return res.data
+}
+
+/** One person's day, for the panel on Team. */
+export async function getPersonDay(userId: string): Promise<PersonDay> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: PersonDay }>(
+    `/api/admin/team/people/${encodeURIComponent(userId)}/today?tz_offset_minutes=${offset}`,
     {},
     20_000,
   )
@@ -307,7 +363,8 @@ export function getLeadsView(params: {
   limit?: number
   offset?: number
 }): Promise<LeadsViewResponse> {
-  const qs = new URLSearchParams()
+  // "Reviewed by you today" is the viewer's own day.
+  const qs = new URLSearchParams({ tz_offset_minutes: String(-new Date().getTimezoneOffset()) })
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== '' && v !== null) qs.set(k, String(v))
   }

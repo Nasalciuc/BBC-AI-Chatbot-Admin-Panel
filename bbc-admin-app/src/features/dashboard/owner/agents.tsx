@@ -40,7 +40,7 @@ function ReplyDelta({ now, before }: { now: number | null; before: number | null
   )
 }
 
-function ByAgent({ d, help }: { d: OwnerDashboard; help: Set<string> }) {
+function ByAgent({ d, help, canSeeTeam }: { d: OwnerDashboard; help: Set<string>; canSeeTeam: boolean }) {
   const [sort, setSort] = useState<AgentSortKey>('chats')
   const rows = useMemo(() => sortAgents(d.agents.by_agent as (AgentRow & Record<AgentSortKey, number | null>)[], sort), [d.agents.by_agent, sort])
   return (
@@ -49,9 +49,11 @@ function ByAgent({ d, help }: { d: OwnerDashboard; help: Set<string> }) {
       title='By agent'
       hint='Click a column to sort, worst first.'
       right={
-        <Link to='/teams' className={linkCls}>
-          Who is Ready right now: Team
-        </Link>
+        canSeeTeam ? (
+          <Link to='/teams' className={linkCls}>
+            Who is Ready right now: Team
+          </Link>
+        ) : undefined
       }
     >
       {rows.length === 0 ? (
@@ -103,10 +105,15 @@ function ByAgent({ d, help }: { d: OwnerDashboard; help: Set<string> }) {
                     <td className={cn('px-2.5 py-2.5 text-right text-sm', a.after_yes ? 'text-k-c27a00' : 'text-k-6b6b6b')}>{a.after_yes}</td>
                     <td className={cn('px-2.5 py-2.5 text-right text-sm', a.never_wrote ? 'text-k-b3261e' : 'text-k-6b6b6b')}>{a.never_wrote}</td>
                     <td className='px-2.5 py-2.5 text-right text-sm font-bold text-k-202020'>
-                      {a.not_in_crm > 0 ? (
-                        <OpenChats chats={a.not_in_crm_conversations} count={a.not_in_crm} label={String(a.not_in_crm)} />
+                      {a.not_in_crm > 0 && a.not_in_crm_conversations.length > 0 ? (
+                        <OpenChats
+                          chats={a.not_in_crm_conversations}
+                          count={a.not_in_crm}
+                          label={String(a.not_in_crm)}
+                          teamOnly={d.scope?.team_scoped_links}
+                        />
                       ) : (
-                        0
+                        a.not_in_crm
                       )}
                     </td>
                   </tr>
@@ -125,7 +132,16 @@ function ByAgent({ d, help }: { d: OwnerDashboard; help: Set<string> }) {
   )
 }
 
-export function Agents({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['action']['to']) => void }) {
+export function Agents({
+  d,
+  go,
+  canSeeTeam = true,
+}: {
+  d: OwnerDashboard
+  go: (to: AttentionView['action']['to']) => void
+  /** The "Team" link: everyone but QA. */
+  canSeeTeam?: boolean
+}) {
   const a = d.agents.now
   // Already on Agents: the agent's line points at their row in the table.
   const items = d.attention
@@ -175,7 +191,7 @@ export function Agents({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['a
           </p>
         )}
       </Panel>
-      <ByAgent d={d} help={help} />
+      <ByAgent d={d} help={help} canSeeTeam={canSeeTeam} />
     </div>
   )
 }

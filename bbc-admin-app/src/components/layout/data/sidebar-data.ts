@@ -9,6 +9,7 @@ import {
   Users,
 } from 'lucide-react'
 import type { Permissions, UserRole } from '@/lib/bbc/types'
+import { canSeeTeam } from '@/features/teams/view'
 import { type SidebarData } from '../types'
 
 export type NavKey =
@@ -39,7 +40,7 @@ export function isOperatorRole(role: string | undefined): boolean {
  *   - agents: Conversations, Dashboard (Your day) | Knowledge | Settings
  *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant | Settings
  *   - QA: Conversations, Dashboard, Leads | Assistant | Settings
- *   - supervisor / PM: Conversations, Dashboard | Team (PM) | Settings
+ *   - supervisor / PM: Conversations, Dashboard | Team | Settings
  * Tasks reaches agents with the Tasks feature; Assistant (the knowledge base
  * editor) is the existing page, not redesigned yet.
  */
@@ -59,7 +60,7 @@ export function getNavGroups(
       : []),
   ]
   const g2: PanelNavItem[] = [
-    ...(permissions.canManageTeams
+    ...(canSeeTeam(role)
       ? [{ key: 'team' as const, title: 'Team', url: '/teams', icon: Users }]
       : []),
     ...(permissions.canViewUsers

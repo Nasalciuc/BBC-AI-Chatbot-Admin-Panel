@@ -340,7 +340,8 @@ export interface OwnerDashboard {
     time_to_ready_median_s: number | null
   }
   leave: { total: number; total_before: number; rows: LeaveRow[] }
-  sources: Record<SourceTab, SourceRow[]>
+  /** null for supervisor, PM and QA: marketing sources are the owner's. */
+  sources: Record<SourceTab, SourceRow[]> | null
   source_spellings: string[]
   agents: {
     now: AgentBlock
@@ -360,6 +361,7 @@ export interface OwnerDashboard {
     sent_to_phone: number
     sent_to_phone_conversations: ChatRef[]
     ai_review: AiReviewRow[]
+    /** null for supervisor, PM and QA: the AI's cost and answers are the owner's. */
     ai: {
       cost: number
       cost_per_ready: number | null
@@ -367,15 +369,18 @@ export interface OwnerDashboard {
       template_answers: number
       latency_median_ms: number | null
       latency_line_ms: number
-    }
+    } | null
     crm: CrmBreakdown
   }
   attention: AttentionItem[]
+  /** Whose chats these are. team_scoped_links: the chat links keep only the
+   *  viewer's own teams' chats (the ones Conversations opens for them). */
+  scope: { tunnel: 'all' | 'sales' | 'support'; team_scoped_links: boolean }
 }
 
 // ── Leads page (GET /api/leads?view=…) ────────────────────────
 export type LeadLevel = 'ready' | 'almost' | 'early' | 'contact'
-export type LeadsView = 'not_in_crm' | 'to_review' | 'all'
+export type LeadsView = 'not_in_crm' | 'to_review' | 'reviewed' | 'all'
 export type LeadsOrder = 'newest' | 'oldest' | 'closest'
 export type LeadCrmState =
   | 'in_crm' | 'no_phone' | 'refused' | 'open' | 'closed_by_agent' | 'ready_never_sent' | 'never_sent'
@@ -412,6 +417,8 @@ export interface LeadRow {
   reviewed_by_qa: boolean | null
   reviewed_at: string | null
   reviewed_by: string | null
+  /** QA's notes, saved with the review. */
+  qa_notes?: string | null
   visitor_name: string | null
   visitor_email: string | null
   visitor_phone: string | null
@@ -443,6 +450,8 @@ export interface LeadsViewResponse {
     never_sent: number
     refused: Record<string, number>
   }
+  /** QA's cards, on To review and Reviewed. */
+  review?: { to_review: number; reviewed_today_by_me: number; ai_only_to_review: number }
 }
 
 export interface EarlierLead {
@@ -635,4 +644,183 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
     if (ev === undefined) return r as unknown as SseMessageRow
   }
   return null
+}
+
+// ── To read (GET /api/conversations/to-read, /conversations/{id}/reading) ──
+export type LostReason = 'back' | 'anyone' | 'never' | 'yes'
+
+export interface ToReadRow {
+  id: string
+  chat_number: number | null
+  kind: 'lost' | 'sample' | 'help'
+  at: string
+  /** "Olga V.", or the masked name for a supervisor. */
+  client: string
+  agent_id: string | null
+  agent_name: string | null
+  route: string | null
+  status: string | null
+  reasons: { key: LostReason; at: string; user_id: string | null; name: string | null }[]
+}
+
+export interface ToReadList {
+  week_start: string
+  sample_week: { start: string; end: string }
+  lost: ToReadRow[]
+  sample: ToReadRow[]
+  people: { id: string; name: string | null }[]
+  no_team: boolean
+}
+
+export interface ReadingEvent {
+  at: string
+  kind: 'started' | 'taken' | 'first_reply' | 'went_back' | 'closed' | 'not_ready' | 'ended'
+  user_id?: string | null
+  name?: string | null
+  seconds?: number
+}
+
+export interface Reading {
+  id: string
+  chat_number: number | null
+  client: string
+  status: string | null
+  tunnel: string | null
+  created_at: string | null
+  closed_at: string | null
+  person: { user_id: string; name: string | null } | null
+  messages: { id: string | null; role: 'user' | 'ai' | 'agent' | 'system'; at: string; text: string | null; user_id: string | null; name: string | null }[]
+  events: ReadingEvent[]
+  reasons: ToReadRow['reasons']
+  lead: {
+    id: string | null
+    route: string | null
+    origin_code: string | null
+    destination_code: string | null
+    departure_date: string | null
+    return_date: string | null
+    passengers: number | null
+    trip_type: string | null
+    cabin_class: string | null
+    level: LeadLevel
+    crm_state: LeadCrmState
+    crm_lead_id: string | null
+    crm_push_gate_reason: string | null
+    phone: string | null
+    email: string | null
+  } | null
+  week: { user_id: string; name: string | null; chats: number; went_back: number; since: string } | null
+}
+
+// ── Team · Now (GET /api/admin/team/now, /admin/team/people/{id}/today) ──
+export type FloorPresence = 'ready' | 'no_signal' | 'online' | 'offline'
+
+export interface FloorChat {
+  id: string
+  chat_number: number | null
+  tunnel: 'sales' | 'support' | string | null
+  client: string
+  route: string | null
+  messages: number | null
+  preview: string | null
+  since: string | null
+}
+
+export interface FloorPerson {
+  id: string
+  name: string | null
+  role: string
+  tunnel: 'sales' | 'support' | null
+  team_id: string | null
+  team_name: string | null
+  presence: FloorPresence
+  ready_since: string | null
+  last_seen_at: string | null
+  chats_now: number
+  took_today: number
+  first_reply_today_s: number | null
+  went_back_today: number
+}
+
+export type FloorAttention =
+  | { kind: 'client_waiting'; level: 'urgent'; user_id: string; name: string | null; conversation_id: string; client: string; chat_number: number | null; minutes: number }
+  | { kind: 'no_signal'; level: 'check'; user_id: string; name: string | null; minutes: number | null; off_after_minutes: number }
+  | { kind: 'queue_wait'; level: 'check'; tunnel: string; conversation_id: string; client: string; chat_number: number | null; minutes: number; ready: number; ready_chats: number[] }
+  | { kind: 'coverage'; level: 'check'; tunnel: string; user_id: string; name: string | null; since: string | null }
+  | { kind: 'went_back'; level: 'info'; user_id: string; name: string | null; at: string; conversation_id: string; presence: FloorPresence | null; last_seen_at: string | null }
+
+/** A team on Teams & shifts, with today's numbers and Ready per hour. */
+export interface TeamCard {
+  id: string
+  name: string | null
+  shift_start: string | null
+  shift_end: string | null
+  supervisor_name: string | null
+  pm_name: string | null
+  members: { id: string; name: string | null }[]
+  ready_now: number
+  won_today: number
+  back_today: number
+  /** 24 hours of the viewer's day: how many were Ready; null = not yet. */
+  coverage: (number | null)[]
+}
+
+export interface TeamNow {
+  no_team: boolean
+  now: string
+  day_start?: string
+  stats?: {
+    ready: number
+    no_signal: number
+    online: number
+    waiting: number
+    oldest_waiting: { client: string; since: string } | null
+    first_reply_today_s: number | null
+    replies_today: number
+    back_today: number
+  }
+  attention?: FloorAttention[]
+  queue?: (FloorChat & { asked_for_person: boolean })[]
+  with_person?: (FloorChat & { agent_id: string; agent_name: string | null; client_waiting: boolean })[]
+  ai_only?: { count: number; chats: FloorChat[] }
+  people?: FloorPerson[]
+  teams?: TeamCard[]
+  windows?: { queue_s: number; ready_off_s: number }
+  can_give?: boolean
+}
+
+export interface PersonDay {
+  user: {
+    id: string
+    name: string | null
+    email: string | null
+    role: string
+    tunnel: 'sales' | 'support' | null
+    is_active: boolean | null
+    team: { id: string; name: string | null; shift_start: string | null; shift_end: string | null } | null
+    presence: FloorPresence
+    ready_since: string | null
+    last_seen_at: string | null
+  }
+  today: {
+    chats_now: number
+    took: number
+    first_reply_median_s: number | null
+    replied_to: number
+    went_back: number
+    takes_lost: number
+    minutes_online: number
+    first_seen_at: string | null
+  }
+  ready_today: [string, string | null][]
+  week_online: { date: string; minutes_online: number }[]
+  activity: {
+    at: string
+    kind: 'ready' | 'not_ready' | 'took' | 'replied' | 'went_back' | 'closed' | 'take_lost' | 'client_waiting'
+    conversation_id?: string
+    client?: string
+    seconds?: number
+    live?: boolean
+  }[]
+  day_start: string
 }

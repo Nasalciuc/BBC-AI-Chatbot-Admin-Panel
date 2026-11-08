@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { getOwnerDashboard } from '@/lib/api'
+import { getOwnerDashboard, getTeamDashboard } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
@@ -12,24 +12,17 @@ import { Agents } from './agents'
 import { Conversion } from './conversion'
 import { Overview } from './overview'
 import { Quality } from './quality'
-import { rangeText, sitesText, type Range } from './view'
+import { TAB_LABEL, TABS_FOR, phoneNote, rangeText, scopeText, type DashTab as Tab, type DashVariant, type Range } from './view'
 
-type Tab = 'overview' | 'conversion' | 'agents' | 'quality'
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'conversion', label: 'Conversion' },
-  { key: 'agents', label: 'Agents' },
-  { key: 'quality', label: 'Quality' },
-]
 const RANGES: { days: Range; label: string }[] = [
   { days: 1, label: 'Today' },
   { days: 7, label: '7 days' },
   { days: 30, label: '30 days' },
 ]
 
-function initialTab(): Tab {
+function initialTab(tabs: Tab[]): Tab {
   const t = new URLSearchParams(window.location.search).get('tab')
-  return TABS.some((x) => x.key === t) ? (t as Tab) : 'overview'
+  return tabs.includes(t as Tab) ? (t as Tab) : tabs[0]
 }
 
 function localToday(): string {
@@ -38,41 +31,50 @@ function localToday(): string {
 }
 
 /**
- * The owner's Dashboard: the whole business, read-only. Owner, admin, dev.
- * Every number comes from GET /api/dashboard/owner; every sentence from
- * ./view.ts. On a phone only the Overview is shown.
+ * The Dashboard, read-only, per role:
+ *   owner (owner, admin, dev) — the whole business, GET /api/dashboard/owner;
+ *   team (supervisor, project manager) — their tunnel, Overview and Agents;
+ *   qa — all chats, Quality first, no AI cost and no sources.
+ * The team and QA numbers come from GET /api/dashboard/team. Every sentence
+ * comes from ./view.ts. On a phone only the first tab is shown.
  */
-export function OwnerDashboard() {
+export function OwnerDashboard({ variant = 'owner' }: { variant?: DashVariant }) {
   const dormant = usePanelModeStore((s) => s.dormant)
   const navigate = useNavigate()
   const isMobile = useIsMobile()
+  const tabs = TABS_FOR[variant]
   const [range, setRange] = useState<Range>(7)
-  const [tab, setTab] = useState<Tab>(initialTab)
+  const [tab, setTab] = useState<Tab>(() => initialTab(tabs))
   const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
     const t = setInterval(() => setNowMs(Date.now()), 30_000)
     return () => clearInterval(t)
   }, [])
 
-  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
-    queryKey: ['owner-dashboard', range],
-    queryFn: () => getOwnerDashboard(range),
+  const { data: raw, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
+    queryKey: ['owner-dashboard', variant, range],
+    queryFn: () => (variant === 'owner' ? getOwnerDashboard(range) : getTeamDashboard(range)),
     refetchInterval: dormant ? false : 60_000,
   })
+  // A supervisor's page is about agents: the review queue is QA's.
+  const data =
+    raw && variant === 'team' ? { ...raw, attention: raw.attention.filter((a) => a.kind === 'agent' || a.kind === 'hour') } : raw
 
   const go = (to: string) => {
     if (to === 'review') {
       navigate({ to: '/leads', search: { view: 'to_review' } as never })
       return
     }
-    const next: Tab = to === 'agents' || to === 'hour' || to === 'agent-table' ? 'agents' : to === 'quality' ? 'quality' : to === 'conversion' ? 'conversion' : 'overview'
+    const want: Tab = to === 'agents' || to === 'hour' || to === 'agent-table' ? 'agents' : to === 'quality' ? 'quality' : to === 'conversion' ? 'conversion' : 'overview'
+    const next = tabs.includes(want) ? want : tabs[0]
     setTab(next)
-    if (to === 'hour') setTimeout(() => document.getElementById('by-hour')?.scrollIntoView({ behavior: 'smooth' }), 50)
+    const anchor = to === 'hour' ? 'by-hour' : to === 'agent-table' ? 'by-agent' : null
+    if (anchor) setTimeout(() => document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth' }), 50)
     else window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const updated = dataUpdatedAt ? Math.max(0, Math.floor((nowMs - dataUpdatedAt) / 60_000)) : null
-  const shownTab: Tab = isMobile ? 'overview' : tab
+  const shownTab: Tab = isMobile ? tabs[0] : tabs.includes(tab) ? tab : tabs[0]
 
   return (
     <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
@@ -81,11 +83,13 @@ export function OwnerDashboard() {
         subtitle={
           data ? (
             <>
-              {sitesText(data.sites)} · all chats · {rangeText(data)}
+              {scopeText(data, variant)} · {rangeText(data)}
               {updated !== null && ` · updated ${updated < 1 ? 'just now' : `${minutesLabel(updated)} ago`}`}
             </>
-          ) : (
+          ) : variant === 'owner' ? (
             'All chats'
+          ) : (
+            ''
           )
         }
         actions={
@@ -114,19 +118,19 @@ export function OwnerDashboard() {
 
       {!isMobile && (
         <div role='tablist' aria-label='Dashboard' className='flex gap-1 overflow-x-auto border-b border-k-ececec'>
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
-              key={t.key}
+              key={t}
               type='button'
               role='tab'
-              aria-selected={tab === t.key}
-              onClick={() => setTab(t.key)}
+              aria-selected={shownTab === t}
+              onClick={() => setTab(t)}
               className={cn(
                 '-mb-px h-11 border-b-2 px-3.5 text-[15px] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
-                tab === t.key ? 'border-k-202020 font-bold text-k-202020' : 'border-transparent text-k-555555 hover:text-k-202020'
+                shownTab === t ? 'border-k-202020 font-bold text-k-202020' : 'border-transparent text-k-555555 hover:text-k-202020'
               )}
             >
-              {t.label}
+              {TAB_LABEL[t]}
             </button>
           ))}
         </div>
@@ -153,15 +157,15 @@ export function OwnerDashboard() {
       ) : shownTab === 'conversion' ? (
         <Conversion d={data} />
       ) : shownTab === 'agents' ? (
-        <Agents d={data} go={go} />
+        <Agents d={data} go={go} canSeeTeam={variant !== 'qa'} />
       ) : shownTab === 'quality' ? (
-        <Quality d={data} go={go} />
+        <Quality d={data} go={go} showCrm={variant === 'owner'} />
       ) : (
-        <Overview d={data} go={go} today={localToday()} />
+        <Overview d={data} go={go} today={localToday()} team={variant === 'team'} />
       )}
 
-      {isMobile && data && (
-        <p className='m-0 rounded-2xl bg-k-f2f2f2 px-4 py-3 text-[13px] text-k-555555'>Conversion, Agents and Quality open on a computer.</p>
+      {isMobile && data && phoneNote(variant) && (
+        <p className='m-0 rounded-2xl bg-k-f2f2f2 px-4 py-3 text-[13px] text-k-555555'>{phoneNote(variant)}</p>
       )}
     </main>
   )
