@@ -12,7 +12,7 @@ so they are not listed. Pure: the rows are already read.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import timedelta
+from datetime import timedelta, timezone
 from typing import Any, Optional
 
 from app.services.agent_day import parse_ts
@@ -39,7 +39,8 @@ def build_access_log(
         if not at:
             return
         events.append({
-            "at": at.isoformat(), "kind": kind,
+            # In UTC, so the text sorts in time order whatever offset the row came with.
+            "at": at.astimezone(timezone.utc).isoformat(), "kind": kind,
             "actor_id": actor, "actor_name": _name(users, actor),
             "target_id": target, "target_name": _name(users, target),
             **extra,

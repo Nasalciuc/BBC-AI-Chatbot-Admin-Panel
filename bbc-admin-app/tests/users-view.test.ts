@@ -40,6 +40,26 @@ test('status: active, invite pending or expired, deactivated', () => {
   assert.equal(statusOf(user({ last_seen_at: null, invite: null }), NOW).label, 'Not signed in yet')
 })
 
+test('a used invite with no sign-in since is not an expired invite', () => {
+  const used = (expires: number) =>
+    statusOf(user({ last_seen_at: null, invite: { expires_at: new Date(expires).toISOString(), used_at: new Date(NOW - 50 * H).toISOString(), sent_at: null, sent_by: null } }), NOW)
+  // The password is set; "Invite expired · send a new one" would be wrong either way.
+  assert.equal(used(NOW - 2 * H).key, 'never')
+  assert.equal(used(NOW + 2 * H).key, 'never')
+  assert.equal(used(NOW - 2 * H).label, 'Not signed in yet')
+})
+
+test('the person panel starts clean for each person and says when the log failed', async () => {
+  const { readFileSync } = await import('node:fs')
+  const panel = readFileSync(new URL('../src/features/users/components/person-panel.tsx', import.meta.url), 'utf8')
+  // A role picked (not saved) for one person is never offered for the next one.
+  assert.match(panel, /if \(\(user\?\.id \?\? null\) !== shownId\) \{\s*setShownId\(user\?\.id \?\? null\)\s*setPendingRole\(null\)\s*setGiveTo\(''\)\s*setConfirmOff\(false\)/)
+  // The changes to someone's access are shown to the people who can read them, and a failed read says so.
+  assert.match(panel, /\{canManage && \(\s*<section aria-label='Changes to their access'/)
+  assert.match(panel, /logFailed && log === undefined \?/)
+  assert.match(panel, /None among the latest \$\{logLimit\} changes/)
+})
+
 test('last active reads like a person would say it', () => {
   assert.equal(lastActive(new Date(NOW - 3 * 60_000).toISOString(), NOW, 'UTC'), 'Now')
   assert.equal(lastActive(new Date(NOW - 20 * 60_000).toISOString(), NOW, 'UTC'), '20 min ago')

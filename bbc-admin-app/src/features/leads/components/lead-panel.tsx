@@ -18,7 +18,7 @@ import {
   tripRows,
   whereRows,
 } from '@/features/chats/view'
-import { LEVELS, TONE_DOT, TONE_TEXT, ageText, chatWithText, checklist, crmLine, historyOf, missingText, reviewerText } from '../view'
+import { LEVELS, TONE_DOT, TONE_TEXT, agoText, chatWithText, checklist, crmLine, historyOf, missingText, reviewerText } from '../view'
 
 const h3 = 'm-0 text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'
 const btn = 'h-9 rounded-full px-4 text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-k-6ea8ff disabled:opacity-60'
@@ -256,7 +256,7 @@ export function LeadPanel({
                 <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-bold', level.chipCls)}>{level.name}</span>
                 {row.chat_number && <span>chat #{row.chat_number}</span>}
                 <span>· {chatWith.ai ? 'only the AI' : `chat with ${chatWith.text}`}</span>
-                <span>· {ageText(row.created_at, nowMs)} ago</span>
+                <span>· {agoText(row.created_at, nowMs)}</span>
               </SheetDescription>
             </div>
             <button

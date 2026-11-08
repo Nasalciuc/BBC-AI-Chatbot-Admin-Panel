@@ -151,6 +151,7 @@ async def _list_leads_view(
     built = build_leads_view(
         rows, view=view, names=names, search=search, level=level, with_=chat_with,
         order=order, limit=limit, offset=offset, viewer_id=user.get("id"), day_start=day_start,
+        masked=role == "supervisor",
     )
     page = built["rows"]
     if role == "supervisor":
