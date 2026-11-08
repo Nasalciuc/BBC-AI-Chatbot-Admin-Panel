@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, ArrowUp, Clock, Info, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
@@ -34,7 +34,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { readDraft, writeDraft } from '@/lib/chat-drafts'
+import { draftId, readDraft, writeDraft } from '@/lib/chat-drafts'
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
 import { DetailsPanel } from './components/details-panel'
@@ -106,14 +106,20 @@ export default function ConversationDetail({
   const [blockDialogOpen, setBlockDialogOpen] = useState(false)
   const [blocking, setBlocking] = useState(false)
   const [blockResult, setBlockResult] = useState<string | null>(null)
-  // Each chat keeps its own draft (lib/chat-drafts.ts): text typed for one client
-  // never follows you into another chat, and survives a sign-in.
-  const [input, setInput]             = useState(() => readDraft(conversationId))
+  // Each chat keeps its own draft, per person (lib/chat-drafts.ts): text typed
+  // for one client never follows you into another chat, survives your sign-in,
+  // and is never shown to someone else signing in on this tab.
+  const myId = me?.accountNo
+  const [input, setInput]             = useState(() => readDraft(draftId(myId, conversationId)))
   const [draftOf, setDraftOf]         = useState(conversationId)
   if (draftOf !== conversationId) {
     setDraftOf(conversationId)
-    setInput(readDraft(conversationId))
+    setInput(readDraft(draftId(myId, conversationId)))
   }
+  // The chat on screen now, for a send that finishes after you moved on.
+  // Layout effect: set as the new chat lands on screen, not a frame later.
+  const openChatRef = useRef(conversationId)
+  useLayoutEffect(() => { openChatRef.current = conversationId }, [conversationId])
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
   const [taking, setTaking] = useState(false)
@@ -348,20 +354,26 @@ export default function ConversationDetail({
   }, [conversationId])
 
   useEffect(() => {
-    writeDraft(conversationId, input)
-  }, [conversationId, input])
+    writeDraft(draftId(myId, conversationId), input)
+  }, [myId, conversationId, input])
 
   const handleSend = async () => {
     if (!input.trim() || sending) return
+    // The chat this reply is for: you may open another before it's sent.
+    const sentFor = conversationId
     setSending(true)
     lastTypingSentRef.current = 0
-    clearAgentTyping(conversationId).catch(() => {})
+    clearAgentTyping(sentFor).catch(() => {})
     try {
-      await sendAgentMessage(conversationId, input.trim())
-      setInput('')
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['messages-incremental', conversationId] })
-      // A promise in the reply ("I'll send you three options within the hour") is now a task.
+      await sendAgentMessage(sentFor, input.trim())
+      // Sent: that chat's draft goes; the composer empties only if it still
+      // shows that chat (another chat's draft stays as it is).
+      writeDraft(draftId(myId, sentFor), '')
+      if (openChatRef.current === sentFor) setInput('')
+      queryClient.invalidateQueries({ queryKey: ['conversation', sentFor] })
+      queryClient.invalidateQueries({ queryKey: ['messages-incremental', sentFor] })
+      // A promise in the reply ("I'll send you three options within the hour") is
+      // now a task. chatTasks is this render's: it refreshes that chat's tasks.
       chatTasks.refresh()
     } catch (_err) {
       // The trust-critical path: a reply to a LIVE customer must never

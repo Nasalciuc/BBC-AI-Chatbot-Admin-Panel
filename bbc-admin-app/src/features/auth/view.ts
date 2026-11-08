@@ -145,6 +145,21 @@ export function crmProblem(status: number | null, detail: string | null = null):
   return { kind, ...words[kind] }
 }
 
+/**
+ * Where to go after signing in: the redirect resolved against this site, kept
+ * only when it stays on it (path, query and hash). "//evil.com" and
+ * "/\evil.com" resolve to another site and give null, like a bad URL.
+ */
+export function backAfterSignIn(redirect: string | undefined, origin: string): string | null {
+  if (!redirect) return null
+  try {
+    const u = new URL(redirect, origin)
+    return u.origin === origin ? `${u.pathname}${u.search}${u.hash}` : null
+  } catch {
+    return null
+  }
+}
+
 /** The e-mail inside a CRM sign-in token, to say who the CRM thinks you are.
  *  Read only for display: the server checks the signature. */
 export function crmEmail(token: string | null | undefined): string | null {

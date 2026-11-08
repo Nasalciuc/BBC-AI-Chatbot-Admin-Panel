@@ -207,7 +207,7 @@ test('the chat shows the caught line, the late banner only on your own chat, and
   const detail = src('features/chats/detail.tsx')
   assert.match(detail, /const task = chatTasks\.byMessage\.get\(msg\.id\)/)
   assert.match(detail, /\{canWrite && chatTasks\.lateMine && \(\s*<LateBanner/)
-  assert.match(detail, /await sendAgentMessage\(conversationId, input\.trim\(\)\)[\s\S]{0,400}chatTasks\.refresh\(\)/)
+  assert.match(detail, /await sendAgentMessage\(sentFor, input\.trim\(\)\)[\s\S]{0,700}chatTasks\.refresh\(\)/)
   // "Not a promise" only for a caught task, by its owner or a manager.
   assert.match(detail, /task\.source === 'caught' && \(task\.assignee_id === me\?\.accountNo \|\| isAdmin\)/)
   // The band sits over the list only inside the CRM dock (no menu there).

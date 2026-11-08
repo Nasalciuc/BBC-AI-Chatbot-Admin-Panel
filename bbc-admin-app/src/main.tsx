@@ -57,6 +57,9 @@ const queryClient = new QueryClient({
           // the same place — the same chat, whose draft is kept (lib/chat-drafts.ts).
           useAuthStore.getState().auth.reset()
           const loc = router.history.location
+          // Several queries fail together: the first 401 already went to
+          // sign-in with the way back; a later one mustn't replace it.
+          if (loc.pathname.startsWith('/sign-in')) return
           const redirect = backTo(loc.pathname, loc.href, useReadyStore.getState().viewingConversationId)
           router.navigate({ to: '/sign-in', search: { redirect, session: 'ended' } })
         }
