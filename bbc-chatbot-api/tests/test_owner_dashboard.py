@@ -179,7 +179,8 @@ def test_ready_hours_are_clipped_to_the_period():
         {"user_id": ROHAN, "is_ready": True, "changed_at": at(30)},
         {"user_id": ROHAN, "is_ready": False, "changed_at": at(20)},
         {"user_id": ROHAN, "is_ready": True, "changed_at": at(2)},
-        # A first row that says "not ready": they were Ready from the start of the read.
+        # A "not ready" with no "ready" before it in the read starts nothing:
+        # it is a repeated "not ready", not the end of a stretch.
         {"user_id": VICTOR, "is_ready": False, "changed_at": at(1)},
     ]
     spans = ready_intervals(rows, NOW - timedelta(hours=24), NOW)
