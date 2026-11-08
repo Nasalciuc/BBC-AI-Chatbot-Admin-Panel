@@ -12,6 +12,7 @@ import { useAttentionStore } from '@/stores/attention-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bridge'
+import { notifyName } from '@/lib/alert-prefs'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 
@@ -259,7 +260,15 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
         })
 
         if (needsAttention.size > 0) {
-          notifyAssignment()
+          // The notification names one chat: the newest arrival, else the
+          // first with a new message. First name and initial only.
+          const firstId = firstNewArrivalId ?? [...needsAttention][0]
+          const first = mine.find((c) => c.id === firstId)
+          notifyAssignment({
+            kind: firstNewArrivalId ? 'new' : 'message',
+            name: notifyName(first?.visitor_name, first?.chat_number),
+            seconds: useReadyStore.getState().responseDeadlineSeconds,
+          })
           // One toast per conversation per episode — the ring says "something
           // needs you", the toast says WHICH chat and takes you there.
           for (const id of needsAttention) {

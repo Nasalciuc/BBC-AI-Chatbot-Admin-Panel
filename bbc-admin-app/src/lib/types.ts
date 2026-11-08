@@ -824,3 +824,30 @@ export interface PersonDay {
   }[]
   day_start: string
 }
+
+// ── Settings › Profile: your access (GET /api/auth/me) ───────────────────
+export interface AccessTeam {
+  id: string | null
+  name: string | null
+  shift_name: string | null
+  /** "12:00:00" */
+  shift_start: string | null
+  shift_end: string | null
+  /** The supervisor's name only; null for teams you lead. */
+  supervisor_name: string | null
+}
+
+export interface MyAccess {
+  /** From the database now; the session may still carry an older one. */
+  role: string
+  tunnel_scope: string
+  is_active: boolean
+  chat_enabled: boolean
+  /** The queue and routing can give you a chat. */
+  receives_chats: boolean
+  team: AccessTeam | null
+  /** Supervisor or project manager: the teams you lead. */
+  leads_teams: AccessTeam[]
+  /** The role this session signed in with. */
+  session_role: string | null
+}

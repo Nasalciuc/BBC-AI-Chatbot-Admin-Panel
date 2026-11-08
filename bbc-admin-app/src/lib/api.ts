@@ -42,6 +42,7 @@ import type {
   UserAccessAuditItem,
   AgentSseEvent,
   AgentDay,
+  MyAccess,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -568,6 +569,13 @@ export async function updateSelf(payload: SelfUpdatePayload): Promise<SelfUpdate
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+/** Settings › Profile: your access as the database has it now (the
+ *  session keeps the role it signed in with until it expires). */
+export async function getMyAccess(): Promise<MyAccess> {
+  const res = await apiFetch<{ success: boolean; data: MyAccess }>('/api/auth/me')
+  return res.data
 }
 
 /** Upload a profile photo (multipart). Do NOT set Content-Type — browser sets boundary. */
