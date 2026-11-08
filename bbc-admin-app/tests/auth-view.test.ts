@@ -91,8 +91,12 @@ test('after signing in you go back where you were, only on this site', () => {
   assert.equal(backAfterSignIn('/chats?highlight=c1#m2', o), '/chats?highlight=c1#m2')
   assert.equal(backAfterSignIn('/leads', o), '/leads')
   assert.equal(backAfterSignIn(`${o}/tasks?task=t1`, o), '/tasks?task=t1')
+  // An encoded slash stays a path on this site.
+  assert.equal(backAfterSignIn('/%2F%2Fevil.com', o), '/%2F%2Fevil.com')
   // Anything that resolves to another site goes home instead.
-  for (const bad of ['//evil.com/x', '/\\evil.com', '/\t/evil.com', 'https://evil.com/', 'http://admin.example.com/', 'javascript:alert(1)']) {
+  for (const bad of ['//evil.com/x', '/\\evil.com', '/\t/evil.com', 'https://evil.com/', 'http://admin.example.com/', 'javascript:alert(1)',
+    // Same origin, but the path left would read as another site ("//evil.com").
+    `${o}//evil.com/x`, '/.//evil.com', '/a/..//evil.com']) {
     assert.equal(backAfterSignIn(bad, o), null, bad)
   }
   assert.equal(backAfterSignIn(undefined, o), null)
