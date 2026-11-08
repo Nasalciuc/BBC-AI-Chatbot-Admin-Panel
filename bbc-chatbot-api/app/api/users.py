@@ -103,6 +103,19 @@ async def list_users(
             role=role, search=search, limit=limit, offset=offset,
             team_ids=team_ids, include_self_id=include_self_id,
         )
+        if actor_role in PRIVILEGED:
+            # How each person signs in and where their invite stands. A failed
+            # read serves the list without it: the page then shows only
+            # active / deactivated / never signed in, which stays true.
+            try:
+                facts = await db.get_sign_in_facts([r.get("id") for r in rows])
+                for r in rows:
+                    f = facts.get(r.get("id"))
+                    if f:
+                        r["has_password"] = f["has_password"]
+                        r["invite"] = f["invite"]
+            except Exception as e:
+                logger.warning(f"list_users: sign-in facts unavailable: {e}")
         return {"success": True, "data": rows, "count": total}
     except Exception as e:
         logger.error(f"list_users error: {e}")
@@ -163,12 +176,15 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
 
     target_role = existing.get("role", "sales")
 
-    # Admin guardrails: cannot touch owner accounts or escalate to owner.
-    if actor_role == "admin":
+    # Only an owner changes owners: admin and dev cannot touch an owner
+    # account or make someone an owner (the Roles table says "Not owners").
+    if actor_role in ("admin", "dev"):
         if target_role == "owner":
-            raise HTTPException(403, "Admin cannot modify owner accounts")
+            raise HTTPException(403, "Only an owner can modify owner accounts")
         if payload.get("role") == "owner":
-            raise HTTPException(403, "Admin cannot assign owner role")
+            raise HTTPException(403, "Only an owner can assign the owner role")
+    if user_id == user.get("id") and "role" in payload and payload["role"] != target_role:
+        raise HTTPException(403, "Nobody can change their own role")
 
     result = await db.update_user(user_id, payload)
     if not result:
@@ -227,3 +243,43 @@ async def get_user_access_history(
         raise HTTPException(404, "User not found")
     rows = await db.get_user_access_audit(user_id, limit=limit)
     return {"success": True, "data": rows, "count": len(rows)}
+
+
+@router.get("/admin/access-log")
+async def get_access_log(
+    limit: int = Query(200, ge=1, le=500),
+    user: dict = Depends(get_current_user),
+):
+    """Every change to who can sign in and what they can do: invites, role
+    and tunnel changes, deactivations, "Receives chats" switches, manual
+    password resets. Profile edits and team moves aren't recorded anywhere."""
+    if user.get("role") not in PRIVILEGED:
+        raise HTTPException(status_code=403, detail="Only owner/admin can view the access log")
+    from app.services.access_log import build_access_log
+
+    try:
+        inputs = await db.get_access_log_inputs(limit)
+    except Exception as e:
+        logger.error(f"get_access_log read failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load the access log") from e
+    rows = build_access_log(limit=limit, **inputs)
+    return {"success": True, "data": rows, "count": len(rows)}
+
+
+@router.get("/admin/users/{user_id}/handover")
+async def get_user_handover(user_id: str, user: dict = Depends(get_current_user)):
+    """What deactivating this person touches: the chats open with them now,
+    the clients who would come back to them (sticky routing, 90 days) and
+    the leads from their chats."""
+    if user.get("role") not in PRIVILEGED:
+        raise HTTPException(status_code=403, detail="Only owner/admin can see this")
+    from datetime import datetime, timedelta, timezone
+    from app.services.routing import AFFINITY_WINDOW_DAYS
+
+    since = (datetime.now(timezone.utc) - timedelta(days=AFFINITY_WINDOW_DAYS)).isoformat()
+    try:
+        facts = await db.get_handover_facts(user_id, since)
+    except Exception as e:
+        logger.error(f"get_user_handover read failed for {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load what this person is handling") from e
+    return {"success": True, "data": {**facts, "window_days": AFFINITY_WINDOW_DAYS}, "count": 1}

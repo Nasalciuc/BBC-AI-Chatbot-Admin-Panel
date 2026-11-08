@@ -282,6 +282,11 @@ async def invite_user(req: InviteRequest, current_user: dict = Depends(get_curre
 
         raise HTTPException(409, "Email already in use by an active user")
 
+    # Only an owner makes an owner — the PATCH path already refuses it to
+    # admin and dev; an invite must not be the way around that.
+    if req.role == "owner" and current_user.get("role") != "owner":
+        raise HTTPException(403, "Only an owner can invite an owner")
+
     user = await db.create_user({
         "email": req.email.lower().strip(),
         "name": req.name,
