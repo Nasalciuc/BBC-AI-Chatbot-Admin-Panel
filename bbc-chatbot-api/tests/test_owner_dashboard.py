@@ -494,6 +494,21 @@ def test_supervisors_see_masked_first_names():
     assert names and all(n.startswith("•••") for n in names) and "•••ow" in names
 
 
+@pytest.fixture
+def at_fixture_time():
+    """The endpoint reads the real clock; these fixtures are dated NOW. Pin
+    the endpoint's clock to NOW, so the tests still mean the same thing in
+    CI's run 120 days ahead (tests/plugins/timetravel.py)."""
+
+    class _FixedNow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+    with patch("app.api.dashboard.datetime", _FixedNow):
+        yield
+
+
 def _team_client(role: str, tunnel_scope: str, uid: str = "sup-1") -> TestClient:
     from app.api.dashboard import router
 
@@ -508,7 +523,7 @@ def test_the_team_dashboard_is_for_supervisors_pms_and_qa(role):
     assert _team_client(role, "all").get("/api/dashboard/team?days=7").status_code == 403
 
 
-def test_a_sales_supervisor_reads_all_sales_chats_with_links_only_to_their_team():
+def test_a_sales_supervisor_reads_all_sales_chats_with_links_only_to_their_team(at_fixture_time):
     s = _two_tunnels()
     s["conversations"] = [
         {**c, "team_id": "team-sales"} if c["id"] == "slow" else c for c in s["conversations"]
@@ -526,7 +541,7 @@ def test_a_sales_supervisor_reads_all_sales_chats_with_links_only_to_their_team(
     assert all(x["first_name"].startswith("•••") for x in _refs(d))
 
 
-def test_a_supervisor_without_a_team_still_gets_the_numbers_but_no_links():
+def test_a_supervisor_without_a_team_still_gets_the_numbers_but_no_links(at_fixture_time):
     with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=_two_tunnels())), \
          patch("app.db.supabase.get_team_ids_for_supervisor", new=AsyncMock(return_value=[])):
         d = _team_client("supervisor", "sales").get("/api/dashboard/team?days=7").json()["data"]
@@ -534,7 +549,7 @@ def test_a_supervisor_without_a_team_still_gets_the_numbers_but_no_links():
     assert _refs(d) == []
 
 
-def test_qa_reads_every_chat_unmasked_and_without_cost():
+def test_qa_reads_every_chat_unmasked_and_without_cost(at_fixture_time):
     with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=_two_tunnels())):
         d = _team_client("qa", "all", uid="qa-1").get("/api/dashboard/team?days=7").json()["data"]
     assert d["scope"] == {"tunnel": "all", "team_scoped_links": False}
