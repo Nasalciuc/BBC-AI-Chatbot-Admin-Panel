@@ -1,222 +1,134 @@
 import { useState } from 'react'
-import { useNavigate, useSearch } from '@tanstack/react-router'
-import { z } from 'zod'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
-import { PasswordInput } from '@/components/password-input'
-import {
-  Form, FormControl, FormField, FormItem, FormLabel, FormMessage
-} from '@/components/ui/form'
-import { apiFetch } from '@/lib/api'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { ApiError, setPasswordFromInvite } from '@/lib/api'
+import { cn } from '@/lib/utils'
+import { AuthNote, AuthShell, AuthTitle, PasswordField } from '../shell'
+import { linkCls, primaryBtn } from '../styles'
+import { LINK_TEXT, linkProblem, passwordRules, type LinkProblem } from '../view'
 
-const formSchema = z.object({
-  password: z.string().min(8, 'Password must be at least 8 characters'),
-  confirm: z.string().min(8, 'Please confirm your password'),
-}).refine(data => data.password === data.confirm, {
-  message: "Passwords don't match",
-  path: ['confirm'],
-})
-
-type FormValues = z.infer<typeof formSchema>
-
-
-type InvalidCardProps = {
-  title: string
-  body: string
-  allowRequest: boolean
-  email: string
-  onEmailChange: (value: string) => void
-  onRequest: () => void
-  requesting: boolean
-}
-
-// Declared at MODULE level on purpose: nested inside the page component it
-// was a brand-new component type on every render, so React unmounted and
-// remounted the input and the operator lost focus after each keystroke.
-function InvalidCard({
-  title, body, allowRequest, email, onEmailChange, onRequest, requesting,
-}: InvalidCardProps) {
-  return (
-    <div className='min-h-screen flex items-center justify-center bg-[#0B1829]'>
-      <div className='bg-white rounded-xl p-8 max-w-md w-full mx-4 text-center'>
-        <h2 className='text-xl font-semibold text-red-600 mb-2'>{title}</h2>
-        <p className='text-gray-500'>{body}</p>
-        {allowRequest ? (
-          <div className='mt-5 space-y-2 text-left'>
-            <label className='text-xs font-medium text-gray-600' htmlFor='reinvite-email'>
-              Your work email
-            </label>
-            <input
-              id='reinvite-email'
-              type='email'
-              value={email}
-              onChange={(e) => onEmailChange(e.target.value)}
-              placeholder='you@buybusinessclass.com'
-              className='w-full px-3 py-2 text-sm rounded-lg border border-input bg-background text-foreground'
-            />
-            <button
-              type='button'
-              onClick={onRequest}
-              disabled={requesting || !email.trim()}
-              className='w-full py-2 rounded-lg bg-[#C9A54E] text-white text-sm font-semibold hover:bg-[#C9A54E]/90 disabled:opacity-50'
-            >
-              {requesting ? 'Sending…' : 'Request a new invite link'}
-            </button>
-          </div>
-        ) : (
-          <p className='text-gray-500 mt-1'>Please contact your admin.</p>
-        )}
-      </div>
-    </div>
-  )
-}
-
+/**
+ * Choose a password from an invite link (POST /api/auth/set-password). When
+ * the link can't be used, the page says why: expired, already used, a newer
+ * invite was sent, or not a link at all.
+ */
 export default function SetPasswordPage() {
+  const search = useSearch({ from: '/(auth)/set-password' })
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { token?: string }
-  const token = search?.token ?? ''
-  const [isLoading, setIsLoading] = useState(false)
-  const [failure, setFailure] = useState<{ reason: string; message: string } | null>(null)
-  const [email, setEmail] = useState('')
-  const [requesting, setRequesting] = useState(false)
+  const token = search.token ?? ''
+  const [pw, setPw] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [link, setLink] = useState<LinkProblem | null>(token ? null : 'unknown')
+  const [done, setDone] = useState(false)
+  const rules = passwordRules(pw)
 
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: { password: '', confirm: '' },
-  })
-
-  const onSubmit = async (values: FormValues) => {
-    if (!token) {
-      toast.error('Invalid or missing token')
+  const save = async () => {
+    if (busy) return
+    if (!rules.every((r) => r.ok)) {
+      setErr(pw ? 'The password doesn’t meet the rule above yet.' : 'Type a new password.')
       return
     }
-    setIsLoading(true)
+    setBusy(true)
+    setErr('')
     try {
-      await apiFetch('/api/auth/set-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, password: values.password }),
-      })
-      toast.success('Password set successfully! Please login.')
-      navigate({ to: '/sign-in' })
-    } catch (err: unknown) {
-      // The backend now says WHY (expired / used / superseded / unknown).
-      // "Expired or invalid" for all four made every failure read like the
-      // operator's mistake — and only some of them are worth re-issuing.
-      const raw = err instanceof Error ? err.message : ''
-      const reason = raw.split(':')[0]?.trim()
-      if (['expired', 'used', 'superseded', 'unknown'].includes(reason)) {
-        setFailure({ reason, message: raw.slice(raw.indexOf(':') + 1).trim() })
-      } else {
-        toast.error(raw || 'Token expired or invalid. Please request a new invite.')
-      }
+      await setPasswordFromInvite(token, pw)
+      setDone(true)
+    } catch (e) {
+      const status = e instanceof ApiError ? e.status : null
+      // 400 names the reason; 422 is the link itself (the server wants 20 to
+      // 512 characters — a link cut short in the e-mail), since the password
+      // already passed the same 8–128 rule here.
+      const reason = status === 400 ? linkProblem(e instanceof Error ? e.message : '') : status === 422 ? 'unknown' : null
+      if (reason) setLink(reason)
+      else if (status === 429) setErr('Too many tries. Wait a minute and try again.')
+      else if (status === null) setErr('Can’t reach the server. Check your connection and try again.')
+      else setErr('Couldn’t save it. Try again, or ask your administrator.')
     } finally {
-      setIsLoading(false)
+      setBusy(false)
     }
   }
 
-  const requestNewLink = async () => {
-    if (!email.trim() || requesting) return
-    setRequesting(true)
-    try {
-      await apiFetch('/api/auth/request-invite', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() }),
-      })
-      // Deliberately the same answer either way — this page must not
-      // become a way to discover which addresses have accounts.
-      toast.success('If that address has a pending invite, a new link is on its way.')
-    } catch {
-      toast.error("Couldn't request a new link — please contact your admin.")
-    } finally {
-      setRequesting(false)
-    }
-  }
-
-  if (failure) {
-    const titles: Record<string, string> = {
-      expired: 'Link expired',
-      used: 'Already used',
-      superseded: 'A newer invite was sent',
-      unknown: 'Invalid link',
-    }
+  if (done) {
     return (
-      <InvalidCard
-        title={titles[failure.reason] ?? 'Invalid link'}
-        body={failure.message}
-        allowRequest={failure.reason === 'expired' || failure.reason === 'unknown'}
-        email={email}
-        onEmailChange={setEmail}
-        onRequest={requestNewLink}
-        requesting={requesting}
-      />
+      <AuthShell>
+        <span aria-hidden='true' className='flex size-12 items-center justify-center rounded-full bg-k-e3f6ea text-xl font-bold text-k-0a6b35'>
+          ✓
+        </span>
+        <AuthTitle title='Your password is saved' text='Use it with the e-mail your invite came to. Your browser or password manager can remember it.' />
+        <button type='button' onClick={() => navigate({ to: '/sign-in' })} className={primaryBtn()}>
+          Sign in
+        </button>
+      </AuthShell>
     )
   }
 
-  if (!token) {
+  if (link) {
+    const t = LINK_TEXT[link]
     return (
-      <InvalidCard
-        title='Invalid Link'
-        body='This invite link is invalid or has expired.'
-        allowRequest
-        email={email}
-        onEmailChange={setEmail}
-        onRequest={requestNewLink}
-        requesting={requesting}
-      />
+      <AuthShell>
+        <AuthTitle title={t.head} text={t.text} />
+        {t.action === 'new_link' ? (
+          <>
+            <Link to='/get-link' search={{ why: link === 'expired' ? 'expired' : 'lost' }} className={primaryBtn()}>
+              Get a new link
+            </Link>
+            <p className='m-0 text-sm text-k-555555'>
+              Already set a password?{' '}
+              <Link to='/sign-in' className={linkCls}>
+                Sign in
+              </Link>
+              .
+            </p>
+          </>
+        ) : (
+          <Link to='/sign-in' className={primaryBtn()}>
+            Sign in
+          </Link>
+        )}
+      </AuthShell>
     )
   }
 
   return (
-    <div className='min-h-screen flex items-center justify-center bg-[#0B1829]'>
-      <div className='bg-white rounded-xl p-8 max-w-md w-full mx-4'>
-        <div className='text-center mb-6'>
-          <h1 className='text-2xl font-bold text-foreground'>Set Your Password</h1>
-          <p className='text-gray-500 text-sm mt-1'>
-            Welcome to BBC Admin Panel. Set a secure password to continue.
-          </p>
-        </div>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-4'>
-            <FormField
-              control={form.control}
-              name='password'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>New Password</FormLabel>
-                  <FormControl>
-                    <PasswordInput placeholder='Min 8 characters' {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='confirm'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Confirm Password</FormLabel>
-                  <FormControl>
-                    <PasswordInput placeholder='Repeat password' {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <Button
-              type='submit'
-              className='w-full bg-[#C9A54E] hover:bg-[#b8943d] text-white'
-              disabled={isLoading}
-            >
-              {isLoading ? 'Setting password...' : 'Set Password & Login'}
-            </Button>
-          </form>
-        </Form>
-      </div>
-    </div>
+    <AuthShell>
+      <AuthTitle kicker='Welcome to the chat panel' title='Choose your password' text='You’ll sign in with it and the e-mail your invite came to.' />
+      {err && <AuthNote tone='bad' head={err} />}
+      <form
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault()
+          void save()
+        }}
+        className='flex flex-col gap-4'
+      >
+        <PasswordField
+          id='new-password'
+          label='New password'
+          value={pw}
+          onChange={(v) => {
+            setPw(v)
+            setErr('')
+          }}
+          autoComplete='new-password'
+        />
+        <ul className='m-0 flex list-none flex-col gap-1 p-0'>
+          {rules.map((r) => (
+            <li key={r.text} className={cn('flex items-center gap-2 text-sm', r.ok ? 'text-k-0a6b35' : 'text-k-555555')}>
+              <span
+                aria-hidden='true'
+                className={cn('flex size-4 items-center justify-center rounded-full text-[11px] font-bold', r.ok ? 'bg-k-00a645 text-on-btn' : 'bg-k-e9e9e9')}
+              >
+                {r.ok ? '✓' : ''}
+              </span>
+              {r.text}
+              <span className='sr-only'>{r.ok ? ' (done)' : ' (not yet)'}</span>
+            </li>
+          ))}
+        </ul>
+        <button type='submit' disabled={busy} className={primaryBtn()}>
+          {busy ? 'Saving…' : 'Save my password'}
+        </button>
+      </form>
+    </AuthShell>
   )
 }

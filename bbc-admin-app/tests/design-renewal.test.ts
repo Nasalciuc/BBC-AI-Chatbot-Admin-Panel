@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,23 +11,26 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (p: string) => readFileSync(join(SRC, p), 'utf8')
 
 const FEATURES = [
-  'features/dashboard/index.tsx', 'features/chats/index.tsx',
+  'features/dashboard/owner/index.tsx', 'features/chats/index.tsx',
   'features/leads/index.tsx', 'features/knowledge-base/index.tsx',
   'features/users/index.tsx', 'features/teams/index.tsx',
   'features/settings/index.tsx', 'features/tasks/index.tsx',
   'features/apps/index.tsx',
+  // The redesigned agent pages (Your day, Knowledge) carry it too.
+  'features/day/index.tsx', 'features/knowledge/index.tsx',
 ]
 
 test('ONE header: every page renders HeaderActions, none composes its own cluster', () => {
   for (const f of FEATURES) {
     const src = read(f)
-    assert.match(src, /<HeaderActions \/>/, `${f} missing HeaderActions`)
+    // `<HeaderActions />` or with props (`compact` on phones and in the CRM dock).
+    assert.match(src, /<HeaderActions[\s/>]/, `${f} missing HeaderActions`)
     assert.ok(!src.includes('<ConfigDrawer'), `${f} still ships the layout-experiment drawer`)
     assert.ok(!/ms-auto flex items-center space-x-4'>\s*<ConnectionBanner/.test(src), `${f} still hand-rolls the action cluster`)
   }
   // The operator lifelines live in the shared component.
   const shared = read('components/header-actions.tsx')
-  assert.match(shared, /<ReadyToggle \/>/)
+  assert.match(shared, /<ReadyToggle\b/)
   assert.match(shared, /<NotificationBell \/>/)
 })
 
@@ -76,11 +79,15 @@ test('template residue gone: dead links, alien copy, debug submit', () => {
   assert.ok(!signin.includes("href='/privacy'"))
   const profile = read('features/settings/profile/index.tsx')
   assert.ok(!profile.includes('others will see you on the site'))
-  const notif = read('features/settings/notifications/notifications-form.tsx')
-  assert.ok(!notif.includes('showSubmittedData'))
-  assert.ok(!notif.includes('friend requests'))
-  assert.ok(!notif.includes('Marketing emails'))
-  assert.match(notif, /No-agents alerts/)
+  // The template's Notifications, Account and Display pages are gone: their
+  // switches saved values nothing read. Alerts replaced them with settings
+  // the alert engine reads (lib/alert-prefs.ts, tests/alert-prefs.test.ts).
+  for (const gone of ['notifications/notifications-form.tsx', 'account/account-form.tsx', 'display/display-form.tsx']) {
+    assert.ok(!existsSync(join(SRC, 'features/settings', gone)), gone)
+  }
+  const alerts = read('features/settings/alerts/index.tsx')
+  assert.ok(!alerts.includes('showSubmittedData'))
+  assert.match(alerts, /writeAlertPrefs/)
 })
 
 test('avatar initials are muted, not neon', () => {
@@ -96,14 +103,20 @@ test('lead-score mid tier no longer reads as disabled', () => {
 
 // ── chat stream polish (from the owner's screenshot review) ──
 
-test('chat stream: grouping, min-width bubbles, honest footer, one date language', () => {
+test('chat stream: grouping, honest presence, one place for where they came from', () => {
   const detail = readFileSync(join(SRC, 'features/chats/detail.tsx'), 'utf8')
-  assert.match(detail, /const grouped = !showDay/)          // same-role turns group
-  assert.match(detail, /min-w-\[76px\]/)                    // "2" never collapses into a blob
+  assert.match(detail, /const grouped = !showDay/)          // same-speaker turns group
+  // The redesign has no bubbles (text beside an avatar), so the old
+  // min-width-bubble guard has nothing left to guard.
   assert.ok(!/opacity-50">\s*\{new Date\(msg\.created_at\)\.toLocaleTimeString/.test(detail),
     'bubble timestamps still at 50% opacity')
-  assert.match(detail, /conv\.status !== 'closed' && \(\s*<>\s*\{' · '\}Client:/)  // no presence on closed
+  // No presence on a closed thread — "on the site now" next to "Closed" was
+  // the panel arguing with itself.
+  assert.match(detail, /conv\.status !== 'closed' && presence\.label &&/)
   assert.ok(!/Closed \$\{new Date\(conv\.closed_at\)\.toLocaleDateString\(\)\}/.test(detail),
     'locale-roulette closed date survives')
-  assert.match(detail, /Brand site/)                        // Source/Source dedup
+  // Source/Source dedup: the brand is "Site", the campaign is "Source".
+  const view = readFileSync(join(SRC, 'features/chats/view.ts'), 'utf8')
+  assert.equal((view.match(/label: 'Site'/g) ?? []).length, 1)
+  assert.equal((view.match(/label: 'Source'/g) ?? []).length, 1)
 })

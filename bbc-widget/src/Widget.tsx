@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { FloatingButtons } from './FloatingButtons'
 import { TunnelForm, type FormCheck } from './TunnelForm'
-import { ChatWindow } from './ChatWindow'
+import { ChatWindow, type Unread } from './ChatWindow'
+import { armChime, playChime } from './chime'
+import { readPageContext } from './pageContext'
 import { apiFetch, clearVisitorToken, ensureVisitorToken, getVisitorId } from './api'
 import { getUtm } from './utm'
 import brand from './config'
+import { usePhoneSheet } from './phoneSheet'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -121,10 +124,17 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     } catch { return null }
   })()
 
+  // A conversation this visitor already has (conversation id and identity cached): it is kept connected
+  // in the background on every page, so nothing it says is missed.
+  const sessionActive = !!(hasOptimisticSession && savedVisitor)
+
   // Embedded (CRM iframe): no bubble step — mount straight on the form
-  // (or chat when a session restores). Site mode: unchanged.
+  // (or chat when a session restores).
+  // On the site the panel opens on load only when this tab had it open (sessionStorage), so a visitor who
+  // closed the chat is not handed it again on every page. A returning visitor's conversation is still
+  // there: a tap on the button restores it (handleTunnelSelect). The CRM iframe keeps the old rule.
   const [step, setStep] = useState<Step>(
-    restored?.step === 'chat' || (hasOptimisticSession && savedVisitor)
+    restored?.step === 'chat' || (embedded && hasOptimisticSession && savedVisitor)
       ? 'chat'
       : embedded ? 'form' : 'buttons'
   )
@@ -138,16 +148,37 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     restored?.metadata || savedMetadata || {}
   )
   const [showAttention, setShowAttention] = useState(false)
+  const [focusLauncher, setFocusLauncher] = useState(false)
+  /** What the visitor is looking at (the page's h1): the greeting speaks to it, the chat starts from it. */
+  const [pageCtx] = useState(readPageContext)
+  /** Messages that arrived while the chat was closed (or the tab hidden), with the latest for a preview. */
+  const [unread, setUnread] = useState<Unread>({ count: 0, fresh: false })
+  /** Bumped when the backend says the cached conversation is over, so the kept-alive chat unmounts. */
+  const [, setSessionTick] = useState(0)
+  /** The chat replaced the form in an open panel: no second entrance, only the conversation fades in. */
+  const [swapped, setSwapped] = useState(false)
+  /** The panel is on its way out (a short exit animation before it unmounts). */
+  const [closing, setClosing] = useState(false)
+  const closingRef = useRef(false)
+
+  /** Close with the exit animation; reduced motion and the CRM iframe close at once. */
+  const animateClose = (done: () => void) => {
+    if (closingRef.current) return
+    let instant = embedded
+    try { instant = instant || window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { /* old browser */ }
+    if (instant) return done()
+    closingRef.current = true
+    setClosing(true)
+    setTimeout(() => {
+      closingRef.current = false
+      setClosing(false)
+      done()
+    }, 220)
+  }
 
   // Auto-open refs
   const autoOpenedRef = useRef(false)
   const formFlowStartedRef = useRef(false)
-
-  // Intent detection refs
-  const intentFiredRef = useRef(false)
-  const intentDwellTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const intentChatTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cachedBtnRect = useRef<DOMRect | null>(null)
 
   // ── Backend verify on mount ───────────────────────────────────────────────
   // If we optimistically jumped to 'chat', ask the backend if the conversation
@@ -178,6 +209,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           // No active conversation — clear cache and fall back
           try { localStorage.removeItem('bbc_conv_id') } catch {}
           try { localStorage.removeItem('bbc_conv_ts') } catch {}
+          setSessionTick(t => t + 1)
           // Only fall back if user hasn't navigated away from chat already.
           // Embedded: there is no bubble to fall back to — show the form.
           setStep(prev => prev === 'chat' ? (embedded ? 'form' : 'buttons') : prev)
@@ -190,120 +222,46 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // eslint-disable-next-line
   }, [])
 
-  // Injectăm @keyframes în <head> — o singură dată la mount
-  // Inline style nu suportă @keyframes → trebuie <style> tag
+  // ─── The greeting beside the button ─────────────────────────────────────────
+  // Once per visit (sessionStorage), 10 s after load, a short note appears beside the corner button. It covers
+  // nothing and opens the chat only when tapped (it replaced the form that opened by itself after 10 s on
+  // computers and 3 min on phones, and the mouse-dwell opener: the site's rule is that nothing opens on load).
+  // A visitor already in a conversation gets news of it on the button instead (unread), never this.
+  // On computers the greeting also comes early when the pointer leaves the page through the top
+  // (towards the tabs or the address bar): the moment a visitor is about to go.
   useEffect(() => {
-    const styleId = 'bbc-widget-keyframes'
-    if (document.getElementById(styleId)) return // deja injectat
-
-    const style = document.createElement('style')
-    style.id = styleId
-    style.textContent = `
-      @keyframes bbc-nudge {
-        0%   { transform: translateY(0); }
-        35%  { transform: translateY(-6px); }
-        100% { transform: translateY(0); }
-      }
-      @keyframes bbc-fadein {
-        from { opacity: 0; transform: translateY(6px); }
-        to   { opacity: 1; transform: translateY(0); }
-      }
-    `
-    document.head.appendChild(style)
-    // Nu facem cleanup — keyframes rămân pe tot parcursul sesiunii
-  }, [])
-
-  // ─── EFFECT A: Auto-open form (10 secunde inactivitate) ─────────────────────
-  useEffect(() => {
-    if (step !== 'buttons') return
+    if (embedded || step !== 'buttons' || sessionActive) return
     if (autoOpenedRef.current || formFlowStartedRef.current) return
     if (safeGet('bbc_attention_shown') === '1') return
 
-    const attentionTimer = setTimeout(() => {
-      if (formFlowStartedRef.current) return
-      // Deschide formularul direct, nu doar tooltip
+    const show = () => {
+      if (formFlowStartedRef.current || autoOpenedRef.current) return
       autoOpenedRef.current = true
-      formFlowStartedRef.current = true
-      setShowAttention(false)
-      setTunnel('sales')
-      setStep('form')
       safeSet('bbc_attention_shown', '1')
-    }, 10_000)
-
-    return () => clearTimeout(attentionTimer)
-  }, [step])
-
-  // ─── EFFECT B: Intent Detection — Desktop (mouse dwell lângă buton) ──────────
-  useEffect(() => {
-    if (step !== 'buttons') return
-
-    // Mobile detection: touch device fără mouse precis
-    const isMobile = navigator.maxTouchPoints > 0 &&
-      !window.matchMedia('(pointer: fine)').matches
-    if (isMobile) return
-
-    // Cache rect-ul butonului (recalculat la resize)
-    const updateRect = () => {
-      const el = document.getElementById('bbc-floating-btn')
-      if (el) cachedBtnRect.current = el.getBoundingClientRect()
+      setShowAttention(true)
     }
-    updateRect()
-    window.addEventListener('resize', updateRect, { passive: true })
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (intentFiredRef.current || formFlowStartedRef.current) return
-
-      const rect = cachedBtnRect.current
-      if (!rect) return
-
-      const dist = Math.hypot(
-        e.clientX - (rect.left + rect.width / 2),
-        e.clientY - (rect.top + rect.height / 2)
-      )
-
-      if (dist < 180) {
-        if (!intentDwellTimer.current) {
-          intentDwellTimer.current = setTimeout(() => {
-            if (formFlowStartedRef.current) return
-            intentFiredRef.current = true
-
-            intentChatTimer.current = setTimeout(() => {
-              if (formFlowStartedRef.current) return
-              autoOpenedRef.current = true
-              setTunnel('sales')
-              setStep('form')
-            }, 10_000)
-          }, 1_500)
-        }
-      }
+    const attentionTimer = setTimeout(show, 10_000)
+    const loadedAt = Date.now()
+    const onLeave = (e: MouseEvent) => {
+      if (e.relatedTarget || e.clientY > 8 || Date.now() - loadedAt < 3000) return
+      show()
     }
-
-    window.addEventListener('mousemove', handleMouseMove, { passive: true })
+    let fine = false
+    try { fine = window.matchMedia('(pointer: fine)').matches } catch { /* old browser */ }
+    if (fine) document.documentElement.addEventListener('mouseleave', onLeave)
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('resize', updateRect)
-      if (intentDwellTimer.current) clearTimeout(intentDwellTimer.current)
-      if (intentChatTimer.current) clearTimeout(intentChatTimer.current)
+      clearTimeout(attentionTimer)
+      document.documentElement.removeEventListener('mouseleave', onLeave)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
 
-  // ─── EFFECT C: Mobile Fallback (3 minute timer simplu) ───────────────────────
+  // Keep an open chat open across this tab's pages (also when it was restored by a tap on the button).
   useEffect(() => {
-    const isMobile = navigator.maxTouchPoints > 0 &&
-      !window.matchMedia('(pointer: fine)').matches
-    if (!isMobile || step !== 'buttons') return
-    if (autoOpenedRef.current || formFlowStartedRef.current) return
-
-    const mobileTimer = setTimeout(() => {
-      if (formFlowStartedRef.current) return
-      autoOpenedRef.current = true
-      setTunnel('sales')
-      setStep('form')
-    }, 3 * 60 * 1000) // 3 minutes
-
-    return () => clearTimeout(mobileTimer)
-  }, [step])
+    if (embedded || step !== 'chat') return
+    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata }))
+  }, [step, tunnel])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
     setShowAttention(false)
@@ -358,6 +316,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
     setVisitor(vis)
     setMetadata(meta)
+    setSwapped(true)
     setStep('chat')
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor: vis, metadata: meta }))
     try { localStorage.setItem('bbc_conv_tunnel', tunnel) } catch {}
@@ -370,19 +329,26 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleBack = () => {
     if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
-    setStep('buttons')
-    clearWidgetStorage()
+    animateClose(() => {
+      setFocusLauncher(true)
+      setSwapped(false)
+      setStep('buttons')
+      clearWidgetStorage()
+    })
   }
 
   const handleCloseChat = () => {
     if (embedded) return  // panel is always open inside the CRM iframe
-    setStep('buttons')
+    animateClose(() => {
+      setFocusLauncher(true)
+      setSwapped(false)
+      setStep('buttons')
+    })
     // Keep localStorage intact (visitor_id, conv_id, visitor_key) — "X → reopen"
     // will use the optimistic path to restore the session. Only clear sessionStorage.
     safeRemove('bbc_widget')
     // Reset auto-open guards so attention grabber can trigger again after close.
     formFlowStartedRef.current = false
-    intentFiredRef.current = false
     autoOpenedRef.current = false
   }
 
@@ -391,10 +357,13 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
-        setStep('buttons')
+        animateClose(() => {
+          setFocusLauncher(true)
+          setSwapped(false)
+          setStep('buttons')
+        })
         safeRemove('bbc_widget')
         formFlowStartedRef.current = false
-        intentFiredRef.current = false
         autoOpenedRef.current = false
       }
     }
@@ -402,28 +371,74 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     return () => window.removeEventListener('keydown', handler)
   }, [step])
 
+  usePhoneSheet(step !== 'buttons', embedded, brand.colors.ink)
+
+  // A conversation in progress stays connected for the whole visit, open or closed, on every page of
+  // the site: what is being sent finishes, replies keep arriving, and the corner button can announce them.
+  const chatMounted = step === 'chat' || (!embedded && sessionActive)
+  useEffect(() => { if (chatMounted) armChime() }, [chatMounted])
+
+  const handleUnread = (u: Unread) => {
+    setUnread(u)
+    if (u.fresh) playChime()
+  }
+
+  // A tab in the background says so in its title: "(1) New message · <the page's own title>".
+  const baseTitleRef = useRef<string | null>(null)
+  useEffect(() => {
+    const apply = () => {
+      try {
+        const hidden = document.visibilityState !== 'visible'
+        if (unread.count > 0 && hidden) {
+          if (baseTitleRef.current === null) baseTitleRef.current = document.title
+          document.title = `(${unread.count}) New message · ${baseTitleRef.current}`
+        } else if (baseTitleRef.current !== null) {
+          document.title = baseTitleRef.current
+          baseTitleRef.current = null
+        }
+      } catch { /* no document title to touch */ }
+    }
+    apply()
+    document.addEventListener('visibilitychange', apply)
+    return () => document.removeEventListener('visibilitychange', apply)
+  }, [unread.count])
+
   return (
-    <>
+    <div class={closing ? 'bw-closing' : undefined} style={{ display: 'contents' }}>
       {step === 'buttons' && !embedded && (
         <FloatingButtons
           onSelect={handleTunnelSelect}
-          showAttention={showAttention}
+          showAttention={showAttention && !sessionActive}
+          onDismissAttention={() => setShowAttention(false)}
+          autoFocus={focusLauncher}
+          context={pageCtx}
+          unread={unread}
         />
       )}
       {step === 'form' && (
-        <div style={embedded ? { width: '100%', height: '100%' } : { animation: 'bbc-fadein 0.3s ease' }}>
-          <TunnelForm
-            tunnel={tunnel}
-            onSubmit={handleFormSubmit}
-            onBack={handleBack}
-            onInteraction={handleFormInteraction}
-            embedded={embedded}
-          />
-        </div>
+        <TunnelForm
+          tunnel={tunnel}
+          onSubmit={handleFormSubmit}
+          onBack={handleBack}
+          onInteraction={handleFormInteraction}
+          embedded={embedded}
+        />
       )}
-      {step === 'chat' && (
-        <ChatWindow tunnel={tunnel} visitor={visitor} metadata={metadata} formCheck={formCheck} onClose={handleCloseChat} apiUrl={apiUrl} embedded={embedded} />
+      {chatMounted && (
+        <ChatWindow
+          tunnel={tunnel}
+          visitor={visitor}
+          metadata={metadata}
+          formCheck={formCheck}
+          onClose={handleCloseChat}
+          apiUrl={apiUrl}
+          embedded={embedded}
+          swapped={swapped}
+          visible={step === 'chat'}
+          draft={pageCtx.draft}
+          onUnread={handleUnread}
+        />
       )}
-    </>
+    </div>
   )
 }

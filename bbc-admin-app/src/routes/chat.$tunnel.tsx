@@ -7,8 +7,5 @@ export const Route = createFileRoute('/chat/$tunnel')({
       throw redirect({ to: '/404' })
     }
   },
-  component: () => {
-    const { tunnel } = Route.useParams()
-    return <ChatStandalone tunnel={tunnel as 'sales' | 'support'} />
-  },
+  component: ChatStandalone,
 })

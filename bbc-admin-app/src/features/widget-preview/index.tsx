@@ -1,20 +1,35 @@
-import { BBCChatWidget } from './components/bbc-chat-widget'
+import { useWidgetScript } from '../widget-embed/use-widget-script'
 
+/**
+ * /widget-preview: the real widget (use-widget-script.ts) on a plain page, its
+ * button in the bottom-right corner as visitors see it on buybusinessclass.com.
+ * The panel keeps no copy of the widget of its own: what shows here is what the
+ * site and the CRM run, built from bbc-widget/src at the same deploy.
+ */
 export default function WidgetPreview() {
-  return (
-    <div className='flex min-h-screen flex-col items-center justify-center bg-muted/40 p-4'>
-      <div className='mb-6 text-center'>
-        <h1 className='text-2xl font-semibold text-foreground'>
-          Widget Preview
-        </h1>
-        <p className='mt-1 text-sm text-muted-foreground'>
-          This is how customers will see the chatbot on buybusinessclass.com
-        </p>
-      </div>
+  useWidgetScript({ embedded: false })
 
-      <div className='h-[600px] w-full max-w-[420px] overflow-hidden rounded-xl border shadow-sm'>
-        <BBCChatWidget />
-      </div>
+  return (
+    <div className='min-h-svh bg-k-ffffff'>
+      <main className='mx-auto flex max-w-[640px] flex-col gap-5 px-6 py-16'>
+        <div className='flex flex-col gap-2'>
+          <p className='m-0 text-[13px] font-bold text-k-555555'>BuyBusinessClass · Chat panel</p>
+          <h1 className='m-0 text-[40px] leading-[1.1] font-bold tracking-[-0.01em] text-k-202020'>
+            Widget preview
+          </h1>
+          <p className='m-0 text-[15px] leading-[1.5] text-k-555555'>
+            The chat visitors see on buybusinessclass.com, built from the same code at every deploy.
+            Its button is in the bottom-right corner, as on the site.
+          </p>
+        </div>
+        <div role='note' className='flex gap-2.5 rounded-[14px] bg-k-fff1dc px-4 py-3 text-sm leading-[1.45] text-k-7a5300'>
+          <span aria-hidden='true' className='mt-1.5 size-2 flex-none rounded-full bg-k-d97a00' />
+          <span>
+            <strong>This is the live chat.</strong> What you send from here reaches the operators, like a
+            client’s message.
+          </span>
+        </div>
+      </main>
     </div>
   )
 }

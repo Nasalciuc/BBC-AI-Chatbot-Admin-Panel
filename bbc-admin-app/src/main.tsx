@@ -9,8 +9,10 @@ import {
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { useReadyStore } from '@/stores/ready-store'
 import { installCrmEmbedAuth } from '@/lib/crm-embed-auth'
 import { handleServerError } from '@/lib/handle-server-error'
+import { backTo } from '@/lib/bands'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -62,25 +64,26 @@ const queryClient = new QueryClient({
     onError: (error, query) => {
       if (error instanceof ApiError) {
         if (error.status === 401) {
-          toast.error('Session expired!')
+          // The sign-in page says the session ended and brings you back to
+          // the same place — the same chat, whose draft is kept (lib/chat-drafts.ts).
           useAuthStore.getState().auth.reset()
-          const redirect = `${router.history.location.href}`
-          router.navigate({ to: '/sign-in', search: { redirect } })
+          const loc = router.history.location
+          // Several queries fail together: the first 401 already went to
+          // sign-in with the way back; a later one mustn't replace it.
+          if (loc.pathname.startsWith('/sign-in')) return
+          const redirect = backTo(loc.pathname, loc.href, useReadyStore.getState().viewingConversationId)
+          router.navigate({ to: '/sign-in', search: { redirect, session: 'ended' } })
         }
         if (error.status === 500) {
-          // A background poll that fails must not throw the operator off the
-          // chat they are typing in (PR-10). Only a first load — nothing on
-          // screen yet for that query — goes to the error page; a refetch of
-          // data already shown keeps the screen and says so once.
+          // Said where it happened, not on a page of its own: leaving the
+          // screen threw away the open chat and what was being typed. A
+          // background refetch of data already on screen (PR-10) says so at
+          // most once a minute per query, whatever the retry count: onError
+          // runs after the retries, so a count-based guard never fired.
           const hadData = query.state.data !== undefined
           if (!hadData) {
-            toast.error('Internal Server Error!')
-            if (import.meta.env.PROD) {
-              router.navigate({ to: '/500' })
-            }
+            toast.error('The server had a problem with that. Try again in a moment.')
           } else if (shouldNotifyRefreshFailure(query.queryHash, Date.now())) {
-            // Once per query per minute, whatever the retry count: onError
-            // runs after the retries, so a count-based guard never fired.
             toast.error('Could not refresh — retrying in the background', { id: 'refresh-failed' })
           }
         }

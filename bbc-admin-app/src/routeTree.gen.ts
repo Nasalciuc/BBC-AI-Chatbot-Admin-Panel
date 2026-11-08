@@ -19,11 +19,9 @@ import { Route as errors500RouteImport } from './routes/(errors)/500'
 import { Route as errors404RouteImport } from './routes/(errors)/404'
 import { Route as errors403RouteImport } from './routes/(errors)/403'
 import { Route as errors401RouteImport } from './routes/(errors)/401'
-import { Route as authSignUpRouteImport } from './routes/(auth)/sign-up'
-import { Route as authSignIn2RouteImport } from './routes/(auth)/sign-in-2'
 import { Route as authSignInRouteImport } from './routes/(auth)/sign-in'
 import { Route as authSetPasswordRouteImport } from './routes/(auth)/set-password'
-import { Route as authOtpRouteImport } from './routes/(auth)/otp'
+import { Route as authGetLinkRouteImport } from './routes/(auth)/get-link'
 import { Route as authForgotPasswordRouteImport } from './routes/(auth)/forgot-password'
 import { Route as AuthenticatedSettingsRouteRouteImport } from './routes/_authenticated/settings/route'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
@@ -32,15 +30,17 @@ import { Route as AuthenticatedTasksIndexRouteImport } from './routes/_authentic
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedLearningIndexRouteImport } from './routes/_authenticated/learning/index'
 import { Route as AuthenticatedLeadsIndexRouteImport } from './routes/_authenticated/leads/index'
+import { Route as AuthenticatedKnowledgeIndexRouteImport } from './routes/_authenticated/knowledge/index'
 import { Route as AuthenticatedKnowledgeBaseIndexRouteImport } from './routes/_authenticated/knowledge-base/index'
 import { Route as AuthenticatedChatsIndexRouteImport } from './routes/_authenticated/chats/index'
 import { Route as AuthenticatedAppsIndexRouteImport } from './routes/_authenticated/apps/index'
+import { Route as AuthenticatedSettingsSecurityRouteImport } from './routes/_authenticated/settings/security'
 import { Route as AuthenticatedSettingsNotificationsRouteImport } from './routes/_authenticated/settings/notifications'
 import { Route as AuthenticatedSettingsDisplayRouteImport } from './routes/_authenticated/settings/display'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
+import { Route as AuthenticatedSettingsAlertsRouteImport } from './routes/_authenticated/settings/alerts'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedSecurityBansRouteImport } from './routes/_authenticated/security/bans'
-import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
 
 const WidgetPreviewRoute = WidgetPreviewRouteImport.update({
   id: '/widget-preview',
@@ -91,16 +91,6 @@ const errors401Route = errors401RouteImport.update({
   path: '/401',
   getParentRoute: () => rootRouteImport,
 } as any)
-const authSignUpRoute = authSignUpRouteImport.update({
-  id: '/(auth)/sign-up',
-  path: '/sign-up',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const authSignIn2Route = authSignIn2RouteImport.update({
-  id: '/(auth)/sign-in-2',
-  path: '/sign-in-2',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const authSignInRoute = authSignInRouteImport.update({
   id: '/(auth)/sign-in',
   path: '/sign-in',
@@ -111,9 +101,9 @@ const authSetPasswordRoute = authSetPasswordRouteImport.update({
   path: '/set-password',
   getParentRoute: () => rootRouteImport,
 } as any)
-const authOtpRoute = authOtpRouteImport.update({
-  id: '/(auth)/otp',
-  path: '/otp',
+const authGetLinkRoute = authGetLinkRouteImport.update({
+  id: '/(auth)/get-link',
+  path: '/get-link',
   getParentRoute: () => rootRouteImport,
 } as any)
 const authForgotPasswordRoute = authForgotPasswordRouteImport.update({
@@ -159,6 +149,12 @@ const AuthenticatedLeadsIndexRoute = AuthenticatedLeadsIndexRouteImport.update({
   path: '/leads/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedKnowledgeIndexRoute =
+  AuthenticatedKnowledgeIndexRouteImport.update({
+    id: '/knowledge/',
+    path: '/knowledge/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedKnowledgeBaseIndexRoute =
   AuthenticatedKnowledgeBaseIndexRouteImport.update({
     id: '/knowledge-base/',
@@ -175,6 +171,12 @@ const AuthenticatedAppsIndexRoute = AuthenticatedAppsIndexRouteImport.update({
   path: '/apps/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedSettingsSecurityRoute =
+  AuthenticatedSettingsSecurityRouteImport.update({
+    id: '/security',
+    path: '/security',
+    getParentRoute: () => AuthenticatedSettingsRouteRoute,
+  } as any)
 const AuthenticatedSettingsNotificationsRoute =
   AuthenticatedSettingsNotificationsRouteImport.update({
     id: '/notifications',
@@ -193,6 +195,12 @@ const AuthenticatedSettingsAppearanceRoute =
     path: '/appearance',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedSettingsAlertsRoute =
+  AuthenticatedSettingsAlertsRouteImport.update({
+    id: '/alerts',
+    path: '/alerts',
+    getParentRoute: () => AuthenticatedSettingsRouteRoute,
+  } as any)
 const AuthenticatedSettingsAccountRoute =
   AuthenticatedSettingsAccountRouteImport.update({
     id: '/account',
@@ -205,12 +213,6 @@ const AuthenticatedSecurityBansRoute =
     path: '/security/bans',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
-const AuthenticatedErrorsErrorRoute =
-  AuthenticatedErrorsErrorRouteImport.update({
-    id: '/errors/$error',
-    path: '/errors/$error',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
@@ -218,26 +220,26 @@ export interface FileRoutesByFullPath {
   '/widget-preview': typeof WidgetPreviewRoute
   '/settings': typeof AuthenticatedSettingsRouteRouteWithChildren
   '/forgot-password': typeof authForgotPasswordRoute
-  '/otp': typeof authOtpRoute
+  '/get-link': typeof authGetLinkRoute
   '/set-password': typeof authSetPasswordRoute
   '/sign-in': typeof authSignInRoute
-  '/sign-in-2': typeof authSignIn2Route
-  '/sign-up': typeof authSignUpRoute
   '/401': typeof errors401Route
   '/403': typeof errors403Route
   '/404': typeof errors404Route
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
-  '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/security/bans': typeof AuthenticatedSecurityBansRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
+  '/settings/alerts': typeof AuthenticatedSettingsAlertsRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
   '/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
+  '/settings/security': typeof AuthenticatedSettingsSecurityRoute
   '/apps/': typeof AuthenticatedAppsIndexRoute
   '/chats/': typeof AuthenticatedChatsIndexRoute
   '/knowledge-base/': typeof AuthenticatedKnowledgeBaseIndexRoute
+  '/knowledge/': typeof AuthenticatedKnowledgeIndexRoute
   '/leads/': typeof AuthenticatedLeadsIndexRoute
   '/learning/': typeof AuthenticatedLearningIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
@@ -249,11 +251,9 @@ export interface FileRoutesByTo {
   '/widget-embed': typeof WidgetEmbedRoute
   '/widget-preview': typeof WidgetPreviewRoute
   '/forgot-password': typeof authForgotPasswordRoute
-  '/otp': typeof authOtpRoute
+  '/get-link': typeof authGetLinkRoute
   '/set-password': typeof authSetPasswordRoute
   '/sign-in': typeof authSignInRoute
-  '/sign-in-2': typeof authSignIn2Route
-  '/sign-up': typeof authSignUpRoute
   '/401': typeof errors401Route
   '/403': typeof errors403Route
   '/404': typeof errors404Route
@@ -261,15 +261,17 @@ export interface FileRoutesByTo {
   '/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/': typeof AuthenticatedIndexRoute
-  '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/security/bans': typeof AuthenticatedSecurityBansRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
+  '/settings/alerts': typeof AuthenticatedSettingsAlertsRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
   '/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
+  '/settings/security': typeof AuthenticatedSettingsSecurityRoute
   '/apps': typeof AuthenticatedAppsIndexRoute
   '/chats': typeof AuthenticatedChatsIndexRoute
   '/knowledge-base': typeof AuthenticatedKnowledgeBaseIndexRoute
+  '/knowledge': typeof AuthenticatedKnowledgeIndexRoute
   '/leads': typeof AuthenticatedLeadsIndexRoute
   '/learning': typeof AuthenticatedLearningIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
@@ -284,11 +286,9 @@ export interface FileRoutesById {
   '/widget-preview': typeof WidgetPreviewRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRouteRouteWithChildren
   '/(auth)/forgot-password': typeof authForgotPasswordRoute
-  '/(auth)/otp': typeof authOtpRoute
+  '/(auth)/get-link': typeof authGetLinkRoute
   '/(auth)/set-password': typeof authSetPasswordRoute
   '/(auth)/sign-in': typeof authSignInRoute
-  '/(auth)/sign-in-2': typeof authSignIn2Route
-  '/(auth)/sign-up': typeof authSignUpRoute
   '/(errors)/401': typeof errors401Route
   '/(errors)/403': typeof errors403Route
   '/(errors)/404': typeof errors404Route
@@ -296,15 +296,17 @@ export interface FileRoutesById {
   '/(errors)/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
-  '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/_authenticated/security/bans': typeof AuthenticatedSecurityBansRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
+  '/_authenticated/settings/alerts': typeof AuthenticatedSettingsAlertsRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/settings/display': typeof AuthenticatedSettingsDisplayRoute
   '/_authenticated/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
+  '/_authenticated/settings/security': typeof AuthenticatedSettingsSecurityRoute
   '/_authenticated/apps/': typeof AuthenticatedAppsIndexRoute
   '/_authenticated/chats/': typeof AuthenticatedChatsIndexRoute
   '/_authenticated/knowledge-base/': typeof AuthenticatedKnowledgeBaseIndexRoute
+  '/_authenticated/knowledge/': typeof AuthenticatedKnowledgeIndexRoute
   '/_authenticated/leads/': typeof AuthenticatedLeadsIndexRoute
   '/_authenticated/learning/': typeof AuthenticatedLearningIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
@@ -320,26 +322,26 @@ export interface FileRouteTypes {
     | '/widget-preview'
     | '/settings'
     | '/forgot-password'
-    | '/otp'
+    | '/get-link'
     | '/set-password'
     | '/sign-in'
-    | '/sign-in-2'
-    | '/sign-up'
     | '/401'
     | '/403'
     | '/404'
     | '/500'
     | '/503'
     | '/chat/$tunnel'
-    | '/errors/$error'
     | '/security/bans'
     | '/settings/account'
+    | '/settings/alerts'
     | '/settings/appearance'
     | '/settings/display'
     | '/settings/notifications'
+    | '/settings/security'
     | '/apps/'
     | '/chats/'
     | '/knowledge-base/'
+    | '/knowledge/'
     | '/leads/'
     | '/learning/'
     | '/settings/'
@@ -351,11 +353,9 @@ export interface FileRouteTypes {
     | '/widget-embed'
     | '/widget-preview'
     | '/forgot-password'
-    | '/otp'
+    | '/get-link'
     | '/set-password'
     | '/sign-in'
-    | '/sign-in-2'
-    | '/sign-up'
     | '/401'
     | '/403'
     | '/404'
@@ -363,15 +363,17 @@ export interface FileRouteTypes {
     | '/503'
     | '/chat/$tunnel'
     | '/'
-    | '/errors/$error'
     | '/security/bans'
     | '/settings/account'
+    | '/settings/alerts'
     | '/settings/appearance'
     | '/settings/display'
     | '/settings/notifications'
+    | '/settings/security'
     | '/apps'
     | '/chats'
     | '/knowledge-base'
+    | '/knowledge'
     | '/leads'
     | '/learning'
     | '/settings'
@@ -385,11 +387,9 @@ export interface FileRouteTypes {
     | '/widget-preview'
     | '/_authenticated/settings'
     | '/(auth)/forgot-password'
-    | '/(auth)/otp'
+    | '/(auth)/get-link'
     | '/(auth)/set-password'
     | '/(auth)/sign-in'
-    | '/(auth)/sign-in-2'
-    | '/(auth)/sign-up'
     | '/(errors)/401'
     | '/(errors)/403'
     | '/(errors)/404'
@@ -397,15 +397,17 @@ export interface FileRouteTypes {
     | '/(errors)/503'
     | '/chat/$tunnel'
     | '/_authenticated/'
-    | '/_authenticated/errors/$error'
     | '/_authenticated/security/bans'
     | '/_authenticated/settings/account'
+    | '/_authenticated/settings/alerts'
     | '/_authenticated/settings/appearance'
     | '/_authenticated/settings/display'
     | '/_authenticated/settings/notifications'
+    | '/_authenticated/settings/security'
     | '/_authenticated/apps/'
     | '/_authenticated/chats/'
     | '/_authenticated/knowledge-base/'
+    | '/_authenticated/knowledge/'
     | '/_authenticated/leads/'
     | '/_authenticated/learning/'
     | '/_authenticated/settings/'
@@ -419,11 +421,9 @@ export interface RootRouteChildren {
   WidgetEmbedRoute: typeof WidgetEmbedRoute
   WidgetPreviewRoute: typeof WidgetPreviewRoute
   authForgotPasswordRoute: typeof authForgotPasswordRoute
-  authOtpRoute: typeof authOtpRoute
+  authGetLinkRoute: typeof authGetLinkRoute
   authSetPasswordRoute: typeof authSetPasswordRoute
   authSignInRoute: typeof authSignInRoute
-  authSignIn2Route: typeof authSignIn2Route
-  authSignUpRoute: typeof authSignUpRoute
   errors401Route: typeof errors401Route
   errors403Route: typeof errors403Route
   errors404Route: typeof errors404Route
@@ -504,20 +504,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof errors401RouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/(auth)/sign-up': {
-      id: '/(auth)/sign-up'
-      path: '/sign-up'
-      fullPath: '/sign-up'
-      preLoaderRoute: typeof authSignUpRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/(auth)/sign-in-2': {
-      id: '/(auth)/sign-in-2'
-      path: '/sign-in-2'
-      fullPath: '/sign-in-2'
-      preLoaderRoute: typeof authSignIn2RouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/(auth)/sign-in': {
       id: '/(auth)/sign-in'
       path: '/sign-in'
@@ -532,11 +518,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof authSetPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/(auth)/otp': {
-      id: '/(auth)/otp'
-      path: '/otp'
-      fullPath: '/otp'
-      preLoaderRoute: typeof authOtpRouteImport
+    '/(auth)/get-link': {
+      id: '/(auth)/get-link'
+      path: '/get-link'
+      fullPath: '/get-link'
+      preLoaderRoute: typeof authGetLinkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(auth)/forgot-password': {
@@ -595,6 +581,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedLeadsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/knowledge/': {
+      id: '/_authenticated/knowledge/'
+      path: '/knowledge'
+      fullPath: '/knowledge/'
+      preLoaderRoute: typeof AuthenticatedKnowledgeIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/knowledge-base/': {
       id: '/_authenticated/knowledge-base/'
       path: '/knowledge-base'
@@ -615,6 +608,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/apps/'
       preLoaderRoute: typeof AuthenticatedAppsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/settings/security': {
+      id: '/_authenticated/settings/security'
+      path: '/security'
+      fullPath: '/settings/security'
+      preLoaderRoute: typeof AuthenticatedSettingsSecurityRouteImport
+      parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
     '/_authenticated/settings/notifications': {
       id: '/_authenticated/settings/notifications'
@@ -637,6 +637,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsAppearanceRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/settings/alerts': {
+      id: '/_authenticated/settings/alerts'
+      path: '/alerts'
+      fullPath: '/settings/alerts'
+      preLoaderRoute: typeof AuthenticatedSettingsAlertsRouteImport
+      parentRoute: typeof AuthenticatedSettingsRouteRoute
+    }
     '/_authenticated/settings/account': {
       id: '/_authenticated/settings/account'
       path: '/account'
@@ -651,31 +658,28 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSecurityBansRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/errors/$error': {
-      id: '/_authenticated/errors/$error'
-      path: '/errors/$error'
-      fullPath: '/errors/$error'
-      preLoaderRoute: typeof AuthenticatedErrorsErrorRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
   }
 }
 
 interface AuthenticatedSettingsRouteRouteChildren {
   AuthenticatedSettingsAccountRoute: typeof AuthenticatedSettingsAccountRoute
+  AuthenticatedSettingsAlertsRoute: typeof AuthenticatedSettingsAlertsRoute
   AuthenticatedSettingsAppearanceRoute: typeof AuthenticatedSettingsAppearanceRoute
   AuthenticatedSettingsDisplayRoute: typeof AuthenticatedSettingsDisplayRoute
   AuthenticatedSettingsNotificationsRoute: typeof AuthenticatedSettingsNotificationsRoute
+  AuthenticatedSettingsSecurityRoute: typeof AuthenticatedSettingsSecurityRoute
   AuthenticatedSettingsIndexRoute: typeof AuthenticatedSettingsIndexRoute
 }
 
 const AuthenticatedSettingsRouteRouteChildren: AuthenticatedSettingsRouteRouteChildren =
   {
     AuthenticatedSettingsAccountRoute: AuthenticatedSettingsAccountRoute,
+    AuthenticatedSettingsAlertsRoute: AuthenticatedSettingsAlertsRoute,
     AuthenticatedSettingsAppearanceRoute: AuthenticatedSettingsAppearanceRoute,
     AuthenticatedSettingsDisplayRoute: AuthenticatedSettingsDisplayRoute,
     AuthenticatedSettingsNotificationsRoute:
       AuthenticatedSettingsNotificationsRoute,
+    AuthenticatedSettingsSecurityRoute: AuthenticatedSettingsSecurityRoute,
     AuthenticatedSettingsIndexRoute: AuthenticatedSettingsIndexRoute,
   }
 
@@ -687,11 +691,11 @@ const AuthenticatedSettingsRouteRouteWithChildren =
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
-  AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
   AuthenticatedSecurityBansRoute: typeof AuthenticatedSecurityBansRoute
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedChatsIndexRoute: typeof AuthenticatedChatsIndexRoute
   AuthenticatedKnowledgeBaseIndexRoute: typeof AuthenticatedKnowledgeBaseIndexRoute
+  AuthenticatedKnowledgeIndexRoute: typeof AuthenticatedKnowledgeIndexRoute
   AuthenticatedLeadsIndexRoute: typeof AuthenticatedLeadsIndexRoute
   AuthenticatedLearningIndexRoute: typeof AuthenticatedLearningIndexRoute
   AuthenticatedTasksIndexRoute: typeof AuthenticatedTasksIndexRoute
@@ -702,11 +706,11 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
-  AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
   AuthenticatedSecurityBansRoute: AuthenticatedSecurityBansRoute,
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedChatsIndexRoute: AuthenticatedChatsIndexRoute,
   AuthenticatedKnowledgeBaseIndexRoute: AuthenticatedKnowledgeBaseIndexRoute,
+  AuthenticatedKnowledgeIndexRoute: AuthenticatedKnowledgeIndexRoute,
   AuthenticatedLeadsIndexRoute: AuthenticatedLeadsIndexRoute,
   AuthenticatedLearningIndexRoute: AuthenticatedLearningIndexRoute,
   AuthenticatedTasksIndexRoute: AuthenticatedTasksIndexRoute,
@@ -722,11 +726,9 @@ const rootRouteChildren: RootRouteChildren = {
   WidgetEmbedRoute: WidgetEmbedRoute,
   WidgetPreviewRoute: WidgetPreviewRoute,
   authForgotPasswordRoute: authForgotPasswordRoute,
-  authOtpRoute: authOtpRoute,
+  authGetLinkRoute: authGetLinkRoute,
   authSetPasswordRoute: authSetPasswordRoute,
   authSignInRoute: authSignInRoute,
-  authSignIn2Route: authSignIn2Route,
-  authSignUpRoute: authSignUpRoute,
   errors401Route: errors401Route,
   errors403Route: errors403Route,
   errors404Route: errors404Route,

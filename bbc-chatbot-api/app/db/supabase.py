@@ -567,7 +567,10 @@ _LIST_COLUMNS_BASE = (
     "widget_pings:metadata->>widget_pings,"
     # The form-trap hold flag (PR-12), for the list's Suspect badge: the list
     # carries no metadata, so the badge had nothing to read.
-    "suspect:metadata->>suspect"
+    "suspect:metadata->>suspect,"
+    # When the chat became this operator's — the first-reply deadline counts
+    # from here, and the list row shows the countdown the server will act on.
+    "agent_assigned_at:metadata->>agent_assigned_at"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -576,7 +579,7 @@ _LIST_COLUMNS_BASE = (
 _LIST_COLUMNS_SUPERVISOR = (
     ",created_at,chat_number,"
     "last_user_message_at,last_agent_message_at,last_reply_at,"
-    "visitor_phone,visitor_email"
+    "visitor_phone,visitor_email,queued_at"
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
 
@@ -762,6 +765,21 @@ def supervisor_columns_status() -> dict:
 _TAG_SCAN_CAP = 400
 
 
+def _readable_to_agent(viewer_id: str, with_queue: bool) -> str:
+    """PostgREST twin of conversations._taken_blind, negated: a chat this agent
+    may read — closed, someone's, one they were already talking in, or not
+    waiting for a person. Keep the two in step: test_blind_take evaluates this
+    filter against _taken_blind row by row. `with_queue`: queued_at exists
+    (migrations 023/024); without it the column can't be named."""
+    not_waiting = "status.neq.needs_agent,mode.not.in.(waiting_for_agent,human)"
+    if with_queue:
+        not_waiting += ",queued_at.is.null"
+    return (
+        "or(status.eq.closed,assigned_agent_id.not.is.null,"
+        f"metadata->>engaged_agent_id.eq.{viewer_id},and({not_waiting}))"
+    )
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -775,8 +793,14 @@ async def get_conversations(
     no_engagement_only: bool = False,
     limit: int = 50,
     offset: int = 0,
+    blind_viewer: Optional[str] = None,
 ) -> tuple[list, int]:
     """List conversations with filters. Returns (rows, total_count).
+
+    blind_viewer: the id of an agent (sales/support) searching. Their search
+    still finds any chat by name, but by e-mail or phone only the chats they
+    may read — never a waiting chat they haven't taken (blind take). Rows
+    would hide the contact anyway; the match itself would give it away.
 
     team_ids (Phase 2): when a non-empty list is passed, restrict to
     conversations whose frozen team_id is in that set. PostgREST ANDs
@@ -819,11 +843,16 @@ async def get_conversations(
                 # "#1042" / "1042" → exact chat_number match in addition to
                 # the usual visitor fields (supervisors search by number).
                 num_part = stripped[1:] if stripped.startswith("#") else stripped
-                visitor_match = (
-                    f"visitor_name.ilike.%{stripped}%,"
+                contact_match = (
                     f"visitor_email.ilike.%{stripped}%,"
                     f"visitor_phone.ilike.%{stripped}%"
                 )
+                if blind_viewer is not None:
+                    contact_match = (
+                        f"and(or({contact_match}),"
+                        f"{_readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)})"
+                    )
+                visitor_match = f"visitor_name.ilike.%{stripped}%,{contact_match}"
                 if num_part.isdigit() and with_supervisor_cols:
                     q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
                 else:
@@ -891,6 +920,7 @@ async def get_conversations(
                 # jsonb ->> yields the STRING "true"; the derivation only
                 # needs truthiness, but None must stay falsy.
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
+                "agent_assigned_at": row.pop("agent_assigned_at", None),
             }
         rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
@@ -898,6 +928,11 @@ async def get_conversations(
             for row in rows:
                 attach_derived_tag(row, lead=lead_map.get(row["id"]))
                 attach_effective_presence(row)
+                # The route the pipeline extracted, already in hand for the
+                # tag: the list row and the waiting card show it, no query.
+                _lead = lead_map.get(row["id"]) or {}
+                if _lead.get("origin_code") and _lead.get("destination_code"):
+                    row["route"] = {"from": _lead["origin_code"], "to": _lead["destination_code"]}
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
             if no_engagement_only:
@@ -995,6 +1030,40 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
                 pass
         logger.error(f"get_conversation_simple error: {e}")
         return None
+
+
+async def get_blind_inputs(conv_id: str) -> Optional[dict]:
+    """The five fields that decide whether an agent may read a chat yet
+    (blind take): status, mode, who has it, who was talking in it, and
+    whether it is in the shared line. One tiny row; None when there is no
+    such chat. A read that fails is logged and RAISED, never None: the
+    caller must tell "no chat" from "couldn't look" (rule 7), because it
+    fails closed on the second and lets the first through."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+
+    def _q(with_queued_at: bool):
+        return (
+            get_client().table("conversations")
+            .select(cols + (", queued_at" if with_queued_at else ""))
+            .eq("id", conv_id)
+            .limit(1)
+            .execute()
+        )
+
+    use_queued_at = _queued_at_column_available()
+    try:
+        try:
+            res = await _run_sync(lambda: _q(use_queued_at), label="blind")
+        except Exception as e:
+            if not use_queued_at or not _is_missing_column_error(e):
+                raise
+            _downgrade_queued_at(e)
+            res = await _run_sync(lambda: _q(False), label="blind")
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"get_blind_inputs({conv_id}) failed: {e}")
+        raise
 
 
 async def get_last_agent_for_visitor(
@@ -1687,7 +1756,10 @@ async def get_crm_orphan_leads(
 # ════════════════════════════════════════════════════════════════
 
 async def get_kb_categories(tunnel: Optional[str] = None) -> list:
-    """KB categories with article count per category."""
+    """KB categories with article count per category.
+
+    A failed read raises: an empty list means the knowledge base has no
+    categories, never that the database didn't answer."""
     try:
         db = get_client()
         def _query():
@@ -1705,7 +1777,7 @@ async def get_kb_categories(tunnel: Optional[str] = None) -> list:
         return result
     except Exception as e:
         logger.error(f"get_kb_categories error: {e}")
-        return []
+        raise
 
 
 async def get_kb_entries(
@@ -1714,6 +1786,8 @@ async def get_kb_entries(
     is_active: Optional[bool] = None,
     limit: int = 100,
 ) -> list:
+    """KB entries, newest change first. A failed read raises: an empty list
+    means there are no entries, never that the database didn't answer."""
     try:
         db = get_client()
         def _query():
@@ -1726,7 +1800,7 @@ async def get_kb_entries(
         return res.data or []
     except Exception as e:
         logger.error(f"get_kb_entries error: {e}")
-        return []
+        raise
 
 
 async def create_kb_entry(payload: dict) -> Optional[dict]:
@@ -2472,7 +2546,22 @@ async def diagnose_invite_token(token: str, purpose: str = "set_password") -> st
         if not row:
             return "unknown"
         if row.get("used_at"):
-            return "used"
+            # used_at is ALSO how a re-invite retires the older links
+            # (invalidate_active_invite_tokens). An account that still has no
+            # password never used this one: a newer link replaced it, and
+            # "Sign in with your password" would send them to a dead end.
+            uid = row.get("user_id")
+            if not uid:
+                return "used"
+            has_pw = await _run_sync(
+                lambda: db.table("users")
+                .select("id")
+                .eq("id", uid)
+                .not_.is_("password_hash", "null")
+                .limit(1)
+                .execute()
+            )
+            return "used" if (has_pw.data or []) else "superseded"
         now = datetime.now(timezone.utc)
         try:
             exp = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
@@ -3310,75 +3399,251 @@ async def has_ai_or_agent_message_since(conversation_id: str, since_iso: str) ->
 
 
 # ════════════════════════════════════════════════════════════════
-# TASKS
+# TASKS — follow-ups (migration 051)
 # ════════════════════════════════════════════════════════════════
+# What an agent promised a client, what a client asked for, or a to-do.
+# Until migration 051 runs, every read and write here raises TasksNotSetUp:
+# the page says the feature isn't set up, and catching from the chats skips
+# (counted in /health). A send never waits on it.
 
-TASK_SELECT = (
-    "id, task_number, title, description, status, label, priority, "
-    "assignee_id, created_by, due_date, created_at, updated_at"
+FOLLOW_UP_COLUMNS = (
+    "id, task_number, title, kind, source, conversation_id, lead_id, message_id, quote, "
+    "due_at, due_kind, assignee_id, created_by, unowned_reason, unowned_from, unowned_at, "
+    "done_at, done_by, dismissed_at, dismissed_by, created_at, updated_at"
 )
+TASKS_HEALTH: dict = {
+    "schema_missing": 0, "caught": 0, "client_asked": 0, "catch_failures": 0,
+    "moved_unowned": 0, "moved_to_ready": 0, "move_failures": 0,
+}
+_OPEN_LIMIT = 500
 
 
-async def get_tasks(
-    status: Optional[str] = None,
-    priority: Optional[str] = None,
-    assignee_id: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> tuple[list, int]:
-    """List tasks with optional filters. Returns (rows, total)."""
-    db_client = get_client()
-
-    def _query():
-        q = db_client.table("tasks").select(TASK_SELECT, count="exact").order("created_at", desc=True)  # type: ignore[arg-type]
-        if status:
-            q = q.eq("status", status)
-        if priority:
-            q = q.eq("priority", priority)
-        if assignee_id:
-            q = q.eq("assignee_id", assignee_id)
-        return q.range(offset, offset + limit - 1).execute()
-
-    res = await _run_sync(_query)
-    return res.data or [], res.count or 0
+class TasksNotSetUp(RuntimeError):
+    """Migration 051 hasn't run: the tasks columns or task_events are missing."""
 
 
-async def get_task(task_id: str) -> Optional[dict]:
-    """Get a single task by ID."""
-    db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").select(TASK_SELECT).eq("id", task_id).single().execute()
+def _is_schema_missing(e: Exception) -> bool:
+    text = str(e)
+    return (
+        any(code in text for code in ("42703", "42P01", "PGRST204", "PGRST205"))
+        or ("does not exist" in text and ("column" in text or "relation" in text))
+        or "Could not find the" in text
     )
-    return res.data if res.data else None
 
 
-async def create_task(payload: dict) -> Optional[dict]:
-    """Create a new task."""
+async def _tasks_call(fn, *, idempotent: bool = True, label: str = "tasks"):
+    try:
+        return await _run_sync(fn, idempotent, label=label)
+    except Exception as e:
+        if _is_schema_missing(e):
+            TASKS_HEALTH["schema_missing"] += 1
+            logger.warning(f"[tasks] migration 051 not applied: {e}")
+            raise TasksNotSetUp(str(e)) from e
+        raise
+
+
+async def get_task_rules_raw() -> Optional[dict]:
+    """The stored Tasks → Rules (None = the defaults). Raises on failure."""
     db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").insert(payload).execute(),
-        idempotent=False,
-    )
-    return res.data[0] if res.data else None
+    res = await _tasks_call(lambda: db_client.table("app_settings").select("task_rules").eq("id", 1).limit(1).execute())
+    rows = res.data or []
+    raw = rows[0].get("task_rules") if rows else None
+    return raw if isinstance(raw, dict) else None
 
 
-async def update_task(task_id: str, payload: dict) -> Optional[dict]:
-    """Update a task by ID."""
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+async def save_task_rules(rules: dict) -> None:
     db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").update(payload).eq("id", task_id).execute()
-    )
-    return res.data[0] if res.data else None
+    now = datetime.now(timezone.utc).isoformat()
+    await _tasks_call(lambda: db_client.table("app_settings").update({"task_rules": rules, "updated_at": now}).eq("id", 1).execute())
 
 
-async def delete_task(task_id: str) -> bool:
-    """Delete a task by ID."""
+async def insert_follow_up(row: dict) -> Optional[dict]:
+    """Insert a task. None when its chat message already made one (a retry)."""
     db_client = get_client()
-    res = await _run_sync(
-        lambda: db_client.table("tasks").delete().eq("id", task_id).execute()
-    )
+    payload = {**row, "updated_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        res = await _tasks_call(lambda: db_client.table("tasks").insert(payload).execute(), idempotent=False)
+    except TasksNotSetUp:
+        raise
+    except Exception as e:
+        if "23505" in str(e) or "uq_tasks_message" in str(e):
+            return None
+        raise
+    return (res.data or [None])[0]
+
+
+async def add_task_event(task_id: str, kind: str, actor_id: Optional[str] = None, details: Optional[dict] = None) -> None:
+    db_client = get_client()
+    row = {"task_id": task_id, "kind": kind, "actor_id": actor_id, "details": details or {}}
+    await _tasks_call(lambda: db_client.table("task_events").insert(row).execute(), idempotent=False)
+
+
+async def list_follow_ups(
+    *,
+    assignee_ids: Optional[list[str]] = None,
+    with_unowned: bool = False,
+    only_unowned: bool = False,
+    done_since: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> tuple[list[dict], list[dict]]:
+    """(open tasks by due time, tasks done since `done_since`, newest first).
+
+    assignee_ids None = everyone's; `conversation_id`: only that chat's (in the
+    query, so the 500-row cap never hides a chat's task). Raises on failure."""
+    db_client = get_client()
+
+    def scoped(q):
+        if conversation_id:
+            q = q.eq("conversation_id", conversation_id)
+        if only_unowned:
+            return q.is_("assignee_id", "null")
+        if assignee_ids is None:
+            return q
+        ids = ",".join(sorted({i for i in assignee_ids if i}))
+        if with_unowned:
+            return q.or_(f"assignee_id.in.({ids}),assignee_id.is.null" if ids else "assignee_id.is.null")
+        return q.in_("assignee_id", sorted({i for i in assignee_ids if i}) or ["00000000-0000-0000-0000-000000000000"])
+
+    open_res = await _tasks_call(lambda: scoped(
+        db_client.table("tasks").select(FOLLOW_UP_COLUMNS).is_("done_at", "null").is_("dismissed_at", "null")
+    ).order("due_at", nullsfirst=False).limit(_OPEN_LIMIT).execute())
+    done: list[dict] = []
+    if done_since:
+        done_res = await _tasks_call(lambda: scoped(
+            db_client.table("tasks").select(FOLLOW_UP_COLUMNS).gte("done_at", done_since)
+        ).order("done_at", desc=True).limit(_OPEN_LIMIT).execute())
+        done = done_res.data or []
+    return open_res.data or [], done
+
+
+async def get_follow_up(task_id: str) -> Optional[dict]:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select(FOLLOW_UP_COLUMNS).eq("id", task_id).limit(1).execute())
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+async def update_follow_up(task_id: str, payload: dict) -> Optional[dict]:
+    db_client = get_client()
+    body = {**payload, "updated_at": datetime.now(timezone.utc).isoformat()}
+    res = await _tasks_call(lambda: db_client.table("tasks").update(body).eq("id", task_id).execute())
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+async def delete_follow_up(task_id: str) -> bool:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").delete().eq("id", task_id).execute())
     return bool(res.data)
+
+
+async def get_task_events(task_id: str) -> list[dict]:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("task_events").select("kind, actor_id, details, at")
+                            .eq("task_id", task_id).order("at").limit(200).execute())
+    return res.data or []
+
+
+async def get_follow_up_context(conversation_ids: list[str]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """The chats and leads behind tasks: ({conversation_id: conv}, {conversation_id: lead})."""
+    ids = sorted({i for i in conversation_ids if i})
+    if not ids:
+        return {}, {}
+    db_client = get_client()
+    convs: dict[str, dict] = {}
+    leads: dict[str, dict] = {}
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        conv_res, lead_res = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations")
+                      .select("id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, assigned_agent_id, tunnel")
+                      .in_("id", chunk).execute(), label="tasks"),
+            _run_sync(lambda chunk=chunk: db_client.table("leads")
+                      .select("id, conversation_id, route_display, origin_code, destination_code, departure_date, "
+                              "passengers, children_count, infant_count, created_in_crm, crm_lead_id")
+                      .in_("conversation_id", chunk).execute(), label="tasks"),
+        )
+        for c in conv_res.data or []:
+            convs[c["id"]] = c
+        for lead in lead_res.data or []:
+            leads.setdefault(lead["conversation_id"], lead)
+    return convs, leads
+
+
+async def client_messages_since(conversation_ids: list[str], since_iso: str) -> list[dict]:
+    """The clients' messages in these chats since `since_iso` (for "wrote again")."""
+    ids = sorted({i for i in conversation_ids if i})
+    if not ids:
+        return []
+    db_client = get_client()
+    out: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        out.extend(await _select_pages(
+            lambda chunk=chunk: db_client.table("messages").select("conversation_id, created_at")
+            .in_("conversation_id", chunk).eq("role", "user").gt("created_at", since_iso).order("created_at"),
+            label="tasks", max_pages=5,
+        ))
+    return out
+
+
+async def messages_around(conversation_id: str, at_iso: str, before: int = 2, after: int = 4) -> list[dict]:
+    """A few messages before and after a moment in a chat (the promise and its replies)."""
+    db_client = get_client()
+    cols = "id, role, content, created_at"
+    older, newer = await asyncio.gather(
+        _run_sync(lambda: db_client.table("messages").select(cols).eq("conversation_id", conversation_id)
+                  .neq("role", "system").lte("created_at", at_iso).order("created_at", desc=True).limit(before + 1).execute(), label="tasks"),
+        _run_sync(lambda: db_client.table("messages").select(cols).eq("conversation_id", conversation_id)
+                  .neq("role", "system").gt("created_at", at_iso).order("created_at").limit(after).execute(), label="tasks"),
+    )
+    return list(reversed(older.data or [])) + (newer.data or [])
+
+
+async def open_task_ids_of(user_id: str) -> list[str]:
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select("id").eq("assignee_id", user_id)
+                            .is_("done_at", "null").is_("dismissed_at", "null").limit(_OPEN_LIMIT).execute())
+    return [r["id"] for r in res.data or []]
+
+
+async def ready_operators() -> list[dict]:
+    """Agents who are Ready now: id, role, tunnel_scope (for "give them to whoever is Ready")."""
+    db_client = get_client()
+    res = await _run_sync(lambda: db_client.table("users").select("id, role, tunnel_scope, last_seen_at")
+                          .eq("is_ready", True).eq("is_active", True).in_("role", list(_OPERATOR_ROLES)).execute(), label="tasks")
+    return res.data or []
+
+
+async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
+    ids = sorted({i for i in user_ids if i})
+    if not ids:
+        return {}
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select("assignee_id").in_("assignee_id", ids)
+                            .is_("done_at", "null").is_("dismissed_at", "null").limit(_OPEN_LIMIT * 4).execute())
+    counts: dict[str, int] = {i: 0 for i in ids}
+    for r in res.data or []:
+        counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
+    return counts
+
+
+async def get_task_people() -> list[dict]:
+    """Everyone who can hold a task: active agents, supervisors, PMs and
+    managers (QA has no Tasks page). Raises."""
+    db_client = get_client()
+    res = await _run_sync(lambda: db_client.table("users").select("id, name, email, role, team_id")
+                          .eq("is_active", True).neq("role", "qa").execute(), label="tasks")
+    return res.data or []
+
+
+async def caught_stats_since(since_iso: str) -> dict:
+    """Tasks caught from agents' messages since `since_iso`, and how many were "Not a promise"."""
+    db_client = get_client()
+    res = await _tasks_call(lambda: db_client.table("tasks").select("id, dismissed_at")
+                            .eq("source", "caught").gte("created_at", since_iso).limit(5000).execute())
+    rows = res.data or []
+    return {"caught": len(rows), "not_a_promise": sum(1 for r in rows if r.get("dismissed_at"))}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -3446,27 +3711,6 @@ async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict
 
     except Exception as e:
         logger.error(f"get_pending_conversations error: {e}")
-        return []
-
-
-async def get_assigned_tasks(user_id: str) -> list[dict]:
-    """Return active tasks assigned to *user_id* (not done/canceled)."""
-    try:
-        db_client = get_client()
-        res = await _run_sync(
-            lambda: (
-                db_client.table("tasks")
-                .select("id, task_number, title, priority, status, created_at")
-                .eq("assignee_id", user_id)
-                .not_.in_("status", '("done","canceled")')
-                .order("created_at", desc=True)
-                .limit(20)
-                .execute()
-            )
-        )
-        return res.data or []
-    except Exception as e:
-        logger.error(f"get_assigned_tasks error: {e}")
         return []
 
 
@@ -3601,6 +3845,12 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
             )
             .eq("tunnel", "sales")
             .in_("status", ["active", "closed"])
+            # Same rule as get_abandoned_conversations: a chat an agent
+            # CLOSED is the agent's decision, not an orphan. Without this
+            # line the backfill pushed every operator-handled chat of the
+            # last 30 days on each deploy (72 on 4 Nov 2026, AAA defaults,
+            # many already entered in the CRM by hand).
+            .is_("metadata->>closed_by_agent_id", "null")
             .gte("created_at", cutoff)
             .or_(
                 "and(visitor_phone.not.is.null,visitor_phone.neq.),"
@@ -3623,6 +3873,82 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
     except Exception as e:
         logger.error(f"get_recent_contact_conversations error: {e}")
         return []
+
+
+_CRM_CONTACT_SCAN_CAP = 5000
+# Rows asked for per request. The server may return fewer (PostgREST
+# max-rows, 1000 by default on Supabase) — the loop advances by what it
+# actually got and stops on the exact count, never on a short page.
+_CRM_CONTACT_PAGE = 1000
+
+
+async def get_crm_contact_rows(days: int = 30) -> list[dict] | None:
+    """Contacts (phone, email) of every lead that reached the CRM in the
+    last N days — the "this human is already in the CRM" guard.
+
+    The created_in_crm flag lives on ONE conversation's lead; the same
+    human writing again from a second conversation (new tab, typo in the
+    email) has a second lead whose flag is false, and the automatic paths
+    pushed it again. Returns None when the read FAILED, so the caller can
+    tell "nobody is in the CRM" ([]) from "we could not look" (None).
+
+    Paged: a single .limit() above the server's max-rows is silently cut
+    to max-rows, and a guard that sees 1000 of 1200 contacts misses
+    duplicates without a word. Newest first, so a push landing between
+    two pages shifts rows down (one is read twice, harmless in a set)
+    instead of skipping one."""
+    try:
+        db = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        def _page(first: int, last: int, with_count: bool):
+            return (
+                db.table("leads")
+                .select(
+                    "id, conversations!inner(visitor_phone, visitor_email)",
+                    count="exact" if with_count else None,  # type: ignore[arg-type]
+                )
+                .eq("created_in_crm", True)
+                .gte("created_in_crm_at", cutoff)
+                .order("created_in_crm_at", desc=True)
+                .order("id")
+                .range(first, last)
+                .execute()
+            )
+
+        rows: list[dict] = []
+        total: int | None = None
+        offset = 0
+        while offset < _CRM_CONTACT_SCAN_CAP:
+            last = min(offset + _CRM_CONTACT_PAGE, _CRM_CONTACT_SCAN_CAP) - 1
+            res = await _run_sync(
+                lambda f=offset, l=last, c=(total is None): _page(f, l, c),
+                label="cron",
+            )
+            if total is None:
+                total = res.count if isinstance(res.count, int) else None
+                if total is None:
+                    logger.error(
+                        "get_crm_contact_rows: no exact count returned — "
+                        "cannot prove the contact list is complete"
+                    )
+                    return None
+            page = res.data or []
+            rows.extend(r.get("conversations") or {} for r in page)
+            offset += len(page)
+            if not page or offset >= total:
+                break
+
+        if total > _CRM_CONTACT_SCAN_CAP:
+            logger.warning(
+                f"get_crm_contact_rows: {total} CRM contacts in the {days}-day "
+                f"window, only the newest {_CRM_CONTACT_SCAN_CAP} were loaded — "
+                "a duplicate of an older one would not be caught"
+            )
+        return rows[:_CRM_CONTACT_SCAN_CAP]
+    except Exception as e:
+        logger.error(f"get_crm_contact_rows error: {e}")
+        return None
 
 
 async def get_last_system_message(conversation_id: str) -> dict | None:
@@ -3894,6 +4220,688 @@ async def get_agent_history(user_id: str, days: int = 7) -> dict:
         "presence": pres_res.data or [],
         "ready_log": ready_res.data or [],
         "activity": acts_res.data or [],
+    }
+
+
+_PAGE = 1000          # PostgREST's default max-rows: a bigger .limit() is silently cut
+_IDS_PER_REQUEST = 100  # keeps an in.(...) filter well under URL limits
+
+
+async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> list[dict]:
+    """Every row of a read, one PostgREST page at a time.
+
+    `build()` returns a fresh query builder; this adds .range() per page. Stops
+    at a short page. Raises on failure — the caller decides what a failed read
+    means, a partial list is never passed off as the whole one. That includes
+    a read still full at `max_pages`: the rows past the cap are the newest
+    ones (every read is ordered oldest first), so it raises instead."""
+    rows: list[dict] = []
+    for page in range(max_pages):
+        lo = page * _PAGE
+        res = await _run_sync(lambda lo=lo: build().range(lo, lo + _PAGE - 1).execute(), label=label)
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE:
+            return rows
+    # Full at the cap: one more row says whether anything was left out.
+    lo = max_pages * _PAGE
+    more = await _run_sync(lambda: build().range(lo, lo).execute(), label=label)
+    if not (more.data or []):
+        return rows
+    logger.error(f"_select_pages[{label}]: still full after {max_pages} pages ({len(rows)} rows); refusing a partial read")
+    raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
+
+
+async def get_last_message_previews(conversation_ids: list[str], max_len: int = 140) -> dict[str, dict]:
+    """The newest non-system message of each conversation on a list page.
+
+    ONE request for the page: PostgREST embeds messages per conversation and
+    applies order + limit per parent (a lateral join on idx_msg_conv_created),
+    so no thread is ever loaded. Raises on failure; the list endpoint logs it
+    and serves the page without previews."""
+    ids = [i for i in conversation_ids if i]
+    if not ids:
+        return {}
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select("id, messages(role, content, created_at)")
+        .in_("id", ids)
+        .neq("messages.role", "system")
+        .order("created_at", desc=True, foreign_table="messages")
+        .limit(1, foreign_table="messages")
+        .execute(),
+        label="list_previews",
+    )
+    out: dict[str, dict] = {}
+    for row in res.data or []:
+        msgs = row.get("messages") or []
+        if not msgs:
+            continue
+        m = msgs[0]
+        text = " ".join(str(m.get("content") or "").split())
+        if len(text) > max_len:
+            text = text[: max_len - 1].rstrip() + "\u2026"
+        out[row["id"]] = {"role": m.get("role"), "content": text, "created_at": m.get("created_at")}
+    return out
+
+
+_DAY_CONV_COLUMNS = (
+    "id, chat_number, visitor_name, visitor_phone, visitor_email, status, mode, tunnel, "
+    "assigned_agent_id, metadata, last_user_message_at, last_agent_message_at"
+)
+
+
+async def get_agent_day_inputs(user_id: str, since_iso: str) -> dict:
+    """Everything "Your day" needs for one operator since `since_iso`.
+
+    Reads only: the operator's activity rows, their open chats, the rows of the
+    conversations involved, the operator messages in them (for the first reply)
+    and the leads (for the CRM). Raises on any failure — a day built from a
+    partial read would show wrong numbers as if they were right."""
+    db_client = get_client()
+    activity = await _select_pages(
+        lambda: db_client.table("agent_activity_log")
+        .select("action, conversation_id, happened_at, response_seconds")
+        .eq("user_id", user_id)
+        .gte("happened_at", since_iso)
+        .in_("action", ["claim_won", "deadline_fired", "closed"])
+        .order("happened_at"),
+        label="agent_day",
+    )
+    open_res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select(_DAY_CONV_COLUMNS)
+        .eq("assigned_agent_id", user_id)
+        .eq("status", "active")
+        .eq("mode", "human")
+        .execute(),
+        label="agent_day",
+    )
+    open_conversations = open_res.data or []
+
+    ids = list({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    conversations: dict[str, dict] = {c["id"]: c for c in open_conversations}
+    leads: dict[str, dict] = {}
+    agent_messages: list[dict] = []
+    claimed = list({a["conversation_id"] for a in activity
+                    if a.get("action") == "claim_won" and a.get("conversation_id")})
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        res = await _run_sync(
+            lambda chunk=chunk: db_client.table("conversations")
+            .select(_DAY_CONV_COLUMNS).in_("id", chunk).execute(),
+            label="agent_day",
+        )
+        for c in res.data or []:
+            conversations[c["id"]] = c
+        lead_res = await _run_sync(
+            lambda chunk=chunk: db_client.table("leads")
+            .select("conversation_id, created_in_crm, crm_lead_id")
+            .in_("conversation_id", chunk).execute(),
+            label="agent_day",
+        )
+        for row in lead_res.data or []:
+            if row.get("conversation_id"):
+                leads[row["conversation_id"]] = row
+    for i in range(0, len(claimed), _IDS_PER_REQUEST):
+        chunk = claimed[i:i + _IDS_PER_REQUEST]
+        agent_messages.extend(await _select_pages(
+            lambda chunk=chunk: db_client.table("messages")
+            .select("conversation_id, created_at")
+            .in_("conversation_id", chunk)
+            .eq("role", "agent")
+            .gte("created_at", since_iso)
+            .order("created_at"),
+            label="agent_day",
+        ))
+    return {
+        "activity": activity,
+        "agent_messages": agent_messages,
+        "conversations": conversations,
+        "leads": leads,
+        "open_conversations": open_conversations,
+    }
+
+
+# The owner's Dashboard reads only these columns. The visitor's phone is turned
+# into has_phone right after the read: the page needs to know a phone exists,
+# never the number.
+_OWNER_CONV_COLUMNS = (
+    "id, chat_number, tunnel, mode, status, created_at, closed_at, assigned_agent_id, "
+    "visitor_name, visitor_phone, "
+    "confirmed_at:metadata->>confirmed_at, site:metadata->>site, "
+    "utm_source:metadata->>utm_source, page_url:metadata->>page_url, "
+    "user_agent:metadata->>user_agent, closed_by_agent_id:metadata->>closed_by_agent_id, team_id"
+)
+_OWNER_LEAD_COLUMNS = (
+    "conversation_id, created_at, origin_code, destination_code, departure_date, return_date, "
+    "passengers, trip_type, created_in_crm, crm_push_gate_reason, reviewed_by_qa, reviewed_at"
+)
+
+
+def _strip_phone(row: dict) -> dict:
+    phone = row.pop("visitor_phone", None)
+    row["has_phone"] = bool((phone or "").strip()) if isinstance(phone, str) else bool(phone)
+    return row
+
+
+async def get_owner_dashboard_inputs(since_iso: str, ready_since_iso: str) -> dict:
+    """Everything the owner's Dashboard needs since `since_iso`, read-only.
+
+    Chats created in the window, their leads, every take/went-back/close in it,
+    the message timestamps (and the assistant's text, for "where people
+    leave"), the AI runs, the Ready log and the user names. Chats taken in the
+    window but started before it are read by id. Raises on any failure: a
+    dashboard built from a partial read would show wrong numbers as if they
+    were right."""
+    db_client = get_client()
+
+    def pages(build, label="owner_dash"):
+        return _select_pages(build, label=label, max_pages=40)
+
+    (
+        convs, leads_rows, activity, user_msgs, agent_msgs, ai_msgs, runs, ready_log,
+        users_res, review_res,
+    ) = await asyncio.gather(
+        pages(lambda: db_client.table("conversations").select(_OWNER_CONV_COLUMNS)
+              .gte("created_at", since_iso).order("created_at")),
+        pages(lambda: db_client.table("leads").select(_OWNER_LEAD_COLUMNS)
+              .gte("created_at", since_iso).order("created_at")),
+        pages(lambda: db_client.table("agent_activity_log")
+              .select("user_id, conversation_id, action, happened_at, response_seconds")
+              .gte("happened_at", since_iso)
+              .in_("action", ["claim_won", "assigned", "deadline_fired", "closed"])
+              .order("happened_at")),
+        pages(lambda: db_client.table("messages").select("conversation_id, created_at")
+              .eq("role", "user").gte("created_at", since_iso).order("created_at")),
+        pages(lambda: db_client.table("messages").select("conversation_id, created_at")
+              .eq("role", "agent").gte("created_at", since_iso).order("created_at")),
+        pages(lambda: db_client.table("messages").select("id, conversation_id, content, created_at")
+              .eq("role", "ai").gte("created_at", since_iso).order("created_at")),
+        pages(lambda: db_client.table("pipeline_runs")
+              .select("conversation_id, message_id, cost, latency_ms, had_fallback, intent_detected, created_at")
+              .gte("created_at", since_iso).order("created_at")),
+        pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+              .gte("changed_at", ready_since_iso).order("changed_at")),
+        _run_sync(lambda: db_client.table("users").select("id, name, role, tunnel_scope, is_active").execute(),
+                  label="owner_dash"),
+        _run_sync(lambda: db_client.table("leads").select("reviewed_at")
+                  .eq("reviewed_by_qa", True).not_.is_("reviewed_at", "null")
+                  .order("reviewed_at", desc=True).limit(1).execute(),
+                  label="owner_dash"),
+    )
+    conversations = {c["id"]: _strip_phone(c) for c in convs if c.get("id")}
+    leads: dict[str, dict] = {
+        row["conversation_id"]: row for row in leads_rows if row.get("conversation_id")
+    }
+
+    # Chats taken in the window but started before it.
+    older = sorted({a["conversation_id"] for a in activity
+                    if a.get("conversation_id") and a["conversation_id"] not in conversations})
+    for i in range(0, len(older), _IDS_PER_REQUEST):
+        chunk = older[i:i + _IDS_PER_REQUEST]
+        conv_res, lead_res = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations")
+                      .select(_OWNER_CONV_COLUMNS).in_("id", chunk).execute(), label="owner_dash"),
+            _run_sync(lambda chunk=chunk: db_client.table("leads")
+                      .select(_OWNER_LEAD_COLUMNS).in_("conversation_id", chunk).execute(), label="owner_dash"),
+        )
+        for c in conv_res.data or []:
+            conversations[c["id"]] = _strip_phone(c)
+        for row in lead_res.data or []:
+            if row.get("conversation_id"):
+                leads.setdefault(row["conversation_id"], row)
+
+    review = (review_res.data or [None])[0] if review_res else None
+    return {
+        "conversations": list(conversations.values()),
+        "leads": leads,
+        "activity": activity,
+        "user_msgs": user_msgs,
+        "agent_msgs": agent_msgs,
+        "ai_msgs": ai_msgs,
+        "runs": runs,
+        "ready_log": ready_log,
+        "users": {u["id"]: u for u in (users_res.data or []) if u.get("id")},
+        "last_review_at": (review or {}).get("reviewed_at"),
+    }
+
+
+# ── To read: chats taken in the last two weeks, and one chat for reading ──
+_READ_CONV_COLUMNS = (
+    "id, chat_number, visitor_name, tunnel, status, mode, created_at, closed_at, team_id, "
+    "assigned_agent_id, confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id"
+)
+_READ_LEAD_COLUMNS = (
+    "id, conversation_id, origin_code, destination_code, route_display, departure_date, return_date, "
+    "passengers, trip_type, cabin_class, created_in_crm, crm_lead_id, crm_push_gate_reason"
+)
+_TAKE_LOG_ACTIONS = ["claim_won", "assigned", "deadline_fired", "closed"]
+
+
+async def get_to_read_inputs(since_iso: str) -> dict:
+    """Every take, went-back and close since `since_iso`, the chats they
+    belong to, those chats' client and operator messages and their leads.
+    Read-only. Raises on any failure: a list built from a partial read would
+    leave lost chats out without saying so."""
+    db_client = get_client()
+    activity, users_res = await asyncio.gather(
+        _select_pages(lambda: db_client.table("agent_activity_log")
+                      .select("user_id, conversation_id, action, happened_at")
+                      .gte("happened_at", since_iso).in_("action", _TAKE_LOG_ACTIONS)
+                      .order("happened_at"), label="to_read", max_pages=20),
+        _run_sync(lambda: db_client.table("users").select("id, name, role").execute(), label="to_read"),
+    )
+    ids = sorted({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    convs: list[dict] = []
+    leads: list[dict] = []
+    messages: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        conv_res, lead_res, msg_rows = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations").select(_READ_CONV_COLUMNS)
+                      .in_("id", chunk).execute(), label="to_read"),
+            _run_sync(lambda chunk=chunk: db_client.table("leads").select(_READ_LEAD_COLUMNS)
+                      .in_("conversation_id", chunk).execute(), label="to_read"),
+            _select_pages(lambda chunk=chunk: db_client.table("messages")
+                          .select("conversation_id, role, content, created_at")
+                          .in_("conversation_id", chunk).in_("role", ["user", "agent"])
+                          .order("created_at"), label="to_read", max_pages=20),
+        )
+        convs.extend(conv_res.data or [])
+        leads.extend(lead_res.data or [])
+        messages.extend(msg_rows)
+    return {
+        "activity": activity, "conversations": convs, "leads": leads, "messages": messages,
+        "users": {u["id"]: u for u in (users_res.data or []) if u.get("id")},
+    }
+
+
+async def get_reading_inputs(conversation_id: str, week_since_iso: str) -> Optional[dict]:
+    """One chat for the To read reader: the chat, its lead, every message,
+    its take log, the Ready changes of the people who had it, and the week of
+    the last person who had it. None when the chat doesn't exist. Raises on
+    any failure."""
+    db_client = get_client()
+    conv_res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select(_READ_CONV_COLUMNS + ", visitor_phone, visitor_email")
+        .eq("id", conversation_id).limit(1).execute(),
+        label="to_read",
+    )
+    conv = (conv_res.data or [None])[0]
+    if not conv:
+        return None
+    lead_res, messages, activity, users_res = await asyncio.gather(
+        _run_sync(lambda: db_client.table("leads").select(_READ_LEAD_COLUMNS)
+                  .eq("conversation_id", conversation_id).limit(1).execute(), label="to_read"),
+        _select_pages(lambda: db_client.table("messages").select("id, role, content, created_at")
+                      .eq("conversation_id", conversation_id).order("created_at"),
+                      label="to_read", max_pages=10),
+        _run_sync(lambda: db_client.table("agent_activity_log")
+                  .select("user_id, conversation_id, action, happened_at")
+                  .eq("conversation_id", conversation_id).in_("action", _TAKE_LOG_ACTIONS)
+                  .order("happened_at").execute(), label="to_read"),
+        _run_sync(lambda: db_client.table("users").select("id, name, role").execute(), label="to_read"),
+    )
+    acts = activity.data or []
+    people = sorted({a["user_id"] for a in acts if a.get("user_id")})
+    last = next((a.get("user_id") for a in reversed(acts) if a.get("action") in ("claim_won", "assigned")), None)
+    ready_log: list[dict] = []
+    week: list[dict] = []
+    if people:
+        ready_res = await _run_sync(
+            lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+            .in_("user_id", people).gte("changed_at", conv.get("created_at") or week_since_iso)
+            .order("changed_at").limit(500).execute(),
+            label="to_read",
+        )
+        ready_log = ready_res.data or []
+    if last:
+        week = await _select_pages(
+            lambda: db_client.table("agent_activity_log")
+            .select("user_id, conversation_id, action, happened_at")
+            .eq("user_id", last).gte("happened_at", week_since_iso).in_("action", _TAKE_LOG_ACTIONS)
+            .order("happened_at"), label="to_read", max_pages=5,
+        )
+    for m in messages:
+        m["conversation_id"] = conversation_id
+    return {
+        "conv": conv,
+        "lead": (lead_res.data or [None])[0],
+        "messages": messages,
+        "activity": acts,
+        "ready_log": ready_log,
+        "agent_week": week,
+        "users": {u["id"]: u for u in (users_res.data or []) if u.get("id")},
+    }
+
+
+# ── Team · Now: the floor right now, and one person's day ──
+_FLOOR_CONV_COLUMNS = (
+    "id, chat_number, tunnel, status, mode, created_at, queued_at, assigned_agent_id, team_id, "
+    "visitor_name, last_user_message_at, last_agent_message_at, message_count"
+)
+_TEAM_USER_COLUMNS = "id, name, email, role, tunnel_scope, team_id, is_ready, last_seen_at, is_active"
+
+
+async def get_team_now_inputs(day_start_iso: str) -> dict:
+    """Everyone active, the active teams, every open chat (with its lead's
+    route), today's take log and operator messages, and the Ready log since
+    the day before. Read-only. Raises on any failure: a floor drawn from a
+    partial read would show people as free who aren't."""
+    db_client = get_client()
+    ready_since = (datetime.fromisoformat(day_start_iso) - timedelta(days=1)).isoformat()
+    users_res, teams_res, convs, activity, agent_msgs, ready_log = await asyncio.gather(
+        _run_sync(lambda: db_client.table("users").select(_TEAM_USER_COLUMNS)
+                  .eq("is_active", True).execute(), label="team_now"),
+        _run_sync(lambda: db_client.table("teams").select("id, name, shift_start, shift_end, supervisor_id, pm_id")
+                  .eq("is_active", True).execute(), label="team_now"),
+        _select_pages(lambda: db_client.table("conversations").select(_FLOOR_CONV_COLUMNS)
+                      .in_("status", ["active", "needs_agent"]).order("created_at"),
+                      label="team_now", max_pages=5),
+        _select_pages(lambda: db_client.table("agent_activity_log")
+                      .select("user_id, conversation_id, action, happened_at")
+                      .gte("happened_at", day_start_iso).in_("action", _TAKE_LOG_ACTIONS)
+                      .order("happened_at"), label="team_now", max_pages=10),
+        _select_pages(lambda: db_client.table("messages").select("conversation_id, created_at")
+                      .eq("role", "agent").gte("created_at", day_start_iso).order("created_at"),
+                      label="team_now", max_pages=10),
+        _select_pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+                      .gte("changed_at", ready_since).order("changed_at"), label="team_now", max_pages=5),
+    )
+    ids = [c["id"] for c in convs if c.get("id")]
+    leads: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        res = await _run_sync(lambda chunk=chunk: db_client.table("leads").select(_READ_LEAD_COLUMNS)
+                              .in_("conversation_id", chunk).execute(), label="team_now")
+        leads.extend(res.data or [])
+    return {
+        "users": users_res.data or [],
+        "teams": teams_res.data or [],
+        "conversations": convs,
+        "leads": leads,
+        "activity": activity,
+        "agent_msgs": agent_msgs,
+        "ready_log": ready_log,
+    }
+
+
+async def get_person_day_inputs(user_id: str, day_start_iso: str) -> Optional[dict]:
+    """One person's day: the user and their team, today's take log (with
+    takes lost) and their chats' operator messages, the Ready log since the
+    day before, seven days of hours online, the chats they have now. None
+    when the user doesn't exist. Raises on any failure."""
+    db_client = get_client()
+    user_res = await _run_sync(lambda: db_client.table("users").select(_TEAM_USER_COLUMNS)
+                               .eq("id", user_id).limit(1).execute(), label="team_now")
+    user = (user_res.data or [None])[0]
+    if not user:
+        return None
+    day_start = datetime.fromisoformat(day_start_iso)
+    week_day = (day_start - timedelta(days=7)).date().isoformat()
+    activity, ready_log, presence_res, open_res = await asyncio.gather(
+        _select_pages(lambda: db_client.table("agent_activity_log")
+                      .select("user_id, conversation_id, action, happened_at")
+                      .eq("user_id", user_id).gte("happened_at", day_start_iso)
+                      .in_("action", [*_TAKE_LOG_ACTIONS, "claim_lost"]).order("happened_at"),
+                      label="team_now", max_pages=5),
+        _select_pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+                      .eq("user_id", user_id).gte("changed_at", (day_start - timedelta(days=1)).isoformat())
+                      .order("changed_at"), label="team_now", max_pages=3),
+        _run_sync(lambda: db_client.table("agent_presence_daily")
+                  .select("day, first_seen_at, last_seen_at, minutes_online")
+                  .eq("user_id", user_id).gte("day", week_day).order("day").execute(), label="team_now"),
+        _run_sync(lambda: db_client.table("conversations").select(_FLOOR_CONV_COLUMNS)
+                  .eq("assigned_agent_id", user_id).in_("status", ["active", "needs_agent"]).execute(),
+                  label="team_now"),
+    )
+    ids = sorted({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    convs: dict[str, dict] = {}
+    agent_msgs: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        conv_res, msg_rows = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations").select("id, visitor_name")
+                      .in_("id", chunk).execute(), label="team_now"),
+            _select_pages(lambda chunk=chunk: db_client.table("messages").select("conversation_id, created_at")
+                          .in_("conversation_id", chunk).eq("role", "agent").gte("created_at", day_start_iso)
+                          .order("created_at"), label="team_now", max_pages=5),
+        )
+        for c in conv_res.data or []:
+            convs[c["id"]] = c
+        agent_msgs.extend(msg_rows)
+    team = None
+    if user.get("team_id"):
+        team_res = await _run_sync(lambda: db_client.table("teams").select("id, name, shift_start, shift_end")
+                                   .eq("id", user["team_id"]).limit(1).execute(), label="team_now")
+        team = (team_res.data or [None])[0]
+    return {
+        "user": user,
+        "team": team,
+        "activity": activity,
+        "agent_msgs": agent_msgs,
+        "conversations": convs,
+        "ready_log": ready_log,
+        "presence_days": presence_res.data or [],
+        "open_chats": open_res.data or [],
+    }
+
+
+# ── Leads: every lead with the fields of its chat the Leads page needs ──
+# The page's tabs, filters and counts all need the conversation's
+# confirmed_at, status and closer, which live in metadata. Reading the whole
+# set (two paged reads, ~3.3k rows in Nov 2026) and filtering in memory keeps
+# one definition for every number on the page. Shared for a short while and
+# dropped on every lead write made through the panel.
+_LEADS_UNIVERSE_TTL = 20
+_LEADS_UNIVERSE: dict = {"at": 0.0, "rows": []}
+_LEADS_UNIVERSE_LOCK = asyncio.Lock()
+LEADS_UNIVERSE_HEALTH: dict = {"hits": 0, "reads": 0, "rows": 0}
+
+_UNIVERSE_LEAD_COLUMNS = (
+    "id, conversation_id, created_at, updated_at, origin_code, destination_code, route_display, "
+    "departure_date, return_date, passengers, children_count, infant_count, trip_type, cabin_class, "
+    "flexible_dates, score, tier, status, team_id, created_in_crm, created_in_crm_at, crm_lead_id, "
+    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by, qa_notes"
+)
+_UNIVERSE_CONV_COLUMNS = (
+    "id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, tunnel, "
+    "assigned_agent_id, last_agent_message_at, closed_at, "
+    "confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id"
+)
+
+
+def invalidate_leads_universe() -> None:
+    _LEADS_UNIVERSE["at"] = 0.0
+
+
+async def get_leads_universe() -> list[dict]:
+    """Every lead joined with its conversation's fields. Raises on failure: a
+    list built from half a read would hide leads as if they didn't exist."""
+    if time.monotonic() - _LEADS_UNIVERSE["at"] < _LEADS_UNIVERSE_TTL:
+        LEADS_UNIVERSE_HEALTH["hits"] += 1
+        return _LEADS_UNIVERSE["rows"]
+    async with _LEADS_UNIVERSE_LOCK:
+        if time.monotonic() - _LEADS_UNIVERSE["at"] < _LEADS_UNIVERSE_TTL:
+            LEADS_UNIVERSE_HEALTH["hits"] += 1
+            return _LEADS_UNIVERSE["rows"]
+        db_client = get_client()
+        leads_rows, conv_rows = await asyncio.gather(
+            _select_pages(lambda: db_client.table("leads").select(_UNIVERSE_LEAD_COLUMNS)
+                          .order("created_at"), label="leads_universe", max_pages=50),
+            _select_pages(lambda: db_client.table("conversations").select(_UNIVERSE_CONV_COLUMNS)
+                          .order("created_at"), label="leads_universe", max_pages=50),
+        )
+        convs = {c["id"]: c for c in conv_rows if c.get("id")}
+        rows = []
+        for lead in leads_rows:
+            c = convs.get(lead.get("conversation_id"))
+            if not c:
+                continue
+            row = dict(lead)
+            row.update({
+                "chat_number": c.get("chat_number"),
+                "visitor_name": c.get("visitor_name"),
+                "visitor_email": c.get("visitor_email"),
+                "visitor_phone": c.get("visitor_phone"),
+                "conversation_status": c.get("status"),
+                "conversation_mode": c.get("mode"),
+                "tunnel": c.get("tunnel"),
+                "assigned_agent_id": c.get("assigned_agent_id"),
+                "last_agent_message_at": c.get("last_agent_message_at"),
+                "conversation_closed_at": c.get("closed_at"),
+                "confirmed_at": c.get("confirmed_at"),
+                "closed_by_agent_id": c.get("closed_by_agent_id"),
+            })
+            rows.append(row)
+        _LEADS_UNIVERSE.update({"at": time.monotonic(), "rows": rows})
+        LEADS_UNIVERSE_HEALTH["reads"] += 1
+        LEADS_UNIVERSE_HEALTH["rows"] = len(rows)
+        return rows
+
+
+async def get_user_names() -> dict[str, str]:
+    """id → name for every user, for "chat with" and "closed by". Raises."""
+    db_client = get_client()
+    res = await _run_sync(lambda: db_client.table("users").select("id, name, email").execute(), label="names")
+    return {u["id"]: (u.get("name") or u.get("email") or "") for u in (res.data or []) if u.get("id")}
+
+
+async def get_earlier_leads(lead_id: str, email: Optional[str], phone: Optional[str]) -> list[dict]:
+    """Other chats with this phone or e-mail, newest first, at most 10.
+    Raises on failure; the caller decides."""
+    db_client = get_client()
+    found: dict[str, dict] = {}
+    for col, value in (("visitor_email", (email or "").strip()), ("visitor_phone", (phone or "").strip())):
+        if not value:
+            continue
+        res = await _run_sync(
+            lambda col=col, value=value: db_client.table("conversations")
+            .select("id, chat_number, created_at, status, assigned_agent_id, leads(id, origin_code, destination_code, created_in_crm, crm_lead_id)")
+            .eq(col, value)
+            .order("created_at", desc=True)
+            .limit(11)
+            .execute(),
+            label="earlier_leads",
+        )
+        for c in res.data or []:
+            found[c["id"]] = c
+    out = []
+    for c in sorted(found.values(), key=lambda x: x.get("created_at") or "", reverse=True):
+        lead = (c.get("leads") or [None])[0] if isinstance(c.get("leads"), list) else c.get("leads")
+        if lead and lead.get("id") == lead_id:
+            continue
+        out.append({
+            "conversation_id": c["id"],
+            "chat_number": c.get("chat_number"),
+            "created_at": c.get("created_at"),
+            "status": c.get("status"),
+            "lead_id": (lead or {}).get("id"),
+            "route": f"{lead.get('origin_code')} → {lead.get('destination_code')}"
+            if lead and lead.get("origin_code") and lead.get("destination_code") else None,
+            "in_crm": bool((lead or {}).get("created_in_crm")),
+            "crm_lead_id": (lead or {}).get("crm_lead_id"),
+        })
+    return out[:10]
+
+
+# ── Users & access: how each person signs in, their invite, the access log ──
+
+
+async def get_sign_in_facts(user_ids: list[str]) -> dict[str, dict]:
+    """Per user: whether a password is set (never the hash itself) and their
+    newest set-password invite. Raises on failure."""
+    ids = [i for i in user_ids if i]
+    if not ids:
+        return {}
+    db_client = get_client()
+    out: dict[str, dict] = {i: {"has_password": False, "invite": None} for i in ids}
+    for k in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[k:k + _IDS_PER_REQUEST]
+        pw_res, tok_res = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("users").select("id, password_hash")
+                      .in_("id", chunk).execute(), label="sign_in_facts"),
+            _run_sync(lambda chunk=chunk: db_client.table("invite_tokens")
+                      .select("user_id, expires_at, used_at, created_at, created_by")
+                      .eq("purpose", "set_password").in_("user_id", chunk)
+                      .order("created_at", desc=True).execute(), label="sign_in_facts"),
+        )
+        for row in pw_res.data or []:
+            out[row["id"]]["has_password"] = bool(row.get("password_hash"))
+        for tok in tok_res.data or []:
+            uid = tok.get("user_id")
+            if uid in out and out[uid]["invite"] is None:
+                out[uid]["invite"] = {
+                    "expires_at": tok.get("expires_at"),
+                    "used_at": tok.get("used_at"),
+                    "sent_at": tok.get("created_at"),
+                    "sent_by": tok.get("created_by"),
+                }
+    return out
+
+
+async def get_access_log_inputs(limit: int = 200) -> dict:
+    """The raw rows behind the access log, newest first. Never the invite
+    token itself. Raises on failure."""
+    db_client = get_client()
+    audit, toggles, invites, users = await asyncio.gather(
+        _run_sync(lambda: db_client.table("user_access_audit")
+                  .select("target_user_id, changed_by_user_id, old_role, new_role, old_tunnel_scope, "
+                          "new_tunnel_scope, old_is_active, new_is_active, changed_fields, created_at")
+                  .order("created_at", desc=True).limit(limit).execute(), label="access_log"),
+        _run_sync(lambda: db_client.table("audit_log")
+                  .select("user_id, action, target_id, details, created_at")
+                  .in_("action", ["chat_enabled_toggle", "password_reset_manual"])
+                  .order("created_at", desc=True).limit(limit).execute(), label="access_log"),
+        _run_sync(lambda: db_client.table("invite_tokens")
+                  .select("user_id, created_by, created_at")
+                  .eq("purpose", "set_password").not_.is_("created_by", "null")
+                  .order("created_at", desc=True).limit(limit).execute(), label="access_log"),
+        _run_sync(lambda: db_client.table("users").select("id, name, email, role, created_at").execute(),
+                  label="access_log"),
+    )
+    return {
+        "audit": audit.data or [],
+        "toggles": toggles.data or [],
+        "invites": invites.data or [],
+        "users": {u["id"]: u for u in (users.data or []) if u.get("id")},
+    }
+
+
+async def get_handover_facts(user_id: str, since_iso: str) -> dict:
+    """What deactivating someone touches: their open chats, the clients who
+    would come back to them (the 90-day sticky routing), and their leads.
+    Raises on failure."""
+    db_client = get_client()
+    open_res, closed, leads_res = await asyncio.gather(
+        _run_sync(lambda: db_client.table("conversations")
+                  .select("id, chat_number, visitor_name, status, tunnel")
+                  .eq("assigned_agent_id", user_id).in_("status", ["active", "needs_agent", "waiting"])
+                  .execute(), label="handover"),
+        _select_pages(lambda: db_client.table("conversations")
+                      .select("visitor_id, visitor_email, visitor_phone")
+                      .eq("assigned_agent_id", user_id).eq("status", "closed")
+                      .gte("updated_at", since_iso).order("updated_at"), label="handover"),
+        _run_sync(lambda: db_client.table("leads")
+                  .select("id, conversations!inner(assigned_agent_id)", count="exact")  # type: ignore[arg-type]
+                  .eq("conversations.assigned_agent_id", user_id).limit(1).execute(), label="handover"),
+    )
+    clients = set()
+    for c in closed:
+        key = c.get("visitor_id") or c.get("visitor_email") or c.get("visitor_phone")
+        if key:
+            clients.add(key)
+    return {
+        "open_chats": [
+            {"id": c["id"], "chat_number": c.get("chat_number"), "tunnel": c.get("tunnel"),
+             "first_name": ((c.get("visitor_name") or "").strip().split() or [""])[0]}
+            for c in (open_res.data or [])
+        ],
+        "clients_90_days": len(clients),
+        "leads": leads_res.count or 0,
     }
 
 

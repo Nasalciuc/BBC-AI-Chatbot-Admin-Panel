@@ -1,25 +1,19 @@
-import { useNavigate, useRouter } from '@tanstack/react-router'
-import { Button } from '@/components/ui/button'
+import { Link } from '@tanstack/react-router'
+import { ErrorFrame } from './frame'
+import { darkBtn } from './styles'
 
 export function ForbiddenError() {
-  const navigate = useNavigate()
-  const { history } = useRouter()
   return (
-    <div className='h-svh'>
-      <div className='m-auto flex h-full w-full flex-col items-center justify-center gap-2'>
-        <h1 className='text-[7rem] leading-tight font-bold'>403</h1>
-        <span className='font-medium'>Access Forbidden</span>
-        <p className='text-center text-muted-foreground'>
-          You don't have necessary permission <br />
-          to view this resource.
-        </p>
-        <div className='mt-6 flex gap-4'>
-          <Button variant='outline' onClick={() => history.go(-1)}>
-            Go Back
-          </Button>
-          <Button onClick={() => navigate({ to: '/' })}>Back to Home</Button>
-        </div>
+    <ErrorFrame
+      kicker='403 · No access'
+      title='This page isn’t part of your role'
+      text='Your role doesn’t include this page. If you need it, ask an owner or an admin.'
+    >
+      <div className='mt-2 flex flex-wrap gap-2.5'>
+        <Link to='/chats' className={darkBtn}>
+          Go to Conversations
+        </Link>
       </div>
-    </div>
+    </ErrorFrame>
   )
 }
