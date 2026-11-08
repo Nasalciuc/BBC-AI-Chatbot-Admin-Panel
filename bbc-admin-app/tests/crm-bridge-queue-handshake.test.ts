@@ -133,7 +133,7 @@ test('SECURITY: a non-parent window is ignored even on an allowed origin', () =>
 test('optional fields travel when given and are ABSENT when undefined', () => {
   const env = setup()
   try {
-    reportQueue(2, { conversationId: 'c-9', waitingSeconds: 41, route: 'HNL → AKL' })
+    reportQueue(2, { conversationId: 'c-9', waitingSeconds: 41 })
     const withAll = env.posted.at(-1)!.msg
     assert.deepEqual(withAll, {
       source: 'bbc-chat',
@@ -141,10 +141,9 @@ test('optional fields travel when given and are ABSENT when undefined', () => {
       count: 2,
       conversationId: 'c-9',
       waitingSeconds: 41,
-      route: 'HNL → AKL',
     })
 
-    reportQueue(3, { conversationId: undefined, waitingSeconds: undefined, route: undefined })
+    reportQueue(3, { conversationId: undefined, waitingSeconds: undefined })
     const bare = env.posted.at(-1)!.msg
     assert.deepEqual(
       Object.keys(bare).sort(),
@@ -178,7 +177,7 @@ test('no message the bridge emits ever carries a preview key', () => {
   const env = setup({ deps: { getQueueCount: () => 1 } })
   try {
     env.fire({ source: 'bbc-crm', type: 'crm:hello' }, CRM)
-    reportQueue(4, { conversationId: 'c-1', waitingSeconds: 9, route: 'JFK → LHR' })
+    reportQueue(4, { conversationId: 'c-1', waitingSeconds: 9 })
     reportAttentionCycle({
       attentionIds: ['c-1'],
       needsAgentIds: [],
@@ -192,6 +191,8 @@ test('no message the bridge emits ever carries a preview key', () => {
     assert.ok(env.posted.length >= 3)
     for (const p of env.posted) {
       assert.ok(!('preview' in p.msg), `preview must never leave the panel: ${p.msg.type}`)
+      // Agents take a waiting chat blind (owner, Nov 2026): no cities either.
+      assert.ok(!('route' in p.msg), `the route must never reach an agent before Take: ${p.msg.type}`)
     }
   } finally {
     env.restore()
