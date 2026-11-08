@@ -437,6 +437,33 @@ def _carries_words(event: dict) -> bool:
     return event.get("event") != "presence"
 
 
+# A typing client sends up to five events a second and the panel only shows
+# the latest. A batch of nothing but typing waits until this long after the
+# stream's last check, gathering what else arrives, so a typing client costs
+# an agent's stream at most two checks a second. A message ends the wait.
+_TYPING_EVERY_SECONDS = 0.5
+
+
+def _only_typing(batch: list) -> bool:
+    return all(e.get("event") in ("typing", "presence") for e in batch)
+
+
+async def _gather_until(queue: asyncio.Queue, batch: list, deadline: float) -> None:
+    """Add to `batch` what reaches `queue` before `deadline` (monotonic);
+    stop at the first event that is more than typing. Chunks are dropped
+    here as everywhere else on an agent's stream."""
+    while (left := deadline - time.monotonic()) > 0:
+        try:
+            e = await asyncio.wait_for(queue.get(), timeout=left)
+        except asyncio.TimeoutError:  # noqa: silent — the window closing is what the wait is for, not a failure
+            return
+        if e.get("event") == "stream_chunk":
+            continue
+        batch.append(e)
+        if e.get("event") not in ("typing", "presence"):
+            return
+
+
 @router.get("/agent/stream/{conversation_id}")
 async def agent_stream(
     conversation_id: str,
@@ -475,6 +502,7 @@ async def agent_stream(
 
     async def event_generator():
         queue = await manager.connect(conversation_id)
+        checked_at = float("-inf")
         try:
             while True:
                 if await request.is_disconnected():
@@ -497,9 +525,13 @@ async def agent_stream(
                     # it went back to the line) stops reaching an agent who
                     # isn't on it. The check runs after the batch was taken off
                     # the queue, so no event goes out on an answer older than
-                    # itself. The agent's own chats answer from memory.
+                    # itself — for the agent's own chats too: whose chat it is
+                    # can change between two events.
                     if any(_carries_words(e) for e in batch):
+                        if _only_typing(batch):
+                            await _gather_until(queue, batch, checked_at + _TYPING_EVERY_SECONDS)
                         sight = await stream_sight(user, conversation_id)
+                        checked_at = time.monotonic()
                         if sight == "blind":
                             # The panel swaps the chat for the gate on this frame.
                             yield f"data: {json.dumps({'event': 'blind'})}\n\n"
