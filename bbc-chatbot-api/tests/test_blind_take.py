@@ -12,9 +12,10 @@ pin that the API agrees, so the gate is not the only thing standing:
   * an open stream asks again before every batch of words it sends, after
     taking the batch off its queue — no interval — so a chat that starts
     waiting stops reaching an agent who isn't on it at the very next event;
-  * the agent's own chats cost one tiny read per 10 minutes, not one per poll;
-  * a check that can't be made fails CLOSED (503, counted in /health) — the
-    agent's own chats answer from memory, so a blip doesn't reach them;
+  * nothing is remembered: whose chat it is can change between two polls
+    (given to a colleague, back in the line), so every read asks again —
+    live typing is gathered so a stream asks at most twice a second for it;
+  * a check that can't be made fails CLOSED (503, counted in /health);
   * a chat that doesn't exist isn't hidden ("no chat" is not "couldn't look").
 """
 
@@ -40,13 +41,6 @@ OTHER = "22222222-2222-2222-2222-222222222222"
 
 AGENTS = ["sales", "support"]
 MANAGERS = ["owner", "admin", "dev", "qa", "supervisor", "project_manager"]
-
-
-@pytest.fixture(autouse=True)
-def _fresh_known_cache():
-    conv_api._known_until.clear()
-    yield
-    conv_api._known_until.clear()
 
 
 def _row(**kw):
@@ -160,16 +154,48 @@ def test_messages_and_typing_wait_for_take():
     reader.assert_not_awaited()
 
 
-def test_an_agents_own_chat_is_checked_once_then_remembered():
+def test_every_read_asks_again_nothing_is_remembered():
+    # Even for the agent's own chat: it can be given away between two polls.
     blind = AsyncMock(return_value=_row(assigned_agent_id=ME, status="active", mode="human"))
     reader = AsyncMock(return_value=[{"id": "m1", "content": "Thanks"}])
     with patch.object(db, "get_blind_inputs", new=blind), \
          patch.object(db, "get_messages_after", new=reader):
         c = _client("sales")
-        for _ in range(5):
+        for _ in range(3):
             assert c.get("/api/conversations/c1/messages").status_code == 200
-    assert blind.await_count == 1, "polls of my own chat must not each cost a read"
-    assert reader.await_count == 5
+    assert blind.await_count == 3
+    assert reader.await_count == 3
+
+
+REQUEUED = _row(engaged_agent_id=OTHER)   # a colleague had it, then let it go back to the line
+
+
+def test_a_chat_that_changed_hands_and_went_back_to_the_line_closes_to_its_old_agent():
+    # The agent read it as theirs; it was given to a colleague (still readable);
+    # the colleague let it go back to the line. From then on: closed — the
+    # client's new words are not the old agent's to read.
+    blind = AsyncMock(side_effect=[
+        _row(assigned_agent_id=ME, status="active", mode="human"),  # messages: mine
+        _row(assigned_agent_id=ME, status="active", mode="human"),  # typing: mine
+        _row(assigned_agent_id=OTHER, engaged_agent_id=OTHER, status="active", mode="human"),
+        REQUEUED,                                                    # messages
+        REQUEUED,                                                    # typing
+    ])
+    reader = AsyncMock(return_value=[{"id": "m9", "content": "Actually, make it Doha"}])
+    typing = AsyncMock(return_value={"is_typing": True, "text": "and two kids"})
+    from app.realtime.typing_indicator import typing_manager
+    with patch.object(db, "get_blind_inputs", new=blind), \
+         patch.object(db, "get_messages_after", new=reader), \
+         patch.object(typing_manager, "get_typing", new=typing):
+        c = _client("sales")
+        assert c.get("/api/conversations/c1/messages").status_code == 200
+        assert c.get("/api/conversations/c1/typing").status_code == 200
+        assert c.get("/api/conversations/c1/messages").status_code == 200   # a colleague's: readable
+        r_messages = c.get("/api/conversations/c1/messages")
+        r_typing = c.get("/api/conversations/c1/typing")
+    assert r_messages.status_code == 403 and r_typing.status_code == 403
+    assert "doha" not in r_messages.text.lower() and "kids" not in r_typing.text
+    assert reader.await_count == 2 and typing.await_count == 1
 
 
 def test_a_waiting_chat_is_checked_every_time_until_take():
@@ -214,15 +240,17 @@ def test_a_chat_that_does_not_exist_is_not_hidden():
     assert conv_api.BLIND_HEALTH["check_failed"] == before
 
 
-def test_an_agents_own_chat_keeps_working_through_a_blip():
+def test_a_blip_closes_the_agents_own_chat_too():
+    # Fail closed has no exceptions: with no memory there is nothing to fall
+    # back on, and a guess is exactly what this check exists to avoid.
     blind = AsyncMock(side_effect=[_row(assigned_agent_id=ME, status="active", mode="human"),
                                    RuntimeError("network")])
     with patch.object(db, "get_blind_inputs", new=blind), \
          patch.object(db, "get_messages_after", new=AsyncMock(return_value=[])):
         c = _client("sales")
         assert c.get("/api/conversations/c1/messages").status_code == 200
-        assert c.get("/api/conversations/c1/messages").status_code == 200, "answered from memory"
-    assert blind.await_count == 1
+        assert c.get("/api/conversations/c1/messages").status_code == 503
+    assert blind.await_count == 2
 
 
 def test_managers_never_pay_for_the_check():
@@ -275,11 +303,13 @@ def _frame(e: dict) -> str:
     return f"data: {json.dumps(e)}\n\n"
 
 
-def _drive(user: dict, seen: AsyncMock, *waves: list):
-    """Open the panel stream at production settings and feed it `waves` of
-    events: each wave lands in its queue after the stream finished with the
-    one before (the first is there when it opens). Returns every frame the
-    stream sent and the release of its subscription."""
+def _drive(user: dict, seen: AsyncMock, *waves: list, during=None, typing_every=None):
+    """Open the panel stream and feed it `waves` of events: each wave lands in
+    its queue after the stream finished with the one before (the first is
+    there when it opens). `during(queue)` runs alongside, for events that
+    arrive while the stream waits. Settings are production's unless
+    `typing_every` is given. Returns every frame the stream sent and the
+    release of its subscription."""
     import asyncio
     from app.api import agent as agent_api
     from app.realtime.manager import manager
@@ -297,12 +327,17 @@ def _drive(user: dict, seen: AsyncMock, *waves: list):
 
         request = MagicMock()
         request.is_disconnected = AsyncMock(side_effect=lambda: next_wave())
+        every = agent_api._TYPING_EVERY_SECONDS if typing_every is None else typing_every
         with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
              patch.object(db, "get_blind_inputs", new=seen), \
+             patch.object(agent_api, "_TYPING_EVERY_SECONDS", every), \
              patch.object(manager, "connect", new=AsyncMock(return_value=q)), \
              patch.object(manager, "disconnect") as release:
             res = await agent_api.agent_stream("c1", request, user=user)
+            side = asyncio.create_task(during(q)) if during else None
             frames = [chunk async for chunk in res.body_iterator]
+            if side:
+                await side
         return frames, release
 
     return asyncio.run(go())
@@ -360,11 +395,69 @@ def test_a_re_check_that_cant_be_made_closes_the_stream():
     release.assert_called_once()
 
 
-def test_the_agents_own_chat_is_not_re_read_mid_stream():
+def test_the_agents_own_chat_is_checked_mid_stream_too():
     seen = AsyncMock(return_value=MINE)
-    frames, _ = _drive(_user("sales"), seen, [M1], [TYPING], [M2])
-    assert len(frames) == 3
-    assert seen.await_count == 1, "answered from memory"
+    frames, _ = _drive(_user("sales"), seen, [M1], [M2])
+    assert frames == [_frame(M1), _frame(M2)]
+    assert seen.await_count == 3, "the door, then each batch: it can be given away mid-stream"
+
+
+def test_a_stream_on_my_chat_closes_once_it_changed_hands_and_went_back_to_the_line():
+    M3 = {"id": "m3", "role": "user", "content": "Actually, make it Doha"}
+    seen = AsyncMock(side_effect=[
+        MINE,                                                              # the door
+        MINE,                                                              # M1
+        _row(assigned_agent_id=OTHER, engaged_agent_id=OTHER, status="active", mode="human"),  # M2
+        REQUEUED,                                                          # M3
+    ])
+    frames, release = _drive(_user("sales"), seen, [M1], [M2], [M3])
+    assert frames == [_frame(M1), _frame(M2), _frame({"event": "blind"})]
+    assert "doha" not in "".join(frames).lower()
+    release.assert_called_once()
+
+
+def test_live_typing_is_gathered_so_it_costs_at_most_two_checks_a_second():
+    import asyncio
+    T2 = {"event": "typing", "is_typing": True, "text": "Do you fly to Duba"}
+    T3 = {"event": "typing", "is_typing": True, "text": "Do you fly to Dubai?"}
+
+    async def keeps_typing(q):
+        await asyncio.sleep(0.05)   # arrives while the stream waits on T2
+        q.put_nowait(T3)
+
+    seen = AsyncMock(return_value=MINE)
+    frames, _ = _drive(_user("sales"), seen, [TYPING], [T2], during=keeps_typing, typing_every=0.3)
+    assert frames == [_frame(TYPING), _frame(T2), _frame(T3)]
+    assert seen.await_count == 3, "the door, the first typing, then ONE check for T2 and T3"
+
+
+def test_a_message_ends_the_typing_wait_at_once():
+    import asyncio
+    import time
+
+    async def says_something(q):
+        await asyncio.sleep(0.05)
+        q.put_nowait(M2)
+
+    seen = AsyncMock(return_value=MINE)
+    t0 = time.monotonic()
+    frames, _ = _drive(_user("sales"), seen, [TYPING], [TYPING], during=says_something, typing_every=5.0)
+    assert time.monotonic() - t0 < 2.0, "a message never waits out the typing window"
+    assert frames == [_frame(TYPING), _frame(TYPING), _frame(M2)]
+    assert seen.await_count == 3
+
+
+def test_gathered_typing_still_goes_out_only_after_a_check():
+    import asyncio
+
+    async def keeps_typing(q):
+        await asyncio.sleep(0.05)
+        q.put_nowait(TYPING)
+
+    # It went back to the line while the stream gathered typing: none of it goes out.
+    seen = AsyncMock(side_effect=[THEIRS, THEIRS, _row()])
+    frames, _ = _drive(_user("sales"), seen, [M1], [TYPING], during=keeps_typing, typing_every=0.3)
+    assert frames == [_frame(M1), _frame({"event": "blind"})]
 
 
 def test_an_agent_gets_whole_replies_not_the_ai_chunks():
