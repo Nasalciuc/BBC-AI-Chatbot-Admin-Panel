@@ -82,10 +82,30 @@ export async function loginUser(email: string, password: string) {
     signal: AbortSignal.timeout(8000),
   })
   if (!res.ok) {
+    // The status decides what the sign-in page says (wrong, off, too many tries).
     const body = await res.json().catch(() => ({ detail: 'Login failed' }))
-    throw new Error(body.detail || 'Login failed')
+    throw new ApiError(res.status, typeof body?.detail === 'string' ? body.detail : 'Login failed')
   }
   return res.json()
+}
+
+/** Set the password from an invite link. 400 carries why the link failed. */
+export async function setPasswordFromInvite(token: string, password: string): Promise<void> {
+  await apiFetch('/api/auth/set-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  })
+}
+
+/** Ask for a new invite link. The answer is the same whether or not the
+ *  address has an account. */
+export async function requestInviteLink(email: string): Promise<void> {
+  await apiFetch('/api/auth/request-invite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
 }
 
 /** The panel's live channel for one conversation. Auth comes from the same

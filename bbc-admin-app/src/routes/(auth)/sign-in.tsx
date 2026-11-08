@@ -14,6 +14,8 @@ function parseJwtPayload(token: string): Record<string, unknown> | null {
 
 const searchSchema = z.object({
   redirect: z.string().optional(),
+  // "ended": the session ran out (24 h) — the page says so.
+  session: z.string().optional(),
 })
 
 export const Route = createFileRoute('/(auth)/sign-in')({
