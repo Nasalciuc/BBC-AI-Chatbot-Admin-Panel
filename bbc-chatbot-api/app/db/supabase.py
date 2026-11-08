@@ -704,6 +704,21 @@ def supervisor_columns_status() -> dict:
 _TAG_SCAN_CAP = 400
 
 
+def _readable_to_agent(viewer_id: str, with_queue: bool) -> str:
+    """PostgREST twin of conversations._taken_blind, negated: a chat this agent
+    may read — closed, someone's, one they were already talking in, or not
+    waiting for a person. Keep the two in step: test_blind_take evaluates this
+    filter against _taken_blind row by row. `with_queue`: queued_at exists
+    (migrations 023/024); without it the column can't be named."""
+    not_waiting = "status.neq.needs_agent,mode.not.in.(waiting_for_agent,human)"
+    if with_queue:
+        not_waiting += ",queued_at.is.null"
+    return (
+        "or(status.eq.closed,assigned_agent_id.not.is.null,"
+        f"metadata->>engaged_agent_id.eq.{viewer_id},and({not_waiting}))"
+    )
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -717,8 +732,14 @@ async def get_conversations(
     no_engagement_only: bool = False,
     limit: int = 50,
     offset: int = 0,
+    blind_viewer: Optional[str] = None,
 ) -> tuple[list, int]:
     """List conversations with filters. Returns (rows, total_count).
+
+    blind_viewer: the id of an agent (sales/support) searching. Their search
+    still finds any chat by name, but by e-mail or phone only the chats they
+    may read — never a waiting chat they haven't taken (blind take). Rows
+    would hide the contact anyway; the match itself would give it away.
 
     team_ids (Phase 2): when a non-empty list is passed, restrict to
     conversations whose frozen team_id is in that set. PostgREST ANDs
@@ -761,11 +782,16 @@ async def get_conversations(
                 # "#1042" / "1042" → exact chat_number match in addition to
                 # the usual visitor fields (supervisors search by number).
                 num_part = stripped[1:] if stripped.startswith("#") else stripped
-                visitor_match = (
-                    f"visitor_name.ilike.%{stripped}%,"
+                contact_match = (
                     f"visitor_email.ilike.%{stripped}%,"
                     f"visitor_phone.ilike.%{stripped}%"
                 )
+                if blind_viewer is not None:
+                    contact_match = (
+                        f"and(or({contact_match}),"
+                        f"{_readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)})"
+                    )
+                visitor_match = f"visitor_name.ilike.%{stripped}%,{contact_match}"
                 if num_part.isdigit() and with_supervisor_cols:
                     q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
                 else:
