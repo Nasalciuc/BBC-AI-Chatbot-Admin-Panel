@@ -49,9 +49,11 @@ export interface Conversation {
   has_flagged_content?: boolean
   flagged_reason?: string | null
   /** List rows only: the newest non-system message, trimmed to 140 chars.
-   *  Absent for supervisors and PMs, and when the preview read failed. */
+   *  Absent for supervisors and PMs, and when the preview read failed.
+   *  An agent gets null on a chat that isn't theirs (blind take). */
   last_message?: { role: Message['role']; content: string; created_at: string } | null
-  /** List rows only: the route the pipeline extracted (lead origin → destination). */
+  /** List rows only: the route the pipeline extracted (lead origin → destination).
+   *  Never sent to an agent for a chat that isn't theirs (blind take). */
   route?: { from: string; to: string } | null
   /** When the chat entered the shared queue (waiting for a person). */
   queued_at?: string | null
@@ -74,7 +76,12 @@ export interface Lead {
   conversation_id: string
   trip_type: 'one_way' | 'round_trip' | 'multi_city' | 'open_jaw' | 'tour'
   cabin_class: 'business' | 'first' | 'economy' | 'mixed'
+  /** Everyone flying: adults + children + infants (the CRM takes adults as the rest). */
   passengers: number | null
+  children_count?: number | null
+  infant_count?: number | null
+  /** NOT NULL DEFAULT true and never written by the pipeline: says nothing.
+   *  The client's own answer is intent_signals.date_flexible. */
   flexible_dates: boolean
   origin_code: string | null
   destination_code: string | null

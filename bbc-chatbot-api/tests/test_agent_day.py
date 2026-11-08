@@ -289,7 +289,7 @@ def _list_client(role: str) -> TestClient:
     return TestClient(app)
 
 
-ROWS = [{"id": "a", "tunnel": "sales", "visitor_name": "David Kim", "metadata": {}}]
+ROWS = [{"id": "a", "tunnel": "sales", "visitor_name": "David Kim", "assigned_agent_id": ME, "metadata": {}}]
 
 
 @pytest.mark.parametrize("role", ["sales", "owner", "qa"])
@@ -311,6 +311,61 @@ def test_no_previews_for_masked_or_team_scoped_readers(role):
         r = _list_client(role).get("/api/conversations?status=active")
     assert r.status_code == 200
     assert "last_message" not in r.json()["data"][0]
+    reader.assert_not_awaited()
+
+
+OTHER = "22222222-2222-2222-2222-222222222222"
+ROUTE = {"from": "BOS", "to": "DXB"}
+
+
+def _mixed_rows():
+    return [
+        {"id": "mine", "assigned_agent_id": ME, "metadata": {}, "route": dict(ROUTE)},
+        {"id": "waiting", "assigned_agent_id": None, "metadata": {}, "route": dict(ROUTE)},
+        # Went back to the assistant after I wrote in it: still mine to read.
+        {"id": "engaged", "assigned_agent_id": None, "metadata": {"engaged_agent_id": ME}, "route": dict(ROUTE)},
+        {"id": "theirs", "assigned_agent_id": OTHER, "metadata": {}, "route": dict(ROUTE)},
+    ]
+
+
+@pytest.mark.parametrize("role", ["sales", "support"])
+def test_an_agent_gets_no_cities_and_no_words_from_a_chat_that_is_not_theirs(role):
+    said = {"role": "user", "content": "Boston to Dubai, two of us", "created_at": "t"}
+    reader = AsyncMock(side_effect=lambda ids: {i: dict(said) for i in ids})
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(_mixed_rows(), 4))), \
+         patch.object(db, "get_last_message_previews", new=reader):
+        r = _list_client(role).get("/api/conversations?assigned_to=none&status=active")
+    assert r.status_code == 200
+    rows = {c["id"]: c for c in r.json()["data"]}
+    for cid in ("mine", "engaged"):
+        assert rows[cid]["route"] == ROUTE
+        assert rows[cid]["last_message"]["content"] == said["content"]
+    for cid in ("waiting", "theirs"):
+        assert "route" not in rows[cid], f"{cid}: the agent would know where the client flies"
+        assert rows[cid]["last_message"] is None, f"{cid}: the client's own words name the cities"
+    # The words are never read for the blind rows, not just dropped afterwards.
+    assert sorted(reader.await_args.args[0]) == ["engaged", "mine"]
+
+
+@pytest.mark.parametrize("role", ["owner", "admin", "dev", "qa"])
+def test_people_who_give_chats_out_still_see_where_a_waiting_client_flies(role):
+    said = {"role": "user", "content": "Boston to Dubai", "created_at": "t"}
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(_mixed_rows(), 4))), \
+         patch.object(db, "get_last_message_previews", new=AsyncMock(side_effect=lambda ids: {i: dict(said) for i in ids})):
+        r = _list_client(role).get("/api/conversations?status=active")
+    rows = {c["id"]: c for c in r.json()["data"]}
+    assert all(rows[cid]["route"] == ROUTE for cid in rows)
+    assert all(rows[cid]["last_message"]["content"] == said["content"] for cid in rows)
+
+
+def test_an_agent_with_only_waiting_rows_reads_no_previews_at_all():
+    reader = AsyncMock(return_value={})
+    rows = [r for r in _mixed_rows() if r["id"] in ("waiting", "theirs")]
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(rows, 2))), \
+         patch.object(db, "get_last_message_previews", new=reader):
+        r = _list_client("sales").get("/api/conversations?assigned_to=none&status=active")
+    assert r.status_code == 200
+    assert [c.get("route") for c in r.json()["data"]] == [None, None]
     reader.assert_not_awaited()
 
 
