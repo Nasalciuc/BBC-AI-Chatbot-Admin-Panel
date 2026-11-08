@@ -75,3 +75,13 @@ test('leaving a widget page unmounts the widget before its root goes', () => {
   assert.ok(!hook.includes('declare global'))
   assert.match(read('lib/types.ts'), /__BBC_WIDGET_TEARDOWN__\?: \(\) => void/)
 })
+
+test("the CRM iframe's own page (/widget-embed.html, v2 PR-10) says so too", () => {
+  // In production /widget-embed is this static page (vercel.json), not the app route.
+  const html = readFileSync(join(SRC, '..', 'widget-embed.html'), 'utf8')
+  const listen = html.indexOf("s.addEventListener('error', fail)")
+  assert.ok(listen > 0 && listen < html.indexOf('document.body.appendChild(s)'), 'listen before appending')
+  assert.match(html, /if \(!document\.getElementById\('bbc-widget-root'\)\) fail\(\)/)
+  assert.match(html, /The chat couldn\\u2019t load\. Reload the page to try again\./)
+})
+

@@ -33,6 +33,19 @@
           s.setAttribute('data-mode', 'embedded')
         }
         s.async = true
+        // A script that fails, or loads and runs no widget (no root), is said
+        // on the page, as the panel's widget pages do — not a blank iframe.
+        var fail = function () {
+          var note = document.createElement('p')
+          note.setAttribute('role', 'alert')
+          note.style.cssText = 'margin:0;padding:24px;font:15px/1.5 system-ui,sans-serif;color:#555;text-align:center'
+          note.textContent = 'The chat couldn\u2019t load. Reload the page to try again.'
+          document.body.appendChild(note)
+        }
+        s.addEventListener('error', fail)
+        s.addEventListener('load', function () {
+          if (!document.getElementById('bbc-widget-root')) fail()
+        })
         document.body.appendChild(s)
       })()
     </script>
