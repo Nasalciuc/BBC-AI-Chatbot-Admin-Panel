@@ -151,7 +151,6 @@ class TestWidenedSelect:
                           new=AsyncMock(return_value={"id": "L1", "created_in_crm": True})), \
              patch.object(cron.db, "add_message", new=AsyncMock()) as add_msg, \
              patch.object(cron.db, "update_conversation", new=AsyncMock()) as upd:
-            cron._AAA_BACKFILL_RAN = True
             out = await cron.run_abandoned_crm()
 
         assert out["results"][0]["status"] == "already_done"
@@ -367,7 +366,6 @@ class TestWidthGrantsNoDestructivePowers:
     async def _run_cron(self, conv, lead, crm_result=None):
         from app.api import cron
 
-        cron._AAA_BACKFILL_RAN = True
         with patch.object(cron.db, "get_abandoned_conversations",
                           new=AsyncMock(return_value=[dict(conv)])), \
              patch.object(cron, "get_or_create_lead", new=AsyncMock(return_value=dict(lead))), \
@@ -423,7 +421,6 @@ class TestWidthGrantsNoDestructivePowers:
         from app.api import cron
 
         conv = dict(BASE_CONV, status="active", mode="ai")
-        cron._AAA_BACKFILL_RAN = True
         with patch.object(cron.db, "get_abandoned_conversations",
                           new=AsyncMock(return_value=[dict(conv)])), \
              patch.object(cron, "get_or_create_lead",
@@ -446,7 +443,6 @@ class TestWidthGrantsNoDestructivePowers:
 
         thin = dict(BASE_CONV, id="thin", message_count=0)
         rich = dict(BASE_CONV, id="rich", message_count=8)
-        cron._AAA_BACKFILL_RAN = True
         with patch.object(cron.db, "get_abandoned_conversations",
                           new=AsyncMock(return_value=[thin, rich])), \
              patch.object(cron, "get_or_create_lead",
@@ -471,7 +467,6 @@ class TestWidthGrantsNoDestructivePowers:
         conv = dict(BASE_CONV, status="active", mode="ai")
 
         async def _run(error):
-            cron._AAA_BACKFILL_RAN = True
             with patch.object(cron.db, "get_abandoned_conversations",
                               new=AsyncMock(return_value=[dict(conv)])), \
                  patch.object(cron, "get_or_create_lead",

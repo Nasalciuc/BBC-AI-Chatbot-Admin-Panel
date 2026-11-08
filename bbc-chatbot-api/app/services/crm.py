@@ -59,6 +59,12 @@ CRM_PUSH_HEALTH: dict = {
     "refused": 0,
     "last_error_at": None,
     "last_refusal_reason": None,
+    # Automatic pushes held back because the same human (phone or email)
+    # already reached the CRM from another conversation in the last 30 days.
+    "contact_already_in_crm": 0,
+    # The "already in the CRM?" read failed, so the automatic push waited a
+    # tick instead of guessing. Rising = duplicates were being risked.
+    "crm_contact_lookup_failed": 0,
 }
 
 

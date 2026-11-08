@@ -1,20 +1,25 @@
 import { useEffect, useRef } from 'react'
 import { Outlet, useNavigate } from '@tanstack/react-router'
 import { useHeartbeat } from '@/hooks/use-heartbeat'
+import { useTaskReminders } from '@/features/tasks/use-task-alerts'
 import { useReadyStore } from '@/stores/ready-store'
 import { getCookie } from '@/lib/cookies'
 import { requestNotifyPermission } from '@/lib/notify-assignment'
-import { installCrmBridge } from '@/lib/crm-bridge'
+import { installCrmBridge, isEmbedded } from '@/lib/crm-bridge'
 import { installPanelLeader } from '@/lib/panel-leader'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { isAllowedCrmOrigin } from '@/lib/crm-embed-auth'
+import { useAuthStore } from '@/stores/auth-store'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
 import { SearchProvider } from '@/context/search-provider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { AppSidebar } from '@/components/layout/app-sidebar'
+import { MobileTabBar } from '@/components/layout/mobile-tab-bar'
+import { isOperatorRole } from '@/components/layout/data/sidebar-data'
 import { SkipToMain } from '@/components/skip-to-main'
+import { StatusBands } from '@/components/layout/status-bands'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
@@ -23,6 +28,8 @@ type AuthenticatedLayoutProps = {
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const viewingConversationId = useReadyStore((s) => s.viewingConversationId)
   useHeartbeat(undefined, viewingConversationId)
+  // Task reminders: 15 min before, at the due time, and 30 min late for supervisors.
+  useTaskReminders()
 
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)
@@ -64,18 +71,27 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   // One consumer per human: the embedded panel wins, a standalone tab dozes.
   useEffect(() => installPanelLeader(), [])
 
-  const notLeader = usePanelModeStore((s) => s.reasons.has('not_leader'))
   const defaultOpen = getCookie('sidebar_state') !== 'false'
+  // Inside the CRM dock the panel is the chat list and nothing else: no side
+  // menu. An agent on a phone gets the tab bar (Chats, Knowledge, Me).
+  const embedded = isEmbedded()
+  const role = useAuthStore((s) => s.auth.user?.role)
+  const tabBar = !embedded && isOperatorRole(role)
   return (
     <SearchProvider>
       <LayoutProvider>
-        <SidebarProvider defaultOpen={defaultOpen}>
+        <SidebarProvider
+          defaultOpen={defaultOpen}
+          style={{ '--sidebar-width': '16rem', '--sidebar-width-icon': '4.5rem' } as React.CSSProperties}
+        >
           <SkipToMain />
-          <AppSidebar />
+          {!embedded && <AppSidebar />}
           <SidebarInset
             className={cn(
               // Set content container, so we can use container queries
               '@container/content',
+              'bg-background',
+              tabBar && 'max-md:pb-16',
 
               // If layout is fixed, set the height
               // to 100svh to prevent overflow
@@ -86,13 +102,12 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
               'peer-data-[variant=inset]:has-data-[layout=fixed]:h-[calc(100svh-(var(--spacing)*4))]'
             )}
           >
-            {notLeader && (
-              <div className='bg-muted/50 border-b px-3 py-1.5 text-[12px] text-muted-foreground'>
-                This panel is idle — it's active in the CRM. Work from there.
-              </div>
-            )}
+            {/* Offline, server not answering, session ending, or this tab
+                paused because it's active in the CRM: one band at a time. */}
+            <StatusBands />
             {children ?? <Outlet />}
           </SidebarInset>
+          {tabBar && <MobileTabBar />}
         </SidebarProvider>
       </LayoutProvider>
     </SearchProvider>

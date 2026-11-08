@@ -146,13 +146,14 @@ class TestPostSummaryBranches:
 
 class TestPanelButtonContract:
     def test_button_renders_from_row_not_derived_flag(self):
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "..",
-            "bbc-admin-app", "src", "features", "chats", "detail.tsx",
-        )
-        src = open(path, encoding="utf-8").read()
-        assert "Lead Created" in src
-        assert "Push to CRM" in src              # the button pushes; it doesn't declare
-        assert "Syncing to CRM" in src           # muted sub-state pre-sync
-        # The old lie: an existing row rendering as "Create Lead".
-        assert ">\n                          Create Lead\n" not in src
+        # The redesigned chat (Nov 2026) renders the CRM card from the lead
+        # ROW in features/chats/view.ts (crmView) and the button lives in the
+        # details panel. The contract is the same: the row's created_in_crm
+        # decides "In the CRM", and an existing row never says "Create Lead".
+        base = os.path.join(os.path.dirname(__file__), "..", "..", "bbc-admin-app", "src", "features", "chats")
+        view = open(os.path.join(base, "view.ts"), encoding="utf-8").read()
+        panel = open(os.path.join(base, "components", "details-panel.tsx"), encoding="utf-8").read()
+        assert "if (lead.created_in_crm) {" in view
+        assert "In the CRM" in view
+        assert "Send to CRM" in panel              # the button pushes; it doesn't declare
+        assert "Create Lead" not in view and "Create Lead" not in panel

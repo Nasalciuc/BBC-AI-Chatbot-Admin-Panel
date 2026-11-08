@@ -1,38 +1,16 @@
 /**
- * Widget embed test page.
- * Loads the compiled bbc-widget.js IIFE — the same bundle used on buybusinessclass.com.
- * This ensures /widget-embed always tests the real production widget code.
+ * Widget embed page: the real widget (use-widget-script.ts), nothing else.
+ * The CRM loads it in an iframe as /widget-embed?embedded=1 → open panel, no bubble.
  *
- * To update the widget: edit bbc-widget/src/ → npm run build → copy dist/bbc-widget.js
+ * To update the widget: edit bbc-widget/src/; every deploy builds it into
+ * public/widget/bbc-widget.js (scripts/sync-widget.cjs).
  */
-import { useEffect } from 'react'
-
-const API_URL =
-  import.meta.env.VITE_API_URL ||
-  'https://admin-panel-error-production.up.railway.app'
+import { useWidgetScript } from './use-widget-script'
 
 export default function WidgetEmbed() {
-  useEffect(() => {
-    // Clean up any previous widget instance (handles React StrictMode double-invoke)
-    document.getElementById('bbc-widget-root')?.remove()
-    ;(window as any).__BBC_WIDGET_LOADED__ = false
-
-    const script = document.createElement('script')
-    script.src = '/widget/bbc-widget.js'
-    script.setAttribute('data-api', API_URL)
-    // CRM iframe: /widget-embed?embedded=1 → open panel, no bubble
-    if (new URLSearchParams(window.location.search).get('embedded') === '1') {
-      script.setAttribute('data-mode', 'embedded')
-    }
-    script.async = true
-    document.body.appendChild(script)
-
-    return () => {
-      script.remove()
-      document.getElementById('bbc-widget-root')?.remove()
-      ;(window as any).__BBC_WIDGET_LOADED__ = false
-    }
-  }, [])
+  useWidgetScript({
+    embedded: new URLSearchParams(window.location.search).get('embedded') === '1',
+  })
 
   // Empty page — widget renders itself into #bbc-widget-root
   return (

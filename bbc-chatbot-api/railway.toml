@@ -1,5 +1,9 @@
 [build]
 builder = "dockerfile"
+# Deploy the API only when the API changes. Patterns are matched from the
+# repo root even though this service's root directory is bbc-chatbot-api.
+# Without this, a widget-only merge (#230, 4 Nov 2026) restarted the API.
+watchPatterns = ["/bbc-chatbot-api/**"]
 
 [deploy]
 healthcheckPath = "/health"

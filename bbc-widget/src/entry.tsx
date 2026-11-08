@@ -2,17 +2,20 @@ import { render } from 'preact'
 import { Widget } from './Widget'
 import { captureUtm } from './utm'
 import brand from './config'
+import { WIDGET_CSS } from './styles'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
   // already loaded
 } else {
   (window as any).__BBC_WIDGET_LOADED__ = true
-  captureUtm()
 
   // Read API URL from script data-api attribute
   const script = document.currentScript as HTMLScriptElement | null
     || document.querySelector('script[src*="-widget"]') as HTMLScriptElement | null
+  // data-attribution="off": the site loaded the chat for a visitor without marketing consent (they tapped the
+  // chat button), so no click ids, campaign tags or Analytics id are kept (utm.ts). Without it, as before.
+  captureUtm({ attribution: script?.getAttribute('data-attribution') !== 'off' })
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
 
@@ -27,18 +30,13 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
       catch { return false }
     })()
 
-  // Inject minimal CSS reset for widget elements
-  const style = document.createElement('style')
-  style.textContent = `
-    #bbc-widget-root, #bbc-widget-root * {
-      box-sizing: border-box;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      line-height: normal;
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
-    }
-  `
-  document.head.appendChild(style)
+  // The widget's stylesheet (src/styles.ts): scoped to #bbc-widget-root, with its own reset.
+  if (!document.getElementById('bbc-widget-css')) {
+    const style = document.createElement('style')
+    style.id = 'bbc-widget-css'
+    style.textContent = WIDGET_CSS
+    document.head.appendChild(style)
+  }
 
   // Create container — DOMContentLoaded fallback if body not ready
   function init() {
@@ -60,17 +58,19 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
       s.width = '100%'
       s.height = '100%'
     }
-    s.setProperty('--bbc-primary', brand.colors.primary)
-    s.setProperty('--bbc-primary-rgb', brand.colors.primaryRgb)
-    s.setProperty('--bbc-header', brand.colors.header)
-    s.setProperty('--bbc-header-text', brand.colors.headerText)
-    s.setProperty('--bbc-user-bubble', brand.colors.userBubble)
-    s.setProperty('--bbc-ai-bubble', brand.colors.aiBubble)
-    s.setProperty('--bbc-ai-bubble-text', brand.colors.aiBubbleText)
-    s.setProperty('--bbc-input-border', brand.colors.inputBorder)
-    s.setProperty('--bbc-send-btn', brand.colors.sendButton)
-    s.setProperty('--bbc-send-btn-text', brand.colors.sendButtonText)
-    s.setProperty('--bbc-link', brand.colors.link)
+    const c = brand.colors
+    s.setProperty('--bw-ink', c.ink)
+    s.setProperty('--bw-ink-rgb', c.inkRgb)
+    s.setProperty('--bw-header-bg', c.headerBg)
+    s.setProperty('--bw-header-rule', c.headerRule)
+    s.setProperty('--bw-accent-on-ink', c.accentOnInk)
+    s.setProperty('--bw-accent', c.accent)
+    s.setProperty('--bw-cta', c.cta)
+    s.setProperty('--bw-cta-text', c.ctaText)
+    s.setProperty('--bw-cta-hover', c.ctaHover)
+    s.setProperty('--bw-launcher', c.launcher)
+    s.setProperty('--bw-launcher-ring', c.launcherRing)
+    s.setProperty('--bw-launcher-ring-rgb', c.launcherRingRgb)
 
     render(<Widget apiUrl={apiUrl} embedded={embedded} />, root)
   }

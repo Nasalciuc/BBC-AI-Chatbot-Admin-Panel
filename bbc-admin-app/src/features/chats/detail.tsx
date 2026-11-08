@@ -1,10 +1,7 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  X, Phone, Mail, User, Bot, Headphones, Info, Copy, Check, Send, Smile,
-  Plane, Calendar, Users, FileText, TrendingUp, Clock, Globe,
-} from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowUp, Clock, Info, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
 import type { Message, Lead } from '@/lib/types'
 import {
   getConversation,
@@ -14,67 +11,122 @@ import {
   blockConversationVisitor,
   postAgentTyping,
   clearAgentTyping,
+  pushLeadToCrm,
+  setLeadCrmId,
+  type ApiError,
 } from '@/lib/api'
-import type { ApiError } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ReassignPanel } from '@/components/reassign-panel'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { useAuthStore } from '@/stores/auth-store'
-import { OperatorHistory, OperatorBadge } from './operator-history'
-import { describeClientPresence, presenceFromMetadata } from './presence'
+import { cameBackMessage, clockIn } from '@/features/tasks/view'
+import { FollowUpLine, LateBanner } from './components/follow-up'
+import { useChatTasks } from './use-chat-tasks'
+import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
+import { useReadyToggle } from '@/hooks/use-ready-toggle'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { draftId, readDraft, writeDraft } from '@/lib/chat-drafts'
+import { ChatAvatar } from './components/chat-avatar'
+import { CloseChat } from './components/close-chat'
+import { DetailsPanel } from './components/details-panel'
+import {
+  avatarClasses,
+  clock,
+  closeSentence,
+  countdown,
+  crmView,
+  dayMonth,
+  deadlineLeft,
+  firstName,
+  initials,
+  confirmedOf,
+  levelOf,
+  minutesLabel,
+  minutesSince,
+  noReplyMinutes,
+  ownerOf,
+  presenceFromMeta,
+  presenceView,
+  STALE_CLOSE_MIN,
+  takenBlind,
+} from './view'
+
+export type ChatLayout = 'wide' | 'medium' | 'narrow'
 
 interface Props {
   conversationId: string
   onClose: () => void
   activeTab?: 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
   onConversationChange?: () => void
+  /** The chat became mine (Take from the thread): show it under Mine. */
+  onTaken?: (id: string) => void
   usingMock?: boolean
+  layout?: ChatLayout
+  /** "Wider chat": the list shrinks to a rail and the thread centres. */
+  wide?: boolean
+  onToggleWide?: () => void
 }
 
-const DETAIL_TAG_LABELS: Record<string, string> = {
-  fresh: 'Fresh',
-  active: 'Active',
-  main_queue: 'Main Queue',
-  completed: 'Completed',
-  abandoned: 'Abandoned',
-  no_engagement: 'No engagement',
-}
+const HANDS_ON = ['sales', 'support', 'owner', 'admin', 'dev']
 
-const ROLE_STYLES: Record<string, { bubble: string; align: string; icon: React.ReactNode }> = {
-  user:   { bubble: 'bg-[#0B1829] text-white rounded-2xl rounded-br-sm',                                      align: 'justify-end',    icon: <User className="w-4 h-4" /> },
-  ai:     { bubble: 'bg-[#C9A54E]/10 border border-[#C9A54E]/30 text-foreground rounded-2xl rounded-bl-sm',     align: 'justify-start',  icon: <Bot className="w-4 h-4 text-[#C9A54E]" /> },
-  agent:  { bubble: 'bg-muted text-foreground rounded-2xl rounded-bl-sm',                                     align: 'justify-start',  icon: <Headphones className="w-4 h-4 text-muted-foreground" /> },
-  system: { bubble: 'bg-muted text-muted-foreground text-xs italic rounded-lg border border-dashed border-border', align: 'justify-center', icon: <Info className="w-3 h-3" /> },
-}
-
-// Every status tint carries a dark: variant — theme.css ships a full dark
-// palette, and light-only literals were rendering near-white-on-pastel in
-// dark mode across the app.
-const TIER_COLORS: Record<string, string> = {
-  gold:   'bg-yellow-100 text-yellow-800 border-yellow-300 dark:bg-yellow-950 dark:text-yellow-300 dark:border-yellow-800',
-  silver: 'bg-muted text-muted-foreground border-border',
-  bronze: 'bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-800',
-}
-
-export default function ConversationDetail({ conversationId, onClose, activeTab = 'my_active', onConversationChange, usingMock }: Props) {
+export default function ConversationDetail({
+  conversationId,
+  onClose,
+  activeTab = 'my_active',
+  onConversationChange,
+  onTaken,
+  usingMock,
+  layout = 'wide',
+  wide = false,
+  onToggleWide,
+}: Props) {
   const role = (useAuthStore((s) => s.auth.user?.role ?? 'sales') as UserRole)
+  const me = useAuthStore((s) => s.auth.user)
   const isAdmin = ['owner', 'admin', 'dev'].includes(role)
+  // Tasks in this chat: "Follow-up caught" under a promise, the late banner, "came back".
+  const chatTasks = useChatTasks(conversationId, me?.accountNo)
+  const [taskNow, setTaskNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setTaskNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
   const canViewHistory = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
   const permissions = usePermissions(role)
   const canBlockVisitor = ['owner', 'admin', 'dev', 'supervisor', 'project_manager'].includes(role)
-  const [copied, setCopied]           = useState(false)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
+  const [closing, setClosing] = useState(false)
   const [blockDialogOpen, setBlockDialogOpen] = useState(false)
   const [blocking, setBlocking] = useState(false)
   const [blockResult, setBlockResult] = useState<string | null>(null)
-  const [input, setInput]             = useState('')
+  // Each chat keeps its own draft, per person (lib/chat-drafts.ts): text typed
+  // for one client never follows you into another chat, survives your sign-in,
+  // and is never shown to someone else signing in on this tab.
+  const myId = me?.accountNo
+  const [input, setInput]             = useState(() => readDraft(draftId(myId, conversationId)))
+  const [draftOf, setDraftOf]         = useState(conversationId)
+  if (draftOf !== conversationId) {
+    setDraftOf(conversationId)
+    setInput(readDraft(draftId(myId, conversationId)))
+  }
+  // The chat on screen now, for a send that finishes after you moved on.
+  // Layout effect: set as the new chat lands on screen, not a frame later.
+  const openChatRef = useRef(conversationId)
+  useLayoutEffect(() => { openChatRef.current = conversationId }, [conversationId])
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sending, setSending] = useState(false)
-  // Below xl the lead panel is an overlay toggled from the header — the
-  // product's reason-to-exist must not silently vanish on ordinary laptops.
-  const [showLeadPanel, setShowLeadPanel] = useState(false)
+  const [taking, setTaking] = useState(false)
+  // Below the three-column width the details are an overlay toggled from the
+  // header — the product's reason-to-exist must not silently vanish.
+  const [showDetails, setShowDetails] = useState(false)
   const [markingLead, setMarkingLead] = useState(false)
   const [markLeadError, setMarkLeadError] = useState<string | null>(null)
   const bottomRef             = useRef<HTMLDivElement>(null)
@@ -91,6 +143,14 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
   // consecutive failures openSse gives up and they come back at exactly
   // today's intervals — never faster.
   const [sseLive, setSseLive] = useState(false)
+  const viewingGraceSeconds = useReadyStore((s) => s.viewingGraceSeconds)
+  const { canBeReady, ready } = useReadyToggle()
+  // One clock for the countdowns and "N min" labels on this screen.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
 
   // Full conversation load — cached, long staleTime
   const { data: conv, isLoading: loading, isError, error, refetch } = useQuery({
@@ -107,6 +167,11 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     retry: 1,
     retryDelay: 500,
   })
+
+  // A waiting chat an agent hasn't taken is shown blind (the gate below):
+  // nothing about it is polled or streamed for them either, and the server
+  // sends it without the words, the lead or the contact (same rule).
+  const blindView = !!conv && takenBlind(conv, me?.accountNo, role)
 
   // Track last message timestamp for incremental polling
   useEffect(() => {
@@ -135,7 +200,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       return res.data ?? { is_typing: false, text: '' }
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 500 : false),
-    enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
+    enabled: !!conv && !blindView && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
   // Incremental message polling — ONLY new messages, ONLY on My Active tab
@@ -153,7 +218,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       return res.success ? res.data : []
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
-    enabled: !!conv && activeTab === 'my_active',
+    enabled: !!conv && !blindView && activeTab === 'my_active',
   })
 
   // Presence polling — lightweight metadata endpoint for real-time client status.
@@ -166,7 +231,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       return res.data ?? {}
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
-    enabled: !!conv && activeTab === 'my_active' && conv.status !== 'closed',
+    enabled: !!conv && !blindView && activeTab === 'my_active' && conv.status !== 'closed',
   })
 
   // Push instead of ask. One stream for the conversation on screen carries
@@ -178,7 +243,7 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     // A dormant panel holds no stream (it asks for nothing), and a mock view
     // never opens a real authenticated channel for a conversation it does not
     // query. Both were missing: dormant panels kept server subscriptions alive.
-    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock) return
+    if (!conversationId || activeTab !== 'my_active' || dormant || usingMock || blindView) return
     const h = openAgentStream(
       conversationId,
       (e) => {
@@ -216,13 +281,18 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
             )
             break
           }
+          case 'blind':
+            // The chat went back to waiting and isn't ours: the server closed
+            // the stream. Reload it so the gate (Take) replaces the thread.
+            queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+            break
         }
       },
       (state) => setSseLive(state === 'open'),
       () => setSseLive(false)
     )
     return () => h.close()
-  }, [conversationId, activeTab, dormant, usingMock, queryClient])
+  }, [conversationId, activeTab, dormant, usingMock, blindView, queryClient])
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {
@@ -243,13 +313,17 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     return fresh.length > 0 ? [...base, ...fresh] : base
   }, [conv?.messages, accumMsgs])
 
-  const clientPresence = useMemo(() => {
-    const m = (presenceData ?? conv?.metadata ?? {}) as Record<string, unknown>
-    const lastEventAt = typeof m.widget_last_event_at === 'string' ? m.widget_last_event_at : undefined
-    return describeClientPresence(presenceFromMetadata(m), lastEventAt, new Date())
+  // "{first} came back to the chat": over a promise of mine that's now late, the
+  // client's first message after a pause (not the "thanks" right after it).
+  const cameBackId = cameBackMessage(allMessages, chatTasks.lateMine?.created_at ? Date.parse(chatTasks.lateMine.created_at) : null)
+
+  const presence = useMemo(() => {
+    const p = presenceFromMeta((presenceData ?? conv?.metadata ?? {}) as Record<string, unknown>)
+    return { ...presenceView(p.effective, p.ageSeconds), ageSeconds: p.ageSeconds }
   }, [presenceData, conv?.metadata])
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length])
+  // New lines, and the client starting to type, both belong in view.
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length, typingData?.is_typing])
 
   // Agent reply box: grow 1→6 rows, then scroll internally.
   const autoGrow = () => {
@@ -290,16 +364,28 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }, [conversationId])
 
+  useEffect(() => {
+    writeDraft(draftId(myId, conversationId), input)
+  }, [myId, conversationId, input])
+
   const handleSend = async () => {
     if (!input.trim() || sending) return
+    // The chat this reply is for: you may open another before it's sent.
+    const sentFor = conversationId
     setSending(true)
     lastTypingSentRef.current = 0
-    clearAgentTyping(conversationId).catch(() => {})
+    clearAgentTyping(sentFor).catch(() => {})
     try {
-      await sendAgentMessage(conversationId, input.trim())
-      setInput('')
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['messages-incremental', conversationId] })
+      await sendAgentMessage(sentFor, input.trim())
+      // Sent: that chat's draft goes; the composer empties only if it still
+      // shows that chat (another chat's draft stays as it is).
+      writeDraft(draftId(myId, sentFor), '')
+      if (openChatRef.current === sentFor) setInput('')
+      queryClient.invalidateQueries({ queryKey: ['conversation', sentFor] })
+      queryClient.invalidateQueries({ queryKey: ['messages-incremental', sentFor] })
+      // A promise in the reply ("I'll send you three options within the hour") is
+      // now a task. chatTasks is this render's: it refreshes that chat's tasks.
+      chatTasks.refresh()
     } catch (_err) {
       // The trust-critical path: a reply to a LIVE customer must never
       // vanish silently. Input is preserved (cleared only on success).
@@ -315,11 +401,12 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }
 
-  const QUICK_EMOJIS = ['🙂', '😊', '👍', '🙏', '✈️', '💼', '✅', '🎉', '📞', '💬']
+  const QUICK_EMOJIS = ['👍', '🙂', '🙏', '✈️', '✅', '👌', '🎉', '⭐', '😊', '👋']
 
   const handleInsertEmoji = (emoji: string) => {
     setInput(prev => `${prev}${emoji}`)
     setShowEmojiPicker(false)
+    requestAnimationFrame(() => taRef.current?.focus())
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -328,18 +415,25 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
 
   // Claim conversation from queue
   const handleClaim = async () => {
+    if (taking) return
+    setTaking(true)
     try {
       await apiFetch(`/api/conversations/${conversationId}/claim`, { method: 'POST' })
-      onConversationChange?.()
+      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      if (onTaken) onTaken(conversationId)
+      else onConversationChange?.()
     } catch (_err) {
       // Most common cause: another agent grabbed it first (claim race).
-      toast.error("Couldn't claim this conversation — it may have just been taken by another agent.")
+      toast.error("Couldn't take this chat — someone may have taken it a moment before you.")
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+    } finally {
+      setTaking(false)
     }
   }
 
   // Close conversation
   const handleCloseConfirm = async () => {
+    setClosing(true)
     try {
       await apiFetch(`/api/conversations/${conversationId}/close`, { method: 'POST' })
       setCloseDialogOpen(false)
@@ -349,6 +443,8 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
       // Dialog stays open — a mute failure here left agents believing
       // conversations were closed when they weren't.
       toast.error("Couldn't close the conversation — try again.")
+    } finally {
+      setClosing(false)
     }
   }
 
@@ -370,33 +466,52 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     }
   }
 
-  const handleMarkLeadCreated = async () => {
-    if (!lead?.id || markingLead) return
+  /** The REAL push (the server runs the gate and the CRM call). A 422 carries
+   *  the CRM's refusal; it is shown verbatim. Returns whether it landed. */
+  const handleMarkLeadCreated = async (): Promise<boolean> => {
+    if (!lead?.id || markingLead) return false
     setMarkingLead(true)
     setMarkLeadError(null)
     try {
-      // 20s: the server's CRM call can take up to 10s — the default 8s
-      // abort would "fail" a push that actually succeeded (double-push bait).
-      await apiFetch(`/api/leads/${lead.id}/mark-crm-created`, { method: 'PATCH' }, 20_000)
+      await pushLeadToCrm(lead.id)
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-      onConversationChange?.()
+      toast.success(`${firstName(conv?.visitor_name)} is in the CRM.`)
+      return true
     } catch (err) {
-      // The endpoint now performs the REAL push — a 422 carries the CRM's
-      // refusal (gate reason or CRM error body). Show it verbatim.
       const msg = (err as ApiError)?.message ?? 'CRM push failed. Please try again.'
       setMarkLeadError(msg)
+      return false
     } finally {
       setMarkingLead(false)
     }
   }
 
-  const copyId = () => {
-    navigator.clipboard.writeText(conversationId)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+  const handleSaveManual = async (crmId: string): Promise<boolean> => {
+    if (!lead?.id) return false
+    try {
+      await setLeadCrmId(lead.id, crmId)
+      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      toast.success(`Saved: CRM lead ${crmId}.`)
+      return true
+    } catch (err) {
+      toast.error((err as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.')
+      return false
+    }
   }
 
-  if (loading) return <div className="h-full flex items-center justify-center text-muted-foreground text-sm">Loading...</div>
+  const handleSendAndClose = async () => {
+    const ok = await handleMarkLeadCreated()
+    if (ok) await handleCloseConfirm()
+    else toast.error('Not sent to the CRM, so the chat stays open. See the reason under Lead & CRM.')
+  }
+
+  if (loading) {
+    return (
+      <div className='flex h-full items-center justify-center rounded-[20px] bg-k-ffffff text-sm text-k-6b6b6b shadow-[0_0_0_1px_var(--k-ececec)]'>
+        Loading…
+      </div>
+    )
+  }
 
   // Bug 5: differentiate "genuine not found" from "transient error".
   // The backend endpoint may return {success:false, data:null} with HTTP 200
@@ -405,54 +520,26 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     const status = (error as ApiError)?.status
     if (status === 403) {
       return (
-        <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
-          <p className="text-lg font-semibold text-muted-foreground mb-2">Access restricted</p>
-          <p className="text-sm text-muted-foreground">
-            This conversation belongs to a different tunnel or team.
-          </p>
-          <button onClick={onClose} className="mt-4 text-sm text-[#C9A54E] hover:underline">Back to chats</button>
-        </div>
+        <Notice title='Access restricted' text='This conversation belongs to a different tunnel or team.' action='Back to chats' onAction={onClose} />
       )
     }
     return (
-      <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
-        <p className="text-lg font-semibold text-muted-foreground mb-2">Couldn't load conversation</p>
-        <p className="text-sm text-muted-foreground">
-          Something went wrong loading this conversation. Please try again.
-        </p>
-        <button onClick={() => refetch()} className="mt-4 text-sm text-[#C9A54E] hover:underline">Retry</button>
-      </div>
+      <Notice title='Couldn’t load the chat' text='Something went wrong loading this conversation. Try again.' action='Retry' onAction={() => refetch()} />
     )
   }
 
   if (!conv) return (
-    <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
-      <p className="text-lg font-semibold text-muted-foreground mb-2">Conversation not found</p>
-      <p className="text-sm text-muted-foreground">
-        It may have been deleted or moved. Return to the list to see your current chats.
-      </p>
-      <button onClick={onClose} className="mt-4 text-sm text-[#C9A54E] hover:underline">Back to chats</button>
-    </div>
+    <Notice title='Chat not found' text='It may have been deleted or moved. Return to the list to see your current chats.' action='Back to chats' onAction={onClose} />
   )
 
   const lead: Lead | null | undefined = conv.lead
 
   if (!permissions.canReadMessages) {
     return (
-      <div className='h-full p-6 flex flex-col gap-4 bg-card'>
-        <div className='bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800'>
-          ⚠️ You are viewing this conversation as a supervisor.
-          Message content is not visible. You can reassign this conversation.
+      <div className='flex h-full flex-col gap-4 rounded-[20px] bg-k-ffffff p-6 shadow-[0_0_0_1px_var(--k-ececec)]'>
+        <div className='rounded-2xl bg-k-fff3e0 p-4 text-sm text-k-8a4b00'>
+          You can see who has this chat, not what was said. You can give it to someone else.
         </div>
-
-        <div className='space-y-2 text-sm text-foreground'>
-          <p><strong>Visitor:</strong> {conv.visitor_name ?? 'Anonymous'}</p>
-          <p><strong>Tunnel:</strong> {conv.tunnel}</p>
-          <p><strong>Status:</strong> {conv.status}</p>
-          <p><strong>Agent:</strong> {conv.assigned_agent_name ?? conv.assigned_agent_id ?? 'Unassigned'}</p>
-          <p><strong>Started:</strong> {conv.created_at ? new Date(conv.created_at).toLocaleString() : '—'}</p>
-        </div>
-
         {permissions.canReassignConversations && (
           <ReassignPanel
             conversationId={conv.id}
@@ -466,657 +553,546 @@ export default function ConversationDetail({ conversationId, onClose, activeTab 
     )
   }
 
+  // ── what this chat is, for me ─────────────────────────────────────────
+  const owner = ownerOf(conv, me?.accountNo)
+  const first = firstName(conv.visitor_name)
+  const isSupervisor = role === 'supervisor'
+  const engagedMe = (conv.metadata?.engaged_agent_id as string | undefined) === me?.accountNo
+  // My Active lists chats assigned to me AND chats I engaged that went back to
+  // the assistant: writing in one of those takes it back (sticky ownership).
+  const canWrite = activeTab === 'my_active' && conv.status !== 'closed' && (owner === 'mine' || engagedMe)
+  const canTake = owner === 'waiting' && HANDS_ON.includes(role) && conv.status !== 'closed' && (!canBeReady || ready)
+  const canManage = permissions.canReassignConversations && conv.status !== 'closed'
+  const canActOnLead = isAdmin || (role === 'sales' && (owner === 'mine' || engagedMe))
+  const crm = crmView(conv, lead, { canAct: canActOnLead, ownerName: conv.assigned_agent_name ?? null })
+  const canPush = !!lead && crm.state === 'ready' && canActOnLead
+  const canManual = !!lead && (crm.state === 'ready' || crm.state === 'missing') && canActOnLead
+  const viewingDeadline = viewingGraceSeconds
+  const left = canWrite ? deadlineLeft(conv, nowMs, viewingDeadline) : null
+  const waitingMin = owner === 'waiting' ? minutesSince(conv.queued_at ?? conv.updated_at, nowMs) : null
+  const noReply = noReplyMinutes(conv, nowMs)
+  const leftMin = presence.state === 'left' && typeof presence.ageSeconds === 'number' ? Math.floor(presence.ageSeconds / 60) : null
+  const level = levelOf(lead, confirmedOf(conv))
+  const narrow = layout === 'narrow'
+  const detailsStatic = layout === 'wide'
+
+  const chip =
+    owner === 'closed'
+      ? { text: 'Closed', cls: 'bg-k-f0f0f0 text-k-555555' }
+      : owner === 'waiting'
+        ? { text: `Waiting ${minutesLabel(waitingMin ?? 0)}`, cls: (waitingMin ?? 0) > 5 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-fff3e0 text-k-8a4b00' }
+        : owner === 'ai'
+          ? { text: 'AI is answering', cls: 'bg-k-efeaff text-k-4a36c4' }
+          : owner === 'agent'
+            ? { text: conv.assigned_agent_name ?? 'An agent', cls: 'bg-k-f0f0f0 text-k-444444' }
+            : activeTab !== 'my_active'
+              ? { text: 'Yours', cls: 'bg-k-00c450/12 text-k-0a6b35' }
+              : null
+
+  const note: { text: string; cls: string } | null =
+    owner === 'closed'
+      ? { text: `This chat is closed${conv.closed_at ? ` since ${clock(conv.closed_at)}` : ''}. It stays in Closed.`, cls: 'bg-k-f7f7f7 text-k-444444' }
+      : canWrite || canTake
+        ? null
+        : owner === 'waiting'
+          ? {
+              text: canBeReady && !ready ? 'Set yourself ready to take this chat.' : isSupervisor || role === 'project_manager' ? `${first} is waiting for a person. Give the chat to an agent who is ready.` : `${first} is waiting for a person.`,
+              cls: 'bg-k-f7f7f7 text-k-444444',
+            }
+          : owner === 'ai'
+            ? { text: `The AI is answering. If ${first} asks for a person, the chat moves to Waiting.`, cls: 'bg-k-f7f7f7 text-k-444444' }
+            : owner === 'mine'
+              ? { text: 'This chat is yours. Open it under Mine to answer.', cls: 'bg-k-f7f7f7 text-k-444444' }
+              : { text: `${conv.assigned_agent_name ?? 'An agent'} is answering. You can read along${canManage ? ', or give the chat to someone else' : ''}.`, cls: 'bg-k-f7f7f7 text-k-444444' }
+
+  // An agent takes a waiting chat blind (owner's decision, Nov 2026): who
+  // and how long, never the cities or the client's words until it's theirs.
+  // Managers still read it, to give it to the right person. The queue never
+  // opens a waiting chat; this covers a link or a selection that lands here.
+  // A chat the agent was already talking in (back with the assistant) is
+  // theirs to read: they know it.
+  if (blindView) {
+    const waitedMin = minutesSince(conv.queued_at ?? conv.updated_at, nowMs) ?? 0
+    const canTakeBlind = conv.status !== 'closed' && (!canBeReady || ready)
+    return (
+      <section
+        aria-label='Chat'
+        className={cn(
+          'flex h-full flex-col items-center justify-center gap-4 bg-k-ffffff p-6 text-center',
+          narrow ? 'rounded-none' : 'rounded-[20px] shadow-[0_0_0_1px_var(--k-ececec)]'
+        )}
+      >
+        <ChatAvatar text={initials(conv.visitor_name)} tone={avatarClasses('waiting')} dot={presence.dot} size={44} />
+        <div className='flex flex-col items-center gap-1.5'>
+          <h2 className='m-0 text-[17px] font-bold text-k-202020'>{conv.visitor_name || 'Visitor'}</h2>
+          <span className={cn('rounded-full px-2 py-0.5 text-xs font-bold', waitedMin > 5 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-fff3e0 text-k-8a4b00')}>
+            Waiting {minutesLabel(waitedMin)}
+          </span>
+        </div>
+        <p className='m-0 max-w-[340px] text-sm leading-[1.45] text-k-555555'>
+          {conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
+          chat and the trip once you take it.
+        </p>
+        {canTakeBlind ? (
+          <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+            {taking ? 'Taking…' : 'Take'}
+          </button>
+        ) : (
+          <p className='m-0 text-sm font-bold text-k-202020'>Set yourself ready to take this chat.</p>
+        )}
+        <button type='button' onClick={onClose} className='min-h-8 text-sm font-bold text-k-5b45e0 hover:underline'>
+          Back to chats
+        </button>
+      </section>
+    )
+  }
+
+  const myInitials = initials(me?.name ?? 'You')
+  const agentName = conv.assigned_agent_name ?? conv.engaged_agent_name ?? null
+  const speaker = (r: Message['role']) =>
+    r === 'ai'
+      ? { name: 'Assistant', av: 'AI', tone: 'bg-k-efeaff text-k-4a36c4' }
+      : r === 'agent'
+        ? owner === 'mine'
+          ? { name: 'You', av: myInitials, tone: 'bg-kb-202020 text-on-btn' }
+          : { name: agentName ? firstName(agentName) : 'Agent', av: agentName ? initials(agentName) : 'AG', tone: 'bg-kb-202020 text-on-btn' }
+        : { name: first, av: initials(conv.visitor_name), tone: 'bg-k-e6f0fb text-k-1f5fb0' }
+
+  const details = (
+    <DetailsPanel
+      conv={conv}
+      lead={lead}
+      owner={owner}
+      messages={allMessages}
+      isSupervisor={isSupervisor}
+      showCost={isAdmin}
+      canViewHistory={canViewHistory}
+      wide={wide}
+      crm={crm}
+      canPush={canPush}
+      canManual={canManual}
+      pushing={markingLead}
+      pushError={markLeadError}
+      onPush={handleMarkLeadCreated}
+      onSaveManual={handleSaveManual}
+    />
+  )
+
+  const iconBtn =
+    'flex size-10 flex-none items-center justify-center rounded-full border border-k-e3e2e2 bg-k-ffffff text-k-202020 hover:bg-k-f7f7f7 focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
+
   return (
-    <div className="relative h-full flex min-w-0 overflow-hidden bg-card text-foreground">
-
-      {/* LEFT COLUMN: Chat (header + messages + input) */}
-      <div className="flex min-w-0 flex-1 basis-0 flex-col">
-
+    <div className='relative flex h-full min-w-0 gap-4'>
+      <section
+        aria-label='Chat'
+        className={cn(
+          'flex min-w-0 flex-1 flex-col overflow-hidden bg-k-ffffff',
+          narrow ? 'rounded-none' : 'rounded-[20px] shadow-[0_0_0_1px_var(--k-ececec),0_8px_24px_rgba(32,32,32,0.04)]'
+        )}
+      >
         {/* Header */}
-        <div className="flex items-start justify-between px-5 py-4 bg-[#0B1829]">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              {conv.chat_number != null && (
-                <span className="text-xs font-mono text-[#C9A54E] shrink-0">#{conv.chat_number}</span>
-              )}
-              <h2 className="text-base font-semibold text-white truncate">
-                {/* The visitor's NAME stays after closing — 1292 identical
-                    "Closed conversation" rows destroyed recognition while
-                    phone/email printed 20px lower anyway. Closed state lives
-                    in the status chips. QA supervisors stay anonymized. */}
-                {role === 'supervisor'
-                  ? 'Anonymous Visitor'  // QA: no customer-identifying text in the header
-                  : (conv.visitor_name ?? 'Anonymous Visitor')}
-              </h2>
-              <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-medium ${
-                conv.tunnel === 'sales' ? 'bg-blue-500/20 text-blue-200' : 'bg-purple-500/20 text-purple-200'
-              }`}>
-                {conv.tunnel}
-              </span>
-              {conv.tag && (
-                <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-white/10 text-white/80">
-                  {DETAIL_TAG_LABELS[conv.tag] ?? conv.tag}
-                </span>
-              )}
-            </div>
-            {/* QA supervisors see NO personal data in the header. */}
-            <div className="flex items-center gap-4 mt-1.5">
-              {/* white/70, never the muted token here: that oklch mid-gray
-                  lands ≈3.9:1 on the navy header — under WCAG AA for small text. */}
-              {role !== 'supervisor' && conv.visitor_phone && (
-                <span className="flex items-center gap-1 text-xs text-white/70">
-                  <Phone className="w-3 h-3" />{conv.visitor_phone}
-                </span>
-              )}
-              {role !== 'supervisor' && conv.visitor_email && (
-                <span className="flex items-center gap-1 text-xs text-white/70">
-                  <Mail className="w-3 h-3" />{conv.visitor_email}
-                </span>
-              )}
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-white/70">
-              <span className="shrink-0">{allMessages.length} messages</span>
-              {(conv.request_id || lead?.id) && (
-                <a
-                  href={`/leads?highlight=${conv.request_id || lead?.id}`}
-                  className="shrink-0 text-[#C9A54E] hover:underline"
-                  title="Open request / lead"
-                >
-                  Request {(conv.request_id || lead?.id || '').slice(0, 8)}…
-                </a>
-              )}
-              {role !== 'supervisor' && (
-                <span className="shrink-0">${conv.ai_cost_total.toFixed(4)} AI cost</span>
-              )}
-              {canViewHistory && (
-                <span className="min-w-0 max-w-full truncate">
-                  <OperatorBadge conversationId={conversationId} />
-                </span>
-              )}
-              <button onClick={copyId} className="flex items-center gap-0.5 hover:text-white transition" aria-label="Copy conversation id">
-                {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                {conversationId.slice(0, 8)}...
-              </button>
-            </div>
-          </div>
-          <div className="ml-3 flex shrink-0 items-center gap-1.5">
-            <button
-              onClick={() => setShowLeadPanel((v) => !v)}
-              aria-expanded={showLeadPanel}
-              className="xl:hidden flex items-center gap-1 rounded-lg border border-white/20 px-2 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/10 hover:text-white transition"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Lead
+        <div className={cn('flex items-center gap-2.5 border-b border-k-f0f0f0', narrow ? 'px-2 py-2.5' : layout === 'wide' ? 'flex-wrap px-[18px] py-3.5' : 'px-4 py-3')}>
+          {narrow && (
+            <button type='button' onClick={onClose} aria-label='Back to the chats' className='flex size-10 flex-none items-center justify-center rounded-full text-k-202020 hover:bg-k-f7f7f7'>
+              <ArrowLeft aria-hidden='true' className='size-5' />
             </button>
-            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition" aria-label="Close conversation view">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 bg-muted">
-          {allMessages.length === 0 ? (
-            <div className="text-center text-muted-foreground text-sm py-8">No messages</div>
-          ) : allMessages.map((msg, i) => {
-            const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system
-            // Day separator: a 3-day conversation must not read as one
-            // sitting — timestamps alone are hour:minute.
-            const day = new Date(msg.created_at).toDateString()
-            const prevDay = i > 0 ? new Date(allMessages[i - 1].created_at).toDateString() : null
-            const showDay = day !== prevDay && !Number.isNaN(new Date(msg.created_at).getTime())
-            // Grouping: consecutive same-role messages read as one turn —
-            // avatar once, tight gap. A new day always starts a new group.
-            const grouped = !showDay && i > 0 && allMessages[i - 1].role === msg.role
-            return (
-              <div key={msg.id} className={grouped ? 'mt-1' : 'mt-3 first:mt-0'}>
-              {showDay && (
-                <div className="flex items-center gap-3 my-4" aria-hidden>
-                  <div className="h-px flex-1 bg-border" />
-                  <span className="text-[11px] font-medium text-muted-foreground">
-                    {new Date(msg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
-                  <div className="h-px flex-1 bg-border" />
-                </div>
-              )}
-              <div className={`flex ${style.align} gap-2`}>
-                {msg.role !== 'user' && (
-                  grouped
-                    ? <div className="w-7 shrink-0" aria-hidden />
-                    : <div className="w-7 h-7 rounded-full bg-card border border-border flex items-center justify-center shrink-0 mt-1 shadow-sm">
-                        {style.icon}
-                      </div>
-                )}
-                {/* min-w: a one-character reply must not collapse into a blob */}
-                <div className={`max-w-[75%] min-w-[76px] px-3.5 py-2.5 shadow-sm ${style.bubble}`}>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                  <div className="flex items-center justify-end gap-2 mt-1">
-                    <span className="text-[11px] opacity-70">
-                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {/* Model ids are ops jargon — admins only, not operators. */}
-                    {isAdmin && msg.model_used && <span className="text-[11px] opacity-50">{msg.model_used}</span>}
-                  </div>
-                </div>
-                {msg.role === 'user' && (
-                  grouped
-                    ? <div className="w-7 shrink-0" aria-hidden />
-                    : <div className="w-7 h-7 rounded-full bg-[#C9A54E]/20 border border-[#C9A54E]/30 flex items-center justify-center shrink-0 mt-1">
-                        <User className="w-4 h-4 text-[#C9A54E]" />
-                      </div>
-                )}
-              </div>
-              </div>
-            )
-          })}
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input + Actions + Status */}
-        <div className="shrink-0 border-t border-border bg-card">
-          {/* Typing preview — shown when client is composing a message */}
-          {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
-            <div className="mx-4 mb-2 px-3 py-2 bg-blue-50 border border-blue-100 dark:bg-blue-950/50 dark:border-blue-900 rounded-xl">
-              <div className="flex items-center gap-1.5 mb-1">
-                <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 uppercase tracking-wide">
-                  Client is composing
-                </span>
-                <span className="flex gap-0.5 items-center">
-                  {/* Smooth opacity wave, not a bounce — the dots breathe. */}
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '250ms' }} />
-                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" style={{ animationDelay: '500ms' }} />
-                </span>
-              </div>
-              {typingData.text && (
-                <p className="text-sm text-muted-foreground italic leading-relaxed">
-                  &ldquo;{typingData.text}&rdquo;
-                </p>
-              )}
-            </div>
           )}
-
-          {/* Agent input — only on My Active */}
-          {activeTab === 'my_active' && conv.status !== 'closed' && (
-            <div className="px-4 pt-3 pb-2">
-              <div className="relative flex gap-2">
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setShowEmojiPicker(v => !v)}
-                    className="h-full px-3 rounded-xl border border-border text-muted-foreground hover:text-foreground hover:border-border transition-all"
-                    aria-label="Insert emoji"
-                    title="Insert emoji"
-                  >
-                    <Smile className="w-4 h-4" />
-                  </button>
-                  {showEmojiPicker && (
-                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-20 w-56 rounded-xl border border-border bg-card p-2 shadow-lg">
-                      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Quick emoji</p>
-                      <div className="grid grid-cols-5 gap-1">
-                        {QUICK_EMOJIS.map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => handleInsertEmoji(emoji)}
-                            className="rounded-md px-2 py-1.5 text-lg hover:bg-accent"
-                            aria-label={`Insert ${emoji}`}
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <textarea
-                  ref={taRef}
-                  value={input}
-                  onChange={(e) => { setInput(e.target.value); autoGrow(); reportTyping(e.target.value) }}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Type a reply as agent..."
-                  rows={1}
-                  disabled={sending}
-                  className="flex-1 resize-none rounded-xl border border-input bg-background text-foreground px-4 py-2.5 text-sm focus:outline-none focus:border-[#C9A54E] focus:ring-1 focus:ring-[#C9A54E]/30 placeholder:text-muted-foreground disabled:opacity-50"
-                />
-                <button onClick={handleSend} disabled={!input.trim() || sending}
-                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0B1829] text-white text-sm font-medium hover:bg-[#0B1829]/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0">
-                  <Send className="w-4 h-4" />{sending ? '...' : 'Send'}
+          <ChatAvatar text={initials(conv.visitor_name)} tone={avatarClasses(owner)} dot={owner !== 'closed' ? presence.dot : null} size={42} />
+          <div className={cn('flex flex-1 flex-col gap-0.5', layout === 'wide' ? 'min-w-[120px]' : 'min-w-0')}>
+            <div className={cn('flex items-center gap-2', layout === 'wide' ? 'flex-wrap' : 'min-w-0')}>
+              <h2 className='m-0 min-w-0 truncate text-[17px] font-bold text-k-202020'>{conv.visitor_name || 'Visitor'}</h2>
+              {chip && <span className={cn('rounded-full px-2 py-0.5 text-xs font-bold', chip.cls)}>{chip.text}</span>}
+              {conv.has_flagged_content && (
+                <span title={conv.flagged_reason || 'Contains flagged content'} className='rounded-full bg-k-fff3e0 px-2 py-0.5 text-xs font-bold text-k-8a4b00'>
+                  Flagged
+                </span>
+              )}
+            </div>
+            {/* Presence is meaningless on a closed thread. */}
+            {conv.status !== 'closed' && presence.label && <div className={cn('text-[13px]', presence.text)}>{presence.label}</div>}
+          </div>
+          {canWrite && (
+            <CloseChat
+              open={closeDialogOpen}
+              onOpenChange={setCloseDialogOpen}
+              first={first}
+              sentence={closeSentence(conv, crm, lead)}
+              crm={crm}
+              canSend={canPush}
+              busy={closing || markingLead}
+              onClose={handleCloseConfirm}
+              onSendAndClose={handleSendAndClose}
+            />
+          )}
+          {canManage && !canWrite && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <button type='button' className='h-10 flex-none rounded-full border border-kl-202020 bg-k-ffffff px-4 text-sm font-bold text-k-202020 hover:bg-k-f7f7f7'>
+                  Give to…
                 </button>
-              </div>
-            </div>
+              </PopoverTrigger>
+              <PopoverContent align='end' className='w-auto rounded-2xl p-3'>
+                <p className='mb-2 text-[11px] font-bold tracking-[0.04em] text-k-6b6b6b uppercase'>Give to an agent</p>
+                <ReassignPanel
+                  conversationId={conv.id}
+                  onReassigned={() => {
+                    queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+                    onConversationChange?.()
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
           )}
-
-          {/* Take button — only on Queue */}
-          {activeTab === 'all_active' && role !== 'qa' && (
-            <div className="px-4 py-3">
-              <button onClick={handleClaim}
-                className="w-full py-2.5 rounded-xl bg-[#C9A54E] text-white text-sm font-semibold hover:bg-[#C9A54E]/90 transition-all">
-                Take This Conversation
+          {/* Below full width the header keeps what matters: Close chat and the details. */}
+          {(layout === 'wide' || canBlockVisitor) && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type='button' aria-label='More actions' className={iconBtn}>
+                <MoreHorizontal aria-hidden='true' className='size-[18px]' />
               </button>
-            </div>
-          )}
-
-          {lead && permissions.canReadMessages && permissions.canEditLeads && (
-            <div className="px-4 py-2">
-              {markLeadError && (
-                <div className="mb-2 px-2 py-1.5 rounded border border-red-200 bg-red-50 text-[11px] text-red-700">
-                  {markLeadError}
-                </div>
-              )}
-              {(() => {
-                // The button renders from the lead ROW, not from a derived
-                // flag. Conv #1347: the row existed (ensure_lead) while
-                // created_in_crm was correctly false pre-confirmation — and
-                // the old button lied "Create Lead" as if nothing existed.
-                const hasName  = !!lead.visitor_name?.trim() || !!conv.visitor_name?.trim()
-                const hasEmail = !!lead.visitor_email?.trim() || !!conv.visitor_email?.trim()
-                const hasPhone = !!lead.visitor_phone?.trim() || !!conv.visitor_phone?.trim()
-                const missing: string[] = []
-                if (!hasName)  missing.push('name')
-                if (!hasEmail) missing.push('email')
-                if (!hasPhone) missing.push('phone')
-                const isSynced   = lead.created_in_crm === true
-                const hasAllData = missing.length === 0
-                const isBlockedTag = conv.tag === 'abandoned' || conv.tag === 'no_engagement'
-                const blockedReason = conv.tag === 'no_engagement'
-                  ? 'Customer left contact but never wrote a message'
-                  : 'Customer went quiet before the conversation was completed'
-
-                return (
-                  <div className="space-y-1.5">
-                    <div className="w-full py-2 rounded-lg border border-emerald-400 bg-emerald-100 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5">
-                      <Check className="w-3 h-3" />
-                      {/* The id is the receipt — a flag with an id was proven
-                          by the CRM's own 2xx response, never assumed. */}
-                      {isSynced && lead.crm_lead_id
-                        ? `In CRM · ${lead.crm_lead_id}`
-                        : 'Lead Created'}
-                    </div>
-                    {!isSynced && (
-                      isBlockedTag ? (
-                        <p className="text-center text-[11px] text-muted-foreground" title={blockedReason}>
-                          CRM submission blocked · {DETAIL_TAG_LABELS[conv.tag ?? ''] ?? 'Blocked'}
-                        </p>
-                      ) : markingLead ? (
-                        <p className="text-center text-[11px] text-muted-foreground">Pushing to CRM…</p>
-                      ) : !hasAllData ? (
-                        <p className="text-center text-[11px] text-muted-foreground" title={`Missing: ${missing.join(', ')}`}>
-                          Syncing to CRM — waiting for {missing.join(', ')}
-                        </p>
-                      ) : (
-                        <button
-                          onClick={handleMarkLeadCreated}
-                          className="w-full py-2 rounded-lg bg-[#C9A54E] text-white text-xs font-semibold hover:bg-[#C9A54E]/90 transition-all"
-                        >
-                          Push to CRM
-                        </button>
-                      )
-                    )}
-                  </div>
-                )
-              })()}
-            </div>
-          )}
-
-          {/* Close button — only on My Active */}
-          {activeTab === 'my_active' && conv.status !== 'closed' && (
-            <div className="px-4 pb-2">
-              <button onClick={() => setCloseDialogOpen(true)}
-                className="w-full py-2 rounded-lg border border-border text-muted-foreground text-xs hover:bg-accent hover:text-red-500 transition-all">
-                Close Conversation
-              </button>
-              <ConfirmDialog
-                open={closeDialogOpen}
-                onOpenChange={setCloseDialogOpen}
-                title="Close Conversation"
-                desc="Are you sure you want to close this conversation? The visitor will no longer receive replies."
-                confirmText="Close"
-                destructive
-                handleConfirm={handleCloseConfirm}
-              />
-            </div>
-          )}
-
-          {/* Block visitor — moderation action, privileged roles only */}
-          {canBlockVisitor && (
-            <div className="px-4 pb-2">
-              <button
-                onClick={() => setBlockDialogOpen(true)}
-                disabled={blocking}
-                className="w-full py-2 rounded-lg border border-red-200 text-red-500 text-xs hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align='end' className='w-60 rounded-2xl p-1.5'>
+              <DropdownMenuItem
+                className='h-10 rounded-[10px] px-2.5 text-sm'
+                onClick={() => {
+                  navigator.clipboard.writeText(conv.chat_number != null ? `#${conv.chat_number}` : conversationId).then(
+                    () => toast.success('Chat number copied'),
+                    () => toast.error('Couldn’t copy the chat number.')
+                  )
+                }}
               >
-                {blocking ? 'Blocking…' : 'Block Visitor'}
-              </button>
-              {blockResult && (
-                <p className="mt-1 text-[11px] text-muted-foreground text-center">{blockResult}</p>
+                Copy chat number{conv.chat_number != null ? ` (#${conv.chat_number})` : ''}
+              </DropdownMenuItem>
+              {canBlockVisitor && (
+                <DropdownMenuItem className='h-10 rounded-[10px] px-2.5 text-sm font-bold text-k-b3261e' onClick={() => setBlockDialogOpen(true)} disabled={blocking}>
+                  {blocking ? 'Blocking…' : 'Block this visitor'}
+                </DropdownMenuItem>
               )}
-              <ConfirmDialog
-                open={blockDialogOpen}
-                onOpenChange={setBlockDialogOpen}
-                title="Block this visitor?"
-                desc="Block this visitor's IP, phone and email? They will no longer be able to chat or create leads. Note: a shared IP alone never blocks anyone — only the phone and email do."
-                confirmText="Block"
-                destructive
-                handleConfirm={handleBlockConfirm}
-              />
-            </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
           )}
+          {layout === 'wide' && onToggleWide && (
+            <button
+              type='button'
+              aria-pressed={wide}
+              aria-label={wide ? 'Back to three columns' : 'Wider chat'}
+              title={wide ? 'Back to three columns' : 'Wider chat'}
+              onClick={onToggleWide}
+              className={cn(iconBtn, wide && 'bg-k-f2f2f2')}
+            >
+              {wide ? <Minimize2 aria-hidden='true' className='size-[17px]' /> : <Maximize2 aria-hidden='true' className='size-[17px]' />}
+            </button>
+          )}
+          {!detailsStatic && (
+            <button
+              type='button'
+              aria-expanded={showDetails}
+              aria-label='Trip and lead'
+              title='Trip and lead'
+              onClick={() => setShowDetails((v) => !v)}
+              className={cn(iconBtn, showDetails && 'bg-k-f2f2f2')}
+            >
+              <Info aria-hidden='true' className='size-[18px]' />
+            </button>
+          )}
+        </div>
 
-          {/* Status bar */}
-          <div className="px-4 py-2 flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground border-t border-border">
-            <span className="min-w-0 truncate">
-              Status: <span className={`font-medium ${conv.status === 'active' ? 'text-green-600' : conv.status === 'pending' ? 'text-yellow-600' : 'text-muted-foreground'}`}>{conv.status}</span>
-              {' · '}Mode: <span className={`font-medium ${conv.mode === 'human' ? 'text-blue-600' : conv.mode === 'ai' ? 'text-amber-600' : 'text-muted-foreground'}`}>{conv.mode}</span>
-              {/* Presence is meaningless on a closed thread — "Client:
-                  Active" next to "Status: closed" was the panel arguing
-                  with itself. */}
-              {conv.status !== 'closed' && (
-                <>
-                  {' · '}Client:
-                  <span className={`ml-1 inline-flex items-center gap-1 font-medium ${clientPresence.text}`}>
-                    <span className={`inline-block h-2 w-2 rounded-full ${clientPresence.dot}`} />
-                    {clientPresence.label}
-                  </span>
-                </>
-              )}
-              {conv.agent_state === 'active' && conv.assigned_agent_name && conv.status === 'active' && (
-                <span className="ml-2 text-green-600 text-[11px]">● {conv.assigned_agent_name}</span>
-              )}
-              {conv.agent_state === 'fallback' && conv.engaged_agent_name && (
-                <span className="ml-2 text-amber-600 text-[11px]">● {conv.engaged_agent_name} → AI</span>
-              )}
-              {conv.agent_state === 'ai_only' && conv.mode === 'ai' && conv.status === 'active' && (
-                <span className="ml-2 text-amber-500 text-[11px]">● AI handling</span>
-              )}
-              {conv.mode === 'human' && conv.status === 'active' && conv.agent_state !== 'active' && (
-                <span className="ml-2 text-blue-500 text-[11px]">● You are chatting</span>
+        {/* The trip in one line when the details aren't on screen. */}
+        {!detailsStatic && lead && (lead.origin_code || lead.destination_code) && (
+          <button
+            type='button'
+            onClick={() => setShowDetails(true)}
+            className='mx-3 mt-2.5 flex flex-col items-start gap-0.5 rounded-[14px] bg-k-f7f7f7 px-3.5 py-2 text-start'
+          >
+            <span className='text-sm text-k-202020'>
+              <strong>{lead.origin_code} → {lead.destination_code}</strong>
+              {lead.departure_date && (
+                <span className='text-k-555555'>
+                  {' · '}
+                  {dayMonth(lead.departure_date)}
+                  {lead.return_date ? ` – ${dayMonth(lead.return_date)}` : ''}
+                </span>
               )}
             </span>
-            <span className="shrink-0">{conv.closed_at
-              ? `Closed ${new Date(conv.closed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
-              : `Started ${new Date(conv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}</span>
-          </div>
-        </div>
-      </div>
+            <span className='flex items-center gap-1.5 text-[13px] font-bold text-k-202020'>
+              <span aria-hidden='true' className={cn('size-1.5 rounded-full', crm.dot)} />
+              {level.chip} · {crm.state === 'in' ? 'In the CRM' : 'Not in the CRM'}
+            </span>
+          </button>
+        )}
 
-      {/* RIGHT COLUMN: Lead Info Panel (272px, hidden on mobile, admin-only on closed) */}
-      {(isAdmin || role === 'qa' || (activeTab !== 'my_closed' && activeTab !== 'all_closed')) && (
-      <div className={`${showLeadPanel ? 'absolute inset-y-0 right-0 z-30 block shadow-2xl' : 'hidden'} h-full min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-muted xl:static xl:block xl:shadow-none`}>
-        <div className="p-4 space-y-4">
+        {canWrite && chatTasks.lateMine && (
+          <LateBanner
+            task={chatTasks.lateMine}
+            nowMs={taskNow}
+            tz={chatTasks.tz}
+            busy={chatTasks.busy}
+            onDone={() => chatTasks.done(chatTasks.lateMine!)}
+            onLater={() => chatTasks.later(chatTasks.lateMine!, 15)}
+          />
+        )}
 
-          {/* AI Summary Card */}
-          {conv.summary && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-                <FileText className="w-3.5 h-3.5" />
-                AI Summary
-              </div>
-              <p className="text-sm text-foreground leading-relaxed">{conv.summary}</p>
-            </div>
-          )}
-
-          {/* Lead Score Card */}
-          {lead && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <div className="flex items-center justify-between mb-2">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  Lead Score
-                </span>
-                <span className={`px-2 py-0.5 rounded-full text-xs font-semibold border ${TIER_COLORS[lead.tier] ?? TIER_COLORS.bronze}`}>
-                  {lead.tier.toUpperCase()}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${
-                      lead.score >= 80 ? 'bg-[#C9A54E]' : lead.score >= 50 ? 'bg-slate-400' : 'bg-amber-400'
-                    }`}
-                    style={{ width: `${lead.score}%` }}
-                  />
-                </div>
-                <span className="text-sm font-bold text-foreground">{lead.score}</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Status: <span className="font-medium text-muted-foreground">{lead.status}</span>
-              </p>
-            </div>
-          )}
-
-          {/* Route Card */}
-          {lead && (lead.origin_code || lead.destination_code) && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-                <Plane className="w-3.5 h-3.5" />
-                Route
-              </div>
-              {lead.route_display ? (
-                <p className="text-sm font-semibold text-foreground">{lead.route_display}</p>
-              ) : (
-                <p className="text-sm text-foreground">{lead.origin_code ?? '?'} → {lead.destination_code ?? '?'}</p>
-              )}
-              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                {lead.trip_type && lead.trip_type !== 'round_trip' && (
-                  <p>Type: <span className="text-foreground">{lead.trip_type.replace(/_/g, ' ')}</span></p>
-                )}
-                <p>Class: <span className="text-foreground capitalize">{lead.cabin_class}</span></p>
-              </div>
-            </div>
-          )}
-
-          {/* Dates Card */}
-          {lead && (lead.departure_date || lead.return_date) && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-                <Calendar className="w-3.5 h-3.5" />
-                Dates
-              </div>
-              <div className="space-y-1 text-sm text-foreground">
-                {lead.departure_date && (
-                  <p>Depart: <span className="font-medium">
-                    {new Date(lead.departure_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span></p>
-                )}
-                {lead.return_date && (
-                  <p>Return: <span className="font-medium">
-                    {new Date(lead.return_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span></p>
-                )}
-                {lead.flexible_dates && (
-                  <p className="text-xs text-green-600">Flexible dates</p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Passengers Card */}
-          {lead?.passengers && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-                <Users className="w-3.5 h-3.5" />
-                Passengers
-              </div>
-              <p className="text-sm font-medium text-foreground">
-                {lead.passengers} {lead.passengers === 1 ? 'traveler' : 'travelers'}
-              </p>
-            </div>
-          )}
-
-          {(() => {
-            const site = conv?.metadata?.site as string | undefined
-            return site ? (
-              <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-                <div className="flex items-center justify-between">
-                  {/* "Brand", not "Source" — the Acquisition card below has
-                      its own utm Source; two different "Source"s in one
-                      sidebar sent operators guessing. */}
-                  <span className="text-sm text-muted-foreground">Brand site</span>
-                  <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                    site === 'bbc'
-                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                      : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                  }`}>{site.toUpperCase()}</span>
-                </div>
-              </div>
-            ) : null
-          })()}
-
-          {/* Acquisition Details Card */}
-          {conv?.metadata && (() => {
-            const m = conv.metadata as Record<string, string>
-            if (!m.utm_source && !m.gclid && !m.fbclid && !m.referrer && !m.page_url) return null
-            return (
-              <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-                  <Globe className="w-3.5 h-3.5" />
-                  Acquisition Details
-                </div>
-                <div className="space-y-1.5 text-xs">
-                  {m.utm_source && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Source</span>
-                      <span className="text-foreground font-medium">{m.utm_source}</span>
+        {/* Messages */}
+        <div role='log' aria-live='polite' aria-label='Messages' className={cn('flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto', narrow ? 'px-3.5 py-3.5' : 'px-[22px] py-[18px]')}>
+          <div className={cn('flex w-full flex-col', wide && 'mx-auto max-w-[760px]')}>
+            {allMessages.length === 0 ? (
+              <div className='py-8 text-center text-sm text-k-6b6b6b'>No messages yet</div>
+            ) : allMessages.map((msg, i) => {
+              // Day separator: a 3-day conversation must not read as one
+              // sitting — timestamps alone are hour:minute.
+              const day = new Date(msg.created_at).toDateString()
+              const prevDay = i > 0 ? new Date(allMessages[i - 1].created_at).toDateString() : null
+              const showDay = day !== prevDay && !Number.isNaN(new Date(msg.created_at).getTime())
+              // Grouping: consecutive same-speaker turns read as one turn —
+              // avatar and name once, tight gap. A new day starts a new group.
+              const cameBack = msg.id === cameBackId
+              // After "came back to the chat" the message gets its own name and time again.
+              const grouped = !showDay && !cameBack && i > 0 && allMessages[i - 1].role === msg.role && msg.role !== 'system'
+              const who = speaker(msg.role)
+              const task = chatTasks.byMessage.get(msg.id)
+              return (
+                <div key={msg.id} className={grouped ? 'mt-0.5' : 'mt-3.5 first:mt-0'}>
+                  {cameBack && (
+                    <div className='mb-3 flex items-center gap-2.5 text-xs text-k-6b6b6b'>
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
+                      {first} came back to the chat · {clockIn(Date.parse(msg.created_at), chatTasks.tz)}
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
                     </div>
                   )}
-                  {m.utm_medium && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Medium</span>
-                      <span className="text-foreground font-medium">{m.utm_medium}</span>
+                  {showDay && (
+                    <div className='my-3 flex items-center gap-2.5 text-xs text-k-6b6b6b' aria-hidden>
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
+                      {new Date(msg.created_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
                     </div>
                   )}
-                  {m.utm_campaign && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Campaign</span>
-                      <span className="text-foreground truncate max-w-[160px]" title={m.utm_campaign}>{m.utm_campaign}</span>
-                    </div>
-                  )}
-                  {m.utm_term && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Keyword</span>
-                      <span className="text-foreground truncate max-w-[160px]" title={m.utm_term}>{m.utm_term}</span>
-                    </div>
-                  )}
-                  {m.gclid && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Google Ads</span>
-                      <span className="text-green-600 font-medium">✓ gclid</span>
-                    </div>
-                  )}
-                  {m.fbclid && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Facebook Ads</span>
-                      <span className="text-blue-600 font-medium">✓ fbclid</span>
-                    </div>
-                  )}
-                  {m.referrer && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Referrer</span>
-                      <span className="text-foreground truncate max-w-[160px]">
-                        {(() => { try { return new URL(m.referrer).hostname } catch { return m.referrer } })()}
+                  {msg.role === 'system' ? (
+                    <div className='my-1.5 flex items-center gap-2.5 text-xs text-k-6b6b6b'>
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
+                      <span className='max-w-[80%] text-center'>
+                        {msg.content} · {clock(msg.created_at)}
                       </span>
+                      <span className='h-px flex-1 bg-k-f0f0f0' />
                     </div>
-                  )}
-                  {m.page_url && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Landing</span>
-                      <span className="text-foreground truncate max-w-[160px]">{m.page_url.replace(/^https?:\/\/[^/]+/, '') || '/'}</span>
-                    </div>
-                  )}
-                  {m.google_analytics_client_id && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">GA Client</span>
-                      <span className="text-foreground truncate max-w-[120px]">{m.google_analytics_client_id}</span>
+                  ) : (
+                    <div className='flex items-start gap-3'>
+                      <span
+                        aria-hidden='true'
+                        className={cn('flex size-8 flex-none items-center justify-center rounded-full text-xs font-bold', who.tone, grouped && 'invisible')}
+                      >
+                        {who.av}
+                      </span>
+                      <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
+                        {!grouped && (
+                          <span className='flex flex-wrap items-baseline gap-1.5'>
+                            <strong className='text-sm text-k-202020'>{who.name}</strong>
+                            <span className='text-xs text-k-6b6b6b'>{clock(msg.created_at)}</span>
+                            {/* Model ids are ops jargon — admins only, not operators. */}
+                            {isAdmin && msg.model_used && <span className='text-[11px] text-k-9a9a9a'>{msg.model_used}</span>}
+                          </span>
+                        )}
+                        <div className={cn('leading-[1.55] whitespace-pre-wrap text-k-202020 [overflow-wrap:anywhere]', wide ? 'text-base' : 'text-[15px]')}>{msg.content}</div>
+                        {task && (
+                          <FollowUpLine
+                            task={task}
+                            nowMs={taskNow}
+                            tz={chatTasks.tz}
+                            busy={chatTasks.busy}
+                            onNotAPromise={task.source === 'caught' && (task.assignee_id === me?.accountNo || isAdmin) ? () => chatTasks.notAPromise(task) : null}
+                          />
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
+              )
+            })}
+
+            {/* Typing preview — the client's words as they type them */}
+            {typingData?.is_typing && activeTab === 'my_active' && conv.status !== 'closed' && (
+              <div className='mt-3 flex flex-col items-start gap-1'>
+                <span className='flex items-center gap-1.5 text-xs text-k-6b6b6b'>
+                  {first} is typing
+                  {/* Smooth opacity wave, not a bounce — the dots breathe. */}
+                  <span className='flex items-center gap-[3px]' aria-hidden='true'>
+                    <span className='size-[5px] animate-pulse rounded-full bg-k-9c9c9c' style={{ animationDelay: '0ms' }} />
+                    <span className='size-[5px] animate-pulse rounded-full bg-k-9c9c9c' style={{ animationDelay: '250ms' }} />
+                    <span className='size-[5px] animate-pulse rounded-full bg-k-9c9c9c' style={{ animationDelay: '500ms' }} />
+                  </span>
+                </span>
+                {typingData.text && (
+                  <div className='max-w-[78%] rounded-[18px_18px_18px_6px] border border-dashed border-k-cfcfcf px-[13px] py-[9px] text-[15px] leading-normal text-k-6b6b6b italic [overflow-wrap:anywhere]'>
+                    {typingData.text}
+                  </div>
+                )}
               </div>
-            )
-          })()}
-
-          {/* Contact Card */}
-          <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-              <User className="w-3.5 h-3.5" />
-              Contact
-            </div>
-            <div className="space-y-1.5 text-sm">
-              {conv.visitor_name && (
-                <p className="flex items-center gap-2 text-foreground">
-                  <User className="w-3 h-3 text-muted-foreground shrink-0" />
-                  {conv.visitor_name}
-                </p>
-              )}
-              {conv.visitor_phone && (
-                <p className="flex items-center gap-2 text-foreground">
-                  <Phone className="w-3 h-3 text-muted-foreground shrink-0" />
-                  <a href={`tel:${conv.visitor_phone}`} className="text-[#C9A54E] hover:underline">
-                    {conv.visitor_phone}
-                  </a>
-                </p>
-              )}
-              {conv.visitor_email && (
-                <p className="flex items-center gap-2 text-foreground">
-                  <Mail className="w-3 h-3 text-muted-foreground shrink-0" />
-                  <a href={`mailto:${conv.visitor_email}`} className="text-[#C9A54E] hover:underline text-xs break-all">
-                    {conv.visitor_email}
-                  </a>
-                </p>
-              )}
-              {!conv.visitor_name && !conv.visitor_phone && !conv.visitor_email && (
-                <p className="text-xs text-muted-foreground italic">No contact info yet</p>
-              )}
-            </div>
+            )}
+            <div ref={bottomRef} />
           </div>
-
-          {/* Operator History — QA / supervisor / admin */}
-          {canViewHistory && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <OperatorHistory conversationId={conversationId} />
-            </div>
-          )}
-
-          {/* Notes Card */}
-          {lead?.notes && lead.notes.trim() !== '' && (
-            <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-                <FileText className="w-3.5 h-3.5" />
-                Notes
-              </div>
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{lead.notes}</p>
-            </div>
-          )}
-
-          {/* Conversation Meta Card */}
-          <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
-              <Clock className="w-3.5 h-3.5" />
-              Details
-            </div>
-            <div className="space-y-1 text-xs text-muted-foreground">
-              <p>Started: <span className="text-foreground">{new Date(conv.created_at).toLocaleString()}</span></p>
-              <p>Messages: <span className="text-foreground">{allMessages.length}</span></p>
-              {role !== 'supervisor' && (
-                <p>AI cost: <span className="text-foreground">${conv.ai_cost_total.toFixed(4)}</span></p>
-              )}
-              {conv.assigned_agent_id && (
-                <p>Agent: <span className="text-foreground">{conv.assigned_agent_name ?? conv.assigned_agent_id?.slice(0, 8) ?? 'Unassigned'}</span></p>
-              )}
-            </div>
-          </div>
-
-          {/* No Lead placeholder */}
-          {!lead && (
-            <div className="bg-card rounded-xl p-3 border border-dashed border-border">
-              <p className="text-xs text-muted-foreground text-center italic">No lead data captured yet</p>
-            </div>
-          )}
-
         </div>
-      </div>
+
+        {/* Footer: what's next */}
+        <div className={cn('flex flex-col gap-2', narrow ? 'px-2.5 pt-2 pb-2.5' : 'px-4 pt-2.5 pb-4')}>
+          <div className={cn('flex w-full flex-col gap-2', wide && 'mx-auto max-w-[760px]')}>
+            {canWrite && leftMin !== null && (
+              <div className='flex items-center gap-2 px-1 text-[13px] text-k-555555'>
+                <span aria-hidden='true' className='size-[7px] rounded-full bg-k-c9c9c9' />
+                {first} left the site {minutesLabel(leftMin)} ago. If they don’t come back, the chat closes by itself
+                {leftMin >= STALE_CLOSE_MIN ? ' any moment.' : ` in about ${Math.max(1, STALE_CLOSE_MIN - leftMin)} min.`}
+              </div>
+            )}
+            {left !== null && (
+              <div role='timer' aria-live='off' className='flex flex-col gap-2 rounded-[14px] bg-k-fff3e0 px-3.5 py-2.5'>
+                <span className='flex items-start gap-2 text-sm leading-[1.4] text-k-8a4b00'>
+                  <Clock aria-hidden='true' className='mt-0.5 size-4 flex-none' />
+                  <span>
+                    <strong>Reply within {countdown(left)}.</strong> With no reply by then, the assistant answers again and the chat leaves you.
+                  </span>
+                </span>
+                <span aria-hidden='true' className='flex h-1 overflow-hidden rounded-full bg-k-d97a00/20'>
+                  <span className='rounded-full bg-k-d97a00' style={{ width: `${Math.round((left / viewingDeadline) * 100)}%` }} />
+                </span>
+              </div>
+            )}
+            {canWrite && chatTasks.lateMine?.client_wrote_at && (
+              <div className='flex flex-wrap items-center justify-between gap-2 px-1 text-[13px]'>
+                <span className='text-k-b3261e'>{first} is waiting for what you promised.</span>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setInput((prev) => prev.trim() ? prev : 'I’m sending it in 10 minutes.')
+                    requestAnimationFrame(() => taRef.current?.focus())
+                  }}
+                  className='font-bold text-k-5b45e0 hover:underline'
+                >
+                  Insert “I’m sending it in 10 minutes.”
+                </button>
+              </div>
+            )}
+            {canWrite && (
+              <div className='relative flex items-end gap-2.5 rounded-[22px] bg-k-ffffff py-1.5 ps-[18px] pe-1.5 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)]'>
+                {!narrow && (
+                  <Popover open={showEmojiPicker} onOpenChange={setShowEmojiPicker}>
+                    <PopoverTrigger asChild>
+                      <button type='button' aria-label='Insert emoji' className='mb-0.5 -ms-2 flex size-9 flex-none items-center justify-center rounded-full text-k-444444 hover:bg-k-f7f7f7'>
+                        <Smile aria-hidden='true' className='size-[18px]' />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent side='top' align='start' className='grid w-auto grid-cols-5 gap-0.5 rounded-[14px] p-2'>
+                      {QUICK_EMOJIS.map((emoji) => (
+                        <button key={emoji} type='button' onClick={() => handleInsertEmoji(emoji)} aria-label={`Insert ${emoji}`} className='size-9 rounded-[10px] text-lg hover:bg-k-f4f4f4'>
+                          {emoji}
+                        </button>
+                      ))}
+                    </PopoverContent>
+                  </Popover>
+                )}
+                <label className='flex min-w-0 flex-1'>
+                  <span className='sr-only'>Your reply. Enter sends, Shift and Enter adds a line.</span>
+                  <textarea
+                    ref={taRef}
+                    value={input}
+                    onChange={(e) => { setInput(e.target.value); autoGrow(); reportTyping(e.target.value) }}
+                    onKeyDown={handleKeyDown}
+                    placeholder={`Reply to ${conv.visitor_name?.trim() ? first : 'the client'}…`}
+                    rows={1}
+                    disabled={sending}
+                    className='min-w-0 flex-1 resize-none border-none bg-transparent py-2.5 text-[15px] leading-[1.4] text-k-202020 outline-offset-4 placeholder:text-k-8a8a8a disabled:opacity-50'
+                  />
+                </label>
+                <button
+                  type='button'
+                  onClick={handleSend}
+                  disabled={!input.trim() || sending}
+                  aria-label='Send'
+                  className={cn(
+                    'flex h-10 flex-none items-center justify-center gap-2 rounded-full text-sm font-bold text-on-btn transition-colors',
+                    narrow ? 'w-10' : 'px-[18px]',
+                    input.trim() && !sending ? 'bg-kb-202020' : 'bg-k-bdbdbd'
+                  )}
+                >
+                  {narrow ? <ArrowUp aria-hidden='true' className='size-[18px]' /> : <>{sending ? 'Sending…' : 'Send'}<ArrowRight aria-hidden='true' className='size-3.5' /></>}
+                </button>
+              </div>
+            )}
+            {canTake && (
+              <div className='flex flex-wrap items-center gap-x-3.5 gap-y-2.5 rounded-2xl bg-k-fffaf2 py-3 ps-4 pe-3'>
+                <span className='min-w-[220px] flex-1 text-sm leading-[1.45] text-k-444444'>
+                  <strong className='text-k-202020'>
+                    {first} has been waiting {minutesLabel(waitingMin ?? 0)}.
+                  </strong>{' '}
+                  Take the chat to answer.
+                </span>
+                <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+                  {taking ? 'Taking…' : 'Take'}
+                </button>
+              </div>
+            )}
+            {canManage && !canWrite && noReply !== null && noReply >= 5 && (
+              <div role='status' className='flex flex-wrap items-center gap-3 rounded-[14px] bg-k-ffffff px-3.5 py-3 shadow-[0_0_0_1px_var(--k-f0cdc8),0_4px_14px_rgba(179,38,30,0.06)]'>
+                <span aria-hidden='true' className='flex size-8 flex-none items-center justify-center rounded-full bg-k-fde8e6 text-k-d93025'>
+                  <Clock className='size-[17px]' />
+                </span>
+                <span className='flex min-w-[200px] flex-1 flex-col gap-0.5 text-sm leading-[1.4] text-k-202020'>
+                  <strong>
+                    No reply for <span className='text-k-b3261e'>{minutesLabel(noReply)}</span>
+                  </strong>
+                  <span className='text-[13px] text-k-555555'>
+                    {conv.assigned_agent_name ?? 'The agent'} has the chat. {first} wrote last
+                    {conv.last_user_message_at ? `, at ${clock(conv.last_user_message_at)}` : ''}.
+                  </span>
+                </span>
+              </div>
+            )}
+            {note && <div className={cn('rounded-2xl px-4 py-3.5 text-sm leading-[1.45]', note.cls)}>{note.text}</div>}
+            {blockResult && <p className='m-0 px-1 text-xs text-k-6b6b6b'>{blockResult}</p>}
+          </div>
+        </div>
+      </section>
+
+      {/* Details: a column at full width, an overlay below it */}
+      {detailsStatic ? (
+        <aside aria-label='About this visitor' className={cn('flex-none overflow-y-auto rounded-[20px] bg-k-f7f7f7', wide ? 'w-[360px]' : 'w-[300px]')}>
+          {details}
+        </aside>
+      ) : (
+        showDetails && (
+          <>
+            <button type='button' aria-label='Close the details' onClick={() => setShowDetails(false)} className='absolute inset-0 z-20 bg-black/20' />
+            <aside
+              aria-label='About this visitor'
+              className={cn(
+                'absolute z-30 overflow-y-auto bg-k-f7f7f7 shadow-2xl',
+                narrow ? 'inset-x-0 bottom-0 max-h-[85%] rounded-t-[20px]' : 'inset-y-0 end-0 w-[320px] rounded-[20px]'
+              )}
+            >
+              {details}
+            </aside>
+          </>
+        )
       )}
 
+      <ConfirmDialog
+        open={blockDialogOpen}
+        onOpenChange={setBlockDialogOpen}
+        title='Block this visitor?'
+        desc="Block this visitor's IP, phone and email? They will no longer be able to chat or create leads. Note: a shared IP alone never blocks anyone — only the phone and email do."
+        confirmText='Block'
+        destructive
+        handleConfirm={handleBlockConfirm}
+      />
+    </div>
+  )
+}
+
+function Notice({ title, text, action, onAction }: { title: string; text: string; action: string; onAction: () => void }) {
+  return (
+    <div className='flex h-full flex-col items-center justify-center gap-2 rounded-[20px] bg-k-ffffff p-8 text-center shadow-[0_0_0_1px_var(--k-ececec)]'>
+      <p className='m-0 text-lg font-bold text-k-202020'>{title}</p>
+      <p className='m-0 max-w-sm text-sm text-k-555555'>{text}</p>
+      <button type='button' onClick={onAction} className='mt-2 text-sm font-bold text-k-5b45e0 hover:underline'>
+        {action}
+      </button>
     </div>
   )
 }
