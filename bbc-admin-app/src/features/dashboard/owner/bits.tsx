@@ -133,11 +133,14 @@ export function OpenChats({ chats, label = 'Open', count }: { chats: ChatRef[]; 
 export function AttentionList({
   items,
   onAction,
+  canOpen = () => true,
   note,
   empty = 'Nothing crossed a line in this period.',
 }: {
   items: AttentionView[]
   onAction: (to: AttentionView['action']['to']) => void
+  /** Whether an action can open here; one that can't (another tab, on a phone) isn't drawn. */
+  canOpen?: (to: AttentionView['action']['to']) => boolean
   note: string
   empty?: string
 }) {
@@ -167,13 +170,17 @@ export function AttentionList({
                 </p>
                 <p className='m-0 text-[13px] text-k-6b6b6b'>{a.sub}</p>
                 {/* On a phone the action sits under the text, not in a squeezed column. */}
-                <button type='button' onClick={() => onAction(a.action.to)} className={cn(linkCls, 'mt-0.5 self-start sm:hidden')}>
+                {canOpen(a.action.to) && (
+                  <button type='button' onClick={() => onAction(a.action.to)} className={cn(linkCls, 'mt-0.5 self-start sm:hidden')}>
+                    {a.action.label}
+                  </button>
+                )}
+              </div>
+              {canOpen(a.action.to) && (
+                <button type='button' onClick={() => onAction(a.action.to)} className={cn(linkCls, 'hidden flex-none sm:block')}>
                   {a.action.label}
                 </button>
-              </div>
-              <button type='button' onClick={() => onAction(a.action.to)} className={cn(linkCls, 'hidden flex-none sm:block')}>
-                {a.action.label}
-              </button>
+              )}
             </li>
           ))}
         </ul>

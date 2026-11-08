@@ -157,7 +157,7 @@ export function OwnerDashboard() {
       ) : shownTab === 'quality' ? (
         <Quality d={data} go={go} />
       ) : (
-        <Overview d={data} go={go} today={localToday()} />
+        <Overview d={data} go={go} tabs={!isMobile} today={localToday()} />
       )}
 
       {isMobile && data && (

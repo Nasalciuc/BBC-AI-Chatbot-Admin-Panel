@@ -6,7 +6,8 @@ import { ATTENTION_LINES, attentionView, delta, overviewHeadline, pct, plural, t
 
 export type Go = (to: AttentionView['action']['to'] | 'conversion') => void
 
-export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
+/** `tabs`: the other tabs can open (not on a phone, which shows only the Overview). */
+export function OverviewCards({ d, go, tabs }: { d: OwnerDashboard; go: Go; tabs: boolean }) {
   const now = d.overview.now
   const before = d.overview.before
   const aiRate = pct(now.ai_only_ready, now.ai_only)
@@ -34,9 +35,11 @@ export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
         value={aiRate === null ? '—' : `${aiRate}%`}
         delta={aiRate !== null && aiRateBefore !== null ? delta(aiRate, aiRateBefore, d.days, { unit: ' pts' }) : null}
         action={
-          <button type='button' onClick={() => go('conversion')} className={linkCls}>
-            See the steps
-          </button>
+          tabs && (
+            <button type='button' onClick={() => go('conversion')} className={linkCls}>
+              See the steps
+            </button>
+          )
         }
       >
         {now.ai_only
@@ -61,9 +64,11 @@ export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
         value={String(back)}
         delta={delta(back, d.agents.before.went_back, d.days, { upIsGood: false })}
         action={
-          <button type='button' onClick={() => go('agents')} className={linkCls}>
-            See Agents
-          </button>
+          tabs && (
+            <button type='button' onClick={() => go('agents')} className={linkCls}>
+              See Agents
+            </button>
+          )
         }
       >
         {d.agents.now.given ? `Of ${plural(d.agents.now.given, 'chat')} given to agents.` : 'No chat was given to an agent.'}
@@ -72,14 +77,14 @@ export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
   )
 }
 
-export function Overview({ d, go, today }: { d: OwnerDashboard; go: Go; today: string }) {
+export function Overview({ d, go, tabs, today }: { d: OwnerDashboard; go: Go; tabs: boolean; today: string }) {
   const items = d.attention.map((a) => attentionView(a, d.quality.qa_accounts))
   return (
     <div className='flex flex-col gap-[18px]'>
       <Headline text={overviewHeadline(d)} />
-      <OverviewCards d={d} go={go} />
+      <OverviewCards d={d} go={go} tabs={tabs} />
       <Panel title='Needs attention'>
-        <AttentionList items={items} onAction={go} note={ATTENTION_LINES} />
+        <AttentionList items={items} onAction={go} canOpen={(to) => tabs || to === 'review'} note={ATTENTION_LINES} />
       </Panel>
       <Panel
         title='Chats by day'
