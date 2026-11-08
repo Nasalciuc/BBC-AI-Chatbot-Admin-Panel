@@ -42,6 +42,9 @@ async def health() -> dict:
     from app.api.integration import PRESENCE_GATE_HEALTH
     # Claim races: exactly one wins; the losers are counted, not punished.
     from app.api.conversations import CLAIM_HEALTH
+    # Blind take: checks that failed closed (an agent got a 503, not their
+    # chat) and streams stopped because their chat started waiting.
+    from app.api.conversations import BLIND_HEALTH
     # Sticky's only defence is the deadline — these two say if it is holding.
     from app.services.routing import STICKY_HEALTH
     # Turns we refused to speak: every count is a moment the bot was about to
@@ -66,6 +69,7 @@ async def health() -> dict:
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
+            "blind_take": dict(BLIND_HEALTH),
             "sticky": dict(STICKY_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
@@ -131,6 +135,7 @@ async def health() -> dict:
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),
+        "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
         "queue": _queue_stats,
         "operator_load": _load,

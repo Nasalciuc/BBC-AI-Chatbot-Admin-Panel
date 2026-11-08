@@ -430,6 +430,11 @@ async def agent_day(
     return {"success": True, "data": data, "count": 1}
 
 
+# How stale "this agent may still read it" may get on an open stream (blind
+# take). The cost lands only on streams of chats that aren't the viewer's.
+_STREAM_RECHECK_SECONDS = 10.0
+
+
 @router.get("/agent/stream/{conversation_id}")
 async def agent_stream(
     conversation_id: str,
@@ -458,7 +463,7 @@ async def agent_stream(
             raise HTTPException(status_code=403, detail="Outside your team")
     # Blind take: an agent gets no stream (messages, typing) for a chat that
     # is waiting for a person and isn't theirs yet.
-    from app.api.conversations import _blind_guard, _BLIND_DETAIL
+    from app.api.conversations import _blind_guard, _BLIND_DETAIL, stream_sight
     if await _blind_guard(user, conversation_id):
         raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
 
@@ -466,15 +471,31 @@ async def agent_stream(
 
     async def event_generator():
         queue = await manager.connect(conversation_id)
+        # The rule holds for the whole stream, not only at the door: a chat
+        # that starts waiting for a person while an agent who isn't on it is
+        # watching (the client asked; it went back to the line) stops
+        # reaching them. Asked again before an event goes out, at most every
+        # _STREAM_RECHECK_SECONDS; quiet streams ask nothing, and the
+        # agent's own chats answer from memory.
+        recheck_at = time.monotonic() + _STREAM_RECHECK_SECONDS
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=25.0)
-                    yield f"data: {json.dumps(msg)}\n\n"
                 except asyncio.TimeoutError:  # noqa: silent — not a failure: 25s of quiet is the normal state of an open chat, and the keepalive below is the whole point of the timeout (proxies close idle connections)
                     yield ": keepalive\n\n"
+                    continue
+                if time.monotonic() >= recheck_at:
+                    sight = await stream_sight(user, conversation_id)
+                    if sight == "blind":
+                        # The panel swaps the chat for the gate on this frame.
+                        yield f"data: {json.dumps({'event': 'blind'})}\n\n"
+                    if sight != "ok":
+                        break
+                    recheck_at = time.monotonic() + _STREAM_RECHECK_SECONDS
+                yield f"data: {json.dumps(msg)}\n\n"
         finally:
             manager.disconnect(conversation_id, queue)
 

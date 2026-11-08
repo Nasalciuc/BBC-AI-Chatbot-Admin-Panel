@@ -948,8 +948,10 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
 async def get_blind_inputs(conv_id: str) -> Optional[dict]:
     """The five fields that decide whether an agent may read a chat yet
     (blind take): status, mode, who has it, who was talking in it, and
-    whether it is in the shared line. One tiny row; None when it can't be
-    read (logged), which the caller treats as "can't tell"."""
+    whether it is in the shared line. One tiny row; None when there is no
+    such chat. A read that fails is logged and RAISED, never None: the
+    caller must tell "no chat" from "couldn't look" (rule 7), because it
+    fails closed on the second and lets the first through."""
     cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
 
     def _q(with_queued_at: bool):
@@ -974,7 +976,7 @@ async def get_blind_inputs(conv_id: str) -> Optional[dict]:
         return rows[0] if rows else None
     except Exception as e:
         logger.error(f"get_blind_inputs({conv_id}) failed: {e}")
-        return None
+        raise
 
 
 async def get_last_agent_for_visitor(
