@@ -144,6 +144,27 @@ def test_supervisor_sees_only_their_team_masked():
     assert all("Michael Turner" != x["visitor_name"] for x in body["data"])
 
 
+def test_a_supervisor_search_reads_only_what_they_see():
+    r = row("a", chat_number=4810)
+    # A supervisor sees •••er, m•••@example.com and •••0110, plus the route and chat number.
+    for hidden in ("michael", "turner", "m@example", "5550110", "555 0"):
+        assert matches(r, hidden) and not matches(r, hidden, masked=True), hidden
+    for seen in ("er", "example.com", "0110", "lhr", "#4810"):
+        assert matches(r, seen, masked=True), seen
+
+
+def test_a_supervisor_cant_find_a_lead_by_its_hidden_contact():
+    with patch("app.db.supabase.get_leads_universe", new=AsyncMock(return_value=_rows())), \
+         patch("app.db.supabase.get_user_names", new=AsyncMock(return_value=NAMES)), \
+         patch("app.db.supabase.get_team_ids_for_supervisor", new=AsyncMock(return_value=["team-1"])):
+        sup = _client("supervisor").get("/api/leads?view=all&search=michael").json()
+        sup_phone = _client("supervisor").get("/api/leads?view=all&search=5550").json()
+        owner = _client("owner").get("/api/leads?view=all&search=michael").json()
+    # The count would otherwise answer "is there a lead named Michael / with 5550 in the phone?".
+    assert sup["count"] == 0 and sup_phone["count"] == 0
+    assert owner["count"] == 8
+
+
 def test_supervisor_without_a_team_sees_nothing():
     with patch("app.db.supabase.get_leads_universe", new=AsyncMock(return_value=_rows())), \
          patch("app.db.supabase.get_user_names", new=AsyncMock(return_value=NAMES)), \

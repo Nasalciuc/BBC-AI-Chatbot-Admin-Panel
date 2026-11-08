@@ -161,7 +161,7 @@ export function OwnerDashboard({ variant = 'owner' }: { variant?: DashVariant })
       ) : shownTab === 'quality' ? (
         <Quality d={data} go={go} showCrm={variant === 'owner'} />
       ) : (
-        <Overview d={data} go={go} today={localToday()} team={variant === 'team'} />
+        <Overview d={data} go={go} tabs={!isMobile} today={localToday()} team={variant === 'team'} />
       )}
 
       {isMobile && data && phoneNote(variant) && (

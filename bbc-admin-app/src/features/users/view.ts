@@ -63,9 +63,10 @@ export function statusOf(u: PanelUser, nowMs: number): StatusView {
   if (inv && !inv.used_at && !Number.isNaN(exp) && exp > nowMs) {
     return { key: 'pending', label: 'Invite pending', sub: `Expires in ${hoursText(exp - nowMs)}`, chip: 'bg-k-fff3e0 text-k-8a4b00', subCls: 'text-k-555555' }
   }
-  if (inv && !Number.isNaN(exp)) {
+  if (inv && !inv.used_at && !Number.isNaN(exp)) {
     return { key: 'expired', label: 'Invite expired', sub: `Expired ${hoursText(nowMs - exp)} ago`, chip: 'bg-k-fdecea text-k-b3261e', subCls: 'text-k-b3261e' }
   }
+  // No invite, or one already used (the password is set) with no sign-in since.
   return { key: 'never', label: 'Not signed in yet', sub: '', chip: 'bg-k-f0f0f0 text-k-555555', subCls: '' }
 }
 

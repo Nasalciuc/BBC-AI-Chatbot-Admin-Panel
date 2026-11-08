@@ -99,18 +99,31 @@ export function crmLine(r: Pick<LeadRow, 'crm_state' | 'crm_lead_id' | 'crm_push
 }
 
 /** "6 min", "1 h 10 m", "3 d", then the date. */
-export function ageText(iso: string | null | undefined, nowMs: number): string {
-  if (!iso) return ''
+/** A lead's age: a duration ("5 min", "3 h 20 m", "2 d"), or "just now", or the day past a week. */
+function age(iso: string | null | undefined, nowMs: number): { text: string; duration: boolean } | null {
+  if (!iso) return null
   const t = new Date(iso).getTime()
-  if (Number.isNaN(t)) return ''
+  if (Number.isNaN(t)) return null
   const min = Math.max(0, Math.floor((nowMs - t) / 60_000))
-  if (min < 1) return 'just now'
-  if (min < 60) return `${min} min`
+  if (min < 1) return { text: 'just now', duration: false }
+  if (min < 60) return { text: `${min} min`, duration: true }
   const h = Math.floor(min / 60)
-  if (h < 24) return `${h} h${min % 60 ? ` ${min % 60} m` : ''}`
+  if (h < 24) return { text: `${h} h${min % 60 ? ` ${min % 60} m` : ''}`, duration: true }
   const d = Math.floor(h / 24)
-  if (d < 8) return `${d} d`
-  return dayMonth(iso.slice(0, 10))
+  if (d < 8) return { text: `${d} d`, duration: true }
+  return { text: dayMonth(iso.slice(0, 10)), duration: false }
+}
+
+/** The Age column: "5 min", "just now", "12 Oct". */
+export function ageText(iso: string | null | undefined, nowMs: number): string {
+  return age(iso, nowMs)?.text ?? ''
+}
+
+/** The same age inside a sentence: "5 min ago", "just now", "12 Oct" (never "just now ago"). */
+export function agoText(iso: string | null | undefined, nowMs: number): string {
+  const a = age(iso, nowMs)
+  if (!a) return ''
+  return a.duration ? `${a.text} ago` : a.text
 }
 
 function travelers(r: Pick<LeadRow, 'passengers' | 'children_count' | 'infant_count'>): string {

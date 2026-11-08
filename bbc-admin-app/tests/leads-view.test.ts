@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Lead, LeadRow } from '../src/lib/types.ts'
-import { ageText, checklist, crmLine, historyOf, leadsCsv, leadsTabsFor, missingText, navText, reviewCards, reviewerText, summaryCards, tripLine } from '../src/features/leads/view.ts'
+import { ageText, agoText, checklist, crmLine, historyOf, leadsCsv, leadsTabsFor, missingText, navText, reviewCards, reviewerText, summaryCards, tripLine } from '../src/features/leads/view.ts'
 import { confirmedOf, levelOf, missingForReady } from '../src/features/chats/view.ts'
 
 const NOW = Date.parse('2026-11-06T12:00:00Z')
@@ -41,6 +41,12 @@ test('age, trip and the summary cards', () => {
   assert.equal(ageText('2026-11-06T10:50:00Z', NOW), '1 h 10 m')
   assert.equal(ageText('2026-11-03T12:00:00Z', NOW), '3 d')
   assert.equal(ageText('2026-10-12T12:00:00Z', NOW), '12 Oct')
+  // In a sentence, "ago" goes only after a duration.
+  assert.equal(agoText('2026-11-06T11:54:00Z', NOW), '6 min ago')
+  assert.equal(agoText('2026-11-03T12:00:00Z', NOW), '3 d ago')
+  assert.equal(agoText(new Date(NOW - 20_000).toISOString(), NOW), 'just now')
+  assert.equal(agoText('2026-10-12T12:00:00Z', NOW), '12 Oct')
+  assert.equal(agoText(null, NOW), '')
   assert.deepEqual(tripLine(row()), { route: 'JFK → LHR', detail: '16 Nov – 23 Nov · 2 adults · Business' })
   assert.equal(tripLine(row({ passengers: 3, children_count: 1 })).detail, '16 Nov – 23 Nov · 2 adults, 1 child · Business')
   assert.equal(tripLine(row({ origin_code: null, destination_code: null })).route, 'No route')

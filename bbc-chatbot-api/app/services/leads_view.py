@@ -20,6 +20,8 @@ import re
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
+from app.security.pii import mask_email, mask_name, mask_phone
+
 VIEWS = ("not_in_crm", "to_review", "reviewed", "all")
 LEVELS = ("ready", "almost", "early", "contact")
 CHAT_WITH = ("person", "ai")
@@ -94,13 +96,21 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", text)
 
 
-def matches(row: dict, search: str) -> bool:
+def matches(row: dict, search: str, *, masked: bool = False) -> bool:
+    """Name, e-mail, route, chat number or 4+ phone digits.
+
+    `masked`: the caller sees contact details masked (a supervisor). The
+    search then reads only what they see, so the match and the count can't
+    answer a question about a hidden name, e-mail or phone number."""
     q = search.strip().lower()
     if not q:
         return True
+    name, email, phone = row.get("visitor_name"), row.get("visitor_email"), row.get("visitor_phone")
+    if masked:
+        name, email, phone = mask_name(name), mask_email(email), mask_phone(phone)
     hay = " ".join(
-        str(row.get(k) or "") for k in
-        ("visitor_name", "visitor_email", "origin_code", "destination_code", "route_display")
+        str(v or "") for v in
+        (name, email, row.get("origin_code"), row.get("destination_code"), row.get("route_display"))
     ).lower()
     if q in hay:
         return True
@@ -108,8 +118,7 @@ def matches(row: dict, search: str) -> bool:
     if digits and q.lstrip("#").replace(" ", "").isdigit():
         if str(row.get("chat_number") or "") == digits:
             return True
-        phone = _digits(str(row.get("visitor_phone") or ""))
-        return len(digits) >= 4 and digits in phone
+        return len(digits) >= 4 and digits in _digits(str(phone or ""))
     return False
 
 
@@ -185,7 +194,9 @@ def build_leads_view(
     offset: int = 0,
     viewer_id: Optional[str] = None,
     day_start: Optional[datetime] = None,
+    masked: bool = False,
 ) -> dict:
+    """`masked`: the reader sees contact details masked; the search follows (matches)."""
     decorated = [decorate(r, names) for r in rows]
     counts = {v: sum(1 for r in decorated if in_view(r, v)) for v in VIEWS}
     tab = [r for r in decorated if in_view(r, view)]
@@ -193,7 +204,7 @@ def build_leads_view(
         r for r in tab
         if (not level or r["level"] == level)
         and (not with_ or r["chat_with"] == with_)
-        and matches(r, search or "")
+        and matches(r, search or "", masked=masked)
     ]
     ordered = order_rows(filtered, order or default_order(view))
     out = {
