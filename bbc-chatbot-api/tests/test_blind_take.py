@@ -16,7 +16,11 @@ pin that the API agrees, so the gate is not the only thing standing:
     (given to a colleague, back in the line), so every read asks again —
     live typing is gathered so a stream asks at most twice a second for it;
   * a check that can't be made fails CLOSED (503, counted in /health);
-  * a chat that doesn't exist isn't hidden ("no chat" is not "couldn't look").
+  * a chat that doesn't exist isn't hidden ("no chat" is not "couldn't look");
+  * the side doors hold too: the list keeps a waiting chat's contact out, and
+    an agent can't change or close a waiting chat it hasn't taken — the
+    answer would be the whole row, and a closed or re-moded chat isn't
+    waiting any more, so it would open without a Take.
 """
 
 import os
@@ -261,6 +265,123 @@ def test_managers_never_pay_for_the_check():
         r = _client("owner").get("/api/conversations/c1/messages")
     assert r.status_code == 200
     blind.assert_not_awaited()
+
+
+# ── the side doors: the list, a change, a close ───────────────────────
+
+
+def _list_rows():
+    contact = {"visitor_email": "grace@example.com", "visitor_phone": "+971 50 000 0000",
+               "flagged_reason": "Shared a card number"}
+    return [
+        dict(_row(id="waiting"), tunnel="sales", visitor_name="Grace Miller", metadata={}, **contact),
+        dict(_row(id="mine", assigned_agent_id=ME, status="active", mode="human"),
+             tunnel="sales", visitor_name="David Kim", metadata={}, **contact),
+        # A colleague's chat reads whole in its detail, so its row does too.
+        dict(_row(id="theirs", assigned_agent_id=OTHER, status="active", mode="human"),
+             tunnel="sales", visitor_name="Ana Pop", metadata={}, **contact),
+    ]
+
+
+@pytest.mark.parametrize("role", AGENTS)
+def test_the_list_keeps_a_waiting_chats_contact_out_too(role):
+    # Same as its detail: who, never how to reach them. An e-mail or a phone
+    # finds the lead, and the lead names the cities.
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(_list_rows(), 3))), \
+         patch.object(db, "get_last_message_previews", new=AsyncMock(return_value={})):
+        r = _client(role).get("/api/conversations?status=active")
+    assert r.status_code == 200
+    rows = {c["id"]: c for c in r.json()["data"]}
+    w = rows["waiting"]
+    assert (w["visitor_email"], w["visitor_phone"], w["flagged_reason"]) == (None, None, None)
+    assert w["visitor_name"] == "Grace Miller", "the gate shows who it is"
+    for cid in ("mine", "theirs"):
+        assert rows[cid]["visitor_email"] == "grace@example.com" and rows[cid]["visitor_phone"]
+
+
+def test_a_managers_list_keeps_every_contact():
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(_list_rows(), 3))), \
+         patch.object(db, "get_last_message_previews", new=AsyncMock(return_value={})):
+        r = _client("owner").get("/api/conversations?status=active")
+    assert all(c["visitor_email"] == "grace@example.com" for c in r.json()["data"])
+
+
+def test_an_agent_cannot_change_a_waiting_chat_it_has_not_taken():
+    # The answer is the whole row, and a new status or mode would open the
+    # chat without a Take: refused before anything is written.
+    write = AsyncMock(return_value=dict(FULL, status="active", mode="ai"))
+    with patch.object(db, "get_blind_inputs", new=AsyncMock(return_value=_row())), \
+         patch.object(db, "update_conversation", new=write):
+        r = _client("sales").patch("/api/conversations/c1", json={"status": "active", "mode": "ai"})
+    assert r.status_code == 403 and r.json()["detail"] == "Take the chat to read it."
+    assert "dubai" not in r.text.lower() and "grace@" not in r.text
+    write.assert_not_awaited()
+
+
+def test_an_agent_still_changes_its_own_chat():
+    mine = _row(assigned_agent_id=ME, status="active", mode="human")
+    write = AsyncMock(return_value=dict(FULL, assigned_agent_id=ME, visitor_name="Grace M."))
+    with patch.object(db, "get_blind_inputs", new=AsyncMock(return_value=mine)), \
+         patch.object(db, "update_conversation", new=write):
+        r = _client("sales").patch("/api/conversations/c1", json={"visitor_name": "Grace M."})
+    assert r.status_code == 200 and r.json()["success"] is True
+    write.assert_awaited_once_with("c1", {"visitor_name": "Grace M."})
+
+
+def test_a_change_that_cant_be_checked_is_not_made():
+    write = AsyncMock(return_value=dict(FULL))
+    before = conv_api.BLIND_HEALTH["check_failed"]
+    with patch.object(db, "get_blind_inputs", new=AsyncMock(side_effect=RuntimeError("network"))), \
+         patch.object(db, "update_conversation", new=write):
+        r = _client("sales").patch("/api/conversations/c1", json={"status": "active"})
+    assert r.status_code == 503
+    write.assert_not_awaited()
+    assert conv_api.BLIND_HEALTH["check_failed"] == before + 1
+
+
+def test_a_manager_changes_a_waiting_chat_without_the_check():
+    blind = AsyncMock(side_effect=RuntimeError("network"))
+    write = AsyncMock(return_value=dict(FULL, status="active"))
+    with patch.object(db, "get_blind_inputs", new=blind), \
+         patch.object(db, "update_conversation", new=write):
+        r = _client("owner").patch("/api/conversations/c1", json={"status": "active"})
+    assert r.status_code == 200
+    blind.assert_not_awaited()
+    write.assert_awaited_once()
+
+
+def _close(role: str, conv: dict):
+    mark = AsyncMock(return_value=True)
+    write = AsyncMock(return_value=dict(conv, status="closed"))
+    with patch.object(db, "get_conversation", new=AsyncMock(return_value=dict(conv))), \
+         patch.object(db, "patch_conversation_presence", new=mark), \
+         patch.object(db, "update_conversation", new=write), \
+         patch("app.services.presence.log_activity", new=MagicMock()), \
+         patch("app.pipeline.orchestrator._fire_and_forget", new=MagicMock()):
+        r = _client(role).post("/api/conversations/c1/close")
+    return r, mark, write
+
+
+@pytest.mark.parametrize("role", AGENTS)
+def test_an_agent_cannot_close_a_waiting_chat_it_has_not_taken(role):
+    # A closed chat isn't waiting any more: closing would open it.
+    r, mark, write = _close(role, FULL)
+    assert r.status_code == 403 and r.json()["detail"] == "Take the chat to read it."
+    mark.assert_not_awaited()
+    write.assert_not_awaited()
+
+
+def test_an_agent_still_closes_its_own_chat():
+    r, mark, write = _close("sales", dict(FULL, assigned_agent_id=ME, status="active", mode="human"))
+    assert r.status_code == 200 and r.json()["data"]["status"] == "closed"
+    mark.assert_awaited_once()
+    assert write.await_args.args[1]["status"] == "closed"
+
+
+def test_a_manager_still_closes_a_waiting_chat():
+    r, _, write = _close("owner", FULL)
+    assert r.status_code == 200
+    assert write.await_args.args[1]["status"] == "closed"
 
 
 def _stream_client(role="sales") -> TestClient:
