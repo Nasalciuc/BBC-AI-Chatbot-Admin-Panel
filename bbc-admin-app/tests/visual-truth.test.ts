@@ -95,14 +95,19 @@ test('team live card collapses offline behind a toggle (source contract)', () =>
   assert.match(card, /max-h-\d+ .*overflow-y-auto|overflow-y-auto/)
 })
 
-// ── chats mobile: master-detail, no fixed column inside a 375px viewport ──
+// ── chats on a phone / in the CRM dock: one column, list OR thread ──
 
-test('chats index goes full-screen detail on mobile (source contract)', () => {
+test('chats goes one column below 720px of room (source contract)', () => {
   const page = readFileSync(join(SRC, 'features/chats/index.tsx'), 'utf8')
-  assert.match(page, /selectedId \? 'hidden md:flex' : 'flex'/)   // list hides under md when detail open
-  assert.match(page, /hidden md:block w-1\.5/)                    // drag handle is desktop-only
+  // The layout follows the room the page actually has (the CRM dock is 420px
+  // inside a wide window), not the window.
+  assert.match(page, /new ResizeObserver/)
+  assert.match(page, /width >= WIDE_MIN \? 'wide' : width >= MEDIUM_MIN \? 'medium' : 'narrow'/)
+  assert.match(page, /layout === 'narrow' && selectedId && 'hidden'/)   // the list steps aside for the thread
+  const detail = readFileSync(join(SRC, 'features/chats/detail.tsx'), 'utf8')
+  assert.match(detail, /aria-label='Back to the chats'/)                // …and the thread has a way back
   assert.ok(!page.includes('text-[10px]'), '10px text must not return')
-  assert.match(page, /min-h-11 md:min-h-0/)                       // 44px touch targets on mobile chips
+  assert.match(page, /min-h-11 md:min-h-8/)                              // 44px touch targets on phone chips
 })
 
 test('no 10px text anywhere in src (11px minimum)', () => {

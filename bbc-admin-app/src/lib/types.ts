@@ -48,6 +48,18 @@ export interface Conversation {
   metadata?: Record<string, unknown>
   has_flagged_content?: boolean
   flagged_reason?: string | null
+  /** List rows only: the newest non-system message, trimmed to 140 chars.
+   *  Absent for supervisors and PMs, and when the preview read failed. */
+  last_message?: { role: Message['role']; content: string; created_at: string } | null
+  /** List rows only: the route the pipeline extracted (lead origin → destination). */
+  route?: { from: string; to: string } | null
+  /** When the chat entered the shared queue (waiting for a person). */
+  queued_at?: string | null
+  /** Presence derived on read (online / minimized / left / stale), list rows. */
+  client_presence?: string | null
+  client_presence_age_seconds?: number | null
+  /** Country of the client's phone number (detail payload). */
+  visitor_phone_country?: string | null
 }
 
 export interface ConversationsResponse {
@@ -72,7 +84,9 @@ export interface Lead {
   score: number
   tier: 'gold' | 'silver' | 'bronze'
   status: 'new' | 'contacted' | 'qualified' | 'converted' | 'lost'
-  intent_signals: string[]
+  /** jsonb object from the pipeline: persona, occasion, nonstop_only,
+   *  callback_requested, airline_preference, date_flexible, … */
+  intent_signals: Record<string, unknown> | null
   notes: string
   created_at: string
   updated_at: string
@@ -179,6 +193,31 @@ export interface DashboardStats {
   leads_sparkline_7d: number[]
 
   funnel: Array<{ name: string; count: number; color: string }>
+}
+
+// ── Your day (GET /api/agent/day) ─────────────────────────────
+export interface AgentDayBucket {
+  took: number
+  wait_median_s: number | null
+  first_reply_median_s: number | null
+  went_back: number
+  closed: number
+  with_lead: number
+  in_crm: number
+}
+
+export interface AgentDay {
+  days: 1 | 7 | 30
+  tz_offset_minutes: number
+  now: string
+  range_start: string
+  totals: AgentDayBucket & { still_open: number }
+  /** Newest first; at least 7 rows. */
+  by_day: Array<AgentDayBucket & { date: string }>
+  went_back: Array<{ conversation_id: string; first_name: string; at: string }>
+  not_in_crm: Array<{ conversation_id: string; first_name: string; has_phone: boolean; has_email: boolean; status: string | null }>
+  waiting_on_you: Array<{ conversation_id: string; first_name: string; minutes: number; left_minutes_ago: number | null }>
+  first_reply_week: { this: number | null; previous: number | null }
 }
 
 // ── Notifications ────────────────────────────────────────

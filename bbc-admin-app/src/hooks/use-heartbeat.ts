@@ -45,6 +45,10 @@ type HeartbeatResponse = {
     waiting_seconds: number | null
     route: string | null
   } | null
+  /** The first-reply deadline the sweep enforces, and the longer one while
+   *  the operator has the chat open — the countdown after Take uses these. */
+  response_deadline_seconds?: number
+  viewing_grace_seconds?: number
 }
 
 /**
@@ -90,6 +94,18 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     active.current = true
 
     const processResponse = (res: HeartbeatResponse) => {
+      if (
+        typeof res?.response_deadline_seconds === 'number' &&
+        typeof res?.viewing_grace_seconds === 'number'
+      ) {
+        const rs = useReadyStore.getState()
+        if (
+          rs.responseDeadlineSeconds !== res.response_deadline_seconds ||
+          rs.viewingGraceSeconds !== res.viewing_grace_seconds
+        ) {
+          rs.setDeadlines(res.response_deadline_seconds, res.viewing_grace_seconds)
+        }
+      }
       if (typeof res?.is_ready === 'boolean') {
         setReady(res.is_ready)
         // The CRM shows the agent's own state next to the chat button.
