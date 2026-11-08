@@ -36,6 +36,9 @@ export function PersonPanel({
   canManage,
   everyone,
   log,
+  logFailed,
+  logLimit,
+  onRetryLog,
   nowMs,
   onClose,
 }: {
@@ -44,7 +47,12 @@ export function PersonPanel({
   /** owner/admin/dev: the backend lets only them change access. */
   canManage: boolean
   everyone: PanelUser[]
+  /** The access log (owner/admin/dev only); undefined while it loads. */
   log: AccessEvent[] | undefined
+  logFailed: boolean
+  /** How many of the latest events the page asked for. */
+  logLimit: number
+  onRetryLog: () => void
   nowMs: number
   onClose: () => void
 }) {
@@ -53,6 +61,15 @@ export function PersonPanel({
   const [pendingRole, setPendingRole] = useState<string | null>(null)
   const [giveTo, setGiveTo] = useState('')
   const [confirmOff, setConfirmOff] = useState(false)
+  // The panel stays mounted between people: each one starts clean, so a role
+  // picked (and not saved) for someone else is never offered for them.
+  const [shownId, setShownId] = useState<string | null>(user?.id ?? null)
+  if ((user?.id ?? null) !== shownId) {
+    setShownId(user?.id ?? null)
+    setPendingRole(null)
+    setGiveTo('')
+    setConfirmOff(false)
+  }
   const open = !!user
   const st = user ? statusOf(user, nowMs) : null
   const handover = useQuery({
@@ -116,7 +133,10 @@ export function PersonPanel({
   const signIn = (() => {
     if (st.key === 'pending') return { title: 'Invite sent', text: `${user.invite?.sent_at ? `Sent ${dayMonth(user.invite.sent_at.slice(0, 10))}. ` : ''}${st.sub}. The link sets their password.`, bg: 'bg-k-fff3e0' }
     if (st.key === 'expired') return { title: 'The invite expired', text: `${st.sub}. Send a new one; the new link works for 48 hours.`, bg: 'bg-k-fdecea' }
-    if (st.key === 'never') return { title: 'Not signed in yet', text: 'No invite on record. Send one to set their password.', bg: 'bg-k-f7f7f7' }
+    if (st.key === 'never')
+      return user.invite?.used_at
+        ? { title: 'Not signed in yet', text: `They set their password with the invite on ${dayMonth(user.invite.used_at.slice(0, 10))}. No sign-in since.`, bg: 'bg-k-f7f7f7' }
+        : { title: 'Not signed in yet', text: 'No invite on record. Send one to set their password.', bg: 'bg-k-f7f7f7' }
     if (st.key === 'deactivated') return { title: 'Can’t sign in', text: 'The account is deactivated. Inviting them again turns it back on and sets a new password.', bg: 'bg-k-f7f7f7' }
     if (user.has_password === false)
       return { title: 'Signs in from the CRM', text: `No password is set: they open the panel from the CRM. Last active: ${lastActive(user.last_seen_at, nowMs).toLowerCase()}.`, bg: 'bg-k-f7f7f7' }
@@ -276,28 +296,40 @@ export function PersonPanel({
             )}
           </section>
 
-          <section aria-label='Changes to their access' className='flex flex-col gap-2'>
-            <h3 className={h3}>Changes to {first}’s access</h3>
-            {log === undefined ? (
-              <p className='m-0 text-sm text-k-6b6b6b'>Loading…</p>
-            ) : history.length === 0 ? (
-              <p className='m-0 text-sm text-k-555555'>No changes recorded. Profile edits and team moves aren’t recorded.</p>
-            ) : (
-              <ul className='m-0 flex list-none flex-col p-0'>
-                {history.map((e) => {
-                  const s = accessSentence(e)
-                  return (
-                    <li key={`${e.at}-${e.kind}`} className='flex items-start justify-between gap-3 border-t border-k-ececec py-2.5 text-sm first:border-t-0'>
-                      <span className='text-k-202020'>
-                        <strong>{s.actor}</strong> {s.text}
-                      </span>
-                      <span className='flex-none text-xs text-k-6b6b6b'>{dayMonth(e.at.slice(0, 10))}</span>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </section>
+          {canManage && (
+            <section aria-label='Changes to their access' className='flex flex-col gap-2'>
+              <h3 className={h3}>Changes to {first}’s access</h3>
+              {logFailed && log === undefined ? (
+                <div role='alert' className='flex flex-wrap items-center gap-3'>
+                  <p className='m-0 text-sm text-k-b3261e'>Couldn’t load the changes to {first}’s access.</p>
+                  <button type='button' onClick={onRetryLog} className={cn(btn, 'border border-k-c9c9c9 text-k-202020')}>
+                    Try again
+                  </button>
+                </div>
+              ) : log === undefined ? (
+                <p className='m-0 text-sm text-k-6b6b6b'>Loading…</p>
+              ) : history.length === 0 ? (
+                <p className='m-0 text-sm text-k-555555'>
+                  {log.length >= logLimit ? `None among the latest ${logLimit} changes to anyone’s access.` : 'No changes recorded.'}{' '}
+                  Profile edits and team moves aren’t recorded.
+                </p>
+              ) : (
+                <ul className='m-0 flex list-none flex-col p-0'>
+                  {history.map((e) => {
+                    const s = accessSentence(e)
+                    return (
+                      <li key={`${e.at}-${e.kind}`} className='flex items-start justify-between gap-3 border-t border-k-ececec py-2.5 text-sm first:border-t-0'>
+                        <span className='text-k-202020'>
+                          <strong>{s.actor}</strong> {s.text}
+                        </span>
+                        <span className='flex-none text-xs text-k-6b6b6b'>{dayMonth(e.at.slice(0, 10))}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
 
           {canManage && !self && !ownerLock && st.key === 'active' && (
             <section aria-label={`Before ${first} goes`} className='flex flex-col gap-2.5 rounded-2xl bg-k-f7f7f7 p-4'>

@@ -240,8 +240,12 @@ def ready_steps(lead: Optional[dict], conv: dict) -> list[bool]:
 # ── Ready hours ──────────────────────────────────────────────────────────────
 
 def ready_intervals(rows: list[dict], start: datetime, end: datetime) -> dict[str, list[tuple[datetime, datetime]]]:
-    """Ready stretches per user, clipped to [start, end). A user whose first
-    row in the read says "not ready" was Ready from the start of the read."""
+    """Ready stretches per user, clipped to [start, end). A stretch starts at a
+    "ready" row; a "not ready" with no "ready" before it in the read starts
+    nothing. The read begins a day before the earliest period and no stretch
+    lasts that long (longest in 60 days: 12.4 h, 8 Nov 2026), so such a row is
+    a repeated "not ready", not the end of a stretch the read missed. Counting
+    from the start of the read would credit hours nobody was Ready."""
     by_user: dict[str, list[tuple[datetime, bool]]] = defaultdict(list)
     for r in rows:
         at = parse_ts(r.get("changed_at"))

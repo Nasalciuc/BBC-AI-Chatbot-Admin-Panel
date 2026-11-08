@@ -32,6 +32,9 @@ import {
 } from './view'
 
 type Tab = 'people' | 'invites' | 'roles' | 'log'
+/** The Access log reads this many of the latest events. */
+const ACCESS_LOG_LIMIT = 200
+
 type StatusFilter = 'all' | 'active' | 'invites' | 'deactivated'
 
 const tabBtn = (on: boolean) =>
@@ -77,7 +80,7 @@ export function Users() {
   }, [])
 
   const users = useQuery({ queryKey: ['panel-users'], queryFn: getPanelUsers })
-  const log = useQuery({ queryKey: ['access-log'], queryFn: () => getAccessLog(200), enabled: canManage })
+  const log = useQuery({ queryKey: ['access-log'], queryFn: () => getAccessLog(ACCESS_LOG_LIMIT), enabled: canManage })
   const everyone = useMemo(() => users.data ?? [], [users.data])
   const statuses = useMemo(() => new Map(everyone.map((u) => [u.id, statusOf(u, nowMs)])), [everyone, nowMs])
   const stOf = (u: PanelUser) => statuses.get(u.id) ?? statusOf(u, nowMs)
@@ -501,7 +504,10 @@ export function Users() {
         me={{ id: me?.accountNo ?? '', role: myRole }}
         canManage={canManage}
         everyone={everyone}
-        log={canManage ? log.data : []}
+        log={log.data}
+        logFailed={log.isError}
+        logLimit={ACCESS_LOG_LIMIT}
+        onRetryLog={() => log.refetch()}
         nowMs={nowMs}
         onClose={() => setOpenId(null)}
       />

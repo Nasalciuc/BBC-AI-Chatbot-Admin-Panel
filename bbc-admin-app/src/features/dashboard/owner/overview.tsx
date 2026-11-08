@@ -8,7 +8,7 @@ export type Go = (to: AttentionView['action']['to'] | 'conversion') => void
 
 /** A supervisor's or PM's cards: what their agents did with the chats. No
  *  Leads link (the page isn't theirs) and no AI-only rate (the owner's). */
-function TeamCards({ d, go }: { d: OwnerDashboard; go: Go }) {
+function TeamCards({ d, go, tabs }: { d: OwnerDashboard; go: Go; tabs: boolean }) {
   const now = d.overview.now
   const a = d.agents.now
   return (
@@ -31,7 +31,7 @@ function TeamCards({ d, go }: { d: OwnerDashboard; go: Go }) {
         value={String(a.went_back)}
         delta={delta(a.went_back, d.agents.before.went_back, d.days, { upIsGood: false })}
         action={
-          a.went_back > 0 ? (
+          tabs && a.went_back > 0 ? (
             <button type='button' onClick={() => go('agents')} className={linkCls}>
               See who
             </button>
@@ -44,9 +44,11 @@ function TeamCards({ d, go }: { d: OwnerDashboard; go: Go }) {
         label='First reply'
         value={secondsText(a.first_reply_median_s)}
         action={
-          <button type='button' onClick={() => go('agent-table')} className={linkCls}>
-            See by agent
-          </button>
+          tabs ? (
+            <button type='button' onClick={() => go('agent-table')} className={linkCls}>
+              See by agent
+            </button>
+          ) : undefined
         }
       >
         Median, from the take to the first message. After 90 s the chat goes back to the assistant.
@@ -55,7 +57,8 @@ function TeamCards({ d, go }: { d: OwnerDashboard; go: Go }) {
   )
 }
 
-export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
+/** `tabs`: the other tabs can open (not on a phone, which shows only the Overview). */
+export function OverviewCards({ d, go, tabs }: { d: OwnerDashboard; go: Go; tabs: boolean }) {
   const now = d.overview.now
   const before = d.overview.before
   const aiRate = pct(now.ai_only_ready, now.ai_only)
@@ -83,9 +86,11 @@ export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
         value={aiRate === null ? '—' : `${aiRate}%`}
         delta={aiRate !== null && aiRateBefore !== null ? delta(aiRate, aiRateBefore, d.days, { unit: ' pts' }) : null}
         action={
-          <button type='button' onClick={() => go('conversion')} className={linkCls}>
-            See the steps
-          </button>
+          tabs && (
+            <button type='button' onClick={() => go('conversion')} className={linkCls}>
+              See the steps
+            </button>
+          )
         }
       >
         {now.ai_only
@@ -110,9 +115,11 @@ export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
         value={String(back)}
         delta={delta(back, d.agents.before.went_back, d.days, { upIsGood: false })}
         action={
-          <button type='button' onClick={() => go('agents')} className={linkCls}>
-            See Agents
-          </button>
+          tabs && (
+            <button type='button' onClick={() => go('agents')} className={linkCls}>
+              See Agents
+            </button>
+          )
         }
       >
         {d.agents.now.given ? `Of ${plural(d.agents.now.given, 'chat')} given to agents.` : 'No chat was given to an agent.'}
@@ -121,16 +128,17 @@ export function OverviewCards({ d, go }: { d: OwnerDashboard; go: Go }) {
   )
 }
 
-export function Overview({ d, go, today, team = false }: { d: OwnerDashboard; go: Go; today: string; team?: boolean }) {
+export function Overview({ d, go, tabs, today, team = false }: { d: OwnerDashboard; go: Go; tabs: boolean; today: string; team?: boolean }) {
   const items = d.attention.map((a) => attentionView(a, d.quality.qa_accounts))
   return (
     <div className='flex flex-col gap-[18px]'>
       <Headline text={overviewHeadline(d)} />
-      {team ? <TeamCards d={d} go={go} /> : <OverviewCards d={d} go={go} />}
+      {team ? <TeamCards d={d} go={go} tabs={tabs} /> : <OverviewCards d={d} go={go} tabs={tabs} />}
       <Panel title='Needs attention'>
         <AttentionList
           items={items}
           onAction={go}
+          canOpen={(to) => tabs || to === 'review'}
           note={
             team
               ? 'Shown only past a line: a first reply over 60 s with a third of an agent’s chats back to the assistant (3 chats or more), an hour with 3 or more chats back.'

@@ -70,6 +70,16 @@ def test_a_later_invite_to_an_old_account_is_not_the_first_one():
     assert log[0]["kind"] == "invite_again"
 
 
+def test_the_log_is_in_time_order_whatever_the_offset():
+    # 10:00+02:00 is 08:00 UTC: earlier than 09:30 UTC, though it sorts after it as text.
+    log = build_access_log(audit=[], toggles=[], users=USERS, invites=[
+        {"user_id": "paul", "created_by": "admin-1", "created_at": "2026-11-07T10:00:00+02:00"},
+        {"user_id": "elena", "created_by": "owner-1", "created_at": "2026-11-07T09:30:00+00:00"},
+    ])
+    assert [e["target_name"] for e in log] == ["Elena Vasile", "Paul Ursu"]
+    assert log[1]["at"] == "2026-11-07T08:00:00+00:00"
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 

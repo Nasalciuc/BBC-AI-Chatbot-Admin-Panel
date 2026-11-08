@@ -187,3 +187,16 @@ test('each role gets its tabs and its scope line', () => {
   assert.equal(phoneNote('team'), 'Agents opens on a computer.')
   assert.equal(phoneNote('qa'), 'Conversion and Agents open on a computer.')
 })
+
+test('on a phone the Overview draws no button that opens another tab', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = (p: string) => readFileSync(new URL(`../src/features/dashboard/owner/${p}`, import.meta.url), 'utf8')
+  const index = src('index.tsx')
+  const overview = src('overview.tsx')
+  // A phone shows only the Overview, so "See Agents" would only scroll the page up.
+  assert.match(index, /<Overview d=\{data\} go=\{go\} tabs=\{!isMobile\}/)
+  assert.match(overview, /tabs && \(\s*<button type='button' onClick=\{\(\) => go\('conversion'\)\}/)
+  assert.match(overview, /tabs && \(\s*<button type='button' onClick=\{\(\) => go\('agents'\)\}/)
+  // "Start reviewing" opens Leads, which a phone has: it stays.
+  assert.match(overview, /canOpen=\{\(to\) => tabs \|\| to === 'review'\}/)
+})
