@@ -384,6 +384,154 @@ def test_a_manager_still_closes_a_waiting_chat():
     assert write.await_args.args[1]["status"] == "closed"
 
 
+# ── search: a match on what the row hides would tell ──────────────────
+#
+# The list's search runs in PostgREST (an `or=` filter). This tiny evaluator
+# reads the subset of that grammar the filter uses, so the tests can hold the
+# filter to the same answer as _taken_blind, row by row.
+
+
+def _split_top(s: str) -> list[str]:
+    parts, depth, cur = [], 0, ""
+    for ch in s:
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            continue
+        depth += ch == "("
+        depth -= ch == ")"
+        cur += ch
+    return parts + [cur]
+
+
+def _cell(row: dict, col: str):
+    if "->>" in col:
+        base, key = col.split("->>")
+        return (row.get(base) or {}).get(key)
+    return row.get(col)
+
+
+def _holds(expr: str, row: dict) -> bool:
+    for op, join in (("or(", any), ("and(", all)):
+        if expr.startswith(op) and expr.endswith(")"):
+            return join(_holds(p, row) for p in _split_top(expr[len(op):-1]))
+    col, rest = expr.split(".", 1)
+    negated = rest.startswith("not.")
+    op, val = (rest[4:] if negated else rest).split(".", 1)
+    v = _cell(row, col)
+    if op == "is":  # SQL: IS NULL / IS NOT NULL never yields NULL
+        return (v is None) != negated
+    if v is None:   # SQL: anything else against NULL is NULL, so not a match
+        return False
+    if op == "in":
+        hit = str(v) in val.strip("()").split(",")
+    elif op == "eq":
+        hit = str(v) == val
+    elif op == "neq":
+        hit = str(v) != val
+    elif op == "ilike":
+        import re as _re
+        hit = _re.fullmatch(_re.escape(val).replace("%", ".*"), str(v), _re.I) is not None
+    else:
+        raise AssertionError(f"evaluator doesn't know {op!r}")
+    return hit != negated
+
+
+def _grid():
+    import itertools
+    for status, mode, assigned, engaged, queued in itertools.product(
+            ["needs_agent", "active", "closed"], ["ai", "human", "waiting_for_agent"],
+            [None, ME, OTHER], [None, ME, OTHER], [None, "2026-11-08T20:00:00+00:00"]):
+        yield {"status": status, "mode": mode, "assigned_agent_id": assigned,
+               "queued_at": queued, "metadata": {"engaged_agent_id": engaged}}
+
+
+@pytest.mark.parametrize("role", AGENTS)
+def test_the_search_filter_and_the_blind_rule_agree_on_every_row(role):
+    readable = db._readable_to_agent(ME, with_queue=True)
+    for row in _grid():
+        assert _holds(readable, row) is not conv_api._taken_blind(_user(role), row), row
+
+
+def test_without_the_queue_column_the_filter_still_agrees_where_it_can():
+    # Before 023/024 there is no queued_at to name, and no row carries one.
+    readable = db._readable_to_agent(ME, with_queue=False)
+    assert "queued_at" not in readable
+    for row in _grid():
+        if row["queued_at"] is None:
+            assert _holds(readable, row) is not conv_api._taken_blind(_user("sales"), row), row
+
+
+class _Recorder:
+    def __init__(self, rows):
+        self.rows, self.calls = rows, []
+
+    def __getattr__(self, name):
+        def rec(*a, **k):
+            self.calls.append((name, a, k))
+            return self
+        return rec
+
+    def execute(self):
+        res = MagicMock()
+        res.data, res.count = [dict(r) for r in self.rows], len(self.rows)
+        return res
+
+
+def _search_filter(viewer, term: str) -> str:
+    import asyncio
+    q = _Recorder([])
+    client = MagicMock()
+    client.table.return_value = q
+    with patch.object(db, "get_client", return_value=client), \
+         patch.object(db, "_supervisor_columns_available", return_value=True), \
+         patch.object(db, "_get_lead_completeness_inputs", new=AsyncMock(return_value={})), \
+         patch.object(db, "enrich_conversations_agent_info", new=AsyncMock(side_effect=lambda r: r)):
+        asyncio.run(db.get_conversations(search=term, blind_viewer=viewer))
+    (expr,) = [c[1][0] for c in q.calls if c[0] == "or_"]
+    return f"or({expr})"
+
+
+WAITING = {"status": "needs_agent", "mode": "ai", "assigned_agent_id": None, "queued_at": "2026-11-08T20:00:00+00:00",
+           "visitor_name": "Grace Miller", "visitor_email": "grace@example.com", "visitor_phone": "+971500000000",
+           "metadata": {"engaged_agent_id": None}}
+
+
+@pytest.mark.parametrize("term", ["grace@", "example.com", "+97150"])
+def test_an_agents_search_cant_find_a_waiting_chat_by_its_contact(term):
+    assert not _holds(_search_filter(ME, term), WAITING), "the match itself would give the contact away"
+    # Once it's theirs (or anyone's), the same search finds it.
+    assert _holds(_search_filter(ME, term), dict(WAITING, assigned_agent_id=ME, status="active", mode="human"))
+    assert _holds(_search_filter(ME, term), dict(WAITING, status="closed"))
+
+
+def test_an_agents_search_still_finds_a_waiting_chat_by_name():
+    # The gate shows who it is: a name match tells nothing new.
+    assert _holds(_search_filter(ME, "grace mil"), WAITING)
+
+
+def test_a_managers_search_matches_every_contact():
+    expr = _search_filter(None, "grace@")
+    assert _holds(expr, WAITING)
+    assert expr == "or(visitor_name.ilike.%grace@%,visitor_email.ilike.%grace@%,visitor_phone.ilike.%grace@%)", \
+        "the filter managers get is the one they had"
+
+
+def test_an_agent_without_an_id_finds_no_waiting_chat_by_contact():
+    # No id to be "theirs": the contact match falls to readable-by-anyone rows.
+    assert not _holds(_search_filter("", "grace@"), WAITING)
+
+
+@pytest.mark.parametrize("role,viewer", [("sales", ME), ("support", ME), ("owner", None), ("supervisor", None)])
+def test_the_list_passes_the_searching_agent_down(role, viewer):
+    lister = AsyncMock(return_value=([], 0))
+    with patch.object(db, "get_conversations", new=lister), \
+         patch("app.api.conversations._resolve_team_scope", new=AsyncMock(return_value=None)):
+        r = _client(role).get("/api/conversations?search=grace")
+    assert r.status_code == 200
+    assert lister.await_args.kwargs["blind_viewer"] == viewer
+
+
 def _stream_client(role="sales") -> TestClient:
     from app.api import agent as agent_api
 

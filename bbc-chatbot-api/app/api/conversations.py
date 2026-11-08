@@ -238,6 +238,9 @@ async def list_conversations(
             team_ids=team_ids,
             tag=tag, quiet_before=quiet_before, no_engagement_only=no_engagement_only,
             limit=limit, offset=offset,
+            # Blind take: an agent's search can't find a waiting chat by the
+            # e-mail or phone it hides from them — the match would tell.
+            blind_viewer=(user.get("id") or "") if user.get("role") in db._OPERATOR_ROLES else None,
         )
         if handled_by == "human":
             rows = [c for c in rows if c.get("agent_state") == "active"]
