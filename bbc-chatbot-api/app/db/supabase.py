@@ -3900,7 +3900,9 @@ async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> 
 
     `build()` returns a fresh query builder; this adds .range() per page. Stops
     at a short page. Raises on failure — the caller decides what a failed read
-    means, a partial list is never passed off as the whole one."""
+    means, a partial list is never passed off as the whole one. That includes
+    a read still full at `max_pages`: the rows past the cap are the newest
+    ones (every read is ordered oldest first), so it raises instead."""
     rows: list[dict] = []
     for page in range(max_pages):
         lo = page * _PAGE
@@ -3909,8 +3911,13 @@ async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> 
         rows.extend(chunk)
         if len(chunk) < _PAGE:
             return rows
-    logger.warning(f"_select_pages[{label}]: stopped at {max_pages} pages ({len(rows)} rows)")
-    return rows
+    # Full at the cap: one more row says whether anything was left out.
+    lo = max_pages * _PAGE
+    more = await _run_sync(lambda: build().range(lo, lo).execute(), label=label)
+    if not (more.data or []):
+        return rows
+    logger.error(f"_select_pages[{label}]: still full after {max_pages} pages ({len(rows)} rows); refusing a partial read")
+    raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
 
 
 async def get_last_message_previews(conversation_ids: list[str], max_len: int = 140) -> dict[str, dict]:
