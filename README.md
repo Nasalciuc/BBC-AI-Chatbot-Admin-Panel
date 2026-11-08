@@ -53,7 +53,9 @@ BBC-AI-Chatbot-Admin-Panel/       (monorepo)
 ## Quick Start
 ```bash
 # Frontend
-cd bbc-admin-app && npm install && npm run dev
+cd bbc-admin-app && npm install
+npm run sync-widget   # builds the chat widget into public/widget/ — the widget pages load it
+npm run dev
 # → http://localhost:5173
 
 # Backend
