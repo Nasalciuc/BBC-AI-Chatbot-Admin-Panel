@@ -20,7 +20,7 @@ import re
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
-VIEWS = ("not_in_crm", "to_review", "all")
+VIEWS = ("not_in_crm", "to_review", "reviewed", "all")
 LEVELS = ("ready", "almost", "early", "contact")
 CHAT_WITH = ("person", "ai")
 ORDERS = ("newest", "oldest", "closest")
@@ -85,6 +85,8 @@ def in_view(row: dict, view: str) -> bool:
         return row["crm_state"] not in ("in_crm", "no_phone")
     if view == "to_review":
         return row["level"] == "ready" and not row.get("reviewed_by_qa")
+    if view == "reviewed":
+        return bool(row.get("reviewed_by_qa"))
     return True
 
 
@@ -133,6 +135,30 @@ def default_order(view: str) -> str:
     return "oldest" if view == "to_review" else "newest"
 
 
+def _parse(raw: Any) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")) if raw else None
+    except ValueError:  # noqa: silent — an unreadable reviewed_at just isn't counted as today's on a read-only card
+        return None
+
+
+def review_summary(rows: Iterable[dict], *, viewer_id: Optional[str], day_start: datetime) -> dict:
+    """The cards above QA's lists: what's left, what this person reviewed
+    today (their own day), and how many left to review never had a person."""
+    rows = list(rows)
+    left = [r for r in rows if in_view(r, "to_review")]
+    mine_today = 0
+    for r in rows:
+        at = _parse(r.get("reviewed_at"))
+        if r.get("reviewed_by_qa") and viewer_id and r.get("reviewed_by") == viewer_id and at and at >= day_start:
+            mine_today += 1
+    return {
+        "to_review": len(left),
+        "reviewed_today_by_me": mine_today,
+        "ai_only_to_review": sum(1 for r in left if r["chat_with"] == "ai"),
+    }
+
+
 def summary_of(rows: Iterable[dict]) -> dict:
     """The cards above "Not in the CRM": why each one isn't there."""
     out: dict[str, Any] = {"open": 0, "closed_by_agent": 0, "ready_never_sent": 0, "never_sent": 0, "refused": {}}
@@ -157,6 +183,8 @@ def build_leads_view(
     order: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    viewer_id: Optional[str] = None,
+    day_start: Optional[datetime] = None,
 ) -> dict:
     decorated = [decorate(r, names) for r in rows]
     counts = {v: sum(1 for r in decorated if in_view(r, v)) for v in VIEWS}
@@ -176,4 +204,6 @@ def build_leads_view(
     }
     if view == "not_in_crm":
         out["summary"] = summary_of(tab)
+    if view in ("to_review", "reviewed") and day_start is not None:
+        out["review"] = review_summary(decorated, viewer_id=viewer_id, day_start=day_start)
     return out

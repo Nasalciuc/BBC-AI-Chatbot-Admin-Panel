@@ -11,7 +11,10 @@ What is pinned here:
     to the same time);
   * Needs attention is shown only past fixed lines;
   * only owner, admin and dev read it, a failed read is a 502, and the
-    result is shared for a minute.
+    result is shared for a minute;
+  * supervisors, project managers and QA read the same build cut to their
+    tunnel, without the AI's cost or the sources, supervisors with masked
+    names, and chat links only for the chats of their own teams.
 """
 
 import os
@@ -363,9 +366,11 @@ def _client(role: str) -> TestClient:
 def _fresh_cache():
     from app.api import dashboard
 
-    dashboard._OWNER_CACHE.clear()
+    dashboard._INPUTS_CACHE.clear()
+    dashboard._BUILD_CACHE.clear()
     yield
-    dashboard._OWNER_CACHE.clear()
+    dashboard._INPUTS_CACHE.clear()
+    dashboard._BUILD_CACHE.clear()
 
 
 EMPTY_INPUTS = dict(conversations=[], leads={}, activity=[], user_msgs=[], agent_msgs=[], ai_msgs=[],
@@ -373,7 +378,7 @@ EMPTY_INPUTS = dict(conversations=[], leads={}, activity=[], user_msgs=[], agent
 
 
 @pytest.mark.parametrize("role", ["sales", "support", "supervisor", "project_manager", "qa"])
-def test_only_owner_admin_and_dev_read_it(role):
+def test_only_owner_admin_and_dev_read_the_owners(role):
     assert _client(role).get("/api/dashboard/owner?days=7").status_code == 403
 
 
@@ -397,3 +402,172 @@ def test_one_read_a_minute_is_shared():
     assert a.status_code == b.status_code == 200
     assert a.json()["data"]["days"] == 30 and a.json()["success"] is True
     assert read.await_count == 2
+
+
+# ── Supervisor, project manager and QA ───────────────────────────────
+
+
+def _two_tunnels() -> dict:
+    support_agent = {"id": "agent-priya", "name": "Priya Nair", "role": "support", "tunnel_scope": "support", "is_active": True}
+    users = {**USERS, support_agent["id"]: support_agent}
+    s = _scenario()
+    s["conversations"] = [
+        *s["conversations"],
+        conv("support-1", 3, tunnel="support", visitor_name="Laura Bennett", team_id="team-support"),
+    ]
+    s["user_msgs"] = [*s["user_msgs"], {"conversation_id": "support-1", "created_at": at(2.5)}]
+    s["activity"] = [*s["activity"], {"user_id": "agent-priya", "conversation_id": "support-1", "action": "claim_won", "happened_at": at(2.4)}]
+    # Priya answered and closed it without sending: a "Not in the CRM" link.
+    s["agent_msgs"] = [*s["agent_msgs"], {"conversation_id": "support-1", "created_at": at(2.39)}]
+    s["leads"] = {**s["leads"], "support-1": lead("support-1", created_in_crm=False)}
+    s["ready_log"] = [
+        {"user_id": ROHAN, "is_ready": True, "changed_at": at(5)},
+        {"user_id": "agent-priya", "is_ready": True, "changed_at": at(5)},
+    ]
+    s["users"] = users
+    s["last_review_at"] = None
+    return s
+
+
+def test_a_tunnel_scope_keeps_only_that_tunnels_chats_and_people():
+    from app.services.owner_dashboard import scope_inputs
+
+    s = _two_tunnels()
+    sales = scope_inputs(s, "sales")
+    assert "support-1" not in {c["id"] for c in sales["conversations"]}
+    assert all(a["conversation_id"] != "support-1" for a in sales["activity"])
+    # Ready hours: only people who work sales.
+    assert {r["user_id"] for r in sales["ready_log"]} == {ROHAN}
+    support = scope_inputs(s, "support")
+    assert {c["id"] for c in support["conversations"]} == {"support-1"}
+    assert {r["user_id"] for r in support["ready_log"]} == {"agent-priya"}
+    # No tunnel (QA, a supervisor of both): everything.
+    assert scope_inputs(s, None) is s and scope_inputs(s, "all") is s
+    names = {a["name"] for a in build(now=NOW, **{k: v for k, v in support.items()})["agents"]["by_agent"]}
+    assert names == {"Priya Nair"}
+
+
+def _refs(node) -> list[dict]:
+    out = []
+    if isinstance(node, dict):
+        if {"id", "chat_number", "first_name"} <= set(node) and len(node) <= 5:
+            out.append(node)
+        for v in node.values():
+            out += _refs(v)
+    elif isinstance(node, list):
+        for v in node:
+            out += _refs(v)
+    return out
+
+
+def test_redaction_never_touches_the_shared_build():
+    import copy
+
+    from app.services.owner_dashboard import redact
+
+    d = build(**{k: v for k, v in _two_tunnels().items() if k != "users"}, users=_two_tunnels()["users"])
+    before = copy.deepcopy(d)
+    out = redact(d, mask_names=True, show_cost=False, show_sources=False, team_ids={"team-support"})
+    assert d == before
+    assert out["quality"]["ai"] is None and out["sources"] is None and out["sites"] == []
+    assert all("team_id" not in r for r in _refs(out))
+    # Only chats of the viewer's teams stay as links; the counts don't move.
+    assert {r["id"] for r in _refs(out)} <= {"support-1"}
+    assert out["agents"]["by_agent"] == [
+        {**a, "not_in_crm_conversations": [r for r in a["not_in_crm_conversations"] if r["id"] == "support-1"]}
+        for a in out["agents"]["by_agent"]
+    ]
+    owner = redact(d, mask_names=False, show_cost=True, show_sources=True)
+    assert owner["quality"]["ai"] == d["quality"]["ai"] and all("team_id" not in r for r in _refs(owner))
+    assert len(_refs(owner)) == len(_refs(d))
+    assert any(r["first_name"] == "Client" for r in _refs(owner))
+    assert all(set(r) == {"id", "first_name", "chat_number"} for r in _refs(owner) + _refs(out))
+
+
+def test_supervisors_see_masked_first_names():
+    from app.services.owner_dashboard import redact
+
+    d = build(**_scenario())
+    out = redact(d, mask_names=True, show_cost=False, show_sources=False, team_ids=None)
+    names = {r["first_name"] for r in _refs(out)}
+    # The whole name masked, as in Conversations: "Client slow" → "•••ow".
+    assert names and all(n.startswith("•••") for n in names) and "•••ow" in names
+
+
+def _team_client(role: str, tunnel_scope: str, uid: str = "sup-1") -> TestClient:
+    from app.api.dashboard import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: {"id": uid, "role": role, "tunnel_scope": tunnel_scope}
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("role", ["sales", "support", "owner", "admin", "dev"])
+def test_the_team_dashboard_is_for_supervisors_pms_and_qa(role):
+    assert _team_client(role, "all").get("/api/dashboard/team?days=7").status_code == 403
+
+
+def test_a_sales_supervisor_reads_all_sales_chats_with_links_only_to_their_team():
+    s = _two_tunnels()
+    s["conversations"] = [
+        {**c, "team_id": "team-sales"} if c["id"] == "slow" else c for c in s["conversations"]
+    ]
+    read = AsyncMock(return_value=s)
+    with patch("app.db.supabase.get_owner_dashboard_inputs", new=read), \
+         patch("app.db.supabase.get_team_ids_for_supervisor", new=AsyncMock(return_value=["team-sales"])):
+        r = _team_client("supervisor", "sales").get("/api/dashboard/team?days=7&tz_offset_minutes=-300")
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["scope"] == {"tunnel": "sales", "team_scoped_links": True}
+    assert "Priya Nair" not in {a["name"] for a in d["agents"]["by_agent"]}
+    assert d["quality"]["ai"] is None and d["sources"] is None
+    assert {x["id"] for x in _refs(d)} == {"slow"}
+    assert all(x["first_name"].startswith("•••") for x in _refs(d))
+
+
+def test_a_supervisor_without_a_team_still_gets_the_numbers_but_no_links():
+    with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=_two_tunnels())), \
+         patch("app.db.supabase.get_team_ids_for_supervisor", new=AsyncMock(return_value=[])):
+        d = _team_client("supervisor", "sales").get("/api/dashboard/team?days=7").json()["data"]
+    assert d["overview"]["now"]["started"] > 0
+    assert _refs(d) == []
+
+
+def test_qa_reads_every_chat_unmasked_and_without_cost():
+    with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=_two_tunnels())):
+        d = _team_client("qa", "all", uid="qa-1").get("/api/dashboard/team?days=7").json()["data"]
+    assert d["scope"] == {"tunnel": "all", "team_scoped_links": False}
+    assert "Priya Nair" in {a["name"] for a in d["agents"]["by_agent"]}
+    assert d["quality"]["ai"] is None and d["quality"]["crm"]["reached"] >= 1
+    assert any(x["first_name"] == "Laura" for x in _refs(d))
+    assert all(a["kind"] != "ai_latency" for a in d["attention"])
+
+
+def test_a_project_manager_sees_names_and_their_teams_links():
+    with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=_two_tunnels())), \
+         patch("app.db.supabase.get_team_ids_for_pm", new=AsyncMock(return_value=["team-support"])):
+        d = _team_client("project_manager", "all", uid="pm-1").get("/api/dashboard/team?days=7").json()["data"]
+    assert d["scope"]["tunnel"] == "all"
+    assert {(x["id"], x["first_name"]) for x in _refs(d)} <= {("support-1", "Laura")}
+
+
+def test_owner_and_team_dashboards_share_one_read():
+    read = AsyncMock(return_value=_two_tunnels())
+    with patch("app.db.supabase.get_owner_dashboard_inputs", new=read), \
+         patch("app.db.supabase.get_team_ids_for_supervisor", new=AsyncMock(return_value=[])):
+        _client("owner").get("/api/dashboard/owner?days=7&tz_offset_minutes=0")
+        _team_client("supervisor", "sales").get("/api/dashboard/team?days=7&tz_offset_minutes=0")
+        _team_client("qa", "all", uid="qa-1").get("/api/dashboard/team?days=7&tz_offset_minutes=0")
+    assert read.await_count == 1
+
+
+def test_expired_reads_leave_memory():
+    import time as _time
+
+    from app.api import dashboard
+
+    dashboard._INPUTS_CACHE[(7, 60)] = (_time.monotonic() - 3600, NOW, {})
+    with patch("app.db.supabase.get_owner_dashboard_inputs", new=AsyncMock(return_value=EMPTY_INPUTS)):
+        _client("owner").get("/api/dashboard/owner?days=7&tz_offset_minutes=0")
+    assert (7, 60) not in dashboard._INPUTS_CACHE
