@@ -117,7 +117,7 @@ export function TaskRules() {
           <p role='status' className={cn('m-0 rounded-[12px] px-3 py-2 text-sm', tried.makes_task ? 'bg-k-efeaff text-k-4a36c4' : 'bg-k-f7f7f7 text-k-555555')}>
             {tried.makes_task && tried.due_at ? (
               <>
-                <strong>It makes a task:</strong> {tried.kind_label} · {dayIn(Date.parse(tried.due_at), r.time_zone)}, {clockIn(Date.parse(tried.due_at), r.time_zone)} · for the agent who wrote it
+                <strong>It makes a task:</strong> {tried.kind_label} · {dayIn(Date.parse(tried.due_at), r.time_zone)}, {clockIn(Date.parse(tried.due_at), r.time_zone)} {city} time · for the agent who wrote it
                 {tried.due_kind === 'default' ? ' (no time said: the default)' : tried.due_words ? ` (“${tried.due_words}”)` : ''}
               </>
             ) : (
@@ -179,16 +179,18 @@ export function TaskRules() {
             </button>
           ))}
         </span>
-        <div className={cn(note, 'flex flex-wrap items-center gap-2')}>
-          <span>Working hours: every day</span>
-          <select aria-label='Working day starts' value={r.day_start} disabled={save.isPending} onChange={(e) => save.mutate({ day_start: e.target.value })} className='h-8 rounded-[8px] border border-k-c9c9c9 bg-k-ffffff px-1.5 text-[13px]'>
-            {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
-          </select>
-          <span>–</span>
-          <select aria-label='Working day ends' value={r.day_end} disabled={save.isPending} onChange={(e) => save.mutate({ day_end: e.target.value })} className='h-8 rounded-[8px] border border-k-c9c9c9 bg-k-ffffff px-1.5 text-[13px]'>
-            {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
-          </select>
-          <span>, {city}. “Today” means by the end of it.</span>
+        <div className={cn(note, 'flex flex-col gap-2')}>
+          <span className='flex flex-wrap items-center gap-2'>
+            <span>Working hours, every day, {city} time:</span>
+            <select aria-label='Working day starts' value={r.day_start} disabled={save.isPending} onChange={(e) => save.mutate({ day_start: e.target.value })} className='h-8 rounded-[8px] border border-k-c9c9c9 bg-k-ffffff px-1.5 text-[13px]'>
+              {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+            <span>–</span>
+            <select aria-label='Working day ends' value={r.day_end} disabled={save.isPending} onChange={(e) => save.mutate({ day_end: e.target.value })} className='h-8 rounded-[8px] border border-k-c9c9c9 bg-k-ffffff px-1.5 text-[13px]'>
+              {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+          </span>
+          <span>“Today” in a promise means by the end of it.</span>
         </div>
       </section>
 
