@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { ChatAvatar } from './chat-avatar'
-import { initials, minutesLabel, minutesSince, presenceView, routeText } from '../view'
+import { initials, minutesLabel, minutesSince, presenceView, queueLine } from '../view'
 
 /**
  * The shared line — conversations waiting for ANY operator; first click wins.
@@ -24,23 +24,24 @@ import { initials, minutesLabel, minutesSince, presenceView, routeText } from '.
  * There is no "give it back" button (owner's decision): a client who just
  * reached a human must not be thrown back into the line, and in a system
  * built on competition, giving back what you took defeats the point.
+ *
+ * The line is taken blind (owner's decision, Nov 2026): who, how long, and
+ * whether they asked for a person — never where they fly, never their words.
+ * Only agents get this line (the heartbeat fills it for sales and support),
+ * and the list endpoint no longer sends them the route or the last message
+ * of a chat that isn't theirs. Nothing here opens the chat before Take.
  */
 export function QueueSection({
   onClaimed,
-  onOpen,
   canTake = true,
   rail = false,
-  selectedId = null,
   flat = false,
 }: {
   onClaimed: (id: string) => void
-  /** Read the chat before taking it. */
-  onOpen?: (id: string) => void
   /** An agent who is not ready sees the line but can't take from it. */
   canTake?: boolean
-  /** The "wider chat" rail: avatars only. */
+  /** The "wider chat" rail: avatars and Take only. */
   rail?: boolean
-  selectedId?: string | null
   /** On a white page (phones, the CRM dock) the card is grey, not white. */
   flat?: boolean
 }) {
@@ -107,27 +108,23 @@ export function QueueSection({
         {ordered.map((conv) => {
           const w = waited(conv)
           const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
+          const who = conv.visitor_name || 'Visitor'
           return (
-            <button
-              key={conv.id}
-              type='button'
-              onClick={() => onOpen?.(conv.id)}
-              aria-label={`${conv.visitor_name || 'Visitor'}, waiting ${minutesLabel(w)}`}
-              title={`${conv.visitor_name || 'Visitor'} · waiting ${minutesLabel(w)}`}
-              className='flex flex-col items-center gap-1'
-            >
-              <ChatAvatar
-                text={initials(conv.visitor_name)}
-                tone='bg-k-fff3e0 text-k-8a4b00'
-                dot={p.dot}
-                ring='border-k-f7f7f7'
-                size={44}
-                className={cn(selectedId === conv.id && 'shadow-[0_0_0_2px_var(--k-f7f7f7),0_0_0_4px_var(--kl-202020)]')}
-              />
-              <span aria-hidden='true' className={cn('text-[11px] font-bold', w > 5 ? 'text-k-b3261e' : 'text-k-8a4b00')}>
-                {minutesLabel(w)}
-              </span>
-            </button>
+            <div key={conv.id} title={`${who} · waiting ${minutesLabel(w)}`} className='flex flex-col items-center gap-1'>
+              <ChatAvatar text={initials(conv.visitor_name)} tone='bg-k-fff3e0 text-k-8a4b00' dot={p.dot} ring='border-k-f7f7f7' size={44} />
+              <span className={cn('text-[11px] font-bold', w > 5 ? 'text-k-b3261e' : 'text-k-8a4b00')}>{minutesLabel(w)}</span>
+              {canTake && (
+                <button
+                  type='button'
+                  onClick={() => claim(conv)}
+                  disabled={busyId === conv.id}
+                  aria-label={`Take ${who}’s chat`}
+                  className='h-7 rounded-full bg-kb-202020 px-3 text-xs font-bold text-on-btn disabled:opacity-50'
+                >
+                  {busyId === conv.id ? '…' : 'Take'}
+                </button>
+              )}
+            </div>
           )
         })}
         <span aria-hidden='true' className='h-px w-10 bg-k-e3e2e2' />
@@ -145,25 +142,18 @@ export function QueueSection({
       {ordered.map((conv) => {
         const w = waited(conv)
         const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
-        const route = routeText(conv)
         return (
           <div key={conv.id} className='flex items-center gap-2.5'>
             <ChatAvatar text={initials(conv.visitor_name)} tone='bg-k-fff3e0 text-k-8a4b00' dot={p.dot} />
-            <button
-              type='button'
-              onClick={() => onOpen?.(conv.id)}
-              className='flex min-w-0 flex-1 flex-col gap-[3px] text-start text-k-202020'
-            >
+            <div className='flex min-w-0 flex-1 flex-col gap-[3px] text-k-202020'>
               <span className='flex min-w-0 items-center gap-1.5'>
                 <strong className='truncate text-sm'>{conv.visitor_name || 'Visitor'}</strong>
                 <span className={cn('flex-none rounded-full px-[7px] py-px text-xs font-bold', w > 5 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-fff3e0 text-k-8a4b00')}>
                   {minutesLabel(w)}
                 </span>
               </span>
-              <span className='truncate text-xs text-k-555555'>
-                {route || (conv.status === 'needs_agent' ? 'Asked for a person' : `${conv.message_count} messages`)}
-              </span>
-            </button>
+              <span className='truncate text-xs text-k-555555'>{queueLine(conv)}</span>
+            </div>
             {canTake && (
               <button
                 type='button'

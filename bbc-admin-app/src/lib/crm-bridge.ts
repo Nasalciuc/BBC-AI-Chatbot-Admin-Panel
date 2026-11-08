@@ -35,10 +35,12 @@ export type { CrmBridgeDeps }
  *  notification with requireInteraction, which stays on screen until somebody
  *  touches it. That can be forty minutes on a shared monitor, mid screen-share.
  *
- *  So we send `route` instead: the pipeline's own extraction (`HNL → AKL`).
- *  Derived, never free text, and it is the thing the agent actually wants in
- *  order to decide. When no route has been extracted yet the field is simply
- *  absent and the notification says what it says today. */
+ *  We used to send `route` instead (`HNL → AKL`), the pipeline's extraction.
+ *  Not any more (owner's decision, Nov 2026): an agent takes a waiting chat
+ *  blind, so nothing that reaches an agent before Take names the cities —
+ *  not the panel's line, not this notification. The heartbeat stopped
+ *  computing it; the field is gone from the contract (it was always optional,
+ *  absent whenever no route had been extracted). */
 export type ChatBridgeMessage =
   // The handshake reply carries BOTH levels. An agent who reloads the CRM
   // mid-shift, or starts one, with a conversation already waiting would
@@ -69,7 +71,6 @@ export type ChatBridgeMessage =
       count: number
       conversationId?: string
       waitingSeconds?: number
-      route?: string
     }
 
 const CHAT_SOURCE = 'bbc-chat'
@@ -225,7 +226,7 @@ export function reportAttentionCycle(opts: {
  */
 export function reportQueue(
   count: number,
-  oldest?: { conversationId?: string; waitingSeconds?: number; route?: string },
+  oldest?: { conversationId?: string; waitingSeconds?: number },
 ): void {
   if (!isEmbedded()) return
   // The anti-noise rule stays on `count` ALONE. waitingSeconds changes every
@@ -236,7 +237,6 @@ export function reportQueue(
   const msg: ChatBridgeMessage = { type: 'chat:queue', count }
   if (oldest?.conversationId) msg.conversationId = oldest.conversationId
   if (typeof oldest?.waitingSeconds === 'number') msg.waitingSeconds = oldest.waitingSeconds
-  if (oldest?.route) msg.route = oldest.route
   sendToCrm(msg)
 }
 
