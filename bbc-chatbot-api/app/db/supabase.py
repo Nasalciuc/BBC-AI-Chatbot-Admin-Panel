@@ -1630,7 +1630,10 @@ async def get_crm_orphan_leads(
 # ════════════════════════════════════════════════════════════════
 
 async def get_kb_categories(tunnel: Optional[str] = None) -> list:
-    """KB categories with article count per category."""
+    """KB categories with article count per category.
+
+    A failed read raises: an empty list means the knowledge base has no
+    categories, never that the database didn't answer."""
     try:
         db = get_client()
         def _query():
@@ -1648,7 +1651,7 @@ async def get_kb_categories(tunnel: Optional[str] = None) -> list:
         return result
     except Exception as e:
         logger.error(f"get_kb_categories error: {e}")
-        return []
+        raise
 
 
 async def get_kb_entries(
@@ -1657,6 +1660,8 @@ async def get_kb_entries(
     is_active: Optional[bool] = None,
     limit: int = 100,
 ) -> list:
+    """KB entries, newest change first. A failed read raises: an empty list
+    means there are no entries, never that the database didn't answer."""
     try:
         db = get_client()
         def _query():
@@ -1669,7 +1674,7 @@ async def get_kb_entries(
         return res.data or []
     except Exception as e:
         logger.error(f"get_kb_entries error: {e}")
-        return []
+        raise
 
 
 async def create_kb_entry(payload: dict) -> Optional[dict]:
