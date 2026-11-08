@@ -157,6 +157,18 @@ export function ownerOf(c: Conversation, meId: string | undefined): Owner {
   return 'ai'
 }
 
+/** Blind take (owner's rule, Nov 2026): an agent reads a waiting chat only
+ *  after Take. Same rule as the server (conversations._taken_blind): an
+ *  agent, the chat open and unassigned, waiting for a person or in the shared
+ *  line (a released chat is mode "ai" but queued), and not a chat this agent
+ *  was already talking in. Managers are never blind. */
+export function takenBlind(c: Conversation, meId: string | undefined, role: string): boolean {
+  if (role !== 'sales' && role !== 'support') return false
+  if (c.status === 'closed' || c.assigned_agent_id) return false
+  if (meId && (c.metadata?.engaged_agent_id as string | undefined) === meId) return false
+  return ownerOf(c, meId) === 'waiting' || !!c.queued_at
+}
+
 /** Avatar tint by whose chat it is (the canvas's colors). */
 export function avatarClasses(owner: Owner): string {
   switch (owner) {
