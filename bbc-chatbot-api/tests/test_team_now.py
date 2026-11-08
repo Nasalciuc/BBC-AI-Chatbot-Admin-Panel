@@ -63,7 +63,7 @@ USERS = [
     user("irina", "Irina Moraru", role="supervisor", tunnel_scope="sales"),
 ]
 TEAMS = [
-    {"id": "team-day", "name": "Sales Day", "shift_start": "12:00:00", "shift_end": "20:00:00"},
+    {"id": "team-day", "name": "Sales Day", "shift_start": "12:00:00", "shift_end": "20:00:00", "supervisor_id": "irina"},
     {"id": "team-support", "name": "Support", "shift_start": "09:00:00", "shift_end": "17:00:00"},
 ]
 
@@ -106,6 +106,20 @@ def build(**over):
     kw = dict(now=NOW, offset_minutes=OFFSET, **floor_inputs())
     kw.update(over)
     return build_team_now(**kw)
+
+
+def test_a_team_card_says_who_and_how_many_were_ready_each_hour():
+    d = build()
+    day = next(t for t in d["teams"] if t["id"] == "team-day")
+    assert day["supervisor_name"] == "Irina Moraru" and {m["name"] for m in day["members"]} == {"Rohan Mehta", "Victor Rusu", "Ana Ceban"}
+    assert (day["ready_now"], day["won_today"], day["back_today"]) == (2, 1, 0)
+    support = next(t for t in d["teams"] if t["id"] == "team-support")
+    assert support["back_today"] == 1
+    # 14:12 in Chisinau: hours 0–14 are known, the rest is still to come.
+    assert len(day["coverage"]) == 24 and day["coverage"][15] is None and day["coverage"][14] is not None
+    # Rohan Ready since 13:08: counted at 13 and 14; with no change logged,
+    # Victor and Ana are Ready since midnight.
+    assert day["coverage"][13] == 3 and day["coverage"][0] == 2
 
 
 def test_presence_follows_the_servers_windows():

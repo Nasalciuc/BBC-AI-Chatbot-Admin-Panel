@@ -104,6 +104,49 @@ def tunnel_of(user: dict) -> Optional[str]:
     return user.get("role") if user.get("role") in OPERATOR_ROLES else None
 
 
+def team_card(
+    team: dict,
+    *,
+    users: list[dict],
+    people: list[dict],
+    ready_log: list[dict],
+    takes: list[dict],
+    day_start: datetime,
+    now: datetime,
+    names: dict[str, Optional[str]],
+) -> dict:
+    """A team on Teams & shifts: who's in it, what it did today, and how many
+    of its people were Ready in each hour of the viewer's day so far."""
+    members = [u for u in users if u.get("team_id") == team["id"] and u.get("role") in OPERATOR_ROLES]
+    ids = {u["id"] for u in members}
+    spans = {
+        u["id"]: [
+            (parse_ts(a), parse_ts(b) if b else now)
+            for a, b in ready_spans(u["id"], ready_log, day_start, fallback=bool(u.get("is_ready")))
+        ]
+        for u in members
+    }
+    coverage: list[Optional[int]] = []
+    for h in range(24):
+        a, b = day_start + timedelta(hours=h), day_start + timedelta(hours=h + 1)
+        if a >= now:
+            coverage.append(None)
+            continue
+        coverage.append(sum(1 for ss in spans.values() if any(x and y and x < b and y > a for x, y in ss)))
+    mine = [t for t in takes if t["user_id"] in ids]
+    return {
+        "id": team["id"], "name": team.get("name"),
+        "shift_start": team.get("shift_start"), "shift_end": team.get("shift_end"),
+        "supervisor_name": names.get(team.get("supervisor_id")) if team.get("supervisor_id") else None,
+        "pm_name": names.get(team.get("pm_id")) if team.get("pm_id") else None,
+        "members": [{"id": u["id"], "name": u.get("name")} for u in members],
+        "ready_now": sum(1 for p in people if p["id"] in ids and p["presence"] == "ready"),
+        "won_today": len({t["conversation_id"] for t in mine}),
+        "back_today": len({t["conversation_id"] for t in mine if t["ended_by"] == "deadline_fired"}),
+        "coverage": coverage,
+    }
+
+
 def build_team_now(
     *,
     now: datetime,
@@ -279,8 +322,9 @@ def build_team_now(
         "ai_only": {"count": len(ai_only), "chats": [] if team_ids is not None else ai_only[:20]},
         "people": person_rows,
         "teams": [
-            {"id": t["id"], "name": t.get("name"), "shift_start": t.get("shift_start"), "shift_end": t.get("shift_end")}
-            for t in teams if team_ids is None or t.get("id") in team_ids
+            team_card(t, users=users, people=person_rows, ready_log=ready_log, takes=takes,
+                      day_start=day_start, now=now, names=names)
+            for t in teams if t.get("id") and (team_ids is None or t.get("id") in team_ids)
         ],
         "windows": {"queue_s": queue_window_s, "ready_off_s": online_s},
     }
