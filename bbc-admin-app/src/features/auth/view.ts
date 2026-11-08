@@ -148,13 +148,17 @@ export function crmProblem(status: number | null, detail: string | null = null):
 /**
  * Where to go after signing in: the redirect resolved against this site, kept
  * only when it stays on it (path, query and hash). "//evil.com" and
- * "/\evil.com" resolve to another site and give null, like a bad URL.
+ * "/\evil.com" resolve to another site and give null, like a bad URL. So does
+ * a path that would read as another site once used ("/.//evil.com" and
+ * "https://this-site//evil.com" keep this origin but give "//evil.com").
  */
 export function backAfterSignIn(redirect: string | undefined, origin: string): string | null {
   if (!redirect) return null
   try {
     const u = new URL(redirect, origin)
-    return u.origin === origin ? `${u.pathname}${u.search}${u.hash}` : null
+    if (u.origin !== origin) return null
+    const back = `${u.pathname}${u.search}${u.hash}`
+    return new URL(back, origin).origin === origin ? back : null
   } catch {
     return null
   }
