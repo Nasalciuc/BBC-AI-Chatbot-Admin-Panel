@@ -3,24 +3,38 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Conversation, Lead } from '../src/lib/types.ts'
 import {
+  aboutOf,
   countdown,
   crmView,
   deadlineLeft,
   firstName,
+  fullDate,
   initials,
   levelOf,
   minutesLabel,
   missingForReady,
   noSummaryText,
+  notesOf,
   ownerOf,
   presenceView,
   previewText,
+  queueLine,
+  routeLine,
   seconds,
   signalOf,
+  travelersText,
+  tripRows,
+  tripText,
   whereRows,
 } from '../src/features/chats/view.ts'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 
 const ME = 'me-1'
 const NOW = Date.parse('2026-11-06T12:00:00Z')
@@ -164,4 +178,126 @@ test('list previews say who spoke', () => {
   assert.equal(previewText(conv({ assigned_agent_name: 'Rohan Mehta', last_message: { role: 'agent', content: 'Hi', created_at: iso(0) } })), 'Rohan: Hi')
   assert.equal(previewText(conv({ last_message: { role: 'user', content: 'Thanks.', created_at: iso(0) } })), 'Thanks.')
   assert.equal(previewText(conv({ last_message: null })), '')
+})
+
+// ── a waiting chat is taken blind (owner, Nov 2026) ─────────────────
+
+test('a waiting row says whether they asked for a person and how much they wrote — nothing else', () => {
+  assert.equal(queueLine({ status: 'needs_agent', message_count: 6 }), 'Asked for a person')
+  assert.equal(queueLine({ status: 'active', message_count: 1 }), '1 message')
+  assert.equal(queueLine({ status: 'active', message_count: 4 }), '4 messages')
+})
+
+test('the waiting line never names the cities, shows no words, and opens nothing before Take', () => {
+  const src = read('src/features/chats/components/queue-section.tsx')
+  for (const leak of ['routeText', 'route', 'previewText', 'last_message', 'onOpen']) {
+    assert.ok(!new RegExp(`\\b${leak}\\b`).test(src.replace(/\/\*[\s\S]*?\*\//g, '')), `queue-section must not use ${leak}`)
+  }
+  assert.match(src, /queueLine\(conv\)/)
+  // Both layouts take from the line directly: the rail has its own Take.
+  assert.equal(src.match(/onClick=\{\(\) => claim\(conv\)\}/g)?.length, 2)
+  const page = read('src/features/chats/index.tsx')
+  assert.ok(!/<QueueSection[^>]*onOpen/.test(page), 'the page must not wire a preview into the line')
+})
+
+test('an agent who lands on a waiting chat sees who and how long, not the chat', () => {
+  const src = read('src/features/chats/detail.tsx')
+  assert.match(src, /const blindView =\s*!!conv &&\s*isOperatorRole\(role\) &&\s*ownerOf\(conv, me\?\.accountNo\) === 'waiting' &&/)
+  assert.match(src, /engaged_agent_id as string \| undefined\) !== me\?\.accountNo/, 'a chat they were talking in stays readable')
+  // The gate returns before the thread and the details are built.
+  const gate = src.indexOf('if (blindView) {')
+  assert.ok(gate > 0 && gate < src.indexOf('const details = ('), 'the gate comes before the details')
+  assert.ok(gate < src.indexOf("aria-label='Messages'"), 'the gate comes before the thread')
+  // Nothing about it is polled or streamed for them.
+  assert.equal(src.match(/enabled: !!conv && !blindView && activeTab === 'my_active'/g)?.length, 3)
+  assert.match(src, /usingMock \|\| blindView\) return/)
+})
+
+// ── the Trip card: what the old panel showed, plus the answers it kept ──
+
+test('dates carry the year; the route is the codes', () => {
+  assert.equal(fullDate('2026-11-25'), '25 Nov 2026')
+  assert.equal(fullDate('2027-01-04T00:00:00Z'), '4 Jan 2027')
+  assert.equal(fullDate(null), '')
+  assert.equal(fullDate('not a date'), '')
+  assert.equal(routeLine(lead()), 'JFK → LHR')
+  assert.equal(routeLine(lead({ destination_code: null })), 'JFK')
+  assert.equal(routeLine(null), '')
+})
+
+test('travelers: the total, and the split the CRM gets when children fly', () => {
+  assert.equal(travelersText({ passengers: 1 }), '1 traveler')
+  assert.equal(travelersText({ passengers: 2, children_count: 0, infant_count: 0 }), '2 travelers')
+  assert.equal(travelersText({ passengers: 3, children_count: 1 }), '3 travelers · 2 adults, 1 child')
+  assert.equal(travelersText({ passengers: 4, children_count: 2, infant_count: 1 }), '4 travelers · 1 adult, 2 children, 1 infant')
+  assert.equal(travelersText({ passengers: null }), '')
+})
+
+test('the notes split the way the pipeline writes them', () => {
+  const n = notesOf(lead({
+    notes: 'CLIENT ASKED TO BE CALLED — +1 555 0142\nItinerary: JFK → LHR → CDG → JFK\nChat: Type=value_driven | Budget~$6000\nPrefers an aisle seat',
+  }))
+  assert.deepEqual(n, { itinerary: 'JFK → LHR → CDG → JFK', callback: '+1 555 0142', other: ['Prefers an aisle seat'] })
+  assert.equal(notesOf(lead({ notes: 'CLIENT ASKED TO BE CALLED — number not captured' })).callback, '')
+  assert.deepEqual(notesOf(lead({ notes: 'Chat: Dates=flexible' })), { itinerary: '', callback: null, other: [] })
+  assert.deepEqual(notesOf(null), { itinerary: '', callback: null, other: [] })
+})
+
+test('trip rows: the itinerary first, dates to copy, flexible only when the client said so', () => {
+  const rows = tripRows(
+    lead({
+      trip_type: 'multi_city', passengers: 3, children_count: 1, flexible_dates: true,
+      notes: 'Itinerary: JFK → LHR → CDG → JFK\nChat: Budget~$6000',
+    }),
+    { nonstop_only: true, airline_preference: 'Qatar', airline_avoid: 'Spirit', budget_hint: '$6000', price_seen: '$4800', must_haves: 'lie-flat seat' }
+  )
+  assert.deepEqual(rows.map((r) => [r.label, r.value]), [
+    ['Itinerary', 'JFK → LHR → CDG → JFK'],
+    ['Out', '16 Nov 2026'],
+    ['Back', '23 Nov 2026'],
+    ['Travelers', '3 travelers · 2 adults, 1 child'],
+    ['Cabin', 'Business'],
+    ['Trip', 'Multi-city · direct only'],
+    ['Airlines', 'Qatar'],
+    ['Not with', 'Spirit'],
+    ['Budget', '$6000'],
+    ['Price seen', '$4800'],
+    ['Must have', 'lie-flat seat'],
+  ])
+  assert.deepEqual(rows.filter((r) => r.copy).map((r) => r.copy), [
+    { text: 'JFK → LHR → CDG → JFK', what: 'Itinerary' },
+    { text: '16 Nov 2026', what: 'Departure date' },
+    { text: '23 Nov 2026', what: 'Return date' },
+  ])
+  // flexible_dates is true on every lead: alone it says nothing.
+  const label = (sig: Record<string, unknown>, over: Partial<Lead> = {}) =>
+    tripRows(lead({ flexible_dates: true, ...over }), sig).find((r) => r.label === 'Dates')?.value
+  assert.equal(label({}), undefined)
+  assert.equal(label({ date_flexible: true }), 'Flexible')
+  assert.equal(label({ date_flexible: false }), 'Fixed')
+  assert.equal(label({}, { flexible_dates: false }), 'Fixed')
+  assert.equal(tripRows(lead({ trip_type: 'one_way', return_date: null }), {})[0].label, 'When')
+  assert.deepEqual(tripRows(null, {}), [])
+})
+
+test('copy the trip: the route, then every row as label and value', () => {
+  const rows = tripRows(lead({ notes: '', flexible_dates: true }), {})
+  assert.equal(
+    tripText(routeLine(lead()), rows),
+    'JFK → LHR\nOut: 16 Nov 2026\nBack: 23 Nov 2026\nTravelers: 2 travelers\nCabin: Business\nTrip: Round trip'
+  )
+  assert.equal(tripText('', []), '')
+})
+
+test('about the client: the call back carries its number; airlines live on the trip now', () => {
+  const withNumber = aboutOf({ callback_requested: true, airline_preference: 'Qatar', booking_for: 'parents', best_call_time: 'after 6 pm' }, lead({ notes: 'CLIENT ASKED TO BE CALLED — +1 555 0142' }))
+  assert.deepEqual(withNumber.rows.map((r) => [r.label, r.value]), [
+    ['Booking for', 'parents'],
+    ['Asks', 'A call back on +1 555 0142'],
+    ['Best time', 'after 6 pm'],
+  ])
+  assert.deepEqual(withNumber.rows[1].copy, { text: '+1 555 0142', what: 'Number' })
+  assert.deepEqual(aboutOf({ callback_requested: true }).rows, [{ label: 'Asks', value: 'A call back' }])
+  assert.deepEqual(aboutOf({}, lead({ notes: 'CLIENT ASKED TO BE CALLED — number not captured' })).rows, [{ label: 'Asks', value: 'A call back' }])
+  assert.deepEqual(aboutOf({}).rows, [])
 })

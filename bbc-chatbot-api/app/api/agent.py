@@ -367,37 +367,13 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
                     )
                 except (ValueError, TypeError):  # noqa: silent — a malformed queued_at reads as unknown age; the notification still names the conversation
                     _age = None
-                # The route the pipeline already extracted — never the
-                # client's own words (see ChatBridgeMessage: the text would go
-                # into a desktop notification that stays up until touched).
-                # ADAPTATION vs the brief: the route does NOT live in
-                # conversations.metadata — it lives on the leads table
-                # (origin_code / destination_code, written by lead_service).
-                # One targeted read-only select, only while a queue exists;
-                # get_or_create_lead is NOT used here because it CREATES.
-                _from = _to = None
-                try:
-                    _lead_res = await db._run_sync(
-                        lambda: db.get_client()
-                        .table("leads")
-                        .select("origin_code, destination_code")
-                        .eq("conversation_id", _oldest_row["id"])
-                        .limit(1)
-                        .execute()
-                    )
-                    _lead_rows = _lead_res.data or []
-                    if _lead_rows:
-                        _from = _lead_rows[0].get("origin_code")
-                        _to = _lead_rows[0].get("destination_code")
-                except Exception as _e:
-                    logger.warning(
-                        f"[heartbeat] route lookup failed for queue_oldest: {_e} "
-                        f"— notification goes out without a route"
-                    )
+                # No route: this beat goes only to agents, and an agent takes
+                # a waiting chat blind (owner's rule, Nov 2026) — the CRM's
+                # notification says someone is waiting and for how long, not
+                # where they fly. It used to read the lead for the cities.
                 _queue_oldest = {
                     "id": _oldest_row["id"],
                     "waiting_seconds": _age,
-                    "route": f"{_from} → {_to}" if (_from and _to) else None,
                 }
     except Exception as e:
         # The queue must never break the heartbeat: presence is more important

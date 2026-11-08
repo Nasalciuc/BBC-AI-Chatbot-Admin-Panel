@@ -411,7 +411,7 @@ export function Chats() {
 
   const listColumn = rail ? (
     <section aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
-      <QueueSection onClaimed={handleTaken} onOpen={pick} canTake={!canBeReady || ready} rail selectedId={selectedId} />
+      <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} rail />
       <span className='text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'>{tab.label === 'All active' ? 'Active' : tab.label}</span>
       {rows.map(({ conv, owner, sig }) => {
         const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
@@ -452,7 +452,7 @@ export function Chats() {
       {/* In the CRM dock there is no menu: your follow-ups show over the list. */}
       {embedded && <TasksBand />}
       <div className={cn('flex flex-col gap-3 pb-2.5', layout === 'narrow' ? 'px-0 pt-1' : 'px-3.5 pt-3.5')}>
-        <QueueSection onClaimed={handleTaken} onOpen={pick} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
+        <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
         {tabBar}
         <div className='flex gap-2'>
           <label className='relative flex flex-1'>
