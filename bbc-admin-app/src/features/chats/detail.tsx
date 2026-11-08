@@ -281,6 +281,11 @@ export default function ConversationDetail({
             )
             break
           }
+          case 'blind':
+            // The chat went back to waiting and isn't ours: the server closed
+            // the stream. Reload it so the gate (Take) replaces the thread.
+            queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+            break
         }
       },
       (state) => setSseLive(state === 'open'),

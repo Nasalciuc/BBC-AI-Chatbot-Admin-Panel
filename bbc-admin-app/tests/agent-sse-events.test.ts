@@ -65,6 +65,22 @@ test('parseAgentSseEvent: an unknown event with an id is not a message row', () 
   assert.equal((end as { id: string }).id, 'm1')
 })
 
+test('parseAgentSseEvent: the blind frame is its own event, never a row', () => {
+  assert.deepEqual(parseAgentSseEvent({ event: 'blind' }), { event: 'blind' })
+  // Whatever rides along is dropped: the frame says one thing.
+  assert.deepEqual(parseAgentSseEvent({ event: 'blind', id: 'm1', content: 'Boston to Dubai' }), { event: 'blind' })
+})
+
+test('the open chat swaps to the gate on the blind frame', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/features/chats/detail.tsx', import.meta.url), 'utf8')
+  assert.match(
+    src,
+    /case 'blind':[\s\S]{0,240}invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/,
+    'the frame reloads the chat, and the reload is what shows the gate',
+  )
+})
+
 test('parseAgentSseEvent: a user row without event is a message row', () => {
   const row = parseAgentSseEvent({ id: 'u1', role: 'user', content: 'hi', created_at: 't' })
   assert.ok(row && !('event' in row))
