@@ -73,6 +73,18 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     s.setProperty('--bw-launcher-ring-rgb', c.launcherRingRgb)
 
     render(<Widget apiUrl={apiUrl} embedded={embedded} />, root)
+
+    // A page that mounts the widget and later drops it without a reload (the
+    // panel's /widget-preview, /chat/* and /widget-embed are app routes) calls
+    // this first. Unmounting runs every effect's cleanup: the phone sheet gives
+    // the page its scroll and theme colour back, the chat's stream and timers
+    // stop. Removing the root alone would leave all of that running.
+    ;(window as any).__BBC_WIDGET_TEARDOWN__ = () => {
+      render(null, root)
+      root.remove()
+      ;(window as any).__BBC_WIDGET_TEARDOWN__ = undefined
+      ;(window as any).__BBC_WIDGET_LOADED__ = false
+    }
   }
   init()
 }
