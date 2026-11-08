@@ -49,6 +49,15 @@ async def _resolve_team_scope(user: dict) -> Optional[list[str]]:
     return None
 
 
+def _known_to(row: dict, user_id: Optional[str]) -> bool:
+    """The chat is this agent's: assigned to them, or engaged by them and
+    back with the assistant (sticky ownership, they were already talking)."""
+    if not user_id:
+        return False
+    engaged = (row.get("metadata") or {}).get("engaged_agent_id")
+    return row.get("assigned_agent_id") == user_id or engaged == user_id
+
+
 @router.get("/conversations")
 async def list_conversations(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
@@ -152,8 +161,16 @@ async def list_conversations(
             # Supervisors and PMs get none: message text carries the client's
             # own phone and e-mail (their rows mask it), and their message
             # access is team-scoped while a global chip can list other teams.
+            # An agent takes a waiting chat blind (owner's rule): no cities,
+            # none of the client's words, until the chat is theirs.
+            blind = user.get("role") in db._OPERATOR_ROLES
+            if blind:
+                for c in rows:
+                    if not _known_to(c, user.get("id")):
+                        c.pop("route", None)
+            wanted = [c["id"] for c in rows if not blind or _known_to(c, user.get("id"))]
             try:
-                previews = await db.get_last_message_previews([c["id"] for c in rows])
+                previews = await db.get_last_message_previews(wanted) if wanted else {}
                 for c in rows:
                     c["last_message"] = previews.get(c["id"])
             except Exception as e:
