@@ -21,6 +21,7 @@ import {
   readKey,
   rowLabel,
   rowLine,
+  scopeNote,
   sideTitle,
   weekLine,
 } from './to-read-view'
@@ -310,10 +311,12 @@ function Reader({ row, onRead, isRead, wide }: { row: ToReadRow; onRead: () => v
  * rules and last week's sample of each person's chats. Read-only; "Mark read"
  * is kept in this browser.
  */
-export function ToRead({ layout, tabBar, list, isError, onRetry, read, markRead }: {
+export function ToRead({ layout, tabBar, list, isError, onRetry, read, markRead, scoped }: {
   layout: ChatLayout
   tabBar: React.ReactNode
   list: ToReadList | undefined
+  /** Only the reader's team, masked (a supervisor): from the role. */
+  scoped: boolean
   isError: boolean
   onRetry: () => void
   /** Kept by the page, so the tab's count follows "Mark read". */
@@ -336,11 +339,7 @@ export function ToRead({ layout, tabBar, list, isError, onRetry, read, markRead 
     setOpenId(next?.id ?? open.id)
   }
 
-  const scopeNote = list?.no_team
-    ? 'You’re not in a team yet. Ask the owner to make you a team’s supervisor in Team › Teams & shifts.'
-    : list && list.people.length && list.lost.concat(list.sample).some((r) => r.client.startsWith('•'))
-      ? 'Your team only. Phone and e-mail are hidden.'
-      : 'Every person’s lost chats and last week’s sample.'
+  const scopeLine = scopeNote(list, scoped)
 
   const narrowOpen = layout === 'narrow' && !!open
   return (
@@ -366,7 +365,7 @@ export function ToRead({ layout, tabBar, list, isError, onRetry, read, markRead 
               ))}
             </select>
           </label>
-          <p className='m-0 px-1 text-xs leading-[1.4] text-k-6b6b6b'>{scopeNote}</p>
+          <p className='m-0 px-1 text-xs leading-[1.4] text-k-6b6b6b'>{scopeLine}</p>
         </div>
         <div className='flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-3'>
           {isError ? (

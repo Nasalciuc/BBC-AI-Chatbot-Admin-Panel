@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getToRead } from '@/lib/api'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
+import { withMark } from './to-read-view'
 
 const READ_STORE = 'bbc_to_read'
-const KEEP_DAYS = 14
 
 function load(): Set<string> {
   try {
@@ -18,17 +18,16 @@ function load(): Set<string> {
  *  anything older than two weeks is dropped when something is marked. */
 export function useReadState(): [Set<string>, (key: string) => void] {
   const [read, setRead] = useState<Set<string>>(load)
-  const mark = (key: string) =>
-    setRead((s) => {
-      const keep = new Date(new Date(key.slice(0, 10)).getTime() - KEEP_DAYS * 86_400_000).toISOString().slice(0, 10)
-      const next = new Set([...s].filter((k) => k.slice(0, 10) >= keep)).add(key)
-      try {
-        localStorage.setItem(READ_STORE, JSON.stringify([...next]))
-      } catch {
-        /* private mode: read holds for this visit */
-      }
-      return next
-    })
+  // The updater only computes (React may run it twice); storage follows the
+  // state, so two marks in a row are both kept.
+  const mark = (key: string) => setRead((s) => withMark(s, key))
+  useEffect(() => {
+    try {
+      localStorage.setItem(READ_STORE, JSON.stringify([...read]))
+    } catch {
+      /* private mode: read holds for this visit */
+    }
+  }, [read])
   return [read, mark]
 }
 

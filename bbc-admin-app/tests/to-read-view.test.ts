@@ -3,6 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import type { Reading, ToReadList, ToReadRow } from '../src/lib/types.ts'
 import {
   avatarText,
@@ -16,8 +17,10 @@ import {
   readKey,
   rowLabel,
   rowLine,
+  scopeNote,
   sideTitle,
   unreadCount,
+  withMark,
 } from '../src/features/chats/to-read-view.ts'
 
 const NOW = new Date(2026, 10, 6, 15, 30).getTime() // Fri 6 Nov, 15:30 local
@@ -124,3 +127,36 @@ test('the lead in one sentence', () => {
   assert.equal(leadSentence({ ...lead, route: null, departure_date: null, return_date: null, passengers: null, level: 'contact', crm_state: 'no_phone' }),
     'No route yet. Contact only. No phone, so not in the CRM.')
 })
+
+test('the line under the list comes from the reader’s role, not from the rows', () => {
+  const team = 'Your team only. Phone and e-mail are hidden.'
+  // A supervisor whose team lost nothing and has no sample is still team-only.
+  assert.equal(scopeNote({ no_team: false }, true), team)
+  assert.equal(scopeNote(undefined, true), team)
+  assert.equal(scopeNote({ no_team: false }, false), 'Every person’s lost chats and last week’s sample.')
+  assert.match(scopeNote({ no_team: true }, true), /^You’re not in a team yet/)
+  const src = (p: string) => readFileSync(new URL(`../src/features/chats/${p}`, import.meta.url), 'utf8')
+  assert.match(src('index.tsx'), /scoped=\{role === 'supervisor'\}/)
+  assert.match(src('to-read.tsx'), /const scopeLine = scopeNote\(list, scoped\)/)
+  assert.ok(!/concat\(list\.sample\)\.some/.test(src('to-read.tsx')), 'the line still guesses from masked names')
+})
+
+test('Mark read keeps two weeks, and two marks in a row are both kept', () => {
+  const a = withMark(new Set(), '2026-11-02:c1:lost')
+  const b = withMark(a, '2026-11-02:c2:lost')
+  assert.deepEqual([...b].sort(), ['2026-11-02:c1:lost', '2026-11-02:c2:lost'])
+  assert.equal(a.size, 1, 'the set it was given is not changed')
+  // Marking in the week of 2 Nov keeps 19 Oct (14 days) and drops 12 Oct.
+  const old = new Set(['2026-10-12:x:lost', '2026-10-19:y:sample'])
+  assert.deepEqual([...withMark(old, '2026-11-02:c1:lost')].sort(), ['2026-10-19:y:sample', '2026-11-02:c1:lost'])
+  // The updater only computes; storage follows the state.
+  const state = src2('to-read-state.ts')
+  const updater = state.slice(state.indexOf('const mark ='), state.indexOf('useEffect('))
+  assert.match(updater, /setRead\(\(s\) => withMark\(s, key\)\)/)
+  assert.ok(!updater.includes('localStorage'))
+  assert.match(state, /useEffect\(\(\) => \{\s*try \{\s*localStorage\.setItem\(READ_STORE, JSON\.stringify\(\[\.\.\.read\]\)\)/)
+})
+
+function src2(p: string): string {
+  return readFileSync(new URL(`../src/features/chats/${p}`, import.meta.url), 'utf8')
+}
