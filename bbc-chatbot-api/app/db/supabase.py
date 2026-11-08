@@ -2379,7 +2379,22 @@ async def diagnose_invite_token(token: str, purpose: str = "set_password") -> st
         if not row:
             return "unknown"
         if row.get("used_at"):
-            return "used"
+            # used_at is ALSO how a re-invite retires the older links
+            # (invalidate_active_invite_tokens). An account that still has no
+            # password never used this one: a newer link replaced it, and
+            # "Sign in with your password" would send them to a dead end.
+            uid = row.get("user_id")
+            if not uid:
+                return "used"
+            has_pw = await _run_sync(
+                lambda: db.table("users")
+                .select("id")
+                .eq("id", uid)
+                .not_.is_("password_hash", "null")
+                .limit(1)
+                .execute()
+            )
+            return "used" if (has_pw.data or []) else "superseded"
         now = datetime.now(timezone.utc)
         try:
             exp = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
