@@ -85,20 +85,36 @@ _KNOWN_TTL_SECONDS = 600.0
 _KNOWN_MAX = 5000
 _known_until: dict[tuple[str, str], float] = {}
 
+_BLIND_DETAIL = "Take the chat to read it."
+_BLIND_UNAVAILABLE = "Couldn't check this chat. Try again in a moment."
+
+# Per-instance, like CLAIM_HEALTH. check_failed: an agent got a 503 instead of
+# their chat because the check couldn't be made (it fails closed).
+# streams_closed: an open stream stopped because its chat started waiting
+# for a person and isn't the viewer's — not a failure, the rule working.
+BLIND_HEALTH: dict = {"check_failed": 0, "last_failed_at": None, "streams_closed": 0}
+
 
 async def _blind_guard(user: dict, conversation_id: str) -> bool:
     """True when this agent must not read this chat yet. Costs one tiny read
     per (agent, chat) every 10 minutes for the agent's own chats, nothing for
-    managers. A failed read is "can't tell" and lets the request through: a
-    database blip must not stop agents reading their own chats (it is logged
-    by get_blind_inputs)."""
+    managers. Fails CLOSED: when the check can't be made the agent gets a
+    503 (counted), never the chat — the only reads that can't answer from
+    memory are the ones for chats that aren't the agent's. A chat that
+    doesn't exist isn't blind: there is nothing in it to hide."""
     if user.get("role") not in db._OPERATOR_ROLES:
         return False
     key = (str(user.get("id") or ""), conversation_id)
     now = time.monotonic()
     if _known_until.get(key, 0.0) > now:
         return False
-    row = await db.get_blind_inputs(conversation_id)
+    try:
+        row = await db.get_blind_inputs(conversation_id)
+    except Exception as e:
+        from datetime import datetime, timezone
+        BLIND_HEALTH["check_failed"] += 1
+        BLIND_HEALTH["last_failed_at"] = datetime.now(timezone.utc).isoformat()
+        raise HTTPException(status_code=503, detail=_BLIND_UNAVAILABLE) from e
     if not row:
         return False
     if _known_to(row, user.get("id")):
@@ -109,7 +125,22 @@ async def _blind_guard(user: dict, conversation_id: str) -> bool:
     return _taken_blind(user, row)
 
 
-_BLIND_DETAIL = "Take the chat to read it."
+async def stream_sight(user: dict, conversation_id: str) -> str:
+    """The same question for a stream that is already open, asked again
+    before it sends anything: "ok" keeps it going; "blind" means the chat
+    started waiting for a person and isn't this agent's (the stream tells
+    the panel, then closes); "unknown" means the check couldn't be made —
+    the stream closes without a word (fail closed) and the panel's
+    reconnect is asked again at the door."""
+    try:
+        blind = await _blind_guard(user, conversation_id)
+    except HTTPException as e:
+        logger.warning(f"[stream] blind re-check failed for {conversation_id}: {e}")
+        return "unknown"
+    if blind:
+        BLIND_HEALTH["streams_closed"] += 1
+        return "blind"
+    return "ok"
 _PRESENCE_KEYS = (
     "widget_presence", "widget_presence_effective", "widget_presence_age_seconds",
     "widget_last_event_at", "widget_last_event", "widget_open", "widget_pings",
