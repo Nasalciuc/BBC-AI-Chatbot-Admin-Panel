@@ -411,6 +411,9 @@ async def chat(
         logger.warning(f"[chat] Blocked visitor refused (conv={req.conversation_id})")
         raise HTTPException(status_code=403, detail=BLOCK_REFUSAL)
 
+    # Rule 3: read by the reopen check and by the PR-15 doors below.
+    conv_info: Optional[dict] = None
+
     # 2. Check message count limit
     if req.conversation_id:
         count = await db.count_messages(req.conversation_id)
@@ -469,6 +472,30 @@ async def chat(
     # A client message IS presence (fire-and-forget; guarded write inside).
     if req.conversation_id:
         _fire_and_forget(_mark_client_active(req.conversation_id))
+
+    # PR-15: the chat lock (someone using the bot for something else) and the
+    # frustration lane. Both shadow until the owner turns them on; on, they
+    # answer without the model, after saving what the client wrote.
+    if req.conversation_id:
+        from app.security import behavior as _bh
+        _site = ((conv_info or {}).get("metadata") or {}).get("site")
+        _door = await _bh.chat_door(
+            conversation_id=req.conversation_id, raw_message=req.message,
+            clean_message=clean_message, ip=client_ip(request) or "",
+            visitor_id=req.visitor_id, site=_site,
+            metadata=(conv_info or {}).get("metadata"),
+            human_handled=_bh._human_handled(conv_info),
+        )
+        if _door is None:
+            _door = await _bh.frustration_door(
+                conversation_id=req.conversation_id, message=clean_message, site=_site,
+                conv=conv_info,
+            )
+        if _door is not None:
+            return ChatResponse(
+                conversation_id=req.conversation_id, message=_door,
+                type="template", model_used="template", cost=0.0,
+            )
 
     # ── POST-CRM: template response + re-close (no handoff) ──
     # Intercept ONLY when collection is COMPLETE. created_in_crm means

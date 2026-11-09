@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
 import { toast } from 'sonner'
-import { type ApiError, getConversation, getEarlierLeads, getLeadFull, pushLeadToCrm, reviewLead, setLeadCrmId } from '@/lib/api'
+import { type ApiError, getConversation, getEarlierLeads, getLeadFull, isLockedPushRefusal, pushLeadToCrm, reviewLead, setLeadCrmId } from '@/lib/api'
 import type { LeadRow, Lead } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
@@ -104,14 +104,23 @@ export function LeadPanel({
   }
   // Each send, save and review names its lead: if you open another lead before
   // the answer lands, it still goes to the lead it was for, never the open one.
+  // A conversation locked for abuse (v2 PR-15) answers 409 until the
+  // operator says yes: confirmLocked is only ever that yes, never a click.
   const push = useMutation({
-    mutationFn: (leadId: string) => pushLeadToCrm(leadId),
-    onSuccess: (r, leadId) => {
+    mutationFn: (v: { leadId: string; confirmLocked?: boolean }) => pushLeadToCrm(v.leadId, v.confirmLocked ?? false),
+    onSuccess: (r, { leadId }) => {
       toast.success(`Sent to the CRM${r.data?.crm_lead_id ? ` · lead ${r.data.crm_lead_id}` : ''}.`)
       onPatched(leadId, { crm_state: 'in_crm', created_in_crm: true, crm_lead_id: r.data?.crm_lead_id ?? null, created_in_crm_at: new Date().toISOString() })
       refresh(leadId)
     },
-    onError: (e, leadId) => {
+    onError: (e, { leadId }): void => {
+      if (isLockedPushRefusal(e)) {
+        toast.warning('This conversation was locked for abuse.', {
+          duration: 10_000,
+          action: { label: 'Push anyway', onClick: () => push.mutate({ leadId, confirmLocked: true }) },
+        })
+        return
+      }
       toast.error((e as ApiError)?.message ?? 'The CRM didn’t take it. Try again.')
       refresh(leadId)
     },
@@ -418,7 +427,7 @@ export function LeadPanel({
                   <button
                     type='button'
                     disabled={sending}
-                    onClick={() => push.mutate(id)}
+                    onClick={() => push.mutate({ leadId: id })}
                     className={cn(btn, 'self-start bg-kb-202020 text-on-btn')}
                   >
                     {sending ? 'Sending…' : 'Send to CRM'}

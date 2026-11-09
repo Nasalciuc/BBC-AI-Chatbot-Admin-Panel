@@ -224,7 +224,8 @@ async def run_aaa_backfill(days: int = 30) -> dict:
             if not conv.get("last_user_message_at"):
                 conv["_no_engagement"] = True
             from app.security.form_trap import holds_crm
-            if holds_crm(conv.get("metadata")):
+            from app.security.behavior import is_locked as _is_locked
+            if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 skipped += 1
                 continue
             result = await submit_abandoned_to_crm(conv, lead)
@@ -381,7 +382,8 @@ async def run_abandoned_crm() -> dict:
                 continue
 
             from app.security.form_trap import holds_crm
-            if holds_crm(conv.get("metadata")):
+            from app.security.behavior import is_locked as _is_locked
+            if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 # PR-12: a form_trap conversation waits for a human push.
                 results.append({"id": cid, "status": "hold_form_trap"})
                 continue
@@ -635,7 +637,8 @@ async def run_crm_orphan_backstop() -> dict:
                 phone=conv.get("visitor_phone") or "",
             )
             from app.security.form_trap import holds_crm
-            if holds_crm(conv.get("metadata")):
+            from app.security.behavior import is_locked as _is_locked
+            if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 continue  # PR-12: waits for a human push from the panel
             result = await push_lead_to_crm(
                 lead,
@@ -1077,3 +1080,15 @@ async def security_weekly(request: Request):
     except Exception as e:
         logger.warning(f"[security-weekly] email failed: {type(e).__name__}: {e}")
     return {"success": True, "data": report, "count": 1}
+
+
+# ── Retention (PR-14, ⚑12) ────────────────────────────────────────────────
+@router.post("/cron/retention")
+async def retention(request: Request):
+    """Counts (RETENTION_ENABLED off) or deletes (on) the rows past their
+    retention. Conversations and messages are not touched here."""
+    _require_cron(request)
+    from app.services.retention import run_once
+
+    out = await run_once()
+    return {"success": True, "data": out, "count": len(out)}

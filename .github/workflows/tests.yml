@@ -178,3 +178,42 @@ jobs:
           # enough (read-only below); nothing else is exposed to the step.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  # PR-14: the schema in the repo must build a working database. Every
+  # migration replays, in order, on an empty Postgres 16 (with the Supabase
+  # roles and schemas ci/bootstrap_supabase.sql creates), each file on its
+  # own — the CONCURRENTLY index files cannot run inside a transaction —
+  # then every column the code names must exist.
+  db-replay:
+    name: db-replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # It runs the PR's own scripts: read access only, no token left behind.
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: replay
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: ci-only-not-a-secret
+      PGDATABASE: replay
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Replay every migration on a clean database
+        working-directory: bbc-chatbot-api
+        run: ci/replay_migrations.sh
+      - name: Every column the code reads exists
+        working-directory: bbc-chatbot-api
+        run: python3 ci/check_code_columns.py

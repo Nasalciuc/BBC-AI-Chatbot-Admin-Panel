@@ -368,6 +368,8 @@ class TestWiring:
         with open(os.path.join(base, "features", "chats", "detail.tsx"), encoding="utf-8") as f:
             chat = f.read()
         assert "onClick={p.onPush}" in panel
-        assert "onPush={handleMarkLeadCreated}" in chat
-        assert "await pushLeadToCrm(lead.id)" in chat
+        # Wrapped, so the click event is never the handler's confirmLocked
+        # (v2 PR-15: a locked conversation's push waits for a real yes).
+        assert "onPush={() => { void handleMarkLeadCreated() }}" in chat
+        assert "await pushLeadToCrm(lead.id, confirmLocked)" in chat
         assert "export function pushLeadToCrm" in api

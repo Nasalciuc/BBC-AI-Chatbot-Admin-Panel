@@ -52,7 +52,7 @@ function conv(over: Partial<Conversation> = {}): Conversation {
 function lead(over: Partial<Lead> = {}): Lead {
   return {
     id: 'L1', conversation_id: 'c1', trip_type: 'round_trip', cabin_class: 'business', passengers: 2,
-    flexible_dates: false, origin_code: 'JFK', destination_code: 'LHR', departure_date: '2026-11-16',
+    dates_flexibility: null, origin_code: 'JFK', destination_code: 'LHR', departure_date: '2026-11-16',
     return_date: '2026-11-23', route_display: 'New York → London', score: 60, tier: 'silver', status: 'new',
     intent_signals: {}, notes: '', created_at: iso(0), updated_at: iso(0), contacted_at: null, converted_at: null,
     created_in_crm: false, crm_lead_id: null, visitor_name: 'Michael Turner', visitor_email: 'm@x.com',
@@ -263,7 +263,7 @@ test('the notes split the way the pipeline writes them', () => {
 test('trip rows: the itinerary first, dates to copy, flexible only when the client said so', () => {
   const rows = tripRows(
     lead({
-      trip_type: 'multi_city', passengers: 3, children_count: 1, flexible_dates: true,
+      trip_type: 'multi_city', passengers: 3, children_count: 1, dates_flexibility: 'unknown',
       notes: 'Itinerary: JFK → LHR → CDG → JFK\nChat: Budget~$6000',
     }),
     { nonstop_only: true, airline_preference: 'Qatar', airline_avoid: 'Spirit', budget_hint: '$6000', price_seen: '$4800', must_haves: 'lie-flat seat' }
@@ -286,19 +286,24 @@ test('trip rows: the itinerary first, dates to copy, flexible only when the clie
     { text: '16 Nov 2026', what: 'Departure date' },
     { text: '23 Nov 2026', what: 'Return date' },
   ])
-  // flexible_dates is true on every lead: alone it says nothing.
+  // The client's own answer decides; without one, the lead's dates_flexibility
+  // (v2 PR-7; flexible_dates, true on every lead, went with migration 050).
   const label = (sig: Record<string, unknown>, over: Partial<Lead> = {}) =>
-    tripRows(lead({ flexible_dates: true, ...over }), sig).find((r) => r.label === 'Dates')?.value
+    tripRows(lead({ dates_flexibility: 'unknown', ...over }), sig).find((r) => r.label === 'Dates')?.value
   assert.equal(label({}), undefined)
+  assert.equal(label({}, { dates_flexibility: null }), undefined)
   assert.equal(label({ date_flexible: true }), 'Flexible')
   assert.equal(label({ date_flexible: false }), 'Fixed')
-  assert.equal(label({}, { flexible_dates: false }), 'Fixed')
+  assert.equal(label({}, { dates_flexibility: 'exact' }), 'Fixed')
+  assert.equal(label({}, { dates_flexibility: 'flexible' }), 'Flexible')
+  assert.equal(label({}, { dates_flexibility: 'window' }), 'Flexible')
+  assert.equal(label({ date_flexible: false }, { dates_flexibility: 'flexible' }), 'Fixed', 'the client’s own answer wins')
   assert.equal(tripRows(lead({ trip_type: 'one_way', return_date: null }), {})[0].label, 'When')
   assert.deepEqual(tripRows(null, {}), [])
 })
 
 test('copy the trip: the route, then every row as label and value', () => {
-  const rows = tripRows(lead({ notes: '', flexible_dates: true }), {})
+  const rows = tripRows(lead({ notes: '', dates_flexibility: 'unknown' }), {})
   assert.equal(
     tripText(routeLine(lead()), rows),
     'JFK → LHR\nOut: 16 Nov 2026\nBack: 23 Nov 2026\nTravelers: 2 travelers\nCabin: Business\nTrip: Round trip'

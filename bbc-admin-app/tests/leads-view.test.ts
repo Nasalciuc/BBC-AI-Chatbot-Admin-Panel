@@ -16,7 +16,7 @@ function row(over: Partial<LeadRow> = {}): LeadRow {
     id: 'L1', conversation_id: 'c1', chat_number: 4810, created_at: '2026-11-06T11:54:00Z',
     origin_code: 'JFK', destination_code: 'LHR', route_display: 'New York → London',
     departure_date: '2026-11-16', return_date: '2026-11-23', passengers: 2, children_count: 0, infant_count: 0,
-    trip_type: 'round_trip', cabin_class: 'business', flexible_dates: false, score: 60, tier: 'silver', status: 'new',
+    trip_type: 'round_trip', cabin_class: 'business', score: 60, tier: 'silver', status: 'new',
     created_in_crm: false, created_in_crm_at: null, crm_lead_id: null, crm_push_gate_reason: null,
     reviewed_by_qa: false, reviewed_at: null, reviewed_by: null,
     visitor_name: 'Michael Turner', visitor_email: 'michael.turner@example.com', visitor_phone: '+1 555 0110',
@@ -124,8 +124,10 @@ test('the lead panel keeps a CRM number, a save and a review with their own lead
   const page = readFileSync(new URL('../src/features/leads/index.tsx', import.meta.url), 'utf8')
   // Another lead opens with an empty CRM number: one typed for the last lead is never saved on it.
   assert.match(panel, /if \(row\?\.id !== shownId\) \{[^}]*setManual\(''\)[^}]*\}/)
-  // Each call names its lead; the answer patches only that lead.
-  assert.match(panel, /push\.mutate\(id\)/)
+  // Each call names its lead; the answer patches only that lead. (A locked
+  // conversation's "Push anyway" names it too: v2 PR-15.)
+  assert.match(panel, /push\.mutate\(\{ leadId: id \}\)/)
+  assert.match(panel, /push\.mutate\(\{ leadId, confirmLocked: true \}\)/)
   assert.match(panel, /saveManual\.mutate\(\{ leadId: id, crmId: manual\.trim\(\) \}\)/)
   assert.equal((panel.match(/review\.mutate\(\{ leadId: id,/g) ?? []).length, 3)
   assert.match(panel, /mutationFn: \(v: \{ leadId: string; crmId: string \}\) => setLeadCrmId\(v\.leadId, v\.crmId\)/)

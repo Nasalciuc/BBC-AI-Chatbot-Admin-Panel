@@ -13,11 +13,15 @@ from fastapi.testclient import TestClient
 from app.security.auth import get_current_user
 
 
-PNG_1x1 = (
+# PR-15: an upload must be at least 1 KB and start with its type's bytes. A
+# real 1x1 PNG is ~70 bytes, so the fixture carries padding after IEND (still
+# a valid PNG to any decoder).
+_PNG_1x1_RAW = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
     b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+PNG_1x1 = _PNG_1x1_RAW + b"\x00" * 1024
 
 PUBLIC_URL = "https://exwxdjfeoekfixnjsreq.supabase.co/storage/v1/object/public/avatars/u-1/abc.png"
 
@@ -176,3 +180,25 @@ def test_storage_helper_rejects_oversized():
         asyncio.run(
             upload_avatar(data=data, content_type="image/png", user_id="u-1")
         )
+
+
+
+def test_lied_about_type_is_415():
+    """PR-15: declared image/png, but the bytes are not a PNG."""
+    with patch("app.api.auth_routes.upload_avatar", new_callable=AsyncMock) as up:
+        r = _client("sales").post(
+            "/api/auth/me/avatar",
+            files={"file": ("x.png", BytesIO(b"<?php echo 1; ?>" + b"x" * 2048), "image/png")},
+        )
+    assert r.status_code == 415
+    up.assert_not_awaited()
+
+
+def test_tiny_file_is_415():
+    with patch("app.api.auth_routes.upload_avatar", new_callable=AsyncMock) as up:
+        r = _client("sales").post(
+            "/api/auth/me/avatar",
+            files={"file": ("x.png", BytesIO(_PNG_1x1_RAW), "image/png")},
+        )
+    assert r.status_code == 415
+    up.assert_not_awaited()

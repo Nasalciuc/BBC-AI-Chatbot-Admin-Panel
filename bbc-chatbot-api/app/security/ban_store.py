@@ -26,6 +26,7 @@ class BanStore:
         self._counts: dict[str, int] = {}     # ip -> ban count (memory mode)
         self._strikes: dict[str, list[float]] = {}  # key -> hit times (memory mode)
         self._auth_emails: dict[str, dict[str, float]] = {}  # ip -> {email: last seen}
+        self._distinct: dict[str, dict[str, float]] = {}     # key -> {member: last seen}
 
     async def is_banned(self, ip: str) -> bool:
         if not ip:
@@ -113,16 +114,41 @@ class BanStore:
         self._strikes[key] = hits
         return len(hits)
 
+    async def _seen_in_window(self, rkey: str, member: str, window: int) -> int:
+        """Redis: the members seen under rkey in the last `window` seconds,
+        each by its own last time (a sorted set scored by time), as the
+        memory branches count. A plain set whose TTL every call renewed never
+        let a member age out while traffic went on: visitors behind one NAT
+        polling over hours added up as if in one window. Raises."""
+        now = time.time()
+        await self._redis.zadd(rkey, {member: now})
+        await self._redis.zremrangebyscore(rkey, "-inf", f"({now - window}")  # older than the window, like the memory branch
+        await self._redis.expire(rkey, window)
+        return int(await self._redis.zcard(rkey))
+
+    async def distinct(self, key: str, member: str, window: int) -> int:
+        """How many different members were seen under key in the window (the
+        enumeration trap: conversation ids asked about from one IP)."""
+        if self._redis is not None:
+            try:
+                return await self._seen_in_window(f"seen:{key}", member, window)
+            except Exception as e:
+                logger.debug(f"[ban-store] distinct redis failed: {type(e).__name__}")
+                return 0
+        now = time.time()
+        seen = self._distinct.setdefault(key, {})
+        for k in [k for k, t in seen.items() if t < now - window]:
+            seen.pop(k, None)
+        seen[member] = now
+        return len(seen)
+
     async def note_auth_email(self, ip: str, email: str, window: int) -> int:
         """Record a failed login's email for ip; the distinct emails seen from
         it within window (0 on a Redis failure — fail-open)."""
         address = (email or "").strip().lower()
         if self._redis is not None:
             try:
-                key = f"authmail:{ip}"
-                await self._redis.sadd(key, address)
-                await self._redis.expire(key, window)
-                return int(await self._redis.scard(key))
+                return await self._seen_in_window(f"seen:authmail:{ip}", address, window)
             except Exception as e:
                 logger.warning(f"[ban-store] auth-email redis failed: {type(e).__name__}")
                 return 0

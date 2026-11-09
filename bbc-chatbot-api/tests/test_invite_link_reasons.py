@@ -33,6 +33,12 @@ class _Query:
         self.filters.append(("gt", col, val))
         return self
 
+    def in_(self, col, vals):
+        # v2 PR-14: a presented link is looked up by its SHA-256 (and, while
+        # links minted before it live, its raw value).
+        self.filters.append(("in", col, tuple(vals)))
+        return self
+
     def is_(self, col, val):
         self.filters.append(("is", col, val))
         return self
@@ -123,3 +129,14 @@ async def test_the_other_reasons_are_unchanged():
     assert "users" not in newer.queries
     # Not used and not expired, yet not consumable: the old "unknown".
     assert await _diagnose(_Client({"invite_tokens": [_token()]})) == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_the_link_is_looked_up_by_its_hash():
+    from app.db import supabase as sb
+
+    client = _Client({"invite_tokens": []})
+    await _diagnose(client)
+    looked = [f for f in client.queries["invite_tokens"][0].filters if f[0] == "in"]
+    assert looked and looked[0][1] == "token"
+    assert sb.hash_invite_token("t" * 24) in looked[0][2]

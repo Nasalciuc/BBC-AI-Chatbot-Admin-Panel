@@ -52,3 +52,12 @@ test('Turnstile loads only when the site gives a key', () => {
   assert.match(ts, /if \(!siteKey\) return null/)
   assert.match(src('entry.tsx'), /data-turnstile-sitekey/)
 })
+
+test('the reserved v0 route ships in the bundle and is never called', () => {
+  const api = src('api.ts')
+  assert.match(api, /export const TRANSCRIPT_EXPORT_V0 = '\/api\/chat\/v0\/transcript-export'/)
+  assert.match(src('entry.tsx'), /transcriptExportV0: TRANSCRIPT_EXPORT_V0/)
+  for (const f of ['ChatWindow.tsx', 'Widget.tsx', 'TunnelForm.tsx']) {
+    assert.doesNotMatch(src(f), /TRANSCRIPT_EXPORT_V0|transcript-export/, f)
+  }
+})

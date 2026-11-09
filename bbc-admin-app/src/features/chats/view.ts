@@ -416,9 +416,17 @@ export function tripRows(lead: Lead | null | undefined, signals: Record<string, 
   if (out) rows.push({ label: oneWay ? 'When' : 'Out', value: out, copy: { text: out, what: 'Departure date' } })
   const back = fullDate(lead.return_date)
   if (back) rows.push({ label: 'Back', value: back, copy: { text: back, what: 'Return date' } })
-  // flexible_dates is true on every lead (column default); only the
-  // client's own answer says flexible or fixed.
-  const dates = signals.date_flexible === true ? 'Flexible' : signals.date_flexible === false || lead.flexible_dates === false ? 'Fixed' : ''
+  // The client's own answer (intent_signals.date_flexible) decides; without
+  // one, the lead's dates_flexibility (v2 PR-7: exact | flexible | window |
+  // unknown), which replaced flexible_dates — true on every lead by column
+  // default, it said nothing, and migration 050 drops it.
+  const flex = lead.dates_flexibility
+  const dates =
+    signals.date_flexible === true ? 'Flexible'
+    : signals.date_flexible === false ? 'Fixed'
+    : flex === 'flexible' || flex === 'window' ? 'Flexible'
+    : flex === 'exact' ? 'Fixed'
+    : ''
   if (dates) rows.push({ label: 'Dates', value: dates })
   const who = travelersText(lead)
   if (who) rows.push({ label: 'Travelers', value: who })

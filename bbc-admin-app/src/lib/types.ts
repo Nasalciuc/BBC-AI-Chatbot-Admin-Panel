@@ -85,9 +85,9 @@ export interface Lead {
   passengers: number | null
   children_count?: number | null
   infant_count?: number | null
-  /** NOT NULL DEFAULT true and never written by the pipeline: says nothing.
-   *  The client's own answer is intent_signals.date_flexible. */
-  flexible_dates: boolean
+  /** exact | flexible | window | unknown (PR-7); replaces flexible_dates,
+   *  which migration 050 drops. */
+  dates_flexibility?: 'exact' | 'flexible' | 'window' | 'unknown' | null
   origin_code: string | null
   destination_code: string | null
   departure_date: string | null
@@ -416,7 +416,6 @@ export interface LeadRow {
   infant_count?: number | null
   trip_type: Lead['trip_type'] | null
   cabin_class: Lead['cabin_class'] | null
-  flexible_dates: boolean | null
   score: number
   tier: Lead['tier']
   status: Lead['status']

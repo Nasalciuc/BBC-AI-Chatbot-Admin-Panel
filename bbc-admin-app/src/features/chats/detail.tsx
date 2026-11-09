@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight, ArrowUp, Clock, Info, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowUp, Clock, Info, Lock, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
 import type { Message, Lead, LeadDetails } from '@/lib/types'
 import {
   getConversation,
@@ -13,6 +13,8 @@ import {
   postAgentTyping,
   clearAgentTyping,
   pushLeadToCrm,
+  isLockedPushRefusal,
+  unlockConversation,
   setLeadCrmId,
   type ApiError,
 } from '@/lib/api'
@@ -500,17 +502,27 @@ export default function ConversationDetail({
   }
 
   /** The REAL push (the server runs the gate and the CRM call). A 422 carries
-   *  the CRM's refusal; it is shown verbatim. Returns whether it landed. */
-  const handleMarkLeadCreated = async (): Promise<boolean> => {
+   *  the CRM's refusal; it is shown verbatim. Returns whether it landed.
+   *  A conversation locked for abuse (v2 PR-15) answers 409 until the
+   *  operator says yes: confirmLocked is only ever that yes, never a click. */
+  const handleMarkLeadCreated = async (confirmLocked = false): Promise<boolean> => {
     if (!lead?.id || markingLead) return false
     setMarkingLead(true)
     setMarkLeadError(null)
     try {
-      await pushLeadToCrm(lead.id)
+      await pushLeadToCrm(lead.id, confirmLocked)
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       toast.success(`${firstName(conv?.visitor_name)} is in the CRM.`)
       return true
     } catch (err) {
+      // PR-15: a conversation locked for abuse needs the operator's yes.
+      if (isLockedPushRefusal(err)) {
+        toast.warning('This conversation was locked for abuse.', {
+          duration: 10_000,
+          action: { label: 'Push anyway', onClick: () => { void handleMarkLeadCreated(true) } },
+        })
+        return false
+      }
       const msg = (err as ApiError)?.message ?? 'CRM push failed. Please try again.'
       setMarkLeadError(msg)
       return false
@@ -706,7 +718,7 @@ export default function ConversationDetail({
       canManual={canManual}
       pushing={markingLead}
       pushError={markLeadError}
-      onPush={handleMarkLeadCreated}
+      onPush={() => { void handleMarkLeadCreated() }}
       onSaveManual={handleSaveManual}
     />
   )
@@ -738,6 +750,43 @@ export default function ConversationDetail({
               {conv.has_flagged_content && (
                 <span title={conv.flagged_reason || 'Contains flagged content'} className='rounded-full bg-k-fff3e0 px-2 py-0.5 text-xs font-bold text-k-8a4b00'>
                   Flagged
+                </span>
+              )}
+              {(conv.metadata as { locked?: unknown } | undefined)?.locked === 'abuse' && (
+                <span className='inline-flex items-center gap-1.5 rounded-full bg-k-fdecea px-2 py-0.5 text-xs font-bold text-k-b3261e'>
+                  Blocked — abuse
+                  {/* The unlock endpoint is MANAGEMENT (owner, admin, dev) — the
+                      same set as canManageBans. Others see it disabled (RBAC rule). */}
+                  {!permissions.canManageBans ? (
+                    <button
+                      type='button'
+                      disabled
+                      data-testid='unlock-conversation'
+                      className='inline-flex cursor-not-allowed items-center gap-0.5 opacity-60'
+                      title='Only an owner, admin or dev can unlock a conversation'
+                      aria-label='Unlock (owner, admin or dev only)'
+                    >
+                      <Lock className='size-3' aria-hidden='true' />
+                      Unlock
+                    </button>
+                  ) : (
+                    <button
+                      type='button'
+                      data-testid='unlock-conversation'
+                      className='underline'
+                      onClick={async () => {
+                        try {
+                          await unlockConversation(conversationId)
+                          toast.success('Unlocked — the bot answers this client again')
+                          queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+                        } catch {
+                          toast.error('Unlock failed')
+                        }
+                      }}
+                    >
+                      Unlock
+                    </button>
+                  )}
                 </span>
               )}
             </div>
