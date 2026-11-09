@@ -32,8 +32,13 @@ def pytest_configure(config):
         # imports them early anyway — this makes the --as-of run match.
         try:
             import app.graph.build  # noqa: F401
-        except Exception:
-            pass
+        except ImportError as e:
+            # Without it the run still works, but a later metaclass conflict
+            # under the frozen clock would hide this cause: say it now.
+            # Anything other than a missing module fails the run here.
+            import warnings
+
+            warnings.warn(f"timetravel: app.graph.build could not be imported before freezing: {e}")
 
         _freezer = freeze_time(f"{as_of} 12:00:00", tick=True)
         _freezer.start()
