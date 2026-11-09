@@ -20,6 +20,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _lit(value: str) -> str:
+    """A SQL string literal: the names come from the catalog, but a quote in
+    one would still end the literal early."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def q(sql: str) -> list[list[str]]:
     out = subprocess.run(["psql", "-tA", "-F", "\t", "-c", sql], check=True, capture_output=True, text=True).stdout
     return [line.split("\t") for line in out.splitlines() if line.strip()]
@@ -52,11 +58,11 @@ def main() -> None:
         for col, typ, nullable, default in q(f"""
             select column_name, data_type, is_nullable, coalesce(column_default, '')
               from information_schema.columns
-             where table_schema = 'public' and table_name = '{name}'
+             where table_schema = 'public' and table_name = {_lit(name)}
              order by ordinal_position"""):
             d = default.replace("|", "\\|")
             lines.append(f"| `{col}` | {typ} | {'yes' if nullable == 'YES' else 'no'} | {('`' + d + '`') if d else ''} |")
-        idx = q(f"select indexname, indexdef from pg_indexes where schemaname = 'public' and tablename = '{name}' order by indexname")
+        idx = q(f"select indexname, indexdef from pg_indexes where schemaname = 'public' and tablename = {_lit(name)} order by indexname")
         if idx:
             lines += ["", "Indexes:", ""]
             for iname, idef in idx:
