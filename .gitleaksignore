@@ -1,0 +1,21 @@
+# Fingerprints gitleaks may skip: <commit>:<file>:<rule>:<line>. Each one is
+# checked by hand and fake. No path is allowlisted (.gitleaks.toml).
+
+# decoys.py: the JWT_SECRET line of the bait .env served to scanners (PR-3)
+4e9f73e91e63af19ae583e110bf953e686f42fd5:bbc-chatbot-api/app/security/decoys.py:generic-api-key:141
+
+# tests/test_decoys.py: the decoy bundle key, the canary AWS secret and the
+# replayed x-api-key, all made-up strings passed to monkeypatch (PR-3)
+4e9f73e91e63af19ae583e110bf953e686f42fd5:bbc-chatbot-api/tests/test_decoys.py:generic-api-key:25
+4e9f73e91e63af19ae583e110bf953e686f42fd5:bbc-chatbot-api/tests/test_decoys.py:generic-api-key:27
+4e9f73e91e63af19ae583e110bf953e686f42fd5:bbc-chatbot-api/tests/test_decoys.py:generic-api-key:66
+4e9f73e91e63af19ae583e110bf953e686f42fd5:bbc-chatbot-api/tests/test_decoys.py:generic-api-key:105
+
+# tests/test_chat_start.py, tests/test_visitor_token.py: a made-up
+# visitor_token_secret for the signed-token tests (PR-12)
+9263cf32a3ab46a65cba06d846dd2b58a2f24104:bbc-chatbot-api/tests/test_chat_start.py:generic-api-key:191
+9263cf32a3ab46a65cba06d846dd2b58a2f24104:bbc-chatbot-api/tests/test_visitor_token.py:generic-api-key:29
+
+# tests/test_mfa.py: a made-up jwt_secret and MFA encryption key (PR-13)
+9b89a4cac974b0df967c0696ab0f52bba622ee55:bbc-chatbot-api/tests/test_mfa.py:generic-api-key:53
+9b89a4cac974b0df967c0696ab0f52bba622ee55:bbc-chatbot-api/tests/test_mfa.py:generic-api-key:54

@@ -28,6 +28,8 @@ from pydantic import BaseModel, Field
 
 from app.deps.ownership import require_visitor_ownership
 from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
+from app.security.client_ip import client_ip
+from app.security.metadata import allowed_widget_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +61,8 @@ async def chat_init(
     _rate: None = Depends(check_rate_limit),
 ):
     """Create conversation instantly for SSE pre-connect. No pipeline."""
-    _meta = dict(payload.metadata or {})
-    _client_ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    _meta = allowed_widget_metadata(payload.metadata)
+    _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
     _ua = request.headers.get("user-agent")
@@ -121,12 +119,8 @@ class ChatStartResponse(BaseModel):
 def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id: Optional[str]) -> dict:
     """Metadata enrichment shared with the first-message path: IP, UA,
     referrer, CF country, visitor id — same spread, same precedence."""
-    _meta = dict(metadata or {})
-    _client_ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    _meta = allowed_widget_metadata(metadata)
+    _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
     _ua = request.headers.get("user-agent")
@@ -251,9 +245,17 @@ async def chat_start(
         )
         model_used = "template"
 
-    await conversation_service.add_message(
+    row = await conversation_service.add_message(
         conv_id, "ai", text, model_used=model_used, cost=cost,
     )
+    # The greeting reads the landing page and its tags, a way in for injected
+    # text: the client gets what was stored, after the output guard ran on it.
+    if isinstance(row, dict) and isinstance(row.get("content"), str):
+        text = row["content"]
+    else:
+        from app.ai.output_guard import guard_ai_text
+
+        text = await guard_ai_text(text, conversation_id=conv_id) or text
     logger.info(f"[start] Conv {conv_id} opened by AI ({model_used})")
     return ChatStartResponse(conversation_id=conv_id, message=text)
 
@@ -409,7 +411,7 @@ async def chat(
                 await conversation_service.add_message(
                     conversation_id=req.conversation_id,
                     role="user",
-                    content=clean_me,)
+                    content=clean_message,)
 
                 if has_closing_been_sent(_meta):
                     # Post-sale: closing already sent — discriminate message type
@@ -613,12 +615,8 @@ async def chat(
 
     # 4. AI mode or new conversation → run pipeline
     # Enrich metadata with client IP + User-Agent
-    _meta = dict(req.metadata or {})
-    _client_ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "")
-    )
+    _meta = allowed_widget_metadata(req.metadata)
+    _client_ip = client_ip(request)
     if _client_ip:
         _meta.setdefault("client_ip", _client_ip)
     _ua = request.headers.get("user-agent")
@@ -678,7 +676,7 @@ async def chat(
         _fire_and_forget(_mark_client_active(response.conversation_id))
 
     # Cache store for FAQ/greeting (Sprint 3) — skip streaming (message empty until SSE ends)
-    _result_intent = detect_intent(clean_message, _meta).value
+    _result_intent = detect_intent(clean_message, _meta, use_llm=False).value
     if response.message and not response.streaming and _result_intent:
         set_cached(
             clean_message,
@@ -686,6 +684,7 @@ async def chat(
             _result_intent,
             site=_cache_site,
             tunnel=req.tunnel,
+            model_used=response.model_used,
         )
 
     return response
@@ -888,8 +887,8 @@ async def public_get_conversation_status(conversation_id: str):
             },
         }
     except Exception as e:
-        logger.error(f"public_get_conversation_status error: {e}")
-        return {"success": False, "data": None, "error": str(e)}
+        logger.error(f"public_get_conversation_status error: {type(e).__name__}: {e}")
+        return {"success": False, "data": None, "error": "status unavailable"}
 
 
 @router.get("/chat/messages/{conversation_id}")
@@ -908,8 +907,8 @@ async def public_get_messages(
         msgs = await db.get_messages_after(conversation_id, after)
         return {"success": True, "data": await _with_agent_identity(conversation_id, msgs)}
     except Exception as e:
-        logger.error(f"public_get_messages error: {e}")
-        return {"success": False, "data": [], "error": str(e)}
+        logger.error(f"public_get_messages error: {type(e).__name__}: {e}")
+        return {"success": False, "data": [], "error": "messages unavailable"}
 
 
 async def _with_agent_identity(conversation_id: str, msgs: list) -> list:

@@ -21,6 +21,7 @@ from app.api.notifications import router as notifications_router
 from app.api.lessons import router as lessons_router
 from app.api.auth_routes import router as auth_router
 from app.api.cron import router as cron_router
+from app.api.canary import router as canary_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 
@@ -30,6 +31,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx logs the full URL of every Supabase request at INFO — PostgREST puts
+# filters and looked-up values in the query string, so that is PII at INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # ── App ───────────────────────────────────────────────────────
@@ -59,6 +64,11 @@ app.add_middleware(RequestLoggerMiddleware)
 # ── Routers ───────────────────────────────────────────────────
 # Health: PUBLIC (no auth — Railway healthcheck needs it)
 app.include_router(health_router, tags=["health"])
+
+# Canary content: PUBLIC decoys (/.env, /api/admin/export). Included before the
+# admin routers so /api/admin/export resolves here, not to a 404 that an admin
+# route might later shadow.
+app.include_router(canary_router, tags=["canary"])
 
 # Chat: PUBLIC (customer widget — no auth)
 app.include_router(chat_router, prefix="/api", tags=["chat"])
@@ -102,6 +112,25 @@ async def startup() -> None:
     if not settings.ops_alert_email:
         logger.warning("ops alerts fall back to super@ — set OPS_ALERT_EMAIL")
 
+    # Runtime switches (app/flags.py): read once now so the first requests see
+    # the database's values, then every 30 s in the background.
+    # Bounded: a slow database must not hold the healthcheck; the refresher
+    # retries in the background either way.
+    import asyncio
+
+    from app import flags as runtime_flags
+
+    try:
+        await asyncio.wait_for(runtime_flags.refresh(), timeout=5)
+    except asyncio.TimeoutError as e:
+        logger.warning(f"[flags] first read took over 5 s ({type(e).__name__}) — continuing on env/defaults")
+    app.state.flags_task = runtime_flags.start_refresher()
+
+    # AI cost ledger: drain the record queue into ai_calls in the background.
+    from app.ai import ledger
+
+    app.state.ledger_task = ledger.start_flusher()
+
     if settings.internal_scheduler_enabled:
         from app.services.scheduler import start as start_scheduler
 
@@ -112,5 +141,23 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    flags_task = getattr(app.state, "flags_task", None)
+    if flags_task is not None:
+        flags_task.cancel()
+    ledger_task = getattr(app.state, "ledger_task", None)
+    if ledger_task is not None:
+        # The final flush runs inside the task's CancelledError handler: wait
+        # for it, or the loop closes first and the last ~2 s of ai_calls rows
+        # are lost on every deploy. A batch already mid-insert when the
+        # cancel lands is not retried (its thread may still write it).
+        import asyncio
+
+        ledger_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(ledger_task, return_exceptions=True), timeout=5)
+        except asyncio.TimeoutError as e:
+            logger.warning(
+                f"[ledger] final flush did not finish within 5 s; queued ai_calls rows may be lost: {type(e).__name__}"
+            )
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()

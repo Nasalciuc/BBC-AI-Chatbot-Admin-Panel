@@ -17,6 +17,7 @@ from app.pipeline.generator import generate_response, GeneratedResponse
 from app.pipeline.validator import validate_response
 from app.ai.templates import get_template
 from app.realtime.manager import manager
+from app.flags import flag
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +397,60 @@ async def reprocess_last_user_message(conversation_id: str) -> None:
         )
 
 
+def _bounded_int(val, lo: int, hi: int) -> Optional[int]:
+    """The tool's number if it is a whole number in [lo, hi], else None."""
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, str) and val.strip().isdigit():
+        val = int(val.strip())
+    elif isinstance(val, float) and val.is_integer():
+        val = int(val)
+    return val if isinstance(val, int) and lo <= val <= hi else None
+
+
+def _tool_pax_breakdown(te: dict, entities: dict, stored_total=None) -> tuple[dict, bool]:
+    """PR-0: children/infants from the tool, mapped onto the lead's own keys.
+
+    Returns (updates, inconsistent). Inconsistent = fewer travelers than
+    minors: the whole triple is untrustworthy and nothing of it is kept. A
+    count the regex already set this turn wins over the tool, the same rule
+    STEP 6.1 applies to passengers and cabin_class.
+
+    The check runs against the total that will be SAVED, not only the
+    tool's: "my husband and I and three children" can leave the regex at 2
+    (the adults) while the tool says 5 with 3 children. A regex total below
+    the minors is then the adults alone, and the tool's consistent total
+    replaces it, so a lead never holds fewer travelers than minors.
+
+    `stored_total` is the lead's passengers before this turn, the last
+    fallback when neither the regex nor the tool says a total this turn: the
+    lead keeps it, so the minors must fit inside it too.
+    """
+    children = _bounded_int(te.get("children"), 0, 8)
+    infants = _bounded_int(te.get("infants"), 0, 8)
+    if children is None and infants is None:
+        return {}, False
+    passengers = _bounded_int(te.get("passengers"), 1, 9)
+    if passengers is not None and passengers < (children or 0) + (infants or 0):
+        return {}, True
+    updates: dict = {}
+    if children is not None and entities.get("_children_count") is None:
+        updates["_children_count"] = children
+    if infants is not None and entities.get("_infant_count") is None:
+        updates["_infant_count"] = infants
+    minors = sum(
+        (updates.get(k) if updates.get(k) is not None else entities.get(k)) or 0
+        for k in ("_children_count", "_infant_count")
+    )
+    saved_total = entities.get("passengers") or passengers or _bounded_int(stored_total, 1, 9)
+    if saved_total is not None and saved_total < minors:
+        if passengers is not None and passengers >= minors and entities.get("passengers"):
+            updates["passengers"] = passengers
+        else:
+            return {}, True
+    return updates, False
+
+
 async def _pipeline(
     conversation_id: Optional[str],
     message: str,
@@ -501,7 +556,14 @@ async def _pipeline(
 
     # ── STEP 3: INTENT DETECTION ─────────────────────────────
     _user_msg_count = sum(1 for m in (history or []) if m.get("role") == "user")
-    intent = detect_intent(message, metadata, user_msg_count=_user_msg_count)
+    # detect_intent can call the Haiku classifier synchronously; off the loop so
+    # one slow classify never freezes /health or another turn. Not to_thread —
+    # test_pipeline_fallback_persistence patches orchestrator.asyncio.to_thread
+    # for generation, and that mock would come back here as the intent.
+    intent = await asyncio.get_running_loop().run_in_executor(
+        None,
+        functools.partial(detect_intent, message, metadata, user_msg_count=_user_msg_count),
+    )
     logger.info(f"[{cid}] Intent: {intent.value}")
 
     # Confirm override: if summary was shown and client confirms,
@@ -1065,8 +1127,10 @@ async def _pipeline(
         "return_date": None if _suppress_return_date else extracted.return_date,
         "trip_type": "multi_city" if _multi_city_declared else extracted.trip_type,
         "itinerary": extracted.itinerary,
-        "_children_count": extracted.children_count or 0,
-        "_infant_count": extracted.infant_count or 0,
+        # None = not said this turn; 0 = said "no children" (a correction
+        # to zero must reach the lead, so the two are kept apart).
+        "_children_count": extracted.children_count,
+        "_infant_count": extracted.infant_count,
         # Sales-methodology signals — merged into the lead's intent_signals and
         # handed to the consultant; _metadata carries SITE CONTEXT to the prompt.
         "occasion": extracted.occasion,
@@ -1261,12 +1325,20 @@ async def _pipeline(
     # Streaming callback (sync→async bridge for thread pool)
     _event_loop = asyncio.get_running_loop()
     _is_streaming = False
+    # A streamed chunk can't be taken back: in OUTPUT_GUARD_MODE=enforce the
+    # guard lets the text out a sentence at a time, scrubbed whole.
+    from app.ai.output_guard import StreamGuard, own_contacts
+
+    _stream_guard = StreamGuard(own_contacts(getattr(visitor, "phone", None), getattr(visitor, "email", None)))
 
     def _on_chunk(delta: str):
         nonlocal _is_streaming
         _is_streaming = True
+        out = _stream_guard.feed(delta)
+        if not out:
+            return
         asyncio.run_coroutine_threadsafe(
-            manager.push_chunk(cid, delta),
+            manager.push_chunk(cid, out),
             _event_loop,
         )
 
@@ -1409,6 +1481,13 @@ async def _pipeline(
             _tool_blocked.add("return_date")
         if _multi_city_declared:
             _tool_blocked.add("trip_type")
+        _pax_updates: dict = {}
+        if flag("PAX_TOOL_FIELDS", False):
+            _pax_updates, _pax_inconsistent = _tool_pax_breakdown(
+                _te, entities, stored_total=lead.get("passengers") if isinstance(lead, dict) else None)
+            if _pax_inconsistent:
+                _tool_blocked.add("passengers")
+                logger.info(f"[{cid}] [pax-merge] inconsistent tool counts — triple ignored")
         for key in [
             "origin",
             "destination",
@@ -1459,6 +1538,9 @@ async def _pipeline(
                 )
                 continue
             entities[key] = val
+            _merged = True
+        if _pax_updates:
+            entities.update(_pax_updates)
             _merged = True
 
         if _merged:
@@ -1773,9 +1855,23 @@ async def _pipeline(
             f"[{cid}] AI reply generated but NOT persisted (add_message returned None)"
         )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
+    # What the customer is given is what was stored: the output guard ran on
+    # it in add_message. Not stored: guarded here, so it never goes out raw.
+    if ai_msg and isinstance(ai_msg, dict) and isinstance(ai_msg.get("content"), str):
+        delivered_text = ai_msg["content"]
+    else:
+        from app.ai.output_guard import guard_ai_text
+
+        delivered_text = await guard_ai_text(validated_text, conversation_id=cid)
 
     if _is_streaming and ai_msg:
         await manager.push_stream_end(cid, ai_msg)
+    elif _is_streaming:
+        # No stored row, so no stream_end to replace the streamed text: what
+        # the guard still holds goes out, scrubbed.
+        _tail = _stream_guard.flush()
+        if _tail:
+            await manager.push_chunk(cid, _tail)
 
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
     # Close only after client confirmed summary and CRM was submitted.
@@ -1836,7 +1932,7 @@ async def _pipeline(
                     )
                     from app.ai.claude import call_haiku as _summarize
                     summary_text, sum_cost = await asyncio.to_thread(
-                        _summarize, summary_prompt, msg_text
+                        _summarize, summary_prompt, msg_text, "summary"
                     )
                     if summary_text:
                         await db.update_conversation(cid, {"summary": summary_text})
@@ -1855,7 +1951,7 @@ async def _pipeline(
 
     return ChatResponse(
         conversation_id=cid,
-        message="" if _is_streaming else validated_text,
+        message="" if _is_streaming else delivered_text,
         streaming=_is_streaming,
         type=resp_type,
         model_used=gen.model_used,

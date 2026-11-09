@@ -27,10 +27,8 @@ jobs:
             -H "Content-Type: application/json")
           
           http_code=$(echo "$response" | tail -1)
-          body=$(echo "$response" | head -n -1)
           
           echo "Status: $http_code"
-          echo "Response: $body"
           
           if [ "$http_code" != "200" ]; then
             echo "::error::Cron failed with status $http_code"
@@ -48,10 +46,8 @@ jobs:
             -H "Content-Type: application/json")
           
           http_code=$(echo "$response" | tail -1)
-          body=$(echo "$response" | head -n -1)
           
           echo "Status: $http_code"
-          echo "Response: $body"
           
           if [ "$http_code" != "200" ]; then
             echo "::error::Agent sweep failed with status $http_code"

@@ -235,13 +235,13 @@ class TestEnsureLead:
 
     @pytest.mark.asyncio
     async def test_health_surfaces_lead_writes(self):
-        from app.api.health import health
+        from app.api.health import health_detail
 
         with patch("app.api.health.get_scheduler_health", return_value={}), \
              patch("app.api.health.supervisor_columns_status", return_value=True), \
              patch("app.api.health.settings") as s:
             s.debug = False
-            payload = await health()
+            payload = await health_detail()
         assert "lead_writes" in payload
         assert "errors_since_boot" in payload["lead_writes"]
 

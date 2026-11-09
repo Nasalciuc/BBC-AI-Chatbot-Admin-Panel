@@ -1,7 +1,7 @@
 """Admin API — users CRUD."""
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.db import supabase as db
 from app.models.admin import UserUpdate
 from app.security.auth import get_current_user
@@ -123,7 +123,7 @@ async def list_users(
 
 
 @router.patch("/admin/users/{user_id}")
-async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_current_user)):
+async def update_user(user_id: str, body: UserUpdate, request: Request, user: dict = Depends(get_current_user)):
     actor_role = user.get("role", "sales")
 
     payload = body.model_dump(exclude_none=True)
@@ -226,6 +226,38 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(get_c
             "new_is_active": result.get("is_active"),
             "changed_fields": changed_fields,
         })
+        # Immediate ops alert — an access change must not only live in a table
+        # nobody reads (S2-8: 7 changed, 3 created, no trace on 8 Sep).
+        from app.security.decoys import alert_role_change
+        from app.security.client_ip import client_ip
+
+        _changes = {f: {"from": existing.get(f), "to": result.get(f)} for f in changed_fields}
+        # Invalidate the target's live sessions first: a demotion or
+        # deactivation must take effect now (S2-4), not after an e-mail that
+        # can take its 10 s timeout.
+        sessions_revoked = True
+        try:
+            await db.bump_token_version(user_id)
+        except Exception as e:
+            # The change is saved; the old sessions are not revoked. Say so
+            # to the caller and to ops instead of answering a clean success.
+            from app.security.token_version import TOKEN_VERSION_HEALTH
+            from app.services.email import send_ops_alert_email
+
+            sessions_revoked = False
+            TOKEN_VERSION_HEALTH["bump_failed"] += 1
+            logger.error(f"[token-version] sessions of {user_id} NOT invalidated: {type(e).__name__}: {e}")
+            await send_ops_alert_email(
+                "Session invalidation failed",
+                f"An access change for user {user_id} was saved, but their live sessions were not "
+                "revoked and stay valid until the token expires.",
+            )
+        await alert_role_change(user, user_id, _changes, client_ip(request))
+        if not sessions_revoked:
+            return {
+                "success": True, "data": result, "count": 1,
+                "error": "sessions_not_invalidated",
+            }
 
     return {"success": True, "data": result, "count": 1}
 

@@ -70,9 +70,19 @@ def set_cached(
     site: str = "bbc",
     tunnel: str = "sales",
     ttl: int = 3600,
+    model_used: Optional[str] = None,
 ) -> None:
-    """Cache response. Only for safe intents."""
+    """Cache response. Only a context-free TEMPLATE reply for a safe intent.
+
+    PR-4: never cache a generated reply. A reply produced with a visitor's
+    history or data is specific to them; serving it to the next visitor with
+    the same opening words would leak one person's context to another. Only
+    model_used == "template" is safe to reuse.
+    """
     if intent not in CACHEABLE_INTENTS:
+        return
+    if model_used is not None and model_used != "template":
+        logger.debug(f"[CACHE] skip non-template reply (model={model_used})")
         return
     r = _get_redis()
     if not r:

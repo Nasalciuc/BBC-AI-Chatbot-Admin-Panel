@@ -25,7 +25,7 @@ from pydantic import (
 _IDIOM_24_7 = re.compile(r"^\s*24\s*/\s*7\s*$")
 
 _VALID_TRIP_TYPES = ("one_way", "round_trip", "multi_city", "open_jaw")
-_VALID_CABINS = ("business", "first", "economy", "mixed")
+_VALID_CABINS = ("business", "first", "premium_economy", "economy", "mixed")
 
 
 class ExtractedEntities(BaseModel):
@@ -39,6 +39,9 @@ class ExtractedEntities(BaseModel):
     return_date: Optional[str] = None
     trip_type: Optional[str] = None
     passengers: Optional[int] = None
+    # Sent only when PAX_TOOL_FIELDS is on (app/ai/claude.py:travel_tool).
+    children: Optional[int] = None
+    infants: Optional[int] = None
     cabin_class: Optional[str] = None
 
     @field_validator("departure_date", "return_date")
@@ -76,6 +79,13 @@ class ExtractedEntities(BaseModel):
     def _pax_bounds(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and not 1 <= v <= 9:
             raise ValueError("passengers must be 1-9")
+        return v
+
+    @field_validator("children", "infants")
+    @classmethod
+    def _minor_bounds(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not 0 <= v <= 8:
+            raise ValueError("children/infants must be 0-8")
         return v
 
     @field_validator("cabin_class")

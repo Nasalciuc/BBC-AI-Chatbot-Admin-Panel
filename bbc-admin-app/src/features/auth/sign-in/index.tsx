@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useRouter, useSearch } from '@tanstack/react-router'
 import { ApiError, loginUser } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -28,6 +28,8 @@ export function SignIn() {
   const [busy, setBusy] = useState(false)
   const [wait, setWait] = useState(0)
   const [ssoDismissed, setSsoDismissed] = useState(false)
+  // Honeypot: a hidden field no person fills. The server counts a filled one.
+  const honeypotRef = useRef<HTMLInputElement>(null)
 
   // "Too many tries": a short pause, counted down on the button.
   useEffect(() => {
@@ -46,7 +48,7 @@ export function SignIn() {
     setBusy(true)
     setProblem(null)
     try {
-      const { token, user } = await loginUser(email.trim(), password)
+      const { token, user } = await loginUser(email.trim(), password, honeypotRef.current?.value || undefined)
       auth.setUser({
         accountNo: user.id,
         email: user.email,
@@ -153,6 +155,16 @@ export function SignIn() {
         }}
         className='flex flex-col gap-4'
       >
+        {/* Honeypot — hidden from people and assistive tech, a bait for bots. */}
+        <input
+          ref={honeypotRef}
+          type='text'
+          name='company_fax'
+          tabIndex={-1}
+          autoComplete='off'
+          aria-hidden='true'
+          style={{ position: 'absolute', left: '-9999px', width: '1px', height: '1px', opacity: 0 }}
+        />
         <Field id='email' label='E-mail' error={emailErr}>
           <input
             id='email'

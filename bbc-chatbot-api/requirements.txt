@@ -1,10 +1,16 @@
-fastapi==0.115.0
+# fastapi 0.134 allows starlette 1.x and still runs on pydantic 2.8
+# (0.135.3+ needs pydantic>=2.9); the whole suite passes on this set.
+fastapi==0.134.0
+# starlette >= 1.3.1: GHSA-82w8-qh3p-5jfq / CVE-2026-54283 (urlencoded
+# request.form() ignored max_fields / max_part_size; every 0.x is affected).
+# Also covers CVE-2024-47874 and CVE-2025-54121.
+starlette>=1.3.1,<2
 uvicorn[standard]==0.30.6
 supabase==2.7.4
 anthropic>=0.50.0,<1.0.0
 pydantic==2.8.2
 pydantic-settings==2.4.0
-python-multipart==0.0.9
+python-multipart>=0.0.27  # GHSA-pp6c-gr5w-3c5g / CVE-2026-42561 (unbounded part headers); CVE-2024-53981
 httpx==0.27.2
 tenacity==9.0.0
 python-dotenv==1.0.1

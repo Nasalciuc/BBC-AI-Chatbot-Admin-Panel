@@ -29,6 +29,8 @@ def _enforce_tunnel(user: dict, tunnel: Optional[str]) -> Optional[str]:
     if role in ("owner", "admin", "dev", "supervisor", "qa", "project_manager"):
         return tunnel  # privileged/oversight roles filter tunnel freely (team scoping applied separately — Phase 2)
     scope = user.get("tunnel_scope", role)
+    if scope == "all":
+        return tunnel  # an explicit all-scope sees every tunnel (was 403 before)
     if tunnel and tunnel != scope:
         raise HTTPException(status_code=403, detail="Access denied to this tunnel")
     return scope
@@ -538,6 +540,9 @@ async def get_conversation(
     return {"success": True, "data": conv, "count": 1}
 
 
+_CONV_PII_FIELDS = ("visitor_name", "visitor_email", "visitor_phone")
+
+
 @router.patch("/conversations/{conversation_id}")
 async def update_conversation(
     conversation_id: str,
@@ -553,13 +558,35 @@ async def update_conversation(
     payload = body.model_dump(exclude_none=True)
     if not payload:
         return {"success": False, "data": None, "count": 0, "error": "No fields to update"}
+    # Only management roles may PATCH a conversation, and only they may touch
+    # the visitor's PII fields (PR-4). Log-first via ROLE_GATES_ENFORCE.
+    from app.security.gates import enforce_or_log, MANAGEMENT
+
+    touches_pii = any(f in payload for f in _CONV_PII_FIELDS)
+    allowed = enforce_or_log(
+        MANAGEMENT, user, "patch_conversation",
+        f"conv={conversation_id} fields={sorted(payload)}",
+    )
+    if not allowed and touches_pii:
+        # Even in log mode, never let a non-management role rewrite PII while
+        # we watch: drop those fields, keep the rest.
+        payload = {k: v for k, v in payload.items() if k not in _CONV_PII_FIELDS}
+        if not payload:
+            return {"success": False, "data": None, "count": 0, "error": "No permitted fields to update"}
     try:
         result = await db.update_conversation(conversation_id, payload)
         if not result:
             return {"success": False, "data": None, "count": 0, "error": "Conversation not found"}
+        if any(f in payload for f in _CONV_PII_FIELDS) or "assigned_agent_id" in payload:
+            await db.log_audit(
+                user_id=user.get("id"), user_email=user.get("email"),
+                action="conversation_patch", target_table="conversations",
+                target_id=conversation_id, details={"fields": sorted(payload)},
+            )
         return {"success": True, "data": result, "count": 1}
     except Exception as e:
-        return {"success": False, "data": None, "count": 0, "error": str(e)}
+        logger.error(f"update_conversation error: {type(e).__name__}: {e}")
+        return {"success": False, "data": None, "count": 0, "error": "Update failed"}
 
 
 class AgentMessageBody(BaseModel):

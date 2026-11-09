@@ -59,12 +59,18 @@ class Settings(BaseSettings):
 
     # Claude
     anthropic_api_key: str = ""  # Optional for dev — required only for AI pipeline
+    # Which usage-report key id is the chatbot's, for reconciliation (PR-2).
+    anthropic_api_key_id: str = ""
     # Model tiers: haiku = utility (classification, extraction, support),
     # sonnet = sales default, opus = premium turns. Env-overridable so a tier
     # can be rolled back to an older model without a deploy.
     claude_haiku_model: str = "claude-haiku-4-5-20251001"
     claude_sonnet_model: str = "claude-sonnet-4-6"
     claude_opus_model: str = "claude-opus-4-8"
+    # 5.5 family — used by the router (PR-6) and by UTILITY_MODEL_55 on legacy.
+    claude_haiku_55_model: str = "claude-haiku-5-5"
+    claude_sonnet_55_model: str = "claude-sonnet-5-5"
+    claude_opus_55_model: str = "claude-opus-5-5"
     claude_timeout: int = 15
     # Emergency fallback: on a non-timeout API error (overloaded/rate-limit)
     # the call retries ONCE on this cheaper model. The collection never dies
@@ -83,10 +89,6 @@ class Settings(BaseSettings):
 
     # Redis (optional — empty = skip rate limiting)
     redis_url: str = ""
-
-    # Auth (required in production — empty = no auth in dev)
-    api_user: str = ""
-    api_pass: str = ""
 
     # JWT
     # REQUIRED in production; the Bearer path in auth.py fails closed (500) if
@@ -290,6 +292,12 @@ class Settings(BaseSettings):
     postmark_token: str = ""
     email_from: str = "noreply@buybusinessclass.com"
     admin_panel_url: str = "https://chat.buybusinessclass.com"
+    # Where the service reaches itself for the hourly IP self-test (ip_selftest).
+    public_api_url: str = ""
+    # Decoys (PR-3). Values set by the owner; empty = that tripwire is inert.
+    decoy_bundle_key: str = ""
+    canary_aws_key_id: str = ""
+    canary_aws_secret: str = ""
     super_alert_email: str = "super@buybusinessclass.com"
     super_alert_cooldown_minutes: int = 1440  # 1 email/conv/24h (Postmark limit)
     # 48h: a 24h link that lands in a Friday inbox is dead by Monday
@@ -323,7 +331,10 @@ class Settings(BaseSettings):
         """Resolved CORS allowlist: env + required BCT/BBC domains."""
         return _merge_required_cors_origins(_parse_cors_origins_env(self.cors_origins_env))
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore": PR-1 removed api_user/api_pass (the Basic door). A local
+    # .env that still has API_USER/API_PASS must not stop the API from
+    # starting (pydantic-settings forbids unknown .env keys by default).
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

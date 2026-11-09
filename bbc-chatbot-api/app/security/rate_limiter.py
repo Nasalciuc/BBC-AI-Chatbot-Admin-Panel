@@ -2,12 +2,14 @@
 
 import time
 import logging
-from collections import defaultdict
+from collections import OrderedDict
 from threading import Lock
 
 from fastapi import HTTPException, Request
 
 from config.settings import settings
+from app.flags import flag
+from app.security.client_ip import client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -31,16 +33,29 @@ class _Bucket:
         self.daily_reset: float = now + 86400
 
 
-_buckets: dict[str, _Bucket] = defaultdict(_Bucket)
+# Bounded: one entry per address ever seen used to live for the life of the
+# process. Oldest out first once RATE_BUCKETS_MAX is reached.
+_buckets: "OrderedDict[str, _Bucket]" = OrderedDict()
 _lock = Lock()
 
 
 def _get_ip(request: Request) -> str:
-    """Extract client IP, respecting X-Forwarded-For behind a proxy."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """The client's address — app/security/client_ip.py decides which header."""
+    return client_ip(request, prefer_cf=False) or "unknown"
+
+
+def _bucket_for(ip: str) -> _Bucket:
+    """Caller holds _lock."""
+    b = _buckets.get(ip)
+    if b is None:
+        b = _Bucket()
+        _buckets[ip] = b
+        cap = max(1, int(flag("RATE_BUCKETS_MAX", 50000)))
+        while len(_buckets) > cap:
+            _buckets.popitem(last=False)
+    else:
+        _buckets.move_to_end(ip)
+    return b
 
 
 async def check_rate_limit(request: Request) -> None:
@@ -49,7 +64,7 @@ async def check_rate_limit(request: Request) -> None:
     now = time.monotonic()
 
     with _lock:
-        b = _buckets[ip]
+        b = _bucket_for(ip)
 
         # ── Reset sliding windows ──────────────────────────────
         if now >= b.hourly_reset:

@@ -36,7 +36,6 @@ app/api/chat.py::public_get_messages::body
 app/api/chat.py::sse_stream.event_generator::body
 app/api/chat.py::sse_stream::body
 app/api/conversations.py::send_agent_message::pass
-app/api/conversations.py::update_conversation::body
 app/api/integration.py::_seconds_since::return-sentinel
 app/api/kb.py::create_entry::body
 app/api/kb.py::update_entry::body

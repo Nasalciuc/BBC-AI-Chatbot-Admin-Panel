@@ -319,13 +319,29 @@ def test_an_agent_cannot_change_a_waiting_chat_it_has_not_taken():
 
 
 def test_an_agent_still_changes_its_own_chat():
+    # The blind check lets an agent through on its own chat. What it may
+    # change there is the role gate's call (v2 PR-4): not the visitor's
+    # name, e-mail or phone, which only management changes.
     mine = _row(assigned_agent_id=ME, status="active", mode="human")
-    write = AsyncMock(return_value=dict(FULL, assigned_agent_id=ME, visitor_name="Grace M."))
+    write = AsyncMock(return_value=dict(FULL, assigned_agent_id=ME, mode="ai"))
+    with patch.object(db, "get_blind_inputs", new=AsyncMock(return_value=mine)), \
+         patch.object(db, "update_conversation", new=write):
+        r = _client("sales").patch("/api/conversations/c1", json={"mode": "ai"})
+    assert r.status_code == 200 and r.json()["success"] is True
+    write.assert_awaited_once_with("c1", {"mode": "ai"})
+
+
+def test_on_its_own_chat_an_agent_still_cannot_rename_the_visitor():
+    # Past the blind check, the role gate still keeps the contact fields to
+    # management: nothing is written, and the answer says why.
+    mine = _row(assigned_agent_id=ME, status="active", mode="human")
+    write = AsyncMock(return_value=dict(FULL))
     with patch.object(db, "get_blind_inputs", new=AsyncMock(return_value=mine)), \
          patch.object(db, "update_conversation", new=write):
         r = _client("sales").patch("/api/conversations/c1", json={"visitor_name": "Grace M."})
-    assert r.status_code == 200 and r.json()["success"] is True
-    write.assert_awaited_once_with("c1", {"visitor_name": "Grace M."})
+    assert r.status_code == 200 and r.json()["success"] is False
+    assert r.json()["error"] == "No permitted fields to update"
+    write.assert_not_awaited()
 
 
 def test_a_change_that_cant_be_checked_is_not_made():
