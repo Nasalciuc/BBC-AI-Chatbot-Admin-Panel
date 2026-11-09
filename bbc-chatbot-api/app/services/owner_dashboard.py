@@ -31,7 +31,7 @@ from statistics import median
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
-from app.services.agent_day import local_day_start, parse_ts
+from app.services.agent_day import local_day_start, parse_ts, photo_of
 
 ALLOWED_DAYS = (1, 7, 30)
 TAKE_ACTIONS = ("claim_won", "assigned")
@@ -578,6 +578,7 @@ def build_owner_dashboard(
         by_agent.append({
             "user_id": uid,
             "name": u.get("name") or "Former operator",
+            "avatar_url": photo_of(u),
             "role": u.get("role"),
             "ready_hours": round(sum((b - a).total_seconds() for a, b in spans.get(uid, [])) / 3600, 1),
             "chats": len(chats),

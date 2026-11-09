@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from statistics import median
 from typing import Optional
 
-from app.services.agent_day import local_day_start, parse_ts
+from app.services.agent_day import local_day_start, parse_ts, photo_of
 from app.services.owner_dashboard import build_takes
 from app.services.to_read import client_label, route_of
 
@@ -172,6 +172,7 @@ def build_team_now(
     day_start = local_day_start(now, offset_minutes)
     team_by_id = {t["id"]: t for t in teams if t.get("id")}
     names = {u["id"]: u.get("name") for u in users if u.get("id")}
+    photos = {u["id"]: photo_of(u) for u in users if u.get("id")}
     people = [
         u for u in users
         if u.get("is_active", True) and u.get("role") in OPERATOR_ROLES
@@ -206,6 +207,7 @@ def build_team_now(
             waiting = bool(last_user and (not last_agent or last_user > last_agent))
             with_person.append({
                 **chat(c), "agent_id": agent, "agent_name": names.get(agent),
+                "agent_avatar_url": photos.get(agent),
                 "client_waiting": waiting,
                 "since": (last_user if waiting else last_agent or parse_ts(c.get("created_at")) or now).isoformat(),
             })
@@ -232,7 +234,7 @@ def build_team_now(
         mine = [t for t in takes if t["user_id"] == uid]
         team = team_by_id.get(u.get("team_id") or "")
         person_rows.append({
-            "id": uid, "name": u.get("name"), "role": u.get("role"), "tunnel": tunnel_of(u),
+            "id": uid, "name": u.get("name"), "avatar_url": photo_of(u), "role": u.get("role"), "tunnel": tunnel_of(u),
             "team_id": u.get("team_id"), "team_name": (team or {}).get("name"),
             "presence": presence_of(u, now, queue_window_s=queue_window_s, online_s=online_s),
             "ready_since": ready_since(uid, ready_log), "last_seen_at": u.get("last_seen_at"),
@@ -398,8 +400,8 @@ def build_person_day(
 
     return {
         "user": {
-            "id": uid, "name": user.get("name"), "email": user.get("email"), "role": user.get("role"),
-            "tunnel": tunnel_of(user), "is_active": user.get("is_active"),
+            "id": uid, "name": user.get("name"), "avatar_url": photo_of(user), "email": user.get("email"),
+            "role": user.get("role"), "tunnel": tunnel_of(user), "is_active": user.get("is_active"),
             "team": {"id": team["id"], "name": team.get("name"), "shift_start": team.get("shift_start"),
                      "shift_end": team.get("shift_end")} if team else None,
             "presence": presence_of(user, now, queue_window_s=queue_window_s, online_s=online_s),

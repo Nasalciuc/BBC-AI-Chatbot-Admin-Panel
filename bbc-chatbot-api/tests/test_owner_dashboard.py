@@ -318,6 +318,14 @@ def test_agents_block():
     assert victor["not_in_crm"] == 1 and victor["first_reply_median_s"] == 20
 
 
+def test_each_agent_row_carries_their_photo():
+    photo = "https://example.com/avatars/rohan.jpg"
+    users = {**USERS, ROHAN: {**USERS[ROHAN], "avatar_url": f" {photo} "}}
+    d = build(**{**_scenario(), "users": users})
+    by_id = {r["user_id"]: r["avatar_url"] for r in d["agents"]["by_agent"]}
+    assert by_id[ROHAN] == photo and by_id[VICTOR] is None
+
+
 def test_needs_attention_only_past_the_lines():
     d = build(**_scenario())
     kinds = {a["kind"]: a for a in d["attention"]}
