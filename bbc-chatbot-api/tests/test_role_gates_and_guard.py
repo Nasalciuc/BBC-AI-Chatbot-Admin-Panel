@@ -156,6 +156,24 @@ def test_allowlist_keeps_attribution_drops_the_rest():
         assert forbidden not in out
 
 
+def test_allowlist_keeps_every_click_id_the_widget_sends():
+    # CodeRabbit #226 follow-up: utm.ts captures these and the server reads
+    # them (CRM utm block, the bing / kayak source fallback). They were dropped.
+    raw = {"msclkid": "m1", "ttclid": "t1", "kayak_click_id": "k1", "kclid": "k2",
+           "skyscanner_click_id": "s1", "google_analytics_client_id": "123.456", "fbclid": "f1"}
+    assert allowed_widget_metadata(raw) == raw
+
+
+def test_allowlist_keeps_strings_only_and_bounded():
+    out = allowed_widget_metadata({
+        "utm_source": {"$where": "1"}, "utm_medium": ["a"], "utm_term": 7,
+        "page_url": "/" + "p" * 5000, "utm_" + "x" * 80: "long key", "referrer": "r",
+    })
+    assert out == {"page_url": "/" + "p" * 2047, "referrer": "r"}
+    many = allowed_widget_metadata({f"utm_k{i}": "v" for i in range(80)})
+    assert len(many) == 50
+
+
 def test_allowlist_keeps_a_known_brand_and_the_booking_id():
     """Review fix: `site` decides the brand (prompts, phone, CRM base); the
     server derives it nowhere, so a configured brand id is kept. An unknown
