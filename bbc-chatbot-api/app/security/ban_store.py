@@ -69,7 +69,7 @@ class BanStore:
                     ttl = await self._redis.ttl(f"ban:{ip}")
                     return max(0, int(ttl or 0)), False
             except Exception as e:
-                logger.warning(f"[ban-store] ban redis failed, no ban set: {type(e).__name__}")
+                logger.warning(f"[ban-store] ban not confirmed (a lost reply may still have applied it): {type(e).__name__}")
                 raise
             try:
                 n = await self._redis.incr(f"bancount:{ip}")

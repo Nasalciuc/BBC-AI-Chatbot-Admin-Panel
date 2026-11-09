@@ -46,7 +46,7 @@ FAIL2BAN_HEALTH = {
     "table_missing": False,
     "poisoned_skipped": 0,
     "ban_already_held": 0,
-    "ban_errors": 0,  # the ban store failed: nothing was banned or recorded
+    "ban_errors": 0,  # the ban store failed: the ban is unconfirmed, nothing recorded
     "by_jail": {},
 }
 
@@ -474,8 +474,10 @@ async def _ban_identity(store, ip: str, jail: str, seconds: int, *, alert: bool)
     try:
         eff, created = await store.ban(ip, jail, seconds)
     except Exception as e:
-        # No ban was set: no row and no alert claim one. Counted apart from a
-        # ban another request holds; the response is never blocked by it.
+        # The ban is unconfirmed: it may or may not have landed, and if it did
+        # this request can't know it was the one. So no row and no alert claim
+        # it (that would risk the double the NX claim prevents). Counted apart
+        # from a ban another request holds; the response is never blocked.
         FAIL2BAN_HEALTH["ban_errors"] += 1
         logger.warning(f"[ban-guard] ban write failed, nothing recorded: {type(e).__name__}")
         return
