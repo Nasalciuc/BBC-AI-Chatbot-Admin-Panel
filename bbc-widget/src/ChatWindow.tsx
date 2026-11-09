@@ -567,21 +567,15 @@ export function ChatWindow({
       }
 
       source.onerror = () => {
-        // An HTTP error status (a 502 or 503 while the API redeploys) closes an
-        // EventSource for good: the browser never retries and onerror fires once,
-        // so the counter below would never reach MAX_ERRORS and operator messages
-        // would stop arriving until a reload. Poll instead, at once.
-        if (source && source.readyState === EventSource.CLOSED) {
-          source = null
-          startPolling()
-          return
-        }
         errorCount++
         sseUpRef.current = false
         // An HTTP error (a restart's 502, a 401/403) makes the browser CLOSE
         // the EventSource for good after this one event — it will not retry
         // and onerror never fires again. Treat that as the give-up point at
         // once, or neither the poll nor the retry below would ever start.
+        // (An early return for a CLOSED source used to come first: the
+        // widget then polled every second for good, never tried SSE again,
+        // and kept the stream marked up.)
         const closedForGood = source?.readyState === EventSource.CLOSED
         if (closedForGood || errorCount >= MAX_ERRORS) {
           // The browser's own retries failed: poll meanwhile, and try SSE

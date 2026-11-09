@@ -3501,6 +3501,31 @@ def _error_code(e: Exception) -> Optional[str]:
     return code.strip() if isinstance(code, str) and code.strip() else None
 
 
+# The database's codes, and only those, reach a log line: PostgREST's own
+# (PGRST and three digits) or a SQLSTATE: five characters, a class from
+# PostgreSQL's list (Appendix A) and at least one digit, as every SQLSTATE
+# has. An exception that isn't the database's could carry a name in .code
+# ("MARIA" has the shape of a SQLSTATE, but no class and no digit).
+_SQLSTATE_CLASSES = frozenset(
+    "00 01 02 03 08 09 0A 0B 0F 0L 0P 0Z 20 21 22 23 24 25 26 27 28 2B 2D 2F "
+    "34 38 39 3B 3D 3F 40 42 44 53 54 55 57 58 72 F0 HV P0 XX".split()
+)
+_POSTGREST_CODE = re.compile(r"PGRST\d{3}")
+_SQLSTATE = re.compile(r"[0-9A-Z]{5}")
+
+
+def _loggable_code(code: Optional[str]) -> str:
+    """A code safe to log: the database's own as it is, '' for none,
+    "unrecognised-code" for anything else."""
+    if not code:
+        return ""
+    if _POSTGREST_CODE.fullmatch(code):
+        return code
+    if _SQLSTATE.fullmatch(code) and code[:2] in _SQLSTATE_CLASSES and any(c.isdigit() for c in code):
+        return code
+    return "unrecognised-code"
+
+
 def _is_schema_missing(e: Exception) -> bool:
     """Migration 051 not applied: PostgREST's own code for a missing column
     or table, and nothing else. Never the error's text: it includes the

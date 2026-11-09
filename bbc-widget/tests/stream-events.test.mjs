@@ -37,10 +37,15 @@ test('richText survives a missing text', () => {
   assert.match(richText, /if \(typeof text !== 'string' \|\| !text\) return \[\]/)
 })
 
-test('a stream closed for good by an HTTP error falls back to polling at once', () => {
-  const onError = chatWindow.slice(chatWindow.indexOf('source.onerror = () => {'))
-  const closedCheck = onError.indexOf('source.readyState === EventSource.CLOSED')
-  assert.ok(closedCheck > -1, 'onerror must notice a closed stream')
-  assert.ok(closedCheck < onError.indexOf('errorCount++'), 'before counting retries that will never come')
-  assert.ok(onError.slice(closedCheck, closedCheck + 200).includes('startPolling()'), 'and start polling')
+test('a stream closed for good by an HTTP error falls back to polling at once, and tries SSE again', () => {
+  // CodeRabbit #228: an early `return` for a CLOSED source ran first, so the
+  // give-up path never saw it: no retry, and the stream stayed marked up.
+  const onError = chatWindow.slice(chatWindow.indexOf('source.onerror = () => {'), chatWindow.indexOf('catchUpPoll()  // instant load'))
+  assert.equal((onError.match(/EventSource\.CLOSED/g) ?? []).length, 1, 'one check for a closed stream')
+  assert.doesNotMatch(onError, /readyState === EventSource\.CLOSED\) \{\s*source = null/, 'no early return before the give-up path')
+  const closed = onError.indexOf('const closedForGood = source?.readyState === EventSource.CLOSED')
+  assert.ok(closed > onError.indexOf('sseUpRef.current = false'), 'the stream is marked down first')
+  const giveUp = onError.slice(onError.indexOf('if (closedForGood || errorCount >= MAX_ERRORS) {'))
+  assert.ok(giveUp.indexOf('startPolling()') > 0, 'polls at once')
+  assert.ok(giveUp.indexOf('sseRetryDelay(retryAttempt++)') > giveUp.indexOf('startPolling()'), 'and tries SSE again, backing off')
 })

@@ -46,6 +46,7 @@ FAIL2BAN_HEALTH = {
     "table_missing": False,
     "poisoned_skipped": 0,
     "ban_already_held": 0,
+    "ban_errors": 0,  # the ban store failed: nothing was banned or recorded
     "by_jail": {},
 }
 
@@ -470,12 +471,15 @@ async def trip(store, ip: str, jail: str, seconds: int, *, alert: bool, staff: b
 async def _ban_identity(store, ip: str, jail: str, seconds: int, *, alert: bool) -> None:
     if not ip:
         return
-    eff, created = seconds, True
     try:
         eff, created = await store.ban(ip, jail, seconds)
-        eff = eff or seconds
-    except Exception as e:  # noqa: silent — a failed ban write must not block the response
-        logger.debug(f"[ban-guard] ban write failed: {type(e).__name__}")
+    except Exception as e:
+        # No ban was set: no row and no alert claim one. Counted apart from a
+        # ban another request holds; the response is never blocked by it.
+        FAIL2BAN_HEALTH["ban_errors"] += 1
+        logger.warning(f"[ban-guard] ban write failed, nothing recorded: {type(e).__name__}")
+        return
+    eff = eff or seconds
     if not created:
         # A parallel request already banned this identity: one row, one
         # alert, one doubling per ban.
@@ -553,14 +557,19 @@ async def record_ban_row(identity: str, jail: str, seconds: int) -> None:
         )
         FAIL2BAN_HEALTH["rows_written"] += 1
     except Exception as e:
-        text = str(e).lower()
-        if "security_bans" in text and ("does not exist" in text or "could not find" in text or "42p01" in text):
+        from app.db.supabase import _error_code, _loggable_code
+
+        # The table (042 not applied), by the database's code: the text also
+        # matched a missing column of the table, which switched the history
+        # off for good. The text is never logged either: it can quote the row.
+        code = _error_code(e)
+        if code in ("42P01", "PGRST205"):
             _table_missing = True
             FAIL2BAN_HEALTH["table_missing"] = True
-            logger.warning(f"[ban-guard] security_bans missing — history off until 042 is applied: {type(e).__name__}")
+            logger.warning(f"[ban-guard] security_bans missing — history off until 042 is applied: {type(e).__name__} {code}")
             return
         FAIL2BAN_HEALTH["row_errors"] += 1
-        logger.warning(f"[ban-guard] security_bans write failed: {type(e).__name__}: {e}")
+        logger.warning(f"[ban-guard] security_bans write failed: {type(e).__name__} {_loggable_code(code)}".rstrip())
 
 
 # ── The auth-attack jail (called from the login route) ────────
@@ -613,4 +622,4 @@ def _reset_for_tests() -> None:
     _SEEN_FOREIGN_ORIGINS.clear()
     FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, blocked=0, staff_alerts=0,
                            rows_written=0, row_errors=0, table_missing=False,
-                           poisoned_skipped=0, ban_already_held=0, by_jail={})
+                           poisoned_skipped=0, ban_already_held=0, ban_errors=0, by_jail={})

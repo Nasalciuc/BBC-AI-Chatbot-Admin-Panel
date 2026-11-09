@@ -1,6 +1,7 @@
 """Auth endpoints — login + invite."""
 
 import asyncio
+import ipaddress
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -82,16 +83,25 @@ def _public_user(user: dict) -> dict:
 
 def _login_place(request: Request, ip: str) -> str:
     """Country when the edge says it (CF-IPCountry), else the network the IP
-    sits in (/24 for IPv4, /48 for IPv6). No ASN database is configured."""
+    sits in (/24 for IPv4, /48 for IPv6). No ASN database is configured.
+
+    The network is computed, not cut from the text: "2001:db8::5" and
+    "2001:0db8:0:1::5" are one /48, and one key, or the same person on the
+    same network reads as a new place. Not an address: no place."""
     cc = (request.headers.get("cf-ipcountry") or "").strip().upper()
     if cc and cc not in ("XX", "T1"):
         return f"country:{cc}"
     if not ip or ip == "unknown":
         return ""
-    if ":" in ip:
-        return "net:" + ":".join(ip.split(":")[:3]) + "::/48"
-    parts = ip.split(".")
-    return "net:" + ".".join(parts[:3]) + ".0/24" if len(parts) == 4 else ""
+    try:
+        addr = ipaddress.ip_address(ip.strip())
+    except ValueError:  # noqa: silent — not an address (a malformed header): no place to compare, same as no IP
+        return ""
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped  # "::ffff:203.0.113.9" is that IPv4 address
+    if addr.version == 4:
+        return f"net:{ipaddress.IPv4Network((int(addr), 24), strict=False)}"
+    return f"net:{ipaddress.IPv6Network((int(addr), 48), strict=False)}"
 
 
 async def _complete_login(user: dict, request: Request, ip: str) -> LoginResponse:

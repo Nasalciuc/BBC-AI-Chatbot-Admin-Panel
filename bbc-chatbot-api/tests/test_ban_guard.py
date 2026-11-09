@@ -432,7 +432,9 @@ async def test_missing_bans_table_logs_once_and_stays_quiet(monkeypatch):
 
     async def _fail(fn, **kw):
         calls["n"] += 1
-        raise RuntimeError('relation "security_bans" does not exist (42P01)')
+        err = RuntimeError('relation "security_bans" does not exist')
+        err.code = "42P01"  # PostgREST's APIError carries the database's code
+        raise err
 
     monkeypatch.setattr("app.db.supabase._run_sync", _fail)
     await real("203.0.113.9", "honeypot", 60)
