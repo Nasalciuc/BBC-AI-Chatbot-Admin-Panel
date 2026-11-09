@@ -65,11 +65,18 @@ def test_a_traceback_stays_inside_its_own_entry():
 
 
 def test_extra_keys_become_attributes_but_never_a_persons_data():
-    out = _json(_record(duration_ms=2300, status=500, email="a@b.c", phone="+1",
-                        name="Ann", token="t", content="hi, I'm Ann"))
+    # A person's name arrives as visitor_name: `name` is the logger's own
+    # argument here, and logging refuses it in extra= (KeyError).
+    rec = _record(duration_ms=2300, status=500, email="a@b.c", phone="+1",
+                  visitor_name="Ann", token="t", content="hi, I'm Ann")
+    line = JsonFormatter().format(rec)
+    out = json.loads(line)
     assert out["duration_ms"] == 2300 and out["status"] == 500
-    for key in ("email", "phone", "name", "token", "content"):
+    assert out["logger"] == "app.test"
+    for key in ("email", "phone", "visitor_name", "token", "content"):
         assert key not in out
+    for value in ("a@b.c", "Ann"):
+        assert value not in line, "the value itself never reaches the line"
 
 
 def test_the_request_id_is_stamped_when_there_is_one():
