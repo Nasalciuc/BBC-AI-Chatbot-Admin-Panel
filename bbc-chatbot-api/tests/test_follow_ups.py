@@ -100,6 +100,11 @@ def test_titles_use_the_agents_words():
     ("Give me half an hour and I will get back to you.", SENT + timedelta(minutes=30), "said"),
     ("I will have the best options in around 20-30 minutes", SENT + timedelta(minutes=30), "said"),
     ("I'll call you in two hours to confirm the seats.", SENT + timedelta(hours=2), "said"),
+    # "After" a span is the span, never a clock: not 14:00 tomorrow, not 17:00.
+    ("I'll call you after 2 hours.", SENT + timedelta(hours=2), "said"),
+    ("I'll email you the options after 5 minutes.", SENT + timedelta(minutes=5), "said"),
+    ("I'll call you back after an hour", SENT + timedelta(hours=1), "said"),
+    ("I'll call you after 4 pm", ny(6, 16), "said"),
     ("I'll e-mail you the fare rules by 5", ny(6, 17), "said"),
     ("I'll call you at 5:30 pm", ny(6, 17, 30), "said"),
     ("I'll call you tomorrow at 9", ny(7, 9), "said"),
