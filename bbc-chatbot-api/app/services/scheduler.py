@@ -16,13 +16,70 @@ this migrates together with SSE/rate-limit, not separately.
 import asyncio
 import logging
 import random
+from collections import Counter
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
 # Canary: readable heartbeat per job (exposed via /health).
 last_runs: dict[str, dict] = {}
+
+# A result that says "nothing happened" is not a log line. On 9 Nov,
+# agent_sweep wrote `swept=0` twice every 15 s and abandoned_crm printed 200
+# conversation ids every 5 minutes, while the error that mattered sat among
+# them. A job writes INFO on its first run after a start, whenever its result
+# says it did something, and on the first quiet run after that (so a recovery
+# is visible); the quiet runs in between are DEBUG. last_runs keeps every
+# result either way. A job without a rule here is always written.
+_QUIET_WHEN: dict[str, Callable[[dict], bool]] = {
+    "agent_sweep": lambda r: not r.get("swept"),
+    "queue_stall_alert": lambda r: r.get("state") == "ok",
+    "db_saturation_alert": lambda r: r.get("state") == "ok",
+    "stale_ready": lambda r: not r.get("reset"),
+    "stale_presence": lambda r: not r.get("closed"),
+    "attention_emails": lambda r: not r.get("sent"),
+}
+_was_quiet: dict[str, Any] = {}
+
+# What abandoned_crm reports per conversation that is NOT work left undone.
+_SWEEP_DONE = frozenset({"already_done", "success", "closed_existing_crm", "skipped"})
+
+
+def _loggable(job_name: str, result: Any) -> Any:
+    """The result as the log line shows it: a sweep's per-conversation list
+    becomes counts per status plus the ids still not done (first 10)."""
+    if not isinstance(result, dict) or not isinstance(result.get("results"), list):
+        return result
+    rows = [r for r in result["results"] if isinstance(r, dict)]
+    out = {k: v for k, v in result.items() if k != "results"}
+    out["by_status"] = dict(Counter(str(r.get("status", "?")) for r in rows))
+    not_done = [str(r.get("id", ""))[:8] for r in rows if r.get("status") not in _SWEEP_DONE]
+    if not_done:
+        out["not_done"] = not_done[:10]
+    return out
+
+
+def _is_quiet(job_name: str, shown: Any) -> bool:
+    """True when this run is not worth a line (see _QUIET_WHEN)."""
+    if job_name == "abandoned_crm" and isinstance(shown, dict):
+        # Quiet when nothing was pushed and the conversations still not done
+        # are the same ones as last time (a refusal repeats every tick).
+        state = tuple(shown.get("not_done") or ())
+        quiet = not shown.get("success") and _was_quiet.get(job_name) == state
+        _was_quiet[job_name] = state
+        return quiet
+    rule = _QUIET_WHEN.get(job_name)
+    if rule is None or not isinstance(shown, dict):
+        return False
+    try:
+        now_quiet = bool(rule(shown))
+    except Exception as e:  # noqa: silent — the run is then written in full, which is the safe side
+        logger.debug(f"[scheduler:internal] quiet rule for {job_name} failed: {type(e).__name__}")
+        now_quiet = False
+    quiet = now_quiet and _was_quiet.get(job_name) is True
+    _was_quiet[job_name] = now_quiet
+    return quiet
 
 _locks: dict[str, asyncio.Lock] = {}
 
@@ -63,7 +120,11 @@ async def _run_forever(job_name: str, job_fn, interval_seconds: int):
                 "at": datetime.now(timezone.utc).isoformat(),
                 "result": result,
             }
-            logger.info(f"[scheduler:internal] {job_name}: {result}")
+            shown = _loggable(job_name, result)
+            logger.log(
+                logging.DEBUG if _is_quiet(job_name, shown) else logging.INFO,
+                f"[scheduler:internal] {job_name}: {shown}",
+            )
         except Exception as e:
             # G1: a job crash must never kill the loop — and never be
             # silent (the RC6 lesson, learned four times this month)

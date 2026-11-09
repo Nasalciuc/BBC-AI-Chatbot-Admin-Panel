@@ -339,6 +339,12 @@ class CrmExchangeRequest(BaseModel):
     token: str
 
 
+# The CRM dock opens a panel session on every CRM page (~4,000 a weekday on
+# 9 Nov): one INFO line each buried everything else. Counted here, in
+# /health/detail → sso; only the refusals stay log lines.
+SSO_HEALTH = {"ok": 0, "token_refused": 0, "no_email": 0, "unknown_user": 0, "inactive": 0}
+
+
 @router.post("/sso/crm-exchange", response_model=LoginResponse)
 async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_rate_limit)):
     """Verify a short-lived JWT signed by the CRM (docs/chatbot-sso.md) and, if it
@@ -351,10 +357,15 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
     # named explicitly so a token minted for a presence CHECK can never
     # be exchanged for a session — absent stays accepted, which is the
     # CRM's shape today.
-    payload = verify_crm_token(req.token, expected_purpose=PURPOSE_LOGIN)
+    try:
+        payload = verify_crm_token(req.token, expected_purpose=PURPOSE_LOGIN)
+    except HTTPException:
+        SSO_HEALTH["token_refused"] += 1
+        raise
 
     email = payload.get("email")
     if not email:
+        SSO_HEALTH["no_email"] += 1
         # Expected until the CRM team adds `email` to their payload (they've confirmed
         # it's a one-line change). Fail closed with a clear, actionable message.
         logger.warning("CRM SSO exchange: token has no email claim yet — cannot map to a BBC user")
@@ -366,14 +377,17 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
 
     user = await db.get_user_by_email(email.lower().strip())
     if not user:
+        SSO_HEALTH["unknown_user"] += 1
         logger.warning(f"CRM SSO exchange: unknown email {_mask_email(email)}")
         raise HTTPException(401, "No matching BBC account for this user")
     if not user.get("is_active", True):
+        SSO_HEALTH["inactive"] += 1
         logger.warning(f"CRM SSO exchange: inactive account {_mask_email(email)}")
         raise HTTPException(403, "Account disabled — contact admin")
 
     token = _issue_jwt(user)  # role/tunnel_scope from OUR db, not the CRM payload
-    logger.info(f"CRM SSO exchange login | user={user.get('id')} role={user.get('role')}")
+    SSO_HEALTH["ok"] += 1
+    logger.debug(f"CRM SSO exchange login | user={user.get('id')} role={user.get('role')}")
 
     return LoginResponse(
         token=token,

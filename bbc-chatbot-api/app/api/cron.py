@@ -275,7 +275,8 @@ async def run_abandoned_crm() -> dict:
     # "first tick" is every deploy and every restart (see run_aaa_backfill).
 
     abandoned = await db.get_abandoned_conversations(settings.abandoned_timeout_minutes)
-    logger.info(f"[cron] Found {len(abandoned)} abandoned conversations")
+    # DEBUG: the scheduler's one line per run says how many were processed.
+    logger.debug(f"[cron] Found {len(abandoned)} abandoned conversations")
 
     # One human = one CRM row, in the live sweep too. Without this the
     # backfill's careful dedup is undone minutes later by the next tick.
@@ -438,7 +439,15 @@ async def run_abandoned_crm() -> dict:
                     _in_crm.update(_contact_ids(conv))
                 results.append({"id": cid, "status": "success"})
             else:
-                logger.error(f"[cron][{cid}] CRM fail: {crm_result.error}")
+                # A gate refusal (bad email domain, no contact...) is the
+                # design working, recorded on the lead by _persist_refusal —
+                # a WARNING. A CRM that did not answer is an ERROR.
+                _refused = (crm_result.error or "").startswith("gate:")
+                logger.log(
+                    logging.WARNING if _refused else logging.ERROR,
+                    f"[cron][{cid}] CRM fail: {crm_result.error}",
+                    extra={"event": "crm.gate_refused" if _refused else "crm.push_failed"},
+                )
                 # A gate refusal becomes work-list state; a transient HTTP
                 # failure stays retryable (see _persist_refusal).
                 await _persist_refusal(lead["id"], crm_result.error or "")
@@ -466,7 +475,9 @@ async def run_agent_sweep() -> dict:
     from app.api.agent import _cleanup_stale_conversations
 
     swept = await _cleanup_stale_conversations()
-    logger.info(f"[cron][agent-sweep] swept={swept}")
+    # Every 15 s: a line only when something was swept (the scheduler writes
+    # the quiet runs at DEBUG too).
+    logger.log(logging.INFO if swept else logging.DEBUG, f"[cron][agent-sweep] swept={swept}")
     return {"success": True, "swept": swept}
 
 

@@ -99,6 +99,9 @@ async def health_detail(full: bool = False) -> dict:
     # said whose the chat is: won_after_check = a Take that used to read as
     # lost ("… took it a moment before you") although the agent had it.
     from app.db.supabase import CLAIM_GATE_HEALTH
+    # CRM sign-ins: one per CRM page (the dock reopens the panel) — counted,
+    # not logged; refusals by reason.
+    from app.api.auth_routes import SSO_HEALTH
     # Blind take: checks that failed closed (an agent got a 503, not their
     # chat) and streams stopped because their chat started waiting.
     from app.api.conversations import BLIND_HEALTH
@@ -164,6 +167,7 @@ async def health_detail(full: bool = False) -> dict:
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
             "claim_gate": dict(CLAIM_GATE_HEALTH),
+            "sso": dict(SSO_HEALTH),
             "blind_take": dict(BLIND_HEALTH),
             "sticky": dict(STICKY_HEALTH),
             "needs_agent": dict(QUEUE_HEALTH),
@@ -249,6 +253,7 @@ async def health_detail(full: bool = False) -> dict:
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),
         "claim_gate": dict(CLAIM_GATE_HEALTH),
+        "sso": dict(SSO_HEALTH),
         "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
         "needs_agent": dict(QUEUE_HEALTH),

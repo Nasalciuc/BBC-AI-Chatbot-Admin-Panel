@@ -213,7 +213,8 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
             DB_HEALTH["disconnects"] += 1
             logger.warning(
                 f"[db-retry] dead connection ({type(e).__name__}: {e}) — retrying once "
-                f"(label={label})"
+                f"(label={label})",
+                extra={"event": "db.retry", "label": label},
             )
             try:
                 out = await loop.run_in_executor(_executor, contextvars.copy_context().run, fn)
