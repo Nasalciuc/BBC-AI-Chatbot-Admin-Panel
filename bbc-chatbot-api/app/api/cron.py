@@ -462,6 +462,11 @@ async def run_cleanup_stale_ready() -> dict:
     """Auto-reset is_ready for operators who disconnected without toggling off."""
     stale = await db.reset_stale_ready_users(settings.agent_timeout_seconds)
     names = [u.get("name") or u["id"] for u in stale]
+    if stale:
+        # They left without switching off: their open tasks move, as on Not ready.
+        from app.services.tasks_service import leave_shift
+        for u in stale:
+            await leave_shift(u["id"])
     if names:
         logger.info(f"[cron] Auto-reset is_ready: {names}")
     return {"reset": len(stale), "names": names}

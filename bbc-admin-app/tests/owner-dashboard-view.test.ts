@@ -124,6 +124,22 @@ test('needs attention never guesses a gender and says where to look', () => {
   assert.match(r.sub, /^Nobody has reviewed one since 22 Aug\. 1 QA account\./)
 })
 
+test('Make a task from Needs attention: a task for the line, none for review or the AI', () => {
+  const a = attentionView(dash().attention[0], 1)
+  assert.deepEqual(a.task, {
+    title: 'Talk to Rohan about the chats going back to the assistant',
+    line: '6 of Rohan Mehta’s 11 chats went back to the assistant.',
+  })
+  assert.ok(!/\b(his|her|he|she)\b/i.test(a.task?.title ?? ''))
+  assert.deepEqual(attentionView(dash().attention[1], 1).task, {
+    title: 'Get more people Ready at 2 pm',
+    line: 'At 2 pm, 4 of 8 chats went back to the assistant.',
+  })
+  // Reviewing is QA's (no Tasks there); the AI's answer time isn't a person's to-do.
+  assert.equal(attentionView({ kind: 'review', level: 'check', waiting: 39, waiting_long: 30, last_review_at: null }, 1).task, null)
+  assert.equal(attentionView({ kind: 'ai_latency', level: 'check', latency_ms: 6200, line_ms: 5000 }, 1).task, null)
+})
+
 test('agents headline: whose chats went back, and the rest', () => {
   assert.equal(
     agentsHeadline(dash()),

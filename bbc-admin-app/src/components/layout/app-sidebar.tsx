@@ -5,6 +5,8 @@ import { useQueueStore } from '@/stores/queue-store'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { cn } from '@/lib/utils'
+import { menuCount } from '@/features/tasks/view'
+import { useTaskAlerts } from '@/features/tasks/use-task-alerts'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
 import useDialogState from '@/hooks/use-dialog-state'
 import { isEmbedded } from '@/lib/crm-bridge'
@@ -56,8 +58,14 @@ export function AppSidebar() {
   const groups = getNavGroups(role, permissions)
   const queueCount = useQueueStore((s) => s.queueCount)
 
-  const badgeFor = (item: PanelNavItem): string | null =>
-    item.key === 'conv' && queueCount > 0 && role !== 'qa' ? String(queueCount) : null
+  const tasks = useTaskAlerts().data
+  const taskCount = menuCount(tasks?.counts, ['owner', 'admin', 'dev', 'supervisor', 'project_manager'].includes(role))
+
+  const badgeFor = (item: PanelNavItem): { text: string; label: string } | null => {
+    if (item.key === 'conv' && queueCount > 0 && role !== 'qa') return { text: String(queueCount), label: `${queueCount} waiting for a person` }
+    if (item.key === 'tasks' && taskCount > 0) return { text: String(taskCount), label: `${taskCount} late` }
+    return null
+  }
 
   return (
     <Sidebar collapsible='icon' variant='sidebar' className='border-none'>
@@ -119,7 +127,7 @@ function NavLink({
 }: {
   item: PanelNavItem
   active: boolean
-  badge: string | null
+  badge: { text: string; label: string } | null
   mini: boolean
 }) {
   const { setOpenMobile } = useSidebar()
@@ -129,7 +137,7 @@ function NavLink({
       to={item.url}
       onClick={() => setOpenMobile(false)}
       aria-current={active ? 'page' : undefined}
-      aria-label={badge ? `${item.title}, ${badge} waiting for a person` : item.title}
+      aria-label={badge ? `${item.title}, ${badge.label}` : item.title}
       title={mini ? item.title : undefined}
       className={cn(
         'relative flex h-10 items-center gap-3 rounded-xl text-sm no-underline transition-colors focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
@@ -142,11 +150,11 @@ function NavLink({
       {badge &&
         (mini ? (
           <span aria-hidden='true' className='absolute -top-0.5 -end-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-nav bg-k-d93025 px-1 text-[11px] font-bold text-k-ffffff'>
-            {badge}
+            {badge.text}
           </span>
         ) : (
           <span aria-hidden='true' className='flex h-5 min-w-[22px] flex-none items-center justify-center rounded-[10px] bg-k-d93025 px-1.5 text-xs font-bold text-k-ffffff'>
-            {badge}
+            {badge.text}
           </span>
         ))}
     </Link>

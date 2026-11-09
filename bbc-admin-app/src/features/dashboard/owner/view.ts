@@ -147,28 +147,36 @@ export interface AttentionView {
   title: string
   sub: string
   action: { label: string; to: 'agents' | 'hour' | 'review' | 'quality' | 'agent-table' }
+  /** "Make a task" from this line (Tasks): what the task says, and the line kept on it. */
+  task: { title: string; line: string } | null
 }
 
 export function attentionView(item: AttentionItem, qaAccounts: number): AttentionView {
   switch (item.kind) {
-    case 'agent':
+    case 'agent': {
+      const title = `${item.went_back} of ${item.name}’s ${item.chats} chats went back to the assistant.`
       return {
         key: `agent-${item.user_id}`,
         level: 'urgent',
         tag: 'Urgent',
-        title: `${item.went_back} of ${item.name}’s ${item.chats} chats went back to the assistant.`,
+        title,
         sub: `First reply: ${secondsText(item.first_reply_s)}. Ready ${item.ready_hours} h.`,
         action: { label: 'See Agents', to: 'agents' },
+        task: { title: `Talk to ${item.name.split(' ')[0] || item.name} about the chats going back to the assistant`, line: title },
       }
-    case 'hour':
+    }
+    case 'hour': {
+      const title = `At ${hourLong(item.hour)}, ${item.went_back} of ${item.given} chats went back to the assistant.`
       return {
         key: `hour-${item.hour}`,
         level: 'check',
         tag: 'Check',
-        title: `At ${hourLong(item.hour)}, ${item.went_back} of ${item.given} chats went back to the assistant.`,
+        title,
         sub: `${plural(item.ready_people, 'person', 'people')} ${item.ready_people === 1 ? 'was' : 'were'} Ready at that hour; the most chats back to the assistant of any hour.`,
         action: { label: 'See by hour', to: 'hour' },
+        task: { title: `Get more people Ready at ${hourLong(item.hour)}`, line: title },
       }
+    }
     case 'review':
       return {
         key: 'review',
@@ -177,6 +185,8 @@ export function attentionView(item: AttentionItem, qaAccounts: number): Attentio
         title: `${plural(item.waiting, 'ready lead')} ${item.waiting === 1 ? 'is' : 'are'} waiting for review.`,
         sub: `${item.last_review_at ? `Nobody has reviewed one since ${shortDate(item.last_review_at)}.` : 'No ready lead has been reviewed yet.'} ${plural(qaAccounts, 'QA account')}. Reviews are saved on the lead.`,
         action: { label: 'Start reviewing', to: 'review' },
+        // Reviewing is QA's, and QA has no Tasks.
+        task: null,
       }
     case 'ai_latency':
       return {
@@ -186,6 +196,7 @@ export function attentionView(item: AttentionItem, qaAccounts: number): Attentio
         title: `The AI’s typical answer takes ${(item.latency_ms / 1000).toFixed(1)} s.`,
         sub: `The line is ${item.line_ms / 1000} s. Clients wait for every answer.`,
         action: { label: 'See Quality', to: 'quality' },
+        task: null,
       }
   }
 }

@@ -789,6 +789,14 @@ def test_the_check_reads_five_fields_and_the_queue_mark():
     assert "queued_at" in q.selects[0] and "engaged_agent_id:metadata->>engaged_agent_id" in q.selects[0]
 
 
+def test_the_check_also_reads_the_tunnel_and_the_team():
+    # A task linking a chat checks the whole door from this one row (tasks.py).
+    q = _Q()
+    with patch.object(db, "_queued_at_column_available", return_value=True):
+        _run(q)
+    assert "tunnel" in q.selects[0] and "team_id" in q.selects[0]
+
+
 def test_without_the_queue_column_the_check_still_reads():
     q = _Q(fail_first=Exception('column conversations.queued_at does not exist'))
     with patch.object(db, "_queued_at_column_available", return_value=True), \

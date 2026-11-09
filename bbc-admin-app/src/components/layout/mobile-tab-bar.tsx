@@ -1,5 +1,5 @@
 import { Link, useLocation } from '@tanstack/react-router'
-import { BookOpen, LayoutGrid, LogOut, MessageCircle, SlidersHorizontal } from 'lucide-react'
+import { BookOpen, LayoutGrid, LogOut, MessageCircle, SlidersHorizontal, SquareCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useQueueStore } from '@/stores/queue-store'
@@ -14,6 +14,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { SignOutDialog } from '@/components/sign-out-dialog'
+import { menuCount } from '@/features/tasks/view'
+import { useTaskAlerts } from '@/features/tasks/use-task-alerts'
 
 function initialsOf(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
@@ -22,7 +24,7 @@ function initialsOf(name: string): string {
 }
 
 /**
- * An agent on a phone: Chats, Knowledge, Me — the design canvas's phone bar.
+ * An agent on a phone: Chats, Tasks, Knowledge, Me — the design canvas's phone bar, plus Tasks.
  * Phones only (md:hidden), operators only, never inside the CRM dock.
  */
 export function MobileTabBar() {
@@ -32,6 +34,7 @@ export function MobileTabBar() {
   const { ready, toggle } = useReadyToggle()
   const [signOut, setSignOut] = useDialogState()
   const name = user?.name || 'User'
+  const taskCount = menuCount(useTaskAlerts().data?.counts, ['owner', 'admin', 'dev', 'supervisor', 'project_manager'].includes(user?.role ?? ''))
 
   const tab = (active: boolean) =>
     cn(
@@ -55,6 +58,17 @@ export function MobileTabBar() {
             )}
           </span>
           Chats
+        </Link>
+        <Link to='/tasks' className={tab(pathname.startsWith('/tasks'))} aria-label={taskCount ? `Tasks, ${taskCount} late` : 'Tasks'}>
+          <span className='relative'>
+            <SquareCheck aria-hidden='true' className='size-[22px]' />
+            {taskCount > 0 && (
+              <span aria-hidden='true' className='absolute -top-1.5 -end-2.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-k-d93025 px-1 text-[11px] font-bold text-k-ffffff'>
+                {taskCount}
+              </span>
+            )}
+          </span>
+          Tasks
         </Link>
         <Link to='/knowledge' className={tab(pathname.startsWith('/knowledge'))}>
           <BookOpen aria-hidden='true' className='size-[22px]' />

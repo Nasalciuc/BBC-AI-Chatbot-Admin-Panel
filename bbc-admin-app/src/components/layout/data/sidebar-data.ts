@@ -37,12 +37,11 @@ export function isOperatorRole(role: string | undefined): boolean {
 /**
  * The panel menu, per role — the design canvas's menu ("what we can build
  * now"), restricted to pages that exist in this build:
- *   - agents: Conversations, Dashboard (Your day) | Knowledge | Settings
+ *   - agents: Conversations, Tasks, Dashboard (Your day) | Knowledge | Settings
  *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant | Settings
  *   - QA: Conversations, Dashboard, Leads | Assistant | Settings
- *   - supervisor / PM: Conversations, Dashboard | Team | Settings
- * Tasks reaches agents with the Tasks feature; Assistant (the knowledge base
- * editor) is the existing page, not redesigned yet.
+ *   - supervisor / PM: Conversations, Tasks, Dashboard | Team | Settings
+ * Assistant (the knowledge base editor) is the existing page, not redesigned yet.
  */
 export function getNavGroups(
   role: UserRole,
@@ -51,7 +50,8 @@ export function getNavGroups(
   const op = isOperatorRole(role)
   const g1: PanelNavItem[] = [
     { key: 'conv', title: 'Conversations', url: '/chats', icon: MessageCircle },
-    ...(permissions.canAssignTasks
+    // Tasks: what each person promised clients (QA has none to follow up).
+    ...(role !== 'qa'
       ? [{ key: 'tasks' as const, title: 'Tasks', url: '/tasks', icon: SquareCheck }]
       : []),
     { key: 'dash', title: 'Dashboard', url: '/', icon: LayoutGrid },
