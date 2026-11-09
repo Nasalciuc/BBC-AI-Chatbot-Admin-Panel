@@ -442,3 +442,47 @@ def test_eval_router_exit_status_says_whether_anything_ran(argv, code, tmp_path,
         assert "nothing was evaluated" in capsys.readouterr().err
     else:
         assert (tmp_path / "router_eval.json").exists()
+
+
+
+# ── the time-travel plugin: only a missing module is a warning ─────────────
+
+@pytest.mark.parametrize("error, warns", [
+    (ModuleNotFoundError("No module named 'langgraph'"), True),
+    (ImportError("cannot import name 'StateGraph' from 'langgraph.graph'"), False),
+])
+def test_timetravel_warns_on_a_missing_module_and_fails_on_a_broken_import(error, warns, monkeypatch):
+    import builtins
+
+    import freezegun
+
+    from tests.plugins import timetravel
+
+    started = []
+
+    class _Freezer:
+        def start(self):
+            started.append(True)
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(timetravel, "_freezer", None)
+    monkeypatch.setattr(freezegun, "freeze_time", lambda *_a, **_k: _Freezer())
+    real_import = builtins.__import__
+
+    def _import(name, *a, **k):
+        if name == "app.graph.build":
+            raise error
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    config = SimpleNamespace(getoption=lambda _name: "2027-03-01")
+    if warns:
+        with pytest.warns(UserWarning, match="could not be imported before freezing"):
+            timetravel.pytest_configure(config)
+        assert started == [True]
+    else:
+        with pytest.raises(ImportError, match="cannot import name"):
+            timetravel.pytest_configure(config)
+        assert started == []
