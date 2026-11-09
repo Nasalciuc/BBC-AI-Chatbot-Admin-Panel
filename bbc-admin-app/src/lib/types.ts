@@ -286,6 +286,8 @@ export interface AgentBlock {
 export interface AgentRow {
   user_id: string
   name: string
+  /** Their photo; null = initials. */
+  avatar_url: string | null
   role: string | null
   ready_hours: number
   chats: number
@@ -573,6 +575,8 @@ export interface TaskRow {
   state: TaskState
   assignee_id: string | null
   assignee_name: string | null
+  /** The assignee's photo; null = initials. */
+  assignee_avatar_url: string | null
   unowned_reason: 'ai_only' | 'left_shift' | null
   unowned_from_name: string | null
   unowned_at: string | null
@@ -943,6 +947,8 @@ export interface FloorChat {
 export interface FloorPerson {
   id: string
   name: string | null
+  /** Their photo; null = initials. */
+  avatar_url: string | null
   role: string
   tunnel: 'sales' | 'support' | null
   team_id: string | null
@@ -995,7 +1001,7 @@ export interface TeamNow {
   }
   attention?: FloorAttention[]
   queue?: (FloorChat & { asked_for_person: boolean })[]
-  with_person?: (FloorChat & { agent_id: string; agent_name: string | null; client_waiting: boolean })[]
+  with_person?: (FloorChat & { agent_id: string; agent_name: string | null; agent_avatar_url: string | null; client_waiting: boolean })[]
   ai_only?: { count: number; chats: FloorChat[] }
   people?: FloorPerson[]
   teams?: TeamCard[]
@@ -1007,6 +1013,8 @@ export interface PersonDay {
   user: {
     id: string
     name: string | null
+    /** Their photo; null = initials. */
+    avatar_url: string | null
     email: string | null
     role: string
     tunnel: 'sales' | 'support' | null

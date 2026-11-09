@@ -286,7 +286,7 @@ export function Floor({
                         {line.text}
                       </span>
                       <div className='mt-1 flex items-center gap-2'>
-                        <PersonAvatar name={c.agent_name ?? '?'} size={30} />
+                        <PersonAvatar name={c.agent_name ?? '?'} url={c.agent_avatar_url} size={30} />
                         <span className='flex-1' />
                         <OpenLink id={c.id} />
                         {canGive && <GiveTo chat={c} people={people} />}
@@ -330,7 +330,7 @@ export function Floor({
               return (
                 <section key={p.id} className='flex flex-col gap-2 rounded-[20px] p-4 ring-1 ring-k-ececec'>
                   <button type='button' onClick={() => onPerson(p.id)} className='flex items-center gap-3 text-start'>
-                    <PersonAvatar name={p.name ?? '?'} size={36} />
+                    <PersonAvatar name={p.name ?? '?'} url={p.avatar_url} size={36} />
                     <span className='min-w-0 flex-1'>
                       <strong className='block truncate text-[15px] text-k-202020'>{p.name}</strong>
                       <span className={cn('flex items-center gap-1.5 text-xs', PRESENCE[p.presence].text)}>

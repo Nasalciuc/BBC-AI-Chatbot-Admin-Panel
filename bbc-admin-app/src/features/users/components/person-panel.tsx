@@ -151,7 +151,7 @@ export function PersonPanel({
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className={cn('w-full gap-0 overflow-y-auto bg-k-ffffff p-0 sm:max-w-none [&>button]:z-20', wide ? 'sm:w-[720px]' : 'sm:w-[500px]')}>
         <div className='flex items-start gap-3 border-b border-k-ececec px-6 pt-5 pb-4 pe-12'>
-          <PersonAvatar name={user.name || user.email} tone={avatarTone(user, st.key)} size={52} />
+          <PersonAvatar name={user.name || user.email} url={user.avatar_url} tone={avatarTone(user, st.key)} size={52} />
           <div className='min-w-0 flex-1'>
             <SheetTitle className='m-0 truncate text-[22px] font-bold text-k-202020'>
               {user.name || user.email}

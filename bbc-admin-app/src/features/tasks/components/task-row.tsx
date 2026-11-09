@@ -138,7 +138,7 @@ export function TaskRow({
         <span className='hidden w-[150px] flex-none items-center gap-2 pt-0.5 text-sm text-k-202020 lg:flex'>
           {row.assignee_id ? (
             <>
-              <PersonAvatar name={row.assignee_name} size={30} />
+              <PersonAvatar name={row.assignee_name} url={row.assignee_avatar_url} size={30} />
               <span className='truncate'>{row.assignee_name}</span>
             </>
           ) : (

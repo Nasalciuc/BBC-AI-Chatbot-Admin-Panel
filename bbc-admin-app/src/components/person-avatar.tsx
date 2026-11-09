@@ -1,3 +1,4 @@
+import { type ReactNode, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { initials } from '@/features/chats/view'
 
@@ -23,14 +24,39 @@ function toneFor(name: string | null | undefined): AvatarTone {
   return ROTATION[h % ROTATION.length]
 }
 
-/** A person's initials in a tinted circle (agents, users — not clients). */
+/**
+ * The person's photo, filling the circle it sits in — or `fallback` (their
+ * initials) when they have none or it doesn't load. A changed link is tried again.
+ */
+export function AvatarPhoto({ url, fallback }: { url: string | null | undefined; fallback: ReactNode }) {
+  const [failed, setFailed] = useState<string | null>(null)
+  const src = url?.trim()
+  if (!src || failed === src) return <>{fallback}</>
+  return (
+    <img
+      src={src}
+      alt=''
+      loading='lazy'
+      decoding='async'
+      draggable={false}
+      referrerPolicy='no-referrer'
+      onError={() => setFailed(src)}
+      className='size-full rounded-full object-cover'
+    />
+  )
+}
+
+/** A person's photo — or their initials in a tinted circle (agents, users — not clients). */
 export function PersonAvatar({
   name,
+  url,
   tone,
   size = 32,
   className,
 }: {
   name: string | null | undefined
+  /** Their photo (users.avatar_url); null = initials. */
+  url: string | null | undefined
   tone?: AvatarTone
   size?: 30 | 32 | 36 | 52
   className?: string
@@ -39,7 +65,7 @@ export function PersonAvatar({
     size === 52 ? 'size-[52px] text-lg' : size === 36 ? 'size-9 text-[13px]' : size === 32 ? 'size-8 text-xs' : 'size-[30px] text-[11px]'
   return (
     <span aria-hidden='true' className={cn('flex flex-none items-center justify-center rounded-full font-bold', box, TONES[tone ?? toneFor(name)], className)}>
-      {initials(name)}
+      <AvatarPhoto url={url} fallback={initials(name)} />
     </span>
   )
 }

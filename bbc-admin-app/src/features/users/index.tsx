@@ -350,7 +350,7 @@ export function Users() {
                         )}
                         <td className='px-4 py-2.5'>
                           <div className='flex items-center gap-3'>
-                            <PersonAvatar name={u.name || u.email} tone={avatarTone(u, st.key)} size={36} />
+                            <PersonAvatar name={u.name || u.email} url={u.avatar_url} tone={avatarTone(u, st.key)} size={36} />
                             <div className='min-w-0'>
                               <strong className='block truncate text-[15px] text-k-202020'>
                                 {u.name || u.email}
