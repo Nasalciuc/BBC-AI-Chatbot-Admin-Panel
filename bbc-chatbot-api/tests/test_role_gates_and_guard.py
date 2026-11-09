@@ -63,13 +63,81 @@ async def test_brand_email_and_domain_kept(monkeypatch):
     assert "[removed]" not in out
 
 
-def test_stream_buffer_holds_a_suspicious_tail():
-    # A trailing digit run is held back so a number is never scrubbed split
-    # across two chunks; the final add_message scrub sees the whole reply.
-    safe, tail = output_guard.scrub_stream_buffer("Call us at +1 (888) 322")
-    assert tail == "322" and safe == "Call us at +1 (888) "
-    safe2, tail2 = output_guard.scrub_stream_buffer("All set, enjoy your trip.")
-    assert tail2 == ""
+def _stream(guard, chunks):
+    return "".join(guard.feed(c) for c in chunks)
+
+
+def test_enforce_streams_a_sentence_at_a_time_scrubbed_whole(monkeypatch):
+    # A contact split across chunks is seen whole: nothing of a sentence goes
+    # out before its end, and then it goes out scrubbed.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard()
+    assert _stream(g, ["Sure! Call the agent at +1 555 ", "123 4567 or visit sca", "m.com today. Thanks"]) == \
+        "Sure! Call the agent at [removed] or visit [removed] today. "
+    assert g.flush() == "Thanks"
+    # The brand's own contacts go out untouched, a line at a time too.
+    g = output_guard.StreamGuard()
+    assert _stream(g, ["Call +1 (888) 322-", "7999\nor email info@buybusinessclass.com.\n"]) == \
+        "Call +1 (888) 322-7999\nor email info@buybusinessclass.com.\n"
+
+
+def test_enforce_stream_keeps_the_clients_own_contact(monkeypatch):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard(output_guard.own_contacts("+1 555 014 2290", "Michael.R@example.com"))
+    assert _stream(g, ["We'll call +1 555 014 2290 and write to michael.r@example.com. "]) == \
+        "We'll call +1 555 014 2290 and write to michael.r@example.com. "
+
+
+def test_log_mode_streams_every_chunk_as_it_comes(monkeypatch):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
+    g = output_guard.StreamGuard()
+    assert [g.feed(c) for c in ["Visit sca", "m.com"]] == ["Visit sca", "m.com"]
+    assert g.flush() == ""
+
+
+@pytest.mark.asyncio
+async def test_a_link_with_digits_is_never_the_clients_own_contact(monkeypatch):
+    # The client's phone ends in 9; "scam9.com" carries a 9. Only a phone is
+    # compared by its digits.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    with patch("app.db.supabase.get_conversation_simple",
+               new=AsyncMock(return_value={"visitor_phone": "+1 555 014 2299"})), \
+         patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+        out = await output_guard.guard_ai_text("Pay at scam9.com or call +1 555 014 2299", conversation_id="c1")
+    assert out == "Pay at [removed] or call +1 555 014 2299"
+    assert output_guard.OUTPUT_GUARD_HEALTH["removed"] == 1
+
+
+def test_a_broken_guard_keeps_the_reply_and_fails_closed_when_enforcing(monkeypatch):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    assert output_guard.guard_failed("Visit evil.com", RuntimeError("boom")) == "Visit [removed]"
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
+    assert output_guard.guard_failed("Visit evil.com", RuntimeError("boom")) == "Visit evil.com"
+    assert output_guard.OUTPUT_GUARD_HEALTH["errors"] == 2
+
+
+@pytest.mark.asyncio
+async def test_add_message_stores_the_reply_when_the_guard_breaks(monkeypatch):
+    from app.db import supabase as sb
+
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    sent = {}
+
+    class _Tbl:
+        def insert(self, payload):
+            sent.update(payload)
+            return self
+
+        def execute(self):
+            return MagicMock(data=[{"id": "m1", **sent}])
+
+    client = MagicMock()
+    client.table.return_value = _Tbl()
+    with patch.object(sb, "get_client", return_value=client), \
+         patch("app.ai.output_guard.guard_ai_text", new=AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch.object(sb, "_touch_conversation_activity", new=AsyncMock()):
+        row = await sb.add_message("c1", "ai", "Visit evil.com")
+    assert row and row["content"] == "Visit [removed]"
 
 
 # ── metadata allowlist ──────────────────────────────────────────────────────

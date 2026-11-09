@@ -1321,12 +1321,20 @@ async def _pipeline(
     # Streaming callback (sync→async bridge for thread pool)
     _event_loop = asyncio.get_running_loop()
     _is_streaming = False
+    # A streamed chunk can't be taken back: in OUTPUT_GUARD_MODE=enforce the
+    # guard lets the text out a sentence at a time, scrubbed whole.
+    from app.ai.output_guard import StreamGuard, own_contacts
+
+    _stream_guard = StreamGuard(own_contacts(getattr(visitor, "phone", None), getattr(visitor, "email", None)))
 
     def _on_chunk(delta: str):
         nonlocal _is_streaming
         _is_streaming = True
+        out = _stream_guard.feed(delta)
+        if not out:
+            return
         asyncio.run_coroutine_threadsafe(
-            manager.push_chunk(cid, delta),
+            manager.push_chunk(cid, out),
             _event_loop,
         )
 
@@ -1842,9 +1850,23 @@ async def _pipeline(
             f"[{cid}] AI reply generated but NOT persisted (add_message returned None)"
         )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
+    # What the customer is given is what was stored: the output guard ran on
+    # it in add_message. Not stored: guarded here, so it never goes out raw.
+    if ai_msg and isinstance(ai_msg, dict) and isinstance(ai_msg.get("content"), str):
+        delivered_text = ai_msg["content"]
+    else:
+        from app.ai.output_guard import guard_ai_text
+
+        delivered_text = await guard_ai_text(validated_text, conversation_id=cid)
 
     if _is_streaming and ai_msg:
         await manager.push_stream_end(cid, ai_msg)
+    elif _is_streaming:
+        # No stored row, so no stream_end to replace the streamed text: what
+        # the guard still holds goes out, scrubbed.
+        _tail = _stream_guard.flush()
+        if _tail:
+            await manager.push_chunk(cid, _tail)
 
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
     # Close only after client confirmed summary and CRM was submitted.
@@ -1924,7 +1946,7 @@ async def _pipeline(
 
     return ChatResponse(
         conversation_id=cid,
-        message="" if _is_streaming else validated_text,
+        message="" if _is_streaming else delivered_text,
         streaming=_is_streaming,
         type=resp_type,
         model_used=gen.model_used,

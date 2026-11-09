@@ -414,9 +414,14 @@ async def add_message(
         db = get_client()
         if role == "ai":
             # Output guard: strip any non-brand contact from a bot reply before
-            # it is stored (PR-4). 'log' mode leaves the text unchanged.
-            from app.ai.output_guard import guard_ai_text
-            content = await guard_ai_text(content, conversation_id=conversation_id)
+            # it is stored (PR-4). 'log' mode leaves the text unchanged. A guard
+            # that breaks never costs the message (guard_failed counts it).
+            from app.ai.output_guard import guard_ai_text, guard_failed
+            try:
+                content = await guard_ai_text(content, conversation_id=conversation_id)
+            except Exception as guard_err:
+                logger.error(f"add_message: output guard failed, reply kept conv={conversation_id}: {type(guard_err).__name__}")
+                content = guard_failed(content, guard_err)
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used

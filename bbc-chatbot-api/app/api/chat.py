@@ -245,9 +245,17 @@ async def chat_start(
         )
         model_used = "template"
 
-    await conversation_service.add_message(
+    row = await conversation_service.add_message(
         conv_id, "ai", text, model_used=model_used, cost=cost,
     )
+    # The greeting reads the landing page and its tags, a way in for injected
+    # text: the client gets what was stored, after the output guard ran on it.
+    if isinstance(row, dict) and isinstance(row.get("content"), str):
+        text = row["content"]
+    else:
+        from app.ai.output_guard import guard_ai_text
+
+        text = await guard_ai_text(text, conversation_id=conv_id) or text
     logger.info(f"[start] Conv {conv_id} opened by AI ({model_used})")
     return ChatStartResponse(conversation_id=conv_id, message=text)
 
