@@ -3348,36 +3348,22 @@ def _error_code(e: Exception) -> Optional[str]:
     return code.strip() if isinstance(code, str) and code.strip() else None
 
 
-def _error_text(e: Exception) -> str:
-    """What an error says, without its details. An APIError's text includes
-    its details, and those can quote the row a write sent ("Failing row
-    contains (…)": the client's name in a title, a phone in a quote), so the
-    details are never matched against and never logged."""
-    message = getattr(e, "message", None)
-    return message if isinstance(message, str) and message else str(e)
-
-
 def _is_schema_missing(e: Exception) -> bool:
-    """Migration 051 not applied: a missing column or table. By the error's
-    code when it has one: matching the whole text read a refused row's phone
-    number ("…4270321…") as code 42703."""
-    code = _error_code(e)
-    if code:
-        return code in _SCHEMA_MISSING_CODES
-    text = _error_text(e)
-    return (
-        any(c in text for c in _SCHEMA_MISSING_CODES)
-        or ("does not exist" in text and ("column" in text or "relation" in text))
-        or "Could not find the" in text
-    )
+    """Migration 051 not applied: PostgREST's own code for a missing column
+    or table, and nothing else. Never the error's text: it includes the
+    details, where a refused row comes back whole ("Failing row contains
+    (…)"), and a phone number in a quote holding "42703" read as a missing
+    column. Every schema error from the database carries its code."""
+    return _error_code(e) in _SCHEMA_MISSING_CODES
 
 
 def _as_not_set_up(e: Exception) -> None:
     """Migration 051 still missing is TasksNotSetUp, counted; anything else is the caller's to raise."""
     if _is_schema_missing(e):
         TASKS_HEALTH["schema_missing"] += 1
-        said = _error_text(e)
-        logger.warning(f"[tasks] migration 051 not applied: {_error_code(e) or type(e).__name__} {said}")
+        # These four codes name a column or a table, never a value; the details stay out.
+        said = f"{_error_code(e)} {getattr(e, 'message', None) or ''}".strip()
+        logger.warning(f"[tasks] migration 051 not applied: {said}")
         raise TasksNotSetUp(said) from e
 
 
@@ -3424,9 +3410,10 @@ async def insert_follow_up(row: dict) -> Optional[dict]:
     except TasksNotSetUp:
         raise
     except Exception as e:
-        # A retry of the same chat message, by the code or the index's name,
-        # never by the whole text: a refused row's quote can hold "23505".
-        if _error_code(e) == "23505" or "uq_tasks_message" in _error_text(e):
+        # A retry of the same chat message (uq_tasks_message is the table's one
+        # unique index besides the id), by the code only: the whole text
+        # includes the refused row, and a quote can hold "23505".
+        if _error_code(e) == "23505":
             return None
         raise
     return (res.data or [None])[0]
