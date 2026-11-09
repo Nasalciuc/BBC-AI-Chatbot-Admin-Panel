@@ -95,6 +95,10 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.integration import PRESENCE_GATE_HEALTH
     # Claim races: exactly one wins; the losers are counted, not punished.
     from app.api.conversations import CLAIM_HEALTH
+    # The claim gate's write failed or came back empty, and the owner read
+    # said whose the chat is: won_after_check = a Take that used to read as
+    # lost ("… took it a moment before you") although the agent had it.
+    from app.db.supabase import CLAIM_GATE_HEALTH
     # Blind take: checks that failed closed (an agent got a 503, not their
     # chat) and streams stopped because their chat started waiting.
     from app.api.conversations import BLIND_HEALTH
@@ -159,6 +163,7 @@ async def health_detail(full: bool = False) -> dict:
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
+            "claim_gate": dict(CLAIM_GATE_HEALTH),
             "blind_take": dict(BLIND_HEALTH),
             "sticky": dict(STICKY_HEALTH),
             "needs_agent": dict(QUEUE_HEALTH),
@@ -243,6 +248,7 @@ async def health_detail(full: bool = False) -> dict:
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),
+        "claim_gate": dict(CLAIM_GATE_HEALTH),
         "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
         "needs_agent": dict(QUEUE_HEALTH),

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Per-instance claim counters, same shape as HANDOFF_HEALTH (handoff.py) and
 # GENERATION_HEALTH (generator.py). Single-instance deploy today (ADR-5); a
 # scale-out would shard these, which is why /health labels them per-instance.
-CLAIM_HEALTH: dict = {"won": 0, "lost": 0, "races_detected": 0, "last_at": None}
+CLAIM_HEALTH: dict = {"won": 0, "lost": 0, "races_detected": 0, "already_mine": 0, "last_at": None}
 
 router = APIRouter()
 
@@ -894,6 +894,23 @@ async def claim_conversation(
     if not _claim.get("won"):
         _cur = await db.get_conversation_simple(conversation_id)
         _winner_id = (_cur or {}).get("assigned_agent_id")
+        if _winner_id == _me and (_cur or {}).get("status") in db.OPEN_STATUSES:
+            # It is mine after all: a double click or a second tab won it a
+            # moment ago, or the gate's write landed while both its answer
+            # and its owner check were lost. Before, the operator read their
+            # OWN name in "… took this chat a moment before you", and the chat
+            # never opened. Same as re-claiming my own chat above: no second
+            # win and no second point on the score.
+            CLAIM_HEALTH["already_mine"] += 1
+            await perform_handoff_to_agent(
+                conversation_id=conversation_id,
+                agent_id=_me,
+                tunnel=conv.get("tunnel", "sales"),
+                emit_messages=False,
+                handoff_reason="manual_claim",
+                _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+            )
+            return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
         _winner = await db.get_user_by_id(_winner_id) if _winner_id else None
         from app.services.presence import log_activity
         from app.pipeline.orchestrator import _fire_and_forget
