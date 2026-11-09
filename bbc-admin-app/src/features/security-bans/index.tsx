@@ -2,6 +2,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { listBans, unbanBan, type SecurityBan } from '@/lib/api'
 
+/** What /api/admin/security/bans says when its database read fails. */
+const HISTORY_READ_FAILED = 'Bans history unavailable'
+
 function isActive(b: SecurityBan): boolean {
   if (b.unbanned_at) return false
   return !b.expires_at || new Date(b.expires_at).getTime() > Date.now()
@@ -28,7 +31,15 @@ export function SecurityBans() {
       {bans.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : bans.isError ? (
-        <p className="text-sm text-muted-foreground">The ban history is unavailable (migration 042 may not be applied yet).</p>
+        // What actually failed (a sign-in that ran out, "Forbidden", the
+        // network): migration 042 is one cause of the server's own failure,
+        // not of every one.
+        <p className="text-sm text-muted-foreground">
+          Couldn’t load the ban history: {bans.error instanceof Error ? bans.error.message : 'unknown error'}.
+          {bans.error instanceof Error && bans.error.message === HISTORY_READ_FAILED
+            ? ' One cause: migration 042 not applied yet.'
+            : null}
+        </p>
       ) : (bans.data ?? []).length === 0 ? (
         <p className="text-sm text-muted-foreground">No bans recorded.</p>
       ) : (
