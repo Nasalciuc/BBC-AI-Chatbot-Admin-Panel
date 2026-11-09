@@ -58,3 +58,14 @@ export function clearDrafts(s: Store & { length?: number; key?: (i: number) => s
     /* storage blocked: nothing was kept */
   }
 }
+
+/** The reply box after the trip card's "Ask: …": the question goes after
+ *  what the operator already typed (one space, or none after a space or a
+ *  line break), never over it, and not twice. */
+export function withSuggestedQuestion(draft: string, question: string): string {
+  const q = question.trim()
+  if (!q) return draft
+  if (!draft.trim()) return q
+  if (draft.trimEnd().endsWith(q)) return draft
+  return /\s$/.test(draft) ? `${draft}${q}` : `${draft} ${q}`
+}

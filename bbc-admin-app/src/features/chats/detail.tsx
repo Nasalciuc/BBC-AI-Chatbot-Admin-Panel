@@ -35,7 +35,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { draftId, readDraft, writeDraft } from '@/lib/chat-drafts'
+import { draftId, readDraft, withSuggestedQuestion, writeDraft } from '@/lib/chat-drafts'
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
 import { DetailsPanel } from './components/details-panel'
@@ -885,7 +885,11 @@ export default function ConversationDetail({
             {canWrite && leadDetails.suggested_question ? (
               <button
                 type='button'
-                onClick={() => setInput(leadDetails.suggested_question ?? '')}
+                onClick={() => {
+                  // A draft in the box stays: the question goes after it.
+                  setInput((prev) => withSuggestedQuestion(prev, leadDetails.suggested_question ?? ''))
+                  requestAnimationFrame(() => taRef.current?.focus())
+                }}
                 className='mt-0.5 self-start rounded-full border border-kl-202020 bg-k-ffffff px-3 py-1 text-[13px] font-bold text-k-202020 hover:bg-k-f7f7f7'
               >
                 Ask: “{leadDetails.suggested_question}”
