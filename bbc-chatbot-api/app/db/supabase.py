@@ -11,6 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 
+import httpx
+from postgrest import SyncPostgrestClient
+from postgrest.utils import SyncClient as _PostgrestSession
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 from config.settings import settings
@@ -227,6 +230,43 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
             _note_slow_call(label, ms, now)
 
 
+class _PostgrestOverHttp1(SyncPostgrestClient):
+    """PostgREST over HTTP/1.1: one request per connection, one thread per
+    connection.
+
+    postgrest-py 0.16.11 opens its session with http2=True, so every thread
+    of _executor shared ONE HTTP/2 connection. httpcore 1.0.9's sync HTTP/2
+    takes no lock between choosing a stream id and sending the headers, and
+    when the server ends the connection (GOAWAY) every request it had already
+    processed fails on our side. A write that landed then reads as an error:
+    chat #3245 (4 Nov) — the Take's UPDATE returned the row to the edge at
+    19:53:50.808, the API logged claim_lost at 19:53:51.074, and the operator
+    who won was told a colleague had the chat. Same headers, base URL,
+    timeout (10s) and redirects as before; only the protocol changes."""
+
+    def create_session(self, base_url, headers, timeout, verify=True):
+        return _PostgrestSession(
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+            follow_redirects=True,
+            http2=False,
+            # One connection per busy thread: keep as many alive as there
+            # are workers, so a burst doesn't pay a new TLS handshake each.
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=max(20, settings.db_executor_workers),
+            ),
+        )
+
+
+def _postgrest_over_http1(rest_url, headers, schema, timeout=10, verify=True):
+    return _PostgrestOverHttp1(
+        rest_url, headers=headers, schema=schema, timeout=timeout, verify=verify
+    )
+
+
 def get_client() -> Client:
     global _client
     if _client is None:
@@ -237,6 +277,10 @@ def get_client() -> Client:
             settings.supabase_key,
             options=ClientOptions(postgrest_client_timeout=10),
         )
+        # Every table() and rpc() goes through client.postgrest, which
+        # supabase-py builds on first use (and again if it ever drops it):
+        # built here, it is HTTP/1.1. test_db_transport pins that this holds.
+        _client._init_postgrest_client = _postgrest_over_http1
     return _client
 
 
