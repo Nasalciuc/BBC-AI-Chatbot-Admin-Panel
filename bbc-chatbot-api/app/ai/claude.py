@@ -298,7 +298,10 @@ def _call_model(
             # 5.5 takes no temperature/top_p/top_k and needs room for thinking
             # inside max_tokens; effort replaces the sampling knobs.
             if _is_55(model):
-                params = dict(output_config={"effort": "low"})
+                # Through extra_body: requirements allow SDKs older than the
+                # typed output_config parameter, and there a keyword is a
+                # TypeError that never reaches the provider fallback.
+                params = dict(extra_body={"output_config": {"effort": "low"}})
                 call_max = max(max_tokens, 512)
             else:
                 params = _sampling_params(model, temperature=temperature)
