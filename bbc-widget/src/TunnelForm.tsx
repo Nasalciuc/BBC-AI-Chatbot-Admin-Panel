@@ -5,9 +5,13 @@ import { PanelTop } from './PanelTop'
 import { IconAlert, IconArrowRight } from './icons'
 import { useIsPhone } from './phoneSheet'
 
+/** PR-12: the trap a person never trips — a hidden field and the fill time.
+ *  Sent with the first /chat/start; the server only counts or marks. */
+export type FormCheck = { website: string; elapsed_ms: number }
+
 interface Props {
   tunnel: 'sales' | 'support'
-  onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string }) => void
+  onSubmit: (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string; form_check?: FormCheck }) => void
   onBack: () => void
   onInteraction?: () => void
   /** CRM iframe mode: fill the container, hide the close ✕ (panel is always open). */
@@ -36,6 +40,10 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
   const firstRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const isPhone = useIsPhone()
+  // PR-12 trap: a hidden field no person fills, and how long the form was open.
+  const [website, setWebsite] = useState('')
+  const shownAt = useRef(Date.now())
+  const formCheck = (): FormCheck => ({ website, elapsed_ms: Date.now() - shownAt.current })
 
   // Focus the first field on computers; on touch screens a focused field would throw up the keyboard
   // before the visitor has read the panel.
@@ -92,13 +100,14 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
         email: email.trim(),
         phone: normalizedPhone || undefined,
         country_code: (detectCountryFromPhone(normalizedPhone) || detectedCountry).code,
+        form_check: formCheck(),
       })
     } else {
       if (!email.trim() && !(phone.trim() && phone.trim() !== '+')) errs.contact = 'Enter your email or phone'
       if (!bookingId.trim()) errs.booking = 'Enter your ticket number'
       setErrors(errs)
       if (Object.values(errs).some(Boolean)) return focusFirstError(errs)
-      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: detectedCountry.code, booking_id: bookingId.trim() })
+      onSubmit({ email: email.trim() || undefined, phone: phone.trim() || undefined, country_code: detectedCountry.code, booking_id: bookingId.trim(), form_check: formCheck() })
     }
   }
 
@@ -135,6 +144,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
       </PanelTop>
 
       <form ref={formRef} class="bw-form" onSubmit={handleSubmit} noValidate>
+        {/* PR-12 trap: invisible to people and to screen readers, skipped by
+            Tab; a form-filling bot finds a "website" field and fills it. */}
+        <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+          <label>
+            Website
+            <input type="text" name="website" tabIndex={-1} autoComplete="off" value={website}
+              onInput={e => setWebsite((e.target as HTMLInputElement).value)} />
+          </label>
+        </div>
         {tunnel === 'sales' ? (
           <>
             <div class="bw-field">

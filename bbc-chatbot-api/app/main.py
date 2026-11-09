@@ -22,8 +22,10 @@ from app.api.lessons import router as lessons_router
 from app.api.auth_routes import router as auth_router
 from app.api.cron import router as cron_router
 from app.api.canary import router as canary_router
+from app.api.security_bans import router as security_bans_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
+from app.security.ban_guard import BanGuardMiddleware
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -61,6 +63,11 @@ app.add_middleware(
 # ── Request Logger ────────────────────────────────────────────
 app.add_middleware(RequestLoggerMiddleware)
 
+# ── fail2ban (PR-11) ──────────────────────────────────────────
+# Added LAST so it wraps everything (Starlette applies middleware outermost-
+# last). Pure ASGI — it must see a request before any router or the logger.
+app.add_middleware(BanGuardMiddleware)
+
 # ── Routers ───────────────────────────────────────────────────
 # Health: PUBLIC (no auth — Railway healthcheck needs it)
 app.include_router(health_router, tags=["health"])
@@ -97,6 +104,7 @@ app.include_router(agent_router,         prefix="/api", tags=["agent"],         
 app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         dependencies=admin_deps)
 app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)
 app.include_router(lessons_router,       prefix="/api", tags=["lessons"],       dependencies=admin_deps)
+app.include_router(security_bans_router, prefix="/api", tags=["security"],      dependencies=admin_deps)
 
 
 # ── Startup / shutdown ────────────────────────────────────────

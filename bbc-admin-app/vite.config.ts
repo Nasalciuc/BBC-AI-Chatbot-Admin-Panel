@@ -19,4 +19,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    rollupOptions: {
+      // PR-10: /widget-embed is its own page with only the Preact widget.
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        'widget-embed': path.resolve(__dirname, 'widget-embed.html'),
+      },
+    },
+  },
 })

@@ -40,6 +40,7 @@ import { Route as AuthenticatedSettingsDisplayRouteImport } from './routes/_auth
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedSettingsAlertsRouteImport } from './routes/_authenticated/settings/alerts'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
+import { Route as AuthenticatedSecurityBansRouteImport } from './routes/_authenticated/security/bans'
 
 const WidgetPreviewRoute = WidgetPreviewRouteImport.update({
   id: '/widget-preview',
@@ -206,6 +207,12 @@ const AuthenticatedSettingsAccountRoute =
     path: '/account',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedSecurityBansRoute =
+  AuthenticatedSecurityBansRouteImport.update({
+    id: '/security/bans',
+    path: '/security/bans',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
@@ -222,6 +229,7 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
+  '/security/bans': typeof AuthenticatedSecurityBansRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/alerts': typeof AuthenticatedSettingsAlertsRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
@@ -253,6 +261,7 @@ export interface FileRoutesByTo {
   '/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/': typeof AuthenticatedIndexRoute
+  '/security/bans': typeof AuthenticatedSecurityBansRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/alerts': typeof AuthenticatedSettingsAlertsRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
@@ -287,6 +296,7 @@ export interface FileRoutesById {
   '/(errors)/503': typeof errors503Route
   '/chat/$tunnel': typeof ChatTunnelRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
+  '/_authenticated/security/bans': typeof AuthenticatedSecurityBansRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/alerts': typeof AuthenticatedSettingsAlertsRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
@@ -321,6 +331,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/chat/$tunnel'
+    | '/security/bans'
     | '/settings/account'
     | '/settings/alerts'
     | '/settings/appearance'
@@ -352,6 +363,7 @@ export interface FileRouteTypes {
     | '/503'
     | '/chat/$tunnel'
     | '/'
+    | '/security/bans'
     | '/settings/account'
     | '/settings/alerts'
     | '/settings/appearance'
@@ -385,6 +397,7 @@ export interface FileRouteTypes {
     | '/(errors)/503'
     | '/chat/$tunnel'
     | '/_authenticated/'
+    | '/_authenticated/security/bans'
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/alerts'
     | '/_authenticated/settings/appearance'
@@ -638,6 +651,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsAccountRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/security/bans': {
+      id: '/_authenticated/security/bans'
+      path: '/security/bans'
+      fullPath: '/security/bans'
+      preLoaderRoute: typeof AuthenticatedSecurityBansRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
@@ -671,6 +691,7 @@ const AuthenticatedSettingsRouteRouteWithChildren =
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedSecurityBansRoute: typeof AuthenticatedSecurityBansRoute
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedChatsIndexRoute: typeof AuthenticatedChatsIndexRoute
   AuthenticatedKnowledgeBaseIndexRoute: typeof AuthenticatedKnowledgeBaseIndexRoute
@@ -685,6 +706,7 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedSecurityBansRoute: AuthenticatedSecurityBansRoute,
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedChatsIndexRoute: AuthenticatedChatsIndexRoute,
   AuthenticatedKnowledgeBaseIndexRoute: AuthenticatedKnowledgeBaseIndexRoute,

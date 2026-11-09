@@ -21,6 +21,17 @@ import { routeTree } from './routeTree.gen'
 // Styles
 import './styles/index.css'
 
+// The last refresh-failure toast per query (queryHash -> ms): a failing
+// background poll says so at most once a minute instead of never or always.
+const REFRESH_TOAST_EVERY_MS = 60_000
+const lastRefreshToast = new Map<string, number>()
+function shouldNotifyRefreshFailure(queryHash: string, now: number): boolean {
+  const last = lastRefreshToast.get(queryHash)
+  if (last !== undefined && now - last < REFRESH_TOAST_EVERY_MS) return false
+  lastRefreshToast.set(queryHash, now)
+  return true
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -50,7 +61,7 @@ const queryClient = new QueryClient({
     },
   },
   queryCache: new QueryCache({
-    onError: (error) => {
+    onError: (error, query) => {
       if (error instanceof ApiError) {
         if (error.status === 401) {
           // The sign-in page says the session ended and brings you back to
@@ -65,8 +76,16 @@ const queryClient = new QueryClient({
         }
         if (error.status === 500) {
           // Said where it happened, not on a page of its own: leaving the
-          // screen threw away the open chat and what was being typed.
-          toast.error('The server had a problem with that. Try again in a moment.')
+          // screen threw away the open chat and what was being typed. A
+          // background refetch of data already on screen (PR-10) says so at
+          // most once a minute per query, whatever the retry count: onError
+          // runs after the retries, so a count-based guard never fired.
+          const hadData = query.state.data !== undefined
+          if (!hadData) {
+            toast.error('The server had a problem with that. Try again in a moment.')
+          } else if (shouldNotifyRefreshFailure(query.queryHash, Date.now())) {
+            toast.error('Could not refresh — retrying in the background', { id: 'refresh-failed' })
+          }
         }
         if (error.status === 403) {
           // router.navigate("/forbidden", { replace: true });

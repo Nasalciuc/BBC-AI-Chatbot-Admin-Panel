@@ -43,6 +43,11 @@ jobs:
           # npm ci / pip install run third-party scripts: no token left in .git/config for them.
           persist-credentials: false
 
+      # test_wave6_hardening diffs Widget.tsx against master (the owner-locked
+      # timers); a shallow checkout has no master, so fetch just that tip.
+      - name: Fetch master for the timer-lock diff
+        run: git fetch --no-tags --depth=1 origin master:refs/remotes/origin/master
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'          # what Railway runs

@@ -121,6 +121,11 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.decoys import DECOY_HEALTH
     from app.security.gates import GATE_HEALTH
     from app.pipeline.slots import SLOTS_HEALTH
+    from app.security.ban_guard import FAIL2BAN_HEALTH
+    from app.security.visitor_token import VISITOR_TOKEN_HEALTH
+    from app.security.turnstile import TURNSTILE_HEALTH
+    from app.security.form_trap import FORM_TRAP_HEALTH
+    from app.security.mfa import MFA_HEALTH
     from app.learning.outcomes import OUTCOMES_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
 
@@ -134,6 +139,11 @@ async def health_detail(full: bool = False) -> dict:
             "role_gates": dict(GATE_HEALTH),
             "output_guard": dict(OUTPUT_GUARD_HEALTH),
             "slots": dict(SLOTS_HEALTH),
+            "fail2ban": dict(FAIL2BAN_HEALTH),
+            "visitor_token": dict(VISITOR_TOKEN_HEALTH),
+            "turnstile": dict(TURNSTILE_HEALTH),
+            "form_trap": dict(FORM_TRAP_HEALTH),
+            "mfa": dict(MFA_HEALTH),
             "learning_outcomes": dict(OUTCOMES_HEALTH),
             "token_version": dict(TOKEN_VERSION_HEALTH),
             "scheduler": scheduler,
@@ -210,6 +220,11 @@ async def health_detail(full: bool = False) -> dict:
         "role_gates": dict(GATE_HEALTH),
         "output_guard": dict(OUTPUT_GUARD_HEALTH),
         "slots": dict(SLOTS_HEALTH),
+        "fail2ban": dict(FAIL2BAN_HEALTH),
+        "visitor_token": dict(VISITOR_TOKEN_HEALTH),
+        "turnstile": dict(TURNSTILE_HEALTH),
+        "form_trap": dict(FORM_TRAP_HEALTH),
+        "mfa": dict(MFA_HEALTH),
         "learning_outcomes": dict(OUTCOMES_HEALTH),
         "token_version": dict(TOKEN_VERSION_HEALTH),
         "scheduler": scheduler,

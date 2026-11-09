@@ -124,21 +124,36 @@ test('an unparseable frame costs one event, not the stream', async () => {
   }
 })
 
-test('it gives up after three consecutive failures so polling can resume', async () => {
-  const f = withFetch(async () => ({ ok: false, status: 503, body: null }))
+test('after three failures polling resumes, and the reader keeps trying', async () => {
+  let n = 0
+  const f = withFetch(async () => {
+    n += 1
+    // Five failures, then the server is back.
+    return n <= 5 ? { ok: false, status: 503, body: null } : streamOf(['data: {"id":"back"}\n\n'])
+  })
   const states: string[] = []
+  const seen: any[] = []
   let gaveUp = 0
   try {
-    openSse('u', {}, () => {}, (s) => states.push(s), () => { gaveUp += 1 })
-    // 1s + 2s of backoff between the three attempts.
-    await new Promise((r) => setTimeout(r, 3_500))
-    assert.equal(f.calls.length, 3, 'three attempts, then it stops trying')
-    assert.equal(gaveUp, 1)
-    assert.equal(states.at(-1), 'closed')
-    assert.deepEqual(states.slice(0, 2), ['reconnecting', 'reconnecting'])
+    const h = openSse('u', {}, (e) => seen.push(e), (s) => states.push(s), () => { gaveUp += 1 }, () => 5)
+    await new Promise((r) => setTimeout(r, 120))
+    h.close()
+    assert.ok(f.calls.length >= 6, `kept trying: ${f.calls.length} attempts`)
+    assert.equal(gaveUp, 1, 'polling is resumed once, not on every failure')
+    assert.ok(states.includes('open'), 'the stream came back and said so')
+    assert.deepEqual(seen.slice(0, 1), [{ id: 'back' }])
   } finally {
     f.restore()
   }
+})
+
+test('the backoff doubles and is capped at 30 s', async () => {
+  const { sseBackoff, SSE_BACKOFF_CAP_MS } = await import('../src/lib/sse-reader.ts')
+  assert.equal(sseBackoff(1), 1_000)
+  assert.equal(sseBackoff(2), 2_000)
+  assert.equal(sseBackoff(5), 16_000)
+  assert.equal(sseBackoff(6), SSE_BACKOFF_CAP_MS)
+  assert.equal(sseBackoff(50), SSE_BACKOFF_CAP_MS)
 })
 
 test('close() stops the loop and never gives up on the caller', async () => {
@@ -203,7 +218,8 @@ test('a user row without event is appended to messages-incremental', () => {
 
 test('the reader is transport: it never sees a token', () => {
   const src = read('src/lib/sse-reader.ts')
-  assert.match(src, /headers: \{ \.\.\.headers, Accept: 'text\/event-stream' \}/)
+  assert.match(src, /headers: \{ \.\.\.current, Accept: 'text\/event-stream' \}/)
+  assert.match(src, /typeof headers === 'function' \? headers\(\) : headers/)
   assert.doesNotMatch(src, /\btoken\b/)
   assert.doesNotMatch(src, /new EventSource/)
 })
@@ -211,7 +227,7 @@ test('the reader is transport: it never sees a token', () => {
 test('openAgentStream owns auth via authHeaders and validates frames', () => {
   const src = read('src/lib/api.ts')
   assert.match(src, /export function openAgentStream/)
-  assert.match(src, /authHeaders\(\)/)
+  assert.match(src, /\(\) => authHeaders\(\)/)
   assert.match(src, /parseAgentSseEvent\(raw\)/)
   assert.match(src, /\$\{BASE\}\/api\/agent\/stream\/\$\{conversationId\}/)
 })
@@ -235,5 +251,21 @@ test('features/ never imports sse-reader and never reads the access token', () =
     const src = readFileSync(file, 'utf-8')
     assert.doesNotMatch(src, /from '@\/lib\/sse-reader'/, file)
     assert.doesNotMatch(src, /accessToken/, file)
+  }
+})
+
+
+test('every reconnect re-reads the headers (a renewed token is used)', async () => {
+  let n = 0
+  const f = withFetch(async () => ({ ok: false, status: 401, body: null }))
+  try {
+    const h = openSse('u', () => ({ Authorization: `Bearer t${++n}` }), () => {}, () => {}, () => {}, () => 5)
+    await new Promise((r) => setTimeout(r, 40))
+    h.close()
+    const auths = f.calls.map((c) => c.init.headers.Authorization)
+    assert.ok(auths.length >= 2)
+    assert.notEqual(auths[0], auths[1])
+  } finally {
+    f.restore()
   }
 })

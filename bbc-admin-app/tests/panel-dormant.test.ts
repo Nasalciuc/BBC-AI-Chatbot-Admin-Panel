@@ -233,7 +233,8 @@ test('leaving dormant pings at once; dormant slows down, never speeds up', () =>
 const INTERVALS_ON_MASTER: Record<string, number[]> = {
   'src/features/chats/detail.tsx': [500, 2_000, 2_000],
   'src/features/chats/index.tsx': [30_000, 5_000, 10_000],
-  'src/features/chats/components/queue-section.tsx': [5_000],
+  // PR-10: no timer of its own — the heartbeat's queue ids drive the key.
+  'src/features/chats/components/queue-section.tsx': [],
   'src/features/dashboard/owner/index.tsx': [60_000],
   'src/features/chats/to-read-state.ts': [60_000],
   'src/features/teams/index.tsx': [15_000],

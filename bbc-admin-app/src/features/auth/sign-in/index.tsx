@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useRouter, useSearch } from '@tanstack/react-router'
-import { ApiError, loginUser } from '@/lib/api'
+import { ApiError, loginUser, type LoginUser } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSsoStore } from '@/stores/sso-store'
 import { AuthNote, AuthShell, AuthTitle, Field, PasswordField } from '../shell'
 import { inputCls, linkCls, primaryBtn } from '../styles'
 import { BURST_PAUSE_S, SESSION_NOTICE, backAfterSignIn, crmProblem, emailError, problemText, signInProblem, type SignInProblem } from '../view'
+import { MfaStep } from './components/mfa-step'
 
 /**
  * Sign in. Every message is an answer the server really gives: wrong
@@ -30,6 +31,28 @@ export function SignIn() {
   const [ssoDismissed, setSsoDismissed] = useState(false)
   // Honeypot: a hidden field no person fills. The server counts a filled one.
   const honeypotRef = useRef<HTMLInputElement>(null)
+  // The second step of a privileged sign-in (PR-13), while it is on screen.
+  const [mfa, setMfa] = useState<{ mode: 'required' | 'enroll'; token: string } | null>(null)
+
+  function finishLogin(token: string, user: LoginUser) {
+    auth.setUser({
+      accountNo: user.id,
+      email: user.email,
+      name: user.name || '',
+      role: user.role || 'sales',
+      tunnelScope: user.tunnel_scope || '',
+      exp: Date.now() + 24 * 60 * 60 * 1000,
+      avatar_url: user.avatar_url ?? null,
+      phone: user.phone ?? '',
+    })
+    auth.setAccessToken(token)
+    sso.done()
+    // Back where you were, search included (/chats?highlight=… reopens the
+    // chat). Only a place on this site; anything else goes home.
+    const back = backAfterSignIn(search.redirect, window.location.origin)
+    if (back) router.history.replace(back)
+    else navigate({ to: '/', replace: true })
+  }
 
   // "Too many tries": a short pause, counted down on the button.
   useEffect(() => {
@@ -48,24 +71,15 @@ export function SignIn() {
     setBusy(true)
     setProblem(null)
     try {
-      const { token, user } = await loginUser(email.trim(), password, honeypotRef.current?.value || undefined)
-      auth.setUser({
-        accountNo: user.id,
-        email: user.email,
-        name: user.name || '',
-        role: user.role || 'sales',
-        tunnelScope: user.tunnel_scope || '',
-        exp: Date.now() + 24 * 60 * 60 * 1000,
-        avatar_url: user.avatar_url ?? null,
-        phone: user.phone ?? '',
-      })
-      auth.setAccessToken(token)
-      sso.done()
-      // Back where you were, search included (/chats?highlight=… reopens the
-      // chat). Only a place on this site; anything else goes home.
-      const back = backAfterSignIn(search.redirect, window.location.origin)
-      if (back) router.history.replace(back)
-      else navigate({ to: '/', replace: true })
+      const res = await loginUser(email.trim(), password, honeypotRef.current?.value || undefined)
+      // PR-13: owner/admin/dev finish with a second factor. No session yet —
+      // the short-lived mfa_token can do only that step, and is never stored.
+      if (res.mfa && res.mfa_token) {
+        setMfa({ mode: res.mfa, token: res.mfa_token })
+        setPassword('')
+        return
+      }
+      finishLogin(res.token, res.user)
     } catch (e) {
       const p = signInProblem(e instanceof ApiError ? e.status : null, e instanceof Error ? e.message : '')
       setProblem(p)
@@ -74,6 +88,14 @@ export function SignIn() {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (mfa) {
+    return (
+      <AuthShell>
+        <MfaStep mode={mfa.mode} mfaToken={mfa.token} onDone={finishLogin} onCancel={() => setMfa(null)} />
+      </AuthShell>
+    )
   }
 
   if (sso.phase === 'pending' && !ssoDismissed) {

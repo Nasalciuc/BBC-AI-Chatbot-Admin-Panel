@@ -184,7 +184,9 @@ export function Chats() {
 
   // Conversation list — cached per tab, polls every 5s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
-  const listParams: Record<string, string> = { ...tab.params, limit: '50' }
+  // with_counts: the tab badges ride this 5 s poll (PR-10) instead of a
+  // separate /conversations/counts request every 10 s.
+  const listParams: Record<string, string> = { ...tab.params, limit: '50', with_counts: 'true' }
   if (debouncedSearch) listParams.search = debouncedSearch
   if (tunnelFilter) listParams.tunnel = tunnelFilter
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
@@ -235,8 +237,11 @@ export function Chats() {
   )
   const showNudge = !dormant && idleCount >= 3 && !nudgeDismissed
 
-  // Counts — 1 request for tab badges, polls every 10s
-  const { data: counts = { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 } } = useQuery({
+  // Counts — from the list response (PR-10). The standalone counts query
+  // only runs when the list did not carry them (an older backend, or a
+  // count that failed), and then at its old 10 s cadence.
+  const listCounts = convResponse?.counts
+  const { data: fallbackCounts } = useQuery({
     queryKey: ['conversation-counts', tunnelFilter],
     queryFn: async () => {
       const qs = tunnelFilter ? `?tunnel=${tunnelFilter}` : ''
@@ -245,8 +250,13 @@ export function Chats() {
       )
       return { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, ...res.data }
     },
+    // The To read tab fetches no list, so its badges come from this poll.
+    enabled: (reading || !!convResponse) && !listCounts,
     refetchInterval: dormant ? false : 10_000,
   })
+  const counts = listCounts
+    ? { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0, ...listCounts }
+    : (fallbackCounts ?? { my_active: 0, my_closed: 0, all_active: 0, all_closed: 0 })
 
   // Sound handled globally by notify-assignment.ts (loop ring via heartbeat)
 
@@ -334,6 +344,7 @@ export function Chats() {
                 <AlertTriangle aria-label='Flagged' className='size-3.5 text-k-d97a00' />
               </span>
             )}
+            {isFormTrapSuspect(conv) && <SuspectBadge />}
             <span className='flex-none text-xs text-k-6b6b6b'>{rowTime(conv.updated_at, new Date(nowMs))}</span>
           </span>
           <span className='truncate text-[13px] text-k-555555'>{preview}</span>
@@ -661,5 +672,27 @@ export function Chats() {
         )}
       </div>
     </main>
+  )
+}
+
+/** PR-12: the pre-chat form's trap fired (hidden field filled, or filled
+ *  faster than a person can). Not lost — held from the automatic CRM push
+ *  until a human looks. */
+function isFormTrapSuspect(conv: Conversation): boolean {
+  // The list lifts metadata.suspect to the top level (it carries no metadata);
+  // a full conversation object still has it inside metadata.
+  const lifted = conv.suspect
+  const nested = (conv.metadata as { suspect?: unknown } | undefined)?.suspect
+  return (lifted ?? nested) === 'form_trap'
+}
+
+function SuspectBadge() {
+  return (
+    <span
+      title="The form's bot check fired. Not sent to the CRM automatically — push it from Leads if it is a real client."
+      className='flex-none rounded-full bg-k-f0f0f0 px-1.5 py-px text-xs font-bold text-k-555555'
+    >
+      Suspect
+    </span>
   )
 }

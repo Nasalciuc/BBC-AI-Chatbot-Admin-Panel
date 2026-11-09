@@ -200,3 +200,31 @@ class TestStageCountersIgnoreAiOpening:
         history = [{"role": "ai", "content": "Welcome! Where are you flying?"}]
         user_msg_count = sum(1 for m in history if m.get("role") == "user")
         assert user_msg_count == 0
+
+
+# ── PR-12: the start door issues the token and runs the form trap ──
+
+class TestStartVisitorToken:
+    @pytest.mark.asyncio
+    async def test_start_returns_a_visitor_token_and_marks_a_trap(self, monkeypatch):
+        from app import flags
+        from config.settings import settings
+        from app.security import visitor_token as vt
+
+        flags._reset_for_tests()
+        monkeypatch.setattr(settings, "visitor_token_secret", "test-visitor-secret-0123456789abcdef")
+        monkeypatch.setenv("FORM_TRAP_MODE", "mark")
+        gen = GeneratedResponse(text="Hello!", model_used="sonnet", cost=0.0)
+        p_block, p_conv, p_count, p_gen, p_add = _patches(gen=gen)
+        with p_block, p_conv as conv_mock, p_count, p_gen, p_add:
+            res = await chat_start(
+                _start_request(form_check={"website": "spam.example", "elapsed_ms": 9000}),
+                _request_mock(), None,
+            )
+        assert res.visitor_token
+        assert vt.check(res.visitor_token, "visitor-uuid-1") == "ok"
+        # The trap marked the conversation; the visitor was NOT refused.
+        meta = conv_mock.await_args.kwargs["metadata"]
+        assert meta["suspect"] == "form_trap"
+        assert res.conversation_id == _CONV_ID
+        flags._reset_for_tests()

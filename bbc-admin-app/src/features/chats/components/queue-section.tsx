@@ -56,10 +56,12 @@ export function QueueSection({
     return () => clearInterval(t)
   }, [])
 
+  // No timer of its own (PR-10): the heartbeat carries the queue ids, and the
+  // key changes with them, so the rows refetch exactly when the line changes.
   const { data: rows = [] } = useQuery({
     queryKey: ['queue-rows', queueIds.join(',')],
-    enabled: queueIds.length > 0,
-    refetchInterval: dormant ? false : 5_000,
+    enabled: queueIds.length > 0 && !dormant,
+    staleTime: 30_000,
     queryFn: async () => {
       const res = await getConversations({ assigned_to: 'none', status: 'active', limit: '50' })
       const wanted = new Set(queueIds)

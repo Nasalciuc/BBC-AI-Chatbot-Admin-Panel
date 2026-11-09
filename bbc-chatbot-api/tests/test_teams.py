@@ -336,3 +336,29 @@ async def test_regression_owner_conversations_ok():
         async with _client() as c:
             r = await c.get("/api/conversations")
     assert r.status_code == 200
+
+
+# ── PR-10: counts ride the list ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_list_with_counts_includes_badges():
+    counts = {"my_active": 2, "my_closed": 1, "all_active": 5, "all_closed": 9}
+    with patch("app.db.supabase.get_conversations", new_callable=AsyncMock, return_value=([], 0)), \
+         patch("app.db.supabase.get_conversation_counts", new_callable=AsyncMock, return_value=counts):
+        _as("owner")
+        async with _client() as c:
+            r = await c.get("/api/conversations?with_counts=true")
+    assert r.status_code == 200
+    assert r.json()["counts"] == counts
+
+
+@pytest.mark.asyncio
+async def test_list_without_counts_unchanged_and_failed_counts_never_fail_list():
+    with patch("app.db.supabase.get_conversations", new_callable=AsyncMock, return_value=([], 0)), \
+         patch("app.db.supabase.get_conversation_counts", new_callable=AsyncMock, side_effect=RuntimeError("x")):
+        _as("owner")
+        async with _client() as c:
+            r1 = await c.get("/api/conversations")
+            r2 = await c.get("/api/conversations?with_counts=true")
+    assert "counts" not in r1.json()
+    assert r2.json()["success"] is True and r2.json()["counts"] is None

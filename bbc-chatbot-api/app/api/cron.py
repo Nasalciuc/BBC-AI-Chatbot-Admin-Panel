@@ -6,6 +6,7 @@ Auth: CRON_SECRET header (not JWT).
 import hmac
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -222,6 +223,10 @@ async def run_aaa_backfill(days: int = 30) -> dict:
                 continue
             if not conv.get("last_user_message_at"):
                 conv["_no_engagement"] = True
+            from app.security.form_trap import holds_crm
+            if holds_crm(conv.get("metadata")):
+                skipped += 1
+                continue
             result = await submit_abandoned_to_crm(conv, lead)
             if result.success and result.request_id:
                 _marked = await db.mark_lead_created_in_crm(
@@ -375,6 +380,11 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "dedup_twin"})
                 continue
 
+            from app.security.form_trap import holds_crm
+            if holds_crm(conv.get("metadata")):
+                # PR-12: a form_trap conversation waits for a human push.
+                results.append({"id": cid, "status": "hold_form_trap"})
+                continue
             if not _in_crm_loaded:
                 _in_crm = await _contacts_already_in_crm()
                 _in_crm_loaded = True
@@ -624,6 +634,9 @@ async def run_crm_orphan_backstop() -> dict:
                 email=conv.get("visitor_email") or "",
                 phone=conv.get("visitor_phone") or "",
             )
+            from app.security.form_trap import holds_crm
+            if holds_crm(conv.get("metadata")):
+                continue  # PR-12: waits for a human push from the panel
             result = await push_lead_to_crm(
                 lead,
                 visitor,
@@ -1001,3 +1014,66 @@ async def _ledger_cost_for(day: str, model: str) -> float:
             break
         offset += _LEDGER_PAGE
     return round(total, 6)
+
+
+# ── Weekly security report (PR-13) ────────────────────────────────────────
+# Two levels of alert: the immediate ones (decoys, Basic, auth attacks, a new
+# login place) go out as they happen; everything else is noise until it is
+# summed here once a week — bans per jail, decoys touched, new login places,
+# second-factor outcomes, role-gate refusals. Counts only, no PII.
+@router.post("/cron/security-weekly")
+async def security_weekly(request: Request):
+    _require_cron(request)
+    from datetime import timedelta
+
+    from app.security.ban_guard import FAIL2BAN_HEALTH
+    from app.security.decoys import DECOY_HEALTH
+    from app.security.form_trap import FORM_TRAP_HEALTH
+    from app.security.gates import GATE_HEALTH
+    from app.security.mfa import MFA_HEALTH
+    from app.security.visitor_token import VISITOR_TOKEN_HEALTH
+
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+    async def _rows(table: str, cols: str, ts_col: str) -> Optional[list]:
+        try:
+            res = await db._run_sync(
+                lambda: db.get_client().table(table).select(cols).gte(ts_col, since).limit(5000).execute(),
+                label=table,
+            )
+            return getattr(res, "data", None) or []
+        except Exception as e:
+            logger.warning(f"[security-weekly] {table} unavailable: {type(e).__name__}: {e}")
+            return None
+
+    bans = await _rows("security_bans", "jail", "last_seen_at")
+    places = await _rows("login_locations", "user_id", "first_seen_at")
+    by_jail: dict = {}
+    for r in bans or []:
+        by_jail[r.get("jail") or "?"] = by_jail.get(r.get("jail") or "?", 0) + 1
+
+    report = {
+        "since": since,
+        "bans_by_jail": by_jail if bans is not None else "security_bans unavailable",
+        "new_login_places": len(places) if places is not None else "login_locations unavailable",
+        "since_restart": {
+            "fail2ban": {k: FAIL2BAN_HEALTH[k] for k in ("would_ban", "banned", "blocked", "staff_alerts", "poisoned_skipped")},
+            "decoys": dict(DECOY_HEALTH),
+            "mfa": {k: MFA_HEALTH[k] for k in ("challenged", "enroll_required", "enrolled", "passed", "failed", "recovery_used", "new_place_alerts")},
+            "role_gates": dict(GATE_HEALTH),
+            "visitor_token": {k: VISITOR_TOKEN_HEALTH[k] for k in ("missing", "invalid", "expired", "mismatch", "refused")},
+            "form_trap": dict(FORM_TRAP_HEALTH),
+        },
+    }
+    lines = [f"Security week since {since[:10]}"]
+    lines.append("Bans by jail: " + (", ".join(f"{k}={v}" for k, v in sorted(by_jail.items())) or "none")
+                 if bans is not None else "Bans by jail: history unavailable (042 not applied)")
+    lines.append(f"New login places: {report['new_login_places']}")
+    for name, block in report["since_restart"].items():
+        lines.append(f"{name}: " + ", ".join(f"{k}={v}" for k, v in block.items()))
+    try:
+        from app.services.email import send_ops_alert_email
+        await send_ops_alert_email("weekly security report", "\n".join(lines))
+    except Exception as e:
+        logger.warning(f"[security-weekly] email failed: {type(e).__name__}: {e}")
+    return {"success": True, "data": report, "count": 1}

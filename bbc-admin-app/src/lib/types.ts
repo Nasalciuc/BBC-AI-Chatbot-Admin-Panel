@@ -48,6 +48,8 @@ export interface Conversation {
   metadata?: Record<string, unknown>
   has_flagged_content?: boolean
   flagged_reason?: string | null
+  /** metadata.suspect lifted by the list (PR-12 form trap): 'form_trap' when held. */
+  suspect?: string | null
   /** List rows only: the newest non-system message, trimmed to 140 chars.
    *  Absent for supervisors and PMs, and when the preview read failed.
    *  An agent gets null on a chat that isn't theirs (blind take). */
@@ -68,6 +70,9 @@ export interface ConversationsResponse {
   success: boolean
   data: Conversation[]
   count: number
+  /** Tab badges, present when the list was asked `with_counts=true` (PR-10).
+   *  null when the count failed alongside a list that did not. */
+  counts?: Partial<Record<'my_active' | 'my_closed' | 'all_active' | 'all_closed', number>> | null
 }
 
 // ── Leads ─────────────────────────────────────────────────────

@@ -1607,12 +1607,23 @@ async def _pipeline(
                         _conv_meta = _meta_upd
                     _client_ip = _conv_meta.get("client_ip")
                     _suid = visitor_id or _conv_meta.get("visitor_id")
-                    _crm = await submit_to_crm(
-                        _lead_fresh, visitor, cid,
-                        conv_metadata=_conv_meta,
-                        client_ip=_client_ip,
-                        suid=_suid,
-                    )
+                    from app.security.form_trap import holds_crm as _holds_crm
+                    if _holds_crm(_conv_meta):
+                        # PR-12: a form_trap conversation waits for a human
+                        # (the panel's Push); nothing goes out on its own.
+                        from app.services.crm import CRMResult as _CRMResult
+                        logger.info(f"[{cid}] CRM hold: suspect=form_trap")
+                        # Visible state: the lead joins the panel's "CRM
+                        # pending" work-list with its reason, like any gate.
+                        await db.update_lead_crm_push_state(_lead_fresh["id"], gate_reason="form_trap")
+                        _crm = _CRMResult(success=False, error="hold:form_trap")
+                    else:
+                        _crm = await submit_to_crm(
+                            _lead_fresh, visitor, cid,
+                            conv_metadata=_conv_meta,
+                            client_ip=_client_ip,
+                            suid=_suid,
+                        )
                     if _crm.success:
                         _marked = await db.mark_lead_created_in_crm(_lead_fresh["id"])
                         if _marked is None:

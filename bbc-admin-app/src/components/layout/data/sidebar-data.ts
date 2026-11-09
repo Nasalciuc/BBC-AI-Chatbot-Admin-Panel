@@ -5,6 +5,7 @@ import {
   KeyRound,
   LayoutGrid,
   MessageCircle,
+  ShieldAlert,
   SlidersHorizontal,
   SquareCheck,
   Users,
@@ -22,6 +23,7 @@ export type NavKey =
   | 'users'
   | 'assist'
   | 'learning'
+  | 'bans'
   | 'settings'
 
 export type PanelNavItem = {
@@ -40,13 +42,15 @@ export function isOperatorRole(role: string | undefined): boolean {
  * The panel menu, per role — the design canvas's menu ("what we can build
  * now"), restricted to pages that exist in this build:
  *   - agents: Conversations, Tasks, Dashboard (Your day) | Knowledge | Settings
- *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant, Learning | Settings
+ *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant, Learning, Security · Bans | Settings
  *   - QA: Conversations, Dashboard, Leads | Assistant | Settings
  *   - supervisor / PM: Conversations, Tasks, Dashboard | Team | Settings
  * Assistant (the knowledge base editor) is the existing page, not redesigned yet.
  * Learning (v2 PR-8, the question variants) is v2's page, also not redesigned;
  * it shows for the roles the backend lets in (CAN_REVIEW_LESSONS =
  * owner/admin/dev), so a project manager never lands on a page of 403s.
+ * Security · Bans (v2 PR-11, the ban list and Unban) likewise: v2's page, for
+ * the backend's MANAGEMENT set (app/security/gates.py) — owner/admin/dev.
  */
 export function getNavGroups(
   role: UserRole,
@@ -78,6 +82,9 @@ export function getNavGroups(
         : []),
     ...(permissions.canReviewLearning
       ? [{ key: 'learning' as const, title: 'Learning', url: '/learning', icon: GraduationCap }]
+      : []),
+    ...(permissions.canManageBans
+      ? [{ key: 'bans' as const, title: 'Security · Bans', url: '/security/bans', icon: ShieldAlert }]
       : []),
   ]
   return [g1, g2].filter((g) => g.length > 0)

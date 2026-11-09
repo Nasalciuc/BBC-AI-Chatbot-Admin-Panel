@@ -1,41 +1,72 @@
 {
   "framework": "vite",
   "rewrites": [
-    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+    {
+      "source": "/widget-embed",
+      "destination": "/widget-embed.html"
+    },
+    {
+      "source": "/((?!assets/|widget/|widget-embed\\.html).*)",
+      "destination": "/index.html"
+    }
   ],
   "headers": [
     {
       "source": "/assets/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
       ]
     },
     {
       "source": "/images/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=604800" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        }
       ]
     },
     {
       "source": "/notification.wav",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=604800" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        }
       ]
     },
     {
       "source": "/heartbeat-worker.js",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=300" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300"
+        }
+      ]
+    },
+    {
+      "source": "/widget/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300, stale-while-revalidate=86400"
+        }
       ]
     },
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Referrer-Policy", "value": "strict-origin" }
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin"
+        }
       ]
     },
     {
-      "source": "/widget-embed",
+      "source": "/widget-embed(.html)?",
       "headers": [
         {
           "key": "Content-Security-Policy",
