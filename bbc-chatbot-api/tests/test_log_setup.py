@@ -79,6 +79,25 @@ def test_extra_keys_become_attributes_but_never_a_persons_data():
         assert value not in line, "the value itself never reaches the line"
 
 
+@pytest.mark.parametrize("key", [
+    "visitor_email", "visitor_phone", "phone_number", "access_token", "refresh_token",
+    "refreshToken", "api_key", "apiKey", "APIKey", "passwd", "pass_word", "client_secret",
+    "session_cookie", "customer_name", "Authorization",
+])
+def test_a_contact_or_a_credential_is_dropped_wherever_the_word_sits(key):
+    line = JsonFormatter().format(_record(**{key: "s3cr3t-value"}))
+    assert key not in json.loads(line)
+    assert "s3cr3t-value" not in line
+
+
+@pytest.mark.parametrize("key", [
+    "input_tokens", "output_tokens", "cache_read_tokens", "duration_ms", "status",
+    "label", "repeat_count", "distinct_ids", "phones_checked_total",
+])
+def test_a_key_that_only_resembles_one_stays(key):
+    assert json.loads(JsonFormatter().format(_record(**{key: 7})))[key] == 7
+
+
 def test_the_request_id_is_stamped_when_there_is_one():
     rec = _record()
     tok = request_id_var.set("req-123456")

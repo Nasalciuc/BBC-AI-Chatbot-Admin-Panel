@@ -61,12 +61,34 @@ _LEVELS = {
     logging.CRITICAL: "error",
 }
 
-# Never written as attributes, whoever passes them in `extra=`.
+# Never written as attributes, whoever passes them in `extra=`. Generic words
+# match only exactly: `content` or `text` alone is a message, `label_text` is
+# not. (`name` is not here: it is the logger's own attribute, written as
+# "logger", and logging refuses it in extra=.)
 _FORBIDDEN_KEYS = frozenset({
-    "email", "phone", "name", "first_name", "last_name", "full_name",
-    "visitor_name", "content", "text", "body", "message_text", "transcript",
+    "email", "phone", "first_name", "last_name", "full_name", "visitor_name",
+    "customer_name", "client_name", "contact_name", "username", "user_name",
+    "content", "text", "body", "message_text", "transcript",
     "token", "password", "authorization", "cookie", "jwt", "secret",
 })
+
+# A contact or a credential, wherever the word sits in the key:
+# visitor_email, phone_number, access_token, refreshToken, api_key, passwd.
+# Whole words of the key only, so input_tokens (a count) still passes.
+_FORBIDDEN_WORDS = frozenset({
+    "email", "phone", "token", "password", "passwd", "secret", "authorization",
+    "cookie", "jwt", "apikey", "transcript",
+})
+_KEY_WORDS = re.compile(r"[_\-.]|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _forbidden(key: str) -> bool:
+    """True for a key that names a person's data or a credential."""
+    if key.lower() in _FORBIDDEN_KEYS:
+        return True
+    words = [w.lower() for w in _KEY_WORDS.split(key) if w]
+    pairs = (a + b for a, b in zip(words, words[1:]))  # api_key, pass_word
+    return any(w in _FORBIDDEN_WORDS for w in words) or any(p in _FORBIDDEN_WORDS for p in pairs)
 
 # Attributes every LogRecord has, plus the ones this module writes itself and
 # uvicorn's colour copy of its own message.
@@ -108,7 +130,7 @@ class JsonFormatter(logging.Formatter):
         if rid:
             out["rid"] = rid
         for key, value in record.__dict__.items():
-            if key in _RECORD_KEYS or key.startswith("_") or key.lower() in _FORBIDDEN_KEYS:
+            if key in _RECORD_KEYS or key.startswith("_") or _forbidden(key):
                 continue
             out[key] = value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
         if record.exc_info:
