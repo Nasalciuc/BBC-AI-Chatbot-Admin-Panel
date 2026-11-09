@@ -974,11 +974,12 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
 async def get_blind_inputs(conv_id: str) -> Optional[dict]:
     """The five fields that decide whether an agent may read a chat yet
     (blind take): status, mode, who has it, who was talking in it, and
-    whether it is in the shared line. One tiny row; None when there is no
-    such chat. A read that fails is logged and RAISED, never None: the
-    caller must tell "no chat" from "couldn't look" (rule 7), because it
-    fails closed on the second and lets the first through."""
-    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+    whether it is in the shared line — plus its tunnel and team, for a
+    caller that checks the whole door (a task linking the chat). One tiny
+    row; None when there is no such chat. A read that fails is logged and
+    RAISED, never None: the caller must tell "no chat" from "couldn't look"
+    (rule 7), because it fails closed on the second and lets the first through."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id, tunnel, team_id"
 
     def _q(with_queued_at: bool):
         return (
@@ -1494,6 +1495,22 @@ async def get_lead_full(lead_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_lead_full error: {e}")
         return None
+
+
+async def get_lead_link(lead_id: str) -> Optional[dict]:
+    """A lead's id and its chat's, for a task made on the lead. None when
+    there is no such lead; a read that fails is logged and RAISED, never
+    None (rule 7): "no lead" is a 404, "couldn't look" must not be one."""
+    def _q():
+        return get_client().table("leads").select("id, conversation_id").eq("id", lead_id).limit(1).execute()
+
+    try:
+        res = await _run_sync(_q, label="tasks")
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"get_lead_link({lead_id}) failed: {e}")
+        raise
 
 
 async def update_lead(lead_id: str, payload: dict) -> Optional[dict]:

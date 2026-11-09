@@ -358,6 +358,78 @@ def test_an_agent_s_chat_view_is_still_only_their_own_and_a_bad_id_is_a_400():
     assert bad.status_code == 400 and lf.await_count == 1
 
 
+LEAD = "0b8a7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d"
+OTHER_CHAT = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6e"
+
+
+def chat_row(**over) -> dict:
+    """What get_blind_inputs reads: Victor's own sales chat, team 1."""
+    base = {"id": CHAT, "status": "active", "mode": "human", "assigned_agent_id": "victor",
+            "engaged_agent_id": None, "queued_at": None, "tunnel": "sales", "team_id": "team-1"}
+    base.update(over)
+    return base
+
+
+def test_a_task_links_only_a_chat_its_maker_may_read():
+    # The task's panel shows the chat's contact and the words around it: a
+    # chat the maker can't open must not reach them through a task.
+    def post(role, uid, row, cid=CHAT):
+        ins = AsyncMock(side_effect=lambda r: {"id": "new", **r})
+        with patched(insert_follow_up=ins, get_blind_inputs=AsyncMock(return_value=row)):
+            r = client(role, uid).post("/api/tasks", json={"title": "Call back", "conversation_id": cid})
+        return r, ins
+
+    ok, ins = post("sales", "victor", chat_row())
+    assert ok.status_code == 200 and ins.call_args.args[0]["conversation_id"] == CHAT
+    tunnel, ins = post("sales", "victor", chat_row(tunnel="support"))
+    assert tunnel.status_code == 403 and ins.await_count == 0
+    # Waiting for a person and not his: the blind take holds here too.
+    blind, ins = post("sales", "victor", chat_row(status="needs_agent", assigned_agent_id=None))
+    assert blind.status_code == 403 and "Take the chat" in blind.json()["detail"] and ins.await_count == 0
+    gone, ins = post("sales", "victor", None)
+    assert gone.status_code == 404 and ins.await_count == 0
+    team, _ = post("supervisor", "irina", chat_row(assigned_agent_id="rohan"))
+    other_team, ins = post("supervisor", "irina", chat_row(team_id="team-9"))
+    assert team.status_code == 200 and other_team.status_code == 403 and ins.await_count == 0
+    # Managers read every chat; the chat must still exist.
+    owner, _ = post("owner", "alex", chat_row(tunnel="support", team_id=None, status="needs_agent", assigned_agent_id=None))
+    assert owner.status_code == 200
+
+
+def test_a_chat_that_can_t_be_checked_or_isn_t_an_id_links_nothing():
+    ins = AsyncMock(side_effect=lambda r: {"id": "new", **r})
+    look = AsyncMock(side_effect=RuntimeError("network"))
+    with patched(insert_follow_up=ins, get_blind_inputs=look):
+        down = client("sales", "victor").post("/api/tasks", json={"title": "x", "conversation_id": CHAT})
+        bad = client("sales", "victor").post("/api/tasks", json={"title": "x", "conversation_id": "chat-4810"})
+        bad_lead = client("sales", "victor").post("/api/tasks", json={"title": "x", "lead_id": "l1"})
+    assert down.status_code == 503 and bad.status_code == 400 and bad_lead.status_code == 400
+    assert look.await_count == 1 and ins.await_count == 0
+
+
+def test_a_task_made_on_a_lead_checks_the_lead_s_chat():
+    def post(lead, row=None, **body):
+        ins = AsyncMock(side_effect=lambda r: {"id": "new", **r})
+        with patched(insert_follow_up=ins, get_lead_link=AsyncMock(return_value=lead),
+                     get_blind_inputs=AsyncMock(return_value=row)):
+            r = client("sales", "victor").post("/api/tasks", json={"title": "x", "lead_id": LEAD, **body})
+        return r, ins
+
+    ok, ins = post({"id": LEAD, "conversation_id": CHAT}, chat_row())
+    assert ok.status_code == 200 and ins.call_args.args[0]["conversation_id"] == CHAT
+    assert ins.call_args.args[0]["lead_id"] == LEAD
+    support, ins = post({"id": LEAD, "conversation_id": CHAT}, chat_row(tunnel="support"))
+    assert support.status_code == 403 and ins.await_count == 0
+    missing, ins = post(None)
+    assert missing.status_code == 404 and ins.await_count == 0
+    # A lead and a chat sent together are one client's, or nothing is made.
+    mixed, ins = post({"id": LEAD, "conversation_id": OTHER_CHAT}, chat_row(), conversation_id=CHAT)
+    assert mixed.status_code == 400 and ins.await_count == 0
+    # A lead with no chat links only the lead: there's no chat to show.
+    alone, ins = post({"id": LEAD, "conversation_id": None})
+    assert alone.status_code == 200 and ins.call_args.args[0]["conversation_id"] is None
+
+
 def test_a_task_from_the_dashboard_keeps_the_line_it_came_from():
     ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
     with patched(insert_follow_up=ins):
@@ -385,6 +457,26 @@ class _Query:
 
     def execute(self):
         return type("Res", (), {"data": [{"id": "victor", "role": "sales"}]})()
+
+
+def test_the_lead_read_tells_no_lead_from_a_failed_read():
+    class _Rows(_Query):
+        def __init__(self, log, rows=None, boom=None):
+            super().__init__(log)
+            self.rows, self.boom = rows, boom
+
+        def execute(self):
+            if self.boom:
+                raise self.boom
+            return type("Res", (), {"data": self.rows})()
+
+    with patch.object(db, "get_client", return_value=_Rows([], rows=[{"id": "l1", "conversation_id": "c1"}])):
+        assert run(db.get_lead_link("l1")) == {"id": "l1", "conversation_id": "c1"}
+    with patch.object(db, "get_client", return_value=_Rows([], rows=[])):
+        assert run(db.get_lead_link("l1")) is None
+    with patch.object(db, "get_client", return_value=_Rows([], boom=RuntimeError("network"))):
+        with pytest.raises(RuntimeError):
+            run(db.get_lead_link("l1"))
 
 
 def test_qa_isn_t_someone_a_task_can_go_to():

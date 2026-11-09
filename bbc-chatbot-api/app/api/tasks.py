@@ -44,7 +44,8 @@ async def _reach(user: dict) -> dict:
         lookup = db.get_team_ids_for_supervisor if role == "supervisor" else db.get_team_ids_for_pm
         team_ids = await lookup(uid) or []
         members = await db.get_operator_ids_for_teams(team_ids) if team_ids else []
-        return {"role": role, "id": uid, "masked": True, "members": sorted(set(members) | {uid}), "has_team": bool(team_ids)}
+        return {"role": role, "id": uid, "masked": True, "members": sorted(set(members) | {uid}),
+                "has_team": bool(team_ids), "team_ids": list(team_ids)}
     return {"role": role, "id": uid, "masked": False, "members": [uid], "has_team": False}
 
 
@@ -311,6 +312,57 @@ class TaskIn(BaseModel):
     note: Optional[str] = Field(None, max_length=300)
 
 
+_CHAT_UNCHECKED = "Couldn’t check this chat. Try again in a moment."
+
+
+def _id_or_400(value: Optional[str], what: str) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        raise HTTPException(400, f"Unknown {what}")
+
+
+async def _chat_for_task(user: dict, reach: dict, conversation_id: Optional[str], lead_id: Optional[str]) -> Optional[str]:
+    """The chat a new task links, checked like opening the chat.
+
+    A task shows its chat to whoever opens it — the client's contact and the
+    words around the moment it was made — so it links only a chat its maker
+    may read now, by the rules of the chat's own stream (agent.py): an
+    agent's own tunnel, and never a waiting chat that isn't theirs yet (blind
+    take); a supervisor's or project manager's team. Owner, admin, dev and QA
+    read every chat. Made on a lead, the lead's chat is the one checked; a
+    lead and a chat sent together must be the same client's. A check that
+    can't be made links nothing (503)."""
+    if lead_id:
+        try:
+            lead = await db.get_lead_link(lead_id)
+        except Exception as e:
+            raise HTTPException(503, _CHAT_UNCHECKED) from e
+        if not lead:
+            raise HTTPException(404, "Lead not found")
+        if conversation_id and lead.get("conversation_id") and lead["conversation_id"] != conversation_id:
+            raise HTTPException(400, "That lead is another chat’s")
+        conversation_id = conversation_id or lead.get("conversation_id")
+    if not conversation_id:
+        return None
+    try:
+        row = await db.get_blind_inputs(conversation_id)
+    except Exception as e:
+        raise HTTPException(503, _CHAT_UNCHECKED) from e
+    if not row:
+        raise HTTPException(404, "Chat not found")
+    from app.api.conversations import _enforce_tunnel, _taken_blind
+
+    _enforce_tunnel(user, row.get("tunnel"))
+    if reach["role"] in TEAM_LEADS and row.get("team_id") not in (reach.get("team_ids") or []):
+        raise HTTPException(403, "You can link only your team’s chats")
+    if _taken_blind(user, row):
+        raise HTTPException(403, "Take the chat first: a task on it shows what the client wrote")
+    return conversation_id
+
+
 async def _check_assignee(reach: dict, assignee_id: str) -> None:
     if assignee_id == reach["id"]:
         return
@@ -324,6 +376,8 @@ async def _check_assignee(reach: dict, assignee_id: str) -> None:
 
 @router.post("/tasks")
 async def create_task(body: TaskIn, user: dict = Depends(get_current_user)):
+    conversation_id = _id_or_400(body.conversation_id, "chat")
+    lead_id = _id_or_400(body.lead_id, "lead")
     reach = await _reach(user)
     if body.unowned and not _can_assign(reach):
         raise HTTPException(403, "Only a supervisor or manager leaves a task Unowned")
@@ -331,11 +385,8 @@ async def create_task(body: TaskIn, user: dict = Depends(get_current_user)):
     if assignee:
         await _check_assignee(reach, assignee)
     due = _iso(body.due_at)
+    conversation_id = await _chat_for_task(user, reach, conversation_id, lead_id)
     try:
-        conversation_id, lead_id = body.conversation_id, body.lead_id
-        if lead_id and not conversation_id:
-            full = await db.get_lead_full(lead_id)
-            conversation_id = (full or {}).get("conversation_id")
         task = await db.insert_follow_up({
             "title": body.title.strip(), "kind": body.kind, "source": body.source,
             "quote": (body.note or "").strip() or None,
