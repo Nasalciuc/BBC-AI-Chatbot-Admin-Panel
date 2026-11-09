@@ -14,6 +14,36 @@ export function jwtClaims(token: string): Record<string, unknown> | null {
   }
 }
 
+/** The signed-in user as a token says. Fields as the auth store keeps them. */
+export interface SessionUser {
+  accountNo: string
+  email: string
+  name: string
+  role: string
+  tunnelScope: string
+  exp: number
+  avatar_url: string | null
+  phone: string
+}
+
+/**
+ * The user from a token's claims, for the sign-in guard and for a newer token
+ * of the same person (a renewal, or a save in Settings → Profile in another
+ * tab: the new name, photo and phone come with it).
+ */
+export function userFromClaims(claims: Record<string, unknown>): SessionUser {
+  return {
+    accountNo: (claims.sub as string) || '',
+    email: (claims.email as string) || '',
+    name: (claims.name as string) || '',
+    role: (claims.role as string) || 'sales',
+    tunnelScope: (claims.tunnel_scope as string) || '',
+    exp: typeof claims.exp === 'number' ? claims.exp * 1000 : Date.now() + 86400000,
+    avatar_url: (claims.avatar_url as string) || null,
+    phone: (claims.phone as string) || '',
+  }
+}
+
 /**
  *  - 'none':   the cookie holds this tab's token, or none;
  *  - 'token':  the same person in the same role with a newer token (a

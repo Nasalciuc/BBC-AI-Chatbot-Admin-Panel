@@ -3,6 +3,7 @@ import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { getCookie } from '@/lib/cookies'
 import { useAuthStore } from '@/stores/auth-store'
 import { withoutSignInTokens } from '@/lib/bands'
+import { userFromClaims } from '@/lib/session-swap'
 
 function parseJwtPayload(token: string): Record<string, unknown> | null {
   try {
@@ -32,16 +33,7 @@ export const Route = createFileRoute('/_authenticated')({
         // An expired session says so on the sign-in page.
         throw redirect({ to: '/sign-in', search: claims ? { redirect: back, session: 'ended' } : { redirect: back } })
       }
-      auth.setUser({
-        accountNo: (claims.sub as string) || '',
-        email: (claims.email as string) || '',
-        name: (claims.name as string) || '',
-        role: (claims.role as string) || 'sales',
-        tunnelScope: (claims.tunnel_scope as string) || '',
-        exp: typeof claims.exp === 'number' ? claims.exp * 1000 : Date.now() + 86400000,
-        avatar_url: (claims.avatar_url as string) || null,
-        phone: (claims.phone as string) || '',
-      })
+      auth.setUser(userFromClaims(claims))
     }
   },
   component: AuthenticatedLayout,
