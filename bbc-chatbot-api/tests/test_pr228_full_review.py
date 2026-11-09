@@ -73,7 +73,7 @@ class _Redis:
 
     async def ttl(self, key):
         await self._maybe("ttl")
-        return 100
+        return self.keys.get(key) or -2  # what SET gave it; -2: no such key
 
     async def incr(self, key):
         await self._maybe("incr")
@@ -118,6 +118,35 @@ async def test_a_ban_set_whose_repeat_count_fails_stands_at_its_base_length(_ban
     await ban_guard._ban_identity(store, "8.8.8.8", "honeypot", 3600, alert=True)
     rows.assert_awaited_once_with("8.8.8.8", "honeypot", 3600)
     assert ban_guard.FAIL2BAN_HEALTH["ban_errors"] == 0
+
+
+class _LostReply(_Redis):
+    """EXPIRE on the ban is applied, then its reply is lost."""
+
+    def __init__(self, ttl_fails=False):
+        super().__init__()
+        self.ttl_fails = ttl_fails
+        self.ttl_now = None
+
+    async def expire(self, key, seconds):
+        if key.startswith("ban:"):
+            self.ttl_now = seconds  # applied …
+            raise ConnectionError("reply lost")  # … but the reply never came
+        return True
+
+    async def ttl(self, key):
+        if self.ttl_fails:
+            raise ConnectionError("still down")
+        return self.ttl_now if self.ttl_now is not None else 100
+
+
+@pytest.mark.asyncio
+async def test_a_lost_reply_after_the_claim_records_the_length_redis_reads_back(_bans):
+    _guard, ban_store, _rows, _alert = _bans
+    # incr says 2: the doubled length (7200 s) was applied, its reply lost.
+    assert await ban_store.BanStore(redis_client=_LostReply()).ban("5.5.5.5", "honeypot", 3600) == (7200, True)
+    # Nothing to read back either: the base length, still created.
+    assert await ban_store.BanStore(redis_client=_LostReply(ttl_fails=True)).ban("5.5.5.6", "honeypot", 3600) == (3600, True)
 
 
 @pytest.mark.asyncio
