@@ -278,24 +278,32 @@ def _without_foreign(text: str, own: set[str]) -> str:
     return out
 
 
+# Stored and sent in 'enforce' when even the plain scrub breaks: nothing of a
+# reply that could not be checked goes out.
+WITHHELD_REPLY = "Sorry, I couldn't send that reply. A consultant will follow up with the details."
+
+
 def guard_failed(text: str, err: BaseException) -> str:
     """The guard itself broke on a reply about to be stored (the caller logs
-    `err`): the reply is kept — add_message never loses one — and the failure
-    counted. In 'enforce' every contact that is not the brand's goes, the
-    client's own too (fail closed); in 'log' the text is kept as it would have
-    been."""
+    `err`): a message is still stored — add_message never loses one — and the
+    failure counted. In 'enforce' every contact that is not the brand's goes,
+    the client's own too (fail closed), and if that scrub breaks as well the
+    reply is withheld whole; in 'log' the text is kept as it would have been."""
     OUTPUT_GUARD_HEALTH["errors"] += 1
     if _mode() != "enforce":
         return text
     try:
         return _scrub(text)[0]
-    except Exception as e:  # noqa: silent — logged with the guard's own failure just above; the reply is stored as written
-        logger.error(f"[output-guard] scrub failed too, reply kept as written: {type(e).__name__}")
-        return text
+    except Exception as e:
+        logger.error(f"[output-guard] scrub failed too, reply withheld: {type(e).__name__}")
+        return WITHHELD_REPLY
 
 
-# The end of a sentence or a line. A URL, an e-mail or a phone never spans one.
+# The end of a sentence or a line. A URL or an e-mail never spans one; a phone
+# can ("555. 123. 4567" is one to _PHONE_RE), so an end right after a digit
+# (separators aside) is not a place to cut.
 _PIECE_END = re.compile(r"[.!?](?=\s)\s*|\n\s*")
+_PHONE_TAIL = " \t()-.+"
 
 
 class StreamGuard:
@@ -319,6 +327,8 @@ class StreamGuard:
         self._held += delta
         cut = 0
         for m in _PIECE_END.finditer(self._held):
+            if self._held[: m.start()].rstrip(_PHONE_TAIL)[-1:].isdigit():
+                continue  # a number ends here: it may go on past the break
             cut = m.end()
         if not cut:
             return ""
