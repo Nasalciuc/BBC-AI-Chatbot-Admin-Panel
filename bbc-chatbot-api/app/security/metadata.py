@@ -10,12 +10,25 @@ engaged_agent_id. This drops anything outside the allowlist at ingress.
 
 from __future__ import annotations
 
-# Exact keys the widget may send.
+# Exact keys the widget may send: what bbc-widget/src/utm.ts captures (the
+# page, the referrer, every platform's click id, the Analytics client id) and
+# the visitor id. The server reads each of them: the CRM's utm block takes
+# google_analytics_client_id and kayak_click_id, the source fallback reads
+# msclkid (bing) and kayak_click_id / kclid. Dropping them at ingress lost
+# that attribution without a word.
 _ALLOWED_EXACT = frozenset({
-    "page_url", "page_path", "referrer", "gclid", "fbclid", "visitor_id",
+    "page_url", "page_path", "referrer", "visitor_id",
+    "gclid", "fbclid", "msclkid", "ttclid", "kayak_click_id", "kclid", "skyscanner_click_id",
+    "google_analytics_client_id",
 })
 # Prefixes the widget may send (utm_source, landing_city, …).
 _ALLOWED_PREFIXES = ("utm_", "landing_")
+# Every allowed value is a string the widget took from the page. Anything else
+# (an object, a list, a megabyte) is not attribution and never reaches the
+# conversation row, the panel or the CRM.
+_MAX_KEY = 64
+_MAX_VALUE = 2048  # a page URL or a referrer can be long; nothing else comes close
+_MAX_KEYS = 50
 
 
 def _known_sites() -> set[str]:
@@ -37,9 +50,13 @@ def allowed_widget_metadata(raw: dict | None) -> dict:
         return {}
     out: dict = {}
     for k, v in raw.items():
+        if len(out) >= _MAX_KEYS:
+            break
         key = str(k)
+        if len(key) > _MAX_KEY or not isinstance(v, str):
+            continue
         if key in _ALLOWED_EXACT or key.startswith(_ALLOWED_PREFIXES):
-            out[key] = v
+            out[key] = v[:_MAX_VALUE]
     site = raw.get("site")
     if isinstance(site, str) and site in _known_sites():
         out["site"] = site

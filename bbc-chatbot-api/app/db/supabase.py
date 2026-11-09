@@ -421,9 +421,14 @@ async def add_message(
         db = get_client()
         if role == "ai":
             # Output guard: strip any non-brand contact from a bot reply before
-            # it is stored (PR-4). 'log' mode leaves the text unchanged.
-            from app.ai.output_guard import guard_ai_text
-            content = await guard_ai_text(content, conversation_id=conversation_id)
+            # it is stored (PR-4). 'log' mode leaves the text unchanged. A guard
+            # that breaks never costs the message (guard_failed counts it).
+            from app.ai.output_guard import guard_ai_text, guard_failed
+            try:
+                content = await guard_ai_text(content, conversation_id=conversation_id)
+            except Exception as guard_err:
+                logger.error(f"add_message: output guard failed, reply kept conv={conversation_id}: {type(guard_err).__name__}")
+                content = guard_failed(content, guard_err)
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
@@ -1896,11 +1901,14 @@ async def get_users(
     try:
         res = await _run_sync(_query)
     except Exception as _e:
+        if not _is_missing_column_error(_e):
+            raise           # not a missing-column error — surface it
         _downgrade_chat_enabled(_e)
         _downgrade_decoy("users", _e)
-        if _chat_enabled_column_available() and _decoy_filterable("users"):
-            raise           # not a missing-column error — surface it
-        res = await _run_sync(lambda: _query(False))
+        # Again without the column(s) just downgraded, and only those: a
+        # missing is_decoy must not cost the list its chat_enabled (the panel
+        # would show every chat toggle as on).
+        res = await _run_sync(_query)
     return res.data or [], res.count or 0
 
 
@@ -2269,22 +2277,28 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
 async def bump_token_version(user_id: str) -> None:
     """Invalidate a user's live sessions (role/scope change, deactivation).
 
-    Uses the atomic increment RPC when present; falls back to read+write.
+    Read, then compare-and-set: the write applies only over the version just
+    read. That is what lets it be retried after a dropped connection (the
+    write may have landed before the drop): a second try over a version that
+    already moved matches nothing and can never step it back over a newer
+    bump. Matching nothing is success either way — the version moved past
+    the one read, which is all a bump has to do.
     A missing token_version column is tolerated (feature inert until 039);
     any other failure raises, so the caller can say the sessions are still
     live instead of reporting a clean demotion."""
     try:
         db = get_client()
-        # Read+write (bumps are rare and admin-initiated; the tiny race is
-        # harmless — the worst case is one more login).
         cur = await _run_sync(
             lambda: db.table("users").select("token_version").eq("id", user_id).limit(1).execute()
         )
         rows = getattr(cur, "data", None) or []
-        nxt = int((rows[0].get("token_version") if rows else 0) or 0) + 1
+        if not rows:
+            return  # no such user: no session to invalidate
+        seen = int(rows[0].get("token_version") or 0)
         await _run_sync(
-            lambda: db.table("users").update({"token_version": nxt}).eq("id", user_id).execute(),
-            idempotent=False,
+            lambda: db.table("users").update({"token_version": seen + 1})
+            .eq("id", user_id).eq("token_version", seen).execute(),
+            idempotent=True,
         )
     except Exception as e:
         if _is_missing_column_error(e):

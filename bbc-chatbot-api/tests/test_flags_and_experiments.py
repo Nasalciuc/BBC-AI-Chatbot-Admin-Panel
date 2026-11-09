@@ -93,6 +93,34 @@ def test_empty_row_means_no_database_flags(monkeypatch):
     assert flags.flag("SOME_SWITCH", False) is True
 
 
+def test_a_null_in_the_database_is_no_value(monkeypatch):
+    # CodeRabbit #226: null kept the key, flag() returned the default and the
+    # environment was skipped.
+    monkeypatch.setenv("SOME_SWITCH", "true")
+    monkeypatch.setattr("app.db.supabase._run_sync",
+                        _fake_run_sync(SimpleNamespace(data=[{"flags": {"SOME_SWITCH": None}}])))
+    assert asyncio.run(flags.refresh()) is True
+    assert flags.flag("SOME_SWITCH", False) is True and "SOME_SWITCH" not in flags.snapshot()
+
+
+def test_an_error_with_another_code_is_an_outage_not_a_missing_source(monkeypatch):
+    # The code decides when there is one: a permission error naming
+    # app_settings is a real fault, said every time, not "migration missing".
+    class _ApiError(Exception):
+        def __init__(self, code, message):
+            super().__init__(message)
+            self.code = code
+
+    monkeypatch.setattr("app.db.supabase._run_sync",
+                        _fake_run_sync(exc=_ApiError("42501", "permission denied for table app_settings (could not find access)")))
+    assert asyncio.run(flags.refresh()) is False
+    assert flags.FLAGS_HEALTH["source_missing"] is False
+    monkeypatch.setattr("app.db.supabase._run_sync",
+                        _fake_run_sync(exc=_ApiError("PGRST205", "Could not find the table 'public.app_settings'")))
+    assert asyncio.run(flags.refresh()) is False
+    assert flags.FLAGS_HEALTH["source_missing"] is True
+
+
 # ── bucket(): stable, salted, never hash() ────────────────────────────────
 
 def test_bucket_is_sha256_of_experiment_and_id():

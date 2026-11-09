@@ -418,7 +418,7 @@ def _bounded_int(val, lo: int, hi: int) -> Optional[int]:
     return val if isinstance(val, int) and lo <= val <= hi else None
 
 
-def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
+def _tool_pax_breakdown(te: dict, entities: dict, stored_total=None) -> tuple[dict, bool]:
     """PR-0: children/infants from the tool, mapped onto the lead's own keys.
 
     Returns (updates, inconsistent). Inconsistent = fewer travelers than
@@ -431,6 +431,10 @@ def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
     (the adults) while the tool says 5 with 3 children. A regex total below
     the minors is then the adults alone, and the tool's consistent total
     replaces it, so a lead never holds fewer travelers than minors.
+
+    `stored_total` is the lead's passengers before this turn, the last
+    fallback when neither the regex nor the tool says a total this turn: the
+    lead keeps it, so the minors must fit inside it too.
     """
     children = _bounded_int(te.get("children"), 0, 8)
     infants = _bounded_int(te.get("infants"), 0, 8)
@@ -448,7 +452,7 @@ def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
         (updates.get(k) if updates.get(k) is not None else entities.get(k)) or 0
         for k in ("_children_count", "_infant_count")
     )
-    saved_total = entities.get("passengers") or passengers
+    saved_total = entities.get("passengers") or passengers or _bounded_int(stored_total, 1, 9)
     if saved_total is not None and saved_total < minors:
         if passengers is not None and passengers >= minors and entities.get("passengers"):
             updates["passengers"] = passengers
@@ -1338,12 +1342,20 @@ async def _pipeline(
     # Streaming callback (sync→async bridge for thread pool)
     _event_loop = asyncio.get_running_loop()
     _is_streaming = False
+    # A streamed chunk can't be taken back: in OUTPUT_GUARD_MODE=enforce the
+    # guard lets the text out a sentence at a time, scrubbed whole.
+    from app.ai.output_guard import StreamGuard, own_contacts
+
+    _stream_guard = StreamGuard(own_contacts(getattr(visitor, "phone", None), getattr(visitor, "email", None)))
 
     def _on_chunk(delta: str):
         nonlocal _is_streaming
         _is_streaming = True
+        out = _stream_guard.feed(delta)
+        if not out:
+            return
         asyncio.run_coroutine_threadsafe(
-            manager.push_chunk(cid, delta),
+            manager.push_chunk(cid, out),
             _event_loop,
         )
 
@@ -1488,7 +1500,8 @@ async def _pipeline(
             _tool_blocked.add("trip_type")
         _pax_updates: dict = {}
         if flag("PAX_TOOL_FIELDS", False):
-            _pax_updates, _pax_inconsistent = _tool_pax_breakdown(_te, entities)
+            _pax_updates, _pax_inconsistent = _tool_pax_breakdown(
+                _te, entities, stored_total=lead.get("passengers") if isinstance(lead, dict) else None)
             if _pax_inconsistent:
                 _tool_blocked.add("passengers")
                 logger.info(f"[{cid}] [pax-merge] inconsistent tool counts — triple ignored")
@@ -1859,9 +1872,23 @@ async def _pipeline(
             f"[{cid}] AI reply generated but NOT persisted (add_message returned None)"
         )
     ai_msg_id = ai_msg["id"] if ai_msg and isinstance(ai_msg, dict) else None
+    # What the customer is given is what was stored: the output guard ran on
+    # it in add_message. Not stored: guarded here, so it never goes out raw.
+    if ai_msg and isinstance(ai_msg, dict) and isinstance(ai_msg.get("content"), str):
+        delivered_text = ai_msg["content"]
+    else:
+        from app.ai.output_guard import guard_ai_text
+
+        delivered_text = await guard_ai_text(validated_text, conversation_id=cid)
 
     if _is_streaming and ai_msg:
         await manager.push_stream_end(cid, ai_msg)
+    elif _is_streaming:
+        # No stored row, so no stream_end to replace the streamed text: what
+        # the guard still holds goes out, scrubbed.
+        _tail = _stream_guard.flush()
+        if _tail:
+            await manager.push_chunk(cid, _tail)
 
     # ── STEP 8.1: AUTO-CLOSE POST-CRM ────────────────────────
     # Close only after client confirmed summary and CRM was submitted.
@@ -1941,7 +1968,7 @@ async def _pipeline(
 
     return ChatResponse(
         conversation_id=cid,
-        message="" if _is_streaming else validated_text,
+        message="" if _is_streaming else delivered_text,
         streaming=_is_streaming,
         type=resp_type,
         model_used=gen.model_used,
