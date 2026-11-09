@@ -17,8 +17,12 @@ import { NewTaskDialog } from './new-task-dialog'
 export function MakeTask({ title, line, className }: { title: string; line: string; className?: string }) {
   const qc = useQueryClient()
   const me = useAuthStore((s) => s.auth.user)
-  const { data, dataUpdatedAt } = useTaskAlerts()
+  const { data } = useTaskAlerts()
   const [open, setOpen] = useState(false)
+  // The due choices ("Today 17:00", "In 1 hour") count from the click, not
+  // from the bell's last poll: a dozing tab stops polling, so that could be
+  // hours old and "In 1 hour" already past.
+  const [openedAt, setOpenedAt] = useState(0)
   const add = useMutation({
     mutationFn: (body: NewTaskBody) => createTask(body),
     onSuccess: () => {
@@ -34,7 +38,10 @@ export function MakeTask({ title, line, className }: { title: string; line: stri
     <>
       <button
         type='button'
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setOpenedAt(Date.now())
+          setOpen(true)
+        }}
         className={cn('text-sm font-bold text-k-555555 hover:text-k-202020 hover:underline focus-visible:outline-2 focus-visible:outline-k-6ea8ff', className)}
       >
         Make a task
@@ -43,7 +50,7 @@ export function MakeTask({ title, line, className }: { title: string; line: stri
         <NewTaskDialog
           open={open}
           onOpenChange={setOpen}
-          nowMs={dataUpdatedAt}
+          nowMs={openedAt}
           tz={localZone()}
           meId={me.accountNo}
           people={[]}

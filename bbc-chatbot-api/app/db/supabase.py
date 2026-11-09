@@ -1032,11 +1032,12 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
 async def get_blind_inputs(conv_id: str) -> Optional[dict]:
     """The five fields that decide whether an agent may read a chat yet
     (blind take): status, mode, who has it, who was talking in it, and
-    whether it is in the shared line. One tiny row; None when there is no
-    such chat. A read that fails is logged and RAISED, never None: the
-    caller must tell "no chat" from "couldn't look" (rule 7), because it
-    fails closed on the second and lets the first through."""
-    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+    whether it is in the shared line — plus its tunnel and team, for a
+    caller that checks the whole door (a task linking the chat). One tiny
+    row; None when there is no such chat. A read that fails is logged and
+    RAISED, never None: the caller must tell "no chat" from "couldn't look"
+    (rule 7), because it fails closed on the second and lets the first through."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id, tunnel, team_id"
 
     def _q(with_queued_at: bool):
         return (
@@ -1557,6 +1558,22 @@ async def get_lead_full(lead_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_lead_full error: {e}")
         return None
+
+
+async def get_lead_link(lead_id: str) -> Optional[dict]:
+    """A lead's id and its chat's, for a task made on the lead. None when
+    there is no such lead; a read that fails is logged and RAISED, never
+    None (rule 7): "no lead" is a 404, "couldn't look" must not be one."""
+    def _q():
+        return get_client().table("leads").select("id, conversation_id").eq("id", lead_id).limit(1).execute()
+
+    try:
+        res = await _run_sync(_q, label="tasks")
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"get_lead_link({lead_id}) failed: {e}")
+        raise
 
 
 async def update_lead(lead_id: str, payload: dict) -> Optional[dict]:
@@ -3411,6 +3428,8 @@ FOLLOW_UP_COLUMNS = (
 TASKS_HEALTH: dict = {
     "schema_missing": 0, "caught": 0, "client_asked": 0, "catch_failures": 0,
     "moved_unowned": 0, "moved_to_ready": 0, "move_failures": 0,
+    # A history line not written after its task was saved: the task stands.
+    "event_failures": 0,
 }
 _OPEN_LIMIT = 500
 
@@ -3428,14 +3447,30 @@ def _is_schema_missing(e: Exception) -> bool:
     )
 
 
+def _as_not_set_up(e: Exception) -> None:
+    """Migration 051 still missing is TasksNotSetUp, counted; anything else is the caller's to raise."""
+    if _is_schema_missing(e):
+        TASKS_HEALTH["schema_missing"] += 1
+        logger.warning(f"[tasks] migration 051 not applied: {e}")
+        raise TasksNotSetUp(str(e)) from e
+
+
 async def _tasks_call(fn, *, idempotent: bool = True, label: str = "tasks"):
     try:
         return await _run_sync(fn, idempotent, label=label)
     except Exception as e:
-        if _is_schema_missing(e):
-            TASKS_HEALTH["schema_missing"] += 1
-            logger.warning(f"[tasks] migration 051 not applied: {e}")
-            raise TasksNotSetUp(str(e)) from e
+        _as_not_set_up(e)
+        raise
+
+
+async def _task_pages(build) -> list[dict]:
+    """Every row of a tasks read, page by page (_select_pages): a bigger
+    .limit() is cut at PostgREST's 1000 without a word. Raises, with
+    migration 051 still missing as TasksNotSetUp, like every tasks read."""
+    try:
+        return await _select_pages(build, label="tasks")
+    except Exception as e:
+        _as_not_set_up(e)
         raise
 
 
@@ -3613,15 +3648,20 @@ async def ready_operators() -> list[dict]:
 
 
 async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
+    """Open tasks per person, for "give them to the Ready agent with the
+    fewest". Every row: a count cut at 1000 would read someone short and give
+    them more. Raises."""
     ids = sorted({i for i in user_ids if i})
     if not ids:
         return {}
     db_client = get_client()
-    res = await _tasks_call(lambda: db_client.table("tasks").select("assignee_id").in_("assignee_id", ids)
-                            .is_("done_at", "null").is_("dismissed_at", "null").limit(_OPEN_LIMIT * 4).execute())
     counts: dict[str, int] = {i: 0 for i in ids}
-    for r in res.data or []:
-        counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        rows = await _task_pages(lambda chunk=chunk: db_client.table("tasks").select("assignee_id").in_("assignee_id", chunk)
+                                 .is_("done_at", "null").is_("dismissed_at", "null").order("id"))
+        for r in rows:
+            counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
     return counts
 
 
@@ -3635,11 +3675,10 @@ async def get_task_people() -> list[dict]:
 
 
 async def caught_stats_since(since_iso: str) -> dict:
-    """Tasks caught from agents' messages since `since_iso`, and how many were "Not a promise"."""
+    """Tasks caught from agents' messages since `since_iso`, and how many were "Not a promise". Every row; raises."""
     db_client = get_client()
-    res = await _tasks_call(lambda: db_client.table("tasks").select("id, dismissed_at")
-                            .eq("source", "caught").gte("created_at", since_iso).limit(5000).execute())
-    rows = res.data or []
+    rows = await _task_pages(lambda: db_client.table("tasks").select("id, dismissed_at")
+                             .eq("source", "caught").gte("created_at", since_iso).order("id"))
     return {"caught": len(rows), "not_a_promise": sum(1 for r in rows if r.get("dismissed_at"))}
 
 

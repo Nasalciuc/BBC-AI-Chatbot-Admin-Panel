@@ -7,6 +7,7 @@ city is known, in the client's city too ("13:40 in Chicago").
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -65,7 +66,8 @@ def task_row(
     title = t.get("title") or ""
     first = _first_name(name)
     if masked and first and label:
-        title = title.replace(first, label)
+        # The name as a word, not inside one: "Al" is masked, "Alps" is left alone.
+        title = re.sub(rf"(?<!\w){re.escape(first)}(?!\w)", lambda _m: label, title)
     origin = (lead or {}).get("origin_code")
     city_zone = city_and_zone(origin)
     due = parse_ts(t.get("due_at"))

@@ -178,11 +178,15 @@ _WORD_NUM = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five":
              "thirty": 30, "forty": 40, "forty-five": 45, "fifty": 50, "couple of": 2, "a couple of": 2}
 _NUM = r"(\d{1,3}|a couple of|couple of|an|a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty-five|forty|fifty)"
 _RANGE = rf"{_NUM}(?:\s*(?:-|–|to)\s*{_NUM})?"
-_MIN_RE = re.compile(rf"\b(?:in|within|give me|about|around|next)\s+(?:about\s+|around\s+|the\s+next\s+)?{_RANGE}\s*(?:min|mins|minutes)\b")
-_HOUR_RE = re.compile(rf"\b(?:in|within|give me|about|around|next)\s+(?:about\s+|around\s+|the\s+next\s+)?{_RANGE}\s*(?:hours?|hrs?)\b")
+_MIN_RE = re.compile(rf"\b(?:in|within|after|give me|about|around|next)\s+(?:about\s+|around\s+|the\s+next\s+)?{_RANGE}\s*(?:min|mins|minutes)\b")
+_HOUR_RE = re.compile(rf"\b(?:in|within|after|give me|about|around|next)\s+(?:about\s+|around\s+|the\s+next\s+)?{_RANGE}\s*(?:hours?|hrs?)\b")
 _HALF_RE = re.compile(r"\bhalf\s+an?\s+(?:hour|hr)\b")
 _WITHIN_HOUR_RE = re.compile(r"\bwithin\s+(?:the|an)\s+hour\b|\bin\s+(?:an|one)\s+hour\b")
-_CLOCK_RE = re.compile(r"\b(?:by|at|after|around|before|until)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?![\d:])")
+# A number followed by a unit is a span, not a clock: "after 2 hours" is never "by 14:00".
+_CLOCK_RE = re.compile(
+    r"\b(?:by|at|after|around|before|until)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?![\d:])"
+    r"(?!\s*(?:mins?|minutes?|hours?|hrs?)\b)"
+)
 _DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 _DAY_RE = re.compile(r"\b(today|tonight|tomorrow|" + "|".join(_DAYS) + r")\b")
 _PART_RE = re.compile(r"\b(morning|afternoon|evening)\b")
