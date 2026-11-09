@@ -28,14 +28,12 @@ from app.security.request_logger import RequestLoggerMiddleware
 from app.security.ban_guard import BanGuardMiddleware
 
 # ── Logging ───────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-# httpx logs the full URL of every Supabase request at INFO — PostgREST puts
-# filters and looked-up values in the query string, so that is PII at INFO.
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# One JSON line per event on Railway (real level, traceback inside, request
+# id), the old text line anywhere else — app/log_setup.py. httpx stays at
+# WARNING (its INFO line is every Supabase URL, PII included).
+from app.log_setup import configure_logging
+
+configure_logging(debug=settings.debug)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +146,12 @@ async def startup() -> None:
     else:
         app.state.scheduler_tasks = []
 
+    # Repeated log lines held back by the grouping come out as one summary
+    # line when their window closes (app/log_setup.py).
+    from app.log_setup import run_flush_forever
+
+    app.state.log_flush_task = asyncio.create_task(run_flush_forever(), name="log_flush")
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
@@ -171,3 +175,12 @@ async def shutdown() -> None:
             )
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()
+    log_flush_task = getattr(app.state, "log_flush_task", None)
+    if log_flush_task is not None:
+        log_flush_task.cancel()
+    # The counts held back so far are written before the process goes, or a
+    # deploy would erase them.
+    from app.log_setup import CAP, GROUPING
+
+    GROUPING.flush(force=True)
+    CAP.flush()

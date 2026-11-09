@@ -36,9 +36,22 @@ class _ConvTable:
             "queued_at": None, "metadata": {},
         }
         self.update_count = 0
+        # What the connection does to the next call (#3245: the UPDATE landed
+        # and its answer never reached the API).
+        self.lose_update_answer = False   # the UPDATE lands, then the call raises
+        self.fail_update = False          # the call raises, nothing lands
+        self.fail_owner_read = False      # the owner check's read raises
 
     def table(self, _name):
         return _Chain(self)
+
+
+def _goaway():
+    import httpx
+
+    return httpx.RemoteProtocolError(
+        "<ConnectionTerminated error_code:ErrorCodes.NO_ERROR, last_stream_id:1999, additional_data:None>"
+    )
 
 
 class _Chain:
@@ -73,6 +86,10 @@ class _Chain:
 
     def execute(self):
         row = self.t.row
+        if self._update is not None and self.t.fail_update:
+            raise _goaway()
+        if self._select == "assigned_agent_id, status" and self.t.fail_owner_read:
+            raise _goaway()
         for kind, col, val in self._filters:
             have = row.get(col)
             if kind == "eq" and have != val:
@@ -84,6 +101,8 @@ class _Chain:
         if self._update is not None:
             row.update(self._update)
             self.t.update_count += 1
+            if self.t.lose_update_answer:
+                raise _goaway()
             return MagicMock(data=[dict(row)])
         if self._select:
             return MagicMock(data=[{k: row.get(k) for k in
@@ -166,6 +185,97 @@ class TestClaimGate:
         with patch.object(sb, "get_client", side_effect=RuntimeError("db down")):
             out = await sb.claim_conversation_if_unassigned(_CID, "a1")
         assert out == {"won": False, "queued_age_seconds": None}
+
+
+class TestClaimGateLostAnswer:
+    """#2678 (13 Oct), #3245 (4 Nov): the UPDATE landed, its answer was lost,
+    and the gate said "lost" — the operator who won read that a colleague
+    had taken the chat, and it never opened for them."""
+
+    async def _claim(self, table, agent="a1"):
+        ps = _wire(table)
+        before = dict(sb.CLAIM_GATE_HEALTH)
+        with ps[0], ps[1], ps[2], ps[3] as inc:
+            sb._queued_at_ok = None
+            out = await sb.claim_conversation_if_unassigned(_CID, agent)
+        delta = {k: sb.CLAIM_GATE_HEALTH[k] - before[k]
+                 for k in ("write_failed", "won_after_check", "owner_check_failed")}
+        return out, delta, inc
+
+    @pytest.mark.asyncio
+    async def test_the_write_landed_and_its_answer_was_lost_is_a_win(self):
+        table = _ConvTable()
+        table.lose_update_answer = True
+        out, delta, inc = await self._claim(table)
+        assert out["won"] is True, "the chat is this agent's: the write landed"
+        assert table.row["assigned_agent_id"] == "a1"
+        assert table.update_count == 1, "the UPDATE is never sent twice"
+        assert inc.await_count == 1, "one chat, one point on the score"
+        assert delta == {"write_failed": 1, "won_after_check": 1, "owner_check_failed": 0}
+        assert sb.CLAIM_GATE_HEALTH["last_won_after_check_at"]
+
+    @pytest.mark.asyncio
+    async def test_the_write_never_landed_stays_lost(self):
+        table = _ConvTable()
+        table.fail_update = True
+        out, delta, inc = await self._claim(table)
+        assert out == {"won": False, "queued_age_seconds": None}
+        assert table.row["assigned_agent_id"] is None
+        inc.assert_not_awaited()
+        assert delta == {"write_failed": 1, "won_after_check": 0, "owner_check_failed": 0}
+
+    @pytest.mark.asyncio
+    async def test_answer_lost_and_a_colleague_holds_it_stays_lost(self):
+        table = _ConvTable({"id": _CID, "assigned_agent_id": "B", "status": "active",
+                            "queued_at": None, "metadata": {}})
+        table.fail_update = True
+        out, delta, inc = await self._claim(table)
+        assert out["won"] is False
+        assert table.row["assigned_agent_id"] == "B"
+        inc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_answer_lost_and_mine_but_closed_stays_lost(self):
+        table = _ConvTable({"id": _CID, "assigned_agent_id": "a1", "status": "closed",
+                            "queued_at": None, "metadata": {}})
+        table.fail_update = True
+        out, _delta, inc = await self._claim(table)
+        assert out["won"] is False, "a closed chat is nobody's to take"
+        inc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_answer_lost_and_owner_unreadable_stays_lost_and_is_counted(self):
+        table = _ConvTable()
+        table.lose_update_answer = True
+        table.fail_owner_read = True
+        out, delta, inc = await self._claim(table)
+        assert out["won"] is False, "unproven: the endpoint reads the owner again"
+        inc.assert_not_awaited()
+        assert delta == {"write_failed": 1, "won_after_check": 0, "owner_check_failed": 1}
+
+    @pytest.mark.asyncio
+    async def test_a_clean_empty_answer_is_not_a_win_even_when_mine(self):
+        """A double click: the first call won, the second matched nothing.
+        Counting the second would score the same chat twice."""
+        table = _ConvTable({"id": _CID, "assigned_agent_id": "a1", "status": "active",
+                            "queued_at": None, "metadata": {}})
+        out, delta, inc = await self._claim(table)
+        assert out == {"won": False, "queued_age_seconds": None}
+        inc.assert_not_awaited()
+        assert delta == {"write_failed": 0, "won_after_check": 0, "owner_check_failed": 0}
+
+    @pytest.mark.asyncio
+    async def test_double_click_one_win_one_point(self):
+        table = _ConvTable()
+        ps = _wire(table)
+        with ps[0], ps[1], ps[2], ps[3] as inc:
+            sb._queued_at_ok = None
+            first, second = await asyncio.gather(
+                sb.claim_conversation_if_unassigned(_CID, "a1"),
+                sb.claim_conversation_if_unassigned(_CID, "a1"),
+            )
+        assert [first["won"], second["won"]].count(True) == 1
+        assert inc.await_count == 1
 
 
 # ══════════════════════════════════════════════════════════════
@@ -276,6 +386,69 @@ class TestClaimEndpoint:
 
         src = (pathlib.Path(__file__).resolve().parent.parent / "app/api/health.py").read_text(encoding="utf-8")
         assert src.count('"claims": dict(CLAIM_HEALTH),') == 2
+        assert src.count('"claim_gate": dict(CLAIM_GATE_HEALTH),') == 2
+
+
+class TestClaimEndpointAfterTheGate:
+    """What the operator sees when the gate answers False."""
+
+    _ME = {"id": "me", "role": "sales", "tunnel_scope": "sales"}
+
+    async def _press_take(self, owner_after, status_after="active"):
+        from app.api import conversations as capi
+
+        conv = {"id": _CID, "assigned_agent_id": None, "status": "needs_agent",
+                "tunnel": "sales", "metadata": {}}
+        users = {"me": {"id": "me", "name": "Ana", "role": "sales"},
+                 "B": {"id": "B", "name": "Bogdan", "role": "sales"}}
+        handoff_call = AsyncMock(return_value={})
+        activity = AsyncMock()
+        before = dict(capi.CLAIM_HEALTH)
+        with patch.object(sb, "get_conversation", new=AsyncMock(return_value=conv)), \
+             patch.object(sb, "get_user_by_id", new=AsyncMock(side_effect=lambda uid: users.get(uid))), \
+             patch.object(sb, "claim_conversation_if_unassigned",
+                          new=AsyncMock(return_value={"won": False, "queued_age_seconds": None})), \
+             patch.object(sb, "get_conversation_simple",
+                          new=AsyncMock(return_value={"id": _CID, "assigned_agent_id": owner_after,
+                                                      "status": status_after})), \
+             patch("app.services.handoff.perform_handoff_to_agent", handoff_call), \
+             patch("app.services.presence.log_activity", activity), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            try:
+                out = await capi.claim_conversation(conversation_id=_CID, user=dict(self._ME))
+            except Exception as e:  # noqa: silent — the HTTPException IS the answer under test
+                out = e
+        delta = {k: capi.CLAIM_HEALTH[k] - before[k] for k in ("won", "lost", "already_mine")}
+        return out, delta, handoff_call, activity
+
+    @pytest.mark.asyncio
+    async def test_mine_after_all_opens_the_chat_without_a_second_win(self):
+        out, delta, handoff_call, activity = await self._press_take(owner_after="me")
+        assert out == {"success": True, "data": {"conversation_id": _CID, "assigned_to": "me"}}
+        assert delta == {"won": 0, "lost": 0, "already_mine": 1}
+        handoff_call.assert_awaited_once()
+        assert "_gate_won" not in handoff_call.await_args.kwargs, "same as re-claiming my own chat"
+        activity.assert_not_awaited()  # no claim_won (the winning call logs it) and no claim_lost
+
+    @pytest.mark.asyncio
+    async def test_a_colleague_won_it_409_names_them(self):
+        from fastapi import HTTPException
+
+        out, delta, handoff_call, _activity = await self._press_take(owner_after="B")
+        assert isinstance(out, HTTPException) and out.status_code == 409
+        assert out.detail["winner"] == "Bogdan"
+        assert delta == {"won": 0, "lost": 1, "already_mine": 0}
+        handoff_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mine_but_closed_is_still_a_409(self):
+        from fastapi import HTTPException
+
+        out, delta, handoff_call, _activity = await self._press_take(owner_after="me", status_after="closed")
+        assert isinstance(out, HTTPException) and out.status_code == 409
+        assert delta["already_mine"] == 0
+        handoff_call.assert_not_awaited()
 
 
 class TestGateFirstHandoff:

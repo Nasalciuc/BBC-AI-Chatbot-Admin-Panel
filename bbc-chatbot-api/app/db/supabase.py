@@ -2,6 +2,7 @@
 Client: supabase-py (HTTP). NO asyncpg. NO SQLAlchemy.
 """
 import asyncio
+import contextvars
 import logging
 import re
 import statistics
@@ -11,6 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 
+import httpx
+from postgrest import SyncPostgrestClient
+from postgrest.utils import SyncClient as _PostgrestSession
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 from config.settings import settings
@@ -198,7 +202,9 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
     t0 = time.monotonic()
     try:
         try:
-            return await loop.run_in_executor(_executor, fn)
+            # The DB thread runs in a copy of this task's context, so a line
+            # written inside fn carries the request id (app/log_setup.py).
+            return await loop.run_in_executor(_executor, contextvars.copy_context().run, fn)
         except Exception as e:
             if not idempotent or not _is_disconnect(e):
                 DB_HEALTH["errors"] += 1
@@ -207,10 +213,11 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
             DB_HEALTH["disconnects"] += 1
             logger.warning(
                 f"[db-retry] dead connection ({type(e).__name__}: {e}) — retrying once "
-                f"(label={label})"
+                f"(label={label})",
+                extra={"event": "db.retry", "label": label},
             )
             try:
-                out = await loop.run_in_executor(_executor, fn)
+                out = await loop.run_in_executor(_executor, contextvars.copy_context().run, fn)
                 DB_HEALTH["retries_ok"] += 1
                 return out
             except Exception:
@@ -227,6 +234,43 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
             _note_slow_call(label, ms, now)
 
 
+class _PostgrestOverHttp1(SyncPostgrestClient):
+    """PostgREST over HTTP/1.1: one request per connection, one thread per
+    connection.
+
+    postgrest-py 0.16.11 opens its session with http2=True, so every thread
+    of _executor shared ONE HTTP/2 connection. httpcore 1.0.9's sync HTTP/2
+    takes no lock between choosing a stream id and sending the headers, and
+    when the server ends the connection (GOAWAY) every request it had already
+    processed fails on our side. A write that landed then reads as an error:
+    chat #3245 (4 Nov) — the Take's UPDATE returned the row to the edge at
+    19:53:50.808, the API logged claim_lost at 19:53:51.074, and the operator
+    who won was told a colleague had the chat. Same headers, base URL,
+    timeout (10s) and redirects as before; only the protocol changes."""
+
+    def create_session(self, base_url, headers, timeout, verify=True):
+        return _PostgrestSession(
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+            follow_redirects=True,
+            http2=False,
+            # One connection per busy thread: keep as many alive as there
+            # are workers, so a burst doesn't pay a new TLS handshake each.
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=max(20, settings.db_executor_workers),
+            ),
+        )
+
+
+def _postgrest_over_http1(rest_url, headers, schema, timeout=10, verify=True):
+    return _PostgrestOverHttp1(
+        rest_url, headers=headers, schema=schema, timeout=timeout, verify=verify
+    )
+
+
 def get_client() -> Client:
     global _client
     if _client is None:
@@ -237,6 +281,10 @@ def get_client() -> Client:
             settings.supabase_key,
             options=ClientOptions(postgrest_client_timeout=10),
         )
+        # Every table() and rpc() goes through client.postgrest, which
+        # supabase-py builds on first use (and again if it ever drops it):
+        # built here, it is HTTP/1.1. test_db_transport pins that this holds.
+        _client._init_postgrest_client = _postgrest_over_http1
     return _client
 
 
@@ -5476,13 +5524,27 @@ async def claim_conversation_if_unassigned(
     the NULL would read nothing and produce an average that looks fine.
 
     Returns {"won": bool, "queued_age_seconds": float | None}.
-    won=False (including on error) means NOTHING happened: the caller answers
-    409 and performs no side effects.
+    won=False means THIS call did not take it: someone else holds it, it is
+    no longer open, or the owner could not be read. The caller performs no
+    side effects (the claim endpoint still checks whether it is already the
+    caller's — a double click or a second tab won it a moment earlier).
+
+    An error from the UPDATE does not prove the write did not land: the
+    connection can break after the database committed. Chat #2678 (13 Oct)
+    and #3245 (4 Nov): the UPDATE returned the row to the edge, the API saw a
+    failure, and the operator who won was told a colleague had taken it — the
+    chat never opened for them, and nothing joined the client. So after an
+    error the gate reads the owner; if it is this agent, this call won
+    (CLAIM_GATE_HEALTH["won_after_check"]). A clean empty answer is different:
+    the database matched nothing for this call, so it is not a win even when
+    the owner is this agent — counting it would score the same chat twice.
     """
+    _age: float | None = None
+    won = False
+    answer_lost = False
     try:
         db_client = get_client()
         # Read the waiting age first. Telemetry only — never a gate.
-        _age: float | None = None
         if _queued_at_column_available():
             try:
                 _cur = await _run_sync(
@@ -5495,7 +5557,6 @@ async def claim_conversation_if_unassigned(
                 _rows = _cur.data or []
                 _qa = _rows[0].get("queued_at") if _rows else None
                 if _qa:
-                    from datetime import datetime, timezone
                     _age = (
                         datetime.now(timezone.utc)
                         - datetime.fromisoformat(str(_qa).replace("Z", "+00:00"))
@@ -5536,22 +5597,65 @@ async def claim_conversation_if_unassigned(
                 raise
             res = await _run_sync(lambda: _claim(False), idempotent=False)
         won = bool(res.data)
-        if won:
-            # The competition score is incremented HERE and only here for queue
-            # claims. increment_chats_served reads chats_served_today and
-            # chats_served_date OUT OF THE DICT it is given: passing {"id": ...}
-            # would make it write 1 every single time instead of incrementing.
-            # So the full user row is fetched first.
-            try:
-                _agent_row = await get_user_by_id(agent_id)
-                if _agent_row:
-                    await increment_chats_served(_agent_row)
-            except Exception as _e:
-                logger.warning(f"[{conversation_id}] score increment skipped: {_e}")
-        return {"won": won, "queued_age_seconds": _age if won else None}
     except Exception as e:
-        logger.warning(f"[{conversation_id}] claim gate failed: {e}")
-        return {"won": False, "queued_age_seconds": None}
+        answer_lost = True
+        CLAIM_GATE_HEALTH["write_failed"] += 1
+        logger.warning(
+            f"[{conversation_id}] claim gate write failed: {type(e).__name__} "
+            f"(code={_loggable_code(_error_code(e)) or 'none'}) — checking the owner"
+        )
+    if answer_lost:
+        owner = await _owner_of(conversation_id)
+        if owner == agent_id:
+            CLAIM_GATE_HEALTH["won_after_check"] += 1
+            CLAIM_GATE_HEALTH["last_won_after_check_at"] = datetime.now(timezone.utc).isoformat()
+            logger.warning(f"[{conversation_id}] claim gate: the write landed but its answer was lost — won after the owner check")
+            won = True
+    if won:
+        # The competition score is incremented HERE and only here for queue
+        # claims. increment_chats_served reads chats_served_today and
+        # chats_served_date OUT OF THE DICT it is given: passing {"id": ...}
+        # would make it write 1 every single time instead of incrementing.
+        # So the full user row is fetched first.
+        try:
+            _agent_row = await get_user_by_id(agent_id)
+            if _agent_row:
+                await increment_chats_served(_agent_row)
+        except Exception as _e:
+            logger.warning(f"[{conversation_id}] score increment skipped: {_e}")
+    return {"won": won, "queued_age_seconds": _age if won else None}
+
+
+# The claim gate's own failures (/health → claim_gate). won_after_check: the
+# UPDATE's answer was lost but the row is this agent's — before this check,
+# each of these was an operator told they had lost a chat they had won.
+CLAIM_GATE_HEALTH: dict = {
+    "write_failed": 0, "won_after_check": 0, "owner_check_failed": 0, "last_won_after_check_at": None,
+}
+
+
+async def _owner_of(conversation_id: str) -> Optional[str]:
+    """Who holds this OPEN conversation now (assigned_agent_id); None when
+    nobody does, it is no longer open, or it cannot be read (counted: the
+    caller then answers "lost", as before)."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations").select("assigned_agent_id, status")
+            .eq("id", conversation_id).limit(1).execute(),
+            label="claim_check",
+        )
+        rows = res.data or []
+        if not rows or rows[0].get("status") not in OPEN_STATUSES:
+            return None
+        return rows[0].get("assigned_agent_id")
+    except Exception as e:
+        CLAIM_GATE_HEALTH["owner_check_failed"] += 1
+        logger.warning(
+            f"[{conversation_id}] claim gate owner check failed: {type(e).__name__} "
+            f"(code={_loggable_code(_error_code(e)) or 'none'})"
+        )
+        return None
 
 
 async def reassign_conversation(
