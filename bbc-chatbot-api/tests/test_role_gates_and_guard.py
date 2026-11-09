@@ -93,6 +93,29 @@ def test_enforce_never_cuts_a_phone_at_a_sentence_end(monkeypatch):
     assert _stream(g, ["Dial 555\n", "123\n4567\nThanks.\n"]) == "Dial [removed]\nThanks.\n"
 
 
+@pytest.mark.parametrize("chunks, expected", [
+    (["Call 555\r\n", "123\r\n", "4567\r\n", "Bye.\r\n"], "Call [removed]\r\nBye.\r\n"),
+    (["Call 555 . ", "123 . ", "4567. ", "Bye. "], "Call [removed]. Bye. "),
+    (["Call 555 \v\n", "123\f\n", "4567\n", "Bye.\n"], "Call [removed]\nBye.\n"),
+])
+def test_enforce_holds_a_number_across_any_whitespace_phone_re_takes(monkeypatch, chunks, expected):
+    # CodeRabbit #226: the held tail skipped only spaces and tabs, so with
+    # "\r\n" (or a no-break space) each piece went out alone, too short to be
+    # a phone. The cut now reads the separators _PHONE_RE itself takes.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard()
+    assert _stream(g, chunks) + g.flush() == expected
+
+
+def test_enforce_a_line_that_ends_in_a_word_goes_out_at_its_crlf(monkeypatch):
+    # The path the number rule must not hold: a sentence that ends in a word.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard()
+    assert g.feed("Thanks for waiting.\r\n") == "Thanks for waiting.\r\n"
+    assert g.feed("Your flight is 123.\r\n") == ""  # ends in a number: held
+    assert g.flush() == "Your flight is 123.\r\n"
+
+
 def test_enforce_stream_keeps_the_clients_own_contact(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
     g = output_guard.StreamGuard(output_guard.own_contacts("+1 555 014 2290", "Michael.R@example.com"))
@@ -280,6 +303,46 @@ def test_token_version_mismatch_after_bump(monkeypatch):
     token_version.invalidate_cache("u1")
     assert token_version.matches("u1", 2) is False
     assert token_version.matches("u1", 3) is True
+
+
+def test_a_read_in_flight_when_a_bump_lands_is_not_cached(monkeypatch):
+    # CodeRabbit #226 (token cache): a read that got the old version before a
+    # bump's write, and stored it after the bump dropped the entry, kept the
+    # revoked token valid for the whole TTL.
+    answers = iter([0, 1])
+
+    def read(uid):
+        v = next(answers)
+        if v == 0:
+            token_version.invalidate_cache(uid)  # the bump lands while this read is in flight
+        return v
+
+    monkeypatch.setattr(token_version, "_read", read)
+    assert token_version.matches("u1", 0) is True  # the request that raced the bump
+    assert token_version.matches("u1", 0) is False  # the next one reads again and sees it
+
+
+def test_a_failed_read_never_falls_back_on_an_entry_a_bump_dropped(monkeypatch):
+    monkeypatch.setattr(token_version, "_read", lambda uid: 2)
+    assert token_version.matches("u1", 2) is True
+    monkeypatch.setattr(token_version.time, "time", lambda: 10**10)  # past the 60s TTL
+
+    def read(uid):
+        token_version.invalidate_cache(uid)  # a bump lands during a failed read
+        return None
+
+    monkeypatch.setattr(token_version, "_read", read)
+    assert token_version.matches("u1", 2) is False
+    assert token_version.TOKEN_VERSION_HEALTH["refused_unreadable"] == 1
+
+
+def test_a_read_with_no_bump_in_flight_is_cached_as_before(monkeypatch):
+    # Rule 5: the path the new check must not touch.
+    calls = []
+    monkeypatch.setattr(token_version, "_read", lambda uid: calls.append(uid) or 4)
+    assert token_version.current_version("u1") == 4
+    assert token_version.current_version("u1") == 4
+    assert calls == ["u1"]
 
 
 # ── review fixes: the output guard never logs or mails a customer contact ──

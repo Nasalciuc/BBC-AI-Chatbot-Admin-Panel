@@ -37,7 +37,10 @@ _ALLOWED_EMAILS: set[str] = set()
 # Accreditation numbers that look like phones but must stay.
 _KEEP_NUMBERS = {"14531683", "99910753"}
 
-_PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{7,}\d")
+# What _PHONE_RE takes between the digits of a number. The stream guard
+# reads the same set, so a number is never cut where _PHONE_RE would join it.
+_PHONE_SEP = r"\s().\-"
+_PHONE_RE = re.compile(rf"\+?\d[\d{_PHONE_SEP}]{{7,}}\d")
 # The last label must be alphabetic (a TLD): "$1,200.50", "2.5" and
 # "12.05.2026" are a price, a decimal and a date, not hosts.
 _URL_RE = re.compile(
@@ -300,10 +303,11 @@ def guard_failed(text: str, err: BaseException) -> str:
 
 
 # The end of a sentence or a line. A URL or an e-mail never spans one; a phone
-# can ("555. 123. 4567" is one to _PHONE_RE), so an end right after a digit
-# (separators aside) is not a place to cut.
+# can ("555. 123. 4567" is one to _PHONE_RE, and so is "555\r\n123\r\n4567"),
+# so an end that comes right after a digit, with only what _PHONE_RE takes
+# between digits in between, is not a place to cut.
 _PIECE_END = re.compile(r"[.!?](?=\s)\s*|\n\s*")
-_PHONE_TAIL = " \t()-.+"
+_ENDS_IN_A_NUMBER = re.compile(rf"\d[{_PHONE_SEP}]*\Z")
 
 
 class StreamGuard:
@@ -327,7 +331,7 @@ class StreamGuard:
         self._held += delta
         cut = 0
         for m in _PIECE_END.finditer(self._held):
-            if self._held[: m.start()].rstrip(_PHONE_TAIL)[-1:].isdigit():
+            if _ENDS_IN_A_NUMBER.search(self._held, 0, m.start()):
                 continue  # a number ends here: it may go on past the break
             cut = m.end()
         if not cut:
