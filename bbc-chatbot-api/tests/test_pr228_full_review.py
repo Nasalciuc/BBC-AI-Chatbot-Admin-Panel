@@ -45,3 +45,82 @@ def test_what_is_not_an_address_is_no_place(ip):
 def test_the_edges_country_still_wins():
     assert _login_place(_req({"cf-ipcountry": "ro"}), "203.0.113.9") == "country:RO"
     assert _login_place(_req({"cf-ipcountry": "XX"}), "203.0.113.9") == "net:203.0.113.0/24"
+
+
+# ── a ban the store failed to set is not "already held" ───────────────────
+
+class _Redis:
+    """SET NX, TTL, INCR, EXPIRE; `fail` names the first call that raises."""
+
+    def __init__(self, fail=None):
+        self.fail = fail
+        self.keys: dict = {}
+
+    async def _maybe(self, name):
+        if self.fail == name:
+            raise ConnectionError("redis down")
+
+    async def set(self, key, value, nx=False, ex=None):
+        await self._maybe("set")
+        if nx and key in self.keys:
+            return None
+        self.keys[key] = ex
+        return True
+
+    async def ttl(self, key):
+        await self._maybe("ttl")
+        return 100
+
+    async def incr(self, key):
+        await self._maybe("incr")
+        return 2  # a repeat: the ban would double
+
+    async def expire(self, key, seconds):
+        await self._maybe("expire")
+        return True
+
+
+@pytest.fixture
+def _bans(monkeypatch):
+    from app.security import ban_guard, ban_store
+
+    ban_guard._reset_for_tests()
+    ban_store._reset_for_tests()
+    rows, alert = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(ban_guard, "record_ban_row", rows)
+    monkeypatch.setattr(ban_guard, "_ops_alert", alert)
+    yield ban_guard, ban_store, rows, alert
+    ban_guard._reset_for_tests()
+    ban_store._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_a_redis_failure_before_the_claim_raises_and_is_counted_apart(_bans):
+    ban_guard, ban_store, rows, alert = _bans
+    store = ban_store.BanStore(redis_client=_Redis(fail="set"))
+    with pytest.raises(ConnectionError):
+        await store.ban("6.6.6.6", "honeypot", 3600)
+    await ban_guard._ban_identity(store, "6.6.6.6", "honeypot", 3600, alert=True)
+    assert ban_guard.FAIL2BAN_HEALTH["ban_errors"] == 1
+    assert ban_guard.FAIL2BAN_HEALTH["ban_already_held"] == 0
+    assert rows.await_count == 0 and alert.await_count == 0  # no ban, so no row and no alert
+
+
+@pytest.mark.asyncio
+async def test_a_ban_set_whose_repeat_count_fails_stands_at_its_base_length(_bans):
+    ban_guard, ban_store, rows, alert = _bans
+    store = ban_store.BanStore(redis_client=_Redis(fail="incr"))
+    assert await store.ban("7.7.7.7", "honeypot", 3600) == (3600, True)
+    await ban_guard._ban_identity(store, "8.8.8.8", "honeypot", 3600, alert=True)
+    rows.assert_awaited_once_with("8.8.8.8", "honeypot", 3600)
+    assert ban_guard.FAIL2BAN_HEALTH["ban_errors"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_ban_another_request_holds_is_still_already_held(_bans):
+    ban_guard, ban_store, rows, alert = _bans
+    store = ban_store.BanStore(redis_client=_Redis())
+    await ban_guard._ban_identity(store, "9.9.9.9", "honeypot", 3600, alert=True)
+    await ban_guard._ban_identity(store, "9.9.9.9", "honeypot", 3600, alert=True)
+    assert rows.await_count == 1 and alert.await_count == 1
+    assert ban_guard.FAIL2BAN_HEALTH["ban_already_held"] == 1 and ban_guard.FAIL2BAN_HEALTH["ban_errors"] == 0

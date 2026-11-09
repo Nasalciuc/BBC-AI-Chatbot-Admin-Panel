@@ -43,6 +43,7 @@ FAIL2BAN_HEALTH = {
     "table_missing": False,
     "poisoned_skipped": 0,
     "ban_already_held": 0,
+    "ban_errors": 0,  # the ban store failed: nothing was banned or recorded
     "by_jail": {},
 }
 
@@ -249,12 +250,15 @@ async def trip(store, ip: str, jail: str, seconds: int, *, alert: bool, staff: b
 async def _ban_identity(store, ip: str, jail: str, seconds: int, *, alert: bool) -> None:
     if not ip:
         return
-    eff, created = seconds, True
     try:
         eff, created = await store.ban(ip, jail, seconds)
-        eff = eff or seconds
-    except Exception as e:  # noqa: silent — a failed ban write must not block the response
-        logger.debug(f"[ban-guard] ban write failed: {type(e).__name__}")
+    except Exception as e:
+        # No ban was set: no row and no alert claim one. Counted apart from a
+        # ban another request holds; the response is never blocked by it.
+        FAIL2BAN_HEALTH["ban_errors"] += 1
+        logger.warning(f"[ban-guard] ban write failed, nothing recorded: {type(e).__name__}")
+        return
+    eff = eff or seconds
     if not created:
         # A parallel request already banned this identity: one row, one
         # alert, one doubling per ban.
@@ -388,4 +392,4 @@ def _reset_for_tests() -> None:
     _table_missing = False
     FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, blocked=0, staff_alerts=0,
                            rows_written=0, row_errors=0, table_missing=False,
-                           poisoned_skipped=0, ban_already_held=0, by_jail={})
+                           poisoned_skipped=0, ban_already_held=0, ban_errors=0, by_jail={})
