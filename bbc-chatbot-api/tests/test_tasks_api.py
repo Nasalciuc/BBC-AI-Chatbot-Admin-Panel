@@ -550,6 +550,44 @@ def test_the_lead_read_tells_no_lead_from_a_failed_read():
             run(db.get_lead_link("l1"))
 
 
+def test_a_task_error_is_read_by_its_code_never_by_the_row_it_quotes(caplog):
+    # PostgREST's error text includes its details, and a refused row comes back
+    # in them: a phone number holding "42703" read as a missing column (503
+    # "not set up", the row logged at WARNING), one holding "23505" as a retry.
+    from postgrest.exceptions import APIError
+
+    row = "Failing row contains (Send Michael three options, Could not find the room, 555-4270321, 555-2350512)"
+    refused = APIError({"code": "23514", "message": 'new row for relation "tasks" violates check constraint "tasks_kind_check"',
+                        "details": row, "hint": None})
+    missing = APIError({"code": "PGRST204", "message": "Could not find the 'due_kind' column of 'tasks' in the schema cache",
+                        "details": None, "hint": None})
+    again = APIError({"code": "23505", "message": 'duplicate key value violates unique constraint "uq_tasks_message"',
+                      "details": "Key (message_id)=(m1) already exists.", "hint": None})
+    assert not db._is_schema_missing(refused) and db._is_schema_missing(missing)
+    # Without a code (our own errors, a dropped connection) the text still decides.
+    assert db._is_schema_missing(Exception("column tasks.due_kind does not exist"))
+
+    class _Refusing(_Query):
+        def __init__(self, err):
+            super().__init__([])
+            self.err = err
+
+        def execute(self):
+            raise self.err
+
+    with caplog.at_level("INFO"):
+        with patch.object(db, "get_client", return_value=_Refusing(refused)):
+            with pytest.raises(APIError):  # a real failure: not "not set up", not "a retry"
+                run(db.insert_follow_up({"title": "x"}))
+        with patch.object(db, "get_client", return_value=_Refusing(missing)):
+            with pytest.raises(db.TasksNotSetUp):
+                run(db.insert_follow_up({"title": "x"}))
+        with patch.object(db, "get_client", return_value=_Refusing(again)):
+            assert run(db.insert_follow_up({"title": "x"})) is None
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "PGRST204" in said and "Michael" not in said and "4270321" not in said
+
+
 class _Paged:
     """A query builder that serves `rows` one .range() page at a time, as PostgREST does (1000 at most)."""
 
