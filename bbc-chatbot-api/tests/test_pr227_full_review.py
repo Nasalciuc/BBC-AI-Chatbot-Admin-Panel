@@ -409,3 +409,16 @@ async def test_the_queued_reply_does_not_wait_for_the_operator_card():
     assert resp.type == "queued"
     for t in list(orchestrator._background_tasks):
         t.cancel()
+
+
+# ── ensure_one_question: the dead conditional is gone, the text is the same ─
+
+@pytest.mark.parametrize("body, expected", [
+    ("Got it, JFK to London.", "Got it, JFK to London. What date would you like to depart?"),
+    ("Got it", "Got it What date would you like to depart?"),  # as before: one space, no stop added
+    ("", "What date would you like to depart?"),
+])
+def test_the_slot_question_is_appended_after_one_space(body, expected):
+    from app.pipeline import slots
+
+    assert slots.ensure_one_question(body, "What date would you like to depart?") == expected
