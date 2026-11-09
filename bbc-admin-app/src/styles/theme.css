@@ -26,6 +26,11 @@
   --k-f0cdc8: #f0cdc8; --k-f0f0f0: #f0f0f0; --k-f2b01e: #f2b01e; --k-f2f2f2: #f2f2f2;
   --k-f4f1ff: #f4f1ff; --k-f4f4f4: #f4f4f4; --k-f7f7f7: #f7f7f7; --k-fde8e6: #fde8e6;
   --k-fdecea: #fdecea; --k-fff3e0: #fff3e0; --k-fffaf2: #fffaf2; --k-ffffff: #ffffff;
+  /* Dashboard and lead tints (owner/admin redesign, Nov 2026) */
+  --k-2a78d6: #2a78d6; --k-1baf7a: #1baf7a; --k-eb6834: #eb6834; --k-c27a00: #c27a00;
+  --k-fdf6e3: #fdf6e3; --k-f3f0ff: #f3f0ff; --k-2c2266: #2c2266; --k-fdf1d0: #fdf1d0;
+  --k-7a5300: #7a5300; --k-fde3d6: #fde3d6; --k-7a2e0e: #7a2e0e; --k-fff1dc: #fff1dc;
+  --k-c9d9f2: #c9d9f2; --k-9dbde9: #9dbde9; --k-6f9fe0: #6f9fe0; --k-4a87d9: #4a87d9;
   /* "b" = button/strong fill, "l" = line on a light card */
   --kb-202020: #202020; --kb-2f2f2f: #2f2f2f; --kb-333333: #333333; --kb-3a3a3a: #3a3a3a;
   --kl-202020: #202020;
@@ -83,6 +88,10 @@
   --k-f0cdc8: #6a2d27; --k-f0f0f0: #2c2c2c; --k-f2b01e: #f2b01e; --k-f2f2f2: #2a2a2a;
   --k-f4f1ff: #241f40; --k-f4f4f4: #242424; --k-f7f7f7: #141414; --k-fde8e6: #3b1d1a;
   --k-fdecea: #3b1d1a; --k-fff3e0: #362812; --k-fffaf2: #30270f; --k-ffffff: #1c1c1c;
+  --k-2a78d6: #5c9cf0; --k-1baf7a: #2fc28b; --k-eb6834: #f07a4a; --k-c27a00: #e9a23a;
+  --k-fdf6e3: #33290f; --k-f3f0ff: #241f40; --k-2c2266: #d8d0ff; --k-fdf1d0: #3d300f;
+  --k-7a5300: #f0c36b; --k-fde3d6: #3b2419; --k-7a2e0e: #ffb48e; --k-fff1dc: #362812;
+  --k-c9d9f2: #2a4466; --k-9dbde9: #3d6699; --k-6f9fe0: #5a8fd6; --k-4a87d9: #6aa0ea;
   --kb-202020: #ececec; --kb-2f2f2f: #2f2f2f; --kb-333333: #cecece; --kb-3a3a3a: #cfcfcf;
   --kl-202020: #ececec;
   --t-on-btn: #1c1c1c; --t-row-hover: #242424;
@@ -150,6 +159,12 @@
   --color-k-f4f1ff: var(--k-f4f1ff); --color-k-f4f4f4: var(--k-f4f4f4); --color-k-f7f7f7: var(--k-f7f7f7);
   --color-k-fde8e6: var(--k-fde8e6); --color-k-fdecea: var(--k-fdecea); --color-k-fff3e0: var(--k-fff3e0);
   --color-k-fffaf2: var(--k-fffaf2); --color-k-ffffff: var(--k-ffffff);
+  --color-k-2a78d6: var(--k-2a78d6); --color-k-1baf7a: var(--k-1baf7a); --color-k-eb6834: var(--k-eb6834);
+  --color-k-c27a00: var(--k-c27a00); --color-k-fdf6e3: var(--k-fdf6e3); --color-k-f3f0ff: var(--k-f3f0ff);
+  --color-k-2c2266: var(--k-2c2266); --color-k-fdf1d0: var(--k-fdf1d0); --color-k-7a5300: var(--k-7a5300);
+  --color-k-fde3d6: var(--k-fde3d6); --color-k-7a2e0e: var(--k-7a2e0e); --color-k-fff1dc: var(--k-fff1dc);
+  --color-k-c9d9f2: var(--k-c9d9f2); --color-k-9dbde9: var(--k-9dbde9); --color-k-6f9fe0: var(--k-6f9fe0);
+  --color-k-4a87d9: var(--k-4a87d9);
   --color-kb-202020: var(--kb-202020); --color-kb-2f2f2f: var(--kb-2f2f2f); --color-kb-333333: var(--kb-333333);
   --color-kb-3a3a3a: var(--kb-3a3a3a); --color-kl-202020: var(--kl-202020);
   --color-on-btn: var(--t-on-btn); --color-row-hover: var(--t-row-hover);

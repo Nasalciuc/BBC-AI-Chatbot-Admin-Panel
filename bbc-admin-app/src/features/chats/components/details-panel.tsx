@@ -9,6 +9,7 @@ import {
   clock,
   type CrmView,
   firstName,
+  confirmedOf,
   levelOf,
   missingForReady,
   joinAnd,
@@ -136,8 +137,8 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const signals = signalsOf(lead)
   const trip = tripRows(lead, signals)
   const about = aboutOf(signals, lead)
-  const level = levelOf(lead)
-  const missing = conv.tunnel === 'support' ? [] : missingForReady(lead)
+  const level = levelOf(lead, confirmedOf(conv))
+  const missing = conv.tunnel === 'support' ? [] : missingForReady(lead, confirmedOf(conv))
   const where = p.isSupervisor ? [] : whereRows(conv.metadata, conv.visitor_phone_country)
   const clientMsgs = p.messages.filter((m) => m.role === 'user').length
   const note = tripNote(conv, owner)

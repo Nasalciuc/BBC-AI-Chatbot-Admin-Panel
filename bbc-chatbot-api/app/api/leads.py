@@ -1,4 +1,5 @@
 """Admin API — leads CRUD."""
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -6,6 +7,7 @@ from app.db import supabase as db
 from app.models.admin import LeadFull, LeadReviewUpdate, LeadStatusUpdate
 from app.security.auth import get_current_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -30,7 +32,13 @@ async def list_leads(
     assigned_to: Optional[str] = Query(None, pattern="^(me|all|none)$"),
     reviewed: Optional[str] = Query(None, pattern="^(true|false)$"),
     crm_pending: bool = Query(False, description="CRM pending work-list: gold orphans + gate-refused leads the CRM never received"),
-    limit:  int = Query(50, ge=1, le=200),
+    view: Optional[str] = Query(None, pattern="^(not_in_crm|to_review|all)$",
+                                description="The Leads page's tabs. When set, level/chat_with/order apply and the "
+                                            "response carries the tab counts."),
+    level: Optional[str] = Query(None, pattern="^(ready|almost|early|contact)$"),
+    chat_with: Optional[str] = Query(None, pattern="^(person|ai)$"),
+    order: Optional[str] = Query(None, pattern="^(newest|oldest|closest)$"),
+    limit:  int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
@@ -38,6 +46,12 @@ async def list_leads(
     # access (Phase 1 trap), so it 403s here regardless of team scoping.
     if user.get("role") not in ("owner", "admin", "supervisor", "qa"):
         raise HTTPException(status_code=403, detail="Leads access restricted to admin/owner")
+    if view:
+        return await _list_leads_view(
+            user, view=view, search=search, level=level, chat_with=chat_with,
+            order=order, limit=limit, offset=offset,
+        )
+    limit = min(limit, 200)
     try:
         tunnel = _enforce_tunnel(user, tunnel)
 
@@ -107,6 +121,62 @@ async def list_leads(
         return {"success": False, "data": [], "count": 0, "error": str(e)}
 
 
+async def _list_leads_view(
+    user: dict, *, view: str, search: Optional[str], level: Optional[str],
+    chat_with: Optional[str], order: Optional[str], limit: int, offset: int,
+) -> dict:
+    """The Leads page: Not in the CRM / To review / All, with their counts.
+
+    Same scope as the classic list: a supervisor sees only leads frozen to
+    their own team(s), masked; a supervisor with no team sees nothing. A
+    failed read is a 502 — never an empty list that reads as "no leads"."""
+    from app.services.leads_view import build_leads_view
+
+    role = user.get("role", "")
+    try:
+        rows = await db.get_leads_universe()
+        names = await db.get_user_names()
+    except Exception as e:
+        logger.error(f"[leads_view] read failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load the leads") from e
+    if role == "supervisor":
+        team_ids = set(await db.get_team_ids_for_supervisor(user.get("id", "")) or [])
+        rows = [r for r in rows if r.get("team_id") in team_ids] if team_ids else []
+    built = build_leads_view(
+        rows, view=view, names=names, search=search, level=level, with_=chat_with,
+        order=order, limit=limit, offset=offset, masked=role == "supervisor",
+    )
+    page = built["rows"]
+    if role == "supervisor":
+        from app.security.pii import mask_visitor_row
+        page = [mask_visitor_row(dict(r)) for r in page]
+    response = {
+        "success": True, "data": page, "count": built["count"],
+        "counts": built["counts"], "order": built["order"],
+    }
+    if "summary" in built:
+        response["summary"] = built["summary"]
+    return response
+
+
+@router.get("/leads/{lead_id}/earlier")
+async def earlier_leads(lead_id: str, user: dict = Depends(get_current_user)):
+    """Other chats with the same phone or e-mail ("Earlier with us").
+    Owner, admin and QA: the lookup is by contact details a supervisor
+    doesn't see."""
+    if user.get("role") not in ("owner", "admin", "qa"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    lead = await db.get_lead_full(lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    try:
+        rows = await db.get_earlier_leads(lead_id, lead.get("visitor_email"), lead.get("visitor_phone"))
+    except Exception as e:
+        logger.error(f"[earlier_leads] read failed for {lead_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't look up earlier chats") from e
+    return {"success": True, "data": rows, "count": len(rows)}
+
+
 @router.get("/leads/{lead_id}", response_model=LeadFull)
 async def get_lead(lead_id: str, user: dict = Depends(get_current_user)):
     if user.get("role") not in ("owner", "admin", "supervisor", "qa"):
@@ -139,6 +209,7 @@ async def update_lead_status(
     result = await db.update_lead(lead_id, payload)
     if not result:
         raise HTTPException(404, "Lead not found")
+    db.invalidate_leads_universe()
     return result
 
 
@@ -162,6 +233,7 @@ async def update_lead_review(
     result = await db.update_lead(lead_id, update_data)
     if not result:
         raise HTTPException(status_code=404, detail="Lead not found")
+    db.invalidate_leads_universe()
     return {"success": True, "reviewed": body.reviewed, "data": result}
 
 
@@ -180,6 +252,7 @@ async def update_lead(
     result = await db.update_lead(lead_id, payload)
     if not result:
         raise HTTPException(404, "Lead not found")
+    db.invalidate_leads_universe()
     return result
 
 
@@ -256,6 +329,7 @@ async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_curren
                 await db.mark_lead_created_in_crm(
                     lead_id, crm_lead_id=result.request_id
                 )
+                db.invalidate_leads_universe()
                 updated = await db.get_lead_full(lead_id)
                 return {
                     "success": True,
@@ -284,10 +358,13 @@ async def mark_lead_created_in_crm(lead_id: str, user: dict = Depends(get_curren
             suid=conv.get("visitor_id"),
         )
         if not result.success:
+            # The refusal reason was written on the lead: show it on the list.
+            db.invalidate_leads_universe()
             raise HTTPException(
                 status_code=422,
                 detail=f"CRM push failed: {result.error}",
             )
+        db.invalidate_leads_universe()
         updated = await db.get_lead_full(lead_id)
         return {"success": True, "data": updated or lead}
     except HTTPException:
@@ -317,6 +394,7 @@ async def set_manual_crm_id(
         result = await db.mark_lead_created_in_crm(lead_id, crm_lead_id=crm_id)
         if not result:
             raise HTTPException(404, "Lead not found")
+        db.invalidate_leads_universe()
         return {"success": True, "data": result}
     except HTTPException:
         raise

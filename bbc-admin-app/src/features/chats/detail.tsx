@@ -44,6 +44,7 @@ import {
   deadlineLeft,
   firstName,
   initials,
+  confirmedOf,
   levelOf,
   minutesLabel,
   minutesSince,
@@ -531,7 +532,7 @@ export default function ConversationDetail({
   const waitingMin = owner === 'waiting' ? minutesSince(conv.queued_at ?? conv.updated_at, nowMs) : null
   const noReply = noReplyMinutes(conv, nowMs)
   const leftMin = presence.state === 'left' && typeof presence.ageSeconds === 'number' ? Math.floor(presence.ageSeconds / 60) : null
-  const level = levelOf(lead)
+  const level = levelOf(lead, confirmedOf(conv))
   const narrow = layout === 'narrow'
   const detailsStatic = layout === 'wide'
 

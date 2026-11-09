@@ -51,6 +51,10 @@ async def health() -> dict:
     # answer a question nobody asked.
     from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
     from app.api.cron import _DB_ALERT
+    # The owner's Dashboard: one paged read a minute, shared; failures 502.
+    from app.api.dashboard import OWNER_DASHBOARD_HEALTH
+    # The Leads page's shared read: how often it reads, and how many rows.
+    from app.db.supabase import LEADS_UNIVERSE_HEALTH
 
     if not settings.debug:
         return {
@@ -78,6 +82,8 @@ async def health() -> dict:
             "sse": {"subscribers": _sse.subscriber_count()},
             "presence_gate": dict(PRESENCE_GATE_HEALTH),
             "phantom_turns": dict(PIPELINE_HEALTH),
+            "owner_dashboard": dict(OWNER_DASHBOARD_HEALTH),
+            "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -142,4 +148,6 @@ async def health() -> dict:
         "sse": {"subscribers": _sse.subscriber_count()},
         "presence_gate": dict(PRESENCE_GATE_HEALTH),
         "phantom_turns": dict(PIPELINE_HEALTH),
+        "owner_dashboard": dict(OWNER_DASHBOARD_HEALTH),
+        "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
     }
