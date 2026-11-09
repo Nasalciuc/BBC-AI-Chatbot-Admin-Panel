@@ -3,9 +3,11 @@ import { toast } from 'sonner'
 import { listQuestionVariants, setVariantStatus, getLearningReport } from '@/lib/api'
 import type { QuestionVariant } from '@/lib/types'
 
+// The palette's green and amber pairs (styles/theme.css): each token carries
+// its own dark value.
 const STATUS_STYLES: Record<string, string> = {
-  active: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-  proposed: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
+  active: 'bg-k-e3f6ea text-k-0a6b35',
+  proposed: 'bg-k-fff3e0 text-k-8a4b00',
   retired: 'bg-muted text-muted-foreground',
 }
 
@@ -80,11 +82,13 @@ export function Learning() {
                       <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[v.status] ?? ''}`}>{v.status}</span>
                     </td>
                     <td className="px-4 py-2 text-right whitespace-nowrap">
+                      {/* One change at a time: a second click while the first is
+                          on its way would send it again, or the opposite one. */}
                       {v.status !== 'active' && (
-                        <button className="text-xs text-green-700 hover:underline mr-3" onClick={() => mutate.mutate({ id: v.id, status: 'active' })}>Activate</button>
+                        <button type="button" disabled={mutate.isPending} className="text-xs text-k-0a6b35 hover:underline mr-3 disabled:opacity-50" onClick={() => mutate.mutate({ id: v.id, status: 'active' })}>Activate</button>
                       )}
                       {v.status !== 'retired' && (
-                        <button className="text-xs text-muted-foreground hover:underline" onClick={() => mutate.mutate({ id: v.id, status: 'retired' })}>Retire</button>
+                        <button type="button" disabled={mutate.isPending} className="text-xs text-muted-foreground hover:underline disabled:opacity-50" onClick={() => mutate.mutate({ id: v.id, status: 'retired' })}>Retire</button>
                       )}
                     </td>
                   </tr>
