@@ -489,8 +489,8 @@ RLS: on
 | `error_message` | text | yes |  |
 | `entities_extracted` | jsonb | no | `'{}'::jsonb` |
 | `created_at` | timestamp with time zone | no | `now()` |
-| `tunnel` | text | yes |  |
-| `had_fallback` | boolean | no | `false` |
+| `tunnel` | character varying | yes |  |
+| `had_fallback` | boolean | yes | `false` |
 
 Indexes:
 
@@ -750,7 +750,7 @@ RLS: on
 | `totp_secret_enc` | text | yes |  |
 | `mfa_enrolled_at` | timestamp with time zone | yes |  |
 | `chats_served_today` | integer | no | `0` |
-| `chats_served_date` | date | yes |  |
+| `chats_served_date` | date | yes | `CURRENT_DATE` |
 
 Indexes:
 

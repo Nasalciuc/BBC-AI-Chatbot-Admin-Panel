@@ -17,7 +17,14 @@ CHECK lookup in 011/013, the non-IMMUTABLE index predicate in 022, the
 REVOKE/ALTER on functions created outside the repo in 031. 044 adds what
 production has and no migration wrote (`pipeline_runs.tunnel`,
 `had_fallback`, `users.chats_served_today`, `chats_served_date`, the
-`needs_agent` status); every statement there is a no-op on production.
+`completed` status), each copied from the live schema (2026-11-09); every
+statement there is a no-op on production.
+
+`needs_agent` is not in it. The code writes `conversations.status =
+'needs_agent'`, but production's column is `varchar(10)` with a CHECK that
+leaves it out, so every such write is rejected live. Accepting it changes
+what production does, so it is a separate migration and PR, applied by the
+owner in working hours.
 
 ## What waits for the owner
 
@@ -39,7 +46,8 @@ production has and no migration wrote (`pipeline_runs.tunnel`,
 
 2. **Running the new files in the SQL editor**, in this order, each one
    alone (none is applied):
-   - `044_reconcile_schema.sql` (expected to change nothing live)
+   - `044_reconcile_schema.sql` (changes nothing live: checked against the
+     live schema on 2026-11-09)
    - `045`–`047` index files, one statement at a time (`CONCURRENTLY`).
      A concurrent build that fails or is cancelled leaves an `INVALID` index
      that `IF NOT EXISTS` then skips silently, so after each file:
