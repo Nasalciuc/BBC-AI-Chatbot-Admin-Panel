@@ -336,14 +336,19 @@ async def record_ban_row(identity: str, jail: str, seconds: int) -> None:
         )
         FAIL2BAN_HEALTH["rows_written"] += 1
     except Exception as e:
-        text = str(e).lower()
-        if "security_bans" in text and ("does not exist" in text or "could not find" in text or "42p01" in text):
+        from app.db.supabase import _error_code, _loggable_code
+
+        # The table (042 not applied), by the database's code: the text also
+        # matched a missing column of the table, which switched the history
+        # off for good. The text is never logged either: it can quote the row.
+        code = _error_code(e)
+        if code in ("42P01", "PGRST205"):
             _table_missing = True
             FAIL2BAN_HEALTH["table_missing"] = True
-            logger.warning(f"[ban-guard] security_bans missing — history off until 042 is applied: {type(e).__name__}")
+            logger.warning(f"[ban-guard] security_bans missing — history off until 042 is applied: {type(e).__name__} {code}")
             return
         FAIL2BAN_HEALTH["row_errors"] += 1
-        logger.warning(f"[ban-guard] security_bans write failed: {type(e).__name__}: {e}")
+        logger.warning(f"[ban-guard] security_bans write failed: {type(e).__name__} {_loggable_code(code)}".rstrip())
 
 
 # ── The auth-attack jail (called from the login route) ────────

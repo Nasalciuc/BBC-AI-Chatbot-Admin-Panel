@@ -16,6 +16,10 @@ os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from app.api.auth_routes import _login_place  # noqa: E402
+from app.security import ban_guard as _ban_guard_module  # noqa: E402
+
+# The real writer, before any fixture replaces it.
+_REAL_RECORD_BAN_ROW = _ban_guard_module.record_ban_row
 
 
 # ── the login place: one network, one key, whatever its spelling ───────────
@@ -124,3 +128,48 @@ async def test_a_ban_another_request_holds_is_still_already_held(_bans):
     await ban_guard._ban_identity(store, "9.9.9.9", "honeypot", 3600, alert=True)
     assert rows.await_count == 1 and alert.await_count == 1
     assert ban_guard.FAIL2BAN_HEALTH["ban_already_held"] == 1 and ban_guard.FAIL2BAN_HEALTH["ban_errors"] == 0
+
+
+# ── the ban history: the missing table by its code, never by the text ──────
+
+class _DbError(Exception):
+    def __init__(self, code, message, details=None):
+        super().__init__(f"{message} {details or ''}")
+        self.code, self.message, self.details = code, message, details
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["42P01", "PGRST205"])
+async def test_the_missing_table_turns_the_history_off_once(code, monkeypatch, _bans):
+    ban_guard, _store, _rows, _alert = _bans
+    calls = []
+
+    async def _fail(fn, **_kw):
+        calls.append(1)
+        raise _DbError(code, "relation does not exist")
+
+    monkeypatch.setattr("app.db.supabase._run_sync", _fail)
+    await _REAL_RECORD_BAN_ROW("203.0.113.9", "honeypot", 60)
+    await _REAL_RECORD_BAN_ROW("203.0.113.9", "honeypot", 60)
+    assert len(calls) == 1 and ban_guard.FAIL2BAN_HEALTH["table_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_missing_column_is_a_row_error_and_the_history_stays_on(monkeypatch, caplog, _bans):
+    # The old text check read 'column … of relation "security_bans" does not
+    # exist' as the table missing, and wrote no row again until a restart.
+    ban_guard, _store, _rows, _alert = _bans
+    calls = []
+
+    async def _fail(fn, **_kw):
+        calls.append(1)
+        raise _DbError("42703", 'column "ban_count" of relation "security_bans" does not exist',
+                       details="Failing row contains (203.0.113.9, honeypot)")
+
+    monkeypatch.setattr("app.db.supabase._run_sync", _fail)
+    with caplog.at_level("WARNING", logger="app.security.ban_guard"):
+        await _REAL_RECORD_BAN_ROW("203.0.113.9", "honeypot", 60)
+        await _REAL_RECORD_BAN_ROW("203.0.113.9", "honeypot", 60)
+    assert len(calls) == 2 and ban_guard.FAIL2BAN_HEALTH["table_missing"] is False
+    assert ban_guard.FAIL2BAN_HEALTH["row_errors"] == 2
+    assert "42703" in caplog.text and "203.0.113.9" not in caplog.text
