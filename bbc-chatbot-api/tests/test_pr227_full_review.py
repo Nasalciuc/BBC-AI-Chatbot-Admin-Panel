@@ -422,3 +422,22 @@ def test_the_slot_question_is_appended_after_one_space(body, expected):
     from app.pipeline import slots
 
     assert slots.ensure_one_question(body, "What date would you like to depart?") == expected
+
+
+# ── scripts/eval_router.py: only --dry-run reports success ────────────────
+
+@pytest.mark.parametrize("argv, code", [(["eval_router.py"], 2), (["eval_router.py", "--dry-run"], 0)])
+def test_eval_router_exit_status_says_whether_anything_ran(argv, code, tmp_path, monkeypatch, capsys):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "eval_router", os.path.join(os.path.dirname(__file__), "..", "scripts", "eval_router.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "OUT", tmp_path)
+    monkeypatch.setattr(sys, "argv", argv)
+    assert mod.main() == code
+    if code:
+        assert "nothing was evaluated" in capsys.readouterr().err
+    else:
+        assert (tmp_path / "router_eval.json").exists()
