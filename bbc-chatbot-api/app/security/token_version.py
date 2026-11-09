@@ -14,6 +14,11 @@ that was in flight while a bump landed is neither cached nor allowed to fall
 back on the dropped entry. The read is sync
 (get_current_user runs under a threadpool Depends) and cached, so it adds at
 most one cheap query per user per minute.
+
+A read that hits a dead connection (the server ended it, a socket the edge
+closed) is tried once more on a fresh one before it fails closed: with no
+version cached yet — the first request after a deploy — that one transport
+error was a 401, and the panel signs out on a 401.
 """
 
 from __future__ import annotations
@@ -34,7 +39,11 @@ _lock = Lock()
 _generation = 0
 _missing_column = False
 
-TOKEN_VERSION_HEALTH: dict[str, int] = {"read_failed": 0, "refused_unreadable": 0, "bump_failed": 0}
+# retried: reads that hit a dead connection and were tried once more (a
+# second failure also counts in read_failed).
+TOKEN_VERSION_HEALTH: dict[str, int] = {
+    "read_failed": 0, "refused_unreadable": 0, "bump_failed": 0, "retried": 0,
+}
 
 # What _read answers for a user whose row does not exist. Every token is
 # issued for a users row (auth_routes._issue_jwt), and claims are >= 0.
@@ -72,26 +81,34 @@ def current_version(user_id: str) -> Optional[int]:
 
 def _read(user_id: str) -> Optional[int]:
     global _missing_column
-    try:
-        from app.db.supabase import get_client
+    from app.db.supabase import _is_disconnect, get_client
 
-        res = (
-            get_client().table("users").select("token_version").eq("id", user_id).limit(1).execute()
-        )
-        rows = getattr(res, "data", None) or []
-        if not rows:
-            return NO_USER
-        return int(rows[0].get("token_version") or 0)
-    except Exception as e:
-        text = str(e).lower()
-        if "token_version" in text and ("does not exist" in text or "42703" in text or "could not find" in text):
-            if not _missing_column:
-                _missing_column = True
-                logger.warning("[token-version] column missing — apply 039; check is inert until then")
-            return 0
-        TOKEN_VERSION_HEALTH["read_failed"] += 1
-        logger.warning(f"[token-version] read failed: {type(e).__name__}: {e}")
-        return None
+    for attempt in (1, 2):
+        try:
+            res = (
+                get_client().table("users").select("token_version").eq("id", user_id).limit(1).execute()
+            )
+            rows = getattr(res, "data", None) or []
+            if not rows:
+                return NO_USER
+            return int(rows[0].get("token_version") or 0)
+        except Exception as e:
+            text = str(e).lower()
+            if "token_version" in text and ("does not exist" in text or "42703" in text or "could not find" in text):
+                if not _missing_column:
+                    _missing_column = True
+                    logger.warning("[token-version] column missing — apply 039; check is inert until then")
+                return 0
+            if attempt == 1 and _is_disconnect(e):
+                # A SELECT: safe to send again. httpx drops the dead socket,
+                # so the second try goes out on a fresh connection.
+                TOKEN_VERSION_HEALTH["retried"] += 1
+                logger.warning(f"[token-version] read hit a dead connection ({type(e).__name__}) — retrying once")
+                continue
+            TOKEN_VERSION_HEALTH["read_failed"] += 1
+            logger.warning(f"[token-version] read failed: {type(e).__name__}: {e}")
+            return None
+    return None  # not reached: the second attempt returns or fails above
 
 
 def matches(user_id: str, claim: Optional[int]) -> bool:

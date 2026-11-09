@@ -290,6 +290,57 @@ def test_a_generic_read_error_is_not_version_zero():
     assert token_version.TOKEN_VERSION_HEALTH["read_failed"] == 1
 
 
+def _users_read_answering(version):
+    chain = MagicMock()
+    chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+        data=[{"token_version": version}]
+    )
+    return chain
+
+
+def test_a_dead_connection_is_read_again_not_a_sign_out():
+    """The first request after a deploy has nothing cached: one transport
+    error used to be a 401, and the panel signs out on a 401."""
+    import httpx
+
+    real_read = token_version._read.real
+    client = MagicMock()
+    client.table.side_effect = [
+        httpx.RemoteProtocolError("Server disconnected without sending a response."),
+        _users_read_answering(3),
+    ]
+    with patch("app.db.supabase.get_client", return_value=client):
+        assert real_read("u1") == 3
+    assert client.table.call_count == 2
+    assert token_version.TOKEN_VERSION_HEALTH["retried"] == 1
+    assert token_version.TOKEN_VERSION_HEALTH["read_failed"] == 0
+
+
+def test_a_second_dead_connection_still_fails_closed():
+    import httpx
+
+    real_read = token_version._read.real
+    client = MagicMock()
+    client.table.side_effect = httpx.RemoteProtocolError(
+        "<ConnectionTerminated error_code:ErrorCodes.NO_ERROR, last_stream_id:1999, additional_data:None>"
+    )
+    with patch("app.db.supabase.get_client", return_value=client):
+        assert real_read("u1") is None
+    assert client.table.call_count == 2, "one retry, not a loop"
+    assert token_version.TOKEN_VERSION_HEALTH["retried"] == 1
+    assert token_version.TOKEN_VERSION_HEALTH["read_failed"] == 1
+
+
+def test_an_error_that_is_not_the_connection_is_not_retried():
+    real_read = token_version._read.real
+    client = MagicMock()
+    client.table.side_effect = RuntimeError("permission denied for table users (42501)")
+    with patch("app.db.supabase.get_client", return_value=client):
+        assert real_read("u1") is None
+    assert client.table.call_count == 1
+    assert token_version.TOKEN_VERSION_HEALTH["retried"] == 0
+
+
 def test_a_missing_column_still_reads_zero():
     real_read = token_version._read.real
     client = MagicMock()
