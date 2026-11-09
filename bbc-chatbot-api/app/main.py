@@ -28,14 +28,12 @@ from app.security.request_logger import RequestLoggerMiddleware
 from app.security.ban_guard import BanGuardMiddleware
 
 # ── Logging ───────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-# httpx logs the full URL of every Supabase request at INFO — PostgREST puts
-# filters and looked-up values in the query string, so that is PII at INFO.
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# One JSON line per event on Railway (real level, traceback inside, request
+# id), the old text line anywhere else — app/log_setup.py. httpx stays at
+# WARNING (its INFO line is every Supabase URL, PII included).
+from app.log_setup import configure_logging
+
+configure_logging(debug=settings.debug)
 
 logger = logging.getLogger(__name__)
 
