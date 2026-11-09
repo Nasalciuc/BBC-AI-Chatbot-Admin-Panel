@@ -29,11 +29,26 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for
         lead_dict.get("origin_code") and lead_dict.get("destination_code")
     )
     has_departure = bool(lead_dict.get("departure_date"))
-    # BBC rule: any confirmed trip_type counts (consultant clarifies details)
-    has_return_or_oneway = bool(
-        lead_dict.get("return_date")
-        or lead_dict.get("trip_type") in ("one_way", "round_trip", "multi_city", "open_jaw")
-    )
+    # BBC rule: any confirmed trip_type counts (consultant clarifies details).
+    # PR-7: with SLOT_POLICY_ENABLED, the NOT NULL 'round_trip' default no
+    # longer counts — only a client-stated trip type (trip_notes.trip_type_source
+    # == 'client') or a real return_date does, so the bot actually asks.
+    _notes = lead_dict.get("trip_notes") or {}
+    _client_trip_type = isinstance(_notes, dict) and _notes.get("trip_type_source") == "client"
+    try:
+        from app.flags import flag as _flag
+        _slot_policy = bool(_flag("SLOT_POLICY_ENABLED", False))
+    except Exception:  # noqa: silent — flags unavailable means today's behaviour, never a crash
+        _slot_policy = False
+    if _slot_policy and "trip_notes" in lead_dict:
+        has_return_or_oneway = bool(lead_dict.get("return_date") or _client_trip_type)
+    else:
+        # Flag off, or no trip_notes column yet (040 unapplied): nothing can
+        # record the client's answer, so the strict rule would ask forever.
+        has_return_or_oneway = bool(
+            lead_dict.get("return_date")
+            or lead_dict.get("trip_type") in ("one_way", "round_trip", "multi_city", "open_jaw")
+        )
     has_passengers = bool(lead_dict.get("passengers"))
 
     # Contact info — from visitor form (conv_dict) OR lead

@@ -789,10 +789,53 @@ export type AgentSseEvent =
       widget_last_close_reason?: string; widget_last_event_at?: string }
   | { event: 'stream_chunk'; delta: string }
   | ({ event: 'stream_end' } & SseMessageRow)
+  | ({ event: 'lead_details' } & LeadDetails)
   /** The chat started waiting for a person and isn't yours (blind take):
    *  the server closes the stream right after this frame. */
   | { event: 'blind' }
   | SseMessageRow   // plain message row (agent / system / ai)
+
+// ── Learning loop (PR-8) ──────────────────────────────────────
+/** Every admin endpoint answers { success, data, count, error? }. */
+export type AdminEnvelope<T> = {
+  success: boolean
+  data: T
+  count: number
+  error?: string
+}
+
+export type QuestionVariant = {
+  id: string
+  slot: string
+  text: string
+  status: 'proposed' | 'active' | 'retired'
+  origin: string
+  shows: number
+  answered: number
+  answer_rate: number | null
+  prob_best: number
+}
+
+export type LearningReport = {
+  treatment_answer_rate: number | null
+  control_answer_rate: number | null
+  treatment_n: number
+  control_n: number
+  by_slot: Record<string, { treatment: number | null; control: number | null }>
+  error?: string
+}
+
+export type LeadDetails = {
+  type?: 'lead_details'
+  route: string | null
+  departure_date: string | null
+  return_date: string | null
+  trip_type: string | null
+  passengers: number | null
+  notes: Record<string, unknown>
+  missing: string[]
+  suggested_question: string | null
+}
 
 export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (!raw || typeof raw !== 'object') return null
@@ -802,6 +845,7 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
+  if (r.type === 'lead_details') return { ...(r as object), event: 'lead_details' } as AgentSseEvent
   if (typeof r.id === 'string') {
     if (ev === 'stream_end') return { ...(r as object), event: 'stream_end' } as AgentSseEvent
     // A message row has NO event field. An unknown event that happens to carry

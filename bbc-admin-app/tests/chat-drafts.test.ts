@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DRAFT_PREFIX, clearDrafts, draftId, readDraft, writeDraft } from '../src/lib/chat-drafts.ts'
+import { DRAFT_PREFIX, clearDrafts, draftId, readDraft, withSuggestedQuestion, writeDraft } from '../src/lib/chat-drafts.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -95,4 +95,24 @@ test('signing out on purpose clears every draft, and nothing else', () => {
   assert.deepEqual([...m.keys()], ['bbc_idle_nudge_seen'])
   const dialog = readFileSync(join(root, 'src/components/sign-out-dialog.tsx'), 'utf-8')
   assert.ok(dialog.indexOf('clearDrafts()') < dialog.indexOf('auth.reset()'))
+})
+
+// CodeRabbit #227: "Ask: …" on the trip card replaced the whole reply box.
+test('the suggested question goes after a draft, never over it', () => {
+  const q = 'What date would you like to depart?'
+  assert.equal(withSuggestedQuestion('', q), q)
+  assert.equal(withSuggestedQuestion('   ', q), q)
+  assert.equal(withSuggestedQuestion('Thanks, David!', q), `Thanks, David! ${q}`)
+  assert.equal(withSuggestedQuestion('Thanks, David!\n', q), `Thanks, David!\n${q}`)
+  // A second click adds nothing.
+  assert.equal(withSuggestedQuestion(`Thanks! ${q}`, q), `Thanks! ${q}`)
+  assert.equal(withSuggestedQuestion('Thanks!', '  '), 'Thanks!')
+})
+
+test('the Ask button merges into the draft and gives the box its focus back', () => {
+  const src = readFileSync(join(root, 'src/features/chats/detail.tsx'), 'utf-8')
+  const ask = src.slice(src.indexOf('leadDetails.suggested_question ? ('), src.indexOf('Ask: “{leadDetails.suggested_question}”'))
+  assert.match(ask, /setInput\(\(prev\) => withSuggestedQuestion\(prev, leadDetails\.suggested_question \?\? ''\)\)/)
+  assert.match(ask, /requestAnimationFrame\(\(\) => taRef\.current\?\.focus\(\)\)/)
+  assert.doesNotMatch(ask, /setInput\(leadDetails\.suggested_question/)
 })

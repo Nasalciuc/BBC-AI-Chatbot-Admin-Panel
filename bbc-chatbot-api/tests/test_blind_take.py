@@ -12,6 +12,8 @@ pin that the API agrees, so the gate is not the only thing standing:
   * an open stream asks again before every batch of words it sends, after
     taking the batch off its queue — no interval — so a chat that starts
     waiting stops reaching an agent who isn't on it at the very next event;
+    v2's trip card (lead_details on the operator channel op:{cid}, and its
+    first load, /details) is held the same way;
   * nothing is remembered: whose chat it is can change between two polls
     (given to a colleague, back in the line), so every read asks again —
     live typing is gathered so a stream asks at most twice a second for it;
@@ -583,6 +585,11 @@ CHUNK = {"event": "stream_chunk", "delta": "Dubai on the 14th"}
 END = {"event": "stream_end", "id": "m3", "role": "ai", "content": "Dubai on the 14th works."}
 
 
+def _released(release) -> bool:
+    """The stream let go of both channels, once each."""
+    return sorted(c.args[0] for c in release.call_args_list) == ["c1", "op:c1"]
+
+
 def _frame(e: dict) -> str:
     import json
     return f"data: {json.dumps(e)}\n\n"
@@ -593,21 +600,24 @@ def _drive(user: dict, seen: AsyncMock, *waves: list, during=None, typing_every=
     its queue after the stream finished with the one before (the first is
     there when it opens). `during(queue)` runs alongside, for events that
     arrive while the stream waits. Settings are production's unless
-    `typing_every` is given. Returns every frame the stream sent and the
-    release of its subscription."""
+    `typing_every` is given. Events with type lead_details (the trip card)
+    land on the operator channel, the rest on the conversation's. Returns
+    every frame the stream sent and the release of its subscriptions."""
     import asyncio
     from app.api import agent as agent_api
     from app.realtime.manager import manager
 
     async def go():
         q: asyncio.Queue = asyncio.Queue()
+        op_q: asyncio.Queue = asyncio.Queue()   # op:{cid}, the trip card's channel
+        channels = {"c1": q, "op:c1": op_q}
         pending = [list(w) for w in waves]
 
         def next_wave() -> bool:
             if not pending:
                 return True  # nothing left to say: the panel goes away
             for e in pending.pop(0):
-                q.put_nowait(e)
+                (op_q if e.get("type") == "lead_details" else q).put_nowait(e)
             return False
 
         request = MagicMock()
@@ -616,7 +626,7 @@ def _drive(user: dict, seen: AsyncMock, *waves: list, during=None, typing_every=
         with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
              patch.object(db, "get_blind_inputs", new=seen), \
              patch.object(agent_api, "_TYPING_EVERY_SECONDS", every), \
-             patch.object(manager, "connect", new=AsyncMock(return_value=q)), \
+             patch.object(manager, "connect", new=AsyncMock(side_effect=lambda ch: channels[ch])), \
              patch.object(manager, "disconnect") as release:
             res = await agent_api.agent_stream("c1", request, user=user)
             side = asyncio.create_task(during(q)) if during else None
@@ -637,7 +647,7 @@ def test_a_chat_that_starts_waiting_stops_reaching_an_agent_who_isnt_on_it():
     assert frames == [_frame(M1), _frame({"event": "blind"})], "the panel is told, and M2 never goes out"
     assert "28th" not in "".join(frames)
     assert conv_api.BLIND_HEALTH["streams_closed"] == before + 1
-    release.assert_called_once()
+    assert _released(release)
 
 
 def test_the_first_event_after_the_door_is_checked_too():
@@ -653,7 +663,7 @@ def test_a_stream_the_agent_may_still_read_carries_every_event():
     frames, release = _drive(_user("sales"), seen, [M1], [TYPING], [M2])
     assert frames == [_frame(M1), _frame(TYPING), _frame(M2)]
     assert seen.await_count == 4, "the door, then once before each batch"
-    release.assert_called_once()
+    assert _released(release)
 
 
 def test_events_waiting_together_go_out_after_one_check():
@@ -677,7 +687,7 @@ def test_a_re_check_that_cant_be_made_closes_the_stream():
     frames, release = _drive(_user("sales"), seen, [M1])
     assert frames == [], "fail closed, without a word: the panel reconnects and is asked at the door"
     assert conv_api.BLIND_HEALTH["check_failed"] == before + 1
-    release.assert_called_once()
+    assert _released(release)
 
 
 def test_the_agents_own_chat_is_checked_mid_stream_too():
@@ -698,7 +708,7 @@ def test_a_stream_on_my_chat_closes_once_it_changed_hands_and_went_back_to_the_l
     frames, release = _drive(_user("sales"), seen, [M1], [M2], [M3])
     assert frames == [_frame(M1), _frame(M2), _frame({"event": "blind"})]
     assert "doha" not in "".join(frames).lower()
-    release.assert_called_once()
+    assert _released(release)
 
 
 def test_live_typing_is_gathered_so_it_costs_at_most_two_checks_a_second():
@@ -755,6 +765,72 @@ def test_a_managers_stream_is_never_re_checked_and_keeps_every_frame():
     seen = AsyncMock(return_value=_row())
     frames, _ = _drive(_user("owner"), seen, [M1, CHUNK], [END])
     assert frames == [_frame(M1), _frame(CHUNK), _frame(END)]
+    seen.assert_not_awaited()
+
+
+CARD = {"type": "lead_details", "route": "BOS → DXB", "departure_date": "2026-12-14", "return_date": None,
+        "trip_type": "one_way", "passengers": 2, "notes": {}, "missing": ["return_date"],
+        "suggested_question": "When would you like to come back?"}
+
+
+def test_the_trip_card_is_held_like_words_when_the_chat_starts_waiting():
+    # The card is the route: it waits for Take exactly like a message.
+    seen = AsyncMock(side_effect=[THEIRS, _row()])
+    frames, release = _drive(_user("sales"), seen, [CARD])
+    assert frames == [_frame({"event": "blind"})]
+    assert "dxb" not in "".join(frames).lower()
+    assert _released(release)
+
+
+def test_the_trip_card_reaches_the_agent_who_may_read_it():
+    seen = AsyncMock(return_value=MINE)
+    frames, _ = _drive(_user("sales"), seen, [CARD])
+    assert frames == [_frame(CARD)]
+    assert seen.await_count == 2, "the door, then one check for the card"
+
+
+def test_a_message_and_the_card_waiting_together_go_out_after_one_check():
+    seen = AsyncMock(return_value=MINE)
+    frames, _ = _drive(_user("sales"), seen, [M1, CARD])
+    assert frames == [_frame(M1), _frame(CARD)], "the conversation's events, then the card's"
+    assert seen.await_count == 2
+
+
+def _details(role: str, blind_row=None, blind_error=None):
+    from app.services import lead_service
+
+    read = AsyncMock(return_value={"origin_code": "BOS", "destination_code": "DXB"})
+    seen = AsyncMock(return_value=blind_row, side_effect=blind_error)
+    with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": "c1", "tunnel": "sales"})), \
+         patch.object(db, "get_blind_inputs", new=seen), \
+         patch.object(lead_service, "get_or_create_lead", new=read):
+        r = _client(role).get("/api/conversations/c1/details")
+    return r, read, seen
+
+
+@pytest.mark.parametrize("role", AGENTS)
+def test_the_trip_card_first_load_waits_for_take(role):
+    r, read, _ = _details(role, blind_row=_row())
+    assert r.status_code == 403 and r.json()["detail"] == "Take the chat to read it."
+    assert "dxb" not in r.text.lower()
+    read.assert_not_awaited()  # no lead is read, or created, for a blind agent
+
+
+def test_the_trip_card_first_load_serves_the_agents_own_chat():
+    r, read, _ = _details("sales", blind_row=MINE)
+    assert r.status_code == 200 and r.json()["data"]["route"] == "BOS → DXB"
+    read.assert_awaited_once()
+
+
+def test_a_trip_card_that_cant_be_checked_is_not_served():
+    r, read, _ = _details("sales", blind_error=RuntimeError("network"))
+    assert r.status_code == 503
+    read.assert_not_awaited()
+
+
+def test_a_manager_loads_the_trip_card_without_the_check():
+    r, _, seen = _details("owner", blind_error=RuntimeError("network"))
+    assert r.status_code == 200 and r.json()["data"]["route"] == "BOS → DXB"
     seen.assert_not_awaited()
 
 

@@ -187,6 +187,44 @@ def _generation_tier(intent: Intent, lead: Optional[dict], tunnel: str) -> tuple
     return _select_sales_model(intent, lead)
 
 
+def _family_55_active(conversation_id: Optional[str]) -> bool:
+    """5.5 models are used only on the graph engine AND inside the
+    MODEL_FAMILY_55_PERCENT arm (R11). Legacy keeps 4.x."""
+    from app.flags import flag
+    from app.experiments import in_arm
+    try:
+        from app.graph.engine import use_graph
+    except Exception as _e:  # noqa: silent — no graph engine importable means legacy, never 5.5
+        logger.debug(f"graph engine import failed, staying on 4.x: {type(_e).__name__}")
+        return False
+    if not use_graph(conversation_id):
+        return False
+    return in_arm("model_family_55", conversation_id, int(flag("MODEL_FAMILY_55_PERCENT", 0)))
+
+
+def _router_override(tier: str, tunnel: str, conversation_id: Optional[str]) -> dict:
+    """Ask the router for model/effort/max_tokens. Returns {} (today's defaults)
+    when nothing special applies, so the legacy path is byte-identical."""
+    from app.ai import ledger
+    from app.ai.router import decide, SALES_REPLY, SUPPORT_REPLY
+
+    from app.flags import flag
+
+    family_55 = _family_55_active(conversation_id)
+    frac = ledger.budget_fraction()
+    # Nothing to change on the 4.x family: today's behaviour, byte-identical.
+    # The 80% downshift to Haiku is a change of production models, so on the
+    # legacy family it waits for BUDGET_DOWNSHIFT_ENABLED (review fix); the
+    # 100% template stays with budget_remaining upstream, as before.
+    if not family_55 and (frac < 0.8 or not flag("BUDGET_DOWNSHIFT_ENABLED", False)):
+        return {}
+    task = SUPPORT_REPLY if tunnel != "sales" else SALES_REPLY
+    route = decide(task, decisive=(tier == "opus"), family_55=family_55, budget_fraction=frac)
+    if route.model is None:
+        return {}  # budget exhausted is handled upstream by budget_remaining
+    return {"model": route.model, "effort": route.effort, "max_tokens": route.max_tokens}
+
+
 def _run_tiered_generation(
     intent: Intent,
     lead: Optional[dict],
@@ -194,6 +232,7 @@ def _run_tiered_generation(
     system_parts: tuple,
     raw_message: str,
     on_chunk=None,
+    conversation_id: Optional[str] = None,
 ) -> tuple[Optional[str], float, Optional[dict], str, str]:
     """One tiered generation turn. Returns (text, cost, tool_entities, tier, reason).
 
@@ -202,13 +241,14 @@ def _run_tiered_generation(
     """
     tier, reason = _generation_tier(intent, lead, tunnel)
     call_tools, stream_tools, plain_call = _tier_calls(tier)
+    _ov = _router_override(tier, tunnel, conversation_id)
 
     if on_chunk:
         ai_text, ai_cost, _te = stream_tools(
-            system_parts, raw_message, on_chunk=on_chunk
+            system_parts, raw_message, on_chunk=on_chunk, **_ov
         )
     else:
-        ai_text, ai_cost, _te = call_tools(system_parts, raw_message)
+        ai_text, ai_cost, _te = call_tools(system_parts, raw_message, **_ov)
 
     tool_entities = _te if _te else None
     if (not ai_text or not str(ai_text).strip()) and tool_entities:
@@ -218,7 +258,20 @@ def _run_tiered_generation(
         if not ai_text or not str(ai_text).strip():
             ai_text = "Let me find the best options for your trip!"
 
+    # One question per turn while details are missing (PR-7, SLOT_POLICY_ENABLED).
+    ai_text = _apply_slot_question(ai_text, lead, tunnel)
     return ai_text, ai_cost, tool_entities, tier, reason
+
+
+def _apply_slot_question(text, lead, tunnel):
+    from app.flags import flag
+    if tunnel != "sales" or not flag("SLOT_POLICY_ENABLED", False):
+        return text
+    try:
+        from app.pipeline.slots import ensure_one_question, next_slot, question_for
+        return ensure_one_question(text, question_for(next_slot(lead or {})))
+    except Exception:  # noqa: silent — the slot nudge must never break a reply
+        return text
 
 
 def generate_response(
@@ -291,6 +344,7 @@ def generate_response(
                     (_static, _dynamic),
                     entities.get("_raw_message", ""),
                     on_chunk=on_chunk,
+                    conversation_id=conversation_id,
                 )
                 if _ai_text:
                     logger.info(
@@ -554,6 +608,7 @@ def generate_response(
             (_static, _dynamic),
             entities.get("_raw_message", ""),
             on_chunk=on_chunk,
+            conversation_id=conversation_id,
         )
         logger.info(f"Generating | model={tier} reason={reason} | intent={intent.value}")
         if ai_text:

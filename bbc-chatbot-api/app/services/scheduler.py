@@ -77,6 +77,7 @@ async def _run_forever(job_name: str, job_fn, interval_seconds: int):
 def start(app_state, settings) -> list[asyncio.Task]:
     """Called from startup. Returns tasks so shutdown can cancel them."""
     from app.services.ip_selftest import run_ip_selftest
+    from app.services.learning import run_learning_tick
     from app.api.cron import (
         run_abandoned_crm,
         run_agent_sweep,
@@ -110,6 +111,8 @@ def start(app_state, settings) -> list[asyncio.Task]:
         ("queue_stall_alert", run_queue_stall_alert, 60),
         # Hourly: does the edge let a client forge its IP? (ip_selftest)
         ("ip_selftest", run_ip_selftest, 3600),
+        # Hourly tick; runs the daily learning once per day at LEARNING_HOUR_UTC.
+        ("daily_learning", run_learning_tick, 3600),
     ]
     tasks = [
         asyncio.create_task(

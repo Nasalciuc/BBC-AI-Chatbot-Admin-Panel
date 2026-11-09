@@ -25,6 +25,22 @@ def pytest_configure(config):
         # then subclasses freezegun's FakeDate (metaclass conflict).
         import pydantic.v1  # noqa: F401
         from freezegun import freeze_time
+
+        # Import the heavy third-party trees (langgraph → pydantic.v1) BEFORE
+        # the clock is frozen. pydantic.v1 builds metaclasses at import; doing
+        # that under a frozen clock raises a metaclass conflict. A normal run
+        # imports them early anyway — this makes the --as-of run match.
+        try:
+            import app.graph.build  # noqa: F401
+        except ModuleNotFoundError as e:
+            # A module not installed: the run still works, but a later
+            # metaclass conflict under the frozen clock would hide this
+            # cause, so say it now. Anything else ("cannot import name …",
+            # an error in the module) fails the run here.
+            import warnings
+
+            warnings.warn(f"timetravel: app.graph.build could not be imported before freezing: {e}")
+
         _freezer = freeze_time(f"{as_of} 12:00:00", tick=True)
         _freezer.start()
 

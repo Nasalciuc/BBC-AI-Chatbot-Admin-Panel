@@ -1,5 +1,6 @@
 """Agent presence — heartbeat endpoint, and the panel's SSE stream."""
 import asyncio
+from typing import Optional
 import json
 import logging
 import time
@@ -502,20 +503,42 @@ async def agent_stream(
 
     async def event_generator():
         queue = await manager.connect(conversation_id)
+        # Operator-only channel (PR-7): lead_details rides here, never on the
+        # conversation channel, so the widget (which renders any non-user event)
+        # never shows it.
+        op_queue = await manager.connect(f"op:{conversation_id}")
+        # Held outside the loop: on a client disconnect Starlette cancels the
+        # generator inside asyncio.wait, so the in-loop cancel never runs and
+        # the two queue.get() tasks would be left pending on every disconnect.
+        get_main: Optional[asyncio.Future] = None
+        get_op: Optional[asyncio.Future] = None
         checked_at = float("-inf")
         try:
             while True:
                 if await request.is_disconnected():
                     break
-                try:
-                    first = await asyncio.wait_for(queue.get(), timeout=25.0)
-                except asyncio.TimeoutError:  # noqa: silent — not a failure: 25s of quiet is the normal state of an open chat, and the keepalive below is the whole point of the timeout (proxies close idle connections)
+                get_main = asyncio.ensure_future(queue.get())
+                get_op = asyncio.ensure_future(op_queue.get())
+                done, pending = await asyncio.wait(
+                    {get_main, get_op}, timeout=25.0, return_when=asyncio.FIRST_COMPLETED
+                )
+                # A cancelled get leaves its event in the queue (asyncio.Queue
+                # takes the item only when the task resumes), so the drains
+                # below still pick it up: nothing is lost, nothing doubled.
+                for fut in pending:
+                    fut.cancel()
+                if not done:
                     yield ": keepalive\n\n"
                     continue
-                # Everything already waiting goes out together, after ONE check.
-                batch = [first]
+                # Everything already waiting goes out together, after ONE check:
+                # the conversation's events in order, then the trip card's.
+                batch = [get_main.result()] if get_main in done else []
                 while not queue.empty():
                     batch.append(queue.get_nowait())
+                if get_op in done:
+                    batch.append(get_op.result())
+                while not op_queue.empty():
+                    batch.append(op_queue.get_nowait())
                 if operator:
                     # The panel renders whole messages (stream_end carries the
                     # reply); the AI's token chunks only ever cost checks.
@@ -526,7 +549,8 @@ async def agent_stream(
                     # isn't on it. The check runs after the batch was taken off
                     # the queue, so no event goes out on an answer older than
                     # itself — for the agent's own chats too: whose chat it is
-                    # can change between two events.
+                    # can change between two events. The trip card
+                    # (lead_details: route, dates, travelers) counts as words.
                     if any(_carries_words(e) for e in batch):
                         if _only_typing(batch):
                             await _gather_until(queue, batch, checked_at + _TYPING_EVERY_SECONDS)
@@ -540,7 +564,11 @@ async def agent_stream(
                 for e in batch:
                     yield f"data: {json.dumps(e)}\n\n"
         finally:
+            for fut in (get_main, get_op):
+                if fut is not None and not fut.done():
+                    fut.cancel()
             manager.disconnect(conversation_id, queue)
+            manager.disconnect(f"op:{conversation_id}", op_queue)
 
     return StreamingResponse(
         event_generator(),

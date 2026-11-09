@@ -223,8 +223,10 @@ test('an agent who lands on a waiting chat sees who and how long, not the chat',
   const gate = src.indexOf('if (blindView) {')
   assert.ok(gate > 0 && gate < src.indexOf('const details = ('), 'the gate comes before the details')
   assert.ok(gate < src.indexOf("aria-label='Messages'"), 'the gate comes before the thread')
-  // Nothing about it is polled or streamed for them.
-  assert.equal(src.match(/enabled: !!conv && !blindView && activeTab === 'my_active'/g)?.length, 3)
+  // Nothing about it is polled or streamed for them: messages, presence,
+  // typing, and v2's trip card (/details — route, dates, travelers).
+  assert.equal(src.match(/enabled: !!conv && !blindView && activeTab === 'my_active'/g)?.length, 4)
+  assert.match(src, /queryFn: \(\) => getConversationDetails\(conversationId\),\n(\s*\/\/.*\n)*\s*enabled: !!conv && !blindView/)
   assert.match(src, /usingMock \|\| blindView\) return/)
 })
 

@@ -7,7 +7,7 @@ fastapi==0.134.0
 starlette>=1.3.1,<2
 uvicorn[standard]==0.30.6
 supabase==2.7.4
-anthropic>=0.50.0,<1.0.0
+anthropic>=0.77.0,<1.0.0  # 0.77.0: first SDK whose messages.create/stream accept output_config (5.5 effort)
 pydantic==2.8.2
 pydantic-settings==2.4.0
 python-multipart>=0.0.27  # GHSA-pp6c-gr5w-3c5g / CVE-2026-42561 (unbounded part headers); CVE-2024-53981
@@ -18,3 +18,9 @@ PyJWT==2.9.0
 bcrypt==4.2.0
 redis==5.2.1
 tzdata==2026.4
+
+# LangGraph — flow control for a chat turn (PR-5). Pinned exactly; the graph
+# runs today's pipeline unchanged at PIPELINE_ENGINE=legacy (the default).
+langgraph==1.2.19
+langgraph-checkpoint==4.3.1
+langchain-core==1.7.4

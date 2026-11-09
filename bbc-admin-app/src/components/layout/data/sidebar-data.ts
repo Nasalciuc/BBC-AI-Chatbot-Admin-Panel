@@ -1,6 +1,7 @@
 import {
   BookOpen,
   CircleDot,
+  GraduationCap,
   KeyRound,
   LayoutGrid,
   MessageCircle,
@@ -20,6 +21,7 @@ export type NavKey =
   | 'team'
   | 'users'
   | 'assist'
+  | 'learning'
   | 'settings'
 
 export type PanelNavItem = {
@@ -38,10 +40,13 @@ export function isOperatorRole(role: string | undefined): boolean {
  * The panel menu, per role — the design canvas's menu ("what we can build
  * now"), restricted to pages that exist in this build:
  *   - agents: Conversations, Tasks, Dashboard (Your day) | Knowledge | Settings
- *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant | Settings
+ *   - owner/admin/dev: Conversations, Tasks, Dashboard, Leads | Team, Users & access, Assistant, Learning | Settings
  *   - QA: Conversations, Dashboard, Leads | Assistant | Settings
  *   - supervisor / PM: Conversations, Tasks, Dashboard | Team | Settings
  * Assistant (the knowledge base editor) is the existing page, not redesigned yet.
+ * Learning (v2 PR-8, the question variants) is v2's page, also not redesigned;
+ * it shows for the roles the backend lets in (CAN_REVIEW_LESSONS =
+ * owner/admin/dev), so a project manager never lands on a page of 403s.
  */
 export function getNavGroups(
   role: UserRole,
@@ -71,6 +76,9 @@ export function getNavGroups(
       : permissions.canViewKB
         ? [{ key: 'assist' as const, title: 'Assistant', url: '/knowledge-base', icon: BookOpen }]
         : []),
+    ...(permissions.canReviewLearning
+      ? [{ key: 'learning' as const, title: 'Learning', url: '/learning', icon: GraduationCap }]
+      : []),
   ]
   return [g1, g2].filter((g) => g.length > 0)
 }

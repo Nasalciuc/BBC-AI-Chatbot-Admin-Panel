@@ -50,12 +50,14 @@ jobs:
           cache-dependency-path: |
             bbc-chatbot-api/requirements.txt
             bbc-chatbot-api/requirements-dev.txt
+            bbc-chatbot-api/constraints.txt
 
       - name: Install
         working-directory: bbc-chatbot-api
+        # The same constraints as the Dockerfile: CI tests the tree production installs.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 
       - name: Tests
         working-directory: bbc-chatbot-api

@@ -2,9 +2,10 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, ArrowUp, Clock, Info, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
-import type { Message, Lead } from '@/lib/types'
+import type { Message, Lead, LeadDetails } from '@/lib/types'
 import {
   getConversation,
+  getConversationDetails,
   sendAgentMessage,
   apiFetch,
   openAgentStream,
@@ -34,7 +35,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { draftId, readDraft, writeDraft } from '@/lib/chat-drafts'
+import { draftId, readDraft, withSuggestedQuestion, writeDraft } from '@/lib/chat-drafts'
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
 import { DetailsPanel } from './components/details-panel'
@@ -272,6 +273,16 @@ export default function ConversationDetail({
           case 'stream_chunk':
             // The panel renders whole messages; the widget owns the typewriter.
             break
+          case 'lead_details': {
+            const { event: _ev, ...details } = e
+            // A push is newer than any first-load fetch still in flight:
+            // cancel that fetch first so its older answer cannot land on top.
+            const key = ['conversation-details', conversationId]
+            void queryClient
+              .cancelQueries({ queryKey: key })
+              .finally(() => queryClient.setQueryData(key, details as LeadDetails))
+            break
+          }
           case 'stream_end': {
             const { event: _ev, ...row } = e
             queryClient.setQueryData(
@@ -288,11 +299,33 @@ export default function ConversationDetail({
             break
         }
       },
-      (state) => setSseLive(state === 'open'),
+      (state) => {
+        setSseLive(state === 'open')
+        // The trip card is kept fresh by lead_details pushes, and a push
+        // sent while this stream was shut (another chat open, a dropped
+        // connection) is lost. Each time the stream opens, read it again.
+        if (state === 'open') {
+          void queryClient.invalidateQueries({ queryKey: ['conversation-details', conversationId] })
+        }
+      },
       () => setSseLive(false)
     )
     return () => h.close()
   }, [conversationId, activeTab, dormant, usingMock, blindView, queryClient])
+
+  // Operator card (PR-7): first load pulls the lead's slots; the op:{cid} SSE
+  // channel pushes updates into the same cache entry (see 'lead_details').
+  const { data: leadDetails = null } = useQuery<LeadDetails | null>({
+    queryKey: ['conversation-details', conversationId],
+    queryFn: () => getConversationDetails(conversationId),
+    // Waits for the chat, so a waiting chat that isn't yours never asks:
+    // the card is the trip, which blind take keeps until you take it.
+    enabled: !!conv && !blindView && activeTab === 'my_active' && !dormant && !usingMock,
+    // Fresh while the stream is open (it pushes every change); read again
+    // each time the stream opens (see above), never on focus.
+    staleTime: Infinity,
+    retry: 1, // a 403 (the chat went back to waiting) is not worth three tries
+  })
 
   // Accumulate incremental messages — never replace, only append new ones
   useEffect(() => {
@@ -831,6 +864,39 @@ export default function ConversationDetail({
             onLater={() => chatTasks.later(chatTasks.lateMine!, 15)}
           />
         )}
+
+        {/* Trip details so far (v2 PR-7): what the client has given and the
+            next thing to ask. Fed by the first-load /details fetch and the
+            op:{cid} stream; the Ask button fills the reply box. */}
+        {leadDetails && (leadDetails.missing?.length || leadDetails.route) ? (
+          <div className='mx-3 mt-2.5 flex flex-col gap-1.5 rounded-[14px] bg-k-f7f7f7 px-3.5 py-2.5 text-[13px] text-k-444444'>
+            <span className='text-[11px] font-bold tracking-[0.04em] text-k-6b6b6b uppercase'>Trip details so far</span>
+            <span className='flex flex-wrap gap-x-4 gap-y-1'>
+              <span>Route <strong className='text-k-202020'>{leadDetails.route ?? '—'}</strong></span>
+              <span>Depart <strong className='text-k-202020'>{leadDetails.departure_date ?? '—'}</strong></span>
+              <span>Return <strong className='text-k-202020'>{leadDetails.return_date ?? '—'}</strong></span>
+              <span>Travelers <strong className='text-k-202020'>{leadDetails.passengers ?? '—'}</strong></span>
+            </span>
+            {leadDetails.missing?.length ? (
+              <span>
+                Missing <strong className='text-k-202020'>{leadDetails.missing.join(', ')}</strong>
+              </span>
+            ) : null}
+            {canWrite && leadDetails.suggested_question ? (
+              <button
+                type='button'
+                onClick={() => {
+                  // A draft in the box stays: the question goes after it.
+                  setInput((prev) => withSuggestedQuestion(prev, leadDetails.suggested_question ?? ''))
+                  requestAnimationFrame(() => taRef.current?.focus())
+                }}
+                className='mt-0.5 self-start rounded-full border border-kl-202020 bg-k-ffffff px-3 py-1 text-[13px] font-bold text-k-202020 hover:bg-k-f7f7f7'
+              >
+                Ask: “{leadDetails.suggested_question}”
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Messages */}
         <div role='log' aria-live='polite' aria-label='Messages' className={cn('flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto', narrow ? 'px-3.5 py-3.5' : 'px-[22px] py-[18px]')}>

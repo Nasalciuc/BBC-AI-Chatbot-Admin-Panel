@@ -5,6 +5,7 @@ something the chatbot actually says. A proper approval screen (list + cards +
 Approve/Retire) is the month-1 follow-up; curl is the interim.
 """
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -84,3 +85,68 @@ async def update_lesson_status(
     invalidate_lesson_cache()
     logger.info(f"Lesson {lesson_id} → {body.status} by {user.get('email') or user.get('id')}")
     return updated
+
+
+# ── Question variants + learning report (PR-8) ────────────────────────────
+VALID_VARIANT_STATUSES = {"proposed", "active", "retired"}
+
+
+class VariantStatusUpdate(BaseModel):
+    status: str
+
+
+@router.get("/admin/question-variants")
+async def list_question_variants(
+    slot: Optional[str] = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """Question variants per slot with their outcome stats (shows, answered,
+    rate, P(best))."""
+    _assert_reviewer(user)
+    from app.services.learning import get_question_variants
+
+    try:
+        data = await get_question_variants(slot)
+    except Exception as e:
+        logger.warning(f"[variants] list failed: {type(e).__name__}: {e}")
+        raise HTTPException(502, "Could not load question variants") from e
+    return {"success": True, "data": data, "count": len(data)}
+
+
+@router.patch("/admin/question-variants/{variant_id}")
+async def update_question_variant(
+    variant_id: str,
+    body: VariantStatusUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Approve (→active), retire or re-propose a variant."""
+    _assert_reviewer(user)
+    if body.status not in VALID_VARIANT_STATUSES:
+        raise HTTPException(400, f"status must be one of {sorted(VALID_VARIANT_STATUSES)}")
+    try:
+        uuid.UUID(variant_id)
+    except ValueError:
+        raise HTTPException(404, "Variant not found") from None  # a malformed id names no variant
+    from app.services.learning import set_question_variant_status
+
+    try:
+        ok = await set_question_variant_status(variant_id, body.status)
+    except Exception as e:
+        # The update failed; the variant may well exist (CLAUDE.md rule 7).
+        logger.warning(f"[variants] update failed: {type(e).__name__}: {e}")
+        raise HTTPException(502, "Could not update the variant") from e
+    if not ok:
+        raise HTTPException(404, "Variant not found")
+    return {"success": True, "data": {"id": variant_id, "status": body.status}, "count": 1}
+
+
+@router.get("/admin/learning/report")
+async def learning_report(user: dict = Depends(get_current_user)):
+    """Treatment-vs-control complete-detail rate and per-variant answer rates."""
+    _assert_reviewer(user)
+    from app.services.learning import build_learning_report
+
+    report = await build_learning_report()
+    if report.get("error"):
+        return {"success": False, "data": report, "count": 0, "error": report["error"]}
+    return {"success": True, "data": report, "count": 1}

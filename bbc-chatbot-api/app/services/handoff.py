@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Missed-handoff counter — surfaced in /health as handoffs_expired. Every
 # increment is a client who asked for a human and never got one in time.
-HANDOFF_HEALTH: dict = {"expired_since_boot": 0, "last_at": None, "fallback_races": 0}
+# notice_held_status_unknown: FALLBACK_MSG_ONCE could not read the status, so
+# no "sorry for the wait" went out (the AI still answers).
+HANDOFF_HEALTH: dict = {"expired_since_boot": 0, "last_at": None, "fallback_races": 0,
+                        "notice_held_status_unknown": 0}
 
 
 # ── H1: Agent staleness detection + AI fallback ──────────────
@@ -441,6 +444,20 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     # backstop below), so silence costs the client nothing and the lie costs
     # them their patience.
     _silent = (_was_unannounced and not _promised_recently) or not _agent
+    # PR-7 (FALLBACK_MSG_ONCE): never apologise after the chat is closed or the
+    # client has said goodbye — the DB claim already makes it once per convo.
+    from app.flags import flag as _flag
+    if _flag("FALLBACK_MSG_ONCE", False) and not _silent:
+        _fresh = await db.get_conversation_simple(conversation_id)
+        if _fresh is None:
+            # The read failed (it logged why) or the row is gone: the status
+            # is unknown, and an apology after goodbye is what this flag
+            # exists to stop. Silence costs the client nothing: the AI
+            # answers either way (FIX-C below).
+            HANDOFF_HEALTH["notice_held_status_unknown"] += 1
+            _silent = True
+        elif _fresh.get("status") in ("closed", "completed"):
+            _silent = True
     if not _silent:
         # Two nets, in order: the row-level claim decides WHO speaks, the
         # content cooldown still guards against a repeat later in the shift.
