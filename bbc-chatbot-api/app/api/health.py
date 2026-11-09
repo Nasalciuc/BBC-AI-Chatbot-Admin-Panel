@@ -102,6 +102,8 @@ async def health_detail(full: bool = False) -> dict:
     # CRM sign-ins: one per CRM page (the dock reopens the panel) — counted,
     # not logged; refusals by reason.
     from app.api.auth_routes import SSO_HEALTH
+    # What the log said today: warnings and errors by kind, held back or not.
+    from app.log_setup import log_health_snapshot
     # Blind take: checks that failed closed (an agent got a 503, not their
     # chat) and streams stopped because their chat started waiting.
     from app.api.conversations import BLIND_HEALTH
@@ -168,6 +170,7 @@ async def health_detail(full: bool = False) -> dict:
             "claims": dict(CLAIM_HEALTH),
             "claim_gate": dict(CLAIM_GATE_HEALTH),
             "sso": dict(SSO_HEALTH),
+            "logs": log_health_snapshot(),
             "blind_take": dict(BLIND_HEALTH),
             "sticky": dict(STICKY_HEALTH),
             "needs_agent": dict(QUEUE_HEALTH),
@@ -254,6 +257,7 @@ async def health_detail(full: bool = False) -> dict:
         "claims": dict(CLAIM_HEALTH),
         "claim_gate": dict(CLAIM_GATE_HEALTH),
         "sso": dict(SSO_HEALTH),
+        "logs": log_health_snapshot(),
         "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
         "needs_agent": dict(QUEUE_HEALTH),

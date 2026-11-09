@@ -146,6 +146,12 @@ async def startup() -> None:
     else:
         app.state.scheduler_tasks = []
 
+    # Repeated log lines held back by the grouping come out as one summary
+    # line when their window closes (app/log_setup.py).
+    from app.log_setup import run_flush_forever
+
+    app.state.log_flush_task = asyncio.create_task(run_flush_forever(), name="log_flush")
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
@@ -169,3 +175,12 @@ async def shutdown() -> None:
             )
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()
+    log_flush_task = getattr(app.state, "log_flush_task", None)
+    if log_flush_task is not None:
+        log_flush_task.cancel()
+    # The counts held back so far are written before the process goes, or a
+    # deploy would erase them.
+    from app.log_setup import CAP, GROUPING
+
+    GROUPING.flush(force=True)
+    CAP.flush()
