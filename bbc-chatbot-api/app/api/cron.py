@@ -903,6 +903,13 @@ async def ai_cost_report(request: Request):
     from app.ai.ledger import LEDGER_HEALTH
 
     chatbot_key = (settings.anthropic_api_key_id or "").strip()
+    if not chatbot_key:
+        # Without it no row is the chatbot's: nothing is compared, every row is
+        # stored with ledger 0 and diff = billed, and no alert can fire. Refuse
+        # instead of writing a reconciliation that didn't happen.
+        LEDGER_HEALTH["reconcile"] = {"error": "ANTHROPIC_API_KEY_ID not set"}
+        logger.error("[cost-report] ANTHROPIC_API_KEY_ID not set — refusing the report, nothing stored")
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_ID not set: the chatbot's rows can't be told apart")
     stored = 0
     ledger_failed = 0
     max_diff_pct = 0.0
