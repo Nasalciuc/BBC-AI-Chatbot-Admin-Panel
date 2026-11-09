@@ -87,8 +87,7 @@ def ensure_one_question(text: str, slot_question: Optional[str]) -> str:
     if qcount == 0:
         if slot_question:
             SLOTS_HEALTH["question_appended"] += 1
-            joiner = " " if body and not body.endswith((".", "!", "?")) else " "
-            return (body + (joiner if body else "") + slot_question).strip()
+            return f"{body} {slot_question}".strip()
         return body
     if qcount >= 2:
         m = _QMARK.search(body)

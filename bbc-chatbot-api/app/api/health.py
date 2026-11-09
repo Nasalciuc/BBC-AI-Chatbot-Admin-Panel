@@ -128,6 +128,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.mfa import MFA_HEALTH
     from app.services.retention import RETENTION_HEALTH
     from app.security.behavior import BEHAVIOR_HEALTH
+    from app.learning.outcomes import OUTCOMES_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
 
     if not full:
@@ -147,6 +148,7 @@ async def health_detail(full: bool = False) -> dict:
             "mfa": dict(MFA_HEALTH),
             "retention": dict(RETENTION_HEALTH),
             "behavior": dict(BEHAVIOR_HEALTH),
+            "learning_outcomes": dict(OUTCOMES_HEALTH),
             "token_version": dict(TOKEN_VERSION_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
@@ -229,6 +231,7 @@ async def health_detail(full: bool = False) -> dict:
         "mfa": dict(MFA_HEALTH),
         "retention": dict(RETENTION_HEALTH),
         "behavior": dict(BEHAVIOR_HEALTH),
+        "learning_outcomes": dict(OUTCOMES_HEALTH),
         "token_version": dict(TOKEN_VERSION_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,

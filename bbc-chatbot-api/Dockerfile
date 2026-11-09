@@ -9,9 +9,10 @@ RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt .
+# constraints.txt pins the transitive tree (langgraph's) to what CI ran.
+COPY requirements.txt constraints.txt ./
 RUN python -m pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
 # ── Stage 2: Production image ────────────────────────────────
 FROM python:3.11-slim-bookworm AS production 
