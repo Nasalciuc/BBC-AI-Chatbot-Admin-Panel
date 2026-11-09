@@ -260,11 +260,14 @@ async def check_connection() -> bool:
 
 # A conversation is OPEN while the client can still be answered: 'active',
 # or 'needs_agent' — the same open chat, with the client waiting for a
-# person (migration 052). Every read that means "open" uses this pair,
+# person (migration 052). Every read that means "open" includes both,
 # never 'active' alone: a read that misses needs_agent loses exactly the
 # client who asked for a human (the widget drops the chat on the next page,
 # the abandoned sweep never pushes the lead, the queue can't list the row
-# it counts).
+# it counts). A few reads add one status of their own on purpose and keep
+# their own list: get_handover_facts and leads_view's OPEN_STATUSES add
+# 'waiting' (no status the CHECK allows, so it matches nothing),
+# get_attention_email_candidates adds 'pending'.
 OPEN_STATUSES: tuple[str, ...] = ("active", "needs_agent")
 
 async def _merge_conv_metadata(conv_id: str, incoming: Optional[dict]) -> None:

@@ -352,6 +352,18 @@ class TestOpenReads:
         assert err.value.status_code == 503
 
     @pytest.mark.asyncio
+    async def test_a_failed_lookup_logs_the_code_never_the_error_text(self, caplog):
+        from app.api.chat import get_active_conversation_for_visitor
+
+        t = _Table([], raise_on_select=_DbError(
+            "22P02", 'invalid input syntax — "jane@example.com" / +12105550100'))
+        with _Patched(_wire(t)), caplog.at_level(logging.INFO), pytest.raises(HTTPException):
+            await get_active_conversation_for_visitor("v1", x_visitor_token=None)
+        assert "22P02" in caplog.text
+        for pii in ("jane@example.com", "2105550100"):
+            assert pii not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_the_visitor_s_open_chat_is_found_not_duplicated(self):
         t = _Table([{"id": "c-wait", "visitor_id": "v1", "status": "needs_agent", "metadata": {}}])
         visitor = SimpleNamespace(name="", email="", phone="", country_code=None)
@@ -431,6 +443,19 @@ class TestOpenReads:
 # ══════════════════════════════════════════════════════════════
 # 3. /health
 # ══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_the_full_health_payload_shows_them_too():
+    """?full=true is what an operator reads while debugging: the same counters."""
+    from app.api import health
+
+    routing.QUEUE_HEALTH["write_failed"] = 3
+    with patch.object(health, "check_connection", new=AsyncMock(return_value=True)), \
+         patch.object(sb, "get_queue_stats", new=AsyncMock(return_value={"waiting_now": 0})), \
+         patch.object(sb, "get_operator_load", new=AsyncMock(return_value={"per_agent": {}})):
+        out = await health.health_detail(full=True)
+    assert out["needs_agent"]["write_failed"] == 3
+
 
 @pytest.mark.asyncio
 async def test_health_detail_shows_the_queue_writes():

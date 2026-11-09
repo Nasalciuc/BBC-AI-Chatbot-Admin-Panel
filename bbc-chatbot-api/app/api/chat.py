@@ -999,7 +999,12 @@ async def get_active_conversation_for_visitor(
         conv_id = res.data[0]["id"] if res.data else None
         return {"success": True, "conversation_id": conv_id}
     except Exception as e:
-        logger.error(f"get_active_conversation_for_visitor error: {type(e).__name__}: {e}")
+        # Type and database code only: an error's text can quote what it
+        # was looking at, and nothing a visitor typed belongs in a log.
+        logger.error(
+            f"get_active_conversation_for_visitor error: {type(e).__name__} "
+            f"(code={db._loggable_code(db._error_code(e)) or 'none'})"
+        )
         raise HTTPException(status_code=503, detail="Conversation lookup unavailable") from e
 
 

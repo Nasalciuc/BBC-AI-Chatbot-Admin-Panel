@@ -245,6 +245,7 @@ async def health_detail(full: bool = False) -> dict:
         "claims": dict(CLAIM_HEALTH),
         "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
+        "needs_agent": dict(QUEUE_HEALTH),
         "queue": _queue_stats,
         "operator_load": _load,
         "generation_fallbacks": dict(GENERATION_HEALTH),
