@@ -2,6 +2,7 @@
 Client: supabase-py (HTTP). NO asyncpg. NO SQLAlchemy.
 """
 import asyncio
+import contextvars
 import logging
 import re
 import statistics
@@ -201,7 +202,9 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
     t0 = time.monotonic()
     try:
         try:
-            return await loop.run_in_executor(_executor, fn)
+            # The DB thread runs in a copy of this task's context, so a line
+            # written inside fn carries the request id (app/log_setup.py).
+            return await loop.run_in_executor(_executor, contextvars.copy_context().run, fn)
         except Exception as e:
             if not idempotent or not _is_disconnect(e):
                 DB_HEALTH["errors"] += 1
@@ -213,7 +216,7 @@ async def _run_sync(fn, idempotent: bool = True, *, label: str = "other"):
                 f"(label={label})"
             )
             try:
-                out = await loop.run_in_executor(_executor, fn)
+                out = await loop.run_in_executor(_executor, contextvars.copy_context().run, fn)
                 DB_HEALTH["retries_ok"] += 1
                 return out
             except Exception:
