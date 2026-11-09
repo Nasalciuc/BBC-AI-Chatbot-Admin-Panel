@@ -5,9 +5,10 @@ version is a claim in the JWT; every request compares it to the users row,
 cached 60s. A mismatch is a 401, so a bump logs the user out within a minute.
 
 This is naturally inert until something bumps: a missing column, a missing
-claim and a fresh user all read as 0, so 0 == 0 passes. A failed read is not
-0: it fails closed (the request is a 401) unless this process already holds a
-version for the user. That entry cannot predate a bump, because a bump drops
+claim and a fresh user all read as 0, so 0 == 0 passes. A user whose row is
+gone reads as NO_USER, which no token matches: deleting the row ends the
+sessions, unbumped ones included. A failed read is not 0: it fails closed (the
+request is a 401) unless this process already holds a version for the user. That entry cannot predate a bump, because a bump drops
 it (invalidate_cache) in this same process (ADR-5, one process). The read is sync
 (get_current_user runs under a threadpool Depends) and cached, so it adds at
 most one cheap query per user per minute.
@@ -28,6 +29,10 @@ _lock = Lock()
 _missing_column = False
 
 TOKEN_VERSION_HEALTH: dict[str, int] = {"read_failed": 0, "refused_unreadable": 0, "bump_failed": 0}
+
+# What _read answers for a user whose row does not exist. Every token is
+# issued for a users row (auth_routes._issue_jwt), and claims are >= 0.
+NO_USER = -1
 
 
 def current_version(user_id: str) -> Optional[int]:
@@ -66,7 +71,7 @@ def _read(user_id: str) -> Optional[int]:
         )
         rows = getattr(res, "data", None) or []
         if not rows:
-            return 0
+            return NO_USER
         return int(rows[0].get("token_version") or 0)
     except Exception as e:
         text = str(e).lower()
@@ -83,7 +88,7 @@ def _read(user_id: str) -> Optional[int]:
 def matches(user_id: str, claim: Optional[int]) -> bool:
     """True when the token's version claim matches the stored version."""
     version = current_version(user_id)
-    return version is not None and int(claim or 0) == version
+    return version is not None and version != NO_USER and int(claim or 0) == version
 
 
 def invalidate_cache(user_id: str) -> None:

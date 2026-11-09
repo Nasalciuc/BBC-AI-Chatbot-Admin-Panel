@@ -2267,22 +2267,28 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
 async def bump_token_version(user_id: str) -> None:
     """Invalidate a user's live sessions (role/scope change, deactivation).
 
-    Uses the atomic increment RPC when present; falls back to read+write.
+    Read, then compare-and-set: the write applies only over the version just
+    read. That is what lets it be retried after a dropped connection (the
+    write may have landed before the drop): a second try over a version that
+    already moved matches nothing and can never step it back over a newer
+    bump. Matching nothing is success either way — the version moved past
+    the one read, which is all a bump has to do.
     A missing token_version column is tolerated (feature inert until 039);
     any other failure raises, so the caller can say the sessions are still
     live instead of reporting a clean demotion."""
     try:
         db = get_client()
-        # Read+write (bumps are rare and admin-initiated; the tiny race is
-        # harmless — the worst case is one more login).
         cur = await _run_sync(
             lambda: db.table("users").select("token_version").eq("id", user_id).limit(1).execute()
         )
         rows = getattr(cur, "data", None) or []
-        nxt = int((rows[0].get("token_version") if rows else 0) or 0) + 1
+        if not rows:
+            return  # no such user: no session to invalidate
+        seen = int(rows[0].get("token_version") or 0)
         await _run_sync(
-            lambda: db.table("users").update({"token_version": nxt}).eq("id", user_id).execute(),
-            idempotent=False,
+            lambda: db.table("users").update({"token_version": seen + 1})
+            .eq("id", user_id).eq("token_version", seen).execute(),
+            idempotent=True,
         )
     except Exception as e:
         if _is_missing_column_error(e):
