@@ -226,3 +226,58 @@ def test_a_token_for_a_user_whose_row_is_gone_is_refused(monkeypatch):
     with patch.object(sb, "get_client", return_value=_Users(2)):
         assert token_version.matches("u1", 2) is True
     token_version._reset_for_tests()
+
+
+# ── get_users: a retry drops only the missing column ──────────────────────
+
+class _UserList:
+    def __init__(self, errors):
+        self.errors, self.selects = list(errors), []
+
+    def __getattr__(self, _name):
+        return lambda *a, **k: self
+
+    def table(self, _name):
+        return self
+
+    def select(self, cols, **_k):
+        self.selects.append(cols)
+        return self
+
+    def execute(self):
+        if self.errors:
+            raise self.errors.pop(0)
+        return MagicMock(data=[{"id": "u1"}], count=1)
+
+
+@pytest.mark.asyncio
+async def test_get_users_surfaces_a_real_error_with_decoys_off(_clean_columns, monkeypatch):
+    # Decoys off made the old guard skip its raise: a timeout was retried
+    # without chat_enabled, and every chat toggle read as on.
+    from app import flags
+
+    flags._reset_for_tests()
+    monkeypatch.setenv("DECOYS_ENABLED", "false")
+    q = _UserList([RuntimeError("connection reset")])
+
+    async def _run(fn, *a, **k):
+        return fn()
+
+    with patch.object(sb, "get_client", return_value=q), patch.object(sb, "_run_sync", new=_run):
+        with pytest.raises(RuntimeError):
+            await sb.get_users()
+    assert len(q.selects) == 1
+    flags._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_get_users_without_is_decoy_keeps_chat_enabled(_clean_columns):
+    q = _UserList([RuntimeError("column users.is_decoy does not exist (42703)")])
+
+    async def _run(fn, *a, **k):
+        return fn()
+
+    with patch.object(sb, "get_client", return_value=q), patch.object(sb, "_run_sync", new=_run):
+        rows, total = await sb.get_users()
+    assert rows == [{"id": "u1"}] and total == 1
+    assert "chat_enabled" in q.selects[-1]

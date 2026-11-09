@@ -1894,11 +1894,14 @@ async def get_users(
     try:
         res = await _run_sync(_query)
     except Exception as _e:
+        if not _is_missing_column_error(_e):
+            raise           # not a missing-column error — surface it
         _downgrade_chat_enabled(_e)
         _downgrade_decoy("users", _e)
-        if _chat_enabled_column_available() and _decoy_filterable("users"):
-            raise           # not a missing-column error — surface it
-        res = await _run_sync(lambda: _query(False))
+        # Again without the column(s) just downgraded, and only those: a
+        # missing is_decoy must not cost the list its chat_enabled (the panel
+        # would show every chat toggle as on).
+        res = await _run_sync(_query)
     return res.data or [], res.count or 0
 
 
