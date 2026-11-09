@@ -408,7 +408,7 @@ def _bounded_int(val, lo: int, hi: int) -> Optional[int]:
     return val if isinstance(val, int) and lo <= val <= hi else None
 
 
-def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
+def _tool_pax_breakdown(te: dict, entities: dict, stored_total=None) -> tuple[dict, bool]:
     """PR-0: children/infants from the tool, mapped onto the lead's own keys.
 
     Returns (updates, inconsistent). Inconsistent = fewer travelers than
@@ -421,6 +421,10 @@ def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
     (the adults) while the tool says 5 with 3 children. A regex total below
     the minors is then the adults alone, and the tool's consistent total
     replaces it, so a lead never holds fewer travelers than minors.
+
+    `stored_total` is the lead's passengers before this turn, the last
+    fallback when neither the regex nor the tool says a total this turn: the
+    lead keeps it, so the minors must fit inside it too.
     """
     children = _bounded_int(te.get("children"), 0, 8)
     infants = _bounded_int(te.get("infants"), 0, 8)
@@ -438,7 +442,7 @@ def _tool_pax_breakdown(te: dict, entities: dict) -> tuple[dict, bool]:
         (updates.get(k) if updates.get(k) is not None else entities.get(k)) or 0
         for k in ("_children_count", "_infant_count")
     )
-    saved_total = entities.get("passengers") or passengers
+    saved_total = entities.get("passengers") or passengers or _bounded_int(stored_total, 1, 9)
     if saved_total is not None and saved_total < minors:
         if passengers is not None and passengers >= minors and entities.get("passengers"):
             updates["passengers"] = passengers
@@ -1479,7 +1483,8 @@ async def _pipeline(
             _tool_blocked.add("trip_type")
         _pax_updates: dict = {}
         if flag("PAX_TOOL_FIELDS", False):
-            _pax_updates, _pax_inconsistent = _tool_pax_breakdown(_te, entities)
+            _pax_updates, _pax_inconsistent = _tool_pax_breakdown(
+                _te, entities, stored_total=lead.get("passengers") if isinstance(lead, dict) else None)
             if _pax_inconsistent:
                 _tool_blocked.add("passengers")
                 logger.info(f"[{cid}] [pax-merge] inconsistent tool counts — triple ignored")
