@@ -4473,6 +4473,17 @@ async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> 
     raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
 
 
+def _order_inside(q, embedded: str, column: str, *, desc: bool = False):
+    """Order the rows INSIDE an embedded resource: `<embedded>.order=<column>.<dir>`.
+
+    Not .order(foreign_table=…): postgrest-py 0.16 writes that as
+    `order=<embedded>(<column>)`, PostgREST's related order, which sorts the
+    PARENT rows by a to-one relation and answers 400 (PGRST118) for a to-many
+    one like conversations → messages."""
+    q.params = q.params.add(f"{embedded}.order", f"{column}.{'desc' if desc else 'asc'}")
+    return q
+
+
 async def get_last_message_previews(conversation_ids: list[str], max_len: int = 140) -> dict[str, dict]:
     """The newest non-system message of each conversation on a list page.
 
@@ -4485,13 +4496,14 @@ async def get_last_message_previews(conversation_ids: list[str], max_len: int = 
         return {}
     db_client = get_client()
     res = await _run_sync(
-        lambda: db_client.table("conversations")
-        .select("id, messages(role, content, created_at)")
-        .in_("id", ids)
-        .neq("messages.role", "system")
-        .order("created_at", desc=True, foreign_table="messages")
-        .limit(1, foreign_table="messages")
-        .execute(),
+        lambda: _order_inside(
+            db_client.table("conversations")
+            .select("id, messages(role, content, created_at)")
+            .in_("id", ids)
+            .neq("messages.role", "system")
+            .limit(1, foreign_table="messages"),
+            "messages", "created_at", desc=True,
+        ).execute(),
         label="list_previews",
     )
     out: dict[str, dict] = {}

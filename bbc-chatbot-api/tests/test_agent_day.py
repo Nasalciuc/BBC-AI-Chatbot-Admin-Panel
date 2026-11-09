@@ -261,23 +261,44 @@ class _PreviewQuery:
 
 
 def test_previews_are_one_request_without_system_lines_and_trimmed():
-    q = _PreviewQuery([
+    """The real postgrest-py builder, stopped at execute(): the parameters
+    PostgREST receives. The order is INSIDE each chat's messages
+    (`messages.order`). The related order (`order=messages(created_at)`) sorts
+    the chats by a to-one relation, and PostgREST answers it with a 400 for
+    messages — every previews read failed that way in production."""
+    import asyncio
+
+    from postgrest import SyncPostgrestClient
+    from postgrest._sync.request_builder import SyncSelectRequestBuilder
+
+    rows = [
         {"id": "a", "messages": [{"role": "user", "content": "Thanks.  Morning\ndepartures if possible.", "created_at": "t"}]},
         {"id": "b", "messages": []},
         {"id": "c", "messages": [{"role": "ai", "content": "x" * 300, "created_at": "t"}]},
-    ])
+    ]
+    sent: list[list[tuple[str, str]]] = []
+
+    def execute(self):
+        sent.append(list(self.params.multi_items()))
+        return MagicMock(data=rows)
+
+    rest = SyncPostgrestClient("http://rest.invalid/rest/v1")
     client = MagicMock()
-    client.table.return_value = q
-    import asyncio
-    with patch.object(db, "get_client", return_value=client):
+    client.table.side_effect = rest.from_
+    with patch.object(SyncSelectRequestBuilder, "execute", execute), \
+         patch.object(db, "get_client", return_value=client):
         out = asyncio.run(db.get_last_message_previews(["a", "b", "c"]))
     assert out["a"]["content"] == "Thanks. Morning departures if possible."
     assert "b" not in out
     assert len(out["c"]["content"]) == 140 and out["c"]["content"].endswith("…")
-    names = [c[0] for c in q.calls]
-    assert ("neq", ("messages.role", "system"), {}) in q.calls
-    assert names.count("order") == 1 and names.count("limit") == 1
-    assert dict(q.calls[names.index("limit")][2]) == {"foreign_table": "messages"}
+    assert len(sent) == 1
+    keys = [k for k, _ in sent[0]]
+    params = dict(sent[0])
+    assert keys.count("messages.order") == 1 and "order" not in keys
+    assert params["messages.order"] == "created_at.desc"
+    assert params["messages.limit"] == "1" and params["messages.role"] == "neq.system"
+    assert params["id"] == "in.(a,b,c)"
+    assert params["select"] == "id, messages(role, content, created_at)"
 
 
 def _list_client(role: str) -> TestClient:
