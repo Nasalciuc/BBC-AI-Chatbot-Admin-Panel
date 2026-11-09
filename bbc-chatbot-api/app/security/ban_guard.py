@@ -47,6 +47,7 @@ FAIL2BAN_HEALTH = {
     "poisoned_skipped": 0,
     "ban_already_held": 0,
     "ban_errors": 0,  # the ban store failed: the ban is unconfirmed, nothing recorded
+    "alerts_suppressed": 0,  # alert-only hits past the first email of the cooldown
     "by_jail": {},
 }
 
@@ -128,6 +129,22 @@ _OPEN_STREAMS: dict[str, int] = {}
 # without a staff session is counted, never emailed (anyone could loop it).
 _OPERATOR_ALERT_COOLDOWN = 300.0
 _OPERATOR_ALERTED: dict[tuple[str, str], float] = {}
+
+
+def _alert_only_due(jail: str) -> bool:
+    """One alert-only email per jail per cooldown. A hit there is never a
+    ban (an unproven IP, or a cross-site bait planted on a busy page), so
+    anyone can repeat it as often as they like; the rest are counted."""
+    now = time.monotonic()
+    key = ("alert_only", jail)
+    last = _OPERATOR_ALERTED.get(key)
+    if last is not None and now - last < _OPERATOR_ALERT_COOLDOWN:
+        FAIL2BAN_HEALTH["alerts_suppressed"] += 1
+        return False
+    if len(_OPERATOR_ALERTED) > 10_000:
+        _OPERATOR_ALERTED.clear()
+    _OPERATOR_ALERTED[key] = now
+    return True
 
 
 def _stream_closed(ip: str) -> None:
@@ -445,8 +462,9 @@ async def trip(store, ip: str, jail: str, seconds: int, *, alert: bool, staff: b
         enforce = True
     elif mode == "alert_only":
         enforce = False
-        if alert:
-            await _ops_alert(f"jail={jail} ip={ip} not banned (unproven IP or cross-site)")
+        if alert and _alert_only_due(jail):
+            await _ops_alert(f"jail={jail} ip={ip} not banned (unproven IP or cross-site); "
+                             f"later hits in the next {int(_OPERATOR_ALERT_COOLDOWN // 60)} min are counted only")
     elif mode == "behavior":
         from app.security import behavior as bh
         enforce = bh.enforced("BEHAVIOR_TRAPS_ENFORCE")
@@ -624,4 +642,5 @@ def _reset_for_tests() -> None:
     _SEEN_FOREIGN_ORIGINS.clear()
     FAIL2BAN_HEALTH.update(degraded=False, would_ban=0, banned=0, blocked=0, staff_alerts=0,
                            rows_written=0, row_errors=0, table_missing=False,
-                           poisoned_skipped=0, ban_already_held=0, ban_errors=0, by_jail={})
+                           poisoned_skipped=0, ban_already_held=0, ban_errors=0,
+                           alerts_suppressed=0, by_jail={})
