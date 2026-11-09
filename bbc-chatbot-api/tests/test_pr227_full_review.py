@@ -371,3 +371,41 @@ def test_startup_uses_the_bounded_seed():
 
     src = inspect.getsource(main.startup)
     assert "seed_budget_bounded()" in src and "await ledger.seed_budget()" not in src
+
+
+# ── a client message in human mode never waits on the operator card ───────
+
+@pytest.mark.asyncio
+async def test_the_queued_reply_does_not_wait_for_the_operator_card():
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app.api.chat import chat
+    from app.models.chat import ChatRequest, VisitorInfo
+    from app.pipeline import orchestrator
+
+    cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    conv = {"id": cid, "status": "active", "mode": "human", "assigned_agent_id": "agent-1", "metadata": {}}
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _card(*_a):
+        started.set()
+        await never.wait()  # lead writes and the push, as slow as they like
+
+    req = MagicMock(headers={}, client=MagicMock(host="127.0.0.1"))
+    body = ChatRequest(message="JFK to London on June 1", conversation_id=cid, tunnel="sales",
+                       visitor=VisitorInfo(name="Test"), visitor_id="visitor-uuid-1")
+    with patch("app.api.chat.db.count_messages", new=AsyncMock(return_value=3)), \
+         patch("app.api.chat.db.get_conversation_simple", new=AsyncMock(return_value=conv)), \
+         patch("app.api.chat.lead_service.get_or_create_lead", new=AsyncMock(return_value=None)), \
+         patch("app.api.chat.db.get_conversation_mode", new=AsyncMock(return_value="human")), \
+         patch("app.services.handoff.is_agent_effectively_offline", new=AsyncMock(return_value=False)), \
+         patch("app.services.conversation_service.add_message", new=AsyncMock(return_value={"id": "m1"})), \
+         patch("app.services.handoff._handoff_phrase_recently_sent", new=AsyncMock(return_value=False)), \
+         patch("app.pipeline.operator_card.extract_and_push", new=_card):
+        resp = await asyncio.wait_for(chat(body, req, None), timeout=2)
+        await asyncio.wait_for(started.wait(), timeout=1)  # it still runs, beside the answer
+    assert resp.type == "queued"
+    for t in list(orchestrator._background_tasks):
+        t.cancel()

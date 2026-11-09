@@ -535,8 +535,10 @@ async def chat(
                 )
                 # PR-7: the client often gives the operator the route/date/pax.
                 # Extract it and push the operator card; never speak to the client.
+                # In the background: the message is saved, and the client's
+                # answer never waits on the lead writes and the push.
                 from app.pipeline.operator_card import extract_and_push
-                await extract_and_push(req.conversation_id, clean_message)
+                _fire_and_forget(extract_and_push(req.conversation_id, clean_message))
                 from app.services.handoff import _handoff_phrase_recently_sent
 
                 already = await _handoff_phrase_recently_sent(req.conversation_id)
