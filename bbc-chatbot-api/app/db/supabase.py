@@ -3346,14 +3346,30 @@ def _is_schema_missing(e: Exception) -> bool:
     )
 
 
+def _as_not_set_up(e: Exception) -> None:
+    """Migration 051 still missing is TasksNotSetUp, counted; anything else is the caller's to raise."""
+    if _is_schema_missing(e):
+        TASKS_HEALTH["schema_missing"] += 1
+        logger.warning(f"[tasks] migration 051 not applied: {e}")
+        raise TasksNotSetUp(str(e)) from e
+
+
 async def _tasks_call(fn, *, idempotent: bool = True, label: str = "tasks"):
     try:
         return await _run_sync(fn, idempotent, label=label)
     except Exception as e:
-        if _is_schema_missing(e):
-            TASKS_HEALTH["schema_missing"] += 1
-            logger.warning(f"[tasks] migration 051 not applied: {e}")
-            raise TasksNotSetUp(str(e)) from e
+        _as_not_set_up(e)
+        raise
+
+
+async def _task_pages(build) -> list[dict]:
+    """Every row of a tasks read, page by page (_select_pages): a bigger
+    .limit() is cut at PostgREST's 1000 without a word. Raises, with
+    migration 051 still missing as TasksNotSetUp, like every tasks read."""
+    try:
+        return await _select_pages(build, label="tasks")
+    except Exception as e:
+        _as_not_set_up(e)
         raise
 
 
@@ -3531,15 +3547,20 @@ async def ready_operators() -> list[dict]:
 
 
 async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
+    """Open tasks per person, for "give them to the Ready agent with the
+    fewest". Every row: a count cut at 1000 would read someone short and give
+    them more. Raises."""
     ids = sorted({i for i in user_ids if i})
     if not ids:
         return {}
     db_client = get_client()
-    res = await _tasks_call(lambda: db_client.table("tasks").select("assignee_id").in_("assignee_id", ids)
-                            .is_("done_at", "null").is_("dismissed_at", "null").limit(_OPEN_LIMIT * 4).execute())
     counts: dict[str, int] = {i: 0 for i in ids}
-    for r in res.data or []:
-        counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        rows = await _task_pages(lambda chunk=chunk: db_client.table("tasks").select("assignee_id").in_("assignee_id", chunk)
+                                 .is_("done_at", "null").is_("dismissed_at", "null").order("id"))
+        for r in rows:
+            counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
     return counts
 
 
@@ -3553,11 +3574,10 @@ async def get_task_people() -> list[dict]:
 
 
 async def caught_stats_since(since_iso: str) -> dict:
-    """Tasks caught from agents' messages since `since_iso`, and how many were "Not a promise"."""
+    """Tasks caught from agents' messages since `since_iso`, and how many were "Not a promise". Every row; raises."""
     db_client = get_client()
-    res = await _tasks_call(lambda: db_client.table("tasks").select("id, dismissed_at")
-                            .eq("source", "caught").gte("created_at", since_iso).limit(5000).execute())
-    rows = res.data or []
+    rows = await _task_pages(lambda: db_client.table("tasks").select("id, dismissed_at")
+                             .eq("source", "caught").gte("created_at", since_iso).order("id"))
     return {"caught": len(rows), "not_a_promise": sum(1 for r in rows if r.get("dismissed_at"))}
 
 

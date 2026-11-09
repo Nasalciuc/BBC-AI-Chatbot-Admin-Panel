@@ -479,6 +479,46 @@ def test_the_lead_read_tells_no_lead_from_a_failed_read():
             run(db.get_lead_link("l1"))
 
 
+class _Paged:
+    """A query builder that serves `rows` one .range() page at a time, as PostgREST does (1000 at most)."""
+
+    def __init__(self, rows: list, boom: Exception | None = None):
+        self.rows, self.boom, self.ranges = rows, boom, []
+
+    def __getattr__(self, name):
+        return lambda *a, **k: self
+
+    def range(self, lo, hi):
+        self.ranges.append((lo, hi))
+        return self
+
+    def execute(self):
+        if self.boom:
+            raise self.boom
+        lo, hi = self.ranges[-1]
+        return type("Res", (), {"data": self.rows[lo:min(hi, lo + 999) + 1]})()
+
+
+def test_the_task_counts_read_past_postgrest_s_1000_rows():
+    # A count cut at 1000 would read Rohan short and give him the next tasks.
+    q = _Paged([{"assignee_id": "rohan"}] * 1500 + [{"assignee_id": "ana"}] * 3)
+    with patch.object(db, "get_client", return_value=q):
+        assert run(db.open_task_counts(["rohan", "ana", "victor"])) == {"rohan": 1500, "ana": 3, "victor": 0}
+    week = _Paged([{"id": str(i), "dismissed_at": NOW.isoformat() if i < 200 else None} for i in range(1200)])
+    with patch.object(db, "get_client", return_value=week):
+        assert run(db.caught_stats_since(NOW.isoformat())) == {"caught": 1200, "not_a_promise": 200}
+    assert len(week.ranges) == 2
+
+
+def test_the_task_counts_before_migration_051_say_not_set_up():
+    missing = _Paged([], boom=Exception("column tasks.dismissed_at does not exist"))
+    with patch.object(db, "get_client", return_value=missing):
+        with pytest.raises(db.TasksNotSetUp):
+            run(db.caught_stats_since(NOW.isoformat()))
+        with pytest.raises(db.TasksNotSetUp):
+            run(db.open_task_counts(["rohan"]))
+
+
 def test_qa_isn_t_someone_a_task_can_go_to():
     log: list = []
     with patch.object(db, "get_client", return_value=_Query(log)):
