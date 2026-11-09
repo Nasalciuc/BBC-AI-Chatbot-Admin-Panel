@@ -19,3 +19,8 @@
 # tests/test_mfa.py: a made-up jwt_secret and MFA encryption key (PR-13)
 9b89a4cac974b0df967c0696ab0f52bba622ee55:bbc-chatbot-api/tests/test_mfa.py:generic-api-key:53
 9b89a4cac974b0df967c0696ab0f52bba622ee55:bbc-chatbot-api/tests/test_mfa.py:generic-api-key:54
+
+# tests/test_db_transport.py: the made-up SUPABASE_KEY placeholder in the
+# first version of the transport test (#246); the file now builds it at run
+# time, so the line below matches that one commit only
+f71f63a1df229c5d77d43830b07a0fa4995684b9:bbc-chatbot-api/tests/test_db_transport.py:generic-api-key:20
