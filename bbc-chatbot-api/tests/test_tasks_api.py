@@ -135,6 +135,12 @@ def test_the_bell_s_two_lists_never_hold_the_same_task():
     with patched(list_follow_ups=lists):
         t = client("supervisor", "irina").get("/api/notifications").json()["tasks"]
     assert [r["id"] for r in t["mine"]] == ["t1"] and [r["id"] for r in t["team_late"]] == ["t2"]
+    # Given to Rohan between the two reads: Irina's in the first, Rohan's in the second. Once, in "mine".
+    moved = {**own, "assignee_id": "rohan"}
+    raced = AsyncMock(side_effect=lambda **k: ([own] if k.get("assignee_ids") == ["irina"] else [moved, rohans], []))
+    with patched(list_follow_ups=raced):
+        t = client("supervisor", "irina").get("/api/notifications").json()["tasks"]
+    assert [r["id"] for r in t["mine"]] == ["t1"] and [r["id"] for r in t["team_late"]] == ["t2"]
 
 
 # ── Who sees what ────────────────────────────────────────────────────────────
