@@ -152,6 +152,22 @@ def test_a_supervisor_sees_the_team_and_unowned_with_contacts_masked():
     assert {p["id"] for p in body["people"]} == {"irina", "rohan", "victor"}
 
 
+def test_a_masked_title_hides_the_name_as_a_word_not_inside_words():
+    from zoneinfo import ZoneInfo
+
+    from app.services.tasks_view import task_row
+
+    def title(name: str, text: str, masked: bool = True) -> str:
+        conv = {**CONVS["c1"], "visitor_name": name}
+        return task_row(task("t1", title=text), conv=conv, lead=None, names=NAMES, wrote_at=None, now=NOW,
+                        tz=ZoneInfo("America/New_York"), masked=masked)["title"]
+
+    assert title("Al Perez", "Call Al about the Alps, Al’s choice") == "Call •••ez about the Alps, •••ez’s choice"
+    assert title("J. Smith", "Call J. back") == "Call •••th back"
+    # Unmasked readers see the title as written.
+    assert title("Al Perez", "Call Al about the Alps", masked=False) == "Call Al about the Alps"
+
+
 def test_an_agent_can_t_open_someone_else_s_task():
     with patched(get_follow_up=AsyncMock(return_value=task("t9", assignee_id="rohan", created_by="rohan"))):
         r = client("sales", "victor").get("/api/tasks/t9")
