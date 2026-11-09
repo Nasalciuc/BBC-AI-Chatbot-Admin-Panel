@@ -78,7 +78,9 @@ async def test_shape_traps_count_in_shadow_and_ban_when_enforced(monkeypatch, sc
     assert sum(bh.BEHAVIOR_HEALTH["would_ban"].values()) == 1
     assert await _run(mw, _scope("/")) == 200          # nobody banned in shadow
 
-    ban_guard._reset_for_tests(); bh._reset_for_tests(); ban_store._reset_for_tests()
+    ban_guard._reset_for_tests()
+    bh._reset_for_tests()
+    ban_store._reset_for_tests()
     monkeypatch.setenv("BEHAVIOR_TRAPS_ENFORCE", "true")
     await _run(mw, _scope("/api/leads", **scope_kw))
     assert await _run(mw, _scope("/")) == 403
