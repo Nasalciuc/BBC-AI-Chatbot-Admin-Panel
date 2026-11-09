@@ -126,6 +126,17 @@ def test_the_menu_number_is_the_late_tasks_and_for_a_supervisor_the_team_s_unown
     assert agent["team_late"] == 0  # an agent gives no tasks out: their number is their own late ones
 
 
+def test_the_bell_s_two_lists_never_hold_the_same_task():
+    # The panel shows "mine" and "team_late" as one list, keyed by task id
+    # (notification-bell.tsx): the reader's own late task is in "mine" only.
+    own = task("t1", assignee_id="irina", due_at=(NOW - timedelta(minutes=50)).isoformat())
+    rohans = task("t2", assignee_id="rohan", due_at=(NOW - timedelta(minutes=50)).isoformat())
+    lists = AsyncMock(side_effect=lambda **k: ([own] if k.get("assignee_ids") == ["irina"] else [own, rohans], []))
+    with patched(list_follow_ups=lists):
+        t = client("supervisor", "irina").get("/api/notifications").json()["tasks"]
+    assert [r["id"] for r in t["mine"]] == ["t1"] and [r["id"] for r in t["team_late"]] == ["t2"]
+
+
 # ── Who sees what ────────────────────────────────────────────────────────────
 
 def test_an_agent_sees_only_their_own_tasks_with_the_client_s_city():
