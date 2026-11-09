@@ -6,7 +6,8 @@ one leads+conversations pair (is_decoy) whose email/phone the owner monitors
 (DECOY_LEAD_EMAIL / DECOY_LEAD_PHONE, step 0.6). Both are filtered out of every
 server-side list, so the only thing that ever touches them is an intruder.
 
-Running it twice changes nothing: it matches on the decoy email.
+Running it twice changes nothing: it matches the account on its email, and
+the lead on its email, or on its phone when only DECOY_LEAD_PHONE is set.
 """
 import os
 import secrets
@@ -45,7 +46,11 @@ def main() -> int:
         print(f"created decoy account: {acct_email}")
 
     if lead_email or lead_phone:
-        conv = db.table("conversations").select("id").eq("visitor_email", lead_email).eq("is_decoy", True).execute()
+        # Matched on what was stored: with no e-mail the row holds NULL, which
+        # .eq("visitor_email", "") never finds, and every run added a lead.
+        q = db.table("conversations").select("id").eq("is_decoy", True)
+        q = q.eq("visitor_email", lead_email) if lead_email else q.eq("visitor_phone", lead_phone)
+        conv = q.execute()
         if conv.data:
             print("decoy lead already present")
         else:

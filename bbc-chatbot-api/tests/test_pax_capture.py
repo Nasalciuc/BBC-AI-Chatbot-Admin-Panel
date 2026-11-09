@@ -142,6 +142,15 @@ def test_saved_total_below_minors_without_a_tool_total_keeps_nothing():
     assert (updates, bad) == ({}, True)
 
 
+def test_the_leads_stored_total_must_hold_the_minors_too():
+    # CodeRabbit #226: a lead saved with 2 travelers, the tool says 3 children
+    # and no total this turn: 2 travelers with 3 children was saved.
+    assert _tool_pax_breakdown({"children": 3}, {}, stored_total=2) == ({}, True)
+    assert _tool_pax_breakdown({"children": 1}, {}, stored_total=2) == ({"_children_count": 1}, False)
+    # A total said this turn still comes first.
+    assert _tool_pax_breakdown({"passengers": 5, "children": 3}, {}, stored_total=2) == ({"_children_count": 3}, False)
+
+
 def test_a_regex_total_that_holds_the_minors_is_kept():
     updates, bad = _tool_pax_breakdown({"passengers": 4, "children": 2}, {"passengers": 4})
     assert (updates, bad) == ({"_children_count": 2}, False)

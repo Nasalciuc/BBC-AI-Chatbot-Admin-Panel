@@ -229,6 +229,10 @@ async def _insert(rows: list[dict]) -> None:
             label="ai_calls",
         )
         LEDGER_HEALTH["flushed"] += len(rows)
+        # Migration 037 applied while running: the table is there now. Say so,
+        # and warn again if it ever goes missing.
+        LEDGER_HEALTH["table_missing"] = False
+        _warned_missing = False
     except Exception as e:
         text = str(e).lower()
         if "ai_calls" in text and ("does not exist" in text or "could not find" in text or "42p01" in text):
