@@ -42,6 +42,7 @@ import type {
   UserAccessAuditItem,
   AgentSseEvent,
   AgentDay,
+  MyAccess,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -73,6 +74,18 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
+// ── Health ────────────────────────────────────────────────────
+/** Whether the server answers /health (the status band, the maintenance
+ *  page). Never throws: no answer in time is "not reachable". */
+export async function checkHealth(timeoutMs = 8000): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────
 export async function loginUser(email: string, password: string) {
   const res = await fetch(`${BASE}/api/auth/login`, {
@@ -82,10 +95,30 @@ export async function loginUser(email: string, password: string) {
     signal: AbortSignal.timeout(8000),
   })
   if (!res.ok) {
+    // The status decides what the sign-in page says (wrong, off, too many tries).
     const body = await res.json().catch(() => ({ detail: 'Login failed' }))
-    throw new Error(body.detail || 'Login failed')
+    throw new ApiError(res.status, typeof body?.detail === 'string' ? body.detail : 'Login failed')
   }
   return res.json()
+}
+
+/** Set the password from an invite link. 400 carries why the link failed. */
+export async function setPasswordFromInvite(token: string, password: string): Promise<void> {
+  await apiFetch('/api/auth/set-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  })
+}
+
+/** Ask for a new invite link. The answer is the same whether or not the
+ *  address has an account. */
+export async function requestInviteLink(email: string): Promise<void> {
+  await apiFetch('/api/auth/request-invite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
 }
 
 /** The panel's live channel for one conversation. Auth comes from the same
@@ -555,6 +588,13 @@ export async function updateSelf(payload: SelfUpdatePayload): Promise<SelfUpdate
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+/** Settings › Profile: your access as the database has it now (the
+ *  session keeps the role it signed in with until it expires). */
+export async function getMyAccess(): Promise<MyAccess> {
+  const res = await apiFetch<{ success: boolean; data: MyAccess }>('/api/auth/me')
+  return res.data
 }
 
 /** Upload a profile photo (multipart). Do NOT set Content-Type — browser sets boundary. */

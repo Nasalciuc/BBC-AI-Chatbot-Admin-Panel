@@ -10,7 +10,6 @@ import { fileURLToPath } from 'node:url'
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const detail = readFileSync(join(SRC, 'features/chats/detail.tsx'), 'utf8')
 const chats = readFileSync(join(SRC, 'features/chats/index.tsx'), 'utf8')
-const kpi = readFileSync(join(SRC, 'features/dashboard/components/kpi-cards.tsx'), 'utf8')
 
 // ── P0: silent failures are dead — every trust-critical catch speaks ──
 
@@ -64,14 +63,13 @@ test('chat colors are palette tokens that flip in dark mode', () => {
   }
   const kb = readFileSync(join(SRC, 'features/knowledge-base/index.tsx'), 'utf8')
   assert.match(kb, /dark:bg-blue-950/)
-  const hot = readFileSync(join(SRC, 'features/dashboard/components/hot-leads.tsx'), 'utf8')
-  assert.match(hot, /dark:bg-amber-950/)
 })
 
-// ── Owner decision: KPI side-tab borders removed ──
+// ── The old dashboard (KPI cards, hot leads, team live card) is gone ──
 
-test('no side-tab border-l-4 left on KPI cards', () => {
-  assert.ok(!kpi.includes('border-l-4'))
+test('the old team dashboard is deleted, not left behind', () => {
+  assert.throws(() => readFileSync(join(SRC, 'features/dashboard/index.tsx'), 'utf8'))
+  assert.throws(() => readFileSync(join(SRC, 'features/dashboard/components/kpi-cards.tsx'), 'utf8'))
 })
 
 // ── Agents' pages: a failed read is an error, never an empty page ──

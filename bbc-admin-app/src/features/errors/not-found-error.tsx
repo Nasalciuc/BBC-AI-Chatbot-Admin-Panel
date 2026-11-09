@@ -1,25 +1,43 @@
-import { useNavigate, useRouter } from '@tanstack/react-router'
-import { Button } from '@/components/ui/button'
+import { Link } from '@tanstack/react-router'
+import { hasSession, useAuthStore } from '@/stores/auth-store'
+import { ErrorFrame } from './frame'
+import { darkBtn, lineBtn } from './styles'
 
+/** An address that leads nowhere. Nothing is broken, and it says so. */
 export function NotFoundError() {
-  const navigate = useNavigate()
-  const { history } = useRouter()
+  // Unknown addresses render outside the signed-in area, so the user may not
+  // be loaded yet: the session on this browser decides.
+  const signedIn = useAuthStore((s) => !!s.auth.user) || hasSession()
+  const path = typeof window === 'undefined' ? '' : `${window.location.pathname}${window.location.search}`
   return (
-    <div className='h-svh'>
-      <div className='m-auto flex h-full w-full flex-col items-center justify-center gap-2'>
-        <h1 className='text-[7rem] leading-tight font-bold'>404</h1>
-        <span className='font-medium'>Oops! Page Not Found!</span>
-        <p className='text-center text-muted-foreground'>
-          It seems like the page you're looking for <br />
-          does not exist or might have been removed.
-        </p>
-        <div className='mt-6 flex gap-4'>
-          <Button variant='outline' onClick={() => history.go(-1)}>
-            Go Back
-          </Button>
-          <Button onClick={() => navigate({ to: '/' })}>Back to Home</Button>
-        </div>
+    <ErrorFrame
+      kicker='404 · Page not found'
+      title='This page doesn’t exist'
+      text={
+        signedIn
+          ? 'The link may be old, or the address has a typo. Nothing is broken, and your chats are where you left them.'
+          : 'The link may be old, or the address has a typo.'
+      }
+    >
+      {path && path !== '/404' && (
+        <code className='self-start rounded-lg bg-k-f4f4f4 px-3 py-1.5 font-mono text-[13px] break-all text-k-444444'>{path}</code>
+      )}
+      <div className='mt-2 flex flex-wrap gap-2.5'>
+        {signedIn ? (
+          <>
+            <Link to='/chats' className={darkBtn}>
+              Go to Conversations
+            </Link>
+            <Link to='/' className={lineBtn}>
+              Dashboard
+            </Link>
+          </>
+        ) : (
+          <Link to='/sign-in' className={lineBtn}>
+            Sign in to the chat panel
+          </Link>
+        )}
       </div>
-    </div>
+    </ErrorFrame>
   )
 }

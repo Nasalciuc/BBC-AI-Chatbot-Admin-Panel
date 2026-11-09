@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,7 +11,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (p: string) => readFileSync(join(SRC, p), 'utf8')
 
 const FEATURES = [
-  'features/dashboard/index.tsx', 'features/chats/index.tsx',
+  'features/dashboard/owner/index.tsx', 'features/chats/index.tsx',
   'features/leads/index.tsx', 'features/knowledge-base/index.tsx',
   'features/users/index.tsx', 'features/teams/index.tsx',
   'features/settings/index.tsx', 'features/tasks/index.tsx',
@@ -79,11 +79,15 @@ test('template residue gone: dead links, alien copy, debug submit', () => {
   assert.ok(!signin.includes("href='/privacy'"))
   const profile = read('features/settings/profile/index.tsx')
   assert.ok(!profile.includes('others will see you on the site'))
-  const notif = read('features/settings/notifications/notifications-form.tsx')
-  assert.ok(!notif.includes('showSubmittedData'))
-  assert.ok(!notif.includes('friend requests'))
-  assert.ok(!notif.includes('Marketing emails'))
-  assert.match(notif, /No-agents alerts/)
+  // The template's Notifications, Account and Display pages are gone: their
+  // switches saved values nothing read. Alerts replaced them with settings
+  // the alert engine reads (lib/alert-prefs.ts, tests/alert-prefs.test.ts).
+  for (const gone of ['notifications/notifications-form.tsx', 'account/account-form.tsx', 'display/display-form.tsx']) {
+    assert.ok(!existsSync(join(SRC, 'features/settings', gone)), gone)
+  }
+  const alerts = read('features/settings/alerts/index.tsx')
+  assert.ok(!alerts.includes('showSubmittedData'))
+  assert.match(alerts, /writeAlertPrefs/)
 })
 
 test('avatar initials are muted, not neon', () => {

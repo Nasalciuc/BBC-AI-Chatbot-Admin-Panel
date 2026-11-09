@@ -21,9 +21,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 
 const MENUS = [
-  'src/components/profile-dropdown.tsx',
   // The side menu's account menu (it replaced nav-user.tsx in the redesign).
   'src/components/layout/app-sidebar.tsx',
+  // An agent's "Me" menu on a phone (the old header avatar menu is gone).
+  'src/components/layout/mobile-tab-bar.tsx',
 ]
 
 for (const file of MENUS) {
@@ -78,10 +79,8 @@ test('standalone keeps Sign out exactly as it is', () => {
   }
 })
 
-test('the shortcut label travels with the item it belongs to', () => {
-  // ⇧⌘Q is only ever a label — nothing in src/ binds it — so hiding the item
-  // removes the last mention of a sign-out path from an embedded panel.
-  const src = read('src/components/profile-dropdown.tsx')
-  const guard = src.indexOf('!isEmbedded()')
-  assert.ok(src.indexOf('⇧⌘Q') > guard, 'the shortcut hint must be hidden too')
+test('the old header avatar menu, with its ⇧⌘Q label, is gone', () => {
+  // It lived only on the template's error showcase; no sign-out path is left
+  // outside the two menus above.
+  assert.throws(() => read('src/components/profile-dropdown.tsx'))
 })
