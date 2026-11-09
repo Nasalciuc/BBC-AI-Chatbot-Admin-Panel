@@ -1,35 +1,15 @@
-import { BBCChatWidget } from '../widget-preview/components/bbc-chat-widget'
+import { useWidgetScript } from '../widget-embed/use-widget-script'
+import { WidgetFailed } from '../widget-embed/widget-failed'
 
-interface Props {
-  tunnel: 'sales' | 'support'
-}
+/**
+ * /chat/sales and /chat/support: the real widget as a full page, open on its form
+ * (embedded mode, as in the CRM). The widget has only the sales path since its
+ * redesign (#230), so both addresses open the same chat; the route keeps
+ * accepting both so old links still land here.
+ */
+export default function ChatStandalone() {
+  const state = useWidgetScript({ embedded: true })
 
-export default function ChatStandalone({ tunnel }: Props) {
-  return (
-    <div style={{
-      width: '100vw',
-      height: '100vh',
-      overflow: 'hidden',
-      margin: 0,
-      padding: 0,
-      background: '#fff',
-      display: 'flex',
-      flexDirection: 'column',
-    }}>
-      <div style={{
-        textAlign: 'center',
-        fontSize: '12px',
-        fontWeight: 600,
-        padding: '6px 0',
-        backgroundColor: tunnel === 'support' ? '#1e40af' : '#0B1829',
-        color: '#fff',
-        letterSpacing: '0.5px',
-      }}>
-        {tunnel === 'support' ? 'BBC Support Assistant' : 'BBC Sales Assistant'}
-      </div>
-      <div style={{ flex: 1, overflow: 'hidden' }}>
-        <BBCChatWidget tunnel={tunnel} />
-      </div>
-    </div>
-  )
+  // Empty page — in embedded mode the widget fills it (#bbc-widget-root); if it can't, say so
+  return <div className='h-svh w-full bg-k-ffffff'>{state === 'failed' && <WidgetFailed />}</div>
 }
