@@ -121,6 +121,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.decoys import DECOY_HEALTH
     from app.security.gates import GATE_HEALTH
     from app.pipeline.slots import SLOTS_HEALTH
+    from app.learning.outcomes import OUTCOMES_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
 
     if not full:
@@ -133,6 +134,7 @@ async def health_detail(full: bool = False) -> dict:
             "role_gates": dict(GATE_HEALTH),
             "output_guard": dict(OUTPUT_GUARD_HEALTH),
             "slots": dict(SLOTS_HEALTH),
+            "learning_outcomes": dict(OUTCOMES_HEALTH),
             "token_version": dict(TOKEN_VERSION_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
@@ -208,6 +210,7 @@ async def health_detail(full: bool = False) -> dict:
         "role_gates": dict(GATE_HEALTH),
         "output_guard": dict(OUTPUT_GUARD_HEALTH),
         "slots": dict(SLOTS_HEALTH),
+        "learning_outcomes": dict(OUTCOMES_HEALTH),
         "token_version": dict(TOKEN_VERSION_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,

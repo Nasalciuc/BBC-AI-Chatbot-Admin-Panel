@@ -196,3 +196,78 @@ async def test_the_learning_run_never_blocks_the_event_loop():
     assert result["status"] == "ok"
     # Two calls of 0.25 s: on the loop the ticker got ~0 turns, in a thread ~50.
     assert ticks >= 20
+
+
+# ── the reward loop: a failure is counted and logged, not hidden at DEBUG ──
+
+class _ApiError(Exception):
+    """The shape of postgrest's APIError: code, message and the details,
+    which can quote the refused row."""
+
+    def __init__(self, code, message="boom", details=None):
+        super().__init__(f"{code} {message} {details}")
+        self.code, self.message, self.details = code, message, details
+
+
+@pytest.fixture
+def _reward_loop(monkeypatch):
+    from app import flags
+    from app.learning import outcomes
+
+    flags._reset_for_tests()
+    outcomes._reset_for_tests()
+    monkeypatch.setenv("LEARNING_ENABLED", "true")
+    yield outcomes
+    flags._reset_for_tests()
+
+
+def _warnings(caplog):
+    import logging
+
+    return [r for r in caplog.records if r.name == "app.learning.outcomes" and r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reward_write_is_counted_and_logged_without_the_row(_reward_loop, caplog):
+    err = _ApiError("42501", "permission denied", details="Failing row contains (Ana, +1 555 014 2290)")
+    with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=err)), \
+         patch("app.db.supabase.get_client", lambda: None), \
+         caplog.at_level("DEBUG", logger="app.learning.outcomes"):
+        await _reward_loop.record_ask("c1", "m1", "route", "v1")
+    assert _reward_loop.OUTCOMES_HEALTH["record_failed"] == 1
+    [w] = _warnings(caplog)
+    assert "record_ask failed" in w.getMessage() and "42501" in w.getMessage()
+    assert "555" not in caplog.text and "Ana" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_missing_table_is_counted_apart_and_stays_at_debug(_reward_loop, caplog):
+    with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=_ApiError("PGRST205", "table not found"))), \
+         patch("app.db.supabase.get_client", lambda: None), \
+         caplog.at_level("DEBUG", logger="app.learning.outcomes"):
+        await _reward_loop.record_ask("c1", "m1", "route", "v1")
+        assert await _reward_loop.resolve_outcomes("c1", lead={}) == 0
+    assert _reward_loop.OUTCOMES_HEALTH == {"record_failed": 0, "resolve_failed": 0, "table_missing": 2}
+    assert _warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_resolve_is_counted_and_nothing_to_resolve_is_not(_reward_loop):
+    with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=_ApiError("57014", "statement timeout"))), \
+         patch("app.db.supabase.get_client", lambda: None):
+        assert await _reward_loop.resolve_outcomes("c1", lead={}) == 0
+    assert _reward_loop.OUTCOMES_HEALTH["resolve_failed"] == 1
+    with patch("app.db.supabase._run_sync", new=AsyncMock(return_value=SimpleNamespace(data=[]))), \
+         patch("app.db.supabase.get_client", lambda: None):
+        assert await _reward_loop.resolve_outcomes("c1", lead={}) == 0
+    assert _reward_loop.OUTCOMES_HEALTH["resolve_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_health_detail_shows_the_reward_loop_counters():
+    from app.api.health import health_detail
+
+    with patch("app.api.health.get_scheduler_health", return_value={}), \
+         patch("app.api.health.supervisor_columns_status", return_value=True):
+        payload = await health_detail()
+    assert set(payload["learning_outcomes"]) == {"record_failed", "resolve_failed", "table_missing"}
