@@ -28,7 +28,7 @@ _ALLOWED_PREFIXES = ("utm_", "landing_")
 # conversation row, the panel or the CRM.
 _MAX_KEY = 64
 _MAX_VALUE = 2048  # a page URL or a referrer can be long; nothing else comes close
-_MAX_KEYS = 50
+_MAX_KEYS = 50     # attribution keys; the validated site and booking_id come on top
 
 
 def _known_sites() -> set[str]:
