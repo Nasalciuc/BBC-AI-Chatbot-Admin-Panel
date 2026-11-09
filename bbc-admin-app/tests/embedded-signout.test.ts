@@ -22,7 +22,8 @@ const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 
 const MENUS = [
   'src/components/profile-dropdown.tsx',
-  'src/components/layout/nav-user.tsx',
+  // The side menu's account menu (it replaced nav-user.tsx in the redesign).
+  'src/components/layout/app-sidebar.tsx',
 ]
 
 for (const file of MENUS) {

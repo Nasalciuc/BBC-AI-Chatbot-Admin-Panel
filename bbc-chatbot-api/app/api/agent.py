@@ -6,7 +6,7 @@ import time
 from collections import deque as _deque
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.db import supabase as db
@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _HANDOFF_COOLDOWN_SECONDS = 120
+
+# While the assigned operator has the conversation open on screen (and their
+# panel pinged in the last 30s) the first-reply deadline stretches to this.
+# One constant: the sweep enforces it and the heartbeat tells the panel, so the
+# countdown an operator sees is the one the server will act on.
+VIEWING_GRACE_SECONDS = 120
 
 # The heartbeat is the hottest endpoint in the system (every agent, every 5s).
 # Its latency is the earliest signal of executor saturation — it climbs minutes
@@ -87,7 +93,7 @@ async def _enforce_response_deadline(
     count = 0
     now = datetime.now(timezone.utc)
     deadline_first = timedelta(seconds=settings.agent_first_response_timeout_seconds)
-    viewing_grace = timedelta(seconds=120)
+    viewing_grace = timedelta(seconds=VIEWING_GRACE_SECONDS)
     fresh_window = timedelta(seconds=30)
 
     def _parse(ts, *, count_bad: bool = False):
@@ -361,37 +367,13 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
                     )
                 except (ValueError, TypeError):  # noqa: silent — a malformed queued_at reads as unknown age; the notification still names the conversation
                     _age = None
-                # The route the pipeline already extracted — never the
-                # client's own words (see ChatBridgeMessage: the text would go
-                # into a desktop notification that stays up until touched).
-                # ADAPTATION vs the brief: the route does NOT live in
-                # conversations.metadata — it lives on the leads table
-                # (origin_code / destination_code, written by lead_service).
-                # One targeted read-only select, only while a queue exists;
-                # get_or_create_lead is NOT used here because it CREATES.
-                _from = _to = None
-                try:
-                    _lead_res = await db._run_sync(
-                        lambda: db.get_client()
-                        .table("leads")
-                        .select("origin_code, destination_code")
-                        .eq("conversation_id", _oldest_row["id"])
-                        .limit(1)
-                        .execute()
-                    )
-                    _lead_rows = _lead_res.data or []
-                    if _lead_rows:
-                        _from = _lead_rows[0].get("origin_code")
-                        _to = _lead_rows[0].get("destination_code")
-                except Exception as _e:
-                    logger.warning(
-                        f"[heartbeat] route lookup failed for queue_oldest: {_e} "
-                        f"— notification goes out without a route"
-                    )
+                # No route: this beat goes only to agents, and an agent takes
+                # a waiting chat blind (owner's rule, Nov 2026) — the CRM's
+                # notification says someone is waiting and for how long, not
+                # where they fly. It used to read the lead for the cities.
                 _queue_oldest = {
                     "id": _oldest_row["id"],
                     "waiting_seconds": _age,
-                    "route": f"{_from} → {_to}" if (_from and _to) else None,
                 }
     except Exception as e:
         # The queue must never break the heartbeat: presence is more important
@@ -410,7 +392,76 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "queue_count": _queue_count,
         "queue_ids": _queue_ids,
         "queue_oldest": _queue_oldest,
+        # The first-reply deadline as the sweep enforces it, so the panel's
+        # countdown after Take is the server's, not a copy that can drift.
+        "response_deadline_seconds": settings.agent_first_response_timeout_seconds,
+        "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
     }
+
+
+@router.get("/agent/day")
+async def agent_day(
+    days: int = Query(1),
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    user: dict = Depends(get_current_user),
+):
+    """Your day: the caller's own chats, from data the server already keeps.
+
+    days: 1 (today), 7 or 30. tz_offset_minutes: minutes EAST of UTC (the
+    panel sends -Date#getTimezoneOffset()), so the days are the operator's."""
+    from app.services.agent_day import ALLOWED_DAYS, build_agent_day, window_start
+
+    if days not in ALLOWED_DAYS:
+        raise HTTPException(status_code=422, detail="days must be 1, 7 or 30")
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user ID in token")
+    now = datetime.now(timezone.utc)
+    since = window_start(now, tz_offset_minutes, days)
+    try:
+        inputs = await db.get_agent_day_inputs(user_id, since.isoformat())
+    except Exception as e:
+        # A day built from a partial read would show wrong numbers as if right.
+        logger.error(f"[agent_day] read failed for {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load your day") from e
+    data = build_agent_day(
+        now=now, offset_minutes=tz_offset_minutes, days=days, **inputs
+    )
+    return {"success": True, "data": data, "count": 1}
+
+
+def _carries_words(event: dict) -> bool:
+    """Presence is the only event without the chat's words in it (the gate
+    shows presence anyway). Messages, typing, replies — and anything added
+    later — count as words until someone says otherwise."""
+    return event.get("event") != "presence"
+
+
+# A typing client sends up to five events a second and the panel only shows
+# the latest. A batch of nothing but typing waits until this long after the
+# stream's last check, gathering what else arrives, so a typing client costs
+# an agent's stream at most two checks a second. A message ends the wait.
+_TYPING_EVERY_SECONDS = 0.5
+
+
+def _only_typing(batch: list) -> bool:
+    return all(e.get("event") in ("typing", "presence") for e in batch)
+
+
+async def _gather_until(queue: asyncio.Queue, batch: list, deadline: float) -> None:
+    """Add to `batch` what reaches `queue` before `deadline` (monotonic);
+    stop at the first event that is more than typing. Chunks are dropped
+    here as everywhere else on an agent's stream."""
+    while (left := deadline - time.monotonic()) > 0:
+        try:
+            e = await asyncio.wait_for(queue.get(), timeout=left)
+        except asyncio.TimeoutError:  # noqa: silent — the window closing is what the wait is for, not a failure
+            return
+        if e.get("event") == "stream_chunk":
+            continue
+        batch.append(e)
+        if e.get("event") not in ("typing", "presence"):
+            return
 
 
 @router.get("/agent/stream/{conversation_id}")
@@ -439,20 +490,55 @@ async def agent_stream(
         team_ids = await _resolve_team_scope(user)
         if not team_ids or conv.get("team_id") not in team_ids:
             raise HTTPException(status_code=403, detail="Outside your team")
+    # Blind take: an agent gets no stream (messages, typing) for a chat that
+    # is waiting for a person and isn't theirs yet.
+    from app.api.conversations import _blind_guard, _BLIND_DETAIL, stream_sight
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
 
     from app.realtime.manager import manager
 
+    operator = user.get("role") in db._OPERATOR_ROLES
+
     async def event_generator():
         queue = await manager.connect(conversation_id)
+        checked_at = float("-inf")
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=25.0)
-                    yield f"data: {json.dumps(msg)}\n\n"
+                    first = await asyncio.wait_for(queue.get(), timeout=25.0)
                 except asyncio.TimeoutError:  # noqa: silent — not a failure: 25s of quiet is the normal state of an open chat, and the keepalive below is the whole point of the timeout (proxies close idle connections)
                     yield ": keepalive\n\n"
+                    continue
+                # Everything already waiting goes out together, after ONE check.
+                batch = [first]
+                while not queue.empty():
+                    batch.append(queue.get_nowait())
+                if operator:
+                    # The panel renders whole messages (stream_end carries the
+                    # reply); the AI's token chunks only ever cost checks.
+                    batch = [e for e in batch if e.get("event") != "stream_chunk"]
+                    # Blind take holds for every event, not only at the door: a
+                    # chat that starts waiting for a person (the client asked;
+                    # it went back to the line) stops reaching an agent who
+                    # isn't on it. The check runs after the batch was taken off
+                    # the queue, so no event goes out on an answer older than
+                    # itself — for the agent's own chats too: whose chat it is
+                    # can change between two events.
+                    if any(_carries_words(e) for e in batch):
+                        if _only_typing(batch):
+                            await _gather_until(queue, batch, checked_at + _TYPING_EVERY_SECONDS)
+                        sight = await stream_sight(user, conversation_id)
+                        checked_at = time.monotonic()
+                        if sight == "blind":
+                            # The panel swaps the chat for the gate on this frame.
+                            yield f"data: {json.dumps({'event': 'blind'})}\n\n"
+                        if sight != "ok":
+                            break
+                for e in batch:
+                    yield f"data: {json.dumps(e)}\n\n"
         finally:
             manager.disconnect(conversation_id, queue)
 

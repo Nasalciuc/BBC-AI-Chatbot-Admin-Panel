@@ -32,34 +32,36 @@ test('"Closed conversation" placeholder is gone from list and detail', () => {
   assert.ok(!chats.includes(marker), 'list rows still erase the name')
 })
 
-// ── P1: lead panel reachable below xl ──
+// ── P1: the details stay reachable below full width ──
 
-test('lead panel: overlay toggle below xl, static default at xl', () => {
-  assert.match(detail, /showLeadPanel/)
-  assert.match(detail, /xl:static xl:block/)
-  assert.match(detail, /xl:hidden[^"]*"[\s\S]{0,200}?Lead/)  // header chip hidden at xl
-  assert.match(detail, /aria-expanded=\{showLeadPanel\}/)
+test('details: a column at full width, an overlay toggle below it', () => {
+  assert.match(detail, /const detailsStatic = layout === 'wide'/)
+  assert.match(detail, /showDetails/)
+  assert.match(detail, /aria-expanded=\{showDetails\}/)
+  assert.match(detail, /aria-label='Trip and lead'/)
 })
 
-// ── P1: on-navy text meets contrast; icon buttons named ──
+// ── P1: icon buttons are named ──
 
-test('navy header uses white/70, not muted-foreground', () => {
-  const anchor = 'px-5 py-4 bg-[#0B1829]'  // the detail header, not the user bubble
-  const start = detail.indexOf(anchor)
-  const header = detail.slice(start, detail.indexOf('aria-label="Close conversation view"', start) + 60)
-  assert.ok(!header.includes('text-muted-foreground'), 'muted-on-navy (≈3.9:1) survives in the header')
-  assert.ok((header.match(/text-white\/70/g) ?? []).length >= 3)
-  assert.match(header, /aria-label="Close conversation view"/)
-  assert.match(header, /aria-label="Copy conversation id"/)
+test('the thread header names every icon button', () => {
+  assert.match(detail, /aria-label='More actions'/)
+  assert.match(detail, /aria-label=\{wide \? 'Back to three columns' : 'Wider chat'\}/)
+  assert.match(detail, /aria-label='Back to the chats'/)
+  assert.match(detail, /aria-label='Send'/)
 })
 
-// ── P1: dark-mode variants on the hot status-color maps ──
+// ── P1: dark mode can't fall through light-only tints ──
 
-test('status tints carry dark: variants', () => {
-  assert.match(detail, /dark:bg-yellow-950/)   // TIER_COLORS gold
-  assert.match(detail, /dark:bg-blue-950/)     // typing preview card
-  assert.match(chats, /dark:bg-sky-950/)       // TAG_STYLES fresh
-  assert.match(chats, /dark:bg-purple-950/)    // TUNNEL_STYLES support
+test('chat colors are palette tokens that flip in dark mode', () => {
+  const theme = readFileSync(join(SRC, 'styles/theme.css'), 'utf8')
+  const dark = theme.slice(theme.indexOf('.dark {'))
+  for (const token of ['--k-fff3e0', '--k-efeaff', '--k-fdecea', '--k-e3f6ea', '--k-202020', '--k-ffffff']) {
+    assert.match(dark, new RegExp(`${token}:`), `${token} has no dark value`)
+  }
+  // No light-only Tailwind tints left in the chat screens.
+  for (const src of [detail, chats]) {
+    assert.ok(!/\b(bg|text|border)-(amber|blue|green|red|sky|purple|emerald|slate|orange|yellow)-\d{2,3}\b/.test(src))
+  }
   const kb = readFileSync(join(SRC, 'features/knowledge-base/index.tsx'), 'utf8')
   assert.match(kb, /dark:bg-blue-950/)
   const hot = readFileSync(join(SRC, 'features/dashboard/components/hot-leads.tsx'), 'utf8')
@@ -70,4 +72,25 @@ test('status tints carry dark: variants', () => {
 
 test('no side-tab border-l-4 left on KPI cards', () => {
   assert.ok(!kpi.includes('border-l-4'))
+})
+
+// ── Agents' pages: a failed read is an error, never an empty page ──
+
+test('Knowledge: a failed KB read rejects, and the phone list never goes blank', () => {
+  const api = readFileSync(join(SRC, 'lib/api.ts'), 'utf8')
+  const knowledge = readFileSync(join(SRC, 'features/knowledge/index.tsx'), 'utf8')
+  // The routes answer 200 + success:false when the database read failed.
+  assert.match(api, /if \(res\.success === false\) throw new ApiError\(503/)
+  assert.match(api, /export async function getKBEntries[\s\S]*?return kbRead\(/)
+  assert.match(api, /export async function getKBCategories[\s\S]*?return kbRead\(/)
+  assert.match(knowledge, /isError \|\| cats\.isError/)
+  // A search with no matches on a phone shows the list and "Nothing matches".
+  assert.match(knowledge, /const detailOpen = showDetail && selected !== null/)
+  assert.ok(!knowledge.includes("showDetail && 'max-md:hidden'"))
+})
+
+test('Your day: the 7- and 30-day views say "Last N days", never "In N days"', () => {
+  const day = readFileSync(join(SRC, 'features/day/index.tsx'), 'utf8')
+  assert.ok(day.includes('`Last ${range} days`'))
+  assert.ok(!day.includes('`In ${range} days`'))
 })

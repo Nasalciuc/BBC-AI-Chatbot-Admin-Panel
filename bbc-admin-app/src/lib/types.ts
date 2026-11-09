@@ -48,6 +48,20 @@ export interface Conversation {
   metadata?: Record<string, unknown>
   has_flagged_content?: boolean
   flagged_reason?: string | null
+  /** List rows only: the newest non-system message, trimmed to 140 chars.
+   *  Absent for supervisors and PMs, and when the preview read failed.
+   *  An agent gets null on a chat that isn't theirs (blind take). */
+  last_message?: { role: Message['role']; content: string; created_at: string } | null
+  /** List rows only: the route the pipeline extracted (lead origin → destination).
+   *  Never sent to an agent for a chat that isn't theirs (blind take). */
+  route?: { from: string; to: string } | null
+  /** When the chat entered the shared queue (waiting for a person). */
+  queued_at?: string | null
+  /** Presence derived on read (online / minimized / left / stale), list rows. */
+  client_presence?: string | null
+  client_presence_age_seconds?: number | null
+  /** Country of the client's phone number (detail payload). */
+  visitor_phone_country?: string | null
 }
 
 export interface ConversationsResponse {
@@ -62,7 +76,12 @@ export interface Lead {
   conversation_id: string
   trip_type: 'one_way' | 'round_trip' | 'multi_city' | 'open_jaw' | 'tour'
   cabin_class: 'business' | 'first' | 'economy' | 'mixed'
+  /** Everyone flying: adults + children + infants (the CRM takes adults as the rest). */
   passengers: number | null
+  children_count?: number | null
+  infant_count?: number | null
+  /** NOT NULL DEFAULT true and never written by the pipeline: says nothing.
+   *  The client's own answer is intent_signals.date_flexible. */
   flexible_dates: boolean
   origin_code: string | null
   destination_code: string | null
@@ -72,7 +91,9 @@ export interface Lead {
   score: number
   tier: 'gold' | 'silver' | 'bronze'
   status: 'new' | 'contacted' | 'qualified' | 'converted' | 'lost'
-  intent_signals: string[]
+  /** jsonb object from the pipeline: persona, occasion, nonstop_only,
+   *  callback_requested, airline_preference, date_flexible, … */
+  intent_signals: Record<string, unknown> | null
   notes: string
   created_at: string
   updated_at: string
@@ -179,6 +200,31 @@ export interface DashboardStats {
   leads_sparkline_7d: number[]
 
   funnel: Array<{ name: string; count: number; color: string }>
+}
+
+// ── Your day (GET /api/agent/day) ─────────────────────────────
+export interface AgentDayBucket {
+  took: number
+  wait_median_s: number | null
+  first_reply_median_s: number | null
+  went_back: number
+  closed: number
+  with_lead: number
+  in_crm: number
+}
+
+export interface AgentDay {
+  days: 1 | 7 | 30
+  tz_offset_minutes: number
+  now: string
+  range_start: string
+  totals: AgentDayBucket & { still_open: number }
+  /** Newest first; at least 7 rows. */
+  by_day: Array<AgentDayBucket & { date: string }>
+  went_back: Array<{ conversation_id: string; first_name: string; at: string }>
+  not_in_crm: Array<{ conversation_id: string; first_name: string; has_phone: boolean; has_email: boolean; status: string | null }>
+  waiting_on_you: Array<{ conversation_id: string; first_name: string; minutes: number; left_minutes_ago: number | null }>
+  first_reply_week: { this: number | null; previous: number | null }
 }
 
 // ── Notifications ────────────────────────────────────────
@@ -298,12 +344,16 @@ export type AgentSseEvent =
       widget_last_close_reason?: string; widget_last_event_at?: string }
   | { event: 'stream_chunk'; delta: string }
   | ({ event: 'stream_end' } & SseMessageRow)
+  /** The chat started waiting for a person and isn't yours (blind take):
+   *  the server closes the stream right after this frame. */
+  | { event: 'blind' }
   | SseMessageRow   // plain message row (agent / system / ai)
 
 export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const ev = r.event
+  if (ev === 'blind') return { event: 'blind' }
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }

@@ -49,6 +49,111 @@ async def _resolve_team_scope(user: dict) -> Optional[list[str]]:
     return None
 
 
+def _known_to(row: dict, user_id: Optional[str]) -> bool:
+    """The chat is this agent's: assigned to them, or engaged by them and
+    back with the assistant (sticky ownership, they were already talking)."""
+    if not user_id:
+        return False
+    engaged = row.get("engaged_agent_id") or (row.get("metadata") or {}).get("engaged_agent_id")
+    return row.get("assigned_agent_id") == user_id or engaged == user_id
+
+
+def _taken_blind(user: dict, row: dict) -> bool:
+    """An agent takes a waiting chat blind (owner's rule, Nov 2026): until
+    it is theirs they get who and how long — never the words, the trip, the
+    contact or where the client came from. Same rule as the panel's gate:
+    unassigned, open, waiting for a person or in the shared line, and not a
+    chat this agent was already talking in. Managers are never blind."""
+    if user.get("role") not in db._OPERATOR_ROLES or not row:
+        return False
+    if row.get("status") == "closed" or row.get("assigned_agent_id"):
+        return False
+    if _known_to(row, user.get("id")):
+        return False
+    return (
+        row.get("status") == "needs_agent"
+        or row.get("mode") in ("waiting_for_agent", "human")
+        or bool(row.get("queued_at"))
+    )
+
+
+_BLIND_DETAIL = "Take the chat to read it."
+_BLIND_UNAVAILABLE = "Couldn't check this chat. Try again in a moment."
+
+# Per-instance, like CLAIM_HEALTH. check_failed: an agent got a 503 instead of
+# their chat because the check couldn't be made (it fails closed).
+# streams_closed: an open stream stopped because its chat started waiting
+# for a person and isn't the viewer's — not a failure, the rule working.
+BLIND_HEALTH: dict = {"check_failed": 0, "last_failed_at": None, "streams_closed": 0}
+
+
+async def _blind_guard(user: dict, conversation_id: str) -> bool:
+    """True when this agent must not read this chat yet. One tiny read
+    (five fields, by id) every time an agent asks — nothing is remembered,
+    because whose chat it is can change between two polls (taken, given to
+    someone else, back in the line) and a memory would answer for the old
+    owner. Managers never ask. Fails CLOSED: when the check can't be made the
+    agent gets a 503 (counted), never the chat. A chat that doesn't exist
+    isn't blind: there is nothing in it to hide."""
+    if user.get("role") not in db._OPERATOR_ROLES:
+        return False
+    try:
+        row = await db.get_blind_inputs(conversation_id)
+    except Exception as e:
+        from datetime import datetime, timezone
+        BLIND_HEALTH["check_failed"] += 1
+        BLIND_HEALTH["last_failed_at"] = datetime.now(timezone.utc).isoformat()
+        raise HTTPException(status_code=503, detail=_BLIND_UNAVAILABLE) from e
+    if not row:
+        return False
+    return _taken_blind(user, row)
+
+
+async def stream_sight(user: dict, conversation_id: str) -> str:
+    """The same question for a stream that is already open, asked again
+    before it sends anything: "ok" keeps it going; "blind" means the chat
+    started waiting for a person and isn't this agent's (the stream tells
+    the panel, then closes); "unknown" means the check couldn't be made —
+    the stream closes without a word (fail closed) and the panel's
+    reconnect is asked again at the door."""
+    try:
+        blind = await _blind_guard(user, conversation_id)
+    except HTTPException as e:
+        logger.warning(f"[stream] blind re-check failed for {conversation_id}: {e}")
+        return "unknown"
+    if blind:
+        BLIND_HEALTH["streams_closed"] += 1
+        return "blind"
+    return "ok"
+
+
+_PRESENCE_KEYS = (
+    "widget_presence", "widget_presence_effective", "widget_presence_age_seconds",
+    "widget_last_event_at", "widget_last_event", "widget_open", "widget_pings",
+)
+
+
+# Row fields a waiting chat keeps from an agent, wherever the row goes out
+# (detail, list): the summary names the cities, and an e-mail or a phone
+# finds the lead, which names them too.
+_BLIND_FIELDS = ("summary", "visitor_email", "visitor_phone", "visitor_phone_country", "flagged_reason")
+
+
+def _blind_view(conv: dict) -> dict:
+    """The chat as an agent sees it before Take: the row's shape, with the
+    words, the lead, the summary, the contact and the visit's metadata
+    (search terms, pages, IP) taken out. Presence stays: the gate shows it."""
+    out = dict(conv)
+    meta = conv.get("metadata") or {}
+    out["metadata"] = {k: meta[k] for k in _PRESENCE_KEYS if k in meta}
+    out["messages"] = []
+    out["lead"] = None
+    for k in _BLIND_FIELDS:
+        if k in out:
+            out[k] = None
+    return out
+
+
 @router.get("/conversations")
 async def list_conversations(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
@@ -133,6 +238,9 @@ async def list_conversations(
             team_ids=team_ids,
             tag=tag, quiet_before=quiet_before, no_engagement_only=no_engagement_only,
             limit=limit, offset=offset,
+            # Blind take: an agent's search can't find a waiting chat by the
+            # e-mail or phone it hides from them — the match would tell.
+            blind_viewer=(user.get("id") or "") if user.get("role") in db._OPERATOR_ROLES else None,
         )
         if handled_by == "human":
             rows = [c for c in rows if c.get("agent_state") == "active"]
@@ -146,6 +254,32 @@ async def list_conversations(
         if user.get("role") == "supervisor":
             from app.security.pii import mask_visitor_row
             rows = [mask_visitor_row(dict(c)) for c in rows]
+        elif user.get("role") != "project_manager":
+            # The last thing said in each chat, for the list row. Best-effort:
+            # a failed read serves the page without previews, never no page.
+            # Supervisors and PMs get none: message text carries the client's
+            # own phone and e-mail (their rows mask it), and their message
+            # access is team-scoped while a global chip can list other teams.
+            # An agent takes a waiting chat blind (owner's rule): no cities,
+            # none of the client's words, until the chat is theirs.
+            blind = user.get("role") in db._OPERATOR_ROLES
+            if blind:
+                for c in rows:
+                    if not _known_to(c, user.get("id")):
+                        c.pop("route", None)
+                    # A waiting chat's row keeps its contact out too, as its
+                    # detail does: who, never how to reach them.
+                    if _taken_blind(user, c):
+                        for k in _BLIND_FIELDS:
+                            if k in c:
+                                c[k] = None
+            wanted = [c["id"] for c in rows if not blind or _known_to(c, user.get("id"))]
+            try:
+                previews = await db.get_last_message_previews(wanted) if wanted else {}
+                for c in rows:
+                    c["last_message"] = previews.get(c["id"])
+            except Exception as e:
+                logger.warning(f"list_conversations: previews unavailable ({e}) — serving the list without them")
         return {"success": True, "data": rows, "count": total}
     except HTTPException:
         # DO NOT swallow HTTPException — _enforce_tunnel uses it to signal 403.
@@ -177,6 +311,8 @@ async def get_typing_status(
 ):
     """Agent polls every 1s to see client's live typing text.
     Returns empty state if client is not typing or Redis key expired."""
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
     from app.realtime.typing_indicator import typing_manager
     state = await typing_manager.get_typing(conversation_id)
     return {
@@ -237,6 +373,8 @@ async def get_conversation_messages(
                 status_code=403,
                 detail="You can only read messages for conversations handled by your team.",
             )
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
     msgs = await db.get_messages_after(conversation_id, after)
     return {"success": True, "data": msgs}
 
@@ -282,11 +420,26 @@ async def get_conversation(
         from app.security.pii import mask_visitor_row
         conv = mask_visitor_row(dict(conv))
 
+    # An agent on a chat waiting for a person: who and how long, nothing the
+    # client said or where they fly, until they take it.
+    if _taken_blind(user, conv):
+        conv = _blind_view(conv)
+
     return {"success": True, "data": conv, "count": 1}
 
 
 @router.patch("/conversations/{conversation_id}")
-async def update_conversation(conversation_id: str, body: ConversationUpdate):
+async def update_conversation(
+    conversation_id: str,
+    body: ConversationUpdate,
+    user: dict = Depends(get_current_user),
+):
+    # Blind take: an agent can't change a waiting chat that isn't theirs. The
+    # answer is the whole row (summary, contact, the visit), and a new status
+    # or mode would open the chat to them without a Take. Checked before
+    # anything is written; a check that can't be made writes nothing (503).
+    if await _blind_guard(user, conversation_id):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
     payload = body.model_dump(exclude_none=True)
     if not payload:
         return {"success": False, "data": None, "count": 0, "error": "No fields to update"}
@@ -568,6 +721,11 @@ async def close_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     _enforce_tunnel(user, conv.get("tunnel"))
+    # Blind take: a closed chat isn't waiting any more, so closing one an
+    # agent hasn't taken would open it to them. The row above is fresh, so
+    # the rule needs no second read.
+    if _taken_blind(user, conv):
+        raise HTTPException(status_code=403, detail=_BLIND_DETAIL)
 
     from datetime import datetime, timezone
 

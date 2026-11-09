@@ -353,12 +353,21 @@ class TestWiring:
         assert "crm_push_gate_reason" in sql
 
     def test_panel_button_pushes_not_declares(self):
-        with open(
-            os.path.join(
-                APP, "..", "..", "bbc-admin-app", "src", "features", "chats", "detail.tsx"
-            ),
-            encoding="utf-8",
-        ) as f:
-            src = f.read()
-        assert "Push to CRM" in src
-        assert "Submit to CRM" not in src
+        # Redesigned chat (Nov 2026): the button is "Send to CRM" in the
+        # details panel and it calls the PUSH endpoint, never a flag flip.
+        base = os.path.join(APP, "..", "..", "bbc-admin-app", "src")
+        with open(os.path.join(base, "features", "chats", "components", "details-panel.tsx"), encoding="utf-8") as f:
+            panel = f.read()
+        with open(os.path.join(base, "lib", "api.ts"), encoding="utf-8") as f:
+            api = f.read()
+        assert "Send to CRM" in panel
+        assert "Submit to CRM" not in panel
+        assert "/mark-crm-created" in api
+        # The wiring, not only the label: the panel's button runs the chat's
+        # push handler, and that handler calls the push endpoint.
+        with open(os.path.join(base, "features", "chats", "detail.tsx"), encoding="utf-8") as f:
+            chat = f.read()
+        assert "onClick={p.onPush}" in panel
+        assert "onPush={handleMarkLeadCreated}" in chat
+        assert "await pushLeadToCrm(lead.id)" in chat
+        assert "export function pushLeadToCrm" in api

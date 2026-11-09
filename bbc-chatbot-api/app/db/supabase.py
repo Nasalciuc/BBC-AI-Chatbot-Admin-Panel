@@ -552,7 +552,10 @@ _LIST_COLUMNS_BASE = (
     # updated_at while the detail showed the real thing.
     "widget_presence:metadata->>widget_presence,"
     "widget_last_event_at:metadata->>widget_last_event_at,"
-    "widget_pings:metadata->>widget_pings"
+    "widget_pings:metadata->>widget_pings,"
+    # When the chat became this operator's — the first-reply deadline counts
+    # from here, and the list row shows the countdown the server will act on.
+    "agent_assigned_at:metadata->>agent_assigned_at"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -561,7 +564,7 @@ _LIST_COLUMNS_BASE = (
 _LIST_COLUMNS_SUPERVISOR = (
     ",created_at,chat_number,"
     "last_user_message_at,last_agent_message_at,last_reply_at,"
-    "visitor_phone,visitor_email"
+    "visitor_phone,visitor_email,queued_at"
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
 
@@ -701,6 +704,21 @@ def supervisor_columns_status() -> dict:
 _TAG_SCAN_CAP = 400
 
 
+def _readable_to_agent(viewer_id: str, with_queue: bool) -> str:
+    """PostgREST twin of conversations._taken_blind, negated: a chat this agent
+    may read — closed, someone's, one they were already talking in, or not
+    waiting for a person. Keep the two in step: test_blind_take evaluates this
+    filter against _taken_blind row by row. `with_queue`: queued_at exists
+    (migrations 023/024); without it the column can't be named."""
+    not_waiting = "status.neq.needs_agent,mode.not.in.(waiting_for_agent,human)"
+    if with_queue:
+        not_waiting += ",queued_at.is.null"
+    return (
+        "or(status.eq.closed,assigned_agent_id.not.is.null,"
+        f"metadata->>engaged_agent_id.eq.{viewer_id},and({not_waiting}))"
+    )
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -714,8 +732,14 @@ async def get_conversations(
     no_engagement_only: bool = False,
     limit: int = 50,
     offset: int = 0,
+    blind_viewer: Optional[str] = None,
 ) -> tuple[list, int]:
     """List conversations with filters. Returns (rows, total_count).
+
+    blind_viewer: the id of an agent (sales/support) searching. Their search
+    still finds any chat by name, but by e-mail or phone only the chats they
+    may read — never a waiting chat they haven't taken (blind take). Rows
+    would hide the contact anyway; the match itself would give it away.
 
     team_ids (Phase 2): when a non-empty list is passed, restrict to
     conversations whose frozen team_id is in that set. PostgREST ANDs
@@ -758,11 +782,16 @@ async def get_conversations(
                 # "#1042" / "1042" → exact chat_number match in addition to
                 # the usual visitor fields (supervisors search by number).
                 num_part = stripped[1:] if stripped.startswith("#") else stripped
-                visitor_match = (
-                    f"visitor_name.ilike.%{stripped}%,"
+                contact_match = (
                     f"visitor_email.ilike.%{stripped}%,"
                     f"visitor_phone.ilike.%{stripped}%"
                 )
+                if blind_viewer is not None:
+                    contact_match = (
+                        f"and(or({contact_match}),"
+                        f"{_readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)})"
+                    )
+                visitor_match = f"visitor_name.ilike.%{stripped}%,{contact_match}"
                 if num_part.isdigit() and with_supervisor_cols:
                     q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
                 else:
@@ -830,6 +859,7 @@ async def get_conversations(
                 # jsonb ->> yields the STRING "true"; the derivation only
                 # needs truthiness, but None must stay falsy.
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
+                "agent_assigned_at": row.pop("agent_assigned_at", None),
             }
         rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
@@ -837,6 +867,11 @@ async def get_conversations(
             for row in rows:
                 attach_derived_tag(row, lead=lead_map.get(row["id"]))
                 attach_effective_presence(row)
+                # The route the pipeline extracted, already in hand for the
+                # tag: the list row and the waiting card show it, no query.
+                _lead = lead_map.get(row["id"]) or {}
+                if _lead.get("origin_code") and _lead.get("destination_code"):
+                    row["route"] = {"from": _lead["origin_code"], "to": _lead["destination_code"]}
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
             if no_engagement_only:
@@ -934,6 +969,40 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
                 pass
         logger.error(f"get_conversation_simple error: {e}")
         return None
+
+
+async def get_blind_inputs(conv_id: str) -> Optional[dict]:
+    """The five fields that decide whether an agent may read a chat yet
+    (blind take): status, mode, who has it, who was talking in it, and
+    whether it is in the shared line. One tiny row; None when there is no
+    such chat. A read that fails is logged and RAISED, never None: the
+    caller must tell "no chat" from "couldn't look" (rule 7), because it
+    fails closed on the second and lets the first through."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+
+    def _q(with_queued_at: bool):
+        return (
+            get_client().table("conversations")
+            .select(cols + (", queued_at" if with_queued_at else ""))
+            .eq("id", conv_id)
+            .limit(1)
+            .execute()
+        )
+
+    use_queued_at = _queued_at_column_available()
+    try:
+        try:
+            res = await _run_sync(lambda: _q(use_queued_at), label="blind")
+        except Exception as e:
+            if not use_queued_at or not _is_missing_column_error(e):
+                raise
+            _downgrade_queued_at(e)
+            res = await _run_sync(lambda: _q(False), label="blind")
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(f"get_blind_inputs({conv_id}) failed: {e}")
+        raise
 
 
 async def get_last_agent_for_visitor(
@@ -1621,7 +1690,10 @@ async def get_crm_orphan_leads(
 # ════════════════════════════════════════════════════════════════
 
 async def get_kb_categories(tunnel: Optional[str] = None) -> list:
-    """KB categories with article count per category."""
+    """KB categories with article count per category.
+
+    A failed read raises: an empty list means the knowledge base has no
+    categories, never that the database didn't answer."""
     try:
         db = get_client()
         def _query():
@@ -1639,7 +1711,7 @@ async def get_kb_categories(tunnel: Optional[str] = None) -> list:
         return result
     except Exception as e:
         logger.error(f"get_kb_categories error: {e}")
-        return []
+        raise
 
 
 async def get_kb_entries(
@@ -1648,6 +1720,8 @@ async def get_kb_entries(
     is_active: Optional[bool] = None,
     limit: int = 100,
 ) -> list:
+    """KB entries, newest change first. A failed read raises: an empty list
+    means there are no entries, never that the database didn't answer."""
     try:
         db = get_client()
         def _query():
@@ -1660,7 +1734,7 @@ async def get_kb_entries(
         return res.data or []
     except Exception as e:
         logger.error(f"get_kb_entries error: {e}")
-        return []
+        raise
 
 
 async def create_kb_entry(payload: dict) -> Optional[dict]:
@@ -3874,6 +3948,140 @@ async def get_agent_history(user_id: str, days: int = 7) -> dict:
         "presence": pres_res.data or [],
         "ready_log": ready_res.data or [],
         "activity": acts_res.data or [],
+    }
+
+
+_PAGE = 1000          # PostgREST's default max-rows: a bigger .limit() is silently cut
+_IDS_PER_REQUEST = 100  # keeps an in.(...) filter well under URL limits
+
+
+async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> list[dict]:
+    """Every row of a read, one PostgREST page at a time.
+
+    `build()` returns a fresh query builder; this adds .range() per page. Stops
+    at a short page. Raises on failure — the caller decides what a failed read
+    means, a partial list is never passed off as the whole one."""
+    rows: list[dict] = []
+    for page in range(max_pages):
+        lo = page * _PAGE
+        res = await _run_sync(lambda lo=lo: build().range(lo, lo + _PAGE - 1).execute(), label=label)
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE:
+            return rows
+    logger.warning(f"_select_pages[{label}]: stopped at {max_pages} pages ({len(rows)} rows)")
+    return rows
+
+
+async def get_last_message_previews(conversation_ids: list[str], max_len: int = 140) -> dict[str, dict]:
+    """The newest non-system message of each conversation on a list page.
+
+    ONE request for the page: PostgREST embeds messages per conversation and
+    applies order + limit per parent (a lateral join on idx_msg_conv_created),
+    so no thread is ever loaded. Raises on failure; the list endpoint logs it
+    and serves the page without previews."""
+    ids = [i for i in conversation_ids if i]
+    if not ids:
+        return {}
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select("id, messages(role, content, created_at)")
+        .in_("id", ids)
+        .neq("messages.role", "system")
+        .order("created_at", desc=True, foreign_table="messages")
+        .limit(1, foreign_table="messages")
+        .execute(),
+        label="list_previews",
+    )
+    out: dict[str, dict] = {}
+    for row in res.data or []:
+        msgs = row.get("messages") or []
+        if not msgs:
+            continue
+        m = msgs[0]
+        text = " ".join(str(m.get("content") or "").split())
+        if len(text) > max_len:
+            text = text[: max_len - 1].rstrip() + "\u2026"
+        out[row["id"]] = {"role": m.get("role"), "content": text, "created_at": m.get("created_at")}
+    return out
+
+
+_DAY_CONV_COLUMNS = (
+    "id, chat_number, visitor_name, visitor_phone, visitor_email, status, mode, tunnel, "
+    "assigned_agent_id, metadata, last_user_message_at, last_agent_message_at"
+)
+
+
+async def get_agent_day_inputs(user_id: str, since_iso: str) -> dict:
+    """Everything "Your day" needs for one operator since `since_iso`.
+
+    Reads only: the operator's activity rows, their open chats, the rows of the
+    conversations involved, the operator messages in them (for the first reply)
+    and the leads (for the CRM). Raises on any failure — a day built from a
+    partial read would show wrong numbers as if they were right."""
+    db_client = get_client()
+    activity = await _select_pages(
+        lambda: db_client.table("agent_activity_log")
+        .select("action, conversation_id, happened_at, response_seconds")
+        .eq("user_id", user_id)
+        .gte("happened_at", since_iso)
+        .in_("action", ["claim_won", "deadline_fired", "closed"])
+        .order("happened_at"),
+        label="agent_day",
+    )
+    open_res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select(_DAY_CONV_COLUMNS)
+        .eq("assigned_agent_id", user_id)
+        .eq("status", "active")
+        .eq("mode", "human")
+        .execute(),
+        label="agent_day",
+    )
+    open_conversations = open_res.data or []
+
+    ids = list({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    conversations: dict[str, dict] = {c["id"]: c for c in open_conversations}
+    leads: dict[str, dict] = {}
+    agent_messages: list[dict] = []
+    claimed = list({a["conversation_id"] for a in activity
+                    if a.get("action") == "claim_won" and a.get("conversation_id")})
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        res = await _run_sync(
+            lambda chunk=chunk: db_client.table("conversations")
+            .select(_DAY_CONV_COLUMNS).in_("id", chunk).execute(),
+            label="agent_day",
+        )
+        for c in res.data or []:
+            conversations[c["id"]] = c
+        lead_res = await _run_sync(
+            lambda chunk=chunk: db_client.table("leads")
+            .select("conversation_id, created_in_crm, crm_lead_id")
+            .in_("conversation_id", chunk).execute(),
+            label="agent_day",
+        )
+        for row in lead_res.data or []:
+            if row.get("conversation_id"):
+                leads[row["conversation_id"]] = row
+    for i in range(0, len(claimed), _IDS_PER_REQUEST):
+        chunk = claimed[i:i + _IDS_PER_REQUEST]
+        agent_messages.extend(await _select_pages(
+            lambda chunk=chunk: db_client.table("messages")
+            .select("conversation_id, created_at")
+            .in_("conversation_id", chunk)
+            .eq("role", "agent")
+            .gte("created_at", since_iso)
+            .order("created_at"),
+            label="agent_day",
+        ))
+    return {
+        "activity": activity,
+        "agent_messages": agent_messages,
+        "conversations": conversations,
+        "leads": leads,
+        "open_conversations": open_conversations,
     }
 
 

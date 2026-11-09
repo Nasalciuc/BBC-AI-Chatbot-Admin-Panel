@@ -39,12 +39,16 @@ type HeartbeatResponse = {
    *  feeds the CRM's chat:queue badge — one source, no contradictions. */
   queue_count?: number
   queue_ids?: string[]
-  /** The longest-waiting conversation in the line — never the client's words. */
+  /** The longest-waiting conversation in the line: which and how long.
+   *  Never the client's words, never the route (agents take chats blind). */
   queue_oldest?: {
     id: string
     waiting_seconds: number | null
-    route: string | null
   } | null
+  /** The first-reply deadline the sweep enforces, and the longer one while
+   *  the operator has the chat open — the countdown after Take uses these. */
+  response_deadline_seconds?: number
+  viewing_grace_seconds?: number
 }
 
 /**
@@ -90,6 +94,18 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     active.current = true
 
     const processResponse = (res: HeartbeatResponse) => {
+      if (
+        typeof res?.response_deadline_seconds === 'number' &&
+        typeof res?.viewing_grace_seconds === 'number'
+      ) {
+        const rs = useReadyStore.getState()
+        if (
+          rs.responseDeadlineSeconds !== res.response_deadline_seconds ||
+          rs.viewingGraceSeconds !== res.viewing_grace_seconds
+        ) {
+          rs.setDeadlines(res.response_deadline_seconds, res.viewing_grace_seconds)
+        }
+      }
       if (typeof res?.is_ready === 'boolean') {
         setReady(res.is_ready)
         // The CRM shows the agent's own state next to the chat button.
@@ -110,12 +126,11 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
         }
         if (isNew && ids.length > 0) playQueueChime()
         // The CRM's badge rides the same number — one source, no contradictions.
-        // The oldest waiting conversation travels with it: which one, how long,
-        // and the route the pipeline extracted. Never the client's own words.
+        // The oldest waiting conversation travels with it: which one and how
+        // long. Never the client's words, never where they fly.
         reportQueue(res.queue_count ?? ids.length, {
           conversationId: res.queue_oldest?.id,
           waitingSeconds: res.queue_oldest?.waiting_seconds ?? undefined,
-          route: res.queue_oldest?.route ?? undefined,
         })
         // Conversations that left the line may return later (released):
         // forget them so their return rings again.

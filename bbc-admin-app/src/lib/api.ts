@@ -29,6 +29,7 @@ import type {
   TasksResponse,
   UserAccessAuditItem,
   AgentSseEvent,
+  AgentDay,
 } from './types'
 import { parseAgentSseEvent } from './types'
 import type { Team } from './bbc/types'
@@ -129,6 +130,15 @@ export async function apiFetch<T>(
 }
 
 // ── Dashboard ─────────────────────────────────────────────────
+/** Your day: the caller's own chats. Days cut at the browser's local midnight. */
+export async function getAgentDay(days: 1 | 7 | 30): Promise<AgentDay> {
+  const offset = -new Date().getTimezoneOffset()
+  const res = await apiFetch<{ success: boolean; data: AgentDay }>(
+    `/api/agent/day?days=${days}&tz_offset_minutes=${offset}`
+  )
+  return res.data
+}
+
 export function getDashboardStats(): Promise<DashboardStats> {
   return apiFetch<DashboardStats>('/api/dashboard/stats')
 }
@@ -158,6 +168,22 @@ export async function getConversation(id: string): Promise<Conversation | null> 
 }
 
 /** Claim from the shared queue — the DATABASE decides; 409 names the winner. */
+/** PUSH the lead to the CRM (the server runs the gate and the real submit).
+ *  20 s: the CRM call alone can take 10 s — the default 8 s abort would
+ *  "fail" a push that actually succeeded (double-push bait). */
+export function pushLeadToCrm(leadId: string): Promise<{ success: boolean; data: Lead }> {
+  return apiFetch(`/api/leads/${encodeURIComponent(leadId)}/mark-crm-created`, { method: 'PATCH' }, 20_000)
+}
+
+/** The operator added the client in the CRM by hand: record the CRM's lead
+ *  number as the proof. No push happens. */
+export function setLeadCrmId(leadId: string, crmId: string): Promise<{ success: boolean; data: Lead }> {
+  return apiFetch(
+    `/api/leads/${encodeURIComponent(leadId)}/crm-id?crm_id=${encodeURIComponent(crmId)}`,
+    { method: 'PATCH' }
+  )
+}
+
 export function claimConversation(id: string): Promise<{ success: boolean }> {
   return apiFetch(`/api/conversations/${encodeURIComponent(id)}/claim`, { method: 'POST' })
 }
@@ -297,15 +323,22 @@ export async function updateLead(
 }
 
 // ── Knowledge Base ────────────────────────────────────────────
-export function getKBCategories(): Promise<{ data: KBCategory[] }> {
-  return apiFetch<{ data: KBCategory[] }>('/api/kb/categories')
+/** The KB routes answer 200 with `success: false` when the database read
+ *  failed. Reject then, so a page can tell an outage from an empty list. */
+function kbRead<T>(res: { success?: boolean; data: T; error?: string }): { data: T } {
+  if (res.success === false) throw new ApiError(503, res.error || 'Couldn’t read the knowledge base')
+  return res
 }
 
-export function getKBEntries(
+export async function getKBCategories(): Promise<{ data: KBCategory[] }> {
+  return kbRead(await apiFetch<{ success?: boolean; data: KBCategory[]; error?: string }>('/api/kb/categories'))
+}
+
+export async function getKBEntries(
   params: Record<string, string> = {},
 ): Promise<{ data: KBEntry[] }> {
   const qs = new URLSearchParams(params).toString()
-  return apiFetch<{ data: KBEntry[] }>(`/api/kb/entries?${qs}`)
+  return kbRead(await apiFetch<{ success?: boolean; data: KBEntry[]; error?: string }>(`/api/kb/entries?${qs}`))
 }
 
 export async function createKBEntry(data: KBEntryCreate): Promise<KBEntry> {

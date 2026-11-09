@@ -12,7 +12,8 @@ interface HealthResponse {
 
 export function ConnectionBanner() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
-  const [isLive, setIsLive] = useState(false)
+  // null until the first check answers: no "Offline" flash on every page load.
+  const [isLive, setIsLive] = useState<boolean | null>(null)
   const dormant = usePanelModeStore((s) => s.dormant)
 
   useEffect(() => {
@@ -34,26 +35,16 @@ export function ConnectionBanner() {
     return () => clearInterval(interval)
   }, [dormant])
 
+  // Quiet when all is well (the design shows nothing); a pill only when the
+  // server is out of reach, or answers degraded.
+  if (isLive === null || (isLive && health?.status !== 'degraded')) return null
   return (
-    <div className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-full ${
-      isLive
-        ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-950 dark:text-green-400 dark:border-green-800'
-        : 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800'
-    }`}>
-      {isLive ? (
-        <>
-          <Wifi className='w-3 h-3' />
-          <span>Connected</span>
-          {health?.status === 'degraded' && (
-            <span className='text-amber-600 ml-1'>(degraded)</span>
-          )}
-        </>
-      ) : (
-        <>
-          <WifiOff className='w-3 h-3' />
-          <span>Offline</span>
-        </>
-      )}
-    </div>
+    <span
+      role='status'
+      className='flex h-10 flex-none items-center gap-2 rounded-full bg-k-fff3e0 px-3.5 text-[13px] font-bold text-k-8a4b00'
+    >
+      {isLive ? <Wifi aria-hidden='true' className='size-3.5' /> : <WifiOff aria-hidden='true' className='size-3.5' />}
+      {isLive ? 'Server degraded' : 'Offline · trying again'}
+    </span>
   )
 }

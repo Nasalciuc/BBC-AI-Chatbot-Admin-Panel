@@ -1,9 +1,10 @@
-"""queue_oldest on the heartbeat — which conversation, how long, which route.
+"""queue_oldest on the heartbeat — which conversation and how long.
 
 The CRM shows this one in its desktop notification. Three rules pinned here:
 oldest is by queued_at and NOT by list order (the queue sorts needs_agent
-first, so _rows[0] is the loudest, not the longest-waiting); the route comes
-from the LEADS table, never from the client's own words; and an ineligible
+first, so _rows[0] is the loudest, not the longest-waiting); no route, ever:
+the beat goes only to agents and an agent takes a waiting chat blind (owner's
+rule, Nov 2026), so the leads table is not even read; and an ineligible
 operator gets None, at the source.
 """
 
@@ -46,8 +47,10 @@ class _LeadTable:
     def __init__(self, row=None, raise_err=False):
         self.row = row
         self.raise_err = raise_err
+        self.tables: list = []
 
-    def table(self, _n):
+    def table(self, n):
+        self.tables.append(n)
         return self
 
     def select(self, *_a, **_k):
@@ -111,31 +114,25 @@ async def test_oldest_is_by_queued_at_not_list_position():
 
 
 # ══════════════════════════════════════════════════════════════
-# 12 — the route: from leads, absent when not extracted, never a 500
+# 12 — no route: agents take a waiting chat blind
 # ══════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_route_comes_from_the_lead():
-    lead = {"origin_code": "HNL", "destination_code": "AKL"}
-    out = await _beat(_op_row(), [_qrow("c1", "active", 60)], _LeadTable(lead))
-    assert out["queue_oldest"]["route"] == "HNL → AKL"
-
-
-@pytest.mark.asyncio
-async def test_route_is_none_when_not_extracted_yet():
-    out = await _beat(_op_row(), [_qrow("c1", "active", 60)],
-                      _LeadTable({"origin_code": None, "destination_code": "AKL"}))
-    assert out["queue_oldest"]["route"] is None, "half a route is no route"
+async def test_the_oldest_names_no_cities_even_when_the_lead_has_them():
+    leads = _LeadTable({"origin_code": "HNL", "destination_code": "AKL"})
+    out = await _beat(_op_row(), [_qrow("c1", "active", 60)], leads)
     assert out["queue_oldest"]["id"] == "c1"
+    assert out["queue_oldest"]["waiting_seconds"] >= 55
+    assert "route" not in out["queue_oldest"], "an agent must not learn where a waiting client flies"
+    assert "leads" not in leads.tables, "the beat no longer reads the lead at all"
 
 
 @pytest.mark.asyncio
-async def test_a_failed_lead_read_still_reports_the_conversation():
+async def test_a_leads_outage_cannot_touch_the_heartbeat():
     out = await _beat(_op_row(), [_qrow("c1", "active", 60)],
                       _LeadTable(raise_err=True))
-    assert out["queue_oldest"] is not None
-    assert out["queue_oldest"]["route"] is None
-    assert out["success"] is True, "a leads hiccup must never break the heartbeat"
+    assert out["success"] is True
+    assert out["queue_oldest"] == {"id": "c1", "waiting_seconds": out["queue_oldest"]["waiting_seconds"]}
 
 
 # ══════════════════════════════════════════════════════════════
