@@ -40,10 +40,12 @@ def _table_missing(e: Exception) -> bool:
 
 
 def _what(e: Exception) -> str:
-    """Type, code and message: never the details, which can quote the row."""
+    """The exception's type and the database's code, nothing else: a message
+    can carry the submitted values ("invalid input syntax …: \"Ana\""), and
+    the details can quote the whole row (CLAUDE.md: no PII in logs at INFO or above)."""
     from app.db.supabase import _error_code
 
-    return f"{type(e).__name__} {_error_code(e) or ''} {getattr(e, 'message', '') or ''}".strip()
+    return f"{type(e).__name__} {_error_code(e) or ''}".strip()
 
 _SLOT_LEAD_FIELD = {
     "route": ("origin_code", "destination_code"),
