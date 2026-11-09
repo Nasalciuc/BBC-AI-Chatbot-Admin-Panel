@@ -5,6 +5,7 @@ import brand from './config'
 import { WIDGET_CSS } from './styles'
 import { setTurnstileSiteKey } from './turnstile'
 import { TRANSCRIPT_EXPORT_V0 } from './api'
+import { exposeRoutes } from './page-globals'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
@@ -12,12 +13,11 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
 } else {
   (window as any).__BBC_WIDGET_LOADED__ = true
   // Route map kept on the page (PR-15: TRANSCRIPT_EXPORT_V0 must stay in the
-  // bundle; see api.ts). Nothing reads it. captureUtm runs below, once the
-  // script tag says whether attribution is allowed (data-attribution).
-  Object.defineProperty(window, '__bbcWidgetRoutes', {
-    value: Object.freeze({ transcriptExportV0: TRANSCRIPT_EXPORT_V0 }),
-    enumerable: false,
-  })
+  // bundle; see api.ts). Nothing reads it; defined once per page, so a
+  // remount after __BBC_WIDGET_TEARDOWN__ doesn't throw (page-globals.ts).
+  // captureUtm runs below, once the script tag says whether attribution is
+  // allowed (data-attribution).
+  exposeRoutes(window, { transcriptExportV0: TRANSCRIPT_EXPORT_V0 })
 
   // Read API URL from script data-api attribute
   const script = document.currentScript as HTMLScriptElement | null
