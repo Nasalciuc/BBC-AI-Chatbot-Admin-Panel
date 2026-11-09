@@ -116,7 +116,7 @@ export function Roster({
                   >
                     <td className='px-4 py-3'>
                       <div className='flex items-center gap-3'>
-                        <PersonAvatar name={u.name ?? u.email} size={36} />
+                        <PersonAvatar name={u.name ?? u.email} url={u.avatar_url} size={36} />
                         <span className='min-w-0'>
                           <strong className='block truncate text-[15px] text-k-202020'>{u.name ?? u.email}</strong>
                           <span className='block truncate text-xs text-k-555555'>{u.email}</span>

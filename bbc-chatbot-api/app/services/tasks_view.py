@@ -59,8 +59,10 @@ def task_row(
     now: datetime,
     tz,
     masked: bool,
+    photos: Optional[dict[str, str]] = None,
 ) -> dict:
-    """One task as the list shows it. `masked`: the reader sees clients' contacts masked."""
+    """One task as the list shows it. `masked`: the reader sees clients' contacts
+    masked. `photos`: id → photo link, for the assignee's avatar."""
     name = (conv or {}).get("visitor_name")
     label = client_label(name, masked=masked) if name else ""
     title = t.get("title") or ""
@@ -97,6 +99,7 @@ def task_row(
         "state": state_of(due, now, tz) if not (t.get("done_at") or t.get("dismissed_at")) else "done",
         "assignee_id": t.get("assignee_id"),
         "assignee_name": names.get(t["assignee_id"]) if t.get("assignee_id") else None,
+        "assignee_avatar_url": (photos or {}).get(t["assignee_id"]) if t.get("assignee_id") else None,
         "unowned_reason": None if t.get("assignee_id") else t.get("unowned_reason"),
         "unowned_from_name": names.get(t["unowned_from"]) if t.get("unowned_from") and not t.get("assignee_id") else None,
         "unowned_at": t.get("unowned_at") if not t.get("assignee_id") else None,
@@ -119,6 +122,7 @@ def build_tasks_view(
     now: datetime,
     rules: dict,
     masked: bool,
+    photos: Optional[dict[str, str]] = None,
 ) -> dict:
     """The page: open tasks (with their state), done this week, and the numbers."""
     tz = zone(rules["time_zone"]) or timezone.utc
@@ -139,7 +143,7 @@ def build_tasks_view(
     def row(t: dict) -> dict:
         cid = t.get("conversation_id") or ""
         return task_row(t, conv=convs.get(cid), lead=leads.get(cid), names=names, wrote_at=wrote_after(t),
-                        now=now, tz=tz, masked=masked)
+                        now=now, tz=tz, masked=masked, photos=photos)
 
     tasks = [row(t) for t in open_rows]
     done = [row(t) for t in done_rows if not t.get("dismissed_at")]

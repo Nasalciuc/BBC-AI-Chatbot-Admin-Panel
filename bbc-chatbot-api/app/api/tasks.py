@@ -208,7 +208,7 @@ async def list_tasks(
         made = [m for m in made if m]
         client_msgs = await db.client_messages_since(
             [t["conversation_id"] for t in open_rows if t.get("conversation_id")], min(made).isoformat()) if made else []
-        names = await db.get_user_names()
+        names, photos = await db.get_user_names_and_photos()
         people = await db.get_task_people() if _can_assign(reach) and not one_chat else []
     except db.TasksNotSetUp:
         raise HTTPException(503, NOT_SET_UP)
@@ -217,7 +217,8 @@ async def list_tasks(
         raise HTTPException(502, "Couldn't load the tasks")
 
     data = build_tasks_view(open_rows=open_rows, done_rows=done_rows, convs=convs, leads=leads,
-                            client_msgs=client_msgs, names=names, now=now, rules=rules, masked=reach["masked"])
+                            client_msgs=client_msgs, names=names, now=now, rules=rules, masked=reach["masked"],
+                            photos=photos)
     data.update({
         "view": v,
         "unowned_open": unowned_open,
@@ -250,7 +251,7 @@ async def get_task(task_id: str, user: dict = Depends(get_current_user)):
         conv, lead = convs.get(cid or ""), leads.get(cid or "")
         events = await db.get_task_events(task_id)
         around = await db.messages_around(cid, task.get("created_at")) if cid and task.get("created_at") else []
-        names = await db.get_user_names()
+        names, photos = await db.get_user_names_and_photos()
     except HTTPException:
         raise
     except db.TasksNotSetUp:
@@ -265,7 +266,8 @@ async def get_task(task_id: str, user: dict = Depends(get_current_user)):
     later_client = [m for m in around if m.get("role") == "user" and made
                     and (parse_ts(m.get("created_at")) or made) > made + WROTE_AGAIN_AFTER]
     row = task_row(task, conv=conv, lead=lead, names=names,
-                   wrote_at=later_client[-1]["created_at"] if later_client else None, now=now, tz=tz, masked=reach["masked"])
+                   wrote_at=later_client[-1]["created_at"] if later_client else None, now=now, tz=tz, masked=reach["masked"],
+                   photos=photos)
     name = (conv or {}).get("visitor_name")
     first = name.strip().split()[0] if isinstance(name, str) and name.strip() else ""
     shown_first = client_label(name, masked=True) if reach["masked"] and name else first

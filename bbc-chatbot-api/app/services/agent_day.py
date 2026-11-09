@@ -38,6 +38,11 @@ def parse_ts(value: Any) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def photo_of(user: Optional[dict]) -> Optional[str]:
+    """A person's photo link (users.avatar_url), or None when they have none."""
+    return ((user or {}).get("avatar_url") or "").strip() or None
+
+
 def local_day_start(now: datetime, offset_minutes: int) -> datetime:
     """UTC instant of the operator's local midnight for `now`."""
     shift = timedelta(minutes=offset_minutes)

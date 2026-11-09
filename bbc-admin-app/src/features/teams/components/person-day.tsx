@@ -81,7 +81,7 @@ export function PersonDayPanel({
       <SheetContent className={cn('w-full gap-0 overflow-y-auto bg-k-ffffff p-0 sm:max-w-none [&>button]:z-20', wide ? 'sm:w-[760px]' : 'sm:w-[480px]')}>
         <div className='sticky top-0 z-10 flex items-start gap-3 border-b border-k-ececec bg-k-ffffff px-6 pt-5 pb-4 pe-14'>
           <span className='relative'>
-            <PersonAvatar name={u?.name ?? '?'} size={52} />
+            <PersonAvatar name={u?.name ?? '?'} url={u?.avatar_url} size={52} />
             {u && <span aria-hidden='true' className={cn('absolute -end-0.5 -bottom-0.5 size-3.5 rounded-full border-2 border-k-ffffff', PRESENCE[u.presence].dot)} />}
           </span>
           <div className='min-w-0 flex-1'>

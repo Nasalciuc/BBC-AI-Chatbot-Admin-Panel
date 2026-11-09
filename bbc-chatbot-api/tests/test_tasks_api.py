@@ -7,7 +7,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -28,6 +28,7 @@ from app.services.tasks_view import build_tasks_view  # noqa: E402
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 NAMES = {"victor": "Victor Rusu", "rohan": "Rohan Mehta", "irina": "Irina Moraru", "alex": "Alex Moore"}
 PEOPLE = [{"id": k, "name": v, "role": "sales"} for k, v in NAMES.items()]
+PHOTOS = {"victor": "https://example.com/avatars/victor.jpg"}
 
 
 def task(tid: str, **over) -> dict:
@@ -67,6 +68,7 @@ def patched(**extra):
         "get_follow_up_context": AsyncMock(return_value=(CONVS, LEADS)),
         "client_messages_since": AsyncMock(return_value=[]),
         "get_user_names": AsyncMock(return_value=NAMES),
+        "get_user_names_and_photos": AsyncMock(return_value=(NAMES, PHOTOS)),
         "get_task_people": AsyncMock(return_value=PEOPLE),
         "get_team_ids_for_supervisor": AsyncMock(return_value=["team-1"]),
         "get_operator_ids_for_teams": AsyncMock(return_value=["victor", "rohan"]),
@@ -167,6 +169,34 @@ def test_a_supervisor_sees_the_team_and_unowned_with_contacts_masked():
     assert "michael.r@example.com" not in row["quote"]
     assert body["counts"]["unowned"] == 1 and body["unowned_open"] == 1
     assert {p["id"] for p in body["people"]} == {"irina", "rohan", "victor"}
+
+
+def test_a_task_row_and_the_task_show_the_assignee_s_photo():
+    rows = [task("t1"), task("t2", assignee_id="rohan"), task("t3", assignee_id=None, unowned_reason="ai_only")]
+    with patched(list_follow_ups=AsyncMock(return_value=(rows, []))):
+        body = client("supervisor", "irina").get("/api/tasks").json()["data"]
+    photo = {r["id"]: r["assignee_avatar_url"] for r in body["tasks"]}
+    # Victor has a photo; Rohan has none (initials); an unowned task has nobody to show.
+    assert photo == {"t1": PHOTOS["victor"], "t2": None, "t3": None}
+    with patched():
+        d = client("sales", "victor").get("/api/tasks/t1").json()["data"]
+    assert d["assignee_avatar_url"] == PHOTOS["victor"]
+
+
+def test_names_and_photos_come_from_one_read_of_users():
+    rows = [
+        {"id": "a", "name": "Ana Ceban", "email": "ana@buybusinessclass.com", "avatar_url": " https://example.com/a.jpg "},
+        {"id": "b", "name": None, "email": "b@buybusinessclass.com", "avatar_url": "  "},
+        {"id": "c", "name": "Cy Moore", "email": "c@buybusinessclass.com", "avatar_url": None},
+        {"name": "no id", "avatar_url": "https://example.com/x.jpg"},
+    ]
+    fake = MagicMock()
+    fake.table.return_value.select.return_value.execute.return_value = MagicMock(data=rows)
+    with patch.object(db, "get_client", return_value=fake):
+        names, photos = asyncio.run(db.get_user_names_and_photos())
+    fake.table.assert_called_once_with("users")
+    assert names == {"a": "Ana Ceban", "b": "b@buybusinessclass.com", "c": "Cy Moore"}
+    assert photos == {"a": "https://example.com/a.jpg"}
 
 
 def test_a_masked_title_hides_the_name_as_a_word_not_inside_words():

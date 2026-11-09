@@ -4657,7 +4657,7 @@ async def get_owner_dashboard_inputs(since_iso: str, ready_since_iso: str) -> di
               .gte("created_at", since_iso).order("created_at")),
         pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
               .gte("changed_at", ready_since_iso).order("changed_at")),
-        _run_sync(lambda: db_client.table("users").select("id, name, role, tunnel_scope, is_active").execute(),
+        _run_sync(lambda: db_client.table("users").select("id, name, role, tunnel_scope, is_active, avatar_url").execute(),
                   label="owner_dash"),
         _run_sync(lambda: db_client.table("leads").select("reviewed_at")
                   .eq("reviewed_by_qa", True).not_.is_("reviewed_at", "null")
@@ -4816,7 +4816,7 @@ _FLOOR_CONV_COLUMNS = (
     "id, chat_number, tunnel, status, mode, created_at, queued_at, assigned_agent_id, team_id, "
     "visitor_name, last_user_message_at, last_agent_message_at, message_count"
 )
-_TEAM_USER_COLUMNS = "id, name, email, role, tunnel_scope, team_id, is_ready, last_seen_at, is_active"
+_TEAM_USER_COLUMNS = "id, name, email, role, tunnel_scope, team_id, is_ready, last_seen_at, is_active, avatar_url"
 
 
 async def get_team_now_inputs(day_start_iso: str) -> dict:
@@ -5005,6 +5005,17 @@ async def get_user_names() -> dict[str, str]:
     db_client = get_client()
     res = await _run_sync(lambda: db_client.table("users").select("id, name, email").execute(), label="names")
     return {u["id"]: (u.get("name") or u.get("email") or "") for u in (res.data or []) if u.get("id")}
+
+
+async def get_user_names_and_photos() -> tuple[dict[str, str], dict[str, str]]:
+    """id → name (as get_user_names) and id → photo link for the users who
+    have one, from one read. Raises."""
+    db_client = get_client()
+    res = await _run_sync(lambda: db_client.table("users").select("id, name, email, avatar_url").execute(), label="names")
+    rows = [u for u in (res.data or []) if u.get("id")]
+    names = {u["id"]: (u.get("name") or u.get("email") or "") for u in rows}
+    photos = {u["id"]: url for u in rows if (url := (u.get("avatar_url") or "").strip())}
+    return names, photos
 
 
 async def get_earlier_leads(lead_id: str, email: Optional[str], phone: Optional[str]) -> list[dict]:

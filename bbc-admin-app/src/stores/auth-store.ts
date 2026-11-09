@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
-import { cookieSessionChange } from '@/lib/session-swap'
+import { cookieSessionChange, jwtClaims, userFromClaims } from '@/lib/session-swap'
 
 const ACCESS_TOKEN = 'bbc_admin_token'
 
@@ -70,7 +70,9 @@ export const useAuthStore = create<AuthState>()((set) => {
 
 /** Another tab that signs in writes the shared cookie but not this tab's
  *  store. The same person's newer token goes into the store, so every
- *  subscriber (the heartbeat worker among them) gets it. Someone else, or
+ *  subscriber (the heartbeat worker among them) gets it, and so does the
+ *  user it carries: a photo, name or phone saved in Settings → Profile in
+ *  another tab shows here without a reload. Someone else, or
  *  the same person in another role, and this tab's user, menus and cached
  *  data are the previous session's while its requests go out as the new
  *  one: the tab starts again, and the sign-in guard reads the new session
@@ -84,7 +86,15 @@ export function syncAccessTokenFromCookie(): void {
     return
   }
   if (change === 'token') {
-    useAuthStore.setState((state) => ({ ...state, auth: { ...state.auth, accessToken: fromCookie } }))
+    const claims = jwtClaims(fromCookie)
+    useAuthStore.setState((state) => ({
+      ...state,
+      auth: {
+        ...state.auth,
+        accessToken: fromCookie,
+        user: state.auth.user && claims ? userFromClaims(claims) : state.auth.user,
+      },
+    }))
   }
 }
 

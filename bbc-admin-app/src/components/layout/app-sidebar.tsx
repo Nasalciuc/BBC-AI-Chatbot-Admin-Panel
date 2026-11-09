@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { SignOutDialog } from '@/components/sign-out-dialog'
+import { AvatarPhoto } from '@/components/person-avatar'
 import { getNavGroups, isOperatorRole, SETTINGS_ITEM, type PanelNavItem } from './data/sidebar-data'
 
 const ROLE_TEXT: Record<string, string> = {
@@ -113,7 +114,7 @@ export function AppSidebar() {
       <SidebarFooter className='gap-0.5 px-3 pt-3 pb-3.5'>
         <NavLink item={SETTINGS_ITEM} active={isActive(pathname, SETTINGS_ITEM.url)} badge={null} mini={mini} />
         <div aria-hidden='true' className='mx-3 my-2 h-px bg-nav-line' />
-        <Me mini={mini} role={role} name={user?.name || 'User'} email={user?.email || ''} />
+        <Me mini={mini} role={role} name={user?.name || 'User'} email={user?.email || ''} photo={user?.avatar_url} />
       </SidebarFooter>
     </Sidebar>
   )
@@ -161,7 +162,19 @@ function NavLink({
   )
 }
 
-function Me({ mini, role, name, email }: { mini: boolean; role: UserRole; name: string; email: string }) {
+function Me({
+  mini,
+  role,
+  name,
+  email,
+  photo,
+}: {
+  mini: boolean
+  role: UserRole
+  name: string
+  email: string
+  photo: string | null | undefined
+}) {
   const [open, setOpen] = useDialogState()
   const op = isOperatorRole(role)
   const { ready, toggle } = useReadyToggle()
@@ -184,7 +197,7 @@ function Me({ mini, role, name, email }: { mini: boolean; role: UserRole; name: 
               aria-hidden='true'
               className='relative flex size-9 flex-none items-center justify-center rounded-full bg-nav-active text-[13px] font-bold text-nav-active-fg'
             >
-              {initialsOf(name)}
+              <AvatarPhoto url={photo} fallback={initialsOf(name)} />
               {op && (
                 <span
                   className={cn(

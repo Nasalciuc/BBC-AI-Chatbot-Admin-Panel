@@ -88,7 +88,7 @@ function ByAgent({ d, help, canSeeTeam }: { d: OwnerDashboard; help: Set<string>
                   <tr key={a.user_id} className='border-b border-k-ececec last:border-b-0'>
                     <td className='px-2.5 py-2.5'>
                       <div className='flex items-center gap-2.5'>
-                        <PersonAvatar name={a.name} size={30} />
+                        <PersonAvatar name={a.name} url={a.avatar_url} size={30} />
                         <strong className='text-[15px] text-k-202020'>{a.name}</strong>
                         {help.has(a.user_id) && (
                           <span className='rounded-full bg-k-fdecea px-2 py-0.5 text-[11px] font-bold text-k-b3261e'>Needs help</span>

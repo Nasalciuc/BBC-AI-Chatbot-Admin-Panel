@@ -141,6 +141,26 @@ def test_the_floor_by_chat():
     assert s["first_reply_today_s"] == 50 and s["oldest_waiting"]["client"] == "Grace M."
 
 
+def test_people_and_the_chats_they_have_carry_their_photo():
+    photo = "https://example.com/avatars/rohan.jpg"
+    users = [user("rohan", "Rohan Mehta", avatar_url=f"  {photo} "), *(u for u in USERS if u["id"] != "rohan")]
+    d = build(users=users)
+    people = {p["id"]: p["avatar_url"] for p in d["people"]}
+    assert people["rohan"] == photo and people["victor"] is None
+    chats = {w["id"]: w["agent_avatar_url"] for w in d["with_person"]}
+    assert chats == {"waiting-long": photo, "answered": None}
+    day = build_person_day(
+        now=NOW, offset_minutes=OFFSET, user=users[0], team=TEAMS[0], masked=False, activity=[], agent_msgs=[],
+        conversations={}, ready_log=[], presence_days=[], open_chats=[],
+    )
+    assert day["user"]["avatar_url"] == photo
+    blank = build_person_day(
+        now=NOW, offset_minutes=OFFSET, user=user("victor", "Victor Rusu", avatar_url="  "), team=None, masked=False,
+        activity=[], agent_msgs=[], conversations={}, ready_log=[], presence_days=[], open_chats=[],
+    )
+    assert blank["user"]["avatar_url"] is None
+
+
 def test_needs_attention_only_past_a_line():
     kinds = [(a["kind"], a.get("name") or a.get("tunnel")) for a in build()["attention"]]
     assert kinds == [

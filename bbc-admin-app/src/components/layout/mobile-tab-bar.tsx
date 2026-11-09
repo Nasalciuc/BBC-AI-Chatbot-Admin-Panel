@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { SignOutDialog } from '@/components/sign-out-dialog'
+import { AvatarPhoto } from '@/components/person-avatar'
 import { menuCount } from '@/features/tasks/view'
 import { useTaskAlerts } from '@/features/tasks/use-task-alerts'
 
@@ -78,7 +79,7 @@ export function MobileTabBar() {
           <DropdownMenuTrigger asChild>
             <button type='button' className={tab(pathname === '/' || pathname.startsWith('/settings'))} aria-label={`${name}, ${ready ? 'ready for chats' : 'not ready'}. Your menu`}>
               <span aria-hidden='true' className='relative flex size-6 items-center justify-center rounded-full bg-kb-202020 text-[11px] font-bold text-on-btn'>
-                {initialsOf(name)}
+                <AvatarPhoto url={user?.avatar_url} fallback={initialsOf(name)} />
                 <span className={cn('absolute -end-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-k-ffffff', ready ? 'bg-k-00c450' : 'bg-k-9c9c9c')} />
               </span>
               Me
