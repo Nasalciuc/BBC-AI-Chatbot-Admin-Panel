@@ -271,3 +271,52 @@ async def test_health_detail_shows_the_reward_loop_counters():
          patch("app.api.health.supervisor_columns_status", return_value=True):
         payload = await health_detail()
     assert set(payload["learning_outcomes"]) == {"record_failed", "resolve_failed", "table_missing"}
+
+
+# ── the fallback notice (FALLBACK_MSG_ONCE): an unknown status is silence ──
+
+async def _fall_back(second_read, monkeypatch):
+    """fall_back_to_ai for a chat an agent never answered; the second status
+    read (the one FALLBACK_MSG_ONCE makes) answers `second_read`."""
+    from unittest.mock import MagicMock
+
+    from app import flags
+    from app.services import handoff
+
+    flags._reset_for_tests()
+    monkeypatch.setenv("FALLBACK_MSG_ONCE", "true")
+    handoff.HANDOFF_HEALTH["notice_held_status_unknown"] = 0
+    conv = {"id": "c1", "assigned_agent_id": "a7", "mode": "human", "status": "active",
+            "metadata": {"announce_pending": False}}
+    claim = AsyncMock(return_value=True)
+    send = AsyncMock(return_value={"id": "m1"})
+    with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(side_effect=[conv, second_read])), \
+         patch.object(handoff, "_release_from_agent", new=AsyncMock(return_value=True)), \
+         patch.object(handoff, "_handoff_phrase_recently_sent", new=AsyncMock(return_value=True)), \
+         patch.object(handoff, "_claim_fallback_notice", new=claim), \
+         patch.object(handoff, "_safe_system_msg", new=send), \
+         patch.object(handoff.manager, "push", new=AsyncMock()), \
+         patch.object(handoff.db, "get_recent_messages", new=AsyncMock(return_value=[])), \
+         patch("app.services.presence.log_activity", new=MagicMock()), \
+         patch("app.pipeline.orchestrator._fire_and_forget", new=MagicMock()):
+        await handoff.fall_back_to_ai("c1")
+    flags._reset_for_tests()
+    return claim, send, handoff.HANDOFF_HEALTH["notice_held_status_unknown"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_status_read_sends_no_notice_and_is_counted(monkeypatch):
+    claim, send, held = await _fall_back(None, monkeypatch)
+    assert claim.await_count == 0 and send.await_count == 0 and held == 1
+
+
+@pytest.mark.asyncio
+async def test_a_closed_chat_still_gets_no_notice(monkeypatch):
+    claim, send, held = await _fall_back({"id": "c1", "status": "closed"}, monkeypatch)
+    assert claim.await_count == 0 and send.await_count == 0 and held == 0
+
+
+@pytest.mark.asyncio
+async def test_an_open_chat_still_gets_the_notice(monkeypatch):
+    claim, send, held = await _fall_back({"id": "c1", "status": "active"}, monkeypatch)
+    assert claim.await_count == 1 and send.await_count == 1 and held == 0
