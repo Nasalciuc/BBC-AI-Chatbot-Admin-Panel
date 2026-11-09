@@ -54,10 +54,12 @@ class BanStore:
         created=True, so the others neither double the ban nor write a
         second row or alert.
 
-        A Redis failure before the claim raises: no ban was set, and
-        (0, False) would read as "another request holds it" (rule 7). After
-        the claim the ban stands; if the repeat count then fails, it keeps
-        its base length and is still created."""
+        A Redis failure before the claim raises: the caller cannot know a ban
+        was set, and (0, False) would read as "another request holds it"
+        (rule 7). After the claim the ban stands; if the repeat count or the
+        new length is not confirmed (a lost reply may still have applied),
+        its length is what Redis reads back, or the base length when it
+        can't."""
         if not ip:
             return 0, False
         if self._redis is not None:
@@ -77,8 +79,13 @@ class BanStore:
                     await self._redis.expire(f"ban:{ip}", eff)
                 return eff, True
             except Exception as e:
-                logger.warning(f"[ban-store] ban set, repeat count not applied (base length kept): {type(e).__name__}")
-                return int(seconds), True
+                logger.warning(f"[ban-store] ban set, repeat count or length not confirmed: {type(e).__name__}")
+                try:
+                    ttl = int(await self._redis.ttl(f"ban:{ip}") or 0)
+                except Exception as e2:
+                    logger.warning(f"[ban-store] ban length unreadable, base length recorded: {type(e2).__name__}")
+                    ttl = 0
+                return (ttl if ttl > 0 else int(seconds)), True
         now = time.time()
         exp = self._mem.get(ip)
         if exp is not None and exp > now:

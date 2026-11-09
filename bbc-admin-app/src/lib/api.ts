@@ -871,21 +871,20 @@ export type SecurityBan = {
   ban_count: number; unbanned_by: string | null; unbanned_at: string | null
 }
 
+/** The ban history. A failed request throws apiFetch's ApiError: its HTTP
+ *  status and the server's own detail ("Not authenticated", a 5xx's text),
+ *  so Security → Bans can say which failure it was. */
 export async function listBans(): Promise<SecurityBan[]> {
-  const res = await fetch(`${BASE}/api/admin/security/bans`, { headers: authHeaders() })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to load bans')
-  const body = await res.json()
+  const body = await apiFetch<AdminEnvelope<SecurityBan[]>>('/api/admin/security/bans')
   if (!body.success) throw new ApiError(500, body.error ?? 'Failed to load bans')
   return body.data ?? []
 }
 
 export async function unbanBan(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/admin/security/bans/${id}/unban`, {
-    method: 'POST',
-    headers: authHeaders(),
-  })
-  if (!res.ok) throw new ApiError(res.status, 'Unban failed')
-  const body = await res.json()
+  const body = await apiFetch<AdminEnvelope<{ id: string } | null>>(
+    `/api/admin/security/bans/${encodeURIComponent(id)}/unban`,
+    { method: 'POST' },
+  )
   if (!body.success) throw new ApiError(500, body.error ?? 'Unban failed')
 }
 
