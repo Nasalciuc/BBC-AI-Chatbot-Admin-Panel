@@ -564,8 +564,8 @@ def test_a_task_error_is_read_by_its_code_never_by_the_row_it_quotes(caplog):
     again = APIError({"code": "23505", "message": 'duplicate key value violates unique constraint "uq_tasks_message"',
                       "details": "Key (message_id)=(m1) already exists.", "hint": None})
     assert not db._is_schema_missing(refused) and db._is_schema_missing(missing)
-    # Without a code (our own errors, a dropped connection) the text still decides.
-    assert db._is_schema_missing(Exception("column tasks.due_kind does not exist"))
+    # Without the database's code nothing is read from the text, whatever it says.
+    assert not db._is_schema_missing(RuntimeError("Could not find the room for alice@example.com (42703)"))
 
     class _Refusing(_Query):
         def __init__(self, err):
@@ -584,8 +584,13 @@ def test_a_task_error_is_read_by_its_code_never_by_the_row_it_quotes(caplog):
                 run(db.insert_follow_up({"title": "x"}))
         with patch.object(db, "get_client", return_value=_Refusing(again)):
             assert run(db.insert_follow_up({"title": "x"})) is None
+        # No code: a real failure, not a retry, whatever the text names.
+        with patch.object(db, "get_client", return_value=_Refusing(RuntimeError("uq_tasks_message alice@example.com"))):
+            with pytest.raises(RuntimeError):
+                run(db.insert_follow_up({"title": "x"}))
     said = " ".join(r.getMessage() for r in caplog.records)
-    assert "PGRST204" in said and "Michael" not in said and "4270321" not in said
+    assert "PGRST204" in said
+    assert "Michael" not in said and "4270321" not in said and "alice" not in said
 
 
 class _Paged:
@@ -620,7 +625,10 @@ def test_the_task_counts_read_past_postgrest_s_1000_rows():
 
 
 def test_the_task_counts_before_migration_051_say_not_set_up():
-    missing = _Paged([], boom=Exception("column tasks.dismissed_at does not exist"))
+    from postgrest.exceptions import APIError
+
+    missing = _Paged([], boom=APIError({"code": "42703", "message": "column tasks.dismissed_at does not exist",
+                                         "details": None, "hint": None}))
     with patch.object(db, "get_client", return_value=missing):
         with pytest.raises(db.TasksNotSetUp):
             run(db.caught_stats_since(NOW.isoformat()))
