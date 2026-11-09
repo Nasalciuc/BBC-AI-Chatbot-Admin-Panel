@@ -37,6 +37,10 @@ LOGIN_GUARD_HEALTH = {"throttled": 0, "email_throttled": 0, "alerts": 0, "redis_
 
 _mem: dict[str, list[float]] = {}
 _mem_lock = Lock()
+# Without Redis every new email (and, while the IP is trusted, every new
+# address) is a new key. Past this many, keys with nothing inside the window
+# are dropped, so a stream of distinct attempts can't grow memory forever.
+_SWEEP_AT = 10_000
 
 
 def _key(email: str, ip: str) -> str:
@@ -77,7 +81,10 @@ def _recent(key: str, now: float) -> list[float]:
             logger.warning(f"[login-guard] redis read failed, using memory: {type(e).__name__}: {e}")
     with _mem_lock:
         items = [t for t in _mem.get(key, []) if t >= now - _WINDOW]
-        _mem[key] = items
+        if items:
+            _mem[key] = items
+        else:
+            _mem.pop(key, None)  # a read never leaves a key behind
         return list(items)
 
 
@@ -151,6 +158,10 @@ def _record(key: str, now: float) -> int:
 
 def _record_memory(key: str, now: float) -> int:
     with _mem_lock:
+        if len(_mem) >= _SWEEP_AT:
+            cutoff = now - _WINDOW
+            for k in [k for k, v in _mem.items() if not v or v[-1] < cutoff]:
+                del _mem[k]
         items = [t for t in _mem.get(key, []) if t >= now - _WINDOW]
         items.append(now)
         _mem[key] = items

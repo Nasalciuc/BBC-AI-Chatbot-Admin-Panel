@@ -46,10 +46,16 @@ async def run_ip_selftest() -> dict:
                     "X-Real-IP": _SPOOF,
                 },
             )
+        # Only a real echo is evidence. A 401/403 (a rotated CRON_SECRET) has
+        # no address in it, and "" != the forged one read as "edge safe":
+        # trusted and verified on nothing, clearing a spoof found earlier.
+        resp.raise_for_status()
         body = resp.json() or {}
         # The configured source alone, never the fallback (see source_ip):
         # otherwise a detected edge reads as fixed on the next run.
-        seen = body.get("source_ip") or body.get("client_ip", "")
+        seen = body.get("source_ip") if isinstance(body, dict) else None
+        if not isinstance(seen, str) or not seen:
+            raise ValueError("ip-echo answered without a source_ip")
     except Exception as e:
         CLIENT_IP_HEALTH["ip_verified"] = False  # the test failed: nothing proven
         logger.warning(f"[ip-selftest] could not reach ip-echo: {type(e).__name__}: {e}")

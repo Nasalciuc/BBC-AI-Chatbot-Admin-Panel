@@ -52,6 +52,9 @@ CLIENT_IP_HEALTH: dict[str, Any] = {
     "last_selftest": None,
 }
 _alerted_missing = False
+# The loop keeps only a weak reference to a task: an alert nobody holds can be
+# collected before it is sent.
+_ALERT_TASKS: set = set()
 
 
 def _peer(request: Any) -> str:
@@ -94,13 +97,15 @@ def _alert_missing_once(header: str) -> None:
         return
     from app.services.email import send_ops_alert_email
 
-    loop.create_task(
+    task = loop.create_task(
         send_ops_alert_email(
             "Client IP header missing",
             f"CLIENT_IP_HEADER={header} but a request arrived without it. "
             "The legacy header order is used until this is resolved.",
         )
     )
+    _ALERT_TASKS.add(task)
+    task.add_done_callback(_ALERT_TASKS.discard)
 
 
 def client_ip(request: Optional[Any], *, prefer_cf: bool = True) -> str:
