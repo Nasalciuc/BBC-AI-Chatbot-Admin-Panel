@@ -97,14 +97,13 @@ export async function checkHealth(timeoutMs = 8000): Promise<boolean> {
 }
 
 // ── Auth ──────────────────────────────────────────────────────
+/** The trip card's first load. A failed request throws (ApiError): a null
+ *  here would be cached as "no trip yet" and never asked again. */
 export async function getConversationDetails(conversationId: string): Promise<LeadDetails | null> {
-  const res = await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/details`, {
-    headers: authHeaders(),
-    signal: AbortSignal.timeout(8000),
-  })
-  if (!res.ok) return null
-  const body = await res.json().catch(() => null)
-  return (body && body.data) as LeadDetails | null
+  const res = await apiFetch<AdminEnvelope<LeadDetails | null>>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/details`,
+  )
+  return res.data ?? null
 }
 
 

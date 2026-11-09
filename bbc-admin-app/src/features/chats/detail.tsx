@@ -299,7 +299,15 @@ export default function ConversationDetail({
             break
         }
       },
-      (state) => setSseLive(state === 'open'),
+      (state) => {
+        setSseLive(state === 'open')
+        // The trip card is kept fresh by lead_details pushes, and a push
+        // sent while this stream was shut (another chat open, a dropped
+        // connection) is lost. Each time the stream opens, read it again.
+        if (state === 'open') {
+          void queryClient.invalidateQueries({ queryKey: ['conversation-details', conversationId] })
+        }
+      },
       () => setSseLive(false)
     )
     return () => h.close()
@@ -313,7 +321,10 @@ export default function ConversationDetail({
     // Waits for the chat, so a waiting chat that isn't yours never asks:
     // the card is the trip, which blind take keeps until you take it.
     enabled: !!conv && !blindView && activeTab === 'my_active' && !dormant && !usingMock,
-    staleTime: Infinity, // the stream keeps it fresh; no refetch on focus
+    // Fresh while the stream is open (it pushes every change); read again
+    // each time the stream opens (see above), never on focus.
+    staleTime: Infinity,
+    retry: 1, // a 403 (the chat went back to waiting) is not worth three tries
   })
 
   // Accumulate incremental messages — never replace, only append new ones
