@@ -14,6 +14,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { isPublicTokenRoute, pickSsoToken } from '../src/lib/sso-token-routing.ts'
+import { afterCrmSignIn, holdSignInUntil } from '../src/lib/sign-in-gate.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (p: string) => readFileSync(join(root, p), 'utf-8')
@@ -56,4 +57,69 @@ test('bootstrap uses the routing rules and strips ONLY on success', () => {
   assert.match(src, /if \(ok\) stripTokenFromUrl\(param\)/)
   const stripCalls = src.match(/stripTokenFromUrl\(param\)/g) ?? []
   assert.equal(stripCalls.length, 1, 'failure paths must leave the URL intact')
+})
+
+// ── The sign-in guard waits for the CRM's sign-in ────────────────────────
+// The CRM opens the panel with its token, and on a browser shared between
+// shifts the cookie can still hold the previous agent's session. Nothing may
+// load from it before the CRM's sign-in has settled: no chat list, no
+// heartbeat, no request with the old token.
+
+test('no CRM sign-in running: the guard runs at once, as before', () => {
+  let ran = false
+  const out = afterCrmSignIn(() => {
+    ran = true
+    return 'checked'
+  })
+  assert.equal(ran, true)
+  assert.equal(out, 'checked')
+})
+
+test('a CRM sign-in running: the guard runs only once it settles, worked or failed', async () => {
+  for (const outcome of ['worked', 'failed'] as const) {
+    let settle!: (ok: boolean) => void
+    let fail!: (e: unknown) => void
+    const signIn = new Promise<boolean>((res, rej) => {
+      settle = res
+      fail = rej
+    })
+    holdSignInUntil(signIn)
+    const order: string[] = []
+    const guarded = afterCrmSignIn(() => {
+      order.push('guard')
+      return 'checked'
+    })
+    assert.ok(guarded instanceof Promise, 'held while the sign-in runs')
+    await new Promise((r) => setTimeout(r, 5))
+    assert.deepEqual(order, [], `${outcome}: nothing ran before the sign-in settled`)
+    if (outcome === 'worked') settle(true)
+    else fail(new Error('exchange failed'))
+    assert.equal(await guarded, 'checked')
+    assert.deepEqual(order, ['guard'])
+    // Settled: the next navigation is checked at once again.
+    assert.equal(afterCrmSignIn(() => 'now'), 'now')
+  }
+})
+
+test('the guard\'s redirect to sign-in still reaches the router after the wait', async () => {
+  holdSignInUntil(Promise.resolve(false))
+  const toSignIn = { to: '/sign-in' }
+  await assert.rejects(
+    Promise.resolve(
+      afterCrmSignIn(() => {
+        throw toSignIn
+      }),
+    ),
+    (e) => e === toSignIn,
+  )
+})
+
+test('held only when the panel was opened with a CRM token, and the guard waits through the gate', () => {
+  const auth = read('src/lib/crm-embed-auth.ts')
+  const install = auth.slice(auth.indexOf('export function installCrmEmbedAuth'))
+  assert.match(install, /fromCrm = pickSsoToken\(window\.location\.pathname, window\.location\.search\) !== null/)
+  assert.match(install, /const exchange = tryCrmUrlTokenLogin\(\)\s*if \(fromCrm\) holdSignInUntil\(exchange\)/)
+
+  const guard = read('src/routes/_authenticated/route.tsx')
+  assert.match(guard, /beforeLoad: \(\{ location \}\) => afterCrmSignIn\(\(\) => requireSession\(location\.href\)\)/)
 })

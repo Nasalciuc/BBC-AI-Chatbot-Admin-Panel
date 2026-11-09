@@ -73,9 +73,10 @@ function applyToken(token: string): boolean {
   return true
 }
 
-// Relative import with extension on purpose — the pure routing rules are
-// node-tested directly (path aliases don't resolve under node --test).
+// Relative imports with extension on purpose — the pure routing rules and the
+// sign-in gate are node-tested directly (path aliases don't resolve there).
 import { pickSsoToken } from './sso-token-routing.ts'
+import { holdSignInUntil } from './sign-in-gate.ts'
 
 /**
  * URL-token SSO (docs/chatbot-sso.md). Reads `?sso_token=` (or the legacy
@@ -171,8 +172,21 @@ export function installCrmEmbedAuth(onAuthed?: () => void): () => void {
 
   window.addEventListener('message', handler)
 
-  // Fire-and-forget URL-token exchange (CRM ?token= flow). Non-blocking.
-  void tryCrmUrlTokenLogin().then((ok) => {
+  // URL-token exchange (CRM ?sso_token= flow), started now. Opened with a CRM
+  // token, the sign-in guard waits for it (sign-in-gate.ts): the cookie may
+  // still hold the previous agent's session, and nothing may load from it
+  // before the CRM has said who is signing in.
+  let fromCrm = false
+  try {
+    fromCrm = pickSsoToken(window.location.pathname, window.location.search) !== null
+  } catch {
+    // Reading our own URL does not fail in a browser; if it ever did, the
+    // exchange below finds no token either and there is nothing to wait for.
+    fromCrm = false
+  }
+  const exchange = tryCrmUrlTokenLogin()
+  if (fromCrm) holdSignInUntil(exchange)
+  void exchange.then((ok) => {
     if (ok) onAuthed?.()
   })
 
