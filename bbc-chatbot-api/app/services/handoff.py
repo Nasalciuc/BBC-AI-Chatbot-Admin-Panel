@@ -321,12 +321,12 @@ async def get_handoff_response(
         )
 
     # Queue feeding (V2): client asked for a human, none available now.
+    # queue_for_person logs "status=needs_agent" only when it is, and counts
+    # a failed write in /health (it used to log "queued" either way).
     try:
-        await db.update_conversation(conversation_id, {"status": "needs_agent"})
-        logger.info(f"[{conversation_id}] No agent available → status=needs_agent (queued)")
-        from app.services.routing import dispatch_needs_agent
-        from app.pipeline.orchestrator import _fire_and_forget
-        _fire_and_forget(dispatch_needs_agent(conversation_id))
+        from app.services.routing import queue_for_person
+
+        await queue_for_person(conversation_id, reason="no agent available")
     except Exception as e:
         logger.warning(f"[{conversation_id}] Failed to queue needs_agent: {e}")
 

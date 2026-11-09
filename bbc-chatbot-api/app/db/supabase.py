@@ -258,6 +258,15 @@ async def check_connection() -> bool:
 # CONVERSATIONS — pipeline (existing + complete)
 # ════════════════════════════════════════════════════════════════
 
+# A conversation is OPEN while the client can still be answered: 'active',
+# or 'needs_agent' — the same open chat, with the client waiting for a
+# person (migration 052). Every read that means "open" uses this pair,
+# never 'active' alone: a read that misses needs_agent loses exactly the
+# client who asked for a human (the widget drops the chat on the next page,
+# the abandoned sweep never pushes the lead, the queue can't list the row
+# it counts).
+OPEN_STATUSES: tuple[str, ...] = ("active", "needs_agent")
+
 async def _merge_conv_metadata(conv_id: str, incoming: Optional[dict]) -> None:
     """Merge incoming metadata into conversation (first-touch: don't overwrite existing keys)."""
     if not incoming:
@@ -291,7 +300,7 @@ async def get_or_create_conversation(
 
     Dual-path matching:
       Path A — conversation_id supplied & passes fingerprint check → return it.
-      Path B — visitor_id supplied → find newest active conv for this visitor.
+      Path B — visitor_id supplied → find newest open conv for this visitor.
       Fallback — create new conversation.
     """
     try:
@@ -358,13 +367,13 @@ async def get_or_create_conversation(
                     f"{conversation_id} (tunnel={tunnel})"
                 )
 
-        # ── Path B: visitor_id supplied — find active conv ────────
+        # ── Path B: visitor_id supplied — find open conv ──────────
         if visitor_id:
             res = await _run_sync(
                 lambda: db.table("conversations")
                 .select("*")
                 .eq("visitor_id", visitor_id)
-                .eq("status", "active")
+                .in_("status", list(OPEN_STATUSES))
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()
@@ -408,7 +417,7 @@ async def get_or_create_conversation(
                     lambda: db.table("conversations")
                     .select("*")
                     .eq("visitor_id", visitor_id)
-                    .eq("status", "active")
+                    .in_("status", list(OPEN_STATUSES))
                     .order("created_at", desc=True)
                     .limit(1)
                     .execute()
@@ -1203,12 +1212,12 @@ async def get_conversation_counts(
     try:
         db_client = get_client()
 
-        async def _count(agent_filter: str, status_val: str) -> int:
+        async def _count(agent_filter: str, statuses: tuple[str, ...]) -> int:
             def _q():
                 q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
                 if tunnel:
                     q = q.eq("tunnel", tunnel)
-                q = q.eq("status", status_val)
+                q = q.in_("status", list(statuses))
                 if agent_filter == "me":
                     q = q.eq("assigned_agent_id", agent_id)
                 elif agent_filter == "none":
@@ -1226,27 +1235,27 @@ async def get_conversation_counts(
                 q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
                 if tunnel:
                     q = q.eq("tunnel", tunnel)
-                q = q.eq("assigned_agent_id", agent_id).in_("status", ["active", "needs_agent"])
+                q = q.eq("assigned_agent_id", agent_id).in_("status", list(OPEN_STATUSES))
                 return q.limit(0).execute()
             res = await _run_sync(_q)
             return res.count or 0
 
         my_active = await _count_my_active()
-        queue_count = await _count("none", "active")
-        my_closed = await _count("me", "closed")
+        queue_count = await _count("none", OPEN_STATUSES)
+        my_closed = await _count("me", ("closed",))
 
-        async def _count_all(status_val: str) -> int:
+        async def _count_all(statuses: tuple[str, ...]) -> int:
             def _q():
                 q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
                 if tunnel:
                     q = q.eq("tunnel", tunnel)
-                q = q.eq("status", status_val)
+                q = q.in_("status", list(statuses))
                 return q.limit(0).execute()
             res = await _run_sync(_q)
             return res.count or 0
 
-        all_active = await _count_all("active")
-        all_closed = await _count_all("closed")
+        all_active = await _count_all(OPEN_STATUSES)
+        all_closed = await _count_all(("closed",))
 
         return {
             "my_active": my_active,
@@ -1308,6 +1317,36 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
     except Exception as e:
         logger.error(f"update_conversation error: {e}")
         return None
+
+
+async def mark_needs_agent(conversation_id: str) -> tuple[str, str]:
+    """The client asked for a person: status needs_agent, on an open conversation only.
+
+    Returns (outcome, code), never None — "nothing to do" and "it broke"
+    are different answers:
+      ("queued", "")     the row is needs_agent now (or already was);
+      ("not_open", "")   no open conversation has that id (closed, completed,
+                         pending or gone): nothing to queue, nothing failed;
+      ("failed", code)   the write raised. Before migration 052 every call
+                         ends here: 'needs_agent' is too long for
+                         varchar(10) (22001) and outside the CHECK (23514).
+    Only the database's code is logged: the error's text can carry the
+    refused row whole ("Failing row contains (…)": name, e-mail, phone).
+    """
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .update({"status": "needs_agent"})
+            .eq("id", conversation_id)
+            .in_("status", list(OPEN_STATUSES))
+            .execute()
+        )
+        return ("queued", "") if res.data else ("not_open", "")
+    except Exception as e:
+        code = _loggable_code(_error_code(e)) or "none"
+        logger.error(f"[{conversation_id}] needs_agent write failed (code={code}, {type(e).__name__})")
+        return ("failed", code)
 
 
 async def patch_conversation_presence(conversation_id: str, patch: dict) -> bool:
@@ -2899,7 +2938,7 @@ async def get_dashboard_stats(
             if (dt := parse_dt(c.get("created_at"))) and dt >= month_ago
         )
         conversations_active = sum(
-            1 for c in all_convos if c.get("status") == "active"
+            1 for c in all_convos if c.get("status") in OPEN_STATUSES
         )
 
         # ── Leads aggregates ──
@@ -3236,7 +3275,7 @@ async def get_agent_active_count(agent_id: str) -> int:
             lambda: db_client.table("conversations")
             .select("id", count="exact")  # type: ignore[arg-type]
             .eq("assigned_agent_id", agent_id)
-            .eq("status", "active")
+            .in_("status", list(OPEN_STATUSES))
             .limit(0)
             .execute()
         )
@@ -3255,7 +3294,7 @@ async def get_stale_agent_conversations(timeout_seconds: int) -> list:
         res = await _run_sync(
             lambda: db_client.table("conversations")
             .select("id, assigned_agent_id, users!conversations_assigned_agent_id_fkey!inner(last_seen_at)")
-            .eq("status", "active")
+            .in_("status", list(OPEN_STATUSES))
             .eq("mode", "human")
             .not_.is_("assigned_agent_id", "null")
             .lt("users.last_seen_at", cutoff)
@@ -3387,7 +3426,7 @@ async def get_active_human_conversations() -> list:
         return (
             db_client.table("conversations")
             .select(fields)
-            .eq("status", "active")
+            .in_("status", list(OPEN_STATUSES))
             .eq("mode", "human")
             .not_.is_("assigned_agent_id", "null")
             .execute()
@@ -3790,7 +3829,7 @@ async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict
             q = (
                 db_client.table("conversations")
                 .select("id, visitor_name, tunnel, assigned_agent_id, created_at, messages(role, created_at)")
-                .eq("status", "active")
+                .in_("status", list(OPEN_STATUSES))
                 .eq("mode", "human")
                 .not_.is_("assigned_agent_id", "null")
             )
@@ -3865,7 +3904,9 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     lead the rule protects (Diana class), and `mode='ai'` silently
     excluded every conversation a human ever touched — the Paulette class
     (human took over, the push was orphaned, nothing ever retried).
-    'completed' is excluded on purpose: post-CRM, already sold."""
+    'completed' is excluded on purpose: post-CRM, already sold.
+    'needs_agent' is in: the client asked for a person — the hottest lead
+    of all must not be the one the sweep skips."""
     db = get_client()
     try:
         _window_start = (
@@ -3877,7 +3918,7 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
                 "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
                 "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
             )
-            .in_("status", ["active", "closed"])
+            .in_("status", [*OPEN_STATUSES, "closed"])
             .in_("mode", ["ai", "human"])
             # …but never one a HUMAN closed. #200 widened this to closed+human
             # to rescue the Diana/Paulette classes — conversations the SYSTEM
@@ -3973,7 +4014,7 @@ async def get_recent_contact_conversations(days: int = 30) -> list[dict]:
                 "created_at, last_user_message_at"
             )
             .eq("tunnel", "sales")
-            .in_("status", ["active", "closed"])
+            .in_("status", [*OPEN_STATUSES, "closed"])
             # Same rule as get_abandoned_conversations: a chat an agent
             # CLOSED is the agent's decision, not an orphan. Without this
             # line the backfill pushed every operator-handled chat of the
@@ -4442,7 +4483,7 @@ async def get_agent_day_inputs(user_id: str, since_iso: str) -> dict:
         lambda: db_client.table("conversations")
         .select(_DAY_CONV_COLUMNS)
         .eq("assigned_agent_id", user_id)
-        .eq("status", "active")
+        .in_("status", list(OPEN_STATUSES))
         .eq("mode", "human")
         .execute(),
         label="agent_day",
@@ -4728,7 +4769,7 @@ async def get_team_now_inputs(day_start_iso: str) -> dict:
         _run_sync(lambda: db_client.table("teams").select("id, name, shift_start, shift_end, supervisor_id, pm_id")
                   .eq("is_active", True).execute(), label="team_now"),
         _select_pages(lambda: db_client.table("conversations").select(_FLOOR_CONV_COLUMNS)
-                      .in_("status", ["active", "needs_agent"]).order("created_at"),
+                      .in_("status", list(OPEN_STATUSES)).order("created_at"),
                       label="team_now", max_pages=5),
         _select_pages(lambda: db_client.table("agent_activity_log")
                       .select("user_id, conversation_id, action, happened_at")
@@ -4784,7 +4825,7 @@ async def get_person_day_inputs(user_id: str, day_start_iso: str) -> Optional[di
                   .select("day, first_seen_at, last_seen_at, minutes_online")
                   .eq("user_id", user_id).gte("day", week_day).order("day").execute(), label="team_now"),
         _run_sync(lambda: db_client.table("conversations").select(_FLOOR_CONV_COLUMNS)
-                  .eq("assigned_agent_id", user_id).in_("status", ["active", "needs_agent"]).execute(),
+                  .eq("assigned_agent_id", user_id).in_("status", list(OPEN_STATUSES)).execute(),
                   label="team_now"),
     )
     ids = sorted({a["conversation_id"] for a in activity if a.get("conversation_id")})
@@ -5160,7 +5201,7 @@ async def get_stale_presence_left_conversations(timeout_minutes: int = 5) -> lis
             return (
                 db_client.table("conversations")
                 .select("id, visitor_name, metadata")
-                .eq("status", "active")
+                .in_("status", list(OPEN_STATUSES))
                 .execute()
             )
 
@@ -5479,7 +5520,7 @@ async def claim_conversation_if_unassigned(
                 .update(_u)
                 .eq("id", conversation_id)
                 .is_("assigned_agent_id", "null")
-                .in_("status", ["active", "needs_agent"])
+                .in_("status", list(OPEN_STATUSES))
                 .execute()
             )
         try:
@@ -5632,7 +5673,7 @@ async def get_queue_for_operator(
                     )
                     .not_.is_("queued_at", "null")
                     .is_("assigned_agent_id", "null")
-                    .in_("status", ["active", "needs_agent"])
+                    .in_("status", list(OPEN_STATUSES))
                     .eq("tunnel", tunnel)
                     .order("queued_at", desc=False)
                     .limit(limit)
@@ -5694,7 +5735,7 @@ async def get_queue_stats() -> dict:
             .select("queued_at")
             .not_.is_("queued_at", "null")
             .is_("assigned_agent_id", "null")
-            .in_("status", ["active", "needs_agent"])
+            .in_("status", list(OPEN_STATUSES))
             .order("queued_at", desc=False)
             .limit(200)
             .execute()

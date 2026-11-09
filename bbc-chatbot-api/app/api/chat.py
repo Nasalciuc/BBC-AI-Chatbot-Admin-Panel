@@ -975,9 +975,14 @@ async def get_active_conversation_for_visitor(
     visitor_id: str,
     x_visitor_token: Optional[str] = Header(None),
 ):
-    """Widget calls this on mount to find a visitor's active conversation.
+    """Widget calls this on mount to find a visitor's open conversation.
     Returns conversation_id if one exists, else null — so the widget can
-    reconnect across tabs/sessions without a stale localStorage ID."""
+    reconnect across tabs/sessions without a stale localStorage ID.
+
+    Open = active or needs_agent: a client who asked for a person keeps the
+    chat on the next page. A null here makes the widget drop its cached chat,
+    so a failed read answers 503 instead (the widget keeps the chat on any
+    non-2xx) — "no conversation" and "couldn't look" are different answers."""
     from app.security.visitor_token import check as _check_token
     _check_token(x_visitor_token, visitor_id)
     try:
@@ -986,7 +991,7 @@ async def get_active_conversation_for_visitor(
             lambda: client.table("conversations")
             .select("id")
             .eq("visitor_id", visitor_id)
-            .eq("status", "active")
+            .in_("status", list(db.OPEN_STATUSES))
             .order("created_at", desc=True)
             .limit(1)
             .execute()
@@ -994,8 +999,8 @@ async def get_active_conversation_for_visitor(
         conv_id = res.data[0]["id"] if res.data else None
         return {"success": True, "conversation_id": conv_id}
     except Exception as e:
-        logger.error(f"get_active_conversation_for_visitor error: {e}")
-        return {"success": True, "conversation_id": None}
+        logger.error(f"get_active_conversation_for_visitor error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=503, detail="Conversation lookup unavailable") from e
 
 
 @router.get("/chat/status/{conversation_id}")

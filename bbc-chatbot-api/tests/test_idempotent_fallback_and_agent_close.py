@@ -181,8 +181,9 @@ class TestAgentClosedStaysClosed:
 
         src = inspect.getsource(sb.get_abandoned_conversations)
         assert 'is_("metadata->>closed_by_agent_id", "null")' in src
-        # …and #200's rescue of the Diana/Paulette classes is untouched.
-        assert 'in_("status", ["active", "closed"])' in src
+        # …and #200's rescue of the Diana/Paulette classes is untouched
+        # (open = active or needs_agent, 052).
+        assert 'in_("status", [*OPEN_STATUSES, "closed"])' in src
         assert 'in_("mode", ["ai", "human"])' in src
 
     def test_closing_records_who_did_it_before_it_records_that_it_is_closed(self):

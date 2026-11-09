@@ -108,7 +108,8 @@ async def _push(conv, lead):
 class TestWidenedSelect:
     def test_status_and_mode_are_wide(self):
         src = _read("db", "supabase.py")
-        assert '.in_("status", ["active", "closed"])' in src
+        assert '.in_("status", [*OPEN_STATUSES, "closed"])' in src
+        assert 'OPEN_STATUSES: tuple[str, ...] = ("active", "needs_agent")' in src
         assert '.in_("mode", ["ai", "human"])' in src
         # 'completed' is post-CRM — it must NOT be in the list.
         assert '"completed"' not in src.split("get_abandoned_conversations")[1][:1200]
@@ -346,7 +347,9 @@ class TestBackfill:
         src = _read("db", "supabase.py")
         body = src[src.index("def get_recent_contact_conversations"):][:1400]
         assert "days: int = 30" in body
-        assert '.in_("status", ["active", "closed"])' in body
+        # Open (active, needs_agent) and closed: a client who asked for a
+        # person is a contact too.
+        assert '.in_("status", [*OPEN_STATUSES, "closed"])' in body
 
     def test_summary_line_has_three_counters(self):
         src = _read("api", "cron.py")

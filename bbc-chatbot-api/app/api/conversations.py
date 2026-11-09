@@ -213,14 +213,19 @@ async def list_conversations(
             agent_id_is_null = True
         # "all" or None → no agent filter (owner/admin sees everything)
 
-        # my_active includes reserved conversations (status=needs_agent,
-        # assigned to me): the silent reservation is silent for the CLIENT,
-        # not the operator — the agent must SEE it to answer within the
-        # deadline. Status flips to active at their first message (engagement).
+        # "active" in a list means OPEN: active or needs_agent, in every list.
+        #   - Mine: reserved conversations (status=needs_agent, assigned to
+        #     me) — the silent reservation is silent for the CLIENT, not the
+        #     operator; the agent must SEE it to answer within the deadline.
+        #     Status flips to active at their first message (engagement).
+        #   - The queue (assigned_to=none): the heartbeat counts needs_agent
+        #     rows in the line, so the list must return them, or the panel
+        #     counts a client it cannot show — the one who asked for a person.
+        #   - All active: a client waiting for a person is an open chat.
         status_in = None
         list_status = status
-        if assigned_to == "me" and status == "active":
-            status_in = ["active", "needs_agent"]
+        if status == "active":
+            status_in = list(db.OPEN_STATUSES)
             list_status = None
 
         quiet_before = None

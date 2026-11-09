@@ -393,7 +393,9 @@ async def frustration_door(*, conversation_id: Optional[str], message: str,
     lead = await get_or_create_lead(conversation_id)
     reply = frustration_message(lead, site)
     await cs.add_message(conversation_id, "ai", reply, model_used="template", cost=0.0)
-    await db.update_conversation(conversation_id, {"status": "needs_agent"})
+    from app.services.routing import queue_for_person
+
+    await queue_for_person(conversation_id, reason="frustration lane", dispatch=False)
     BEHAVIOR_HEALTH["frustration_lane"] += 1
     if lead and not lead.get("created_in_crm"):
         try:
