@@ -305,6 +305,46 @@ def test_token_version_mismatch_after_bump(monkeypatch):
     assert token_version.matches("u1", 3) is True
 
 
+def test_a_read_in_flight_when_a_bump_lands_is_not_cached(monkeypatch):
+    # CodeRabbit #226 (token cache): a read that got the old version before a
+    # bump's write, and stored it after the bump dropped the entry, kept the
+    # revoked token valid for the whole TTL.
+    answers = iter([0, 1])
+
+    def read(uid):
+        v = next(answers)
+        if v == 0:
+            token_version.invalidate_cache(uid)  # the bump lands while this read is in flight
+        return v
+
+    monkeypatch.setattr(token_version, "_read", read)
+    assert token_version.matches("u1", 0) is True  # the request that raced the bump
+    assert token_version.matches("u1", 0) is False  # the next one reads again and sees it
+
+
+def test_a_failed_read_never_falls_back_on_an_entry_a_bump_dropped(monkeypatch):
+    monkeypatch.setattr(token_version, "_read", lambda uid: 2)
+    assert token_version.matches("u1", 2) is True
+    monkeypatch.setattr(token_version.time, "time", lambda: 10**10)  # past the 60s TTL
+
+    def read(uid):
+        token_version.invalidate_cache(uid)  # a bump lands during a failed read
+        return None
+
+    monkeypatch.setattr(token_version, "_read", read)
+    assert token_version.matches("u1", 2) is False
+    assert token_version.TOKEN_VERSION_HEALTH["refused_unreadable"] == 1
+
+
+def test_a_read_with_no_bump_in_flight_is_cached_as_before(monkeypatch):
+    # Rule 5: the path the new check must not touch.
+    calls = []
+    monkeypatch.setattr(token_version, "_read", lambda uid: calls.append(uid) or 4)
+    assert token_version.current_version("u1") == 4
+    assert token_version.current_version("u1") == 4
+    assert calls == ["u1"]
+
+
 # ── review fixes: the output guard never logs or mails a customer contact ──
 
 @pytest.mark.asyncio
