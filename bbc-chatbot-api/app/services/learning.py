@@ -7,6 +7,7 @@ Lessons land as 'proposed'. Nothing reaches a client until a human approves it,
 so the loop can be wrong without the live prompt being wrong.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -715,7 +716,11 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                     logger.warning(f"Learning: budget cap ${budget} hit — stopping MAP early")
                     break
                 chunk = cards[start:start + CHUNK_SIZE]
-                parsed, chunk_cost = _call_json(_MAP_SYSTEM, json.dumps(chunk, default=str), task="learn_map")
+                # The model call is sync (seconds each): in a worker thread, so
+                # chats, /health and the other jobs keep running meanwhile.
+                parsed, chunk_cost = await asyncio.to_thread(
+                    _call_json, _MAP_SYSTEM, json.dumps(chunk, default=str), task="learn_map"
+                )
                 cost += chunk_cost
                 if parsed is None:
                     skipped_chunks += 1
@@ -740,7 +745,7 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                 },
                 default=str,
             )
-            reduced, reduce_cost = _call_json(_REDUCE_SYSTEM, reduce_payload, task="learn_reduce")
+            reduced, reduce_cost = await asyncio.to_thread(_call_json, _REDUCE_SYSTEM, reduce_payload, task="learn_reduce")
             cost += reduce_cost
             if reduced is None:
                 skipped_chunks += 1

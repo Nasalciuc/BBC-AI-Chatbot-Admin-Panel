@@ -159,3 +159,40 @@ async def test_the_endpoint_says_502_when_the_update_fails_and_404_when_no_varia
 async def test_a_malformed_variant_id_is_404_without_a_database_call():
     _, err, upd = await _patch_variant("not-a-uuid", AssertionError("no call"))
     assert err.status_code == 404 and upd.await_count == 0
+
+
+# ── the daily learning run keeps the event loop free (Major) ──────────────
+
+@pytest.mark.asyncio
+async def test_the_learning_run_never_blocks_the_event_loop():
+    """MAP and REDUCE are sync model calls of seconds each. Run on the loop,
+    they froze every chat, /health and the other scheduler jobs meanwhile."""
+    import asyncio
+    import time
+
+    def _slow_model(*_a, task="learn", **_k):
+        time.sleep(0.25)
+        return ('{"lessons": []}' if task == "learn_reduce" else '{"killer_patterns": [], "winning_patterns": []}'), 0.01
+
+    ticks = 0
+
+    async def _ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    cards = [{"chat": 1, "tag": "abandoned", "segment": "sales/direct"}]
+    patches = {
+        "collect_cards": AsyncMock(return_value=cards), "get_lessons": AsyncMock(return_value=[]),
+        "_save_run": AsyncMock(), "_recent_runs": AsyncMock(return_value=[]), "_prune_runs": AsyncMock(),
+        "_prior_run_today": AsyncMock(return_value=None), "_approved_lesson_ids": AsyncMock(return_value=[]),
+        "merge_lessons": AsyncMock(return_value=(0, 0)), "call_sonnet_learning": _slow_model,
+    }
+    with patch.multiple(learning, **patches):
+        t = asyncio.create_task(_ticker())
+        result = await learning.run_learning()
+        t.cancel()
+    assert result["status"] == "ok"
+    # Two calls of 0.25 s: on the loop the ticker got ~0 turns, in a thread ~50.
+    assert ticks >= 20
