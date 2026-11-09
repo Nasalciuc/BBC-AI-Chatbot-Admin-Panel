@@ -320,3 +320,54 @@ async def test_a_closed_chat_still_gets_no_notice(monkeypatch):
 async def test_an_open_chat_still_gets_the_notice(monkeypatch):
     claim, send, held = await _fall_back({"id": "c1", "status": "active"}, monkeypatch)
     assert claim.await_count == 1 and send.await_count == 1 and held == 0
+
+
+# ── the startup budget seed is bounded ────────────────────────────────────
+
+@pytest.fixture
+def _ledger():
+    from app.ai import ledger
+
+    ledger._reset_for_tests()
+    saved = dict(ledger._budget)
+    yield ledger
+    ledger._budget.update(saved)
+    ledger._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_seed_gives_up_and_keeps_the_in_memory_total(_ledger):
+    import asyncio
+    import time
+
+    async def _slow(*_a, **_k):
+        await asyncio.sleep(5)
+
+    _ledger._budget.update(day=_ledger._today_utc(), total=1.25)
+    started = time.monotonic()
+    with patch("app.db.supabase._run_sync", new=_slow), patch("app.db.supabase.get_client", lambda: None):
+        await _ledger.seed_budget_bounded(timeout=0.05)
+    assert time.monotonic() - started < 1
+    assert _ledger.LEDGER_HEALTH["budget_seed"] == "timed_out"
+    assert _ledger._budget["total"] == 1.25
+
+
+@pytest.mark.asyncio
+async def test_a_quick_seed_still_seeds_and_a_failed_one_says_so(_ledger):
+    with patch("app.db.supabase._run_sync", new=AsyncMock(return_value=SimpleNamespace(data=[{"cost_usd": 0.5}]))), \
+         patch("app.db.supabase.get_client", lambda: None):
+        await _ledger.seed_budget_bounded(timeout=5)
+    assert _ledger.LEDGER_HEALTH["budget_seed"] == "seeded" and _ledger._budget["total"] >= 0.5
+    with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=RuntimeError("down"))), \
+         patch("app.db.supabase.get_client", lambda: None):
+        await _ledger.seed_budget_bounded(timeout=5)
+    assert _ledger.LEDGER_HEALTH["budget_seed"] == "failed"
+
+
+def test_startup_uses_the_bounded_seed():
+    import inspect
+
+    from app import main
+
+    src = inspect.getsource(main.startup)
+    assert "seed_budget_bounded()" in src and "await ledger.seed_budget()" not in src
