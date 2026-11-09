@@ -93,6 +93,29 @@ def test_enforce_never_cuts_a_phone_at_a_sentence_end(monkeypatch):
     assert _stream(g, ["Dial 555\n", "123\n4567\nThanks.\n"]) == "Dial [removed]\nThanks.\n"
 
 
+@pytest.mark.parametrize("chunks, expected", [
+    (["Call 555\r\n", "123\r\n", "4567\r\n", "Bye.\r\n"], "Call [removed]\r\nBye.\r\n"),
+    (["Call 555 . ", "123 . ", "4567. ", "Bye. "], "Call [removed]. Bye. "),
+    (["Call 555 \v\n", "123\f\n", "4567\n", "Bye.\n"], "Call [removed]\nBye.\n"),
+])
+def test_enforce_holds_a_number_across_any_whitespace_phone_re_takes(monkeypatch, chunks, expected):
+    # CodeRabbit #226: the held tail skipped only spaces and tabs, so with
+    # "\r\n" (or a no-break space) each piece went out alone, too short to be
+    # a phone. The cut now reads the separators _PHONE_RE itself takes.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard()
+    assert _stream(g, chunks) + g.flush() == expected
+
+
+def test_enforce_a_line_that_ends_in_a_word_goes_out_at_its_crlf(monkeypatch):
+    # The path the number rule must not hold: a sentence that ends in a word.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard()
+    assert g.feed("Thanks for waiting.\r\n") == "Thanks for waiting.\r\n"
+    assert g.feed("Your flight is 123.\r\n") == ""  # ends in a number: held
+    assert g.flush() == "Your flight is 123.\r\n"
+
+
 def test_enforce_stream_keeps_the_clients_own_contact(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
     g = output_guard.StreamGuard(output_guard.own_contacts("+1 555 014 2290", "Michael.R@example.com"))
