@@ -231,3 +231,12 @@ test('the template is gone: no fake bulk actions, no fake import', async () => {
     assert.ok(!existsSync(new URL(`../src/features/tasks/${f}`, import.meta.url)), f)
   }
 })
+
+test('Make a task counts its due choices from the click, not from the last poll', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/features/tasks/components/make-task.tsx', import.meta.url), 'utf8')
+  // A dozing tab stops polling: the bell's dataUpdatedAt can be hours old.
+  assert.doesNotMatch(src, /dataUpdatedAt/)
+  assert.match(src, /onClick=\{\(\) => \{\s*setOpenedAt\(Date\.now\(\)\)\s*setOpen\(true\)/)
+  assert.match(src, /nowMs=\{openedAt\}/)
+})
