@@ -81,6 +81,18 @@ def test_enforce_streams_a_sentence_at_a_time_scrubbed_whole(monkeypatch):
         "Call +1 (888) 322-7999\nor email info@buybusinessclass.com.\n"
 
 
+def test_enforce_never_cuts_a_phone_at_a_sentence_end(monkeypatch):
+    # CodeRabbit #226: "555. 123. 4567" is one phone to _PHONE_RE; cut at each
+    # ". " the pieces went out one by one, each too short to be a phone.
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = output_guard.StreamGuard()
+    out = _stream(g, ["Call 555. ", "123. ", "4567. ", "Bye. "]) + g.flush()
+    assert "555" not in out and "4567" not in out
+    assert out == "Call [removed]. Bye. "
+    g = output_guard.StreamGuard()
+    assert _stream(g, ["Dial 555\n", "123\n4567\nThanks.\n"]) == "Dial [removed]\nThanks.\n"
+
+
 def test_enforce_stream_keeps_the_clients_own_contact(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
     g = output_guard.StreamGuard(output_guard.own_contacts("+1 555 014 2290", "Michael.R@example.com"))
@@ -111,9 +123,12 @@ async def test_a_link_with_digits_is_never_the_clients_own_contact(monkeypatch):
 def test_a_broken_guard_keeps_the_reply_and_fails_closed_when_enforcing(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
     assert output_guard.guard_failed("Visit evil.com", RuntimeError("boom")) == "Visit [removed]"
+    # The plain scrub breaks too: nothing unchecked is stored or sent.
+    with patch.object(output_guard, "_scrub", side_effect=RuntimeError("again")):
+        assert output_guard.guard_failed("Visit evil.com", RuntimeError("boom")) == output_guard.WITHHELD_REPLY
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
     assert output_guard.guard_failed("Visit evil.com", RuntimeError("boom")) == "Visit evil.com"
-    assert output_guard.OUTPUT_GUARD_HEALTH["errors"] == 2
+    assert output_guard.OUTPUT_GUARD_HEALTH["errors"] == 3
 
 
 @pytest.mark.asyncio
