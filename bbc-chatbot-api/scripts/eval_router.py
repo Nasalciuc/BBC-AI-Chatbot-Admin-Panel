@@ -10,6 +10,8 @@ check within 1pp; (c) >= (b) on "asks the wanted slot" and "no invented detail".
 
 This is a scaffold: it needs a production DB (SELECT) and real API keys, so it
 never runs in CI. Run: railway run python scripts/eval_router.py --limit 300
+Until the evaluation is built, that run exits 2 (nothing evaluated); only
+--dry-run exits 0.
 """
 import argparse
 import json
@@ -51,7 +53,10 @@ def main() -> int:
     )
     if args.dry_run:
         (OUT / "router_eval.json").write_text(json.dumps({"status": "dry_run"}, indent=2))
-    return 0
+        return 0
+    # No evaluation ran: an exit status of 0 would read as a passed gate.
+    print("eval_router: the evaluation itself is not built yet; nothing was evaluated.", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ something the chatbot actually says. A proper approval screen (list + cards +
 Approve/Retire) is the month-1 follow-up; curl is the interim.
 """
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -122,9 +123,18 @@ async def update_question_variant(
     _assert_reviewer(user)
     if body.status not in VALID_VARIANT_STATUSES:
         raise HTTPException(400, f"status must be one of {sorted(VALID_VARIANT_STATUSES)}")
+    try:
+        uuid.UUID(variant_id)
+    except ValueError:
+        raise HTTPException(404, "Variant not found") from None  # a malformed id names no variant
     from app.services.learning import set_question_variant_status
 
-    ok = await set_question_variant_status(variant_id, body.status)
+    try:
+        ok = await set_question_variant_status(variant_id, body.status)
+    except Exception as e:
+        # The update failed; the variant may well exist (CLAUDE.md rule 7).
+        logger.warning(f"[variants] update failed: {type(e).__name__}: {e}")
+        raise HTTPException(502, "Could not update the variant") from e
     if not ok:
         raise HTTPException(404, "Variant not found")
     return {"success": True, "data": {"id": variant_id, "status": body.status}, "count": 1}

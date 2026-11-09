@@ -10,7 +10,9 @@ it always gets the seed variant and no lessons, and its outcomes are marked
 control=true so the report can compare treatment vs control.
 
 All writes are best-effort and gated by LEARNING_ENABLED; a missing table or a
-failed write never disturbs a chat turn.
+failed write never disturbs a chat turn. A failure is not raised into the turn,
+so it is counted (OUTCOMES_HEALTH, in /health/detail) and logged at WARNING;
+only the table that is not there yet (041 unapplied) stays at DEBUG.
 """
 
 from __future__ import annotations
@@ -22,6 +24,26 @@ from app.experiments import bucket
 from app.flags import flag
 
 logger = logging.getLogger(__name__)
+
+# Rule 7: record_ask returns nothing and resolve_outcomes 0 on a failure, so
+# the counters are what tell "nothing to do" from "it broke".
+OUTCOMES_HEALTH: dict[str, int] = {"record_failed": 0, "resolve_failed": 0, "table_missing": 0}
+_TABLE_MISSING_CODES = ("42P01", "PGRST205")
+
+
+def _table_missing(e: Exception) -> bool:
+    """Migration 041 not applied: the database's code for a missing table,
+    never the error's text."""
+    from app.db.supabase import _error_code
+
+    return _error_code(e) in _TABLE_MISSING_CODES
+
+
+def _what(e: Exception) -> str:
+    """Type, code and message: never the details, which can quote the row."""
+    from app.db.supabase import _error_code
+
+    return f"{type(e).__name__} {_error_code(e) or ''} {getattr(e, 'message', '') or ''}".strip()
 
 _SLOT_LEAD_FIELD = {
     "route": ("origin_code", "destination_code"),
@@ -72,12 +94,18 @@ async def record_ask(conversation_id: str, message_id: Optional[str], slot: str,
             idempotent=False, label="question_outcomes",
         )
     except Exception as e:
-        logger.debug(f"[outcomes] record_ask skipped: {type(e).__name__}: {e}")
+        if _table_missing(e):
+            OUTCOMES_HEALTH["table_missing"] += 1
+            logger.debug(f"[outcomes] record_ask skipped, question_outcomes not created yet (041): {_what(e)}")
+        else:
+            OUTCOMES_HEALTH["record_failed"] += 1
+            logger.warning(f"[outcomes] record_ask failed, no reward row: {_what(e)}")
 
 
 async def resolve_outcomes(conversation_id: str, lead: Optional[dict] = None) -> int:
     """Resolve this conversation's open asks against the current lead. Returns
-    how many were resolved."""
+    how many were resolved; 0 on a failure too, which OUTCOMES_HEALTH counts
+    (the only caller schedules it in the background and never reads it)."""
     if not flag("LEARNING_ENABLED", True):
         return 0
     try:
@@ -103,5 +131,15 @@ async def resolve_outcomes(conversation_id: str, lead: Optional[dict] = None) ->
             resolved += 1
         return resolved
     except Exception as e:
-        logger.debug(f"[outcomes] resolve skipped: {type(e).__name__}: {e}")
+        if _table_missing(e):
+            OUTCOMES_HEALTH["table_missing"] += 1
+            logger.debug(f"[outcomes] resolve skipped, question_outcomes not created yet (041): {_what(e)}")
+        else:
+            OUTCOMES_HEALTH["resolve_failed"] += 1
+            logger.warning(f"[outcomes] resolve failed, open asks left unresolved: {_what(e)}")
         return 0
+
+
+def _reset_for_tests() -> None:
+    for k in OUTCOMES_HEALTH:
+        OUTCOMES_HEALTH[k] = 0

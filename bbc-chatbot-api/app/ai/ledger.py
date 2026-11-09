@@ -46,6 +46,9 @@ LEDGER_HEALTH: dict[str, Any] = {
     "cache_write_tokens": 0,
     "reconcile": None,    # last reconciliation diff, set by the cron route
     "budget_durable": None,  # False: AI_LEDGER_ENABLED off, cap resets on restart
+    # The startup seed: "seeded", "failed" (logged) or "timed_out". Not
+    # seeded, the cap counts only the spend recorded since boot.
+    "budget_seed": None,
 }
 _warned_missing = False
 
@@ -137,9 +140,31 @@ async def seed_budget() -> None:
                 total = max(total, _budget["total"])
             _budget["day"] = day
             _budget["total"] = total
+        LEDGER_HEALTH["budget_seed"] = "seeded"
         logger.info(f"[budget] seeded today's spend: ${total:.4f}")
     except Exception as e:
+        LEDGER_HEALTH["budget_seed"] = "failed"
         logger.warning(f"[budget] seed skipped: {type(e).__name__}: {e}")
+
+
+_SEED_TIMEOUT_S = 15.0
+
+
+async def seed_budget_bounded(timeout: float = _SEED_TIMEOUT_S) -> None:
+    """seed_budget at startup, bounded: it reads a page per 1,000 calls, and a
+    slow database must not hold startup and the healthcheck (the flags'
+    first read is bounded the same way). On a timeout the in-memory total
+    stands, so the cap counts what is recorded from boot on."""
+    import asyncio
+
+    try:
+        await asyncio.wait_for(seed_budget(), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        LEDGER_HEALTH["budget_seed"] = "timed_out"
+        logger.warning(
+            f"[budget] seed took over {timeout:.0f} s ({type(e).__name__}): "
+            "the daily cap counts only the spend since boot"
+        )
 
 
 def _tally(task: str, model: str, cost: float, cache_read: int, cache_write: int) -> None:
@@ -287,7 +312,7 @@ def _reset_for_tests() -> None:
     LEDGER_HEALTH.update(
         recorded=0, dropped=0, flushed=0, flush_errors=0, table_missing=False,
         by_task={}, by_model={}, cache_read_tokens=0, cache_write_tokens=0, reconcile=None,
-        budget_durable=None,
+        budget_durable=None, budget_seed=None,
     )
     _budget["day"] = None
     _budget["total"] = 0.0

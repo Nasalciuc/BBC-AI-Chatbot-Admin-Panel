@@ -7,6 +7,7 @@ Lessons land as 'proposed'. Nothing reaches a client until a human approves it,
 so the loop can be wrong without the live prompt being wrong.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -715,7 +716,11 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                     logger.warning(f"Learning: budget cap ${budget} hit — stopping MAP early")
                     break
                 chunk = cards[start:start + CHUNK_SIZE]
-                parsed, chunk_cost = _call_json(_MAP_SYSTEM, json.dumps(chunk, default=str), task="learn_map")
+                # The model call is sync (seconds each): in a worker thread, so
+                # chats, /health and the other jobs keep running meanwhile.
+                parsed, chunk_cost = await asyncio.to_thread(
+                    _call_json, _MAP_SYSTEM, json.dumps(chunk, default=str), task="learn_map"
+                )
                 cost += chunk_cost
                 if parsed is None:
                     skipped_chunks += 1
@@ -740,7 +745,7 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                 },
                 default=str,
             )
-            reduced, reduce_cost = _call_json(_REDUCE_SYSTEM, reduce_payload, task="learn_reduce")
+            reduced, reduce_cost = await asyncio.to_thread(_call_json, _REDUCE_SYSTEM, reduce_payload, task="learn_reduce")
             cost += reduce_cost
             if reduced is None:
                 skipped_chunks += 1
@@ -896,11 +901,13 @@ async def get_question_variants(slot: Optional[str] = None) -> list[dict]:
             q = q.eq("slot", slot)
         vres = await _db._run_sync(lambda: q.execute(), label="question_variants")
         variants = getattr(vres, "data", None) or []
-        ores = await _db._run_sync(
-            lambda: client.table("question_outcomes").select("variant_id,answered").execute(),
-            label="question_outcomes",
+        # Every resolved outcome, page by page: one PostgREST response stops at
+        # 1,000 rows, and a partial count would rank the variants wrong.
+        outcomes = await _db._select_pages(
+            lambda: client.table("question_outcomes").select("id,variant_id,answered")
+            .not_.is_("variant_id", "null").not_.is_("answered", "null").order("id"),
+            label="question_outcomes", max_pages=50,
         )
-        outcomes = getattr(ores, "data", None) or []
     except Exception as e:
         if "PGRST205" in str(e) or "42P01" in str(e):
             # Migration 041 not applied: no variants yet is the normal case.
@@ -938,18 +945,22 @@ async def set_question_variant_status(variant_id: str, status: str) -> bool:
     from app.db import supabase as _db
     from datetime import datetime, timezone
 
-    payload = {"status": status}
-    if status == "retired":
-        payload["retired_at"] = datetime.now(timezone.utc).isoformat()
+    # retired_at says "retired, since": a variant set back to active or
+    # proposed is not retired any more.
+    payload = {
+        "status": status,
+        "retired_at": datetime.now(timezone.utc).isoformat() if status == "retired" else None,
+    }
     try:
         res = await _db._run_sync(
             lambda: _db.get_client().table("question_variants").update(payload).eq("id", variant_id).execute(),
             idempotent=False, label="question_variants",
         )
-        return bool(getattr(res, "data", None))
     except Exception as e:
+        # Raised, not False: False is "no such variant" (CLAUDE.md rule 7).
         logger.warning(f"[variants] status update failed: {type(e).__name__}: {e}")
-        return False
+        raise
+    return bool(getattr(res, "data", None))
 
 
 async def build_learning_report() -> dict:
@@ -957,12 +968,12 @@ async def build_learning_report() -> dict:
     from app.db import supabase as _db
 
     try:
-        res = await _db._run_sync(
+        # Every resolved outcome, page by page (1,000 rows per response).
+        rows = await _db._select_pages(
             lambda: _db.get_client().table("question_outcomes")
-            .select("slot,answered,control").not_.is_("answered", "null").execute(),
-            label="question_outcomes",
+            .select("id,slot,answered,control").not_.is_("answered", "null").order("id"),
+            label="question_outcomes", max_pages=50,
         )
-        rows = getattr(res, "data", None) or []
     except Exception as e:
         logger.warning(f"[report] fetch failed: {type(e).__name__}: {e}")
         # Same keys as the success shape, plus `error`, so a caller can tell

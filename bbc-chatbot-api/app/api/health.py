@@ -126,6 +126,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.turnstile import TURNSTILE_HEALTH
     from app.security.form_trap import FORM_TRAP_HEALTH
     from app.security.mfa import MFA_HEALTH
+    from app.learning.outcomes import OUTCOMES_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
 
     if not full:
@@ -143,6 +144,7 @@ async def health_detail(full: bool = False) -> dict:
             "turnstile": dict(TURNSTILE_HEALTH),
             "form_trap": dict(FORM_TRAP_HEALTH),
             "mfa": dict(MFA_HEALTH),
+            "learning_outcomes": dict(OUTCOMES_HEALTH),
             "token_version": dict(TOKEN_VERSION_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
@@ -223,6 +225,7 @@ async def health_detail(full: bool = False) -> dict:
         "turnstile": dict(TURNSTILE_HEALTH),
         "form_trap": dict(FORM_TRAP_HEALTH),
         "mfa": dict(MFA_HEALTH),
+        "learning_outcomes": dict(OUTCOMES_HEALTH),
         "token_version": dict(TOKEN_VERSION_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
