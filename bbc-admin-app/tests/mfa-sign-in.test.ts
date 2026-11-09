@@ -32,3 +32,26 @@ test('recovery codes are shown once, before the session starts', () => {
   assert.match(step, /They will not be shown again/)
   assert.match(step, /onClick=\{\(\) => onDone\(recovery\.token, recovery\.user\)\}/)
 })
+
+// CodeRabbit #228: five digits went to the server, came back as a 422 with a
+// list for detail, read "Something went wrong", and the field was cleared.
+import { MFA_CODE_MIN, mfaCodeProblem } from '../src/lib/mfa-code.ts'
+
+test('a code shorter than the server takes is answered here', () => {
+  assert.equal(MFA_CODE_MIN, 6)
+  assert.match(mfaCodeProblem('12345', 'required') ?? '', /6-digit code/)
+  assert.match(mfaCodeProblem('123 45', 'enroll') ?? '', /6 digits/)
+  assert.equal(mfaCodeProblem('123456', 'required'), null)
+  assert.equal(mfaCodeProblem('123 456', 'enroll'), null)
+  assert.equal(mfaCodeProblem('ab3k9-x7q2m', 'required'), null) // a recovery code
+})
+
+test('the step checks before it asks, and keeps what was typed', () => {
+  const step = read('src/features/auth/sign-in/components/mfa-step.tsx')
+  const submit = step.slice(step.indexOf('async function submit('), step.indexOf('if (recovery) {'))
+  const check = submit.indexOf('const problem = mfaCodeProblem(code, mode)')
+  assert.ok(check > 0 && check < submit.indexOf('setBusy(true)'), 'checked before any request')
+  const branch = submit.slice(check, submit.indexOf('setBusy(true)'))
+  assert.match(branch, /setError\(problem\)\s*return/)
+  assert.doesNotMatch(branch, /setCode\(''\)/)
+})

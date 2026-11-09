@@ -3,6 +3,7 @@ import {
   confirmMfaEnroll, startMfaEnroll, verifyMfa,
   type LoginResult, type LoginUser,
 } from '@/lib/api'
+import { mfaCodeProblem } from '@/lib/mfa-code'
 import { cn } from '@/lib/utils'
 import { AuthNote, AuthTitle, Field } from '../../shell'
 import { inputCls, linkCls, primaryBtn } from '../../styles'
@@ -48,6 +49,13 @@ export function MfaStep({
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (busy || !code.trim()) return
+    // Too short to be a code: said here, under the field, and the field
+    // keeps what was typed (the server's 422 read "Something went wrong").
+    const problem = mfaCodeProblem(code, mode)
+    if (problem) {
+      setError(problem)
+      return
+    }
     setBusy(true)
     setError(null)
     try {
