@@ -229,14 +229,15 @@ def _warnings(caplog):
 
 @pytest.mark.asyncio
 async def test_a_failed_reward_write_is_counted_and_logged_without_the_row(_reward_loop, caplog):
-    err = _ApiError("42501", "permission denied", details="Failing row contains (Ana, +1 555 014 2290)")
+    err = _ApiError("22P02", 'invalid input syntax for type uuid: "Ana +1 555 014 2290"',
+                    details="Failing row contains (Ana, +1 555 014 2290)")
     with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=err)), \
          patch("app.db.supabase.get_client", lambda: None), \
          caplog.at_level("DEBUG", logger="app.learning.outcomes"):
         await _reward_loop.record_ask("c1", "m1", "route", "v1")
     assert _reward_loop.OUTCOMES_HEALTH["record_failed"] == 1
     [w] = _warnings(caplog)
-    assert "record_ask failed" in w.getMessage() and "42501" in w.getMessage()
+    assert "record_ask failed" in w.getMessage() and "22P02" in w.getMessage()
     assert "555" not in caplog.text and "Ana" not in caplog.text
 
 
