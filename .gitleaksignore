@@ -24,3 +24,8 @@
 # first version of the transport test (#246); the file now builds it at run
 # time, so the line below matches that one commit only
 f71f63a1df229c5d77d43830b07a0fa4995684b9:bbc-chatbot-api/tests/test_db_transport.py:generic-api-key:20
+
+# tests/test_quiet_logs.py: the same made-up SUPABASE_KEY placeholder many
+# test files on master carry, added in the logs commit of #246; the file now
+# builds it at run time, so the line below matches that one commit only
+4a626d51ba06d6e20e3b8dbbe6eb2eaa38fc1a22:bbc-chatbot-api/tests/test_quiet_logs.py:generic-api-key:18

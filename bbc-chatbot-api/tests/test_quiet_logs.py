@@ -6,6 +6,8 @@ INFO line, and a gate refusal (a lead with a typo in its email domain) was an
 ERROR every 5 minutes for days — 53 of the 217 ERROR lines of the morning.
 """
 
+import base64
+import json
 import logging
 import os
 import sys
@@ -13,9 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+def _placeholder_jwt() -> str:
+    """JWT-shaped, built at run time: create_client checks the shape and
+    nothing checks the signature, and no key-shaped literal sits in the
+    source for the secret scan (.gitleaks.toml) to flag."""
+    def part(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{part({'alg': 'HS256', 'typ': 'JWT'})}.{part({'role': 'test'})}.sig"
+
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
-os.environ.setdefault("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoieCJ9.sig")
+os.environ.setdefault("SUPABASE_KEY", _placeholder_jwt())
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from app.services import scheduler as sched
