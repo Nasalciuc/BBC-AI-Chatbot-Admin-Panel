@@ -3329,6 +3329,8 @@ FOLLOW_UP_COLUMNS = (
 TASKS_HEALTH: dict = {
     "schema_missing": 0, "caught": 0, "client_asked": 0, "catch_failures": 0,
     "moved_unowned": 0, "moved_to_ready": 0, "move_failures": 0,
+    # A history line not written after its task was saved: the task stands.
+    "event_failures": 0,
 }
 _OPEN_LIMIT = 500
 

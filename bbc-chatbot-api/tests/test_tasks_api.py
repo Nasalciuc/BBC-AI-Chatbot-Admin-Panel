@@ -280,6 +280,44 @@ def test_catching_never_fails_the_send():
     assert ev.call_count == 0
 
 
+def test_a_history_line_that_fails_never_undoes_the_task():
+    # The task is saved before its history line: a line that can't be written
+    # is counted, and the task still comes back (a "couldn't add" would have
+    # the person add it twice; a Not-ready move would stop half way).
+    ev = AsyncMock(side_effect=RuntimeError("task_events down"))
+    msg = {"id": "m1", "content": "I'll call you in an hour", "created_at": NOW.isoformat()}
+    before = dict(db.TASKS_HEALTH)
+    upd = AsyncMock(side_effect=lambda tid, p: {**task(tid), **p})
+    with patched(add_task_event=ev, update_follow_up=upd, open_task_ids_of=AsyncMock(return_value=["t1", "t2"])):
+        caught = run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor"))
+        asked = run(tasks_service.task_from_callback(CONVS["c1"], {"id": "u1", "created_at": NOW.isoformat()}, "Call me please"))
+        made = client("sales", "victor").post("/api/tasks", json={"title": "Call the airline"})
+        done = client("sales", "victor").patch("/api/tasks/t1", json={"done": True})
+        moved = run(tasks_service.leave_shift("victor"))
+    assert caught["id"] == "new" and asked["id"] == "new"
+    assert made.status_code == 200 and made.json()["data"]["id"] == "new" and done.status_code == 200
+    assert moved == 2 and [c.args[0] for c in upd.call_args_list][-2:] == ["t1", "t2"]
+    assert db.TASKS_HEALTH["catch_failures"] == before["catch_failures"]
+    assert db.TASKS_HEALTH["event_failures"] == before["event_failures"] + 6
+
+
+def test_a_refused_task_row_is_logged_without_what_was_in_it(caplog):
+    class Refused(Exception):
+        code = "23514"
+
+    boom = Refused('new row violates check constraint. Failing row contains (Send Michael three options, '
+                   'Write to michael.r@example.com)')
+    msg = {"id": "m1", "content": "I'll call you in an hour", "created_at": NOW.isoformat()}
+    with patched(insert_follow_up=AsyncMock(side_effect=boom)), caplog.at_level("INFO"):
+        assert run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor")) is None
+        assert client("sales", "victor").post("/api/tasks", json={"title": "Send Michael the fares"}).status_code == 502
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 2
+    for r in errors:
+        text = r.getMessage()
+        assert "Refused 23514 at " in text and "michael" not in text.lower() and r.exc_info is None
+
+
 def test_a_call_me_while_the_ai_has_the_chat_is_unowned():
     ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
     conv = {**CONVS["c1"], "mode": "ai", "assigned_agent_id": None}

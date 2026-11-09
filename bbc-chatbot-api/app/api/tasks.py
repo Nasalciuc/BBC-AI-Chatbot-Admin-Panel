@@ -397,14 +397,16 @@ async def create_task(body: TaskIn, user: dict = Depends(get_current_user)):
         })
         if not task:
             raise HTTPException(500, "Couldn't add the task")
-        await db.add_task_event(task["id"], body.source, reach["id"], {"to": assignee})
     except HTTPException:
         raise
     except db.TasksNotSetUp:
         raise HTTPException(503, NOT_SET_UP)
     except Exception as e:
-        logger.error(f"[tasks] create failed: {e}", exc_info=True)
+        # The row carries the client's first name and the note: no message, no traceback text.
+        logger.error(f"[tasks] create failed: {tasks_service.what_failed(e)}")
         raise HTTPException(502, "Couldn't add the task")
+    # Made: a history line that can't be written is counted, never a "couldn't add" (it would be added twice).
+    await tasks_service.note(task["id"], body.source, reach["id"], {"to": assignee})
     return {"success": True, "data": task, "count": 1}
 
 
@@ -462,15 +464,17 @@ async def update_task(task_id: str, body: TaskPatch, user: dict = Depends(get_cu
         updated = await db.update_follow_up(task_id, payload)
         if not updated:
             raise HTTPException(404, "Task not found")
-        for kind, details in events:
-            await db.add_task_event(task_id, kind, reach["id"], details)
     except HTTPException:
         raise
     except db.TasksNotSetUp:
         raise HTTPException(503, NOT_SET_UP)
     except Exception as e:
-        logger.error(f"[tasks] update {task_id} failed: {e}", exc_info=True)
+        # A refused update can quote the row (title, quote): no message, no traceback text.
+        logger.error(f"[tasks] update {task_id} failed: {tasks_service.what_failed(e)}")
         raise HTTPException(502, "Couldn't save the task")
+    # Saved: a history line that can't be written is counted, never a "couldn't save".
+    for kind, details in events:
+        await tasks_service.note(task_id, kind, reach["id"], details)
     return {"success": True, "data": updated, "count": 1}
 
 
