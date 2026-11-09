@@ -29,3 +29,14 @@ test('042 is named only for the server read failure, with the server’s own wor
   assert.ok(route.includes(`"error": "${words}"`), 'the list endpoint says exactly that when its read fails')
   assert.match(page, /bans\.error\.message === HISTORY_READ_FAILED\s*\?\s*' One cause: migration 042 not applied yet\.'/)
 })
+
+test('a failed request carries its status and the server’s own detail', () => {
+  // CodeRabbit #228 follow-up: listBans turned every non-OK answer into
+  // "Failed to load bans", so a 401 read the same as a 5xx.
+  const api = readFileSync(join(root, 'src/lib/api.ts'), 'utf-8')
+  const fns = api.slice(api.indexOf('export async function listBans'), api.indexOf('export async function unbanBan') + 400)
+  assert.match(fns, /apiFetch<AdminEnvelope<SecurityBan\[\]>>\('\/api\/admin\/security\/bans'\)/)
+  assert.doesNotMatch(fns, /'Failed to load bans'\)\s*\n\s*const body/)
+  assert.doesNotMatch(fns, /if \(!res\.ok\)/)
+})
+
