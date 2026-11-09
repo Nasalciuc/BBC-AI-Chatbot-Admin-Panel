@@ -504,6 +504,11 @@ def _patches(conv, lead, update_conversation=None, update_lead=None):
     stack.enter_context(patch(
         "app.pipeline.orchestrator.db.update_conversation",
         new=update_conversation or AsyncMock()))
+    # Queueing a client for a person (needs_agent) holds, as it does once
+    # migration 052 has run; the dispatcher fires only after it holds.
+    stack.enter_context(patch(
+        "app.pipeline.orchestrator.db.mark_needs_agent",
+        new=AsyncMock(return_value=("queued", ""))))
     stack.enter_context(patch(
         "app.pipeline.orchestrator.db.update_lead",
         new=update_lead or AsyncMock()))
