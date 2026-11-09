@@ -3431,10 +3431,34 @@ class TasksNotSetUp(RuntimeError):
     """Migration 051 hasn't run: the tasks columns or task_events are missing."""
 
 
+_SCHEMA_MISSING_CODES = ("42703", "42P01", "PGRST204", "PGRST205")
+
+
+def _error_code(e: Exception) -> Optional[str]:
+    """The database's own code for an error (PostgREST's APIError carries one), or None."""
+    code = getattr(e, "code", None)
+    return code.strip() if isinstance(code, str) and code.strip() else None
+
+
+def _error_text(e: Exception) -> str:
+    """What an error says, without its details. An APIError's text includes
+    its details, and those can quote the row a write sent ("Failing row
+    contains (…)": the client's name in a title, a phone in a quote), so the
+    details are never matched against and never logged."""
+    message = getattr(e, "message", None)
+    return message if isinstance(message, str) and message else str(e)
+
+
 def _is_schema_missing(e: Exception) -> bool:
-    text = str(e)
+    """Migration 051 not applied: a missing column or table. By the error's
+    code when it has one: matching the whole text read a refused row's phone
+    number ("…4270321…") as code 42703."""
+    code = _error_code(e)
+    if code:
+        return code in _SCHEMA_MISSING_CODES
+    text = _error_text(e)
     return (
-        any(code in text for code in ("42703", "42P01", "PGRST204", "PGRST205"))
+        any(c in text for c in _SCHEMA_MISSING_CODES)
         or ("does not exist" in text and ("column" in text or "relation" in text))
         or "Could not find the" in text
     )
@@ -3444,8 +3468,9 @@ def _as_not_set_up(e: Exception) -> None:
     """Migration 051 still missing is TasksNotSetUp, counted; anything else is the caller's to raise."""
     if _is_schema_missing(e):
         TASKS_HEALTH["schema_missing"] += 1
-        logger.warning(f"[tasks] migration 051 not applied: {e}")
-        raise TasksNotSetUp(str(e)) from e
+        said = _error_text(e)
+        logger.warning(f"[tasks] migration 051 not applied: {_error_code(e) or type(e).__name__} {said}")
+        raise TasksNotSetUp(said) from e
 
 
 async def _tasks_call(fn, *, idempotent: bool = True, label: str = "tasks"):
@@ -3491,7 +3516,9 @@ async def insert_follow_up(row: dict) -> Optional[dict]:
     except TasksNotSetUp:
         raise
     except Exception as e:
-        if "23505" in str(e) or "uq_tasks_message" in str(e):
+        # A retry of the same chat message, by the code or the index's name,
+        # never by the whole text: a refused row's quote can hold "23505".
+        if _error_code(e) == "23505" or "uq_tasks_message" in _error_text(e):
             return None
         raise
     return (res.data or [None])[0]
