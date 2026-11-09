@@ -126,6 +126,23 @@ def test_the_menu_number_is_the_late_tasks_and_for_a_supervisor_the_team_s_unown
     assert agent["team_late"] == 0  # an agent gives no tasks out: their number is their own late ones
 
 
+def test_the_bell_s_two_lists_never_hold_the_same_task():
+    # The panel shows "mine" and "team_late" as one list, keyed by task id
+    # (notification-bell.tsx): the reader's own late task is in "mine" only.
+    own = task("t1", assignee_id="irina", due_at=(NOW - timedelta(minutes=50)).isoformat())
+    rohans = task("t2", assignee_id="rohan", due_at=(NOW - timedelta(minutes=50)).isoformat())
+    lists = AsyncMock(side_effect=lambda **k: ([own] if k.get("assignee_ids") == ["irina"] else [own, rohans], []))
+    with patched(list_follow_ups=lists):
+        t = client("supervisor", "irina").get("/api/notifications").json()["tasks"]
+    assert [r["id"] for r in t["mine"]] == ["t1"] and [r["id"] for r in t["team_late"]] == ["t2"]
+    # Given to Rohan between the two reads: Irina's in the first, Rohan's in the second. Once, in "mine".
+    moved = {**own, "assignee_id": "rohan"}
+    raced = AsyncMock(side_effect=lambda **k: ([own] if k.get("assignee_ids") == ["irina"] else [moved, rohans], []))
+    with patched(list_follow_ups=raced):
+        t = client("supervisor", "irina").get("/api/notifications").json()["tasks"]
+    assert [r["id"] for r in t["mine"]] == ["t1"] and [r["id"] for r in t["team_late"]] == ["t2"]
+
+
 # ── Who sees what ────────────────────────────────────────────────────────────
 
 def test_an_agent_sees_only_their_own_tasks_with_the_client_s_city():
@@ -150,6 +167,22 @@ def test_a_supervisor_sees_the_team_and_unowned_with_contacts_masked():
     assert "michael.r@example.com" not in row["quote"]
     assert body["counts"]["unowned"] == 1 and body["unowned_open"] == 1
     assert {p["id"] for p in body["people"]} == {"irina", "rohan", "victor"}
+
+
+def test_a_masked_title_hides_the_name_as_a_word_not_inside_words():
+    from zoneinfo import ZoneInfo
+
+    from app.services.tasks_view import task_row
+
+    def title(name: str, text: str, masked: bool = True) -> str:
+        conv = {**CONVS["c1"], "visitor_name": name}
+        return task_row(task("t1", title=text), conv=conv, lead=None, names=NAMES, wrote_at=None, now=NOW,
+                        tz=ZoneInfo("America/New_York"), masked=masked)["title"]
+
+    assert title("Al Perez", "Call Al about the Alps, Al’s choice") == "Call •••ez about the Alps, •••ez’s choice"
+    assert title("J. Smith", "Call J. back") == "Call •••th back"
+    # Unmasked readers see the title as written.
+    assert title("Al Perez", "Call Al about the Alps", masked=False) == "Call Al about the Alps"
 
 
 def test_an_agent_can_t_open_someone_else_s_task():
@@ -280,6 +313,44 @@ def test_catching_never_fails_the_send():
     assert ev.call_count == 0
 
 
+def test_a_history_line_that_fails_never_undoes_the_task():
+    # The task is saved before its history line: a line that can't be written
+    # is counted, and the task still comes back (a "couldn't add" would have
+    # the person add it twice; a Not-ready move would stop half way).
+    ev = AsyncMock(side_effect=RuntimeError("task_events down"))
+    msg = {"id": "m1", "content": "I'll call you in an hour", "created_at": NOW.isoformat()}
+    before = dict(db.TASKS_HEALTH)
+    upd = AsyncMock(side_effect=lambda tid, p: {**task(tid), **p})
+    with patched(add_task_event=ev, update_follow_up=upd, open_task_ids_of=AsyncMock(return_value=["t1", "t2"])):
+        caught = run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor"))
+        asked = run(tasks_service.task_from_callback(CONVS["c1"], {"id": "u1", "created_at": NOW.isoformat()}, "Call me please"))
+        made = client("sales", "victor").post("/api/tasks", json={"title": "Call the airline"})
+        done = client("sales", "victor").patch("/api/tasks/t1", json={"done": True})
+        moved = run(tasks_service.leave_shift("victor"))
+    assert caught["id"] == "new" and asked["id"] == "new"
+    assert made.status_code == 200 and made.json()["data"]["id"] == "new" and done.status_code == 200
+    assert moved == 2 and [c.args[0] for c in upd.call_args_list][-2:] == ["t1", "t2"]
+    assert db.TASKS_HEALTH["catch_failures"] == before["catch_failures"]
+    assert db.TASKS_HEALTH["event_failures"] == before["event_failures"] + 6
+
+
+def test_a_refused_task_row_is_logged_without_what_was_in_it(caplog):
+    class Refused(Exception):
+        code = "23514"
+
+    boom = Refused('new row violates check constraint. Failing row contains (Send Michael three options, '
+                   'Write to michael.r@example.com)')
+    msg = {"id": "m1", "content": "I'll call you in an hour", "created_at": NOW.isoformat()}
+    with patched(insert_follow_up=AsyncMock(side_effect=boom)), caplog.at_level("INFO"):
+        assert run(tasks_service.catch_from_agent_message(CONVS["c1"], msg, "victor")) is None
+        assert client("sales", "victor").post("/api/tasks", json={"title": "Send Michael the fares"}).status_code == 502
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 2
+    for r in errors:
+        text = r.getMessage()
+        assert "Refused 23514 at " in text and "michael" not in text.lower() and r.exc_info is None
+
+
 def test_a_call_me_while_the_ai_has_the_chat_is_unowned():
     ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
     conv = {**CONVS["c1"], "mode": "ai", "assigned_agent_id": None}
@@ -358,6 +429,78 @@ def test_an_agent_s_chat_view_is_still_only_their_own_and_a_bad_id_is_a_400():
     assert bad.status_code == 400 and lf.await_count == 1
 
 
+LEAD = "0b8a7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d"
+OTHER_CHAT = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6e"
+
+
+def chat_row(**over) -> dict:
+    """What get_blind_inputs reads: Victor's own sales chat, team 1."""
+    base = {"id": CHAT, "status": "active", "mode": "human", "assigned_agent_id": "victor",
+            "engaged_agent_id": None, "queued_at": None, "tunnel": "sales", "team_id": "team-1"}
+    base.update(over)
+    return base
+
+
+def test_a_task_links_only_a_chat_its_maker_may_read():
+    # The task's panel shows the chat's contact and the words around it: a
+    # chat the maker can't open must not reach them through a task.
+    def post(role, uid, row, cid=CHAT):
+        ins = AsyncMock(side_effect=lambda r: {"id": "new", **r})
+        with patched(insert_follow_up=ins, get_blind_inputs=AsyncMock(return_value=row)):
+            r = client(role, uid).post("/api/tasks", json={"title": "Call back", "conversation_id": cid})
+        return r, ins
+
+    ok, ins = post("sales", "victor", chat_row())
+    assert ok.status_code == 200 and ins.call_args.args[0]["conversation_id"] == CHAT
+    tunnel, ins = post("sales", "victor", chat_row(tunnel="support"))
+    assert tunnel.status_code == 403 and ins.await_count == 0
+    # Waiting for a person and not his: the blind take holds here too.
+    blind, ins = post("sales", "victor", chat_row(status="needs_agent", assigned_agent_id=None))
+    assert blind.status_code == 403 and "Take the chat" in blind.json()["detail"] and ins.await_count == 0
+    gone, ins = post("sales", "victor", None)
+    assert gone.status_code == 404 and ins.await_count == 0
+    team, _ = post("supervisor", "irina", chat_row(assigned_agent_id="rohan"))
+    other_team, ins = post("supervisor", "irina", chat_row(team_id="team-9"))
+    assert team.status_code == 200 and other_team.status_code == 403 and ins.await_count == 0
+    # Managers read every chat; the chat must still exist.
+    owner, _ = post("owner", "alex", chat_row(tunnel="support", team_id=None, status="needs_agent", assigned_agent_id=None))
+    assert owner.status_code == 200
+
+
+def test_a_chat_that_can_t_be_checked_or_isn_t_an_id_links_nothing():
+    ins = AsyncMock(side_effect=lambda r: {"id": "new", **r})
+    look = AsyncMock(side_effect=RuntimeError("network"))
+    with patched(insert_follow_up=ins, get_blind_inputs=look):
+        down = client("sales", "victor").post("/api/tasks", json={"title": "x", "conversation_id": CHAT})
+        bad = client("sales", "victor").post("/api/tasks", json={"title": "x", "conversation_id": "chat-4810"})
+        bad_lead = client("sales", "victor").post("/api/tasks", json={"title": "x", "lead_id": "l1"})
+    assert down.status_code == 503 and bad.status_code == 400 and bad_lead.status_code == 400
+    assert look.await_count == 1 and ins.await_count == 0
+
+
+def test_a_task_made_on_a_lead_checks_the_lead_s_chat():
+    def post(lead, row=None, **body):
+        ins = AsyncMock(side_effect=lambda r: {"id": "new", **r})
+        with patched(insert_follow_up=ins, get_lead_link=AsyncMock(return_value=lead),
+                     get_blind_inputs=AsyncMock(return_value=row)):
+            r = client("sales", "victor").post("/api/tasks", json={"title": "x", "lead_id": LEAD, **body})
+        return r, ins
+
+    ok, ins = post({"id": LEAD, "conversation_id": CHAT}, chat_row())
+    assert ok.status_code == 200 and ins.call_args.args[0]["conversation_id"] == CHAT
+    assert ins.call_args.args[0]["lead_id"] == LEAD
+    support, ins = post({"id": LEAD, "conversation_id": CHAT}, chat_row(tunnel="support"))
+    assert support.status_code == 403 and ins.await_count == 0
+    missing, ins = post(None)
+    assert missing.status_code == 404 and ins.await_count == 0
+    # A lead and a chat sent together are one client's, or nothing is made.
+    mixed, ins = post({"id": LEAD, "conversation_id": OTHER_CHAT}, chat_row(), conversation_id=CHAT)
+    assert mixed.status_code == 400 and ins.await_count == 0
+    # A lead with no chat links only the lead: there's no chat to show.
+    alone, ins = post({"id": LEAD, "conversation_id": None})
+    assert alone.status_code == 200 and ins.call_args.args[0]["conversation_id"] is None
+
+
 def test_a_task_from_the_dashboard_keeps_the_line_it_came_from():
     ins = AsyncMock(side_effect=lambda row: {"id": "new", **row})
     with patched(insert_follow_up=ins):
@@ -385,6 +528,66 @@ class _Query:
 
     def execute(self):
         return type("Res", (), {"data": [{"id": "victor", "role": "sales"}]})()
+
+
+def test_the_lead_read_tells_no_lead_from_a_failed_read():
+    class _Rows(_Query):
+        def __init__(self, log, rows=None, boom=None):
+            super().__init__(log)
+            self.rows, self.boom = rows, boom
+
+        def execute(self):
+            if self.boom:
+                raise self.boom
+            return type("Res", (), {"data": self.rows})()
+
+    with patch.object(db, "get_client", return_value=_Rows([], rows=[{"id": "l1", "conversation_id": "c1"}])):
+        assert run(db.get_lead_link("l1")) == {"id": "l1", "conversation_id": "c1"}
+    with patch.object(db, "get_client", return_value=_Rows([], rows=[])):
+        assert run(db.get_lead_link("l1")) is None
+    with patch.object(db, "get_client", return_value=_Rows([], boom=RuntimeError("network"))):
+        with pytest.raises(RuntimeError):
+            run(db.get_lead_link("l1"))
+
+
+class _Paged:
+    """A query builder that serves `rows` one .range() page at a time, as PostgREST does (1000 at most)."""
+
+    def __init__(self, rows: list, boom: Exception | None = None):
+        self.rows, self.boom, self.ranges = rows, boom, []
+
+    def __getattr__(self, name):
+        return lambda *a, **k: self
+
+    def range(self, lo, hi):
+        self.ranges.append((lo, hi))
+        return self
+
+    def execute(self):
+        if self.boom:
+            raise self.boom
+        lo, hi = self.ranges[-1]
+        return type("Res", (), {"data": self.rows[lo:min(hi, lo + 999) + 1]})()
+
+
+def test_the_task_counts_read_past_postgrest_s_1000_rows():
+    # A count cut at 1000 would read Rohan short and give him the next tasks.
+    q = _Paged([{"assignee_id": "rohan"}] * 1500 + [{"assignee_id": "ana"}] * 3)
+    with patch.object(db, "get_client", return_value=q):
+        assert run(db.open_task_counts(["rohan", "ana", "victor"])) == {"rohan": 1500, "ana": 3, "victor": 0}
+    week = _Paged([{"id": str(i), "dismissed_at": NOW.isoformat() if i < 200 else None} for i in range(1200)])
+    with patch.object(db, "get_client", return_value=week):
+        assert run(db.caught_stats_since(NOW.isoformat())) == {"caught": 1200, "not_a_promise": 200}
+    assert len(week.ranges) == 2
+
+
+def test_the_task_counts_before_migration_051_say_not_set_up():
+    missing = _Paged([], boom=Exception("column tasks.dismissed_at does not exist"))
+    with patch.object(db, "get_client", return_value=missing):
+        with pytest.raises(db.TasksNotSetUp):
+            run(db.caught_stats_since(NOW.isoformat()))
+        with pytest.raises(db.TasksNotSetUp):
+            run(db.open_task_counts(["rohan"]))
 
 
 def test_qa_isn_t_someone_a_task_can_go_to():

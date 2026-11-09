@@ -8,7 +8,9 @@ logged and counted in /health (TASKS_HEALTH in app/db/supabase.py).
 from __future__ import annotations
 
 import logging
+import os
 import time as _time
+import traceback
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -57,6 +59,35 @@ def _first(name) -> str:
     return name.strip().split()[0] if isinstance(name, str) and name.strip() else ""
 
 
+_APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def what_failed(e: BaseException) -> str:
+    """What failed, never what was in it — for the ERROR logs around a
+    task's row. A database error can quote the row it refused ("Failing row
+    contains (…)"), and a task's title carries the client's first name, its
+    quote an e-mail or a phone. So: the error's type, the database's code,
+    and where in our code it came from ("APIError 23514 at tasks_service.py:84
+    → supabase.py:3383"). No message, no traceback text."""
+    code = getattr(e, "code", None)
+    ours = [f"{os.path.basename(f.filename)}:{f.lineno}" for f in traceback.extract_tb(e.__traceback__)
+            if os.path.abspath(f.filename).startswith(_APP_DIR + os.sep)]
+    where = f" at {' → '.join(dict.fromkeys([ours[0], ours[-1]]))}" if ours else ""
+    return f"{type(e).__name__}{f' {code}' if isinstance(code, (str, int)) and code != '' else ''}{where}"
+
+
+async def note(task_id: str, kind: str, actor_id: Optional[str], details: Optional[dict] = None) -> None:
+    """One line of a task's history, written after the task itself is saved.
+    A line that can't be written is logged and counted (tasks.event_failures
+    in /health), never the task's failure: the task is made or changed, and
+    an answer of "couldn't add" would have the person add it a second time."""
+    try:
+        await db.add_task_event(task_id, kind, actor_id, details)
+    except Exception as e:
+        db.TASKS_HEALTH["event_failures"] += 1
+        logger.error(f"[tasks] task {task_id}: its {kind} line wasn't written: {what_failed(e)}")
+
+
 async def catch_from_agent_message(conv: dict, msg: dict, sender_id: str) -> Optional[dict]:
     """The task an agent's message makes (a promise in the rules' phrases), or None.
 
@@ -90,14 +121,13 @@ async def catch_from_agent_message(conv: dict, msg: dict, sender_id: str) -> Opt
         if task is None:
             return None
         db.TASKS_HEALTH["caught"] += 1
-        await db.add_task_event(task["id"], "caught", sender_id,
-                                {"phrase": caught.phrase, "due_words": due.words, "due_kind": due.kind})
+        await note(task["id"], "caught", sender_id, {"phrase": caught.phrase, "due_words": due.words, "due_kind": due.kind})
         return task
     except db.TasksNotSetUp:  # noqa: silent — migration 051 not applied yet: _tasks_call logged it and counted it in /health (tasks.schema_missing); the message itself is already sent
         return None
     except Exception as e:
         db.TASKS_HEALTH["catch_failures"] += 1
-        logger.error(f"[tasks] catching a promise in {cid} failed: {e}", exc_info=True)
+        logger.error(f"[tasks] catching a promise in {cid} failed: {what_failed(e)}")
         return None
 
 
@@ -133,14 +163,14 @@ async def task_from_callback(conv: dict, message: dict, text: str) -> Optional[d
         if task is None:
             return None
         db.TASKS_HEALTH["client_asked"] += 1
-        await db.add_task_event(task["id"], "client_asked", None,
-                                {"with": "an agent" if owner else "the AI", "due_words": due.words, "due_kind": due.kind})
+        await note(task["id"], "client_asked", None,
+                   {"with": "an agent" if owner else "the AI", "due_words": due.words, "due_kind": due.kind})
         return task
     except db.TasksNotSetUp:  # noqa: silent — migration 051 not applied yet: _tasks_call logged it and counted it in /health (tasks.schema_missing); the AI already answered the client
         return None
     except Exception as e:
         db.TASKS_HEALTH["catch_failures"] += 1
-        logger.error(f"[tasks] call-back task for {cid} failed: {e}", exc_info=True)
+        logger.error(f"[tasks] call-back task for {cid} failed: {what_failed(e)}")
         return None
 
 
@@ -163,16 +193,16 @@ async def leave_shift(user_id: str) -> int:
         for tid in ids:
             if target:
                 await db.update_follow_up(tid, {"assignee_id": target, "unowned_reason": None, "unowned_from": None, "unowned_at": None})
-                await db.add_task_event(tid, "given_ready", None, {"from": user_id, "to": target})
+                await note(tid, "given_ready", None, {"from": user_id, "to": target})
             else:
                 await db.update_follow_up(tid, {"assignee_id": None, "unowned_reason": "left_shift",
                                                 "unowned_from": user_id, "unowned_at": now})
-                await db.add_task_event(tid, "unowned", None, {"reason": "left_shift", "from": user_id})
+                await note(tid, "unowned", None, {"reason": "left_shift", "from": user_id})
         db.TASKS_HEALTH["moved_to_ready" if target else "moved_unowned"] += len(ids)
         return len(ids)
     except db.TasksNotSetUp:  # noqa: silent — migration 051 not applied yet: there are no follow-up tasks to move; _tasks_call logged it and counted it in /health
         return 0
     except Exception as e:
         db.TASKS_HEALTH["move_failures"] += 1
-        logger.error(f"[tasks] moving {user_id}'s tasks after Not ready failed: {e}", exc_info=True)
+        logger.error(f"[tasks] moving {user_id}'s tasks after Not ready failed: {what_failed(e)}")
         return 0

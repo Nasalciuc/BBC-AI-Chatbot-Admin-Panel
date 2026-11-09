@@ -40,8 +40,12 @@ async def _task_alerts(user: dict) -> dict:
     late: list[dict] = []
     if _can_assign(reach):
         team_open, _ = await db.list_follow_ups(assignee_ids=reach["members"], with_unowned=True)
+        # The panel shows both lists as one, keyed by task id. A task given
+        # from the reader to a teammate between the two reads is in both:
+        # it stays in "mine", where it was read first.
+        mine_ids = {t.get("id") for t in soon}
         late = [t for t in team_open if t.get("assignee_id") and t["assignee_id"] != reach["id"]
-                and (d := due_of(t)) and d <= now - TEAM_LATE_AFTER][:20]
+                and t.get("id") not in mine_ids and (d := due_of(t)) and d <= now - TEAM_LATE_AFTER][:20]
     convs, leads = await db.get_follow_up_context([t["conversation_id"] for t in [*soon, *late] if t.get("conversation_id")])
     names = await db.get_user_names() if late else {}
 
