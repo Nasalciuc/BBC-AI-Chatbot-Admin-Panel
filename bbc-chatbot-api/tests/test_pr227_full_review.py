@@ -242,6 +242,19 @@ async def test_a_failed_reward_write_is_counted_and_logged_without_the_row(_rewa
 
 
 @pytest.mark.asyncio
+async def test_a_code_that_is_not_the_databases_is_not_logged(_reward_loop, caplog):
+    # An exception that isn't postgrest's could carry anything in .code.
+    err = _ApiError("Ana +1 555 014 2290", "boom")
+    with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=err)), \
+         patch("app.db.supabase.get_client", lambda: None), \
+         caplog.at_level("DEBUG", logger="app.learning.outcomes"):
+        await _reward_loop.record_ask("c1", "m1", "route", "v1")
+    [w] = _warnings(caplog)
+    assert "unrecognised-code" in w.getMessage()
+    assert "555" not in caplog.text and "Ana" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_a_missing_table_is_counted_apart_and_stays_at_debug(_reward_loop, caplog):
     with patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=_ApiError("PGRST205", "table not found"))), \
          patch("app.db.supabase.get_client", lambda: None), \

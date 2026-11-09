@@ -18,6 +18,7 @@ only the table that is not there yet (041 unapplied) stays at DEBUG.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from app.experiments import bucket
@@ -39,13 +40,22 @@ def _table_missing(e: Exception) -> bool:
     return _error_code(e) in _TABLE_MISSING_CODES
 
 
+# The shape of the database's codes: SQLSTATE ("23505", "42P01") or
+# PostgREST's own ("PGRST205"). Any other .code is not logged: an exception
+# that isn't the database's could carry anything there.
+_CODE_FORMAT = re.compile(r"PGRST\d{3}|[0-9A-Z]{5}")
+
+
 def _what(e: Exception) -> str:
     """The exception's type and the database's code, nothing else: a message
     can carry the submitted values ("invalid input syntax …: \"Ana\""), and
     the details can quote the whole row (CLAUDE.md: no PII in logs at INFO or above)."""
     from app.db.supabase import _error_code
 
-    return f"{type(e).__name__} {_error_code(e) or ''}".strip()
+    code = _error_code(e)
+    if code and not _CODE_FORMAT.fullmatch(code):
+        code = "unrecognised-code"
+    return f"{type(e).__name__} {code or ''}".strip()
 
 _SLOT_LEAD_FIELD = {
     "route": ("origin_code", "destination_code"),
