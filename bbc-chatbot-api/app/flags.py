@@ -89,16 +89,24 @@ def snapshot() -> dict[str, Any]:
 def _apply(raw: Any) -> None:
     global _snapshot, _loaded_at
     flags = raw if isinstance(raw, dict) else {}
-    _snapshot = {str(k).strip().upper(): v for k, v in flags.items()}
+    # A JSON null is no value: the environment, then the default, decide.
+    _snapshot = {str(k).strip().upper(): v for k, v in flags.items() if v is not None}
     _loaded_at = time.monotonic()
     FLAGS_HEALTH["loaded_at"] = time.time()
 
 
+_MISSING_CODES = ("42P01", "42703", "PGRST204", "PGRST205")
 _MISSING_MARKERS = ("does not exist", "could not find", "42p01", "42703", "pgrst204", "pgrst205")
 
 
 def _is_missing_source(exc: Exception) -> bool:
-    """The table or the column is not there yet — a migration not applied, not an outage."""
+    """The table or the column is not there yet — a migration not applied, not an outage.
+
+    By the database's own code when the error carries one (any other code is
+    a real failure, said every time); the text is read only without one."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.strip():
+        return code.strip().upper() in _MISSING_CODES
     text = str(exc).lower()
     mentions_source = "flags" in text or "app_settings" in text
     return mentions_source and any(m in text for m in _MISSING_MARKERS)
