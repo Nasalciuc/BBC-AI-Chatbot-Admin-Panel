@@ -66,3 +66,25 @@ def test_flag_off_keeps_the_old_haiku_and_has_no_fallback_to_itself(monkeypatch)
     # haiku == fallback_model: no second call to the same model
     assert seen == [settings.claude_haiku_model]
     assert text is None
+
+
+def test_a_55_call_sends_effort_in_the_body_not_as_a_keyword(monkeypatch):
+    # CodeRabbit #226: requirements allow SDKs without the typed output_config
+    # parameter; there the keyword is a TypeError, and classify fell back to
+    # GENERAL_QUESTION without trying the old Haiku.
+    flags._reset_for_tests()
+    monkeypatch.setenv("UTILITY_MODEL_55", "true")
+    seen = {}
+
+    def _create(**kw):
+        seen.update(kw)
+        return _ok_response()
+
+    client = MagicMock()
+    client.messages.create.side_effect = _create
+    with patch.object(claude, "_get_client", return_value=client), patch.object(claude, "record_ai_call"):
+        text, _ = claude._call_model(settings.claude_haiku_model, "sys", "hi", 50, 0.0, task="classify")
+    flags._reset_for_tests()
+    assert text == "ok" and seen["model"] == settings.claude_haiku_55_model
+    assert "output_config" not in seen
+    assert seen["extra_body"] == {"output_config": {"effort": "low"}}

@@ -127,6 +127,30 @@ async def test_missing_table_disables_without_crashing(monkeypatch):
     assert ledger.LEDGER_HEALTH["table_missing"] is True
 
 
+@pytest.mark.asyncio
+async def test_the_table_arriving_while_running_clears_the_missing_state(monkeypatch):
+    # CodeRabbit #226: migration 037 applied while the process runs. Rows were
+    # written, /health still said the table was missing, and a later real
+    # outage would never warn again.
+    calls = {"n": 0}
+
+    async def _first_missing(fn, idempotent=True, *, label="other"):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception('relation "ai_calls" does not exist')
+        return None
+
+    monkeypatch.setattr("app.db.supabase._run_sync", _first_missing)
+    monkeypatch.setattr("app.db.supabase.get_client", lambda: None)
+    ledger.record_ai_call(task="x", model="claude-haiku-5-5", cost=0.01)
+    await ledger.flush_once()
+    assert ledger.LEDGER_HEALTH["table_missing"] is True and ledger._warned_missing is True
+    ledger.record_ai_call(task="x", model="claude-haiku-5-5", cost=0.01)
+    await ledger.flush_once()
+    assert ledger.LEDGER_HEALTH["table_missing"] is False and ledger._warned_missing is False
+    assert ledger.LEDGER_HEALTH["flushed"] == 1
+
+
 # ── the AST guard ───────────────────────────────────────────────────────────
 
 def test_only_allowed_modules_call_the_sdk():

@@ -11,9 +11,11 @@ OUTPUT_GUARD_MODE (app/flags.py):
                 two days of watching before enforcing);
   - "enforce" : actually remove, set by the owner.
 
-Applied in one place — db.add_message for role="ai" — and, for the streamed
-path, through scrub_stream_buffer, which holds back a suspicious tail (digits,
-http, www., @) until it is whole so a redaction is never split across chunks.
+Applied where a reply is stored — db.add_message for role="ai", the one place
+that counts — and therefore to what the customer receives: a reply in the
+response or the greeting is the stored row's text, and a streamed reply goes
+out through StreamGuard, which in 'enforce' holds the text back a sentence at
+a time so a contact is scrubbed whole before any of it leaves.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from app.flags import flag
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_GUARD_HEALTH = {"scanned": 0, "would_remove": 0, "removed": 0, "alerts": 0}
+OUTPUT_GUARD_HEALTH = {"scanned": 0, "would_remove": 0, "removed": 0, "alerts": 0, "errors": 0}
 
 # Brand contacts that must survive. Built once from SITE_CONFIGS.
 _ALLOWED_PHONES: set[str] = set()
@@ -149,6 +151,16 @@ _ALERT_COOLDOWN = 3600.0
 _last_alert_at = 0.0
 
 
+def own_contacts(phone: Optional[str], email: Optional[str]) -> set[str]:
+    """The client's own phone digits and e-mail, which a reply may repeat back."""
+    out = set()
+    if phone:
+        out.add(_digits(str(phone)))
+    if email:
+        out.add(str(email).strip().lower())
+    return {x for x in out if x}
+
+
 async def _visitor_contact(conversation_id: Optional[str]) -> set[str]:
     """The conversation's own phone digits and email: the bot repeating the
     client's contact back in a summary is not a leak (review fix)."""
@@ -161,12 +173,7 @@ async def _visitor_contact(conversation_id: Optional[str]) -> set[str]:
     except Exception as e:
         logger.warning(f"[output-guard] contact lookup failed: {type(e).__name__}: {e}")
         return set()
-    out = set()
-    if conv.get("visitor_phone"):
-        out.add(_digits(str(conv["visitor_phone"])))
-    if conv.get("visitor_email"):
-        out.add(str(conv["visitor_email"]).strip().lower())
-    return {x for x in out if x}
+    return own_contacts(conv.get("visitor_phone"), conv.get("visitor_email"))
 
 
 def _is_own(snippet: str, own: set[str]) -> bool:
@@ -174,6 +181,10 @@ def _is_own(snippet: str, own: set[str]) -> bool:
         return False
     if "@" in snippet:
         return snippet.strip().lower() in own
+    # Digits are compared for a phone only: "scam9.com" carries a 9, and a
+    # client's phone ending in 9 must not let that link through as theirs.
+    if _kind(snippet) != "phone":
+        return False
     d = _digits(snippet)
     return bool(d) and any(d == o or o.endswith(d) or d.endswith(o) for o in own if o.isdigit())
 
@@ -217,7 +228,7 @@ _ALERT_TASKS: set = set()
 def _kind(snippet: str) -> str:
     if "@" in snippet:
         return "email"
-    if re.match(r"^(https?:|www\.)", snippet, re.I):
+    if re.match(r"^(https?:|www\.)", snippet, re.I) or _URL_RE.fullmatch(snippet):
         return "url"
     return "phone"
 
@@ -229,7 +240,7 @@ async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = No
     counts and kinds, never the values (rule 7: no PII at INFO or above)."""
     if not text:
         return text
-    mode = str(flag("OUTPUT_GUARD_MODE", "log")).strip().lower()
+    mode = _mode()
     OUTPUT_GUARD_HEALTH["scanned"] += 1
     clean, removed = _scrub(text)
     if not removed:
@@ -249,30 +260,88 @@ async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = No
         if len(foreign) == len(removed):
             return clean
         # Keep the client's own contact; scrub only the foreign ones.
-        out = text
-        for r in foreign:
-            out = out.replace(r, "[removed]")
-        return out
+        return _without_foreign(text, own)
     return text
 
 
-_TAIL_RE = re.compile(r"(?:[\d@]|https?:|www\.|\+)[\w@.:/\-]*$", re.I)
+def _mode() -> str:
+    return str(flag("OUTPUT_GUARD_MODE", "log")).strip().lower()
 
 
-def scrub_stream_buffer(buffer: str) -> tuple[str, str]:
-    """Split a streaming buffer into (safe_to_emit, held_tail).
+def _without_foreign(text: str, own: set[str]) -> str:
+    """The text with every non-brand contact removed, the client's own kept."""
+    _, removed = _scrub(text)
+    out = text
+    for r in removed:
+        if not _is_own(r, own):
+            out = out.replace(r, "[removed]")
+    return out
 
-    Holds back a trailing run that might be the start of a contact so a
-    redaction is never split across chunks. The caller scrubs safe_to_emit and
-    keeps held_tail for the next chunk; the final flush scrubs the remainder.
-    """
-    m = _TAIL_RE.search(buffer)
-    if not m:
-        return buffer, ""
-    return buffer[: m.start()], buffer[m.start():]
+
+def guard_failed(text: str, err: BaseException) -> str:
+    """The guard itself broke on a reply about to be stored (the caller logs
+    `err`): the reply is kept — add_message never loses one — and the failure
+    counted. In 'enforce' every contact that is not the brand's goes, the
+    client's own too (fail closed); in 'log' the text is kept as it would have
+    been."""
+    OUTPUT_GUARD_HEALTH["errors"] += 1
+    if _mode() != "enforce":
+        return text
+    try:
+        return _scrub(text)[0]
+    except Exception as e:  # noqa: silent — logged with the guard's own failure just above; the reply is stored as written
+        logger.error(f"[output-guard] scrub failed too, reply kept as written: {type(e).__name__}")
+        return text
+
+
+# The end of a sentence or a line. A URL, an e-mail or a phone never spans one.
+_PIECE_END = re.compile(r"[.!?](?=\s)\s*|\n\s*")
+
+
+class StreamGuard:
+    """What a streamed reply may send the customer now.
+
+    A chunk that has gone out cannot be taken back, so in 'enforce' the text
+    goes out a sentence (or a line) at a time and each piece is scrubbed whole:
+    a contact split across chunks is still seen whole. What is held when the
+    reply ends never needs sending — the stored reply (guarded, counted once
+    in add_message) replaces the streamed text at stream_end. In 'log' every
+    chunk goes out as it comes, as before."""
+
+    def __init__(self, own: Optional[set[str]] = None):
+        self.enforce = _mode() == "enforce"
+        self.own = own or set()
+        self._held = ""
+
+    def feed(self, delta: str) -> str:
+        if not self.enforce or not delta:
+            return delta
+        self._held += delta
+        cut = 0
+        for m in _PIECE_END.finditer(self._held):
+            cut = m.end()
+        if not cut:
+            return ""
+        piece, self._held = self._held[:cut], self._held[cut:]
+        try:
+            return _without_foreign(piece, self.own)
+        except Exception as e:  # noqa: silent — logged; the piece is withheld, stream_end brings the stored reply
+            logger.error(f"[output-guard] stream piece not scrubbed, withheld: {type(e).__name__}")
+            return ""
+
+    def flush(self) -> str:
+        """What is still held, scrubbed — for a reply that ends without a stored row."""
+        piece, self._held = self._held, ""
+        if not self.enforce or not piece:
+            return piece
+        try:
+            return _without_foreign(piece, self.own)
+        except Exception as e:  # noqa: silent — logged; nothing unscrubbed goes out
+            logger.error(f"[output-guard] stream tail not scrubbed, withheld: {type(e).__name__}")
+            return ""
 
 
 def _reset_for_tests() -> None:
     global _last_alert_at
     _last_alert_at = 0.0
-    OUTPUT_GUARD_HEALTH.update(scanned=0, would_remove=0, removed=0, alerts=0)
+    OUTPUT_GUARD_HEALTH.update(scanned=0, would_remove=0, removed=0, alerts=0, errors=0)

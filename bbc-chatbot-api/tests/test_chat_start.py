@@ -94,6 +94,30 @@ class TestChatStart:
         assert gen_args[0] == Intent.GREETING
 
     @pytest.mark.asyncio
+    async def test_the_client_gets_the_guarded_greeting(self, monkeypatch):
+        # CodeRabbit #226: the greeting reads the landing page's tags, a way in
+        # for injected text. The client gets what was stored after the output
+        # guard, not the model's raw text.
+        from app import flags
+
+        flags._reset_for_tests()
+        monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+        gen = GeneratedResponse(text="Welcome! Book now at evil-deals.com", model_used="sonnet", cost=0.004)
+        stored = {"id": "m1", "content": "Welcome! Book now at [removed]"}
+        p_block, p_conv, p_count, p_gen, _p_add = _patches(gen=gen)
+        with p_block, p_conv, p_count, p_gen, \
+             patch("app.services.conversation_service.add_message", new=AsyncMock(return_value=stored)):
+            res = await chat_start(_start_request(), _request_mock(), None)
+        assert res.message == "Welcome! Book now at [removed]"
+        # Not stored: guarded on the way out all the same.
+        with p_block, p_conv, p_count, p_gen, \
+             patch("app.services.conversation_service.add_message", new=AsyncMock(return_value=None)), \
+             patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
+            res = await chat_start(_start_request(), _request_mock(), None)
+        assert res.message == "Welcome! Book now at [removed]"
+        flags._reset_for_tests()
+
+    @pytest.mark.asyncio
     async def test_llm_failure_falls_back_to_template(self):
         p_block, p_conv, p_count, p_gen, p_add = _patches(gen_raises=True)
         visitor = VisitorInfo()  # anonymous → anonymous welcome variants

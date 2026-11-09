@@ -154,8 +154,11 @@ def test_selftest_clears_trust_when_spoof_echoes(monkeypatch):
     monkeypatch.setattr(settings, "cron_secret", "s")
 
     class _Resp:
+        def raise_for_status(self):
+            return None
+
         def json(self):
-            return {"client_ip": "203.0.113.7"}
+            return {"client_ip": "203.0.113.7", "source_ip": "203.0.113.7"}
 
     class _Client:
         async def __aenter__(self):
@@ -183,8 +186,11 @@ def test_selftest_keeps_trust_when_spoof_is_dropped(monkeypatch):
     monkeypatch.setattr(settings, "cron_secret", "s")
 
     class _Resp:
+        def raise_for_status(self):
+            return None
+
         def json(self):
-            return {"client_ip": "198.51.100.9"}
+            return {"client_ip": "198.51.100.9", "source_ip": "198.51.100.9"}
 
     class _Client:
         async def __aenter__(self):
@@ -261,6 +267,9 @@ def test_a_detected_edge_stays_detected_while_it_is_unchanged(monkeypatch):
     cip.CLIENT_IP_HEALTH["ip_trusted"] = False
 
     class _Resp:
+        def raise_for_status(self):
+            return None
+
         def json(self):  # what /health/ip-echo answers while the fallback is on
             return {"client_ip": "198.51.100.4", "source_ip": "203.0.113.7"}
 
@@ -280,3 +289,73 @@ def test_a_detected_edge_stays_detected_while_it_is_unchanged(monkeypatch):
             out = asyncio.run(ip_selftest.run_ip_selftest())
             assert out["spoofable"] is True and cip.ip_trusted() is False
 
+
+
+# ── CodeRabbit #226 full review ───────────────────────────────────────────
+
+def _echo_client(status: int, body: dict):
+    import httpx
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **k):
+            return httpx.Response(status, json=body, request=httpx.Request("GET", url))
+
+    return _Client()
+
+
+@pytest.mark.parametrize("status, body", [
+    (401, {"detail": "Invalid cron token"}),          # a rotated CRON_SECRET
+    (200, {"client_ip": "198.51.100.9"}),             # no source_ip: no evidence
+    (200, {"source_ip": ""}),
+])
+def test_a_selftest_without_a_real_echo_proves_nothing(status, body, monkeypatch):
+    from app.services import ip_selftest
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "public_api_url", "https://api.test")
+    monkeypatch.setattr(settings, "cron_secret", "s")
+    cip.CLIENT_IP_HEALTH["ip_trusted"] = False  # a spoof was found before
+    with patch("httpx.AsyncClient", return_value=_echo_client(status, body)):
+        out = asyncio.run(ip_selftest.run_ip_selftest())
+    assert "error" in out
+    # Not verified, and the earlier finding stands.
+    assert cip.CLIENT_IP_HEALTH["ip_verified"] is False and cip.ip_trusted() is False
+
+
+def test_the_missing_header_alert_task_is_held_until_it_ends():
+    sent = asyncio.Event()
+
+    async def _alert(*a, **k):
+        sent.set()
+
+    async def _run():
+        with patch("app.services.email.send_ops_alert_email", new=_alert):
+            cip._alert_missing_once("x-real-ip")
+            assert len(cip._ALERT_TASKS) == 1
+            await asyncio.wait_for(sent.wait(), 1)
+            await asyncio.sleep(0)
+        assert not cip._ALERT_TASKS
+
+    asyncio.run(_run())
+
+
+def test_a_login_read_leaves_no_key_behind():
+    for i in range(50):
+        assert login_guard.retry_after(f"nobody{i}@x.com", "1.1.1.1") == 0
+    assert login_guard._mem == {}
+
+
+def test_memory_drops_keys_past_the_window_once_it_is_large(monkeypatch):
+    monkeypatch.setattr(login_guard, "_SWEEP_AT", 100)
+    old = 1_000_000.0
+    for i in range(100):
+        login_guard._record_memory(f"login_fail:a{i}@x.com|*", old)
+    assert len(login_guard._mem) == 100
+    login_guard._record_memory("login_fail:new@x.com|*", old + login_guard._WINDOW + 1)
+    assert list(login_guard._mem) == ["login_fail:new@x.com|*"]

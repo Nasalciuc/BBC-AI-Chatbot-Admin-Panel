@@ -16,16 +16,21 @@ with patch("app.db.supabase.get_client"):
     from app.main import app
 
 from app import flags
+from app.security import client_ip as cip
 from app.security import login_guard
 
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
+    # The per-IP throttle needs the edge trusted; a test elsewhere that leaves
+    # ip_trusted False would turn this file's pairs into one email key.
     flags._reset_for_tests()
     login_guard._reset_for_tests()
+    cip._reset_for_tests()
     monkeypatch.setattr("app.services.response_cache._get_redis", lambda: None)
     yield
     login_guard._reset_for_tests()
+    cip._reset_for_tests()
 
 
 async def _post(email, ip="7.7.7.7"):
