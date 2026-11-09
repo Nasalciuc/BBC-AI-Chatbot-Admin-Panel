@@ -9,7 +9,9 @@ claim and a fresh user all read as 0, so 0 == 0 passes. A user whose row is
 gone reads as NO_USER, which no token matches: deleting the row ends the
 sessions, unbumped ones included. A failed read is not 0: it fails closed (the
 request is a 401) unless this process already holds a version for the user. That entry cannot predate a bump, because a bump drops
-it (invalidate_cache) in this same process (ADR-5, one process). The read is sync
+it (invalidate_cache) in this same process (ADR-5, one process), and a read
+that was in flight while a bump landed is neither cached nor allowed to fall
+back on the dropped entry. The read is sync
 (get_current_user runs under a threadpool Depends) and cached, so it adds at
 most one cheap query per user per minute.
 """
@@ -26,6 +28,10 @@ logger = logging.getLogger(__name__)
 _TTL = 60.0
 _cache: dict[str, tuple[int, float]] = {}
 _lock = Lock()
+# Moved by every invalidate_cache. A read that started before a bump's write
+# may return the old version after the bump dropped the entry: that read
+# answers its own request, and is never cached for the next ones.
+_generation = 0
 _missing_column = False
 
 TOKEN_VERSION_HEALTH: dict[str, int] = {"read_failed": 0, "refused_unreadable": 0, "bump_failed": 0}
@@ -48,16 +54,19 @@ def current_version(user_id: str) -> Optional[int]:
         hit = _cache.get(user_id)
         if hit and now - hit[1] < _TTL:
             return hit[0]
+        seen = _generation
     version = _read(user_id)
+    with _lock:
+        bumped = _generation != seen  # a bump landed while this read was in flight
+        if version is not None and not bumped:
+            _cache[user_id] = (version, now)
     if version is None:
-        # Keep serving the last version read in this process (a bump would
-        # have dropped it); with none, refuse.
-        if hit is not None:
+        # Keep serving the last version read in this process, unless a bump
+        # dropped it meanwhile; with none, refuse.
+        if hit is not None and not bumped:
             return hit[0]
         TOKEN_VERSION_HEALTH["refused_unreadable"] += 1
         return None
-    with _lock:
-        _cache[user_id] = (version, now)
     return version
 
 
@@ -92,8 +101,10 @@ def matches(user_id: str, claim: Optional[int]) -> bool:
 
 
 def invalidate_cache(user_id: str) -> None:
+    global _generation
     with _lock:
         _cache.pop(user_id, None)
+        _generation += 1
 
 
 def _reset_for_tests() -> None:
