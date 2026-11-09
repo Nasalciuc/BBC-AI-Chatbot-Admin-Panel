@@ -19,6 +19,9 @@ import { QueueSection } from './components/queue-section'
 import { ChatAvatar } from './components/chat-avatar'
 import { idleMinutes, IDLE_BADGE_MIN, IDLE_NUDGE_MIN } from './idle'
 import ConversationDetail, { type ChatLayout } from './detail'
+import { ToRead } from './to-read'
+import { useReadState, useToRead } from './to-read-state'
+import { unreadCount } from './to-read-view'
 import {
   avatarClasses,
   initials,
@@ -46,7 +49,7 @@ const TAG_FILTERS: { key: ConversationTag; label: string }[] = [
 ]
 const TAG_LABELS = Object.fromEntries(TAG_FILTERS.map((t) => [t.key, t.label])) as Record<ConversationTag, string>
 
-type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed'
+type TabKey = 'my_active' | 'my_closed' | 'all_active' | 'all_closed' | 'to_read'
 
 const AGENT_TABS: { key: TabKey; label: string; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'Mine', params: { assigned_to: 'me', status: 'active' } },
@@ -56,8 +59,13 @@ const AGENT_TABS: { key: TabKey; label: string; params: Record<string, string> }
 const MANAGER_TABS: { key: TabKey; label: string; params: Record<string, string> }[] = [
   { key: 'my_active', label: 'Mine', params: { assigned_to: 'me', status: 'active' } },
   { key: 'all_active', label: 'All active', params: { assigned_to: 'all', status: 'active' } },
+  // Supervisor and owner: this week's lost chats and last week's sample.
+  { key: 'to_read', label: 'To read', params: {} },
   { key: 'all_closed', label: 'Closed', params: { assigned_to: 'all', status: 'closed' } },
 ]
+
+/** To read: supervisors (their team) and the owner, admin, dev (everyone). */
+const READ_ROLES = ['owner', 'admin', 'dev', 'supervisor']
 
 /** Container widths where the layout changes: three columns, two, one. */
 const WIDE_MIN = 1120
@@ -86,8 +94,9 @@ export function Chats() {
   // Outcome-tag chips: oversight roles only (team-scoped on the backend
   // for supervisors; no_engagement is global regardless of role).
   const canFilterTag = ['owner', 'admin', 'dev', 'supervisor', 'qa'].includes(role)
+  const canRead = READ_ROLES.includes(role)
   const visibleTabs = (isManager ? MANAGER_TABS : AGENT_TABS).filter(
-    (t) => !(hideMyActive && t.key === 'my_active')
+    (t) => !(hideMyActive && t.key === 'my_active') && (t.key !== 'to_read' || canRead)
   )
   const embedded = isEmbedded()
   const operator = isOperatorRole(role)
@@ -185,13 +194,19 @@ export function Chats() {
   // instead of fetching the same list a second time every 5s. Changing the key
   // shape or the params below without updating that constant reintroduces the
   // duplicate request.
+  const reading = activeTab === 'to_read'
   const { data: convResponse, isLoading, isError } = useQuery({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter, tagFilter],
     queryFn: () => getConversations(listParams),
+    enabled: !reading,
     // Bug 3: agents need near-realtime assignment visibility
     refetchInterval: dormant ? false : 5_000,
   })
+  // To read: the list (shared with the tab) and what this browser has read.
+  const toRead = useToRead(canRead)
+  const [readKeys, markRead] = useReadState()
+  const toReadUnread = unreadCount(toRead.data, readKeys)
   const conversations: Conversation[] = useMemo(() => convResponse?.data ?? [], [convResponse])
 
   // Most urgent first: no reply (red), then your turn / just taken (amber),
@@ -365,6 +380,34 @@ export function Chats() {
               ? 'No open chats right now. The assistant is handling the site.'
               : 'No closed chats.'
 
+  const tabBar = (
+    <div className='flex flex-wrap gap-2'>
+      <div role='tablist' aria-label='Which chats' className='flex min-w-[180px] flex-1 gap-1 rounded-[14px] bg-k-ececec p-1'>
+        {visibleTabs.map(t => {
+          const n = t.key === 'to_read' ? toReadUnread : counts[t.key as Exclude<TabKey, 'to_read'>]
+          return (
+            <button
+              key={t.key}
+              type='button'
+              role='tab'
+              aria-selected={activeTab === t.key}
+              onClick={() => { setActiveTab(t.key); setSelectedId(null) }}
+              className={cn(
+                'flex h-[34px] flex-1 items-center justify-center gap-1.5 rounded-[10px] px-2 text-[13px] whitespace-nowrap text-k-202020 transition-colors',
+                activeTab === t.key ? 'bg-k-ffffff font-bold shadow-[0_1px_2px_rgba(32,32,32,0.10)]' : 'hover:bg-k-f4f4f4'
+              )}
+            >
+              {t.label}
+              {(t.key !== 'to_read' || n > 0) && (
+                <span className={cn('font-normal', (t.key === 'all_active' && n > 0 && !isManager) || (t.key === 'to_read' && n > 0) ? 'text-k-b3261e' : 'text-k-6b6b6b')}>{n}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+
   const listColumn = rail ? (
     <section aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
       <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} rail />
@@ -407,26 +450,7 @@ export function Chats() {
     >
       <div className={cn('flex flex-col gap-3 pb-2.5', layout === 'narrow' ? 'px-0 pt-1' : 'px-3.5 pt-3.5')}>
         <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
-        <div className='flex flex-wrap gap-2'>
-          <div role='tablist' aria-label='Which chats' className='flex min-w-[180px] flex-1 gap-1 rounded-[14px] bg-k-ececec p-1'>
-            {visibleTabs.map(t => (
-              <button
-                key={t.key}
-                type='button'
-                role='tab'
-                aria-selected={activeTab === t.key}
-                onClick={() => { setActiveTab(t.key); setSelectedId(null) }}
-                className={cn(
-                  'flex h-[34px] flex-1 items-center justify-center gap-1.5 rounded-[10px] px-2 text-[13px] text-k-202020 transition-colors',
-                  activeTab === t.key ? 'bg-k-ffffff font-bold shadow-[0_1px_2px_rgba(32,32,32,0.10)]' : 'hover:bg-k-f4f4f4'
-                )}
-              >
-                {t.label}
-                <span className={cn('font-normal', t.key === 'all_active' && counts[t.key] > 0 && !isManager ? 'text-k-b3261e' : 'text-k-6b6b6b')}>{counts[t.key]}</span>
-              </button>
-            ))}
-          </div>
-        </div>
+        {tabBar}
         <div className='flex gap-2'>
           <label className='relative flex flex-1'>
             <span className='sr-only'>Search chats</span>
@@ -592,6 +616,19 @@ export function Chats() {
       )}
 
       <div ref={containerRef} className={cn('flex min-h-0 flex-1', layout === 'narrow' ? 'gap-0' : 'gap-4')}>
+        {reading ? (
+          <ToRead
+            layout={layout}
+            tabBar={tabBar}
+            list={toRead.data}
+            isError={toRead.isError}
+            onRetry={() => toRead.refetch()}
+            read={readKeys}
+            markRead={markRead}
+            scoped={role === 'supervisor'}
+          />
+        ) : (
+        <>
         {listColumn}
         {selectedId ? (
           <div className='min-w-0 flex-1'>
@@ -616,6 +653,8 @@ export function Chats() {
               <div className='max-w-[360px] text-sm leading-normal text-k-555555'>Choose a chat on the left, or take one that is waiting.</div>
             </section>
           )
+        )}
+        </>
         )}
       </div>
     </main>

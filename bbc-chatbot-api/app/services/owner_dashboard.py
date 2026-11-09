@@ -420,7 +420,13 @@ def build_owner_dashboard(
 
     def chats_row(cid: str) -> dict:
         c = convs.get(cid, {})
-        return {"id": cid, "first_name": _first_name(c.get("visitor_name")), "chat_number": c.get("chat_number")}
+        # team_id lets a team-scoped viewer keep only the chats they can open,
+        # visitor_name lets a supervisor see the same masked name as in
+        # Conversations; redact() always takes both out before the page.
+        return {
+            "id": cid, "first_name": _first_name(c.get("visitor_name")), "chat_number": c.get("chat_number"),
+            "team_id": c.get("team_id"), "visitor_name": c.get("visitor_name"),
+        }
 
     # ── Overview cards and chats by day ──
     def cohort(rows: list[dict]) -> dict:
@@ -771,3 +777,91 @@ def build_owner_dashboard(
         },
         "attention": attention,
     }
+
+
+# ── Scoped views (supervisor, project manager, QA) ───────────────────────────
+# Same numbers, cut to what a role may see. The Dashboard of a supervisor or a
+# project manager covers their tunnel (the design says "All sales chats"), as
+# the old dashboard did; Conversations stays team-scoped, so the chat links on
+# the page keep only the chats of their own teams, the ones they can open.
+
+_CHAT_REF_KEYS = frozenset({"id", "first_name", "chat_number", "team_id", "visitor_name"})
+
+
+def scope_inputs(inputs: dict, tunnel: Optional[str]) -> dict:
+    """The same inputs, cut to one tunnel's chats. Ready hours count only the
+    people who work that tunnel. `tunnel` None (or "all") keeps everything."""
+    if tunnel not in ("sales", "support"):
+        return inputs
+    convs = [c for c in inputs["conversations"] if c.get("tunnel") == tunnel]
+    ids = {c["id"] for c in convs}
+
+    def mine(rows: list[dict]) -> list[dict]:
+        return [r for r in rows if r.get("conversation_id") in ids]
+
+    workers = {
+        uid for uid, u in inputs["users"].items()
+        if u.get("role") == tunnel or u.get("tunnel_scope") in (tunnel, "all")
+    }
+    return {
+        **inputs,
+        "conversations": convs,
+        "leads": {cid: row for cid, row in inputs["leads"].items() if cid in ids},
+        "activity": mine(inputs["activity"]),
+        "user_msgs": mine(inputs["user_msgs"]),
+        "agent_msgs": mine(inputs["agent_msgs"]),
+        "ai_msgs": mine(inputs["ai_msgs"]),
+        "runs": mine(inputs["runs"]),
+        "ready_log": [r for r in inputs["ready_log"] if r.get("user_id") in workers],
+    }
+
+
+def redact(
+    data: dict,
+    *,
+    mask_names: bool,
+    show_cost: bool,
+    show_sources: bool,
+    team_ids: Optional[set[str]] = None,
+) -> dict:
+    """What a role may see of a built dashboard. Never mutates `data` (it is
+    shared through the cache).
+
+    mask_names: clients' names masked (supervisors), as Conversations masks them.
+    show_cost: the AI's cost, answer counts and latency (owner, admin, dev).
+    show_sources: marketing sources, sites, devices and pages (owner, admin, dev).
+    team_ids: when set, chat links keep only chats of these teams; the counts
+    next to them don't change."""
+    from app.security.pii import mask_name
+
+    def chat_ref(node: Any) -> bool:
+        return isinstance(node, dict) and set(node) == _CHAT_REF_KEYS
+
+    def walk(node: Any) -> Any:
+        if chat_ref(node):
+            full = node["visitor_name"]
+            return {
+                "id": node["id"],
+                # Masked the way Conversations masks it: the whole name.
+                "first_name": (mask_name(full.strip()) or "") if mask_names and isinstance(full, str) and full.strip()
+                else "" if mask_names else node["first_name"],
+                "chat_number": node["chat_number"],
+            }
+        if isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [
+                walk(x) for x in node
+                if not (team_ids is not None and chat_ref(x) and x.get("team_id") not in team_ids)
+            ]
+        return node
+
+    out = walk(data)
+    if not show_cost:
+        out["quality"]["ai"] = None
+        out["attention"] = [a for a in out["attention"] if a.get("kind") != "ai_latency"]
+    if not show_sources:
+        out["sources"] = None
+        out["source_spellings"] = []
+        out["sites"] = []
+    return out

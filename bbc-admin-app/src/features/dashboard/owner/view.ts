@@ -1,9 +1,51 @@
-// What the owner's Dashboard says — pure, so every sentence is pinned by
-// tests/owner-dashboard-view.test.ts. Numbers come from GET /api/dashboard/owner.
+// What the Dashboard says — pure, so every sentence is pinned by
+// tests/owner-dashboard-view.test.ts. Numbers come from GET /api/dashboard/owner
+// (owner, admin, dev) or /api/dashboard/team (supervisor, PM, QA).
 import type { AttentionItem, LeaveRow, OwnerDashboard, SourceRow } from '../../../lib/types.ts'
 
 export type Range = 1 | 7 | 30
 export type Tone = 'good' | 'bad' | 'same'
+
+/** Whose Dashboard: the owner's (owner, admin, dev), a team's (supervisor and
+ *  project manager: their tunnel) or QA's (all chats, quality first). */
+export type DashVariant = 'owner' | 'team' | 'qa'
+export type DashTab = 'overview' | 'conversion' | 'agents' | 'quality'
+
+export const TAB_LABEL: Record<DashTab, string> = {
+  overview: 'Overview',
+  conversion: 'Conversion',
+  agents: 'Agents',
+  quality: 'Quality',
+}
+
+export const TABS_FOR: Record<DashVariant, DashTab[]> = {
+  owner: ['overview', 'conversion', 'agents', 'quality'],
+  team: ['overview', 'agents'],
+  qa: ['quality', 'conversion', 'agents'],
+}
+
+/** The first line under the title: whose chats these are. */
+export function scopeText(d: Pick<OwnerDashboard, 'sites' | 'scope'>, variant: DashVariant): string {
+  if (variant === 'owner') return `${sitesText(d.sites)} · all chats`
+  const tunnel = d.scope?.tunnel ?? 'all'
+  return tunnel === 'all' ? 'All chats' : `All ${tunnel} chats`
+}
+
+/** On a phone only the first tab is shown; this names the rest. */
+export function phoneNote(variant: DashVariant): string {
+  const rest = TABS_FOR[variant].slice(1).map((t) => TAB_LABEL[t])
+  if (!rest.length) return ''
+  const names = rest.length === 1 ? rest[0] : `${rest.slice(0, -1).join(', ')} and ${rest[rest.length - 1]}`
+  return `${names} open${rest.length === 1 ? 's' : ''} on a computer.`
+}
+
+/** The first line of a list of chats (OpenChats). `teamOnly`: the list keeps
+ *  only the viewer's own teams' chats; the verb agrees with those shown. */
+export function openChatsLine(shown: number, count: number | undefined, teamOnly: boolean): string {
+  if (teamOnly) return `${shown} of ${count ?? shown} ${shown === 1 ? 'is' : 'are'} your team’s; only those open for you.`
+  if (count && count > shown) return `The ${shown} newest of ${count}.`
+  return `${shown} ${shown === 1 ? 'chat' : 'chats'}.`
+}
 
 export function pct(n: number, d: number): number | null {
   return d > 0 ? Math.round((n / d) * 100) : null

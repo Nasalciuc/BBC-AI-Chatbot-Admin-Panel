@@ -55,6 +55,10 @@ async def health() -> dict:
     from app.api.dashboard import OWNER_DASHBOARD_HEALTH
     # The Leads page's shared read: how often it reads, and how many rows.
     from app.db.supabase import LEADS_UNIVERSE_HEALTH
+    # To read (Conversations): one shared read a minute; failures 502.
+    from app.api.conversations import TO_READ_HEALTH
+    # Team · Now: one shared read every 10 s; failures 502.
+    from app.api.teams import TEAM_NOW_HEALTH
 
     if not settings.debug:
         return {
@@ -84,6 +88,8 @@ async def health() -> dict:
             "phantom_turns": dict(PIPELINE_HEALTH),
             "owner_dashboard": dict(OWNER_DASHBOARD_HEALTH),
             "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
+            "to_read": dict(TO_READ_HEALTH),
+            "team_now": dict(TEAM_NOW_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -150,4 +156,6 @@ async def health() -> dict:
         "phantom_turns": dict(PIPELINE_HEALTH),
         "owner_dashboard": dict(OWNER_DASHBOARD_HEALTH),
         "leads_universe": dict(LEADS_UNIVERSE_HEALTH),
+        "to_read": dict(TO_READ_HEALTH),
+        "team_now": dict(TEAM_NOW_HEALTH),
     }

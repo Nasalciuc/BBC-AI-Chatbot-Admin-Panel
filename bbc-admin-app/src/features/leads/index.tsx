@@ -10,14 +10,25 @@ import { useAuthStore } from '@/stores/auth-store'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
 import { LeadPanel } from './components/lead-panel'
-import { LEVELS, TAB_TEXT, TONE_DOT, TONE_TEXT, ageText, chatWithText, crmLine, leadsCsv, personLine, summaryCards, tripLine } from './view'
+import {
+  LEVELS,
+  TAB_LABEL,
+  TAB_TEXT,
+  TONE_DOT,
+  TONE_TEXT,
+  ageText,
+  chatWithText,
+  crmLine,
+  leadsCsv,
+  leadsTabsFor,
+  navText,
+  personLine,
+  reviewCards,
+  summaryCards,
+  tripLine,
+} from './view'
 
 const LIMIT = 50
-const TABS: { key: LeadsView; label: string }[] = [
-  { key: 'not_in_crm', label: 'Not in the CRM' },
-  { key: 'to_review', label: 'To review' },
-  { key: 'all', label: 'All' },
-]
 const ORDERS: { key: LeadsOrder; label: string }[] = [
   { key: 'oldest', label: 'Oldest first' },
   { key: 'closest', label: 'Closest to Ready' },
@@ -39,17 +50,21 @@ function useDebounced<T>(value: T, ms: number): T {
 /**
  * Leads: what reached the CRM and what didn't. Owner, admin and QA (the
  * route guard). The rows, the tabs and their counts come from one server
- * definition (GET /api/leads?view=…).
+ * definition (GET /api/leads?view=…). QA reads it as a reviewer: To review
+ * first, with notes and "Mark reviewed and next" in the panel.
  */
 export function Leads() {
   const role = useAuthStore((s) => s.auth.user?.role ?? '')
+  const meId = useAuthStore((s) => s.auth.user?.accountNo)
+  const tabs = leadsTabsFor(role)
+  const isQa = role === 'qa'
   const params = useSearch({ strict: false }) as { view?: LeadsView; level?: LeadLevel }
   const qc = useQueryClient()
   const canReview = ['owner', 'admin', 'supervisor', 'qa'].includes(role)
   const canSend = ['owner', 'admin', 'dev'].includes(role)
   const canLookUp = ['owner', 'admin', 'qa'].includes(role)
 
-  const [view, setView] = useState<LeadsView>(params.view ?? 'not_in_crm')
+  const [view, setView] = useState<LeadsView>(params.view && tabs.includes(params.view) ? params.view : tabs[0])
   const [level, setLevel] = useState<LeadLevel | ''>(params.level ?? '')
   const [withWho, setWithWho] = useState<'' | 'person' | 'ai'>('')
   const [order, setOrder] = useState<LeadsOrder | null>(null)
@@ -96,6 +111,16 @@ export function Leads() {
   const counts = data?.counts
   const shownOrder = order ?? data?.order ?? (view === 'to_review' ? 'oldest' : 'newest')
   const openRow = openSnap
+  // QA goes from one lead to the next on this page of the list.
+  const openIndex = openSnap ? rows.findIndex((r) => r.id === openSnap.id) : -1
+  const nav =
+    openSnap && openIndex >= 0 && data
+      ? {
+          text: navText(offset + openIndex, data.count, view),
+          prev: openIndex > 0 ? () => setOpenSnap(rows[openIndex - 1]) : undefined,
+          next: openIndex < rows.length - 1 ? () => setOpenSnap(rows[openIndex + 1]) : undefined,
+        }
+      : undefined
   const [exporting, setExporting] = useState(false)
 
   const exportCsv = async () => {
@@ -120,7 +145,7 @@ export function Leads() {
     <main id='content' className='flex flex-col gap-4 px-4 pt-6 pb-9 md:px-7 md:pt-7'>
       <PageHeader
         title='Leads'
-        subtitle='Every lead the chat collects, from first message to the CRM'
+        subtitle={isQa ? 'Read the conversations and check how each lead was handled' : 'Every lead the chat collects, from first message to the CRM'}
         actions={
           <div className='flex items-center gap-2.5'>
             <button
@@ -137,29 +162,30 @@ export function Leads() {
       />
 
       <div role='tablist' aria-label='Leads' className='flex w-fit max-w-full flex-wrap gap-1 rounded-2xl bg-k-f2f2f2 p-1'>
-        {TABS.map((t) => {
-          const n = counts?.[t.key]
+        {tabs.map((key) => {
+          const n = counts?.[key]
           return (
             <button
-              key={t.key}
+              key={key}
               type='button'
               role='tab'
-              aria-selected={view === t.key}
+              aria-selected={view === key}
               onClick={() => {
-                setView(t.key)
+                setView(key)
                 setOrder(null)
+                setOpenSnap(null)
               }}
               className={cn(
                 'flex h-10 items-center gap-2 rounded-xl px-4 text-[15px] focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
-                view === t.key ? 'bg-k-ffffff font-bold text-k-202020 shadow-sm' : 'text-k-444444'
+                view === key ? 'bg-k-ffffff font-bold text-k-202020 shadow-sm' : 'text-k-444444'
               )}
             >
-              {t.label}
+              {TAB_LABEL[key]}
               {n !== undefined && (
                 <span
                   className={cn(
                     'rounded-full px-1.5 text-xs font-bold',
-                    t.key === 'not_in_crm' && n > 0 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-e9e9e9 text-k-444444'
+                    key === 'not_in_crm' && n > 0 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-e9e9e9 text-k-444444'
                   )}
                 >
                   {n}
@@ -204,6 +230,17 @@ export function Leads() {
           </label>
         </div>
       </div>
+
+      {isQa && (view === 'to_review' || view === 'reviewed') && data?.review && (
+        <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
+          {reviewCards(data.review).map((c, i) => (
+            <div key={c.text} className={cn('flex items-baseline gap-2 rounded-[18px] px-4 py-3', i === 0 ? 'bg-k-fdf6e3' : 'bg-k-f7f7f7')}>
+              <span className='text-2xl font-bold text-k-202020'>{c.n}</span>
+              <span className='text-[13px] leading-[1.3] text-k-444444'>{c.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {view === 'not_in_crm' && data?.summary && summaryCards(data.summary).length > 0 && (
         <div className='grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5'>
@@ -256,7 +293,9 @@ export function Leads() {
               ? 'Every lead with a phone is in the CRM.'
               : view === 'to_review'
                 ? 'No ready lead is waiting for review.'
-                : 'No leads yet.'}
+                : view === 'reviewed'
+                  ? 'No lead has been reviewed yet.'
+                  : 'No leads yet.'}
         </div>
       ) : (
         <div className={cn('overflow-x-auto rounded-[20px] ring-1 ring-k-ececec', list.isFetching && 'opacity-70')}>
@@ -365,12 +404,15 @@ export function Leads() {
       <LeadPanel
         row={openRow}
         onClose={() => setOpenSnap(null)}
-        onPatched={(patch) => setOpenSnap((s) => (s ? { ...s, ...patch } : s))}
+        onPatched={(leadId, patch) => setOpenSnap((s) => (s && s.id === leadId ? { ...s, ...patch } : s))}
         canReview={canReview}
         canSend={canSend}
         canLookUp={canLookUp}
         userNames={userNames}
         nowMs={nowMs}
+        meId={meId}
+        nav={canReview ? nav : undefined}
+        reviewFirst={isQa}
       />
     </main>
   )

@@ -2,9 +2,60 @@ import { Link } from '@tanstack/react-router'
 import type { OwnerDashboard } from '@/lib/types'
 import { AttentionList, Headline, Panel, StatCard, linkCls } from './bits'
 import { DayBars } from './charts'
-import { ATTENTION_LINES, attentionView, delta, overviewHeadline, pct, plural, type AttentionView } from './view'
+import { ATTENTION_LINES, attentionView, delta, overviewHeadline, pct, plural, secondsText, type AttentionView } from './view'
 
 export type Go = (to: AttentionView['action']['to'] | 'conversion') => void
+
+/** A supervisor's or PM's cards: what their agents did with the chats. No
+ *  Leads link (the page isn't theirs) and no AI-only rate (the owner's). */
+function TeamCards({ d, go, tabs }: { d: OwnerDashboard; go: Go; tabs: boolean }) {
+  const now = d.overview.now
+  const a = d.agents.now
+  return (
+    <div className='grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4'>
+      <StatCard
+        label='Ready to quote'
+        value={String(now.ready)}
+        delta={delta(now.ready, d.overview.before.ready, d.days)}
+        tint='bg-k-fdf6e3'
+      >
+        {now.ready === 0
+          ? 'No client confirmed a complete trip in this period.'
+          : `${now.ready_ai_only} from chats only with the AI, ${now.ready_with_agent} with an agent: after the take nothing new is read from the chat.`}
+      </StatCard>
+      <StatCard label='Given to agents' value={String(a.given)}>
+        Taken from the queue with Take, or given by the routing.
+      </StatCard>
+      <StatCard
+        label='Went back to the assistant'
+        value={String(a.went_back)}
+        delta={delta(a.went_back, d.agents.before.went_back, d.days, { upIsGood: false })}
+        action={
+          tabs && a.went_back > 0 ? (
+            <button type='button' onClick={() => go('agents')} className={linkCls}>
+              See who
+            </button>
+          ) : undefined
+        }
+      >
+        The agent didn’t answer in time.
+      </StatCard>
+      <StatCard
+        label='First reply'
+        value={secondsText(a.first_reply_median_s)}
+        action={
+          tabs ? (
+            <button type='button' onClick={() => go('agent-table')} className={linkCls}>
+              See by agent
+            </button>
+          ) : undefined
+        }
+      >
+        Median, from the take to the first message. After 90 s the chat goes back to the assistant.
+      </StatCard>
+    </div>
+  )
+}
 
 /** `tabs`: the other tabs can open (not on a phone, which shows only the Overview). */
 export function OverviewCards({ d, go, tabs }: { d: OwnerDashboard; go: Go; tabs: boolean }) {
@@ -77,14 +128,23 @@ export function OverviewCards({ d, go, tabs }: { d: OwnerDashboard; go: Go; tabs
   )
 }
 
-export function Overview({ d, go, tabs, today }: { d: OwnerDashboard; go: Go; tabs: boolean; today: string }) {
+export function Overview({ d, go, tabs, today, team = false }: { d: OwnerDashboard; go: Go; tabs: boolean; today: string; team?: boolean }) {
   const items = d.attention.map((a) => attentionView(a, d.quality.qa_accounts))
   return (
     <div className='flex flex-col gap-[18px]'>
       <Headline text={overviewHeadline(d)} />
-      <OverviewCards d={d} go={go} tabs={tabs} />
+      {team ? <TeamCards d={d} go={go} tabs={tabs} /> : <OverviewCards d={d} go={go} tabs={tabs} />}
       <Panel title='Needs attention'>
-        <AttentionList items={items} onAction={go} canOpen={(to) => tabs || to === 'review'} note={ATTENTION_LINES} />
+        <AttentionList
+          items={items}
+          onAction={go}
+          canOpen={(to) => tabs || to === 'review'}
+          note={
+            team
+              ? 'Shown only past a line: a first reply over 60 s with a third of an agent’s chats back to the assistant (3 chats or more), an hour with 3 or more chats back.'
+              : ATTENTION_LINES
+          }
+        />
       </Panel>
       <Panel
         title='Chats by day'

@@ -1,6 +1,6 @@
 """Admin API — leads CRUD."""
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.db import supabase as db
@@ -32,12 +32,14 @@ async def list_leads(
     assigned_to: Optional[str] = Query(None, pattern="^(me|all|none)$"),
     reviewed: Optional[str] = Query(None, pattern="^(true|false)$"),
     crm_pending: bool = Query(False, description="CRM pending work-list: gold orphans + gate-refused leads the CRM never received"),
-    view: Optional[str] = Query(None, pattern="^(not_in_crm|to_review|all)$",
+    view: Optional[str] = Query(None, pattern="^(not_in_crm|to_review|reviewed|all)$",
                                 description="The Leads page's tabs. When set, level/chat_with/order apply and the "
                                             "response carries the tab counts."),
     level: Optional[str] = Query(None, pattern="^(ready|almost|early|contact)$"),
     chat_with: Optional[str] = Query(None, pattern="^(person|ai)$"),
     order: Optional[str] = Query(None, pattern="^(newest|oldest|closest)$"),
+    tz_offset_minutes: int = Query(0, ge=-840, le=840,
+                                   description="Minutes east of UTC: 'reviewed by you today' is the viewer's day."),
     limit:  int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
@@ -49,7 +51,7 @@ async def list_leads(
     if view:
         return await _list_leads_view(
             user, view=view, search=search, level=level, chat_with=chat_with,
-            order=order, limit=limit, offset=offset,
+            order=order, limit=limit, offset=offset, tz_offset_minutes=tz_offset_minutes,
         )
     limit = min(limit, 200)
     try:
@@ -124,8 +126,9 @@ async def list_leads(
 async def _list_leads_view(
     user: dict, *, view: str, search: Optional[str], level: Optional[str],
     chat_with: Optional[str], order: Optional[str], limit: int, offset: int,
+    tz_offset_minutes: int = 0,
 ) -> dict:
-    """The Leads page: Not in the CRM / To review / All, with their counts.
+    """The Leads page: Not in the CRM / To review / Reviewed / All, with their counts.
 
     Same scope as the classic list: a supervisor sees only leads frozen to
     their own team(s), masked; a supervisor with no team sees nothing. A
@@ -142,9 +145,13 @@ async def _list_leads_view(
     if role == "supervisor":
         team_ids = set(await db.get_team_ids_for_supervisor(user.get("id", "")) or [])
         rows = [r for r in rows if r.get("team_id") in team_ids] if team_ids else []
+    now = datetime.now(timezone.utc)
+    local = now + timedelta(minutes=tz_offset_minutes)
+    day_start = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(minutes=tz_offset_minutes)
     built = build_leads_view(
         rows, view=view, names=names, search=search, level=level, with_=chat_with,
-        order=order, limit=limit, offset=offset, masked=role == "supervisor",
+        order=order, limit=limit, offset=offset, viewer_id=user.get("id"), day_start=day_start,
+        masked=role == "supervisor",
     )
     page = built["rows"]
     if role == "supervisor":
@@ -156,6 +163,8 @@ async def _list_leads_view(
     }
     if "summary" in built:
         response["summary"] = built["summary"]
+    if "review" in built:
+        response["review"] = built["review"]
     return response
 
 

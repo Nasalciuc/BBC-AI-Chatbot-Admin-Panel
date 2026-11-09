@@ -24,12 +24,21 @@ function Line({ label, value, cls, action, sub = false }: { label: string; value
   )
 }
 
-export function Quality({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['action']['to']) => void }) {
+export function Quality({
+  d,
+  go,
+  showCrm = true,
+}: {
+  d: OwnerDashboard
+  go: (to: AttentionView['action']['to']) => void
+  /** The CRM breakdown: the owner's. QA reads "Not in the CRM" from the card. */
+  showCrm?: boolean
+}) {
   const q = d.quality
   const crm = q.crm
   const ai = q.ai
   const items = d.attention.filter((x) => x.kind === 'review' || x.kind === 'ai_latency').map((x) => attentionView(x, q.qa_accounts))
-  const slow = ai.latency_median_ms !== null && ai.latency_median_ms > ai.latency_line_ms
+  const slow = !!ai && ai.latency_median_ms !== null && ai.latency_median_ms > ai.latency_line_ms
   const reviewedPct = pct(q.reviewed, q.ready)
   return (
     <div className='flex flex-col gap-[18px]'>
@@ -55,7 +64,15 @@ export function Quality({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['
         </StatCard>
       </div>
       <Panel title='Needs attention'>
-        <AttentionList items={items} onAction={go} note='Shown only past a line: a ready lead waiting more than 2 days for review, an AI answer over 5 s.' />
+        <AttentionList
+          items={items}
+          onAction={go}
+          note={
+            ai
+              ? 'Shown only past a line: a ready lead waiting more than 2 days for review, an AI answer over 5 s.'
+              : 'Shown only past a line: a ready lead waiting more than 2 days for review.'
+          }
+        />
       </Panel>
       <div className='grid grid-cols-1 gap-[18px] xl:grid-cols-2'>
         <div className='flex flex-col gap-[18px]'>
@@ -86,6 +103,7 @@ export function Quality({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['
               </tbody>
             </table>
           </Panel>
+          {showCrm && (
           <Panel title='CRM'>
             <ul className='m-0 flex list-none flex-col p-0'>
               <Line label='Reached the CRM' value={crm.reached} />
@@ -111,7 +129,9 @@ export function Quality({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['
             </ul>
             <p className='m-0 text-xs text-k-6b6b6b'>Chats started in this period, with a phone. Closing a chat doesn’t send it.</p>
           </Panel>
+          )}
         </div>
+        {ai && (
         <Panel
           title='The AI'
           right={
@@ -154,6 +174,7 @@ export function Quality({ d, go }: { d: OwnerDashboard; go: (to: AttentionView['
             fallbacks — most on purpose, so they have no line. Typical answer time is the median, from the client’s message to the reply.
           </p>
         </Panel>
+        )}
       </div>
     </div>
   )

@@ -4100,7 +4100,7 @@ _OWNER_CONV_COLUMNS = (
     "visitor_name, visitor_phone, "
     "confirmed_at:metadata->>confirmed_at, site:metadata->>site, "
     "utm_source:metadata->>utm_source, page_url:metadata->>page_url, "
-    "user_agent:metadata->>user_agent, closed_by_agent_id:metadata->>closed_by_agent_id"
+    "user_agent:metadata->>user_agent, closed_by_agent_id:metadata->>closed_by_agent_id, team_id"
 )
 _OWNER_LEAD_COLUMNS = (
     "conversation_id, created_at, origin_code, destination_code, departure_date, return_date, "
@@ -4152,7 +4152,7 @@ async def get_owner_dashboard_inputs(since_iso: str, ready_since_iso: str) -> di
               .gte("created_at", since_iso).order("created_at")),
         pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
               .gte("changed_at", ready_since_iso).order("changed_at")),
-        _run_sync(lambda: db_client.table("users").select("id, name, role, is_active").execute(),
+        _run_sync(lambda: db_client.table("users").select("id, name, role, tunnel_scope, is_active").execute(),
                   label="owner_dash"),
         _run_sync(lambda: db_client.table("leads").select("reviewed_at")
                   .eq("reviewed_by_qa", True).not_.is_("reviewed_at", "null")
@@ -4196,6 +4196,228 @@ async def get_owner_dashboard_inputs(since_iso: str, ready_since_iso: str) -> di
     }
 
 
+# ── To read: chats taken in the last two weeks, and one chat for reading ──
+_READ_CONV_COLUMNS = (
+    "id, chat_number, visitor_name, tunnel, status, mode, created_at, closed_at, team_id, "
+    "assigned_agent_id, confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id"
+)
+_READ_LEAD_COLUMNS = (
+    "id, conversation_id, origin_code, destination_code, route_display, departure_date, return_date, "
+    "passengers, trip_type, cabin_class, created_in_crm, crm_lead_id, crm_push_gate_reason"
+)
+_TAKE_LOG_ACTIONS = ["claim_won", "assigned", "deadline_fired", "closed"]
+
+
+async def get_to_read_inputs(since_iso: str) -> dict:
+    """Every take, went-back and close since `since_iso`, the chats they
+    belong to, those chats' client and operator messages and their leads.
+    Read-only. Raises on any failure: a list built from a partial read would
+    leave lost chats out without saying so."""
+    db_client = get_client()
+    activity, users_res = await asyncio.gather(
+        _select_pages(lambda: db_client.table("agent_activity_log")
+                      .select("user_id, conversation_id, action, happened_at")
+                      .gte("happened_at", since_iso).in_("action", _TAKE_LOG_ACTIONS)
+                      .order("happened_at"), label="to_read", max_pages=20),
+        _run_sync(lambda: db_client.table("users").select("id, name, role").execute(), label="to_read"),
+    )
+    ids = sorted({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    convs: list[dict] = []
+    leads: list[dict] = []
+    messages: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        conv_res, lead_res, msg_rows = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations").select(_READ_CONV_COLUMNS)
+                      .in_("id", chunk).execute(), label="to_read"),
+            _run_sync(lambda chunk=chunk: db_client.table("leads").select(_READ_LEAD_COLUMNS)
+                      .in_("conversation_id", chunk).execute(), label="to_read"),
+            _select_pages(lambda chunk=chunk: db_client.table("messages")
+                          .select("conversation_id, role, content, created_at")
+                          .in_("conversation_id", chunk).in_("role", ["user", "agent"])
+                          .order("created_at"), label="to_read", max_pages=20),
+        )
+        convs.extend(conv_res.data or [])
+        leads.extend(lead_res.data or [])
+        messages.extend(msg_rows)
+    return {
+        "activity": activity, "conversations": convs, "leads": leads, "messages": messages,
+        "users": {u["id"]: u for u in (users_res.data or []) if u.get("id")},
+    }
+
+
+async def get_reading_inputs(conversation_id: str, week_since_iso: str) -> Optional[dict]:
+    """One chat for the To read reader: the chat, its lead, every message,
+    its take log, the Ready changes of the people who had it, and the week of
+    the last person who had it. None when the chat doesn't exist. Raises on
+    any failure."""
+    db_client = get_client()
+    conv_res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select(_READ_CONV_COLUMNS + ", visitor_phone, visitor_email")
+        .eq("id", conversation_id).limit(1).execute(),
+        label="to_read",
+    )
+    conv = (conv_res.data or [None])[0]
+    if not conv:
+        return None
+    lead_res, messages, activity, users_res = await asyncio.gather(
+        _run_sync(lambda: db_client.table("leads").select(_READ_LEAD_COLUMNS)
+                  .eq("conversation_id", conversation_id).limit(1).execute(), label="to_read"),
+        _select_pages(lambda: db_client.table("messages").select("id, role, content, created_at")
+                      .eq("conversation_id", conversation_id).order("created_at"),
+                      label="to_read", max_pages=10),
+        _run_sync(lambda: db_client.table("agent_activity_log")
+                  .select("user_id, conversation_id, action, happened_at")
+                  .eq("conversation_id", conversation_id).in_("action", _TAKE_LOG_ACTIONS)
+                  .order("happened_at").execute(), label="to_read"),
+        _run_sync(lambda: db_client.table("users").select("id, name, role").execute(), label="to_read"),
+    )
+    acts = activity.data or []
+    people = sorted({a["user_id"] for a in acts if a.get("user_id")})
+    last = next((a.get("user_id") for a in reversed(acts) if a.get("action") in ("claim_won", "assigned")), None)
+    ready_log: list[dict] = []
+    week: list[dict] = []
+    if people:
+        ready_res = await _run_sync(
+            lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+            .in_("user_id", people).gte("changed_at", conv.get("created_at") or week_since_iso)
+            .order("changed_at").limit(500).execute(),
+            label="to_read",
+        )
+        ready_log = ready_res.data or []
+    if last:
+        week = await _select_pages(
+            lambda: db_client.table("agent_activity_log")
+            .select("user_id, conversation_id, action, happened_at")
+            .eq("user_id", last).gte("happened_at", week_since_iso).in_("action", _TAKE_LOG_ACTIONS)
+            .order("happened_at"), label="to_read", max_pages=5,
+        )
+    for m in messages:
+        m["conversation_id"] = conversation_id
+    return {
+        "conv": conv,
+        "lead": (lead_res.data or [None])[0],
+        "messages": messages,
+        "activity": acts,
+        "ready_log": ready_log,
+        "agent_week": week,
+        "users": {u["id"]: u for u in (users_res.data or []) if u.get("id")},
+    }
+
+
+# ── Team · Now: the floor right now, and one person's day ──
+_FLOOR_CONV_COLUMNS = (
+    "id, chat_number, tunnel, status, mode, created_at, queued_at, assigned_agent_id, team_id, "
+    "visitor_name, last_user_message_at, last_agent_message_at, message_count"
+)
+_TEAM_USER_COLUMNS = "id, name, email, role, tunnel_scope, team_id, is_ready, last_seen_at, is_active"
+
+
+async def get_team_now_inputs(day_start_iso: str) -> dict:
+    """Everyone active, the active teams, every open chat (with its lead's
+    route), today's take log and operator messages, and the Ready log since
+    the day before. Read-only. Raises on any failure: a floor drawn from a
+    partial read would show people as free who aren't."""
+    db_client = get_client()
+    ready_since = (datetime.fromisoformat(day_start_iso) - timedelta(days=1)).isoformat()
+    users_res, teams_res, convs, activity, agent_msgs, ready_log = await asyncio.gather(
+        _run_sync(lambda: db_client.table("users").select(_TEAM_USER_COLUMNS)
+                  .eq("is_active", True).execute(), label="team_now"),
+        _run_sync(lambda: db_client.table("teams").select("id, name, shift_start, shift_end, supervisor_id, pm_id")
+                  .eq("is_active", True).execute(), label="team_now"),
+        _select_pages(lambda: db_client.table("conversations").select(_FLOOR_CONV_COLUMNS)
+                      .in_("status", ["active", "needs_agent"]).order("created_at"),
+                      label="team_now", max_pages=5),
+        _select_pages(lambda: db_client.table("agent_activity_log")
+                      .select("user_id, conversation_id, action, happened_at")
+                      .gte("happened_at", day_start_iso).in_("action", _TAKE_LOG_ACTIONS)
+                      .order("happened_at"), label="team_now", max_pages=10),
+        _select_pages(lambda: db_client.table("messages").select("conversation_id, created_at")
+                      .eq("role", "agent").gte("created_at", day_start_iso).order("created_at"),
+                      label="team_now", max_pages=10),
+        _select_pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+                      .gte("changed_at", ready_since).order("changed_at"), label="team_now", max_pages=5),
+    )
+    ids = [c["id"] for c in convs if c.get("id")]
+    leads: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        res = await _run_sync(lambda chunk=chunk: db_client.table("leads").select(_READ_LEAD_COLUMNS)
+                              .in_("conversation_id", chunk).execute(), label="team_now")
+        leads.extend(res.data or [])
+    return {
+        "users": users_res.data or [],
+        "teams": teams_res.data or [],
+        "conversations": convs,
+        "leads": leads,
+        "activity": activity,
+        "agent_msgs": agent_msgs,
+        "ready_log": ready_log,
+    }
+
+
+async def get_person_day_inputs(user_id: str, day_start_iso: str) -> Optional[dict]:
+    """One person's day: the user and their team, today's take log (with
+    takes lost) and their chats' operator messages, the Ready log since the
+    day before, seven days of hours online, the chats they have now. None
+    when the user doesn't exist. Raises on any failure."""
+    db_client = get_client()
+    user_res = await _run_sync(lambda: db_client.table("users").select(_TEAM_USER_COLUMNS)
+                               .eq("id", user_id).limit(1).execute(), label="team_now")
+    user = (user_res.data or [None])[0]
+    if not user:
+        return None
+    day_start = datetime.fromisoformat(day_start_iso)
+    week_day = (day_start - timedelta(days=7)).date().isoformat()
+    activity, ready_log, presence_res, open_res = await asyncio.gather(
+        _select_pages(lambda: db_client.table("agent_activity_log")
+                      .select("user_id, conversation_id, action, happened_at")
+                      .eq("user_id", user_id).gte("happened_at", day_start_iso)
+                      .in_("action", [*_TAKE_LOG_ACTIONS, "claim_lost"]).order("happened_at"),
+                      label="team_now", max_pages=5),
+        _select_pages(lambda: db_client.table("agent_ready_log").select("user_id, is_ready, changed_at")
+                      .eq("user_id", user_id).gte("changed_at", (day_start - timedelta(days=1)).isoformat())
+                      .order("changed_at"), label="team_now", max_pages=3),
+        _run_sync(lambda: db_client.table("agent_presence_daily")
+                  .select("day, first_seen_at, last_seen_at, minutes_online")
+                  .eq("user_id", user_id).gte("day", week_day).order("day").execute(), label="team_now"),
+        _run_sync(lambda: db_client.table("conversations").select(_FLOOR_CONV_COLUMNS)
+                  .eq("assigned_agent_id", user_id).in_("status", ["active", "needs_agent"]).execute(),
+                  label="team_now"),
+    )
+    ids = sorted({a["conversation_id"] for a in activity if a.get("conversation_id")})
+    convs: dict[str, dict] = {}
+    agent_msgs: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        conv_res, msg_rows = await asyncio.gather(
+            _run_sync(lambda chunk=chunk: db_client.table("conversations").select("id, visitor_name")
+                      .in_("id", chunk).execute(), label="team_now"),
+            _select_pages(lambda chunk=chunk: db_client.table("messages").select("conversation_id, created_at")
+                          .in_("conversation_id", chunk).eq("role", "agent").gte("created_at", day_start_iso)
+                          .order("created_at"), label="team_now", max_pages=5),
+        )
+        for c in conv_res.data or []:
+            convs[c["id"]] = c
+        agent_msgs.extend(msg_rows)
+    team = None
+    if user.get("team_id"):
+        team_res = await _run_sync(lambda: db_client.table("teams").select("id, name, shift_start, shift_end")
+                                   .eq("id", user["team_id"]).limit(1).execute(), label="team_now")
+        team = (team_res.data or [None])[0]
+    return {
+        "user": user,
+        "team": team,
+        "activity": activity,
+        "agent_msgs": agent_msgs,
+        "conversations": convs,
+        "ready_log": ready_log,
+        "presence_days": presence_res.data or [],
+        "open_chats": open_res.data or [],
+    }
+
+
 # ── Leads: every lead with the fields of its chat the Leads page needs ──
 # The page's tabs, filters and counts all need the conversation's
 # confirmed_at, status and closer, which live in metadata. Reading the whole
@@ -4211,7 +4433,7 @@ _UNIVERSE_LEAD_COLUMNS = (
     "id, conversation_id, created_at, updated_at, origin_code, destination_code, route_display, "
     "departure_date, return_date, passengers, children_count, infant_count, trip_type, cabin_class, "
     "flexible_dates, score, tier, status, team_id, created_in_crm, created_in_crm_at, crm_lead_id, "
-    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by"
+    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by, qa_notes"
 )
 _UNIVERSE_CONV_COLUMNS = (
     "id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, tunnel, "

@@ -192,9 +192,9 @@ const SOURCE_TABS: { key: SourceTab; label: string }[] = [
   { key: 'route', label: 'Route' },
 ]
 
-function WhereTheyComeFrom({ d }: { d: OwnerDashboard }) {
+function WhereTheyComeFrom({ d, sources }: { d: OwnerDashboard; sources: NonNullable<OwnerDashboard['sources']> }) {
   const [tab, setTab] = useState<SourceTab>('source')
-  const rows = d.sources[tab] ?? []
+  const rows = sources[tab] ?? []
   const sentence = sourceSentence(rows, tab)
   const label = SOURCE_TABS.find((t) => t.key === tab)?.label ?? ''
   return (
@@ -253,9 +253,10 @@ export function Conversion({ d }: { d: OwnerDashboard }) {
     <div className='flex flex-col gap-[18px]'>
       <ChangeThisWeek d={d} />
       <Funnel d={d} />
-      <div className='grid grid-cols-1 gap-[18px] xl:grid-cols-2'>
+      {/* Sources are the owner's (marketing): QA reads where people leave. */}
+      <div className={cn('grid grid-cols-1 gap-[18px]', d.sources && 'xl:grid-cols-2')}>
         <WhereTheyLeave d={d} />
-        <WhereTheyComeFrom d={d} />
+        {d.sources && <WhereTheyComeFrom d={d} sources={d.sources} />}
       </div>
     </div>
   )

@@ -8,7 +8,9 @@ What is pinned here:
   * tabs count the whole tab, filters narrow the rows, the counts agree;
   * a supervisor sees only their team, masked; a failed read is a 502;
   * the classic list (no `view`) is unchanged;
-  * every panel write drops the shared read.
+  * every panel write drops the shared read;
+  * QA's lists: Reviewed, and the cards (left to review, reviewed by you
+    today in your own day, left to review that never had a person).
 """
 
 import os
@@ -25,6 +27,8 @@ os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from app.security.auth import get_current_user  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
 from app.services.leads_view import (  # noqa: E402
     build_leads_view,
     chat_with,
@@ -97,7 +101,7 @@ def _rows() -> list[dict]:
 
 def test_tabs_count_the_whole_tab_and_say_why():
     v = build_leads_view(_rows(), view="not_in_crm", names=NAMES)
-    assert v["counts"] == {"not_in_crm": 4, "to_review": 2, "all": 8}
+    assert v["counts"] == {"not_in_crm": 4, "to_review": 2, "reviewed": 1, "all": 8}
     assert [r["id"] for r in v["rows"]] == ["open", "closed", "ready-unsent", "refused"]   # newest first
     assert v["summary"] == {"open": 1, "closed_by_agent": 1, "ready_never_sent": 1, "never_sent": 0,
                             "refused": {"email_typo_domain": 1}}
@@ -166,7 +170,7 @@ def test_supervisor_without_a_team_sees_nothing():
          patch("app.db.supabase.get_user_names", new=AsyncMock(return_value=NAMES)), \
          patch("app.db.supabase.get_team_ids_for_supervisor", new=AsyncMock(return_value=[])):
         body = _client("supervisor").get("/api/leads?view=all").json()
-    assert body["count"] == 0 and body["counts"] == {"not_in_crm": 0, "to_review": 0, "all": 0}
+    assert body["count"] == 0 and body["counts"] == {"not_in_crm": 0, "to_review": 0, "reviewed": 0, "all": 0}
 
 
 def test_a_failed_read_is_a_502():
@@ -196,3 +200,45 @@ def test_every_panel_write_drops_the_shared_read():
     with patch("app.db.supabase.update_lead", new=AsyncMock(return_value={"id": "L1"})):
         r = _client("qa").patch("/api/leads/L1/review", json={"reviewed": True})
     assert r.status_code == 200 and db._LEADS_UNIVERSE["at"] == 0.0
+
+
+# ── QA ───────────────────────────────────────────────────────────────
+
+
+def _qa_rows() -> list[dict]:
+    day = "2026-11-06T"
+    return _rows() + [
+        row("mine-today", reviewed_by_qa=True, reviewed_by="qa-1", reviewed_at=day + "09:00:00+00:00",
+            confirmed_at=day + "08:00:00+00:00", created_in_crm=True, created_at="2026-11-01T07:00:00+00:00"),
+        row("mine-yesterday", reviewed_by_qa=True, reviewed_by="qa-1", reviewed_at="2026-11-05T22:00:00+00:00",
+            created_at="2026-11-01T06:00:00+00:00"),
+        row("someone-elses", reviewed_by_qa=True, reviewed_by="qa-2", reviewed_at=day + "10:00:00+00:00",
+            created_at="2026-11-01T05:00:00+00:00"),
+    ]
+
+
+def test_reviewed_tab_and_the_qa_cards():
+    # The viewer is in New York: their day started at 05:00 UTC.
+    start = datetime(2026, 11, 6, 5, 0, tzinfo=timezone.utc)
+    v = build_leads_view(_qa_rows(), view="reviewed", names=NAMES, viewer_id="qa-1", day_start=start)
+    assert v["counts"]["reviewed"] == 4
+    assert [r["id"] for r in v["rows"]] == ["reviewed", "mine-today", "mine-yesterday", "someone-elses"]
+    assert v["review"] == {"to_review": 2, "reviewed_today_by_me": 1, "ai_only_to_review": 2}
+    # Only the review lists carry the cards; "Not in the CRM" keeps its own.
+    assert "review" not in build_leads_view(_qa_rows(), view="all", names=NAMES, viewer_id="qa-1", day_start=start)
+    assert "review" in build_leads_view(_qa_rows(), view="to_review", names=NAMES, viewer_id="qa-1", day_start=start)
+
+
+def test_the_qa_endpoint_counts_today_in_the_viewers_day():
+    rows = _qa_rows()
+    with patch("app.db.supabase.get_leads_universe", new=AsyncMock(return_value=rows)), \
+         patch("app.db.supabase.get_user_names", new=AsyncMock(return_value=NAMES)):
+        app = FastAPI()
+        from app.api.leads import router
+
+        app.include_router(router, prefix="/api")
+        app.dependency_overrides[get_current_user] = lambda: {"id": "qa-1", "role": "qa", "tunnel_scope": "all"}
+        body = TestClient(app).get("/api/leads?view=to_review&tz_offset_minutes=-300").json()
+    assert body["counts"]["reviewed"] == 4
+    assert set(body["review"]) == {"to_review", "reviewed_today_by_me", "ai_only_to_review"}
+    assert body["review"]["to_review"] == body["count"] == 2

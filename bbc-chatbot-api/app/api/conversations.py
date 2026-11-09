@@ -289,6 +289,116 @@ async def list_conversations(
         return {"success": False, "data": [], "count": 0, "error": str(e)}
 
 
+# ── To read (supervisor, owner, admin, dev) ──
+# The lost chats of this week by fixed rules, and last week's sample of each
+# person's chats. A supervisor sees only chats of their own team(s), masked,
+# as everywhere else; no team means an empty list (fail closed). The read is
+# the same for everyone in a time zone, so it's shared for a minute.
+TO_READ_ROLES = ("owner", "admin", "dev", "supervisor")
+TO_READ_TTL_SECONDS = 60
+_TO_READ_CACHE: dict[str, tuple[float, dict]] = {}
+_TO_READ_LOCK = None
+TO_READ_HEALTH: dict = {"reads": 0, "hits": 0, "read_failures": 0}
+
+
+async def _to_read_inputs(since_iso: str) -> dict:
+    import asyncio
+    import time
+
+    global _TO_READ_LOCK
+    cached = _TO_READ_CACHE.get(since_iso)
+    if cached and time.monotonic() - cached[0] < TO_READ_TTL_SECONDS:
+        TO_READ_HEALTH["hits"] += 1
+        return cached[1]
+    if _TO_READ_LOCK is None:
+        _TO_READ_LOCK = asyncio.Lock()
+    async with _TO_READ_LOCK:
+        cached = _TO_READ_CACHE.get(since_iso)
+        if cached and time.monotonic() - cached[0] < TO_READ_TTL_SECONDS:
+            TO_READ_HEALTH["hits"] += 1
+            return cached[1]
+        try:
+            inputs = await db.get_to_read_inputs(since_iso)
+        except Exception as e:
+            TO_READ_HEALTH["read_failures"] += 1
+            logger.error(f"[to_read] read failed: {e}", exc_info=True)
+            raise HTTPException(status_code=502, detail="Couldn't load the chats to read") from e
+        TO_READ_HEALTH["reads"] += 1
+        for k in [k for k, v in _TO_READ_CACHE.items() if time.monotonic() - v[0] >= TO_READ_TTL_SECONDS]:
+            _TO_READ_CACHE.pop(k, None)
+        _TO_READ_CACHE[since_iso] = (time.monotonic(), inputs)
+    return inputs
+
+
+async def _reader_teams(user: dict) -> Optional[set[str]]:
+    """None: sees every chat. A set (maybe empty): only these teams' chats."""
+    if user.get("role") == "supervisor":
+        return set(await db.get_team_ids_for_supervisor(user.get("id", "")))
+    return None
+
+
+@router.get("/conversations/to-read")
+async def list_to_read(
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    user: dict = Depends(get_current_user),
+):
+    """The To read tab: this week's lost chats and last week's sample."""
+    from datetime import datetime, timedelta, timezone
+    from app.services.to_read import build_to_read, week_start
+
+    role = user.get("role", "")
+    if role not in TO_READ_ROLES:
+        raise HTTPException(status_code=403, detail="To read is for supervisors and the owner")
+    team_ids = await _reader_teams(user)
+    now = datetime.now(timezone.utc)
+    this_week = week_start(now, tz_offset_minutes)
+    if team_ids is not None and not team_ids:
+        empty = {
+            "week_start": this_week.isoformat(),
+            "sample_week": {"start": (this_week - timedelta(days=7)).isoformat(), "end": this_week.isoformat()},
+            "lost": [], "sample": [], "people": [], "no_team": True,
+        }
+        return {"success": True, "data": empty, "count": 0}
+    inputs = await _to_read_inputs((this_week - timedelta(days=7)).isoformat())
+    data = build_to_read(
+        now=now, offset_minutes=tz_offset_minutes, team_ids=team_ids, masked=role == "supervisor", **inputs
+    )
+    data["no_team"] = False
+    return {"success": True, "data": data, "count": len(data["lost"]) + len(data["sample"])}
+
+
+@router.get("/conversations/{conversation_id}/reading")
+async def read_conversation(
+    conversation_id: str,
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    user: dict = Depends(get_current_user),
+):
+    """One chat for the reader: messages with who sent them, what happened,
+    the rules it broke, the trip and lead, the person's week. Read-only.
+    Supervisors: only their team's chats; names, phones and e-mails masked,
+    in the messages too."""
+    from datetime import datetime, timezone
+    from app.services.to_read import build_reading, week_start
+
+    role = user.get("role", "")
+    if role not in TO_READ_ROLES:
+        raise HTTPException(status_code=403, detail="To read is for supervisors and the owner")
+    now = datetime.now(timezone.utc)
+    try:
+        inputs = await db.get_reading_inputs(conversation_id, week_start(now, tz_offset_minutes).isoformat())
+    except Exception as e:
+        TO_READ_HEALTH["read_failures"] += 1
+        logger.error(f"[to_read] reading {conversation_id} failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Couldn't load the chat") from e
+    if not inputs:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    team_ids = await _reader_teams(user)
+    if team_ids is not None and inputs["conv"].get("team_id") not in team_ids:
+        raise HTTPException(status_code=403, detail="You can only read chats handled by your team.")
+    data = build_reading(now=now, offset_minutes=tz_offset_minutes, masked=role == "supervisor", **inputs)
+    return {"success": True, "data": data, "count": 1}
+
+
 @router.get("/conversations/counts")
 async def get_conversation_counts(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
