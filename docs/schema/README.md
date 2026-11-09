@@ -23,8 +23,8 @@ statement there is a no-op on production.
 `needs_agent` is not in it. The code writes `conversations.status =
 'needs_agent'`, but production's column is `varchar(10)` with a CHECK that
 leaves it out, so every such write is rejected live. Accepting it changes
-what production does, so it is a separate migration and PR, applied by the
-owner in working hours.
+what production does, so it is a separate migration, `052`, applied by the
+owner in working hours (below).
 
 ## What waits for the owner
 
@@ -66,6 +66,17 @@ owner in working hours.
    - `051_tasks_follow_ups.sql` is the redesign's (the Tasks page, #242), not
      part of this list: it depends on none of 036–050, and the replay passes
      with it before them or after them. Run it when #242 merges.
+   - `052_needs_agent_status.sql` — a client who asks for a person enters
+     the line. **Only after** the code of its PR is deployed (that code reads
+     needs_agent wherever it means "open": without it, the widget would drop
+     the chat on the next page and the abandoned sweep would skip the lead),
+     in working hours, with someone watching the queue: from that moment the
+     queue shows "Asked for a person", super@ gets one e-mail per such chat
+     (at most one a day each) while auto-dispatch is off, and the attention
+     e-mail covers them when `ATTENTION_EMAIL_ENABLED` is on.
+     Before: `/health/detail` → `needs_agent.write_failed` grows, code 22001.
+     After: `write_failed` stops, `queued` grows. The file's header has the
+     two checks to run and the undo.
 
 3. **Retention** (⚑12) — `POST /api/cron/retention` counts what it would
    delete until `RETENTION_ENABLED=true` is set; schedule it nightly.
