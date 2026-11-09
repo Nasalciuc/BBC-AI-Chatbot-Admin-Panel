@@ -26,6 +26,25 @@ logger = logging.getLogger(__name__)
 # by person — which is what D2 asked for. Per-instance, like the others.
 STICKY_HEALTH: dict = {"sticky_routed": 0, "sticky_fell_back": 0}
 
+# needs_agent writes — every one is a client who asked for a person. Before
+# migration 052 each write fails (22001: 'needs_agent' doesn't fit
+# varchar(10)), and for months nothing counted it: the log said "queued".
+#   queued        the conversation is needs_agent now
+#   not_open      it wasn't open (closed, completed, gone): nothing to queue
+#   write_failed  the database refused it — the client is NOT in the line;
+#                 last_failed_code says why (22001/23514 = 052 not applied)
+#   put_back_failed  a dispatch claimed the chat, the handoff failed and the
+#                 chat could not be put back: it is active with nobody on it
+# Per-instance, like the others.
+QUEUE_HEALTH: dict = {
+    "queued": 0,
+    "not_open": 0,
+    "write_failed": 0,
+    "put_back_failed": 0,
+    "last_failed_at": None,
+    "last_failed_code": None,
+}
+
 AFFINITY_WINDOW_DAYS = 90  # Dan's business rule — returning-client definition
 
 # TODO (privacy hardening): shared-browser residual risk — on a shared PC,
@@ -300,11 +319,17 @@ async def dispatch_needs_agent(conversation_id: str) -> bool:
             )
         except Exception:
             # The handoff itself failed — put the demand signal back on the
-            # shelf so a later dispatch (or /open self-heal) retries it.
-            try:
-                await db.update_conversation(conversation_id, {"status": "needs_agent"})
-            except Exception:
-                pass
+            # shelf so a later dispatch (or /open self-heal) retries it. If
+            # that write fails too, the chat is active with nobody on it:
+            # counted, never swallowed. (not_open: it was closed meanwhile —
+            # there is no line to put it back in.)
+            outcome, code = await db.mark_needs_agent(conversation_id)
+            if outcome == "failed":
+                _queue_failed(code, key="put_back_failed")
+                logger.error(
+                    f"[dispatch] {conversation_id}: handoff failed and the chat could not "
+                    f"be put back in the line (code={code}; counted in /health)"
+                )
             raise
         logger.info(
             f"[dispatch] {conversation_id} → {route.get('agent_name')} "
@@ -314,3 +339,41 @@ async def dispatch_needs_agent(conversation_id: str) -> bool:
     except Exception as e:
         logger.error(f"[dispatch] failed for {conversation_id}: {e}", exc_info=True)
         return False
+
+
+def _queue_failed(code: str, *, key: str = "write_failed") -> None:
+    QUEUE_HEALTH[key] += 1
+    QUEUE_HEALTH["last_failed_at"] = datetime.now(timezone.utc).isoformat()
+    QUEUE_HEALTH["last_failed_code"] = code
+
+
+async def queue_for_person(conversation_id: str, *, reason: str, dispatch: bool = True) -> bool:
+    """The client asked for a person: mark the conversation needs_agent and,
+    when `dispatch`, try to hand it to someone (dispatch_needs_agent, in the
+    background). True only when the conversation is needs_agent now.
+
+    The one door for every "the client wants a human" path (an explicit ask,
+    a call-back, the summary loop, nobody free, the frustration lane), so the
+    outcome is counted and logged the same way everywhere, and nothing says
+    "queued" when the write failed. Never raises: a failed queue write must
+    not cost the client the reply they are about to get.
+    """
+    outcome, code = await db.mark_needs_agent(conversation_id)
+    if outcome == "queued":
+        QUEUE_HEALTH["queued"] += 1
+        logger.info(f"[{conversation_id}] status=needs_agent ({reason})")
+        if dispatch:
+            from app.pipeline.orchestrator import _fire_and_forget
+
+            _fire_and_forget(dispatch_needs_agent(conversation_id))
+        return True
+    if outcome == "not_open":
+        QUEUE_HEALTH["not_open"] += 1
+        logger.info(f"[{conversation_id}] needs_agent skipped ({reason}): the conversation is not open")
+        return False
+    _queue_failed(code)
+    logger.error(
+        f"[{conversation_id}] the client asked for a person ({reason}) and is NOT "
+        f"in the line: needs_agent write failed (code={code}; counted in /health)"
+    )
+    return False

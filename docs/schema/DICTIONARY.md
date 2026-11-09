@@ -261,7 +261,7 @@ Indexes:
 - `idx_conversations_visitor_id` — btree (visitor_id) WHERE (visitor_id IS NOT NULL)
 - `idx_conversations_visitor_name_trgm` — gin (visitor_name gin_trgm_ops)
 - `idx_conversations_visitor_phone_trgm` — gin (visitor_phone gin_trgm_ops)
-- `uq_conv_active_visitor` — btree (visitor_id) WHERE (((status)::text = 'active'::text) AND (visitor_id IS NOT NULL))
+- `uq_conv_active_visitor` — btree (visitor_id) WHERE (((status)::text = ANY ((ARRAY['active'::character varying, 'needs_agent'::character varying])::text[])) AND (visitor_id IS NOT NULL))
 
 ## `invite_tokens`
 

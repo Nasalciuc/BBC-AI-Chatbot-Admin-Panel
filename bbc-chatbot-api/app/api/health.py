@@ -100,6 +100,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.conversations import BLIND_HEALTH
     # Sticky's only defence is the deadline — these two say if it is holding.
     from app.services.routing import STICKY_HEALTH
+    # Clients who asked for a person: queued, or NOT in the line (write_failed,
+    # put_back_failed; last_failed_code 22001/23514 = migration 052 missing).
+    from app.services.routing import QUEUE_HEALTH
     # Turns we refused to speak: every count is a moment the bot was about to
     # answer a question nobody asked.
     from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
@@ -158,6 +161,7 @@ async def health_detail(full: bool = False) -> dict:
             "claims": dict(CLAIM_HEALTH),
             "blind_take": dict(BLIND_HEALTH),
             "sticky": dict(STICKY_HEALTH),
+            "needs_agent": dict(QUEUE_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
             "db": db_health_snapshot(),
@@ -241,6 +245,7 @@ async def health_detail(full: bool = False) -> dict:
         "claims": dict(CLAIM_HEALTH),
         "blind_take": dict(BLIND_HEALTH),
         "sticky": dict(STICKY_HEALTH),
+        "needs_agent": dict(QUEUE_HEALTH),
         "queue": _queue_stats,
         "operator_load": _load,
         "generation_fallbacks": dict(GENERATION_HEALTH),

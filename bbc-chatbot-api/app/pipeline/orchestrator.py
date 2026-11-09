@@ -962,11 +962,9 @@ async def _pipeline(
             logger.warning(f"[{cid}] callback note failed: {e}")
         # A human owns this now — same queue the explicit agent request uses.
         try:
-            from app.services.routing import dispatch_needs_agent
+            from app.services.routing import queue_for_person
 
-            if (conv or {}).get("status") != "needs_agent":
-                await db.update_conversation(cid, {"status": "needs_agent"})
-            _fire_and_forget(dispatch_needs_agent(cid))
+            await queue_for_person(cid, reason="call-back request")
         except Exception as e:
             logger.warning(f"[{cid}] callback dispatch failed: {e}")
 
@@ -1040,10 +1038,11 @@ async def _pipeline(
         # almost nobody asks twice.
         if agent_request_count >= 0:
             try:
-                await db.update_conversation(cid, {"status": "needs_agent"})
-                logger.info(f"[{cid}] HANDOFF: agent request #{agent_request_count + 1} → status=needs_agent")
-                from app.services.routing import dispatch_needs_agent
-                _fire_and_forget(dispatch_needs_agent(cid))
+                from app.services.routing import queue_for_person
+
+                await queue_for_person(
+                    cid, reason=f"HANDOFF: agent request #{agent_request_count + 1}"
+                )
             except Exception as e:
                 logger.warning(f"[{cid}] Failed to set needs_agent status: {e}")
 
@@ -1433,8 +1432,9 @@ async def _pipeline(
                 # FIRST operator who comes online receives it (silent reservation).
                 # AI keeps serving meanwhile (mode stays 'ai').
                 try:
-                    await db.update_conversation(cid, {"status": "needs_agent"})
-                    logger.info(f"[{cid}] No agent available → status=needs_agent (queued)")
+                    from app.services.routing import queue_for_person
+
+                    await queue_for_person(cid, reason="no agent available", dispatch=False)
                 except Exception as e:
                     logger.error(
                         f"[{cid}] Failed to queue needs_agent: {e}",
@@ -1795,13 +1795,12 @@ async def _pipeline(
                 if _loop == "consultant":
                     # Stop asking and put a human on it — the same queue
                     # path a "talk to an agent" request takes (#187).
-                    from app.services.routing import dispatch_needs_agent
+                    from app.services.routing import queue_for_person
 
                     try:
-                        await db.update_conversation(cid, {"status": "needs_agent"})
+                        await queue_for_person(cid, reason="summary loop → consultant")
                     except Exception as e:
                         logger.warning(f"[{cid}] loop→needs_agent flip failed: {e}")
-                    _fire_and_forget(dispatch_needs_agent(cid))
                 _summary_text = None
 
             if _summary_text:

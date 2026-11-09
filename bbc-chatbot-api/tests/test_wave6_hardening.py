@@ -176,7 +176,9 @@ class TestCallbackIntent:
              patch("app.pipeline.orchestrator.db.get_recent_messages",
                    new=AsyncMock(return_value=[])), \
              patch("app.services.moderation.moderate_message", new=AsyncMock()), \
-             patch("app.pipeline.orchestrator.db.update_conversation", new=AsyncMock()) as upd, \
+             patch("app.pipeline.orchestrator.db.update_conversation", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator.db.mark_needs_agent",
+                   new=AsyncMock(return_value=("queued", ""))) as queued, \
              patch("app.pipeline.orchestrator.db.update_lead", new=AsyncMock()) as lead_upd, \
              patch("app.pipeline.orchestrator.lead_service.get_or_create_lead",
                    new=AsyncMock(return_value=lead)), \
@@ -195,7 +197,7 @@ class TestCallbackIntent:
         assert any("CLIENT ASKED TO BE CALLED" in (n.get("notes") or "") for n in notes)
         assert any(n.get("intent_signals", {}).get("callback_requested") for n in notes)
         # And a human is queued.
-        assert any(c.args[1].get("status") == "needs_agent" for c in upd.await_args_list)
+        queued.assert_awaited_with("c-josef")
 
 
 # ════════════════════════════════════════════════════════════

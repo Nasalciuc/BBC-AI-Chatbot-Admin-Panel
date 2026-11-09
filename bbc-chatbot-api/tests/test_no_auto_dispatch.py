@@ -107,12 +107,36 @@ async def test_rollback_flag_restores_the_old_path():
 
 
 def test_the_five_callers_are_untouched():
-    """The function refuses by itself; every caller stays as it was."""
+    """The function refuses by itself; every caller stays as it was.
+
+    Since 052 the four that set needs_agent first reach it through one door,
+    queue_for_person (dispatch on by default), which fires it only once the
+    write held; the fifth, /open's self-heal, still calls it directly. The
+    two that never dispatched (nobody free in the pipeline, the frustration
+    lane) still don't."""
+    import ast
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent
-    count = 0
-    for rel in ("app/api/chat.py", "app/pipeline/orchestrator.py", "app/services/handoff.py"):
-        src = (root / rel).read_text(encoding="utf-8")
-        count += src.count("_fire_and_forget(dispatch_needs_agent(")
-    assert count == 5, f"expected the 5 known call sites, found {count}"
+
+    def _src(rel):
+        return (root / rel).read_text(encoding="utf-8")
+
+    def _door_calls(rel):
+        """(dispatching, quiet) calls to queue_for_person in one file."""
+        on = off = 0
+        for node in ast.walk(ast.parse(_src(rel))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "queue_for_person":
+                quiet = any(
+                    k.arg == "dispatch" and isinstance(k.value, ast.Constant) and k.value.value is False
+                    for k in node.keywords
+                )
+                off += quiet
+                on += not quiet
+        return on, off
+
+    assert _src("app/api/chat.py").count("_fire_and_forget(dispatch_needs_agent(") == 1
+    assert _src("app/services/routing.py").count("_fire_and_forget(dispatch_needs_agent(") == 1
+    assert _door_calls("app/pipeline/orchestrator.py") == (3, 1)
+    assert _door_calls("app/services/handoff.py") == (1, 0)
+    assert _door_calls("app/security/behavior.py") == (0, 1)

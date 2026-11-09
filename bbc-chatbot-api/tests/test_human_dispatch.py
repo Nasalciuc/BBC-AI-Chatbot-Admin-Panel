@@ -57,8 +57,9 @@ class TestFirstRequestCounts:
         src = inspect.getsource(orchestrator._pipeline)
         assert "agent_request_count >= 0" in src
         assert "agent_request_count >= 1" not in src
-        # Setting the flag now also fires the dispatcher.
-        assert "dispatch_needs_agent" in src
+        # Setting the flag now also fires the dispatcher — through the one
+        # door, queue_for_person, which dispatches once the write held.
+        assert "queue_for_person(" in src
 
     @pytest.mark.asyncio
     async def test_queue_reply_collects_instead_of_phone_deflection(self):
@@ -167,8 +168,12 @@ class TestDispatcher:
         from app.pipeline import orchestrator
         from app.services import handoff
 
-        assert "dispatch_needs_agent" in inspect.getsource(orchestrator._pipeline)
-        assert "dispatch_needs_agent" in inspect.getsource(handoff.get_handoff_response)
+        from app.services import routing
+
+        assert "queue_for_person(" in inspect.getsource(orchestrator._pipeline)
+        assert "queue_for_person(" in inspect.getsource(handoff.get_handoff_response)
+        # …and the door fires the dispatcher when it is asked to.
+        assert "_fire_and_forget(dispatch_needs_agent(" in inspect.getsource(routing.queue_for_person)
 
 
 # ── Leak 3: fall_back_to_ai leaves a trace ───────────────────────────────
