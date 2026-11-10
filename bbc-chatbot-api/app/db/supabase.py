@@ -1255,15 +1255,27 @@ async def get_conversation(
         return None
 
 
+# One page of open chats is enough to count them by owner: there are a few
+# dozen at the busiest hour. Past it, the three counts are asked for.
+_OPEN_COUNT_PAGE = 1000
+
+
 async def get_conversation_counts(
     agent_id: str,
     tunnel: Optional[str] = None,
 ) -> dict:
-    """Lightweight counts for queue tabs. 3 fast count queries, zero row data."""
+    """Counts for the queue tabs.
+
+    ONE read answers the three open badges (mine, the queue, all open): it
+    brings each open chat's owner and they are counted here, instead of three
+    counts over the same rows. The two closed totals stay exact counts. Three
+    reads where there were five, every 5 s for every open panel — and still
+    one after the other: the DB executor paged ops as saturated on 9 Nov
+    (18 of 20 in flight), so this asks for fewer reads, not for more at once."""
     try:
         db_client = get_client()
 
-        async def _count(agent_filter: str, statuses: tuple[str, ...]) -> int:
+        async def _count(agent_filter: Optional[str], statuses: tuple[str, ...]) -> int:
             def _q():
                 q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
                 if tunnel:
@@ -1277,36 +1289,39 @@ async def get_conversation_counts(
             res = await _run_sync(_q)
             return res.count or 0
 
-        # my_active includes reserved conversations (status=needs_agent,
-        # assigned to me): the silent reservation is silent for the CLIENT,
-        # not the operator — the agent must SEE it to answer within the
-        # deadline. Status flips to active at their first message (engagement).
-        async def _count_my_active() -> int:
+        # Open = active or needs_agent, in all three: my_active includes the
+        # conversations reserved for me (status=needs_agent, assigned to me) —
+        # the silent reservation is silent for the CLIENT, not the operator,
+        # who must SEE it to answer within the deadline; the queue counts the
+        # client who asked for a person; all_active counts both.
+        async def _open():
             def _q():
-                q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
+                q = db_client.table("conversations").select("id, assigned_agent_id", count="exact")  # type: ignore[arg-type]
                 if tunnel:
                     q = q.eq("tunnel", tunnel)
-                q = q.eq("assigned_agent_id", agent_id).in_("status", list(OPEN_STATUSES))
-                return q.limit(0).execute()
-            res = await _run_sync(_q)
-            return res.count or 0
+                return q.in_("status", list(OPEN_STATUSES)).limit(_OPEN_COUNT_PAGE).execute()
+            return await _run_sync(_q)
 
-        my_active = await _count_my_active()
-        queue_count = await _count("none", OPEN_STATUSES)
+        open_res = await _open()
         my_closed = await _count("me", ("closed",))
-
-        async def _count_all(statuses: tuple[str, ...]) -> int:
-            def _q():
-                q = db_client.table("conversations").select("id", count="exact")  # type: ignore[arg-type]
-                if tunnel:
-                    q = q.eq("tunnel", tunnel)
-                q = q.in_("status", list(statuses))
-                return q.limit(0).execute()
-            res = await _run_sync(_q)
-            return res.count or 0
-
-        all_active = await _count_all(OPEN_STATUSES)
-        all_closed = await _count_all(("closed",))
+        all_closed = await _count(None, ("closed",))
+        open_rows = [r for r in (getattr(open_res, "data", None) or []) if isinstance(r, dict)]
+        _exact = getattr(open_res, "count", None)
+        all_active = max(_exact if isinstance(_exact, int) else 0, len(open_rows))
+        if all_active > len(open_rows):
+            # More open chats than the page holds: the page cannot say whose
+            # the rest are. Ask for the two counts, as before.
+            my_active = await _count("me", OPEN_STATUSES)
+            queue_count = await _count("none", OPEN_STATUSES)
+        else:
+            # The database compares ids as uuids; here they are text, so case
+            # must not decide whose a chat is.
+            _me = str(agent_id or "").lower()
+            my_active = sum(
+                1 for r in open_rows
+                if r.get("assigned_agent_id") and str(r["assigned_agent_id"]).lower() == _me
+            )
+            queue_count = sum(1 for r in open_rows if not r.get("assigned_agent_id"))
 
         return {
             "my_active": my_active,
@@ -2017,8 +2032,38 @@ async def get_users(
     return res.data or [], res.count or 0
 
 
+# Rule 7. get_user_by_email answers None for "no such address" AND for a read
+# that failed, and sign-in told real agents "No matching BBC account" /
+# "Invalid email or password" for the second — 48 times in the week before the
+# HTTP/1.1 switch (3-9 Nov 2026), each counted as a failed attempt against the
+# office's one IP. Why the last None was returned is kept per request: a
+# context variable, so two sign-ins at the same moment cannot read each
+# other's.
+_USER_LOOKUP_FAILED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "user_lookup_failed", default=False
+)
+USER_LOOKUP_HEALTH: dict = {"failed": 0}
+
+
+def user_lookup_failed() -> bool:
+    """True when this request's last get_user_by_email returned None because
+    the users table could not be read — not because the address is unknown."""
+    return _USER_LOOKUP_FAILED.get()
+
+
+def _is_no_rows(exc: Exception) -> bool:
+    """PostgREST's answer to .single() when nothing matches: its code,
+    PGRST116, never the error's text (which can quote the address asked for)."""
+    code = getattr(exc, "code", None)
+    return isinstance(code, str) and code.strip() == "PGRST116"
+
+
 async def get_user_by_email(email: str) -> Optional[dict]:
-    """Get single user by email for login."""
+    """Get single user by email for login.
+
+    None means "no such address" — or that the read failed; user_lookup_failed()
+    says which, right after the call."""
+    _USER_LOOKUP_FAILED.set(False)
     try:
         db = get_client()
         res = await _run_sync(
@@ -2026,7 +2071,18 @@ async def get_user_by_email(email: str) -> Optional[dict]:
         )
         return res.data if res.data else None
     except Exception as e:
-        logger.error(f"get_user_by_email error: {e}")
+        if _is_no_rows(e):
+            # An address nobody has: the ordinary answer, not an error — and
+            # no ERROR line for it (the caller logs the refusal it turns into).
+            return None
+        _USER_LOOKUP_FAILED.set(True)
+        USER_LOOKUP_HEALTH["failed"] += 1
+        # The kind of error and the database's code, never its text: an error
+        # about this request can quote the address that was looked up.
+        logger.error(
+            f"get_user_by_email error: {type(e).__name__} "
+            f"{_loggable_code(_error_code(e))}".rstrip()
+        )
         return None
 
 
@@ -3215,8 +3271,14 @@ _VIEWING_COLUMN_WARNED = False
 
 async def update_user_last_seen(
     user_id: str, viewing_conversation_id: str | None = None
-) -> None:
+) -> Optional[dict]:
     """Update agent's last_seen_at timestamp (heartbeat).
+
+    Returns the user's row as this UPDATE left it (PostgREST answers a PATCH
+    with the row it wrote), or None when the write failed or matched nobody.
+    The heartbeat reads role, readiness and scope from it instead of asking
+    for the same row again: the second read was a quarter of all the
+    requests this API made to the database (Nov 2026).
 
     Also records what the operator is looking at (035). Written on EVERY
     heartbeat — value or NULL — so a closed tab cannot leave a stale claim
@@ -3232,7 +3294,7 @@ async def update_user_last_seen(
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).isoformat()
         try:
-            await _run_sync(
+            res = await _run_sync(
                 lambda: db_client.table("users")
                 .update({
                     "last_seen_at": now_iso,
@@ -3252,15 +3314,20 @@ async def update_user_last_seen(
                     "applied. Presence still writes; the sweep loses the "
                     "'operator is viewing → 120s' extension until it is."
                 )
-            await _run_sync(
+            res = await _run_sync(
                 lambda: db_client.table("users")
                 .update({"last_seen_at": now_iso})
                 .eq("id", user_id)
                 .execute(),
                 label="heartbeat",
             )
+        rows = getattr(res, "data", None)
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
     except Exception as e:
         logger.warning(f"update_user_last_seen error: {e}")
+        return None
 
 
 # Roles excluded from chat distribution (auto-assignment, sticky routing, stale cleanup).
@@ -3933,10 +4000,36 @@ async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict
         return []
 
 
-# Newest-first page size for the abandoned sweep. Each row costs one
-# message query, and the caller runs on a shared scheduler tick — a
-# 30-day closed+human window must not turn one tick into a table scan.
+# Newest-first page size for the abandoned sweep. The caller runs on a shared
+# scheduler tick — a 30-day closed+human window must not turn one tick into a
+# table scan.
 _ABANDONED_SCAN_CAP = 200
+
+_ABANDONED_COLUMNS = (
+    "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
+    "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
+)
+
+# What the sweep's scan cost, for /health. `embedded`: one read brought every
+# conversation with its newest message and its lead's CRM flag.
+# `embedded_failed`: that read was refused and the plain one ran instead.
+# `message_reads`: conversations asked for one by one (all 200 of them, every
+# 5 minutes, until Nov 2026).
+ABANDONED_SCAN_HEALTH: dict = {"scans": 0, "embedded": 0, "embedded_failed": 0, "message_reads": 0}
+
+_NOT_EMBEDDED = object()
+
+
+def _embedded_lead_in_crm(leads) -> Optional[bool]:
+    """True/False from the lead rows that came with a conversation; None when
+    none came (the plain read), so the caller reads the lead itself."""
+    if leads is _NOT_EMBEDDED:
+        return None
+    if isinstance(leads, dict):
+        leads = [leads]
+    if not isinstance(leads, list):
+        return False  # embedded, and no lead yet
+    return any(isinstance(lead, dict) and bool(lead.get("created_in_crm")) for lead in leads)
 
 
 async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
@@ -3957,18 +4050,24 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     (human took over, the push was orphaned, nothing ever retried).
     'completed' is excluded on purpose: post-CRM, already sold.
     'needs_agent' is in: the client asked for a person — the hottest lead
-    of all must not be the one the sweep skips."""
+    of all must not be the one the sweep skips.
+
+    ONE read for the page: each conversation comes with its newest message
+    and its lead's CRM flag (returned as `_in_crm`), instead of one message
+    read per conversation and, in the sweep, one lead read per conversation:
+    400 reads every 5 minutes, 199 of them to learn "already in the CRM".
+    Which rows are selected, and which count as abandoned, is unchanged. If
+    that read is refused the plain one runs and each row is asked for, as
+    before; the row then carries no `_in_crm` and the sweep reads the lead."""
     db = get_client()
-    try:
-        _window_start = (
-            datetime.now(timezone.utc) - timedelta(days=30)
-        ).isoformat()
-        result = await _run_sync(lambda: (
+    _window_start = (
+        datetime.now(timezone.utc) - timedelta(days=30)
+    ).isoformat()
+
+    def _candidates(columns: str):
+        return (
             db.table("conversations")
-            .select(
-                "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
-                "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
-            )
+            .select(columns)
             .in_("status", [*OPEN_STATUSES, "closed"])
             .in_("mode", ["ai", "human"])
             # …but never one a HUMAN closed. #200 widened this to closed+human
@@ -3986,15 +4085,36 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             )
             .order("created_at", desc=True)
             .limit(_ABANDONED_SCAN_CAP)
-            .execute()
-        ), label="cron")
+        )
+
+    ABANDONED_SCAN_HEALTH["scans"] += 1
+    result = None
+    try:
+        # The newest message per conversation, the way the list's previews
+        # read it (order + limit inside the embedded rows), and the lead's flag.
+        result = await _run_sync(lambda: _order_inside(
+            _candidates(_ABANDONED_COLUMNS + ", messages(created_at, role), leads(created_in_crm)")
+            .limit(1, foreign_table="messages"),
+            "messages", "created_at", desc=True,
+        ).execute(), label="cron")
+        ABANDONED_SCAN_HEALTH["embedded"] += 1
     except Exception as e:
-        logger.error(f"get_abandoned_conversations query error: {e}")
-        return []
+        ABANDONED_SCAN_HEALTH["embedded_failed"] += 1
+        logger.warning(
+            "get_abandoned_conversations: the one-read scan was refused "
+            f"({type(e).__name__}: {e}) — reading each conversation instead"
+        )
+    if result is None:
+        try:
+            result = await _run_sync(
+                lambda: _candidates(_ABANDONED_COLUMNS).execute(), label="cron"
+            )
+        except Exception as e:
+            logger.error(f"get_abandoned_conversations query error: {e}")
+            return []
 
     # The widened select (closed + human, 30 days) can return far more
-    # rows than the old active-only one, and each costs a message query.
-    # Cap it — and NEVER cap silently.
+    # rows than the old active-only one. Cap it — and NEVER cap silently.
     if len(result.data or []) >= _ABANDONED_SCAN_CAP:
         logger.warning(
             f"get_abandoned_conversations: hit the {_ABANDONED_SCAN_CAP}-row "
@@ -4010,16 +4130,25 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     for conv in result.data:
         cid = conv["id"]
         try:
-            # CRM=true convs now handled by cron close-only path
-            msg_res = await _run_sync(lambda cid=cid: (
-                db.table("messages")
-                .select("created_at, role")
-                .eq("conversation_id", cid)
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            ), label="cron")
-            if not msg_res.data:
+            # What the one read brought comes off the row: the sweep and the
+            # CRM payload get the row shape they always had, plus `_in_crm`.
+            newest = conv.pop("messages", _NOT_EMBEDDED)
+            in_crm = _embedded_lead_in_crm(conv.pop("leads", _NOT_EMBEDDED))
+            if in_crm is not None:
+                conv["_in_crm"] = in_crm
+            if not isinstance(newest, list):
+                # CRM=true convs now handled by cron close-only path
+                msg_res = await _run_sync(lambda cid=cid: (
+                    db.table("messages")
+                    .select("created_at, role")
+                    .eq("conversation_id", cid)
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                ), label="cron")
+                ABANDONED_SCAN_HEALTH["message_reads"] += 1
+                newest = msg_res.data
+            if not newest:
                 # Silent lead: form filled, nobody ever spoke. Age from
                 # conversation creation; the old `continue` here was the
                 # third layer strangling the AAA design.
@@ -4035,7 +4164,7 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
                 abandoned.append(conv)
                 continue
 
-            raw_ts = msg_res.data[0]["created_at"]
+            raw_ts = newest[0]["created_at"]
             last_msg = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
             if last_msg > cutoff:
                 continue
@@ -4266,29 +4395,50 @@ async def get_presence_day(user_id: str, day: str) -> dict | None:
         return None
 
 
-async def upsert_presence_day(user_id: str, day: str, d: dict) -> None:
-    try:
-        db_client = get_client()
-        existing = await get_presence_day(user_id, day)
-        if existing:
-            await _run_sync(
-                lambda: db_client.table("agent_presence_daily")
-                .update(d)
-                .eq("user_id", user_id)
-                .eq("day", day)
-                .execute(),
-                label="presence",
-            )
-        else:
-            await _run_sync(
-                lambda: db_client.table("agent_presence_daily")
-                .insert({"user_id": user_id, "day": day, **d})
-                .execute(),
-                idempotent=False,
-                label="presence",
-            )
-    except Exception as e:
-        logger.warning(f"upsert_presence_day error: {e}")
+async def read_presence_day(user_id: str, day: str) -> dict | None:
+    """The day's presence row, or None when the day has not started.
+
+    RAISES when the read fails. get_presence_day (above) answers None for
+    both, and the heartbeat's tick took a failed read for a new day: it wrote
+    first_seen_at = now and minutes_online = 0 over a day already counted.
+    Measured 11 Oct - 9 Nov 2026: of the 154 days on which an agent claimed,
+    answered or closed a chat, 101 have a row that "starts" more than five
+    minutes AFTER that first action (86 of them more than an hour after)."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("agent_presence_daily")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("day", day)
+        .execute(),
+        label="presence",
+    )
+    return res.data[0] if res.data else None
+
+
+async def insert_presence_day(user_id: str, day: str, d: dict) -> None:
+    """The first tick of the day. Raises on failure (the caller decides)."""
+    db_client = get_client()
+    await _run_sync(
+        lambda: db_client.table("agent_presence_daily")
+        .insert({"user_id": user_id, "day": day, **d})
+        .execute(),
+        idempotent=False,
+        label="presence",
+    )
+
+
+async def update_presence_day(user_id: str, day: str, d: dict) -> None:
+    """A later tick: only the fields given. Raises on failure."""
+    db_client = get_client()
+    await _run_sync(
+        lambda: db_client.table("agent_presence_daily")
+        .update(d)
+        .eq("user_id", user_id)
+        .eq("day", day)
+        .execute(),
+        label="presence",
+    )
 
 
 async def insert_ready_log(user_id: str, is_ready: bool) -> None:

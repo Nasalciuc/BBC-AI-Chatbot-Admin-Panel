@@ -197,12 +197,50 @@ async def sync_kb_entries(entries: list[dict]) -> dict:
 
 _QUERY_BODY_LOGGED = False  # dump the failing /points/query body once per process
 
+# Search by meaning, counted for /health: every failure here is a turn that
+# got NO knowledge-base entry, and nobody saw it. Nothing searches by keyword
+# behind this: the pipeline's keyword search cannot be reached since the KB
+# read moved into a parallel task (#57, 27 May 2026), and pipeline_runs has no
+# turn with a KB entry after 29 May 2026. `last_error` is the kind of the
+# latest failure ("HTTP 400", "ReadTimeout"); `refused_because` is the reason
+# Qdrant gives, which the status line alone never said (see _why_refused).
+QDRANT_HEALTH: dict = {
+    "searches": 0, "failed": 0, "last_status": None, "last_error": None, "refused_because": None,
+}
+
+# Our words, not a visitor's: what Qdrant answers to them can be kept whole.
+_PROBE_TEXT = "business class flights to London"
+
+
+def _why_refused(client: httpx.Client, body: dict) -> str:
+    """Why Qdrant refuses this kind of request — asked with OUR words.
+
+    The refused request carried a visitor's message, and the answer to it can
+    quote that message back (in another spacing, cut short, escaped): no
+    search-and-replace cleans that reliably, so that answer is never kept or
+    logged. The same request goes out once more with a fixed text of ours:
+    nothing of a visitor's is sent, so nothing of a visitor's can come back.
+
+    A diagnostic: whatever goes wrong in it (the request, or reading the
+    answer) is said in the result and never costs the turn."""
+    try:
+        probe = {**body, "query": {**(body.get("query") or {}), "text": _PROBE_TEXT}}
+        resp = client.post(_collection_url("/points/query"), json=probe)
+        if resp.status_code < 400:
+            return f"HTTP {resp.status_code} for our own text: the refusal depends on the text that was sent"
+        said = " ".join(str(resp.text or "").split())[:300]
+        return f"HTTP {resp.status_code}: {said or '(empty body)'}"
+    except Exception as e:  # noqa: BLE001 — broad on purpose: nothing in a diagnostic may cost the turn
+        logger.warning(f"[qdrant] the probe failed: {type(e).__name__}")
+        return f"probe failed ({type(e).__name__})"
+
 
 def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list[dict]:
     """Search KB entries by text similarity. Qdrant embeds the query server-side."""
     client = _get_client()
     if not client:
         return []
+    QDRANT_HEALTH["searches"] += 1
     try:
         _SCORE_THRESHOLD = 0.60  # Minimum cosine similarity — below this, KB entry is irrelevant
 
@@ -235,22 +273,37 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
                 "content": payload.get("content", ""),
                 "score": score,
             })
-        logger.info(f"[qdrant] query='{query_text[:50]}' \u2192 {len(results)} results above threshold {_SCORE_THRESHOLD}")
+        # The visitor's words stay out of the log (they can hold a name or a
+        # phone number): how long the question was, not what it said.
+        logger.info(f"[qdrant] query of {len(query_text)} chars \u2192 {len(results)} results above threshold {_SCORE_THRESHOLD}")
         return results
     except Exception as e:
-        # FOLLOW-UP: /points/query returns 400 in production (KB silently
-        # degraded to keyword search). Needs its own investigation — the
-        # one-shot dump below captures the failing body for it. WARNING,
-        # not DEBUG: production runs at INFO, a DEBUG line would never
+        # FOLLOW-UP: /points/query returns 400 in production, and the turn
+        # then has no KB entry at all (no keyword search runs behind this
+        # one). Needs its own investigation — the one-shot lines below
+        # capture what was sent and why it was refused.
+        # WARNING, not DEBUG: production runs at INFO, a DEBUG line would never
         # surface; and the flag is only consumed on an actual 400 so a
-        # timeout can't waste the single shot. Body carries no PII beyond
-        # the query text already logged at INFO.
+        # timeout can't waste the single shot. Neither line carries the
+        # visitor's words: the body is logged with the text's length in its
+        # place, and the reason is asked for with a text of ours.
         global _QUERY_BODY_LOGGED
         _status = getattr(getattr(e, "response", None), "status_code", None)
+        QDRANT_HEALTH["failed"] += 1
+        QDRANT_HEALTH["last_status"] = _status
+        QDRANT_HEALTH["last_error"] = f"HTTP {_status}" if _status else type(e).__name__
         if _status == 400 and not _QUERY_BODY_LOGGED:
             _QUERY_BODY_LOGGED = True
-            logger.warning(f"[qdrant] failing /points/query body (once): {body}")
-        logger.warning(f"Qdrant search failed (falling back to keyword): {e}")
+            _sent = {**body, "query": {**body["query"], "text": f"<{len(query_text)} chars>"}}
+            logger.warning(f"[qdrant] failing /points/query body (once): {_sent}")
+            # The exception carries only "400 Bad Request"; this is the reason.
+            _why = _why_refused(client, body)
+            QDRANT_HEALTH["refused_because"] = _why
+            logger.warning(f"[qdrant] what Qdrant answers to our own text (once): {_why}")
+        # The kind of failure, not its text (an error raised while the answer
+        # is read can quote the answer). And what it means for the turn: no
+        # KB entry, not "keyword search instead".
+        logger.warning(f"Qdrant search failed ({type(e).__name__}, status {_status}): no KB entries for this turn")
         return []
 
 

@@ -392,10 +392,24 @@ class TestOpenReads:
         with _Patched(_wire(t)):
             await sb.get_conversation_counts("a1")
         statuses = [f[2] for f in _status_filters(t)]
-        # my_active, the queue and all_active count open chats; the two
-        # closed tabs count closed ones.
-        assert statuses.count(OPEN) == 3
+        # my_active, the queue and all_active count open chats — one read of
+        # the open chats answers all three; the two closed tabs count closed
+        # ones.
+        assert statuses.count(OPEN) == 1
         assert statuses.count(["closed"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_three_open_badges_count_a_client_waiting_for_a_person(self):
+        t = _Table([
+            {"id": "c1", "status": "active", "assigned_agent_id": "a1"},
+            {"id": "c2", "status": "needs_agent", "assigned_agent_id": "a1"},   # reserved for me
+            {"id": "c3", "status": "needs_agent", "assigned_agent_id": None},   # in the line
+            {"id": "c4", "status": "active", "assigned_agent_id": "a2"},
+            {"id": "c5", "status": "closed", "assigned_agent_id": "a1"},
+        ])
+        with _Patched(_wire(t)):
+            counts = await sb.get_conversation_counts("a1")
+        assert (counts["my_active"], counts["queue"], counts["all_active"]) == (2, 1, 4)
 
     @pytest.mark.parametrize("assigned_to", ["none", "all", "me"])
     def test_an_active_list_returns_open_chats(self, assigned_to):

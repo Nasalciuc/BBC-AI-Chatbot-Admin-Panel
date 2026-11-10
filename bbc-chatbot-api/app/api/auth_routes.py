@@ -168,6 +168,11 @@ async def login(req: LoginRequest, request: Request, _rate: None = Depends(check
 
     user = await db.get_user_by_email(_email)
     if not user:
+        if db.user_lookup_failed():
+            # The users table could not be read: nobody typed a wrong
+            # password. No failed attempt is counted (not on the address, not
+            # on the IP a whole office shares), and the answer is the truth.
+            raise HTTPException(503, "Sign-in is temporarily unavailable — please try again in a moment.")
         await _reject()
         raise HTTPException(401, "Invalid email or password")
 
@@ -342,7 +347,7 @@ class CrmExchangeRequest(BaseModel):
 # The CRM dock opens a panel session on every CRM page (~4,000 a weekday on
 # 9 Nov): one INFO line each buried everything else. Counted here, in
 # /health/detail → sso; only the refusals stay log lines.
-SSO_HEALTH = {"ok": 0, "token_refused": 0, "no_email": 0, "unknown_user": 0, "inactive": 0}
+SSO_HEALTH = {"ok": 0, "token_refused": 0, "no_email": 0, "unknown_user": 0, "inactive": 0, "lookup_failed": 0}
 
 
 @router.post("/sso/crm-exchange", response_model=LoginResponse)
@@ -376,6 +381,16 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
         )
 
     user = await db.get_user_by_email(email.lower().strip())
+    if not user and db.user_lookup_failed():
+        # The account could not be looked up — which is not "no account". The
+        # dock asks again on the next CRM page; an agent whose account is in
+        # order must not read "No matching BBC account" meanwhile.
+        # 502, not 503: the panel reads a 503 here as "sign-in from the CRM
+        # isn't switched on" (the missing-secret answer above), and words any
+        # other failure as "something went wrong on the way — open the chat
+        # from the CRM again", which is what happened.
+        SSO_HEALTH["lookup_failed"] += 1
+        raise HTTPException(502, "Could not check your account just now — please try again in a moment.")
     if not user:
         SSO_HEALTH["unknown_user"] += 1
         logger.warning(f"CRM SSO exchange: unknown email {_mask_email(email)}")

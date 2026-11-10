@@ -83,7 +83,7 @@ async def update_lesson_status(
         raise HTTPException(404, "Lesson not found")
 
     invalidate_lesson_cache()
-    logger.info(f"Lesson {lesson_id} → {body.status} by {user.get('email') or user.get('id')}")
+    logger.info(f"Lesson {lesson_id} → {body.status} by user={user.get('id')}")
     return updated
 
 
