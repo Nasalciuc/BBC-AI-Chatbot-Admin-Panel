@@ -126,3 +126,51 @@ async def test_an_answer_that_is_not_json_logs_the_status_alone(caplog):
         assert await mail.send_ops_alert_email("x", "y") is False
     said = _lines(caplog)
     assert "502 (no JSON body)" in said and _ADDR not in said and _OPS not in said
+
+
+# ── an error while sending is written by its kind, not its text ─────────
+
+def _postmark_raises(exc):
+    """httpx.AsyncClient whose post raises: the mail never left."""
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=exc)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return patch.object(mail.httpx, "AsyncClient", return_value=ctx)
+
+
+async def _send_invite():
+    return await mail.send_invite_email(_ADDR, "Dana", "https://panel.test/x", 60)
+
+
+async def _send_attention():
+    return await mail.send_attention_email(
+        tag="returning_customer", chat_number=3301, created_at=None,
+        customer_name="A Client", conversation_id="c-1",
+    )
+
+
+async def _send_ops_alert():
+    return await mail.send_ops_alert_email("DB executor saturated", "18/20")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send, line", [
+    (_send_invite, "send_invite_email error: LocalProtocolError"),
+    (_send_attention, "Attention email exception: LocalProtocolError"),
+    (_send_ops_alert, "Exception sending ops alert email (DB executor saturated): LocalProtocolError"),
+])
+async def test_an_error_while_sending_is_logged_by_its_kind(send, line, caplog):
+    """An HTTP client's error can quote what it was sending: here the token
+    it refused as a header, and an address. Neither reaches the log."""
+    boom = httpx.LocalProtocolError("Illegal header value b'pm-secret-token\\n' while sending to %s" % _ADDR)
+    with patch.object(settings, "postmark_token", "pm-secret-token\n"), \
+         patch.object(settings, "attention_email_to", _ADDR), \
+         patch.object(settings, "ops_alert_email", _OPS), \
+         patch.object(settings, "super_alert_email", _OPS), \
+         _postmark_raises(boom), caplog.at_level("INFO"):
+        assert await send() is False
+    said = _lines(caplog)
+    assert line in said
+    assert "pm-secret-token" not in said and _ADDR not in said and _OPS not in said and "Illegal header" not in said

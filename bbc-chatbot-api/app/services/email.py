@@ -173,7 +173,9 @@ async def send_invite_email(to_email: str, name: str, invite_url: str, expires_m
             logger.error(f"Postmark {res.status_code}: {_postmark_said(res)}")
             return False
     except Exception as e:
-        logger.error(f"send_invite_email error: {e}")
+        # The kind of error, not its text: an HTTP client's error can quote
+        # what was being sent (a header value, a piece of the body).
+        logger.error(f"send_invite_email error: {type(e).__name__}")
         return False
 
 
@@ -252,7 +254,7 @@ async def send_attention_email(
             logger.error(f"Attention email failed: {res.status_code} {_postmark_said(res)}")
             return False
     except Exception as e:
-        logger.error(f"Attention email exception: {e}")
+        logger.error(f"Attention email exception: {type(e).__name__}")
         return False
 
 
@@ -359,5 +361,5 @@ async def _send_super_inbox_email(
             logger.error(f"Failed {what}: {res.status_code} {_postmark_said(res)}")
             return False
     except Exception as e:
-        logger.error(f"Exception sending {what}: {e}")
+        logger.error(f"Exception sending {what}: {type(e).__name__}")
         return False

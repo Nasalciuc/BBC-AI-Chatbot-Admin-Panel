@@ -594,7 +594,51 @@ class TestKbSearchSaysWhy:
         client.post.side_effect = [httpx.Response(400, text=_INDEX, request=request), httpx.ConnectError("down")]
         with patch.object(qdrant, "_get_client", return_value=client):
             assert qdrant._search_sync("do you fly to Rome", tunnel="sales") == []
-        assert _qdrant_state["refused_because"] == "probe not sent (ConnectError)"
+        assert _qdrant_state["refused_because"] == "probe failed (ConnectError)"
+
+    def test_a_probe_whose_answer_cannot_be_read_does_not_break_the_turn_either(self, _qdrant_state):
+        """Not only the request: reading the probe's answer is inside the same
+        guard, so the search still ends in its counted, empty answer."""
+        class _Unreadable:
+            status_code = 400
+
+            @property
+            def text(self):
+                raise RuntimeError("stream closed")
+
+        client = MagicMock()
+        request = httpx.Request("POST", "https://q.invalid/collections/kb_entries/points/query")
+        client.post.side_effect = [httpx.Response(400, text=_INDEX, request=request), _Unreadable()]
+        with patch.object(qdrant, "_get_client", return_value=client):
+            assert qdrant._search_sync("do you fly to Rome", tunnel="sales") == []
+        assert _qdrant_state["refused_because"] == "probe failed (RuntimeError)"
+        assert _qdrant_state["failed"] == 1 and _qdrant_state["last_error"] == "HTTP 400"
+
+    def test_the_failure_line_says_the_turn_has_no_kb_entries_not_keyword_search(self, _qdrant_state, caplog):
+        """Nothing searches by keyword behind this search (the pipeline's
+        keyword branch cannot be reached): the line must not say it does."""
+        client = _qdrant_client((400, _INDEX), (400, _INDEX))
+        with patch.object(qdrant, "_get_client", return_value=client), caplog.at_level("WARNING"):
+            assert qdrant._search_sync("do you fly to Rome", tunnel="sales") == []
+        said = [r.getMessage() for r in caplog.records]
+        assert "Qdrant search failed (HTTPStatusError, status 400): no KB entries for this turn" in said
+        assert not any("keyword" in line for line in said)
+
+    def test_an_error_that_quotes_the_answer_is_logged_by_its_kind(self, _qdrant_state, caplog):
+        """An error raised while the answer is read can carry a piece of it:
+        the line says what kind of error it was, never its text."""
+        answer = MagicMock()
+        answer.raise_for_status.return_value = None
+        answer.json.side_effect = ValueError("unexpected token near 'my phone is 212 555 0142, I am Dana'")
+        client = MagicMock()
+        client.post.return_value = answer
+        with patch.object(qdrant, "_get_client", return_value=client), caplog.at_level("DEBUG"):
+            assert qdrant._search_sync("my phone is 212 555 0142, I am Dana", tunnel="sales") == []
+        everything = "\n".join(r.getMessage() for r in caplog.records) + repr(dict(_qdrant_state))
+        assert "Qdrant search failed (ValueError, status None): no KB entries for this turn" in everything
+        for words in ("212", "0142", "Dana", "my phone", "unexpected token"):
+            assert words not in everything
+        assert client.post.call_count == 1                 # not a 400: no probe
 
     def test_a_working_search_logs_how_long_the_question_was_not_what_it_said(self, _qdrant_state, caplog):
         ok = '{"result":{"points":[{"id":"e1","score":0.91,"payload":{"title":"Payment","content":"Visa"}}]}}'

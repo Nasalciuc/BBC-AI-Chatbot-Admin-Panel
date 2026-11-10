@@ -127,8 +127,9 @@ async def health_detail(full: bool = False) -> dict:
     # Tasks: promises caught, call-backs, moves on Not ready, and failures
     # (schema_missing until migration 051 runs).
     from app.db.supabase import TASKS_HEALTH
-    # KB search by meaning: failed = turns answered from keyword search
-    # instead; last_error = what Qdrant said.
+    # KB search by meaning: failed = turns that got no KB entry at all (no
+    # keyword search runs behind it); last_error = the kind of the latest
+    # failure, refused_because = the reason Qdrant gives.
     from app.db.qdrant import QDRANT_HEALTH
     # Online minutes: ticks skipped because the day could not be read or saved.
     from app.services.presence import PRESENCE_HEALTH
