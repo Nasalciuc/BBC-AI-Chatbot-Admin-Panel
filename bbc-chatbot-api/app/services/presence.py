@@ -21,10 +21,22 @@ def _parse_ts(raw) -> datetime:
 PRESENCE_HEALTH: dict = {"ticks": 0, "read_failed": 0, "write_failed": 0, "started_twice": 0}
 
 
+def _kind(exc: Exception) -> str:
+    """What failed, for a log line: the kind of error and the database's own
+    code — never the error's text, which quotes the row it refused."""
+    from app.db.supabase import _error_code, _loggable_code
+
+    return f"{type(exc).__name__} {_loggable_code(_error_code(exc))}".rstrip()
+
+
 def _is_duplicate_day(exc: Exception) -> bool:
-    """Another request started the same day first (two tabs, one second)."""
-    text = f"{type(exc).__name__}: {exc}"
-    return "23505" in text or "duplicate key" in text
+    """Another request started the same day first (two tabs, one second).
+
+    The database's own code (23505, unique violation) and nothing else: an
+    error's text quotes values, and an id with those five digits in it would
+    read as a duplicate."""
+    code = getattr(exc, "code", None)
+    return isinstance(code, str) and code.strip() == "23505"
 
 
 async def record_presence_tick(user_id: str, db) -> None:
@@ -42,7 +54,7 @@ async def record_presence_tick(user_id: str, db) -> None:
             # A read that failed is not a day that has not started. Writing
             # "first seen now, 0 minutes" here reset days already counted.
             PRESENCE_HEALTH["read_failed"] += 1
-            logger.warning(f"[presence] tick skipped {user_id}: the day could not be read ({type(e).__name__}: {e})")
+            logger.warning(f"[presence] tick skipped {user_id}: the day could not be read ({_kind(e)})")
             return
         try:
             if not row:
@@ -70,7 +82,7 @@ async def record_presence_tick(user_id: str, db) -> None:
                 logger.info(f"[presence] {user_id}: the day was started by another request")
                 return
             PRESENCE_HEALTH["write_failed"] += 1
-            logger.warning(f"[presence] tick not saved {user_id}: {type(e).__name__}: {e}")
+            logger.warning(f"[presence] tick not saved {user_id}: {_kind(e)}")
     except Exception as e:
         logger.warning(f"[presence] tick failed {user_id}: {e}")
 

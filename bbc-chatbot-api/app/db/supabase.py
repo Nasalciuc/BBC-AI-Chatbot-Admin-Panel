@@ -2060,8 +2060,10 @@ def user_lookup_failed() -> bool:
 
 
 def _is_no_rows(exc: Exception) -> bool:
-    """PostgREST's answer to .single() when nothing matches (PGRST116)."""
-    return getattr(exc, "code", None) == "PGRST116" or "PGRST116" in str(exc)
+    """PostgREST's answer to .single() when nothing matches: its code,
+    PGRST116, never the error's text (which can quote the address asked for)."""
+    code = getattr(exc, "code", None)
+    return isinstance(code, str) and code.strip() == "PGRST116"
 
 
 async def get_user_by_email(email: str) -> Optional[dict]:
@@ -2083,7 +2085,12 @@ async def get_user_by_email(email: str) -> Optional[dict]:
             return None
         _USER_LOOKUP_FAILED.set(True)
         USER_LOOKUP_HEALTH["failed"] += 1
-        logger.error(f"get_user_by_email error: {e}")
+        # The kind of error and the database's code, never its text: an error
+        # about this request can quote the address that was looked up.
+        logger.error(
+            f"get_user_by_email error: {type(e).__name__} "
+            f"{_loggable_code(_error_code(e))}".rstrip()
+        )
         return None
 
 

@@ -476,6 +476,14 @@ def _presence_db(*, row=None, read_error=None, insert_error=None, update_error=N
     return db
 
 
+class _DbSays(Exception):
+    """Shaped like PostgREST's APIError: the database's code, and a text that
+    can quote the row."""
+    def __init__(self, code, text=""):
+        super().__init__(text)
+        self.code = code
+
+
 class TestPresenceTick:
     @pytest.mark.asyncio
     async def test_the_first_tick_of_the_day_starts_it(self, _presence_state):
@@ -510,9 +518,21 @@ class TestPresenceTick:
 
     @pytest.mark.asyncio
     async def test_two_tabs_starting_the_same_day_leave_one_row(self, _presence_state):
-        db = _presence_db(row=None, insert_error=RuntimeError('duplicate key value violates unique constraint (23505)'))
+        db = _presence_db(row=None, insert_error=_DbSays("23505", "duplicate key value violates unique constraint"))
         await presence.record_presence_tick("u1", db)
         assert _presence_state["started_twice"] == 1 and _presence_state["write_failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_another_error_that_only_quotes_those_digits_is_a_failed_write(self, _presence_state, caplog):
+        """A foreign-key refusal quoting an id with 23505 in it is not "the day
+        exists" — and the id it quotes stays out of the log."""
+        quoted = 'Key (user_id)=(0a123505-77aa-4b1c-9d0e-5f6a7b8c9d0e) is not present in table "users"'
+        db = _presence_db(row=None, insert_error=_DbSays("23503", quoted))
+        with caplog.at_level("WARNING"):
+            await presence.record_presence_tick("u1", db)
+        assert _presence_state["write_failed"] == 1 and _presence_state["started_twice"] == 0
+        line = "\n".join(r.getMessage() for r in caplog.records)
+        assert "_DbSays 23503" in line and "0a123505" not in line
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kw", [{"row": None, "insert_error": RuntimeError("timeout")},
@@ -544,7 +564,7 @@ class TestPresenceTick:
 @pytest.fixture
 def _qdrant_state():
     before = dict(qdrant.QDRANT_HEALTH)
-    qdrant.QDRANT_HEALTH.update({"searches": 0, "failed": 0, "last_status": None, "last_error": None})
+    qdrant.QDRANT_HEALTH.update({"searches": 0, "failed": 0, "last_status": None, "last_error": None, "refused_because": None})
     logged = qdrant._QUERY_BODY_LOGGED
     qdrant._QUERY_BODY_LOGGED = False
     yield qdrant.QDRANT_HEALTH
@@ -552,38 +572,76 @@ def _qdrant_state():
     qdrant._QUERY_BODY_LOGGED = logged
 
 
-def _qdrant_client(status, body):
+def _qdrant_client(*answers):
+    """A client whose posts are answered in turn: (status, body) pairs."""
     client = MagicMock()
     request = httpx.Request("POST", "https://q.invalid/collections/kb_entries/points/query")
-    client.post.return_value = httpx.Response(status, text=body, request=request)
+    client.post.side_effect = [httpx.Response(st, text=body, request=request) for st, body in answers]
     return client
 
 
+def _sent_texts(client):
+    return [c.kwargs["json"]["query"]["text"] for c in client.post.call_args_list]
+
+
+_INDEX = '{"status":{"error":"Bad request: Index required but not found for \\"tunnel\\""},"time":0.0}'
+
+
 class TestKbSearchSaysWhy:
-    def test_a_400_is_counted_and_its_answer_logged_once(self, _qdrant_state, caplog):
-        answer = '{"status":{"error":"Bad request: Index required but not found for \\"tunnel\\""},"time":0.0}'
-        with patch.object(qdrant, "_get_client", return_value=_qdrant_client(400, answer)):
+    def test_a_400_is_counted_and_the_reason_is_asked_for_once(self, _qdrant_state, caplog):
+        client = _qdrant_client((400, _INDEX), (400, _INDEX), (400, _INDEX))
+        with patch.object(qdrant, "_get_client", return_value=client), caplog.at_level("WARNING"):
             assert qdrant._search_sync("do you fly to Rome", tunnel="sales") == []
             assert qdrant._search_sync("do you fly to Rome", tunnel="sales") == []
         assert _qdrant_state["searches"] == 2 and _qdrant_state["failed"] == 2
-        assert _qdrant_state["last_status"] == 400
-        assert "Index required" in _qdrant_state["last_error"]
-        said = [r.getMessage() for r in caplog.records if "what Qdrant answered" in r.getMessage()]
+        assert _qdrant_state["last_status"] == 400 and _qdrant_state["last_error"] == "HTTP 400"
+        assert _qdrant_state["refused_because"].startswith("HTTP 400: ") and "Index required" in _qdrant_state["refused_because"]
+        # Two searches and ONE probe; the probe carries our text, and the same filter.
+        assert _sent_texts(client) == ["do you fly to Rome", qdrant._PROBE_TEXT, "do you fly to Rome"]
+        assert client.post.call_args_list[1].kwargs["json"]["filter"] == client.post.call_args_list[0].kwargs["json"]["filter"]
+        said = [r.getMessage() for r in caplog.records if "what Qdrant answers" in r.getMessage()]
         assert len(said) == 1 and "Index required" in said[0]
 
-    def test_the_answer_never_carries_the_visitors_words(self, _qdrant_state):
-        echo = '{"status":{"error":"cannot embed: my phone is 212 555 0142"}}'
-        with patch.object(qdrant, "_get_client", return_value=_qdrant_client(400, echo)):
-            qdrant._search_sync("my phone is 212 555 0142", tunnel="sales")
-        assert "212 555 0142" not in _qdrant_state["last_error"]
-        assert "<query>" in _qdrant_state["last_error"]
+    def test_what_qdrant_says_about_the_visitors_message_is_never_kept(self, _qdrant_state, caplog):
+        """The answer to the visitor's request can quote it in another shape
+        (spaces, case, cut short): it is not cleaned, it is not used."""
+        echo = '{"status":{"error":"cannot embed: MY PHONE IS 212-555-0142, i am Dana"}}'
+        client = _qdrant_client((400, echo), (400, _INDEX))
+        with patch.object(qdrant, "_get_client", return_value=client), caplog.at_level("DEBUG"):
+            qdrant._search_sync("my phone is 212 555 0142, I am Dana", tunnel="sales")
+        everything = "\n".join(r.getMessage() for r in caplog.records) + repr(dict(_qdrant_state))
+        for words in ("212", "0142", "Dana", "DANA", "my phone", "MY PHONE"):
+            assert words not in everything
+        assert "<35 chars>" in everything                 # what was sent, by its length
+        assert "Index required" in _qdrant_state["refused_because"]
+
+    def test_our_text_accepted_means_the_refusal_was_about_the_text(self, _qdrant_state):
+        client = _qdrant_client((400, '{"status":{"error":"too long"}}'), (200, '{"result":{"points":[]}}'))
+        with patch.object(qdrant, "_get_client", return_value=client):
+            qdrant._search_sync("x" * 9000, tunnel="sales")
+        assert _qdrant_state["refused_because"].startswith("HTTP 200 for our own text")
+
+    def test_a_probe_that_cannot_be_sent_is_said_and_does_not_break_the_turn(self, _qdrant_state):
+        client = MagicMock()
+        request = httpx.Request("POST", "https://q.invalid/collections/kb_entries/points/query")
+        client.post.side_effect = [httpx.Response(400, text=_INDEX, request=request), httpx.ConnectError("down")]
+        with patch.object(qdrant, "_get_client", return_value=client):
+            assert qdrant._search_sync("do you fly to Rome", tunnel="sales") == []
+        assert _qdrant_state["refused_because"] == "probe not sent (ConnectError)"
+
+    def test_a_working_search_logs_how_long_the_question_was_not_what_it_said(self, _qdrant_state, caplog):
+        ok = '{"result":{"points":[{"id":"e1","score":0.91,"payload":{"title":"Payment","content":"Visa"}}]}}'
+        with patch.object(qdrant, "_get_client", return_value=_qdrant_client((200, ok))), caplog.at_level("INFO"):
+            qdrant._search_sync("call me on 212 555 0142", tunnel="sales")
+        line = "\n".join(r.getMessage() for r in caplog.records)
+        assert "query of 23 chars" in line and "212" not in line
 
     def test_a_search_that_works_counts_no_failure(self, _qdrant_state):
         ok = '{"result":{"points":[{"id":"e1","score":0.91,"payload":{"title":"Payment","content":"Visa"}}]}}'
-        with patch.object(qdrant, "_get_client", return_value=_qdrant_client(200, ok)):
+        with patch.object(qdrant, "_get_client", return_value=_qdrant_client((200, ok))):
             got = qdrant._search_sync("can I pay by card", tunnel="sales")
         assert [g["id"] for g in got] == ["e1"]
-        assert _qdrant_state == {"searches": 1, "failed": 0, "last_status": None, "last_error": None}
+        assert _qdrant_state == {"searches": 1, "failed": 0, "last_status": None, "last_error": None, "refused_because": None}
 
     def test_a_timeout_is_counted_without_a_status(self, _qdrant_state):
         client = MagicMock()
@@ -591,7 +649,8 @@ class TestKbSearchSaysWhy:
         with patch.object(qdrant, "_get_client", return_value=client):
             assert qdrant._search_sync("anything", tunnel="sales") == []
         assert _qdrant_state["failed"] == 1 and _qdrant_state["last_status"] is None
-        assert _qdrant_state["last_error"] == "ReadTimeout"
+        assert _qdrant_state["last_error"] == "ReadTimeout" and _qdrant_state["refused_because"] is None
+        assert client.post.call_count == 1                 # a timeout asks no second question
 
     def test_not_configured_is_not_a_search(self, _qdrant_state):
         with patch.object(qdrant, "_get_client", return_value=None):
@@ -639,6 +698,23 @@ class TestUserLookup:
             assert await sb.get_user_by_email("real@bbc.test") is None
             assert sb.user_lookup_failed() is True
         assert _lookup_health["failed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_error_line_says_the_kind_never_the_text(self, _lookup_health, caplog):
+        """An error about this request can quote the address that was asked for."""
+        p = _users_read(_DbSays("57014", "canceling statement: ...email=eq.real@bbc.test"))
+        with p[0], p[1], caplog.at_level("ERROR"):
+            assert await sb.get_user_by_email("real@bbc.test") is None
+            assert sb.user_lookup_failed() is True
+        line = "\n".join(r.getMessage() for r in caplog.records)
+        assert "get_user_by_email error: _DbSays 57014" in line and "real@bbc.test" not in line
+
+    @pytest.mark.asyncio
+    async def test_a_text_that_only_mentions_no_rows_is_still_a_failed_read(self, _lookup_health):
+        p = _users_read(RuntimeError("upstream said PGRST116 somewhere in its page"))
+        with p[0], p[1]:
+            assert await sb.get_user_by_email("real@bbc.test") is None
+            assert sb.user_lookup_failed() is True
 
     @pytest.mark.asyncio
     async def test_the_next_lookup_starts_clean(self, _lookup_health):
@@ -746,7 +822,7 @@ def test_health_detail_reports_the_new_counters():
     with patch.object(health, "get_scheduler_health", return_value={}), \
          patch.object(health, "supervisor_columns_status", return_value={}):
         out = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(health.health_detail(full=False))
-    assert set(out["kb_search"]) == {"searches", "failed", "last_status", "last_error"}
+    assert set(out["kb_search"]) == {"searches", "failed", "last_status", "last_error", "refused_because"}
     assert set(out["presence_ticks"]) == {"ticks", "read_failed", "write_failed", "started_twice"}
     assert set(out["abandoned_scan"]) == {"scans", "embedded", "embedded_failed", "message_reads"}
     assert set(out["user_lookup"]) == {"failed"}
