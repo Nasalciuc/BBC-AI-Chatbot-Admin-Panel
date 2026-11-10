@@ -319,6 +319,15 @@ async def run_abandoned_crm() -> dict:
                 )
                 results.append({"id": cid, "status": "skipped", "reason": "pushed_today"})
                 continue
+            if conv.get("_in_crm") is True and not _may_close:
+                # The scan read the lead's flag together with the conversation:
+                # in the CRM already, and this conversation must not be touched
+                # (a human owns it, or it is already closed). Nothing left to
+                # do — and no second read, 199 times a tick, to learn it again.
+                # The flag only ever goes from false to true, so a read a few
+                # seconds old cannot be wrong about "already there".
+                results.append({"id": cid, "status": "already_done"})
+                continue
             lead = await get_or_create_lead(cid)
             if not lead:
                 # A read that FAILED is not a lead that does not exist. Both

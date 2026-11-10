@@ -127,6 +127,17 @@ async def health_detail(full: bool = False) -> dict:
     # Tasks: promises caught, call-backs, moves on Not ready, and failures
     # (schema_missing until migration 051 runs).
     from app.db.supabase import TASKS_HEALTH
+    # KB search by meaning: failed = turns answered from keyword search
+    # instead; last_error = what Qdrant said.
+    from app.db.qdrant import QDRANT_HEALTH
+    # Online minutes: ticks skipped because the day could not be read or saved.
+    from app.services.presence import PRESENCE_HEALTH
+    # The abandoned sweep's scan: one read a tick (embedded), or the old
+    # read-per-conversation (message_reads) when that one is refused.
+    from app.db.supabase import ABANDONED_SCAN_HEALTH
+    # Sign-in: the users table could not be read (answered "try again", not
+    # "no such account").
+    from app.db.supabase import USER_LOOKUP_HEALTH
 
     from app.ai.ledger import LEDGER_HEALTH
     from app.ai.output_guard import OUTPUT_GUARD_HEALTH
@@ -194,6 +205,10 @@ async def health_detail(full: bool = False) -> dict:
             "to_read": dict(TO_READ_HEALTH),
             "team_now": dict(TEAM_NOW_HEALTH),
             "tasks": dict(TASKS_HEALTH),
+            "kb_search": dict(QDRANT_HEALTH),
+            "presence_ticks": dict(PRESENCE_HEALTH),
+            "abandoned_scan": dict(ABANDONED_SCAN_HEALTH),
+            "user_lookup": dict(USER_LOOKUP_HEALTH),
         }
 
     # Check Supabase connectivity
@@ -283,4 +298,8 @@ async def health_detail(full: bool = False) -> dict:
         "to_read": dict(TO_READ_HEALTH),
         "team_now": dict(TEAM_NOW_HEALTH),
         "tasks": dict(TASKS_HEALTH),
+        "kb_search": dict(QDRANT_HEALTH),
+        "presence_ticks": dict(PRESENCE_HEALTH),
+        "abandoned_scan": dict(ABANDONED_SCAN_HEALTH),
+        "user_lookup": dict(USER_LOOKUP_HEALTH),
     }

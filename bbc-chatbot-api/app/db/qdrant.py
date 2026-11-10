@@ -197,12 +197,31 @@ async def sync_kb_entries(entries: list[dict]) -> dict:
 
 _QUERY_BODY_LOGGED = False  # dump the failing /points/query body once per process
 
+# Search by meaning, counted for /health: every failure here is a turn that
+# answered from keyword search instead, and nobody saw it (every search has
+# failed with 400 since at least Aug 2026). `last_error` is what Qdrant
+# answered — the reason, which the status line alone never said.
+QDRANT_HEALTH: dict = {"searches": 0, "failed": 0, "last_status": None, "last_error": None}
+
+
+def _answer_of(exc: Exception, query_text: str) -> str:
+    """What the server said about a refused request, without the visitor's words."""
+    try:
+        text = getattr(getattr(exc, "response", None), "text", "") or ""
+    except Exception:  # noqa: silent — a response body that cannot be read leaves the status line, which is logged anyway
+        text = ""
+    text = " ".join(str(text).split())
+    if query_text:
+        text = text.replace(query_text, "<query>")
+    return text[:300]
+
 
 def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list[dict]:
     """Search KB entries by text similarity. Qdrant embeds the query server-side."""
     client = _get_client()
     if not client:
         return []
+    QDRANT_HEALTH["searches"] += 1
     try:
         _SCORE_THRESHOLD = 0.60  # Minimum cosine similarity — below this, KB entry is irrelevant
 
@@ -247,9 +266,17 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
         # the query text already logged at INFO.
         global _QUERY_BODY_LOGGED
         _status = getattr(getattr(e, "response", None), "status_code", None)
+        _answer = _answer_of(e, query_text)
+        QDRANT_HEALTH["failed"] += 1
+        QDRANT_HEALTH["last_status"] = _status
+        QDRANT_HEALTH["last_error"] = _answer or f"{type(e).__name__}"
         if _status == 400 and not _QUERY_BODY_LOGGED:
             _QUERY_BODY_LOGGED = True
             logger.warning(f"[qdrant] failing /points/query body (once): {body}")
+            # The body above is what we sent; this is why it was refused. The
+            # follow-up from Aug never had it: the exception carries only
+            # "400 Bad Request".
+            logger.warning(f"[qdrant] what Qdrant answered (once): {_answer or '(empty body)'}")
         logger.warning(f"Qdrant search failed (falling back to keyword): {e}")
         return []
 

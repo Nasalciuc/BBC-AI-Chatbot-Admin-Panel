@@ -276,7 +276,7 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # scheduler sweep can honour the "operator is viewing → 120s" extension
     # without this endpoint doing the sweep itself.
     _t0 = time.monotonic()
-    await db.update_user_last_seen(
+    _written = await db.update_user_last_seen(
         user_id, viewing_conversation_id=body.viewing_conversation_id
     )
     from app.services.presence import record_presence_tick
@@ -291,7 +291,16 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # SECURITY: role, readiness AND tunnel_scope all from DB, never from JWT.
     # A stale token (e.g. admin still carrying an old sales token) was
     # receiving auto-assigns in production. Fail closed on any miss.
-    user_db = await db.get_user_by_id(user_id)
+    # The presence write above answers with the row it just wrote: the same
+    # row, from the same database, one request earlier. It is read again only
+    # when the write returned nothing (it failed, or matched nobody).
+    user_db = (
+        _written
+        if isinstance(_written, dict) and _written.get("id") == user_id
+        else None
+    )
+    if user_db is None:
+        user_db = await db.get_user_by_id(user_id)
     role_db = (user_db or {}).get("role") or ""
     is_ready = bool((user_db or {}).get("is_ready", False))
     # 033: chat_enabled comes from the DB too, never from the JWT. An absent
