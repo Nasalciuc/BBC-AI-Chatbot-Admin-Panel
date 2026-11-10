@@ -1,27 +1,28 @@
 """Fewer trips to the database on the paths every open panel walks.
 
-10 Nov 2026, the evening after the redesign went live: the API made 1.25
-million requests to the database in 20 hours (40 a second at the peak), the
-chat list took 300-450 ms where it had taken 120-150, and several times that
-evening the database answered nothing for 5 seconds. None of the requests
-below was needed:
+In the 21 hours after the redesign went live (9 Nov 15:10 - 10 Nov 12:10 UTC)
+the API sent 1,260,839 requests to the database, 151,000 in the busiest hour.
+In the hours above 80,000 every request waited 1-6 s, two to six times an
+hour; in the nine hours under 13,000, never. About four in ten of those
+requests asked for something the API already had:
 
   * the heartbeat read the user's row right after writing it (the write
     answers with the row);
   * the tab badges asked five counts in a row, three of them over the same
     few open chats;
-  * the list read who has each chat, THEN each lead's trip: two independent
-    reads, one after the other;
   * the abandoned sweep asked 200 conversations for their newest message and
     200 leads whether they are in the CRM, every 5 minutes, to learn that 199
     were done;
   * the presence tick read the day twice — and took a failed read for "the
     day has not started", resetting first_seen_at and the minutes.
 
-Search by meaning (Qdrant) has answered 400 since August; the reason was
-never logged. It is now, and counted.
+Fewer reads, never more at once: the executor that runs them paged ops as
+saturated that same evening.
 
-And two answers that were not true: sign-in said "no such account" (and
+Search by meaning (Qdrant) has answered 400 since August; the reason was
+never logged. It is now asked for with a text of ours, and counted.
+
+And an answer that was not true: sign-in said "no such account" (and
 counted a failed attempt) when the users table could not be read.
 """
 
@@ -183,6 +184,28 @@ class TestTabCounts:
         assert len(t.executed) == 3
 
     @pytest.mark.asyncio
+    async def test_the_reads_are_asked_one_after_the_other(self):
+        """Fewer reads, never more at once: the executor that runs them is the
+        one every heartbeat waits on."""
+        t = _Counts([_conv(1, agent="me"), _conv(2, "closed", agent="me")])
+        in_flight = peak = 0
+
+        async def run(fn, *a, **k):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            try:
+                return fn()
+            finally:
+                in_flight -= 1
+
+        with patch.object(sb, "get_client", return_value=t), patch.object(sb, "_run_sync", new=run):
+            got = await sb.get_conversation_counts("me")
+        assert got["my_active"] == 1 and got["my_closed"] == 1
+        assert peak == 1 and len(t.executed) == 3
+
+    @pytest.mark.asyncio
     async def test_the_tunnel_narrows_every_badge(self):
         t = _Counts([
             _conv(1, agent="me"), _conv(2, agent="me", tunnel="support"), _conv(3, tunnel="support"),
@@ -216,63 +239,7 @@ class TestTabCounts:
 
 
 # ══════════════════════════════════════════════════════════════
-# 3. The list: who has each chat and each lead's trip, together
-# ══════════════════════════════════════════════════════════════
-
-class TestListReadsTogether:
-    @staticmethod
-    def _page():
-        return SimpleNamespace(count=1, data=[{
-            "id": "c1", "status": "active", "mode": "ai", "assigned_agent_id": None,
-            "engaged_agent_id": None, "widget_presence": None, "widget_last_event_at": None,
-            "widget_pings": None, "agent_assigned_at": None, "created_at": _iso(5), "updated_at": _iso(1),
-        }])
-
-    @pytest.mark.asyncio
-    async def test_neither_read_waits_for_the_other(self):
-        started: list[str] = []
-        both = asyncio.Event()
-
-        async def _note(name):
-            started.append(name)
-            if len(started) == 2:
-                both.set()
-            # Each waits for the OTHER to have started: one after the other
-            # would never finish.
-            await asyncio.wait_for(both.wait(), timeout=2)
-
-        async def _agents(rows):
-            await _note("agents")
-            return rows
-
-        async def _leads(ids):
-            await _note("leads")
-            return {"c1": {"conversation_id": "c1", "origin_code": "JFK", "destination_code": "LHR"}}
-
-        with patch.object(sb, "get_client", return_value=MagicMock()), \
-             patch.object(sb, "_run_sync", new=AsyncMock(return_value=self._page())), \
-             patch.object(sb, "_supervisor_columns_available", return_value=True), \
-             patch.object(sb, "enrich_conversations_agent_info", new=_agents), \
-             patch.object(sb, "_get_lead_completeness_inputs", new=_leads):
-            rows, total = await sb.get_conversations(tunnel="sales")
-        assert sorted(started) == ["agents", "leads"]
-        assert total == 1 and rows[0]["route"] == {"from": "JFK", "to": "LHR"}
-
-    @pytest.mark.asyncio
-    async def test_without_the_supervisor_columns_only_the_agents_are_read(self):
-        leads = AsyncMock(return_value={})
-        with patch.object(sb, "get_client", return_value=MagicMock()), \
-             patch.object(sb, "_run_sync", new=AsyncMock(return_value=self._page())), \
-             patch.object(sb, "_supervisor_columns_available", return_value=False), \
-             patch.object(sb, "enrich_conversations_agent_info", new=AsyncMock(side_effect=lambda rows: rows)), \
-             patch.object(sb, "_get_lead_completeness_inputs", new=leads):
-            rows, _ = await sb.get_conversations(tunnel="sales")
-        leads.assert_not_awaited()
-        assert [r["id"] for r in rows] == ["c1"] and "route" not in rows[0]
-
-
-# ══════════════════════════════════════════════════════════════
-# 4. The abandoned sweep: one read a tick
+# 3. The abandoned sweep: one read a tick
 # ══════════════════════════════════════════════════════════════
 
 _BASE = {
@@ -454,7 +421,7 @@ class TestSweepSkipsWhatIsDone:
 
 
 # ══════════════════════════════════════════════════════════════
-# 5. Online minutes: a failed read is not a new day
+# 4. Online minutes: a failed read is not a new day
 # ══════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -558,7 +525,7 @@ class TestPresenceTick:
 
 
 # ══════════════════════════════════════════════════════════════
-# 6. Search by meaning: the refusal says why
+# 5. Search by meaning: the refusal says why
 # ══════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -659,7 +626,7 @@ class TestKbSearchSaysWhy:
 
 
 # ══════════════════════════════════════════════════════════════
-# 7. Sign-in: "could not check" is not "no such account"
+# 6. Sign-in: "could not check" is not "no such account"
 # ══════════════════════════════════════════════════════════════
 
 class _NoRows(Exception):
@@ -813,7 +780,7 @@ class TestSignInTellsTheTruth:
 
 
 # ══════════════════════════════════════════════════════════════
-# 8. /health/detail carries the new counters
+# 7. /health/detail carries the new counters
 # ══════════════════════════════════════════════════════════════
 
 def test_health_detail_reports_the_new_counters():

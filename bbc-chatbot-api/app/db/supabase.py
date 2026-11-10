@@ -999,14 +999,9 @@ async def get_conversations(
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
                 "agent_assigned_at": row.pop("agent_assigned_at", None),
             }
+        rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
-            # Two independent reads of the same page (who has each chat, what
-            # trip each lead holds): asked together, the list waits for one
-            # round trip instead of two. Each keeps its own failure handling.
-            rows, lead_map = await asyncio.gather(
-                enrich_conversations_agent_info(rows),
-                _get_lead_completeness_inputs([r["id"] for r in rows]),
-            )
+            lead_map = await _get_lead_completeness_inputs([r["id"] for r in rows])
             for row in rows:
                 attach_derived_tag(row, lead=lead_map.get(row["id"]))
                 attach_effective_presence(row)
@@ -1015,8 +1010,6 @@ async def get_conversations(
                 _lead = lead_map.get(row["id"]) or {}
                 if _lead.get("origin_code") and _lead.get("destination_code"):
                     row["route"] = {"from": _lead["origin_code"], "to": _lead["destination_code"]}
-        else:
-            rows = await enrich_conversations_agent_info(rows)
         if tag:
             rows = [r for r in rows if r.get("tag") == tag]
             if no_engagement_only:
@@ -1275,9 +1268,10 @@ async def get_conversation_counts(
 
     ONE read answers the three open badges (mine, the queue, all open): it
     brings each open chat's owner and they are counted here, instead of three
-    counts over the same rows. The two closed totals stay exact counts. The
-    three reads go together — they used to be five in a row, the longest wait
-    in the list request, every 5 s for every open panel."""
+    counts over the same rows. The two closed totals stay exact counts. Three
+    reads where there were five, every 5 s for every open panel — and still
+    one after the other: the DB executor paged ops as saturated on 9 Nov
+    (18 of 20 in flight), so this asks for fewer reads, not for more at once."""
     try:
         db_client = get_client()
 
@@ -1308,11 +1302,9 @@ async def get_conversation_counts(
                 return q.in_("status", list(OPEN_STATUSES)).limit(_OPEN_COUNT_PAGE).execute()
             return await _run_sync(_q)
 
-        open_res, my_closed, all_closed = await asyncio.gather(
-            _open(),
-            _count("me", ("closed",)),
-            _count(None, ("closed",)),
-        )
+        open_res = await _open()
+        my_closed = await _count("me", ("closed",))
+        all_closed = await _count(None, ("closed",))
         open_rows = [r for r in (getattr(open_res, "data", None) or []) if isinstance(r, dict)]
         _exact = getattr(open_res, "count", None)
         all_active = max(_exact if isinstance(_exact, int) else 0, len(open_rows))

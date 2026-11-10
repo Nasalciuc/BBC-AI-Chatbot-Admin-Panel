@@ -1,14 +1,34 @@
 """Email service — invite emails via Postmark HTTP API."""
 import html
 import logging
+import re
 import secrets
 import string
 
 import httpx
 
+from app.security.pii import mask_email
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# No address reaches a log line (PII at INFO and above): a recipient is
+# written masked, and what Postmark answers — it names the address it
+# refused — is written by its error code, with every address taken out.
+_ADDRESS = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _postmark_said(res) -> str:
+    """Postmark's refusal, for a log line: its error code and its message
+    without the addresses."""
+    try:
+        data = res.json()
+    except Exception:  # noqa: silent — a body that is not JSON: the caller's line still carries the HTTP status
+        data = None
+    if not isinstance(data, dict):
+        return "(no JSON body)"
+    message = _ADDRESS.sub("<address>", str(data.get("Message") or ""))[:200]
+    return f"code={data.get('ErrorCode')} {message}".rstrip()
 
 
 def generate_temp_password(length: int = 12) -> str:
@@ -148,9 +168,9 @@ async def send_invite_email(to_email: str, name: str, invite_url: str, expires_m
                 },
             )
             if res.status_code == 200:
-                logger.info(f"Invite email sent to {to_email}")
+                logger.info(f"Invite email sent to {mask_email(to_email)}")
                 return True
-            logger.error(f"Postmark {res.status_code}: {res.text}")
+            logger.error(f"Postmark {res.status_code}: {_postmark_said(res)}")
             return False
     except Exception as e:
         logger.error(f"send_invite_email error: {e}")
@@ -226,10 +246,10 @@ async def send_attention_email(
             if res.status_code == 200:
                 logger.info(
                     f"Attention email sent for conv {conversation_id} "
-                    f"({number_label}) → {to_addr}"
+                    f"({number_label}) → {mask_email(to_addr)}"
                 )
                 return True
-            logger.error(f"Attention email failed: {res.status_code} {res.text}")
+            logger.error(f"Attention email failed: {res.status_code} {_postmark_said(res)}")
             return False
     except Exception as e:
         logger.error(f"Attention email exception: {e}")
@@ -333,9 +353,10 @@ async def _send_super_inbox_email(
                 },
             )
             if res.status_code == 200:
-                logger.info(f"Sent {what} → {settings.super_alert_email}")
+                # The address it really went to (an override wins), masked.
+                logger.info(f"Sent {what} → {mask_email(to_override or settings.super_alert_email)}")
                 return True
-            logger.error(f"Failed {what}: {res.status_code} {res.text}")
+            logger.error(f"Failed {what}: {res.status_code} {_postmark_said(res)}")
             return False
     except Exception as e:
         logger.error(f"Exception sending {what}: {e}")

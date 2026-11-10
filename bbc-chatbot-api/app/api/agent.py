@@ -625,7 +625,8 @@ async def set_ready_status(
         from app.services.tasks_service import leave_shift
         _fire_and_forget(leave_shift(user_id))
     status_str = "ready" if body.is_ready else "not_ready"
-    logger.info(f"[agent-status] {user.get('email')} -> {status_str}")
+    # Who, by id: an address in an INFO line is PII in the log.
+    logger.info(f"[agent-status] user={user_id} -> {status_str}")
     return {"success": True, "is_ready": body.is_ready}
 
 
