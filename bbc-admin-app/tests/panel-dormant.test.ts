@@ -179,6 +179,53 @@ test('the badge threshold is 15 and the nudge threshold is 30', () => {
   assert.ok(idleMinutes({ ...HUMAN, last_user_message_at: agoISO(15) }, NOW)! >= IDLE_BADGE_MIN)
 })
 
+// A closed chat keeps its mode and its agent. Without the status check every
+// closed chat a person had handled was idle for ever (11 Nov 2026, production:
+// in Closed the 16 chats with an agent sat under the 34 the assistant had
+// kept, and the banner said "16 chats with no activity for over 30 min").
+test('a chat that ended is never idle, however long ago its last message was', () => {
+  const days = 6 * 24 * 60
+  for (const status of ['closed', 'completed']) {
+    assert.equal(
+      idleMinutes({ ...HUMAN, status, last_user_message_at: agoISO(days), last_agent_message_at: agoISO(days - 5) }, NOW),
+      null,
+      status,
+    )
+  }
+  // The same chat while it is open is still an idle desk: the rule did not go soft.
+  for (const status of ['active', 'needs_agent', undefined]) {
+    assert.equal(idleMinutes({ ...HUMAN, status, last_user_message_at: agoISO(45) }, NOW), 45, String(status))
+  }
+})
+
+test('Closed keeps the server’s order, newest first, and the banner does not count closed chats', () => {
+  // As the server sends them: newest first, people's chats and the assistant's mixed.
+  const closed = [
+    { n: 3257, ...HUMAN, status: 'closed', last_agent_message_at: agoISO(600) },
+    { n: 3256, ...HUMAN, status: 'closed', last_user_message_at: agoISO(2000) },
+    { n: 3251, mode: 'ai', assigned_agent_id: null, status: 'closed' },
+    { n: 3250, mode: 'ai', assigned_agent_id: null, status: 'closed' },
+    { n: 3249, ...HUMAN, status: 'closed', last_user_message_at: agoISO(9000) },
+  ]
+  // The page's own comparator and count (index.tsx), with the real rule.
+  const idle = (c: (typeof closed)[number]) => ((idleMinutes(c, NOW) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0)
+  assert.deepEqual([...closed].sort((a, b) => idle(a) - idle(b)).map((c) => c.n), [3257, 3256, 3251, 3250, 3249])
+  assert.equal(closed.filter((c) => (idleMinutes(c, NOW) ?? 0) >= IDLE_NUDGE_MIN).length, 0)
+
+  // An open list still puts the idle desks under the live ones.
+  const open = [
+    { n: 1, ...HUMAN, status: 'active', last_user_message_at: agoISO(50) },
+    { n: 2, ...HUMAN, status: 'active', last_user_message_at: agoISO(2) },
+  ]
+  const idleOpen = (c: (typeof open)[number]) => ((idleMinutes(c, NOW) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0)
+  assert.deepEqual([...open].sort((a, b) => idleOpen(a) - idleOpen(b)).map((c) => c.n), [2, 1])
+
+  // The page asks this rule, with these expressions, for the order and the banner.
+  const page = read('src/features/chats/index.tsx')
+  assert.match(page, /const idle = \(c: Conversation\) => \(\(idleMinutes\(c\) \?\? 0\) >= IDLE_BADGE_MIN \? 1 : 0\)/)
+  assert.match(page, /conversations\.filter\(\(c\) => \(idleMinutes\(c\) \?\? 0\) >= IDLE_NUDGE_MIN\)\.length/)
+})
+
 // ── The store: reasons are independent, and the no-op is a real no-op ──
 
 test('dormant is a set of reasons — any one is enough, all must clear', async () => {
