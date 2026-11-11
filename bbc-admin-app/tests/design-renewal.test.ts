@@ -52,6 +52,18 @@ test('ONE header: every page renders HeaderActions, none composes its own cluste
   assert.match(shared, /<NotificationBell \/>/)
 })
 
+test('Learning and Security · Bans: a six-column table scrolls inside its card, the page stays still', () => {
+  // The old wrapper of these pages scrolled on its own (overflow-y-auto, so
+  // sideways too). Inside the page's <main> a table wider than a phone pushed
+  // the whole page, header and all, sideways (390 px: the page became 556 wide).
+  assert.match(read('features/learning/index.tsx'), /<div className='overflow-x-auto'>\s*<table\b/)
+  assert.match(read('features/security-bans/index.tsx'), /<div className="overflow-x-auto rounded-lg border border-border">\s*<table\b/)
+  for (const f of ['features/learning/index.tsx', 'features/security-bans/index.tsx']) {
+    assert.match(read(f), /<main id='content' className='flex flex-col gap-\[18px\] px-4 pt-6 pb-9 md:px-7 md:pt-7'>/, f)
+    assert.equal(read(f).match(/<h1\b/g), null, `${f} keeps a title of its own next to the page header`)
+  }
+})
+
 test('KB grew up: search, dialog manners, no native confirm, no emoji icon', () => {
   const kb = read('features/knowledge-base/index.tsx')
   assert.match(kb, /Search articles\.\.\./)

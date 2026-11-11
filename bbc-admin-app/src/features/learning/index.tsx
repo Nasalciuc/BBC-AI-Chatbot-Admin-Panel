@@ -67,41 +67,45 @@ export function Learning() {
         Object.entries(bySlot).map(([slot, vs]) => (
           <div key={slot} className="rounded-lg border border-border">
             <div className="px-4 py-2 border-b border-border font-medium text-foreground">{slot}</div>
-            <table className="w-full text-sm">
-              <thead className="text-muted-foreground">
-                <tr className="text-left">
-                  <th className="px-4 py-2 font-medium">Question</th>
-                  <th className="px-4 py-2 font-medium">Shows</th>
-                  <th className="px-4 py-2 font-medium">Answer rate</th>
-                  <th className="px-4 py-2 font-medium">P(best)</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {vs.map((v) => (
-                  <tr key={v.id} className="border-t border-border">
-                    <td className="px-4 py-2 text-foreground">{v.text}</td>
-                    <td className="px-4 py-2">{v.shows}</td>
-                    <td className="px-4 py-2">{fmt(v.answer_rate)}</td>
-                    <td className="px-4 py-2">{v.prob_best?.toFixed(2) ?? '—'}</td>
-                    <td className="px-4 py-2">
-                      <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[v.status] ?? ''}`}>{v.status}</span>
-                    </td>
-                    <td className="px-4 py-2 text-right whitespace-nowrap">
-                      {/* One change at a time: a second click while the first is
-                          on its way would send it again, or the opposite one. */}
-                      {v.status !== 'active' && (
-                        <button type="button" disabled={mutate.isPending} className="text-xs text-k-0a6b35 hover:underline mr-3 disabled:opacity-50" onClick={() => mutate.mutate({ id: v.id, status: 'active' })}>Activate</button>
-                      )}
-                      {v.status !== 'retired' && (
-                        <button type="button" disabled={mutate.isPending} className="text-xs text-muted-foreground hover:underline disabled:opacity-50" onClick={() => mutate.mutate({ id: v.id, status: 'retired' })}>Retire</button>
-                      )}
-                    </td>
+            {/* Six columns do not fit a phone: the table scrolls inside its
+                card, the page does not move sideways. */}
+            <div className='overflow-x-auto'>
+              <table className="w-full text-sm">
+                <thead className="text-muted-foreground">
+                  <tr className="text-left">
+                    <th className="px-4 py-2 font-medium">Question</th>
+                    <th className="px-4 py-2 font-medium">Shows</th>
+                    <th className="px-4 py-2 font-medium">Answer rate</th>
+                    <th className="px-4 py-2 font-medium">P(best)</th>
+                    <th className="px-4 py-2 font-medium">Status</th>
+                    <th className="px-4 py-2" />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {vs.map((v) => (
+                    <tr key={v.id} className="border-t border-border">
+                      <td className="px-4 py-2 text-foreground">{v.text}</td>
+                      <td className="px-4 py-2">{v.shows}</td>
+                      <td className="px-4 py-2">{fmt(v.answer_rate)}</td>
+                      <td className="px-4 py-2">{v.prob_best?.toFixed(2) ?? '—'}</td>
+                      <td className="px-4 py-2">
+                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[v.status] ?? ''}`}>{v.status}</span>
+                      </td>
+                      <td className="px-4 py-2 text-right whitespace-nowrap">
+                        {/* One change at a time: a second click while the first is
+                            on its way would send it again, or the opposite one. */}
+                        {v.status !== 'active' && (
+                          <button type="button" disabled={mutate.isPending} className="text-xs text-k-0a6b35 hover:underline mr-3 disabled:opacity-50" onClick={() => mutate.mutate({ id: v.id, status: 'active' })}>Activate</button>
+                        )}
+                        {v.status !== 'retired' && (
+                          <button type="button" disabled={mutate.isPending} className="text-xs text-muted-foreground hover:underline disabled:opacity-50" onClick={() => mutate.mutate({ id: v.id, status: 'retired' })}>Retire</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         ))
       )}

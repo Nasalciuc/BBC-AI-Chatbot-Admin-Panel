@@ -45,7 +45,9 @@ export function SecurityBans() {
       ) : (bans.data ?? []).length === 0 ? (
         <p className="text-sm text-muted-foreground">No bans recorded.</p>
       ) : (
-        <div className="rounded-lg border border-border">
+        // Six columns do not fit a phone: the table scrolls inside its card,
+        // the page does not move sideways.
+        <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead className="text-muted-foreground">
               <tr className="text-left">
