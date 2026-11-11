@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
+import { Logo } from '@/assets/logo'
 import { inputCls } from './styles'
 
 /** Sign-in, invite and password screens: the dark side with what the panel
@@ -8,9 +9,12 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
   return (
     <div className='flex min-h-svh bg-k-ffffff'>
       <aside className='hidden w-[560px] flex-none flex-col bg-nav p-10 text-nav-active-fg lg:flex'>
-        <div>
-          <p className='m-0 text-xl font-bold text-nav-active-fg'>BuyBusinessClass</p>
-          <p className='m-0 text-sm text-nav-sub'>Chat panel</p>
+        <div className='flex items-center gap-3'>
+          <Logo alt='' aria-hidden='true' className='size-10 flex-none rounded-[10px]' />
+          <div>
+            <p className='m-0 text-xl font-bold text-nav-active-fg'>BuyBusinessClass</p>
+            <p className='m-0 text-sm text-nav-sub'>Chat panel</p>
+          </div>
         </div>
         <div className='mt-auto flex flex-col gap-6 pb-12'>
           <p className='m-0 max-w-[460px] font-display text-[40px] leading-[1.15] font-semibold tracking-[-0.01em] text-nav-active-fg'>
@@ -32,9 +36,12 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
         <p className='m-0 text-[13px] text-nav-sub'>The AI answers first; you take over when a person is needed.</p>
       </aside>
       <main className='flex min-w-0 flex-1 flex-col'>
-        <div className='px-6 pt-6 lg:hidden'>
-          <p className='m-0 text-lg font-bold text-k-202020'>BuyBusinessClass</p>
-          <p className='m-0 text-[13px] text-k-555555'>Chat panel</p>
+        <div className='flex items-center gap-3 px-6 pt-6 lg:hidden'>
+          <Logo alt='' aria-hidden='true' className='size-9 flex-none rounded-[10px]' />
+          <div>
+            <p className='m-0 text-lg font-bold text-k-202020'>BuyBusinessClass</p>
+            <p className='m-0 text-[13px] text-k-555555'>Chat panel</p>
+          </div>
         </div>
         <div className='flex flex-1 items-center justify-center px-6 py-10'>
           <div className='flex w-full max-w-[400px] flex-col gap-5'>{children}</div>

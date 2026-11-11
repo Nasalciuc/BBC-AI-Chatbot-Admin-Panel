@@ -27,6 +27,7 @@ import {
   routeLine,
   takenBlind,
   seconds,
+  showRail,
   signalOf,
   travelersText,
   tripRows,
@@ -322,4 +323,25 @@ test('about the client: the call back carries its number; airlines live on the t
   assert.deepEqual(aboutOf({ callback_requested: true }).rows, [{ label: 'Asks', value: 'A call back' }])
   assert.deepEqual(aboutOf({}, lead({ notes: 'CLIENT ASKED TO BE CALLED — number not captured' })).rows, [{ label: 'Asks', value: 'A call back' }])
   assert.deepEqual(aboutOf({}).rows, [])
+})
+
+// ── the page's columns ─────────────────────────────────────────────────
+
+test('the rail of faces is the wider view of an open chat: with none open, the whole list shows', () => {
+  assert.equal(showRail(true, 'wide', 'c1'), true)
+  // The trap of 11 Nov 2026: "Wider chat" remembered from another day and no
+  // open chats. The rail has no tabs and no search, and its switch sits in
+  // the open chat's header — so Closed and To read were out of reach.
+  assert.equal(showRail(true, 'wide', null), false)
+  assert.equal(showRail(true, 'wide', ''), false) // ?highlight= with no id
+  // Not chosen, or no room for three columns: never a rail.
+  assert.equal(showRail(false, 'wide', 'c1'), false)
+  assert.equal(showRail(true, 'medium', 'c1'), false)
+  assert.equal(showRail(true, 'narrow', 'c1'), false)
+  // The page asks the rule; it does not decide on its own again.
+  const page = read('src/features/chats/index.tsx')
+  assert.match(page, /const rail = showRail\(wide, layout, selectedId\)/)
+  assert.ok(!/const rail = wide && layout === 'wide'/.test(page))
+  // The way back stays where it was: in the open chat's header.
+  assert.match(read('src/features/chats/detail.tsx'), /layout === 'wide' && onToggleWide &&/)
 })

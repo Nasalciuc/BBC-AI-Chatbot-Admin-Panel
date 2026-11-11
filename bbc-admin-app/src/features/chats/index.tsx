@@ -6,6 +6,7 @@ import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
+import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
 import { isOperatorRole } from '@/components/layout/data/sidebar-data'
@@ -32,6 +33,7 @@ import {
   previewText,
   routeText,
   rowTime,
+  showRail,
   signalClasses,
   signalOf,
   type Signal,
@@ -124,7 +126,8 @@ export function Chats() {
     const t = setInterval(() => setNowMs(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
-  // "Wider chat": the list becomes a rail of faces. Remembered per browser.
+  // "Wider chat": with a chat open, the list becomes a rail of faces.
+  // Remembered per browser.
   const [wide, setWide] = useState(() => {
     try {
       return localStorage.getItem('bbc_wide_chat') === '1'
@@ -180,7 +183,8 @@ export function Chats() {
   const containerRef = useRef<HTMLDivElement>(null)
   const width = useWidth(containerRef)
   const layout: ChatLayout = width >= WIDE_MIN ? 'wide' : width >= MEDIUM_MIN ? 'medium' : 'narrow'
-  const rail = wide && layout === 'wide'
+  // Only while a chat is open: with none, the whole list (tabs, search) shows.
+  const rail = showRail(wide, layout, selectedId)
 
   // Conversation list — cached per tab, polls every 5s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
@@ -608,9 +612,7 @@ export function Chats() {
       {!narrowThread &&
         (embedded ? (
           <header className='flex items-center gap-2.5'>
-            <span aria-hidden='true' className='flex size-8 flex-none items-center justify-center rounded-[9px] bg-kb-202020 text-sm font-bold text-on-btn'>
-              B
-            </span>
+            <Logo alt='' aria-hidden='true' className='size-8 flex-none rounded-[9px]' />
             <h1 className='m-0 flex-1 font-display text-lg font-semibold text-k-202020'>Chats</h1>
             <HeaderActions compact />
           </header>

@@ -18,6 +18,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Logo } from '@/assets/logo'
 import { SignOutDialog } from '@/components/sign-out-dialog'
 import { AvatarPhoto } from '@/components/person-avatar'
 import { getNavGroups, isOperatorRole, SETTINGS_ITEM, type PanelNavItem } from './data/sidebar-data'
@@ -72,12 +73,8 @@ export function AppSidebar() {
     <Sidebar collapsible='icon' variant='sidebar' className='border-none'>
       <SidebarHeader className={cn('px-3.5 pt-5 pb-0', mini && 'px-0 items-center')}>
         <div className={cn('flex items-center gap-2.5', mini ? 'flex-col' : 'ps-1')}>
-          <span
-            aria-hidden='true'
-            className='flex size-9 flex-none items-center justify-center rounded-[10px] bg-k-ffffff text-[15px] font-bold text-k-202020'
-          >
-            B
-          </span>
+          {/* The company's logo, as before the redesign (a letter stood in for it). */}
+          <Logo alt='' aria-hidden='true' className='size-9 flex-none rounded-[10px]' />
           {!mini && (
             <span className='flex min-w-0 flex-1 flex-col gap-px'>
               <span className='truncate text-[15px] font-bold text-nav-active-fg'>BuyBusinessClass</span>

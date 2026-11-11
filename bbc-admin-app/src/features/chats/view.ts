@@ -720,3 +720,15 @@ export function whereRows(meta: Record<string, unknown> | undefined, phoneCountr
   if (phoneCountry) rows.push({ label: 'Phone from', value: phoneCountry })
   return rows
 }
+
+// ── the page's columns ─────────────────────────────────────────────────
+
+/** "Wider chat" is a way to read ONE open chat: the list shrinks to a rail of
+ *  faces and the thread gets the room. With no chat open there is nothing to
+ *  widen, and the rail has no tabs, no search and no way back (its switch is
+ *  in the open chat's header). A choice remembered from another day, on a tab
+ *  with no chats, left the page with nothing to click and Closed out of reach
+ *  (11 Nov 2026). So the rail holds only while a chat is open. */
+export function showRail(wide: boolean, layout: 'wide' | 'medium' | 'narrow', selectedId: string | null): boolean {
+  return wide && layout === 'wide' && !!selectedId
+}

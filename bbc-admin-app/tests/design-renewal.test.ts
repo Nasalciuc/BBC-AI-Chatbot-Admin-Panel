@@ -120,3 +120,30 @@ test('chat stream: grouping, honest presence, one place for where they came from
   assert.equal((view.match(/label: 'Site'/g) ?? []).length, 1)
   assert.equal((view.match(/label: 'Source'/g) ?? []).length, 1)
 })
+
+test("the company's logo is drawn wherever the panel names the company, never a letter standing in for it", () => {
+  // One image for the whole panel, and the file is there.
+  const brand = read('lib/brand.ts')
+  assert.match(brand, /export const LOGO_SRC = '\/images\/favicon%20dark\.png'/)
+  assert.ok(existsSync(join(SRC, '..', 'public', 'images', 'favicon dark.png')), 'the logo file is missing')
+  assert.match(read('assets/logo.tsx'), /<img src=\{LOGO_SRC\}/)
+  // The menu, the sign-in screens, the CRM dock's header, the example notification.
+  for (const f of [
+    'components/layout/app-sidebar.tsx',
+    'features/auth/shell.tsx',
+    'features/chats/index.tsx',
+    'features/settings/alerts/index.tsx',
+  ]) {
+    const src = read(f)
+    assert.match(src, /import \{ Logo \} from '@\/assets\/logo'/, `${f} must draw the logo`)
+    assert.match(src, /<Logo alt='' aria-hidden='true' /, `${f}: the name is written beside it, so the image is decorative`)
+    assert.ok(!/>\s*B\s*</.test(src), `${f}: a letter is not the logo`)
+  }
+  // Sign-in shows it on both sides: the dark one on computers, the header on phones.
+  assert.equal(read('features/auth/shell.tsx').match(/<Logo /g)?.length, 2)
+  // "The notification looks like this" is true: every real one carries the same image.
+  const notify = read('lib/notify-assignment.ts')
+  assert.match(notify, /import \{ LOGO_SRC \} from '\.\/brand\.ts'/)
+  assert.equal(notify.match(/new Notification\(/g)?.length, 3)
+  assert.equal(notify.match(/icon: LOGO_SRC/g)?.length, 3)
+})

@@ -20,6 +20,7 @@ import {
   testAlert,
 } from '@/lib/notify-assignment'
 import { cn } from '@/lib/utils'
+import { Logo } from '@/assets/logo'
 import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { Switch } from '@/components/ui/switch'
@@ -181,9 +182,8 @@ export function SettingsAlerts() {
               <div className='mt-1 flex flex-col gap-1.5'>
                 <span className='text-[13px] font-bold text-k-555555'>The notification looks like this</span>
                 <div aria-label='Example notification' className='flex max-w-[420px] gap-3 rounded-2xl bg-k-ffffff p-3.5 ring-1 ring-k-ececec'>
-                  <span aria-hidden='true' className='flex size-9 flex-none items-center justify-center rounded-lg bg-kb-202020 text-sm font-bold text-on-btn'>
-                    B
-                  </span>
+                  {/* The same image the real notification carries (its `icon`). */}
+                  <Logo alt='' aria-hidden='true' className='size-9 flex-none rounded-lg' />
                   <span className='flex flex-col gap-0.5'>
                     <strong className='text-sm text-k-202020'>{sample.title}</strong>
                     <span className='text-[13px] text-k-202020'>{sample.body}</span>
