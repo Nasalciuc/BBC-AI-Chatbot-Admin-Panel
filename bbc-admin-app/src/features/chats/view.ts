@@ -60,11 +60,15 @@ export function dayClock(iso: string | null | undefined, now: Date): string {
 
 /** Under a chat that ended: when it closed, with the day when that is not
  *  today. A chat the "client left the site" sweep closed has no closed_at (204
- *  of the 1,154 closed in ten weeks): the row's own stand-in, updated_at, is
- *  used, so the row and the chat under it say the same. */
+ *  of the 1,154 closed in ten weeks). Its updated_at is usually the close, but
+ *  any later write moves it: of the 949 chats that have both, 12 were changed
+ *  more than a minute after they closed, 3 of them more than a day after. So
+ *  it is shown as what it is, the last change, and not as the closing time. */
 export function closedNote(c: Pick<Conversation, 'closed_at' | 'updated_at'>, now: Date): string {
-  const at = dayClock(c.closed_at ?? c.updated_at, now)
-  return `This chat is closed${at ? ` since ${at}` : ''}. It stays in Closed.`
+  const closed = dayClock(c.closed_at, now)
+  if (closed) return `This chat is closed since ${closed}. It stays in Closed.`
+  const changed = dayClock(c.updated_at, now)
+  return `This chat is closed.${changed ? ` Last change ${changed}.` : ''} It stays in Closed.`
 }
 
 export function minutesSince(iso: string | null | undefined, nowMs: number): number | null {
@@ -756,4 +760,17 @@ export function whereRows(meta: Record<string, unknown> | undefined, phoneCountr
  *  (11 Nov 2026). So the rail holds only while a chat is open. */
 export function showRail(wide: boolean, layout: 'wide' | 'medium' | 'narrow', selectedId: string | null): boolean {
   return wide && layout === 'wide' && !!selectedId
+}
+
+/** The list, the rail of faces and To read are three different columns. When
+ *  one turns into another, the button that held the keyboard focus is taken
+ *  off the page and the browser drops the focus to the page itself. A chat's
+ *  row or face, and a tab, exist in the new column too: this names the one
+ *  that holds the focus so it can be found again there. Anything else (the
+ *  search box, a filter) has no twin in the other column: null. */
+export function focusKey(el: { dataset?: { chatId?: string; tab?: string } } | null | undefined): string | null {
+  const d = el?.dataset
+  if (d?.chatId) return `chat:${d.chatId}`
+  if (d?.tab) return `tab:${d.tab}`
+  return null
 }

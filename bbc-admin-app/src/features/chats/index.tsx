@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useDeferredValue, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useDeferredValue, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Clock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
@@ -26,6 +26,7 @@ import { useReadState, useToRead } from './to-read-state'
 import { unreadCount } from './to-read-view'
 import {
   avatarClasses,
+  focusKey,
   initials,
   ownerLine,
   ownerOf,
@@ -186,21 +187,28 @@ export function Chats() {
   // Only while a chat is open: with none, the whole list (tabs, search) shows.
   const rail = showRail(wide, layout, selectedId)
 
-  // The list and the rail are two different columns. When picking a chat
-  // turns one into the other, the button that had the focus is removed and
-  // the browser drops focus to the page — a keyboard user loses their place.
-  // The same chat's button in the new column takes it. Where the column did
-  // not change, the button still has the focus and nothing is done.
-  const columnRef = useRef<HTMLElement>(null)
-  const refocusId = useRef<string | null>(null)
+  // The list, the rail and To read are three different columns. When one
+  // turns into another (a chat picked, a tab pressed, the window resized or
+  // zoomed across the wide layout) the button that had the focus is removed
+  // and the browser drops focus to the page: a keyboard user loses their
+  // place. The same chat's button, or the same tab, in the new column takes
+  // it. Where the column did not change, the button still has the focus and
+  // nothing is done.
+  // Read while drawing, before this render's changes reach the page: what
+  // holds the focus now. Whatever changes the column is covered, not one
+  // handler at a time.
+  const focusedNow = focusKey(document.activeElement as HTMLElement | null)
+  const focusedBefore = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    focusedBefore.current = focusedNow
+  })
   useEffect(() => {
-    const id = refocusId.current
-    refocusId.current = null
-    if (!id || (document.activeElement && document.activeElement !== document.body)) return
-    Array.from(columnRef.current?.querySelectorAll<HTMLElement>('[data-chat-id]') ?? [])
-      .find((el) => el.dataset.chatId === id)
+    const key = focusedBefore.current
+    if (!key || (document.activeElement && document.activeElement !== document.body)) return
+    Array.from(containerRef.current?.querySelectorAll<HTMLElement>('[data-chat-id], [data-tab]') ?? [])
+      .find((el) => focusKey(el) === key)
       ?.focus()
-  }, [rail, selectedId])
+  }, [rail, activeTab])
 
   // Conversation list — cached per tab, polls every 5s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
@@ -308,9 +316,6 @@ export function Chats() {
 
   const pick = (id: string) => {
     stopAssignmentAlerts()
-    // Picked from inside the column (a row or a face): if the column changes
-    // shape under it, the focus follows the chat (see refocusId).
-    if (columnRef.current?.contains(document.activeElement)) refocusId.current = id
     setSelectedId(id === selectedId ? null : id)
   }
 
@@ -426,6 +431,7 @@ export function Chats() {
               key={t.key}
               type='button'
               role='tab'
+              data-tab={t.key}
               aria-selected={activeTab === t.key}
               onClick={() => { setActiveTab(t.key); setSelectedId(null) }}
               className={cn(
@@ -445,7 +451,7 @@ export function Chats() {
   )
 
   const listColumn = rail ? (
-    <section ref={columnRef} aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
+    <section aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
       <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} rail />
       <span className='text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'>{tab.label === 'All active' ? 'Active' : tab.label}</span>
       {rows.map(({ conv, owner, sig }) => {
@@ -478,7 +484,6 @@ export function Chats() {
     </section>
   ) : (
     <section
-      ref={columnRef}
       aria-label='Chats'
       className={cn(
         'flex min-w-0 flex-col overflow-hidden',
