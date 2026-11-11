@@ -491,17 +491,22 @@ async def run_agent_sweep() -> dict:
 
 
 async def run_cleanup_stale_ready() -> dict:
-    """Auto-reset is_ready for operators who disconnected without toggling off."""
+    """Auto-reset is_ready for operators who disconnected without toggling off.
+
+    Says who by id. Until 11 Nov 2026 the line below, and the result the
+    scheduler writes at INFO whenever someone was reset, carried the agents'
+    names: the one place in the backend that logged a person's name at INFO
+    (rule 7)."""
     stale = await db.reset_stale_ready_users(settings.agent_timeout_seconds)
-    names = [u.get("name") or u["id"] for u in stale]
+    ids = [u["id"] for u in stale]
     if stale:
         # They left without switching off: their open tasks move, as on Not ready.
         from app.services.tasks_service import leave_shift
         for u in stale:
             await leave_shift(u["id"])
-    if names:
-        logger.info(f"[cron] Auto-reset is_ready: {names}")
-    return {"reset": len(stale), "names": names}
+    if ids:
+        logger.info(f"[cron] Auto-reset is_ready: {ids}")
+    return {"reset": len(stale), "ids": ids}
 
 
 async def run_close_stale_presence() -> dict:

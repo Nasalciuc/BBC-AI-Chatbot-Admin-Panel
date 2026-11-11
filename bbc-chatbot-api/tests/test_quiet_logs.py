@@ -58,7 +58,7 @@ def test_a_sweep_that_swept_nothing_is_written_once_then_on_every_change():
 @pytest.mark.parametrize("job,quiet,busy", [
     ("queue_stall_alert", {"state": "ok", "waiting": 0}, {"state": "stalled", "waiting": 2}),
     ("db_saturation_alert", {"state": "ok", "in_flight": 3}, {"state": "over", "in_flight": 19}),
-    ("stale_ready", {"reset": 0, "names": []}, {"reset": 1, "names": ["x"]}),
+    ("stale_ready", {"reset": 0, "ids": []}, {"reset": 1, "ids": ["x"]}),
     ("stale_presence", {"closed": 0}, {"closed": 2}),
     ("attention_emails", {"sent": 0, "skipped": 3}, {"sent": 1, "skipped": 0}),
 ])
