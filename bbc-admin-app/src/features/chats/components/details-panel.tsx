@@ -6,8 +6,8 @@ import { cn } from '@/lib/utils'
 import { OperatorHistory } from '../operator-history'
 import {
   aboutOf,
-  clock,
   type CrmView,
+  dayClock,
   firstName,
   confirmedOf,
   levelOf,
@@ -153,11 +153,14 @@ export function DetailsPanel(p: DetailsPanelProps) {
     handoff && firstAgent && new Date(firstAgent.created_at) > new Date(handoff.created_at)
       ? Math.max(0, Math.round((new Date(firstAgent.created_at).getTime() - new Date(handoff.created_at).getTime()) / 60_000))
       : null
+  // With the day when the chat is not from today: these stand alone, away
+  // from the thread's day separators.
+  const now = new Date()
   const chatRows: Row[] = [
     { label: 'Chat', value: `${conv.chat_number != null ? `#${conv.chat_number} · ` : ''}${conv.tunnel === 'support' ? 'Support' : 'Sales'}` },
-    { label: 'Started', value: clock(conv.created_at) || '—' },
+    { label: 'Started', value: dayClock(conv.created_at, now) || '—' },
     { label: 'Messages', value: String(p.messages.filter((m) => m.role !== 'system').length) },
-    ...(handoff ? [{ label: 'Asked for a person', value: clock(handoff.created_at) }] : []),
+    ...(handoff ? [{ label: 'Asked for a person', value: dayClock(handoff.created_at, now) }] : []),
     ...(firstReplyMin !== null ? [{ label: 'First reply', value: firstReplyMin < 1 ? 'in under a minute' : `in ${firstReplyMin} min` }] : []),
     ...(p.showCost ? [{ label: 'AI cost', value: `$${conv.ai_cost_total.toFixed(2)}` }] : []),
   ]

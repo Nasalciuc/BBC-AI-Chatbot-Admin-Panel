@@ -42,6 +42,31 @@ export function rowTime(iso: string | null | undefined, now: Date): string {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+/** A time that stands alone, in a sentence or on a card: today → "14:12";
+ *  another day → "5 Nov, 14:12"; another year → "5 Nov 2025, 14:12". The
+ *  thread has its day separators; these have nothing, and "closed since
+ *  12:58" on a chat from last week read as today (11 Nov 2026). */
+export function dayClock(iso: string | null | undefined, now: Date): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  if (d.toDateString() === now.toDateString()) return clock(iso)
+  const day = d.toLocaleDateString(
+    'en-GB',
+    d.getFullYear() === now.getFullYear() ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' }
+  )
+  return `${day}, ${clock(iso)}`
+}
+
+/** Under a chat that ended: when it closed, with the day when that is not
+ *  today. A chat the "client left the site" sweep closed has no closed_at (204
+ *  of the 1,154 closed in ten weeks): the row's own stand-in, updated_at, is
+ *  used, so the row and the chat under it say the same. */
+export function closedNote(c: Pick<Conversation, 'closed_at' | 'updated_at'>, now: Date): string {
+  const at = dayClock(c.closed_at ?? c.updated_at, now)
+  return `This chat is closed${at ? ` since ${at}` : ''}. It stays in Closed.`
+}
+
 export function minutesSince(iso: string | null | undefined, nowMs: number): number | null {
   if (!iso) return null
   const t = new Date(iso).getTime()

@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url'
 import type { Conversation, Lead } from '../src/lib/types.ts'
 import {
   aboutOf,
+  closedNote,
   countdown,
   crmView,
+  dayClock,
   deadlineLeft,
   firstName,
   fullDate,
@@ -363,4 +365,46 @@ test('picking a chat keeps the keyboard focus when the list turns into the rail,
   assert.match(effect, /refocusId\.current = null/)
   assert.match(effect, /document\.activeElement !== document\.body\)\) return/)
   assert.match(effect, /\.find\(\(el\) => el\.dataset\.chatId === id\)\s*\?\.focus\(\)/)
+})
+
+// ── times that stand alone ───────────────────────────────────────────
+
+// Local time on purpose: the helpers print the reader's own clock.
+const at = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m, d, h, min).toISOString()
+
+test('a time that stands alone carries its day when that is not today', () => {
+  const now = new Date(2026, 10, 11, 18, 0)
+  assert.equal(dayClock(at(2026, 10, 11, 0, 35), now), '00:35')
+  assert.equal(dayClock(at(2026, 10, 5, 12, 58), now), '5 Nov, 12:58')
+  assert.equal(dayClock(at(2025, 10, 5, 12, 58), now), '5 Nov 2025, 12:58')
+  assert.equal(dayClock(null, now), '')
+  assert.equal(dayClock('not-a-date', now), '')
+})
+
+test('under a closed chat: when it closed, with its day, and never less than the row says', () => {
+  const now = new Date(2026, 10, 11, 18, 0)
+  // Closed today: the time alone.
+  assert.equal(
+    closedNote({ closed_at: at(2026, 10, 11, 0, 35), updated_at: at(2026, 10, 11, 0, 36) }, now),
+    'This chat is closed since 00:35. It stays in Closed.'
+  )
+  // Closed last week. On 11 Nov 2026 a chat from 5 Nov said "closed since 12:58".
+  assert.equal(
+    closedNote({ closed_at: at(2026, 10, 5, 12, 58), updated_at: at(2026, 10, 5, 12, 58) }, now),
+    'This chat is closed since 5 Nov, 12:58. It stays in Closed.'
+  )
+  // No closed_at: the "client left the site" sweep never wrote one. The row
+  // already stood in updated_at; the chat under it said no time at all.
+  const swept = conv({ status: 'closed', closed_at: null, updated_at: at(2026, 10, 10, 23, 35) })
+  assert.equal(closedNote(swept, now), 'This chat is closed since 10 Nov, 23:35. It stays in Closed.')
+  assert.equal(signalOf(swept, 'closed', now.getTime(), 90)?.text, 'Closed 10 Nov')
+  // Nothing to go by: no "since", and no invented time.
+  assert.equal(closedNote({ closed_at: null, updated_at: '' }, now), 'This chat is closed. It stays in Closed.')
+
+  // The chat's footer and its facts card ask these helpers, not the bare clock.
+  assert.match(read('src/features/chats/detail.tsx'), /text: closedNote\(conv, new Date\(nowMs\)\)/)
+  const panel = read('src/features/chats/components/details-panel.tsx')
+  assert.match(panel, /label: 'Started', value: dayClock\(conv\.created_at, now\)/)
+  assert.match(panel, /label: 'Asked for a person', value: dayClock\(handoff\.created_at, now\)/)
+  assert.ok(!/(?<!day)clock\(/i.test(panel), 'no bare clock() left in the facts card')
 })
