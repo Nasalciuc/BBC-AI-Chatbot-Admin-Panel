@@ -18,6 +18,19 @@ const FEATURES = [
   'features/apps/index.tsx',
   // The redesigned agent pages (Your day, Knowledge) carry it too.
   'features/day/index.tsx', 'features/knowledge/index.tsx',
+  // Learning and Security · Bans arrived with the chatbot's stack, the same
+  // day as the redesign, with a title of their own and no header (11 Nov 2026).
+  'features/learning/index.tsx', 'features/security-bans/index.tsx',
+]
+
+// Pages a manager reaches from the side menu. On a phone that menu is off the
+// screen and a manager has no tab bar: the header's menu button is the only
+// way to another page. (The Assistant's editor keeps the older <Header>, which
+// carries the same button.)
+const MENU_PAGES = [
+  'features/dashboard/owner/index.tsx', 'features/chats/index.tsx', 'features/leads/index.tsx',
+  'features/users/index.tsx', 'features/teams/index.tsx', 'features/settings/index.tsx',
+  'features/tasks/index.tsx', 'features/learning/index.tsx', 'features/security-bans/index.tsx',
 ]
 
 test('ONE header: every page renders HeaderActions, none composes its own cluster', () => {
@@ -28,6 +41,11 @@ test('ONE header: every page renders HeaderActions, none composes its own cluste
     assert.ok(!src.includes('<ConfigDrawer'), `${f} still ships the layout-experiment drawer`)
     assert.ok(!/ms-auto flex items-center space-x-4'>\s*<ConnectionBanner/.test(src), `${f} still hand-rolls the action cluster`)
   }
+  for (const f of MENU_PAGES) {
+    assert.match(read(f), /<PageHeader\b/, `${f} has no page header: on a phone there is no way to the menu`)
+  }
+  // The page header is where the phone's menu button lives.
+  assert.match(read('components/layout/page-header.tsx'), /menuButton && <SidebarTrigger\b[^>]*md:hidden/)
   // The operator lifelines live in the shared component.
   const shared = read('components/header-actions.tsx')
   assert.match(shared, /<ReadyToggle\b/)

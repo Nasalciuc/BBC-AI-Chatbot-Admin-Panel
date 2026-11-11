@@ -2,6 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { listQuestionVariants, setVariantStatus, getLearningReport } from '@/lib/api'
 import type { QuestionVariant } from '@/lib/types'
+import { HeaderActions } from '@/components/header-actions'
+import { PageHeader } from '@/components/layout/page-header'
 
 // The palette's green and amber pairs (styles/theme.css): each token carries
 // its own dark value.
@@ -26,14 +28,19 @@ export function Learning() {
   for (const v of variants.data ?? []) (bySlot[v.slot] ??= []).push(v)
 
   return (
-    <div className="h-full overflow-y-auto p-6 space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Learning</h1>
-        <p className="text-sm text-muted-foreground">
-          Question phrasings the bot is testing, and how treatment compares to the 10% control group.
-          Nothing reaches customers until you set a variant to <strong>active</strong>.
-        </p>
-      </div>
+    <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
+      {/* The header every page has: on a phone its menu button is the only
+          way to the other pages, and the bell is where a new chat shows. */}
+      <PageHeader
+        title='Learning'
+        subtitle={
+          <>
+            Question phrasings the bot is testing, and how treatment compares to the 10% control group. Nothing reaches
+            customers until you set a variant to <strong>active</strong>.
+          </>
+        }
+        actions={<HeaderActions className='ms-0' />}
+      />
 
       {report.isError && (
         <LoadError what="the learning report" onRetry={() => report.refetch()} />
@@ -98,7 +105,7 @@ export function Learning() {
           </div>
         ))
       )}
-    </div>
+    </main>
   )
 }
 

@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { listBans, unbanBan, type SecurityBan } from '@/lib/api'
+import { HeaderActions } from '@/components/header-actions'
+import { PageHeader } from '@/components/layout/page-header'
 
 /** What /api/admin/security/bans says when its database read fails. */
 const HISTORY_READ_FAILED = 'Bans history unavailable'
@@ -20,14 +22,14 @@ export function SecurityBans() {
   })
 
   return (
-    <div className="h-full overflow-y-auto p-6 space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Security · Bans</h1>
-        <p className="text-sm text-muted-foreground">
-          Addresses the tripwires banned. A ban lasts 1 hour to a week and doubles on a repeat; none is permanent.
-          Unban lets the next request through and records who did it.
-        </p>
-      </div>
+    <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
+      {/* The header every page has: on a phone its menu button is the only
+          way to the other pages, and the bell is where a new chat shows. */}
+      <PageHeader
+        title='Security · Bans'
+        subtitle='Addresses the tripwires banned. A ban lasts 1 hour to a week and doubles on a repeat; none is permanent. Unban lets the next request through and records who did it.'
+        actions={<HeaderActions className='ms-0' />}
+      />
       {bans.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : bans.isError ? (
@@ -81,7 +83,7 @@ export function SecurityBans() {
           </table>
         </div>
       )}
-    </div>
+    </main>
   )
 }
 
