@@ -186,6 +186,22 @@ export function Chats() {
   // Only while a chat is open: with none, the whole list (tabs, search) shows.
   const rail = showRail(wide, layout, selectedId)
 
+  // The list and the rail are two different columns. When picking a chat
+  // turns one into the other, the button that had the focus is removed and
+  // the browser drops focus to the page — a keyboard user loses their place.
+  // The same chat's button in the new column takes it. Where the column did
+  // not change, the button still has the focus and nothing is done.
+  const columnRef = useRef<HTMLElement>(null)
+  const refocusId = useRef<string | null>(null)
+  useEffect(() => {
+    const id = refocusId.current
+    refocusId.current = null
+    if (!id || (document.activeElement && document.activeElement !== document.body)) return
+    Array.from(columnRef.current?.querySelectorAll<HTMLElement>('[data-chat-id]') ?? [])
+      .find((el) => el.dataset.chatId === id)
+      ?.focus()
+  }, [rail, selectedId])
+
   // Conversation list — cached per tab, polls every 5s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
   // with_counts: the tab badges ride this 5 s poll (PR-10) instead of a
@@ -292,6 +308,9 @@ export function Chats() {
 
   const pick = (id: string) => {
     stopAssignmentAlerts()
+    // Picked from inside the column (a row or a face): if the column changes
+    // shape under it, the focus follows the chat (see refocusId).
+    if (columnRef.current?.contains(document.activeElement)) refocusId.current = id
     setSelectedId(id === selectedId ? null : id)
   }
 
@@ -326,6 +345,7 @@ export function Chats() {
       <button
         key={conv.id}
         type='button'
+        data-chat-id={conv.id}
         aria-pressed={on}
         aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}${sig ? `, ${sig.text}` : ''}`}
         onClick={() => pick(conv.id)}
@@ -425,7 +445,7 @@ export function Chats() {
   )
 
   const listColumn = rail ? (
-    <section aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
+    <section ref={columnRef} aria-label='Chats' className='flex w-[84px] flex-none flex-col items-center gap-3 overflow-y-auto rounded-[20px] bg-k-f7f7f7 py-3.5'>
       <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} rail />
       <span className='text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'>{tab.label === 'All active' ? 'Active' : tab.label}</span>
       {rows.map(({ conv, owner, sig }) => {
@@ -434,6 +454,7 @@ export function Chats() {
           <button
             key={conv.id}
             type='button'
+            data-chat-id={conv.id}
             aria-pressed={selectedId === conv.id}
             onClick={() => pick(conv.id)}
             aria-label={`${conv.visitor_name ?? 'Visitor'}${sig ? `, ${sig.text}` : ''}`}
@@ -457,6 +478,7 @@ export function Chats() {
     </section>
   ) : (
     <section
+      ref={columnRef}
       aria-label='Chats'
       className={cn(
         'flex min-w-0 flex-col overflow-hidden',

@@ -345,3 +345,22 @@ test('the rail of faces is the wider view of an open chat: with none open, the w
   // The way back stays where it was: in the open chat's header.
   assert.match(read('src/features/chats/detail.tsx'), /layout === 'wide' && onToggleWide &&/)
 })
+
+test('picking a chat keeps the keyboard focus when the list turns into the rail, and back', () => {
+  // The list and the rail are different columns: the focused row is removed
+  // when one becomes the other, and the browser drops focus to the page.
+  // (No DOM in these tests: the contract is pinned on the source; the
+  // behaviour was checked in a browser with the keyboard, both ways.)
+  const page = read('src/features/chats/index.tsx')
+  // One ref finds whichever column is drawn, and every row and face names its chat.
+  assert.equal(page.match(/<section\s+ref=\{columnRef\}/g)?.length, 2)
+  assert.equal(page.match(/data-chat-id=\{conv\.id\}/g)?.length, 2)
+  // A pick made from inside the column remembers which chat to follow …
+  assert.match(page, /if \(columnRef\.current\?\.contains\(document\.activeElement\)\) refocusId\.current = id/)
+  // … and once the column changed, that chat's button takes the focus — only if it was lost.
+  const effect = page.slice(page.indexOf('const refocusId = useRef'), page.indexOf('}, [rail, selectedId])'))
+  assert.ok(effect.length > 0 && effect.length < 600, 'the refocus effect is where it was')
+  assert.match(effect, /refocusId\.current = null/)
+  assert.match(effect, /document\.activeElement !== document\.body\)\) return/)
+  assert.match(effect, /\.find\(\(el\) => el\.dataset\.chatId === id\)\s*\?\.focus\(\)/)
+})
