@@ -109,8 +109,14 @@ test('the open chat reads the rule, and reads it again: silence is never pushed'
   // stream is open, PR-10): it is read again when the server says its answer changes.
   assert.match(detail, /refetchInterval: dormant \|\| sseLive \? false : \(activeTab === 'my_active' \? 2_000 : false\),\s*enabled: !!conv && !blindView && conv\.status !== 'closed',/)
   assert.match(detail, /typeof presenceData\?\.widget_presence_changes_in === 'number'/)
-  assert.match(detail, /const t = setTimeout\(\(\) => \{ void refetchPresence\(\) \}, presenceChangesIn \* 1000\)/)
-  assert.match(detail, /\}, \[presenceChangesIn, presenceAt, dormant, refetchPresence\]\)/)
+  // From the answer's own time (review on #251): a pause does not restart the wait,
+  // a deadline already past reads at once.
+  assert.match(detail, /const wait = Math\.max\(0, presenceAt \+ presenceNextS \* 1000 - Date\.now\(\)\)/)
+  assert.match(detail, /const t = setTimeout\(\(\) => \{ void refetchPresence\(\) \}, wait\)/)
+  assert.match(detail, /\}, \[presenceNextS, presenceAt, dormant, refetchPresence\]\)/)
+  // Where nothing pushes (no stream), an answer with no change of its own ("left") is read
+  // again in a minute: a client who comes back is seen (review on #251).
+  assert.match(detail, /const presenceNextS = presenceChangesIn \?\? \(sseLive \? null : 60\)/)
   // Between two answers the minutes keep counting.
   assert.match(detail, /const since = presenceData && presenceAt \? Math\.max\(0, Math\.floor\(\(nowMs - presenceAt\) \/ 1000\)\) : 0/)
   // The countdown under "left" counts the same minutes as the server's sweep.

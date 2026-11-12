@@ -242,11 +242,17 @@ export default function ConversationDetail({
   })
   const presenceChangesIn =
     typeof presenceData?.widget_presence_changes_in === 'number' ? presenceData.widget_presence_changes_in : null
+  // A client who left can only come back through a read. Without the stream (a tab other than
+  // yours, or the stream down), the answer that has no change of its own is read again in a minute.
+  const presenceNextS = presenceChangesIn ?? (sseLive ? null : 60)
   useEffect(() => {
-    if (presenceChangesIn === null || dormant) return
-    const t = setTimeout(() => { void refetchPresence() }, presenceChangesIn * 1000)
+    if (presenceNextS === null || dormant || !presenceAt) return
+    // Counted from the answer, not from now: a pause (dormant) does not start the wait again,
+    // and a deadline already past reads at once.
+    const wait = Math.max(0, presenceAt + presenceNextS * 1000 - Date.now())
+    const t = setTimeout(() => { void refetchPresence() }, wait)
     return () => clearTimeout(t)
-  }, [presenceChangesIn, presenceAt, dormant, refetchPresence])
+  }, [presenceNextS, presenceAt, dormant, refetchPresence])
 
   // Push instead of ask. One stream for the conversation on screen carries
   // messages, typing and presence — the three things the polls above were
