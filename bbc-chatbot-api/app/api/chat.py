@@ -8,7 +8,7 @@ import uuid as _uuid_mod
 import asyncio
 import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -30,6 +30,7 @@ from app.deps.ownership import require_visitor_ownership
 from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
 from app.security.client_ip import client_ip
 from app.security.metadata import allowed_widget_metadata
+from app.services.client_presence import signal_patch
 
 
 class _SkipGreetingGen(Exception):
@@ -883,45 +884,76 @@ async def mark_chat_session_open(
 @router.post("/chat/session/{conversation_id}/ping")
 async def ping_chat_session(
     conversation_id: str,
+    v: Optional[int] = None,
+    kind: Optional[Literal["beat", "hidden", "leaving"]] = None,
+    chat: Optional[Literal["open", "closed"]] = None,
+    idle: Optional[int] = None,
+    m: Optional[int] = None,
     _owner: None = Depends(require_visitor_ownership),
 ):
-    """The widget is open and the tab is visible — the client is really there.
+    """The widget tells the server the client is really there.
 
     9 of the 34 vanish-census conversations still read `online` with no
     close event ever recorded: `keepalive` beacons die with a killed tab
     or a suspended phone, and nothing ever contradicted the stored value.
     An operator then opens the chat believing someone is on the other end.
 
+    Without `v` (a widget bundle from before presence v2): the chat is open
+    and the tab is visible, as it always meant. With v=2 it is one of three
+    signals (presence.signal_patch): a beat every 30 s while the page is in view,
+    chat open or closed, with the seconds since the visitor last touched the
+    page (`idle`) and whether it is a phone (`m`); `hidden`; `leaving`.
+
     A PATCH, not a read-modify-write: at 120 pings/hour a full-blob
     rewrite would eventually revert a flag another request claimed in
     between (closing_sent_at, confirmed_at, summary state) and would
-    cost a whole conversation read each time. Only these four keys are
+    cost a whole conversation read each time. Only the signal's keys are
     merged, server-side, under 029's no-touch discipline — a heartbeat
     must never resurrect a conversation to the top of the panel's list."""
-    ok = await db.patch_conversation_presence(conversation_id, {
-        "widget_open": True,
-        "widget_presence": "online",
-        "widget_last_event": "ping",
-        "widget_last_event_at": datetime.now(timezone.utc).isoformat(),
-        # Proof this conversation has a PINGING widget: without it the
-        # server cannot tell "silent because gone" from "silent because
-        # the client runs an older bundle that never pings".
-        "widget_pings": True,
-    })
-    if ok:
-        # Same shape GET /conversations/{id}/presence returns, so the panel can
-        # setQueryData(['presence', id]) with it instead of polling every 2s.
-        # widget_presence_effective is derived from these two by the same rule.
-        from app.realtime.manager import manager
-        await manager.push(conversation_id, {
-            "event": "presence",
+    now = datetime.now(timezone.utc)
+    signal = kind or "beat"
+    if v == 2:
+        patch = signal_patch(signal, now, chat, idle, m)
+    else:
+        signal = "beat"
+        patch = {
             "widget_open": True,
             "widget_presence": "online",
-            "widget_presence_effective": "online",
-            "widget_presence_age_seconds": 0,
-            "widget_last_event_at": datetime.now(timezone.utc).isoformat(),
-        })
-    return {"success": ok}
+            "widget_last_event": "ping",
+            "widget_last_event_at": now.isoformat(),
+            # Proof this conversation has a PINGING widget: without it the
+            # server cannot tell "silent because gone" from "silent because
+            # the client runs an older bundle that never pings".
+            "widget_pings": True,
+        }
+    ok = await db.patch_conversation_presence(conversation_id, patch)
+    if not ok:
+        return {"success": False}
+    from app.realtime.manager import manager
+    if signal == "leaving":
+        # As /close does for the first rule: no "typing…" left behind. The
+        # presence line itself does not move yet — a page change sends a
+        # beat from the next page within seconds (PRESENCE_LEAVE_GRACE_SECONDS).
+        from app.realtime.typing_indicator import typing_manager
+        await typing_manager.clear_typing(conversation_id)
+        await manager.push(conversation_id, {"event": "typing", "is_typing": False, "text": ""})
+        return {"success": True}
+    # The signal carries everything the rule needs right now, so it is derived
+    # from the patch alone, no read: the same shape GET /conversations/{id}/presence
+    # returns, so the panel can setQueryData(['presence', id]) with it.
+    effective, age = db.derive_effective_presence(patch, now)
+    event = {
+        "event": "presence",
+        "widget_presence_effective": effective,
+        "widget_presence_age_seconds": age,
+        "widget_presence_changes_in": db.presence_changes_in(patch, now),
+        "widget_last_event_at": now.isoformat(),
+    }
+    if signal == "beat":
+        event["widget_open"] = patch["widget_open"]
+        event["widget_presence"] = patch["widget_presence"]
+    await manager.push(conversation_id, event)
+    return {"success": True}
 
 
 @router.post("/chat/session/{conversation_id}/close")
@@ -947,8 +979,8 @@ async def mark_chat_session_close(
     await db.update_conversation_presence(conversation_id, metadata)
     from app.realtime.typing_indicator import typing_manager
     await typing_manager.clear_typing(conversation_id)
-    # Publish the SAME five keys ping_chat_session publishes (chat.py:787),
-    # derived by the SAME rule GET /presence uses — the panel MERGES this over
+    # Publish the SAME keys ping_chat_session publishes for a beat, derived
+    # by the SAME rule GET /presence uses — the panel MERGES this over
     # the last ping, so any key left out keeps its old value. A close payload
     # without widget_open=False left the client "online" until reconnect.
     from app.realtime.manager import manager
@@ -961,6 +993,9 @@ async def mark_chat_session_close(
         "widget_presence": reason,
         "widget_presence_effective": _effective,
         "widget_presence_age_seconds": _age,
+        "widget_presence_changes_in": db.presence_changes_in(
+            metadata, last_user_message_at=conv.get("last_user_message_at")
+        ),
         "widget_last_close_reason": reason,
         "widget_last_event_at": metadata["widget_last_event_at"],
     })

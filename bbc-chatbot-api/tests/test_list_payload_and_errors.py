@@ -157,10 +157,13 @@ async def test_engaged_agent_id_is_reshaped_so_agent_state_still_works():
     # The lifted keys grew when presence became read-derived: the list
     # REPLACES metadata, so everything the panel needs must be lifted here.
     assert row["metadata"]["engaged_agent_id"] == ENGAGED_ID
-    # agent_assigned_at joined them with the reply countdown on the list row.
+    # agent_assigned_at joined them with the reply countdown on the list row,
+    # and the v2 presence signals with the rule that reads them (Nov 2026).
     assert set(row["metadata"]) == {
         "engaged_agent_id", "widget_presence",
         "widget_last_event_at", "widget_pings", "agent_assigned_at",
+        "pres_v", "pres_seen_at", "pres_active_at", "pres_chat_open",
+        "pres_mobile", "pres_hidden_at", "pres_leaving_at",
     }
     # The lifted alias is not left lying around at the top level
     assert "engaged_agent_id" not in {k for k in row if k != "metadata"}

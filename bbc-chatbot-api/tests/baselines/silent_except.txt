@@ -51,7 +51,6 @@ app/api/users.py::get_live_agents::pass
 app/db/qdrant.py::_count_points_sync::body
 app/db/supabase.py::_parse_iso_dt::return-sentinel
 app/db/supabase.py::check_connection::return-sentinel
-app/db/supabase.py::derive_effective_presence._parse::return-sentinel
 app/db/supabase.py::diagnose_invite_token::body
 app/db/supabase.py::ensure_lead_for_conversation::body
 app/db/supabase.py::ensure_lead_for_conversation::return-sentinel

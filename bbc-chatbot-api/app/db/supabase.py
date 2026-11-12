@@ -642,6 +642,15 @@ _LIST_COLUMNS_BASE = (
     "widget_presence:metadata->>widget_presence,"
     "widget_last_event_at:metadata->>widget_last_event_at,"
     "widget_pings:metadata->>widget_pings,"
+    # And what the v2 widget signals carry (PRESENCE_V2_KEYS): `->` keeps the
+    # number and the two booleans typed, the timestamps come as text.
+    "pres_v:metadata->pres_v,"
+    "pres_seen_at:metadata->>pres_seen_at,"
+    "pres_active_at:metadata->>pres_active_at,"
+    "pres_chat_open:metadata->pres_chat_open,"
+    "pres_mobile:metadata->pres_mobile,"
+    "pres_hidden_at:metadata->>pres_hidden_at,"
+    "pres_leaving_at:metadata->>pres_leaving_at,"
     # The form-trap hold flag (PR-12), for the list's Suspect badge: the list
     # carries no metadata, so the badge had nothing to read.
     "suspect:metadata->>suspect,"
@@ -998,6 +1007,7 @@ async def get_conversations(
                 # needs truthiness, but None must stay falsy.
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
                 "agent_assigned_at": row.pop("agent_assigned_at", None),
+                **{k: row.pop(k, None) for k in PRESENCE_V2_KEYS},
             }
         rows = await enrich_conversations_agent_info(rows)
         if _supervisor_columns_available():
@@ -2302,67 +2312,17 @@ def derive_conversation_tag(
     return "active"
 
 
-# A stored "online" is a CLAIM, not a fact: the widget's close beacon is
-# best-effort (a killed tab, a suspended phone, a dropped network all lose
-# it), so 9 of the 34 vanish-census conversations sat at `online` forever
-# with the client long gone. Presence is DERIVED on read, from the age of
-# the last signal — the widget pings every 30s while it is really open.
-PRESENCE_STALE_SECONDS = 90      # two missed pings
-PRESENCE_LEFT_SECONDS = 1800     # 30 min: a backgrounded tab is quiet, not gone
-
-
-def derive_effective_presence(
-    metadata: dict,
-    now: Optional[datetime] = None,
-    last_user_message_at: Optional[str] = None,
-) -> tuple[Optional[str], Optional[int]]:
-    """(effective_presence, age_seconds). Never upgrades a state — only
-    ages one down: online → stale → left.
-
-    Two guards learned the hard way:
-      * Only conversations whose widget ACTUALLY pings are aged down
-        (`widget_pings`). Without it, every client running a cached older
-        bundle would read "left" the moment this deploys — a fleet-wide
-        lie dressed as a fix.
-      * A client who is actively SENDING messages is present, whatever
-        the ping stream says: the message path only rewrites presence
-        when it changes, so a chatty client's timestamp can be minutes
-        old while they are mid-sentence.
-    """
-    meta = metadata or {}
-    stored = meta.get("widget_presence")
-    raw_at = meta.get("widget_last_event_at")
-    if not raw_at:
-        return stored, None
-
-    def _parse(value) -> Optional[datetime]:
-        try:
-            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            return None
-        # Legacy rows stored naive timestamps; subtracting one from an
-        # aware `now` raises TypeError and blanked the whole chats list.
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-    seen = _parse(raw_at)
-    if seen is None:
-        return stored, None
-    now_dt = now or datetime.now(timezone.utc)
-    # A clock skew that puts the signal in the future must not read as
-    # "seen -20s ago" and certainly not as stale.
-    age = max(0, int((now_dt - seen).total_seconds()))
-    if stored != "online":
-        return stored, age
-    if not meta.get("widget_pings"):
-        return stored, age          # no heartbeat to reason from
-    typed = _parse(last_user_message_at)
-    if typed is not None:
-        age = min(age, max(0, int((now_dt - typed).total_seconds())))
-    if age >= PRESENCE_LEFT_SECONDS:
-        return "left", age
-    if age >= PRESENCE_STALE_SECONDS:
-        return "stale", age
-    return "online", age
+# The presence rule lives in app.services.client_presence (pure, no database);
+# re-exported here for the callers that read it from this module.
+from app.services.client_presence import (  # noqa: E402,F401
+    PRESENCE_CLOSE_AFTER_SECONDS,
+    PRESENCE_LEFT_SECONDS,
+    PRESENCE_STALE_SECONDS,
+    PRESENCE_V2_KEYS,
+    client_left,
+    derive_effective_presence,
+    presence_changes_in,
+)
 
 
 def attach_effective_presence(row: dict, now: Optional[datetime] = None) -> dict:
@@ -5414,29 +5374,29 @@ async def get_system_messages_for_conversation(conversation_id: str) -> list[dic
 
 
 async def get_stale_presence_left_conversations(timeout_minutes: int = 5) -> list[dict]:
-    """Conversations where client left website >timeout_minutes ago."""
+    """Open conversations whose client left the website at least
+    timeout_minutes ago, by the same rule the panel shows
+    (derive_effective_presence): a lost "left" beacon no longer keeps a
+    chat open for ever, and a page change is not a departure."""
     try:
         db_client = get_client()
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
-        ).isoformat()
+        columns = "id, metadata" + (", last_user_message_at" if _supervisor_columns_available() else "")
 
         def _q():
             return (
                 db_client.table("conversations")
-                .select("id, visitor_name, metadata")
+                .select(columns)
                 .in_("status", list(OPEN_STATUSES))
                 .execute()
             )
 
         res = await _run_sync(_q)
+        now = datetime.now(timezone.utc)
         stale = []
         for c in (res.data or []):
-            meta = c.get("metadata") or {}
-            if meta.get("widget_presence") == "left":
-                _at = meta.get("widget_last_event_at")
-                if _at and _at < cutoff:
-                    stale.append(c)
+            gone = client_left(c.get("metadata") or {}, c.get("last_user_message_at"), now)
+            if gone is not None and gone >= timeout_minutes * 60:
+                stale.append(c)
         return stale
     except Exception as e:
         logger.warning(f"get_stale_presence_left: {e}")

@@ -1452,8 +1452,7 @@ async def _pipeline(
                     gen.tool_entities = _saved_tool_entities
 
                 # Alert super@ when no agents are available (fire-and-forget, throttled)
-                _presence = _conv_meta.get("widget_presence")
-                if _presence != "left":
+                if db.client_left(_conv_meta, (conv or {}).get("last_user_message_at")) is None:
 
                     async def _send_super_alert():
                         from app.services.closing import claim_super_alert

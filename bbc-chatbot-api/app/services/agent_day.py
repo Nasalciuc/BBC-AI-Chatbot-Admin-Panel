@@ -23,6 +23,8 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Iterable, Optional
 
+from app.services.client_presence import client_left
+
 ALLOWED_DAYS = (1, 7, 30)
 
 
@@ -212,13 +214,12 @@ def build_agent_day(
         last_agent = parse_ts(conv.get("last_agent_message_at"))
         if not last_user or (last_agent and last_agent >= last_user):
             continue
-        meta = conv.get("metadata") or {}
-        left_at = parse_ts(meta.get("widget_last_event_at")) if meta.get("widget_presence") == "left" else None
+        gone = client_left(conv.get("metadata") or {}, conv.get("last_user_message_at"), now)
         waiting_on_you.append({
             "conversation_id": conv.get("id"),
             "first_name": _first_name(conv),
             "minutes": max(0, int((now - last_user).total_seconds() // 60)),
-            "left_minutes_ago": int((now - left_at).total_seconds() // 60) if left_at else None,
+            "left_minutes_ago": gone // 60 if gone is not None else None,
         })
     waiting_on_you.sort(key=lambda w: -w["minutes"])
 

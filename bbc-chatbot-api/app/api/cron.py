@@ -521,7 +521,9 @@ async def run_close_stale_presence() -> dict:
     update_conversation returns None when the write failed (it logs why) or
     matched no row: such a chat is still open, so it is neither counted nor
     logged as closed. The next run finds it again."""
-    stale = await db.get_stale_presence_left_conversations(timeout_minutes=5)
+    stale = await db.get_stale_presence_left_conversations(
+        timeout_minutes=db.PRESENCE_CLOSE_AFTER_SECONDS // 60
+    )
     closed = 0
     for conv in stale:
         cid = conv["id"]
