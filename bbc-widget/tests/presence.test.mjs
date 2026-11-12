@@ -36,6 +36,23 @@ test('the query carries the version, the signal, the idle seconds, the device, a
   const hidden = new URLSearchParams(signalQuery('hidden', { chatOpen: true, idleS: 0, mobile: false }))
   assert.deepEqual(Object.fromEntries(hidden), { v: '2', kind: 'hidden', idle: '0', m: '0' })
   assert.equal(new URLSearchParams(signalQuery('leaving', { chatOpen: true, idleS: -5, mobile: false })).get('idle'), '0')
+  // No idle at all: nothing claimed about activity (the server counts a beat as activity now).
+  const blind = new URLSearchParams(signalQuery('beat', { chatOpen: true, idleS: null, mobile: false }))
+  assert.equal(blind.has('idle'), false)
+  assert.equal(blind.get('chat'), 'open')
+})
+
+test('the embedded chat (CRM iframe) claims no idleness and its beats never stop for it', () => {
+  // Review on #251: the frame cannot see the page around it; counting only its own
+  // touches would read "left" for a visitor busy on the host page.
+  assert.match(chat, /idleS: embedded \? null : idleSeconds\(Date\.now\(\), lastActivityRef\.current\),/)
+  assert.match(chat, /if \(!embedded && !shouldBeat\(true, Date\.now\(\), lastActivityRef\.current\)\) \{/)
+})
+
+test('only a page in view starts beating, so coming into view beats at once', () => {
+  // Review on #251: an interval started while hidden (mounted in a background tab, or a
+  // pageshow without being shown) made the visible transition wait for the next tick.
+  assert.match(chat, /const startPing = \(\) => \{\s*if \(pingInterval \|\| document\.visibilityState !== 'visible'\) return/)
 })
 
 test('phones and tablets are told apart from computers', () => {

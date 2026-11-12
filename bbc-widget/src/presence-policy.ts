@@ -57,12 +57,16 @@ export function isMobileDevice(nav: NavigatorLike | undefined): boolean {
 }
 
 /** The query of one signal: POST /api/chat/session/{id}/ping?<this>. No body, so a keepalive
- *  request at pagehide stays as small and as simple as it can be. */
+ *  request at pagehide stays as small and as simple as it can be. `idleS: null` says nothing
+ *  about activity (the embedded chat cannot see the page around it): the server counts a beat
+ *  without it as activity now. */
 export function signalQuery(
   kind: PresenceSignal,
-  o: { chatOpen: boolean; idleS: number; mobile: boolean },
+  o: { chatOpen: boolean; idleS: number | null; mobile: boolean },
 ): string {
-  const q = new URLSearchParams({ v: '2', kind, idle: String(Math.max(0, Math.floor(o.idleS))), m: o.mobile ? '1' : '0' })
+  const q = new URLSearchParams({ v: '2', kind })
+  if (o.idleS !== null) q.set('idle', String(Math.max(0, Math.floor(o.idleS))))
+  q.set('m', o.mobile ? '1' : '0')
   if (kind === 'beat') q.set('chat', o.chatOpen ? 'open' : 'closed')
   return q.toString()
 }

@@ -413,10 +413,12 @@ export function ChatWindow({
     // signal is what says "left", never a beacon alone: a killed tab, a phone put to sleep
     // or a dropped network send nothing. Presence-only writes — never updated_at (029).
     const mobile = isMobileDevice(typeof navigator === 'undefined' ? undefined : navigator as never)
+    // Embedded (the CRM's iframe): the frame cannot see the page around it, so it claims no
+    // idleness and its beats never stop for it — the page being in view is what it knows.
     const signal = (kind: PresenceSignal, keepalive = false) => {
       const q = signalQuery(kind, {
         chatOpen: visibleRef.current,
-        idleS: idleSeconds(Date.now(), lastActivityRef.current),
+        idleS: embedded ? null : idleSeconds(Date.now(), lastActivityRef.current),
         mobile,
       })
       apiFetch(`${apiUrl}/api/chat/session/${convId}/ping?${q}`, { method: 'POST', keepalive }).catch(() => {})
@@ -427,15 +429,18 @@ export function ChatWindow({
     let beatsPaused = false
     const sendPing = () => {
       if (document.visibilityState !== 'visible') return
-      if (!shouldBeat(true, Date.now(), lastActivityRef.current)) {
+      if (!embedded && !shouldBeat(true, Date.now(), lastActivityRef.current)) {
         beatsPaused = true
         return
       }
       beatsPaused = false
       signal('beat')
     }
+    // Only a page in view beats. An interval started out of view (mounted in a background tab,
+    // or back from the back-forward cache without being shown) would make the moment it comes
+    // into view wait for the next tick instead of beating at once.
     const startPing = () => {
-      if (pingInterval) return
+      if (pingInterval || document.visibilityState !== 'visible') return
       sendPing()
       pingInterval = setInterval(sendPing, BEAT_MS)
     }
