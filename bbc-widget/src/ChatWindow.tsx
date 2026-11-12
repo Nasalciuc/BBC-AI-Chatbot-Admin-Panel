@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { shouldSendTyping, sseRetryDelay, AGENT_TYPING_EXPIRE_MS } from './realtime-policy'
+import { ACTIVITY_EVENTS, BEAT_MS, idleSeconds, isMobileDevice, shouldBeat, signalQuery } from './presence-policy'
+import type { PresenceSignal } from './presence-policy'
 import { apiFetch, ensureVisitorToken, getVisitorId, getVisitorToken, saveVisitorToken } from './api'
 import { getTurnstileToken } from './turnstile'
 import type { FormCheck } from './TunnelForm'
@@ -122,10 +124,14 @@ export function ChatWindow({
   const sseUpRef = useRef(false)
   const agentTypingExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeSentRef = useRef(false)
-  // Last time the client actually DID something in the chat. A tab left
-  // open on a desk is visible, not present — the ping stops after a
-  // stretch of real idleness so the server can age the state down.
-  const lastInteractionRef = useRef(Date.now())
+  // Last time the visitor did anything on the PAGE (presence-policy.ts): moved, scrolled,
+  // typed, touched, in the chat or anywhere else. The server tells "inactive" and "gone"
+  // from it; the beats stop after 20 idle minutes and the first touch starts them again.
+  const lastActivityRef = useRef(Date.now())
+  // Set by the presence effect: a beat now (the chat just opened or closed), and what the
+  // first touch does once the beats have stopped.
+  const beatNowRef = useRef<() => void>(() => {})
+  const onActivityRef = useRef<() => void>(() => {})
   /** Operator-typing state, polled from the backend (name only, never the draft). */
   const [agentTyping, setAgentTyping] = useState<{ is_typing: boolean; name: string }>({
     is_typing: false,
@@ -154,13 +160,13 @@ export function ChatWindow({
     return () => clearTimeout(timeout)
   }, [sending])
 
-  const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false) => {
-    if (!convId || closeSentRef.current) return
+  const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false): Promise<void> => {
+    if (!convId || closeSentRef.current) return Promise.resolve()
     closeSentRef.current = true
-    apiFetch(`${apiUrl}/api/chat/session/${convId}/close?reason=${reason}`, {
+    return apiFetch(`${apiUrl}/api/chat/session/${convId}/close?reason=${reason}`, {
       method: 'POST',
       keepalive,
-    }).catch(() => {})
+    }).then(() => undefined, () => undefined)
   }
 
   // Keep the newest message in view. Scrolls the log itself, never the host page (scrollIntoView would
@@ -186,6 +192,19 @@ export function ChatWindow({
     else setHasUnseen(true)
   }, [messages.length, streamingText, sending, agentTyping.is_typing, queued.length])
 
+  // ── The visitor doing something on the page (presence-policy.ts) ───────────
+  // Anywhere on it, not only in the chat. Capture and passive: nothing on the page is
+  // delayed or blocked, and a handler that stops propagation does not hide it.
+  useEffect(() => {
+    const opts: AddEventListenerOptions = { capture: true, passive: true }
+    const on = () => {
+      lastActivityRef.current = Date.now()
+      onActivityRef.current()
+    }
+    for (const e of ACTIVITY_EVENTS) window.addEventListener(e, on, opts)
+    return () => { for (const e of ACTIVITY_EVENTS) window.removeEventListener(e, on, opts) }
+  }, [])
+
   // ── Open and closed (the chat stays mounted) ─────────────────────────────
   // Closing tells the server the client minimized the chat (no heartbeat until it opens again) and
   // clears the operator's live preview of an unsent draft; opening marks the client back, then shows
@@ -198,12 +217,14 @@ export function ChatWindow({
     if (visible) {
       if (convId) {
         closeSentRef.current = false
+        // Then a beat that says the chat is open (the server's presence line follows at once).
         apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
+          .finally(() => beatNowRef.current())
       }
-      lastInteractionRef.current = Date.now()
       requestAnimationFrame(() => { scrollToEnd(false); fitComposer(); focusComposer() })
     } else {
-      notifySessionClose('minimized', true)
+      // Still on the site with the chat closed: a beat says so once the close is written.
+      notifySessionClose('minimized', true).finally(() => beatNowRef.current())
       if (convId) apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,50 +407,75 @@ export function ChatWindow({
     if (!convId) return
     closeSentRef.current = false
 
-    const handlePageLeave = () => notifySessionClose('left', true)
-    // bfcache return (back button, mobile app-switch): pagehide fired 'left'
-    // on the way out — mark the client back and re-arm the close beacon.
-    const handlePageReturn = () => {
-      if (!visibleRef.current) return
-      closeSentRef.current = false
-      apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
+    // PRESENCE (presence-policy.ts) — the server decides who is on the site from three
+    // signals, all on /ping: a beat every 30 s while the PAGE is in view, chat open or
+    // closed; `hidden` when it goes out of view; `leaving` on pagehide. Silence after a
+    // signal is what says "left", never a beacon alone: a killed tab, a phone put to sleep
+    // or a dropped network send nothing. Presence-only writes — never updated_at (029).
+    const mobile = isMobileDevice(typeof navigator === 'undefined' ? undefined : navigator as never)
+    const signal = (kind: PresenceSignal, keepalive = false) => {
+      const q = signalQuery(kind, {
+        chatOpen: visibleRef.current,
+        idleS: idleSeconds(Date.now(), lastActivityRef.current),
+        mobile,
+      })
+      apiFetch(`${apiUrl}/api/chat/session/${convId}/ping?${q}`, { method: 'POST', keepalive }).catch(() => {})
     }
-    window.addEventListener('pagehide', handlePageLeave)
-    window.addEventListener('beforeunload', handlePageLeave)
-    window.addEventListener('pageshow', handlePageReturn)
 
-    // PRESENCE HEARTBEAT — the close beacon is best-effort: a killed tab,
-    // a suspended phone or a dropped network loses it, and the panel then
-    // shows "online" for someone who left an hour ago. A ping every 30s
-    // while the tab is VISIBLE means silence is itself the signal: two
-    // missed pings and the server derives 'stale' on read. Presence-only
-    // write — it never bumps updated_at (migration 029).
-    const PING_MS = 30_000
-    // A tab left open on a desk overnight is visible, not present. After
-    // this long without the client touching the chat, stop claiming they
-    // are there and let the server age the state down honestly.
-    const PING_IDLE_CUTOFF_MS = 15 * 60_000
     let pingInterval: ReturnType<typeof setInterval> | null = null
+    // The beats stopped because nobody touched the page for 20 minutes: the first touch beats.
+    let beatsPaused = false
     const sendPing = () => {
       if (document.visibilityState !== 'visible') return
-      // A closed chat is not a present client: no heartbeat until it opens again.
-      if (!visibleRef.current) return
-      if (Date.now() - lastInteractionRef.current > PING_IDLE_CUTOFF_MS) return
-      apiFetch(`${apiUrl}/api/chat/session/${convId}/ping`, { method: 'POST' }).catch(() => {})
+      if (!shouldBeat(true, Date.now(), lastActivityRef.current)) {
+        beatsPaused = true
+        return
+      }
+      beatsPaused = false
+      signal('beat')
     }
     const startPing = () => {
       if (pingInterval) return
       sendPing()
-      pingInterval = setInterval(sendPing, PING_MS)
+      pingInterval = setInterval(sendPing, BEAT_MS)
     }
     const stopPing = () => {
       if (!pingInterval) return
       clearInterval(pingInterval)
       pingInterval = null
     }
+    beatNowRef.current = sendPing
+    onActivityRef.current = () => { if (beatsPaused) sendPing() }
+
+    let leaveSent = false
+    // pagehide: the page closed or the visitor followed a link. The next page beats within
+    // seconds; the server waits before it calls this a departure.
+    const handlePageLeave = () => {
+      if (leaveSent) return
+      leaveSent = true
+      stopPing()
+      signal('leaving', true)
+    }
+    // bfcache return (back button, mobile app-switch): the page left with a `leaving` —
+    // mark the client back and re-arm the close beacon.
+    const handlePageReturn = () => {
+      leaveSent = false
+      startPing()
+      if (!visibleRef.current) return
+      closeSentRef.current = false
+      apiFetch(`${apiUrl}/api/chat/session/${convId}/open`, { method: 'POST' }).catch(() => {})
+    }
+    window.addEventListener('pagehide', handlePageLeave)
+    window.addEventListener('pageshow', handlePageReturn)
+
+    // Out of view is the last thing a page is sure to hear, on a phone above all: say it then.
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') startPing()
-      else stopPing()
+      if (document.visibilityState === 'visible') {
+        startPing()
+      } else {
+        stopPing()
+        signal('hidden', true)
+      }
     }
     document.addEventListener('visibilitychange', handleVisibility)
     startPing()
@@ -610,9 +656,10 @@ export function ChatWindow({
       if (fallbackInterval) clearInterval(fallbackInterval)
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
       stopPing()
+      beatNowRef.current = () => {}
+      onActivityRef.current = () => {}
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('pagehide', handlePageLeave)
-      window.removeEventListener('beforeunload', handlePageLeave)
       window.removeEventListener('pageshow', handlePageReturn)
     }
   }, [convId, apiUrl])
@@ -722,7 +769,7 @@ export function ChatWindow({
 
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
-    lastInteractionRef.current = Date.now()
+    lastActivityRef.current = Date.now()
     // Clear typing indicator immediately when sending
     if (convId) {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
@@ -1096,7 +1143,7 @@ export function ChatWindow({
           aria-label="Type a message"
           onInput={e => {
             const val = (e.target as HTMLTextAreaElement).value
-            lastInteractionRef.current = Date.now()
+            lastActivityRef.current = Date.now()
             setInput(val)
             sendTypingEvent(val)
             fitComposer()

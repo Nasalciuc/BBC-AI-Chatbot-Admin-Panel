@@ -20,12 +20,16 @@ test('a conversation stays mounted while the chat is closed, on every page', () 
   assert.match(widget, /visible=\{step === 'chat'\}/)
 })
 
-test('a closed chat is not a present client: no heartbeat, a minimized close, open again on reopen', () => {
+test('closing the chat is reported, and the visitor is still on the site: beats go on, saying the chat is closed', () => {
+  // Presence v2 (12 Nov 2026): with no beat while the chat was closed, "on the site, chat
+  // closed" was only the last thing the widget had said — 263 of 581 chats ended on it.
   const ping = chat.slice(chat.indexOf('const sendPing = () => {'))
-  assert.ok(ping.slice(0, 400).includes('if (!visibleRef.current) return'), 'pings pause while closed')
+  assert.ok(!ping.slice(0, 400).includes('if (!visibleRef.current) return'), 'beats go on while the chat is closed')
+  assert.match(chat, /chatOpen: visibleRef\.current,/)
   const vis = chat.slice(chat.indexOf('const wasVisibleRef = useRef(visible)'))
-  assert.ok(vis.includes("notifySessionClose('minimized', true)"), 'closing reports minimized')
+  assert.ok(vis.includes("notifySessionClose('minimized', true).finally(() => beatNowRef.current())"), 'closing reports minimized, then a beat')
   assert.ok(vis.indexOf('/open`') > -1, 'reopening reports open')
+  assert.ok(vis.includes('.finally(() => beatNowRef.current())'), 'then a beat that says the chat is open')
 })
 
 test('what the visitor typed and what waits its turn survive closing and other pages', () => {
