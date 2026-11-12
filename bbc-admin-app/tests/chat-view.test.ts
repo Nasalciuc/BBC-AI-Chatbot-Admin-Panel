@@ -31,6 +31,7 @@ import {
   takenBlind,
   seconds,
   showRail,
+  STALE_CLOSE_MIN,
   signalOf,
   travelersText,
   tripRows,
@@ -80,13 +81,40 @@ test('names and numbers read like people write them', () => {
 })
 
 test('presence says what the server derived, and nothing it did not', () => {
-  assert.equal(presenceView('online', 5).label, 'On the site now')
-  assert.equal(presenceView('minimized', 60).label, 'On the site · chat window closed')
+  assert.equal(presenceView('online', 5).label, 'On the site · chat open')
+  assert.equal(presenceView('online', 5).state, 'here')
+  assert.equal(presenceView('minimized', 60).label, 'On the site · chat closed')
+  // Presence v2 (12 Nov 2026): on the site but nobody touched the page, and out of view.
+  assert.equal(presenceView('idle', 720).label, 'On the site · inactive 12 min')
+  assert.equal(presenceView('away', 240).label, 'In another tab or app · 4 min')
+  assert.equal(presenceView('away', 20).label, 'In another tab or app')
+  for (const s of ['minimized', 'idle', 'away']) {
+    assert.equal(presenceView(s, 60).state, 'away', s)
+    assert.equal(presenceView(s, 60).dot, 'bg-k-9c9c9c', s)
+  }
   // A fresh "left" is usually a page change, not a client who is gone.
   assert.equal(presenceView('left', 30).label, 'Left just now')
   assert.equal(presenceView('left', 180).label, 'Left 3 min ago')
+  assert.equal(presenceView('left', 180).state, 'left')
   assert.equal(presenceView('stale', 600).label, 'No signal for 10 min')
   assert.equal(presenceView(undefined, null).label, '', 'no signal at all: no claim')
+})
+
+test('the open chat reads the rule, and reads it again: silence is never pushed', () => {
+  const detail = read('src/features/chats/detail.tsx')
+  // Until the live answer comes: the derived state of the chat, not the raw stored value.
+  assert.match(detail, /: \{ effective: conv\?\.client_presence \?\? null, ageSeconds: conv\?\.client_presence_age_seconds \?\? null \}/)
+  assert.doesNotMatch(detail, /presenceFromMeta\(\(presenceData \?\? conv\?\.metadata/)
+  // Read on every tab while the chat is open; no new polling (the polls stop while the
+  // stream is open, PR-10): it is read again when the server says its answer changes.
+  assert.match(detail, /refetchInterval: dormant \|\| sseLive \? false : \(activeTab === 'my_active' \? 2_000 : false\),\s*enabled: !!conv && !blindView && conv\.status !== 'closed',/)
+  assert.match(detail, /typeof presenceData\?\.widget_presence_changes_in === 'number'/)
+  assert.match(detail, /const t = setTimeout\(\(\) => \{ void refetchPresence\(\) \}, presenceChangesIn \* 1000\)/)
+  assert.match(detail, /\}, \[presenceChangesIn, presenceAt, dormant, refetchPresence\]\)/)
+  // Between two answers the minutes keep counting.
+  assert.match(detail, /const since = presenceData && presenceAt \? Math\.max\(0, Math\.floor\(\(nowMs - presenceAt\) \/ 1000\)\) : 0/)
+  // The countdown under "left" counts the same minutes as the server's sweep.
+  assert.equal(STALE_CLOSE_MIN, 5)
 })
 
 test('whose chat: assigned is assigned, whatever the mode', () => {
@@ -229,7 +257,9 @@ test('an agent who lands on a waiting chat sees who and how long, not the chat',
   assert.ok(gate < src.indexOf("aria-label='Messages'"), 'the gate comes before the thread')
   // Nothing about it is polled or streamed for them: messages, presence,
   // typing, and v2's trip card (/details — route, dates, travelers).
-  assert.equal(src.match(/enabled: !!conv && !blindView && activeTab === 'my_active'/g)?.length, 4)
+  // Presence is read on every tab since 12 Nov 2026, never for a blind view.
+  assert.equal(src.match(/enabled: !!conv && !blindView && activeTab === 'my_active'/g)?.length, 3)
+  assert.match(src, /queryKey: \['presence', conversationId\],[\s\S]{0,600}enabled: !!conv && !blindView && conv\.status !== 'closed',/)
   assert.match(src, /queryFn: \(\) => getConversationDetails\(conversationId\),\n(\s*\/\/.*\n)*\s*enabled: !!conv && !blindView/)
   assert.match(src, /usingMock \|\| blindView\) return/)
 })

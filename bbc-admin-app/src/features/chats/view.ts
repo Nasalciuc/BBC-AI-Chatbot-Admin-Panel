@@ -114,9 +114,17 @@ export interface PresenceView {
 const FRESH_LEFT_S = 120
 
 /**
- * The client's presence as the server derives it (online / minimized / stale /
- * left + seconds since the last widget signal). A fresh "left" is usually a
- * page change, so it does not read as gone for the first two minutes.
+ * The client's presence as the server derives it (bbc-chatbot-api,
+ * app/services/client_presence.py) + the seconds that go with that state.
+ * The server decides; this only says it.
+ *
+ * - online · minimized: on the site, the chat open or closed (a beat in the
+ *   last 90 s). The widget beats with the chat closed too since 12 Nov 2026.
+ * - idle: on the site, nobody touched the page for 10 min (seconds since).
+ * - away: the page is out of view, another tab or app (seconds since).
+ * - stale: no signal and no reason given (seconds since the last one).
+ * - left: gone, seconds since they were last there. A fresh "left" from an
+ *   older widget is usually a page change: not gone for the first 2 minutes.
  */
 export function presenceView(
   effective: string | null | undefined,
@@ -125,9 +133,23 @@ export function presenceView(
   const age = typeof ageSeconds === 'number' ? Math.floor(ageSeconds / 60) : null
   switch (effective) {
     case 'online':
-      return { state: 'here', label: 'On the site now', dot: 'bg-k-00a645', text: 'text-k-0a6b35' }
+      return { state: 'here', label: 'On the site · chat open', dot: 'bg-k-00a645', text: 'text-k-0a6b35' }
     case 'minimized':
-      return { state: 'away', label: 'On the site · chat window closed', dot: 'bg-k-9c9c9c', text: 'text-k-555555' }
+      return { state: 'away', label: 'On the site · chat closed', dot: 'bg-k-9c9c9c', text: 'text-k-555555' }
+    case 'idle':
+      return {
+        state: 'away',
+        label: age !== null ? `On the site · inactive ${minutesLabel(age)}` : 'On the site · inactive',
+        dot: 'bg-k-9c9c9c',
+        text: 'text-k-555555',
+      }
+    case 'away':
+      return {
+        state: 'away',
+        label: age !== null && age >= 1 ? `In another tab or app · ${minutesLabel(age)}` : 'In another tab or app',
+        dot: 'bg-k-9c9c9c',
+        text: 'text-k-555555',
+      }
     case 'stale':
       return {
         state: 'quiet',
@@ -170,7 +192,9 @@ export function presenceFromMeta(meta: Record<string, unknown> | undefined): {
   return { effective: eff, ageSeconds: age }
 }
 
-/** After the client leaves, the stale_presence job closes the chat 5 min later. */
+/** The stale_presence job closes the chat once the client has been gone this
+ *  long, counted from the last moment they were there: the same minutes as
+ *  "Left N min ago" (server: PRESENCE_CLOSE_AFTER_SECONDS). */
 export const STALE_CLOSE_MIN = 5
 
 // ── whose chat, and what needs doing ───────────────────────────────────

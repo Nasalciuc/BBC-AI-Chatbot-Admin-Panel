@@ -225,8 +225,11 @@ export default function ConversationDetail({
     enabled: !!conv && !blindView && activeTab === 'my_active',
   })
 
-  // Presence polling — lightweight metadata endpoint for real-time client status.
-  const { data: presenceData } = useQuery<Record<string, unknown>>({
+  // Presence — lightweight endpoint for the client's status, read on every tab
+  // while the chat is open. The live stream pushes every beat; "no signal" and
+  // "left" are made of silence, which nothing pushes, so the server says when
+  // its answer changes by itself and the line is read again then (below).
+  const { data: presenceData, dataUpdatedAt: presenceAt, refetch: refetchPresence } = useQuery<Record<string, unknown>>({
     queryKey: ['presence', conversationId],
     queryFn: async () => {
       const res = await apiFetch<{ success: boolean; data: Record<string, unknown> }>(
@@ -235,8 +238,15 @@ export default function ConversationDetail({
       return res.data ?? {}
     },
     refetchInterval: dormant || sseLive ? false : (activeTab === 'my_active' ? 2_000 : false),
-    enabled: !!conv && !blindView && activeTab === 'my_active' && conv.status !== 'closed',
+    enabled: !!conv && !blindView && conv.status !== 'closed',
   })
+  const presenceChangesIn =
+    typeof presenceData?.widget_presence_changes_in === 'number' ? presenceData.widget_presence_changes_in : null
+  useEffect(() => {
+    if (presenceChangesIn === null || dormant) return
+    const t = setTimeout(() => { void refetchPresence() }, presenceChangesIn * 1000)
+    return () => clearTimeout(t)
+  }, [presenceChangesIn, presenceAt, dormant, refetchPresence])
 
   // Push instead of ask. One stream for the conversation on screen carries
   // messages, typing and presence — the three things the polls above were
@@ -353,10 +363,18 @@ export default function ConversationDetail({
   // client's first message after a pause (not the "thanks" right after it).
   const cameBackId = cameBackMessage(allMessages, chatTasks.lateMine?.created_at ? Date.parse(chatTasks.lateMine.created_at) : null)
 
+  // The live answer when there is one; until then, what the server derived for
+  // the chat itself (never the raw value the widget last stored, which is not
+  // the rule's answer).
   const presence = useMemo(() => {
-    const p = presenceFromMeta((presenceData ?? conv?.metadata ?? {}) as Record<string, unknown>)
-    return { ...presenceView(p.effective, p.ageSeconds), ageSeconds: p.ageSeconds }
-  }, [presenceData, conv?.metadata])
+    const p = presenceData
+      ? presenceFromMeta(presenceData)
+      : { effective: conv?.client_presence ?? null, ageSeconds: conv?.client_presence_age_seconds ?? null }
+    // The age as of now, not as of the answer: "No signal for 3 min" keeps counting.
+    const since = presenceData && presenceAt ? Math.max(0, Math.floor((nowMs - presenceAt) / 1000)) : 0
+    const ageSeconds = typeof p.ageSeconds === 'number' ? p.ageSeconds + since : p.ageSeconds
+    return { ...presenceView(p.effective, ageSeconds), ageSeconds }
+  }, [presenceData, presenceAt, nowMs, conv?.client_presence, conv?.client_presence_age_seconds])
 
   // New lines, and the client starting to type, both belong in view.
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length, typingData?.is_typing])
