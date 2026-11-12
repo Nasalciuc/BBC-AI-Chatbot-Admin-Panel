@@ -866,12 +866,15 @@ async def mark_chat_session_open(
     conv = await db.get_conversation(conversation_id)
     if not conv:
         return {"success": False, "data": None}
-    metadata = dict(conv.get("metadata") or {})
-    metadata["widget_open"] = True
-    metadata["widget_presence"] = "online"
-    metadata["widget_last_event"] = "open"
-    metadata["widget_last_event_at"] = datetime.now(timezone.utc).isoformat()
-    await db.update_conversation_presence(conversation_id, metadata)
+    # Merged, not written back whole: a beat that lands between this read and
+    # this write keeps its pres_seen_at (a whole-blob write would undo it, and
+    # the presence rule could then read "left" for a client who just came back).
+    await db.patch_conversation_presence(conversation_id, {
+        "widget_open": True,
+        "widget_presence": "online",
+        "widget_last_event": "open",
+        "widget_last_event_at": datetime.now(timezone.utc).isoformat(),
+    })
     # Self-healing dispatch: a conversation stuck in needs_agent (queued when
     # nobody was ready, or a dispatch that died mid-flight) retries the
     # moment the client is back at the widget.
@@ -925,6 +928,13 @@ async def ping_chat_session(
             # server cannot tell "silent because gone" from "silent because
             # the client runs an older bundle that never pings".
             "widget_pings": True,
+            # An older tab of a visitor whose newer tab speaks v2: the same
+            # conversation reads the v2 rule, so this ping must count there too.
+            # It means the chat is open, the tab in view and the chat touched in
+            # the last 15 min. Without pres_v it changes nothing for the rest.
+            "pres_seen_at": now.isoformat(),
+            "pres_chat_open": True,
+            "pres_active_at": now.isoformat(),
         }
     ok = await db.patch_conversation_presence(conversation_id, patch)
     if not ok:
@@ -933,20 +943,33 @@ async def ping_chat_session(
     if signal == "leaving":
         # As /close does for the first rule: no "typing…" left behind. The
         # presence line itself does not move yet — a page change sends a
-        # beat from the next page within seconds (PRESENCE_LEAVE_GRACE_SECONDS).
+        # beat from the next page within seconds — but the panel is told when
+        # to read it again: when the grace runs out, not at the deadline of an
+        # earlier signal (`hidden` comes first when a tab is closed).
         from app.realtime.typing_indicator import typing_manager
         await typing_manager.clear_typing(conversation_id)
         await manager.push(conversation_id, {"event": "typing", "is_typing": False, "text": ""})
+        await manager.push(conversation_id, {
+            "event": "presence",
+            "widget_presence_changes_in": db.PRESENCE_LEAVE_GRACE_SECONDS + 1,
+            "widget_last_event_at": now.isoformat(),
+        })
         return {"success": True}
     # The signal carries everything the rule needs right now, so it is derived
     # from the patch alone, no read: the same shape GET /conversations/{id}/presence
     # returns, so the panel can setQueryData(['presence', id]) with it.
     effective, age = db.derive_effective_presence(patch, now)
+    changes_in = db.presence_changes_in(patch, now)
+    if signal == "hidden" and m is None:
+        # Phone or computer is not in this signal (the stored one decides):
+        # the panel reads it again at the earlier of the two deadlines.
+        as_phone = db.presence_changes_in({**patch, "pres_mobile": True}, now)
+        changes_in = min(filter(None, (changes_in, as_phone)), default=None)
     event = {
         "event": "presence",
         "widget_presence_effective": effective,
         "widget_presence_age_seconds": age,
-        "widget_presence_changes_in": db.presence_changes_in(patch, now),
+        "widget_presence_changes_in": changes_in,
         "widget_last_event_at": now.isoformat(),
     }
     if signal == "beat":

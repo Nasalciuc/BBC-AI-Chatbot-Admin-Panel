@@ -2316,6 +2316,7 @@ def derive_conversation_tag(
 # re-exported here for the callers that read it from this module.
 from app.services.client_presence import (  # noqa: E402,F401
     PRESENCE_CLOSE_AFTER_SECONDS,
+    PRESENCE_LEAVE_GRACE_SECONDS,
     PRESENCE_LEFT_SECONDS,
     PRESENCE_STALE_SECONDS,
     PRESENCE_V2_KEYS,
@@ -3455,6 +3456,25 @@ async def increment_chats_served(agent: dict) -> None:
         logger.warning(f"increment_chats_served error (non-blocking): {e}")
 
 
+async def _rows_with_last_message(build, base_columns: str) -> list[dict]:
+    """build(columns) → rows, with last_user_message_at (migration 024) when
+    the activity clocks exist: a message is presence too, and the presence
+    rule reads it. A database without the column is a normal case, not a
+    failure: the read is made again without it and the flag is downgraded,
+    as get_conversations does. Any other failure is raised to the caller."""
+    with_clock = _supervisor_columns_available()
+    columns = base_columns + (", last_user_message_at" if with_clock else "")
+    try:
+        res = await _run_sync(lambda: build(columns).execute())
+    except Exception as e:
+        if not (with_clock and _is_missing_column_error(e)):
+            raise
+        logger.warning(f"last_user_message_at missing, read again without it: {e}")
+        _downgrade_supervisor_columns(e)
+        res = await _run_sync(lambda: build(base_columns).execute())
+    return res.data or []
+
+
 async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> list:
     """Get up to `limit` oldest conversations explicitly WAITING for a human
     (status=needs_agent) with no assigned agent.
@@ -3465,18 +3485,17 @@ async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> li
     human override."""
     try:
         db_client = get_client()
-        res = await _run_sync(
-            lambda: db_client.table("conversations")
-            .select("id, tunnel, mode, status, created_at, metadata")
+        return await _rows_with_last_message(
+            lambda columns: db_client.table("conversations")
+            .select(columns)
             .eq("status", "needs_agent")
             .eq("mode", "ai")
             .is_("assigned_agent_id", "null")
             .eq("tunnel", tunnel)
             .order("created_at", desc=False)
-            .limit(limit)
-            .execute()
+            .limit(limit),
+            "id, tunnel, mode, status, created_at, metadata",
         )
-        return res.data or []
     except Exception as e:
         logger.error(f"get_oldest_unassigned_conversations error: {e}")
         return []
@@ -5380,20 +5399,15 @@ async def get_stale_presence_left_conversations(timeout_minutes: int = 5) -> lis
     chat open for ever, and a page change is not a departure."""
     try:
         db_client = get_client()
-        columns = "id, metadata" + (", last_user_message_at" if _supervisor_columns_available() else "")
-
-        def _q():
-            return (
-                db_client.table("conversations")
-                .select(columns)
-                .in_("status", list(OPEN_STATUSES))
-                .execute()
-            )
-
-        res = await _run_sync(_q)
+        rows = await _rows_with_last_message(
+            lambda columns: db_client.table("conversations")
+            .select(columns)
+            .in_("status", list(OPEN_STATUSES)),
+            "id, metadata",
+        )
         now = datetime.now(timezone.utc)
         stale = []
-        for c in (res.data or []):
+        for c in rows:
             gone = client_left(c.get("metadata") or {}, c.get("last_user_message_at"), now)
             if gone is not None and gone >= timeout_minutes * 60:
                 stale.append(c)

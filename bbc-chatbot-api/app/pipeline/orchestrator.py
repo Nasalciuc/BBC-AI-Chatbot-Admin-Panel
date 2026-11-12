@@ -1452,7 +1452,11 @@ async def _pipeline(
                     gen.tool_entities = _saved_tool_entities
 
                 # Alert super@ when no agents are available (fire-and-forget, throttled)
-                if db.client_left(_conv_meta, (conv or {}).get("last_user_message_at")) is None:
+                # The message being answered is the client's latest sign of
+                # life: `conv` was read before it was saved.
+                _typed_at = (user_msg.get("created_at") if isinstance(user_msg, dict) else None) \
+                    or (conv or {}).get("last_user_message_at")
+                if db.client_left(_conv_meta, _typed_at) is None:
 
                     async def _send_super_alert():
                         from app.services.closing import claim_super_alert

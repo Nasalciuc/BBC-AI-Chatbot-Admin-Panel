@@ -1034,7 +1034,7 @@ async def close_conversation(
             candidates = await db.get_oldest_unassigned_conversations(t)
             for next_conv in candidates:
                 _nc_meta = (next_conv.get("metadata") or {})
-                if db.client_left(_nc_meta) is not None:
+                if db.client_left(_nc_meta, next_conv.get("last_user_message_at")) is not None:
                     continue
                 _sticky = _nc_meta.get("engaged_agent_id")
                 if _sticky and _sticky != agent_id:

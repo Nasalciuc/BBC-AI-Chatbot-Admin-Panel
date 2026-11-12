@@ -300,7 +300,8 @@ class TestSignalPatch:
 class TestPingEndpoint:
     @pytest.mark.asyncio
     async def test_an_older_widget_ping_writes_what_it_always_wrote(self):
-        """The branch NOT taken: no v → none of the new keys, the old meaning."""
+        """The branch NOT taken: no v → the old meaning, and no pres_v, so a
+        conversation that only ever had older widgets stays on the first rule."""
         from app.api.chat import ping_chat_session
 
         write = AsyncMock(return_value=True)
@@ -309,11 +310,35 @@ class TestPingEndpoint:
             out = await ping_chat_session(_CONV, _owner=None)
         assert out == {"success": True}
         written = write.await_args.args[1]
-        assert set(written) == {"widget_open", "widget_presence", "widget_last_event",
-                                "widget_last_event_at", "widget_pings"}
+        assert {"widget_open", "widget_presence", "widget_last_event",
+                "widget_last_event_at", "widget_pings"} <= set(written)
         assert written["widget_presence"] == "online"
+        assert "pres_v" not in written
         event = push.await_args.args[1]
         assert (event["widget_presence_effective"], event["widget_presence_age_seconds"]) == ("online", 0)
+        # The first rule reads it exactly as before.
+        assert derive_effective_presence(written, datetime.now(timezone.utc))[0] == "online"
+
+    @pytest.mark.asyncio
+    async def test_an_older_tab_of_a_v2_visitor_keeps_the_v2_clock(self):
+        """Review on #251: tabs share the cached conversation. A v2 tab that
+        went to the background, and an older tab still open and chatting:
+        the older tab's pings must count for the v2 rule, or the chat reads
+        "left" and is closed under the client."""
+        from app.api.chat import ping_chat_session
+
+        long_ago = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        meta = {"pres_v": 2, "pres_mobile": False, "pres_seen_at": long_ago,
+                "pres_active_at": long_ago, "pres_hidden_at": long_ago}
+        assert derive_effective_presence(meta)[0] == "left"
+
+        async def merge(_cid, p):
+            meta.update(p)
+            return True
+        with patch("app.db.supabase.patch_conversation_presence", new=merge), \
+                patch("app.realtime.manager.manager.push", new=AsyncMock()):
+            await ping_chat_session(_CONV, _owner=None)
+        assert derive_effective_presence(meta)[0] == "online"
 
     @pytest.mark.asyncio
     async def test_a_beat_with_the_chat_closed_is_pushed_as_on_the_site_chat_closed(self):
@@ -343,9 +368,10 @@ class TestPingEndpoint:
         assert "widget_open" not in event and "widget_presence" not in event
 
     @pytest.mark.asyncio
-    async def test_leaving_clears_typing_and_does_not_announce_a_departure(self):
-        """Most pagehides are page changes: the presence line holds until the
-        grace runs out (the panel re-reads it)."""
+    async def test_leaving_clears_typing_and_says_when_to_look_again_not_a_departure(self):
+        """Most pagehides are page changes: the presence line holds, but the
+        panel is told to read it again when the grace runs out — not at the
+        deadline of the `hidden` that came first (review on #251)."""
         from app.api.chat import ping_chat_session
 
         with patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)), \
@@ -354,7 +380,43 @@ class TestPingEndpoint:
             out = await ping_chat_session(_CONV, v=2, kind="leaving", idle=0, m=0, _owner=None)
         assert out == {"success": True}
         clear.assert_awaited_once_with(_CONV)
-        assert [c.args[1]["event"] for c in push.await_args_list] == ["typing"]
+        events = [c.args[1] for c in push.await_args_list]
+        assert [e["event"] for e in events] == ["typing", "presence"]
+        # The state is not announced (it is the one before the pagehide); the deadline is.
+        assert "widget_presence_effective" not in events[1]
+        assert events[1]["widget_presence_changes_in"] == 91
+
+    @pytest.mark.asyncio
+    async def test_hidden_without_the_device_asks_again_at_the_earlier_deadline(self):
+        """Review on #251: the stored pres_mobile decides, which the signal
+        does not carry; the panel reads the truth at the phone's 2 minutes."""
+        from app.api.chat import ping_chat_session
+
+        with patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)), \
+                patch("app.realtime.manager.manager.push", new=AsyncMock()) as push:
+            await ping_chat_session(_CONV, v=2, kind="hidden", idle=0, _owner=None)
+        assert push.await_args.args[1]["widget_presence_changes_in"] == 121
+        with patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)), \
+                patch("app.realtime.manager.manager.push", new=AsyncMock()) as push:
+            await ping_chat_session(_CONV, v=2, kind="hidden", idle=0, m=0, _owner=None)
+        assert push.await_args.args[1]["widget_presence_changes_in"] == 1201
+
+    @pytest.mark.asyncio
+    async def test_open_merges_its_keys_instead_of_writing_the_blob_back(self):
+        """Review on #251: /open read the metadata and wrote it back whole; a
+        beat landing in between lost its pres_seen_at."""
+        from app.api.chat import mark_chat_session_open
+
+        write = AsyncMock(return_value=True)
+        full = AsyncMock(return_value=True)
+        conv = {"id": _CONV, "status": "active", "metadata": {"pres_v": 2, "pres_seen_at": "old"}}
+        with patch("app.db.supabase.get_conversation", new=AsyncMock(return_value=conv)), \
+                patch("app.db.supabase.patch_conversation_presence", new=write), \
+                patch("app.db.supabase.update_conversation_presence", new=full):
+            out = await mark_chat_session_open(_CONV, _owner=None)
+        assert out == {"success": True}
+        full.assert_not_awaited()
+        assert set(write.await_args.args[1]) == {"widget_open", "widget_presence", "widget_last_event", "widget_last_event_at"}
 
     @pytest.mark.asyncio
     async def test_a_failed_write_pushes_nothing(self):
@@ -443,6 +505,64 @@ async def test_a_client_who_just_wrote_is_never_swept():
     with patch.object(sb, "get_client", return_value=_Rows(rows)), \
             patch.object(sb, "_supervisor_columns_available", return_value=True):
         assert await sb.get_stale_presence_left_conversations(5) == []
+
+
+@pytest.mark.asyncio
+async def test_a_database_without_the_message_clock_still_sweeps_and_queues():
+    """Review on #251: last_user_message_at comes with migration 024. Without
+    it the read is made again without the column (and the flag downgraded),
+    as the chats list does — the sweep must not stop."""
+    from app.db import supabase as sb
+
+    class _Missing(_Rows):
+        def execute(self):
+            if "last_user_message_at" in self.selected:
+                raise Exception({"code": "42703", "message": 'column conversations.last_user_message_at does not exist'})
+            return super().execute()
+
+        def eq(self, *_a):
+            return self
+
+        def is_(self, *_a):
+            return self
+
+        def order(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+    rows = [{"id": "gone", "metadata": {"widget_presence": "left", "widget_last_event_at": _ago(400)}}]
+    with patch.object(sb, "get_client", return_value=_Missing(rows)), \
+            patch.object(sb, "_supervisor_columns_available", return_value=True), \
+            patch.object(sb, "_downgrade_supervisor_columns") as down:
+        assert [r["id"] for r in await sb.get_stale_presence_left_conversations(5)] == ["gone"]
+        assert [r["id"] for r in await sb.get_oldest_unassigned_conversations("sales")] == ["gone"]
+    assert down.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_the_queue_reads_the_candidates_last_message():
+    """Review on #251: with the auto-dispatch flag on, a candidate whose beats
+    are old but who just wrote is there."""
+    from app.db import supabase as sb
+
+    db = _Rows([])
+    db.eq = db.is_ = db.limit = lambda *a, **k: db
+    db.order = lambda *a, **k: db
+    with patch.object(sb, "get_client", return_value=db), \
+            patch.object(sb, "_supervisor_columns_available", return_value=True):
+        await sb.get_oldest_unassigned_conversations("sales")
+    assert "last_user_message_at" in db.selected
+    src = open(os.path.join(os.path.dirname(__file__), "..", "app", "api", "conversations.py"), encoding="utf-8").read()
+    assert 'db.client_left(_nc_meta, next_conv.get("last_user_message_at"))' in src
+
+
+def test_the_no_agent_alert_counts_the_message_it_is_answering():
+    """Review on #251: `conv` is read before the client's message is saved."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "app", "pipeline", "orchestrator.py"), encoding="utf-8").read()
+    assert '_typed_at = (user_msg.get("created_at") if isinstance(user_msg, dict) else None)' in src
+    assert "db.client_left(_conv_meta, _typed_at) is None" in src
 
 
 def test_no_one_reads_the_stored_left_any_more():
