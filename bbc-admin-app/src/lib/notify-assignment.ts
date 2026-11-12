@@ -15,6 +15,9 @@ import {
   type NotifyPermission,
   type RingSound,
 } from './alert-prefs.ts'
+// Every browser notification carries the company's logo — the image the
+// example in Settings › Alerts draws, so the example is the real thing.
+import { LOGO_SRC } from './brand.ts'
 
 let _ringAudio: HTMLAudioElement | null = null
 /** The made sounds (Soft chime, Two tones) repeat on this timer. */
@@ -150,6 +153,7 @@ export function notifyAssignment(info?: { name?: string | null; kind?: 'new' | '
       const t = notificationText(info?.kind ?? 'new', info?.name ?? null, info?.seconds ?? 90)
       const n = new Notification(t.title, {
         body: t.body,
+        icon: LOGO_SRC,
         tag: 'bbc-assign',
         requireInteraction: true,
       })
@@ -205,7 +209,7 @@ export function notifyTaskReminder(title: string, body: string, tag: string): vo
   }
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
-      const n = new Notification(title, { body, tag: `bbc-task-${tag}` })
+      const n = new Notification(title, { body, icon: LOGO_SRC, tag: `bbc-task-${tag}` })
       n.onclick = () => {
         window.focus()
         n.close()
@@ -292,6 +296,7 @@ export function testAlert(seconds = 4): { rang: boolean; flashed: boolean; notif
     try {
       const n = new Notification('Test · New chat for you', {
         body: 'This is how a new chat shows up. Nothing is waiting.',
+        icon: LOGO_SRC,
         tag: 'bbc-assign-test',
       })
       n.onclick = () => {

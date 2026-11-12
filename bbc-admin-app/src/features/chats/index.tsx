@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useDeferredValue, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useDeferredValue, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Clock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
@@ -6,6 +6,7 @@ import { getConversations, getNotifications, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
+import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
 import { isOperatorRole } from '@/components/layout/data/sidebar-data'
@@ -25,6 +26,7 @@ import { useReadState, useToRead } from './to-read-state'
 import { unreadCount } from './to-read-view'
 import {
   avatarClasses,
+  focusKey,
   initials,
   ownerLine,
   ownerOf,
@@ -32,6 +34,7 @@ import {
   previewText,
   routeText,
   rowTime,
+  showRail,
   signalClasses,
   signalOf,
   type Signal,
@@ -124,7 +127,8 @@ export function Chats() {
     const t = setInterval(() => setNowMs(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
-  // "Wider chat": the list becomes a rail of faces. Remembered per browser.
+  // "Wider chat": with a chat open, the list becomes a rail of faces.
+  // Remembered per browser.
   const [wide, setWide] = useState(() => {
     try {
       return localStorage.getItem('bbc_wide_chat') === '1'
@@ -180,7 +184,31 @@ export function Chats() {
   const containerRef = useRef<HTMLDivElement>(null)
   const width = useWidth(containerRef)
   const layout: ChatLayout = width >= WIDE_MIN ? 'wide' : width >= MEDIUM_MIN ? 'medium' : 'narrow'
-  const rail = wide && layout === 'wide'
+  // Only while a chat is open: with none, the whole list (tabs, search) shows.
+  const rail = showRail(wide, layout, selectedId)
+
+  // The list, the rail and To read are three different columns. When one
+  // turns into another (a chat picked, a tab pressed, the window resized or
+  // zoomed across the wide layout) the button that had the focus is removed
+  // and the browser drops focus to the page: a keyboard user loses their
+  // place. The same chat's button, or the same tab, in the new column takes
+  // it. Where the column did not change, the button still has the focus and
+  // nothing is done.
+  // Read while drawing, before this render's changes reach the page: what
+  // holds the focus now. Whatever changes the column is covered, not one
+  // handler at a time.
+  const focusedNow = focusKey(document.activeElement as HTMLElement | null)
+  const focusedBefore = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    focusedBefore.current = focusedNow
+  })
+  useEffect(() => {
+    const key = focusedBefore.current
+    if (!key || (document.activeElement && document.activeElement !== document.body)) return
+    Array.from(containerRef.current?.querySelectorAll<HTMLElement>('[data-chat-id], [data-tab]') ?? [])
+      .find((el) => focusKey(el) === key)
+      ?.focus()
+  }, [rail, activeTab])
 
   // Conversation list — cached per tab, polls every 5s
   const tab = visibleTabs.find(t => t.key === activeTab) ?? visibleTabs[0]
@@ -322,6 +350,7 @@ export function Chats() {
       <button
         key={conv.id}
         type='button'
+        data-chat-id={conv.id}
         aria-pressed={on}
         aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}${sig ? `, ${sig.text}` : ''}`}
         onClick={() => pick(conv.id)}
@@ -402,6 +431,7 @@ export function Chats() {
               key={t.key}
               type='button'
               role='tab'
+              data-tab={t.key}
               aria-selected={activeTab === t.key}
               onClick={() => { setActiveTab(t.key); setSelectedId(null) }}
               className={cn(
@@ -430,6 +460,7 @@ export function Chats() {
           <button
             key={conv.id}
             type='button'
+            data-chat-id={conv.id}
             aria-pressed={selectedId === conv.id}
             onClick={() => pick(conv.id)}
             aria-label={`${conv.visitor_name ?? 'Visitor'}${sig ? `, ${sig.text}` : ''}`}
@@ -608,9 +639,7 @@ export function Chats() {
       {!narrowThread &&
         (embedded ? (
           <header className='flex items-center gap-2.5'>
-            <span aria-hidden='true' className='flex size-8 flex-none items-center justify-center rounded-[9px] bg-kb-202020 text-sm font-bold text-on-btn'>
-              B
-            </span>
+            <Logo alt='' aria-hidden='true' className='size-8 flex-none rounded-[9px]' />
             <h1 className='m-0 flex-1 font-display text-lg font-semibold text-k-202020'>Chats</h1>
             <HeaderActions compact />
           </header>

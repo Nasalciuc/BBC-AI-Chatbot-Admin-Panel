@@ -44,6 +44,7 @@ import { DetailsPanel } from './components/details-panel'
 import {
   avatarClasses,
   clock,
+  closedNote,
   closeSentence,
   countdown,
   crmView,
@@ -636,7 +637,7 @@ export default function ConversationDetail({
 
   const note: { text: string; cls: string } | null =
     owner === 'closed'
-      ? { text: `This chat is closed${conv.closed_at ? ` since ${clock(conv.closed_at)}` : ''}. It stays in Closed.`, cls: 'bg-k-f7f7f7 text-k-444444' }
+      ? { text: closedNote(conv, new Date(nowMs)), cls: 'bg-k-f7f7f7 text-k-444444' }
       : canWrite || canTake
         ? null
         : owner === 'waiting'

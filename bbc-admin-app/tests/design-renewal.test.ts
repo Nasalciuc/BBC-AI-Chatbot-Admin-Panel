@@ -18,6 +18,19 @@ const FEATURES = [
   'features/apps/index.tsx',
   // The redesigned agent pages (Your day, Knowledge) carry it too.
   'features/day/index.tsx', 'features/knowledge/index.tsx',
+  // Learning and Security · Bans arrived with the chatbot's stack, the same
+  // day as the redesign, with a title of their own and no header (11 Nov 2026).
+  'features/learning/index.tsx', 'features/security-bans/index.tsx',
+]
+
+// Pages a manager reaches from the side menu. On a phone that menu is off the
+// screen and a manager has no tab bar: the header's menu button is the only
+// way to another page. (The Assistant's editor keeps the older <Header>, which
+// carries the same button.)
+const MENU_PAGES = [
+  'features/dashboard/owner/index.tsx', 'features/chats/index.tsx', 'features/leads/index.tsx',
+  'features/users/index.tsx', 'features/teams/index.tsx', 'features/settings/index.tsx',
+  'features/tasks/index.tsx', 'features/learning/index.tsx', 'features/security-bans/index.tsx',
 ]
 
 test('ONE header: every page renders HeaderActions, none composes its own cluster', () => {
@@ -28,10 +41,27 @@ test('ONE header: every page renders HeaderActions, none composes its own cluste
     assert.ok(!src.includes('<ConfigDrawer'), `${f} still ships the layout-experiment drawer`)
     assert.ok(!/ms-auto flex items-center space-x-4'>\s*<ConnectionBanner/.test(src), `${f} still hand-rolls the action cluster`)
   }
+  for (const f of MENU_PAGES) {
+    assert.match(read(f), /<PageHeader\b/, `${f} has no page header: on a phone there is no way to the menu`)
+  }
+  // The page header is where the phone's menu button lives.
+  assert.match(read('components/layout/page-header.tsx'), /menuButton && <SidebarTrigger\b[^>]*md:hidden/)
   // The operator lifelines live in the shared component.
   const shared = read('components/header-actions.tsx')
   assert.match(shared, /<ReadyToggle\b/)
   assert.match(shared, /<NotificationBell \/>/)
+})
+
+test('Learning and Security · Bans: a six-column table scrolls inside its card, the page stays still', () => {
+  // The old wrapper of these pages scrolled on its own (overflow-y-auto, so
+  // sideways too). Inside the page's <main> a table wider than a phone pushed
+  // the whole page, header and all, sideways (390 px: the page became 556 wide).
+  assert.match(read('features/learning/index.tsx'), /<div className='overflow-x-auto'>\s*<table\b/)
+  assert.match(read('features/security-bans/index.tsx'), /<div className="overflow-x-auto rounded-lg border border-border">\s*<table\b/)
+  for (const f of ['features/learning/index.tsx', 'features/security-bans/index.tsx']) {
+    assert.match(read(f), /<main id='content' className='flex flex-col gap-\[18px\] px-4 pt-6 pb-9 md:px-7 md:pt-7'>/, f)
+    assert.equal(read(f).match(/<h1\b/g), null, `${f} keeps a title of its own next to the page header`)
+  }
 })
 
 test('KB grew up: search, dialog manners, no native confirm, no emoji icon', () => {
@@ -119,4 +149,31 @@ test('chat stream: grouping, honest presence, one place for where they came from
   const view = readFileSync(join(SRC, 'features/chats/view.ts'), 'utf8')
   assert.equal((view.match(/label: 'Site'/g) ?? []).length, 1)
   assert.equal((view.match(/label: 'Source'/g) ?? []).length, 1)
+})
+
+test("the company's logo is drawn wherever the panel names the company, never a letter standing in for it", () => {
+  // One image for the whole panel, and the file is there.
+  const brand = read('lib/brand.ts')
+  assert.match(brand, /export const LOGO_SRC = '\/images\/favicon%20dark\.png'/)
+  assert.ok(existsSync(join(SRC, '..', 'public', 'images', 'favicon dark.png')), 'the logo file is missing')
+  assert.match(read('assets/logo.tsx'), /<img src=\{LOGO_SRC\}/)
+  // The menu, the sign-in screens, the CRM dock's header, the example notification.
+  for (const f of [
+    'components/layout/app-sidebar.tsx',
+    'features/auth/shell.tsx',
+    'features/chats/index.tsx',
+    'features/settings/alerts/index.tsx',
+  ]) {
+    const src = read(f)
+    assert.match(src, /import \{ Logo \} from '@\/assets\/logo'/, `${f} must draw the logo`)
+    assert.match(src, /<Logo alt='' aria-hidden='true' /, `${f}: the name is written beside it, so the image is decorative`)
+    assert.ok(!/>\s*B\s*</.test(src), `${f}: a letter is not the logo`)
+  }
+  // Sign-in shows it on both sides: the dark one on computers, the header on phones.
+  assert.equal(read('features/auth/shell.tsx').match(/<Logo /g)?.length, 2)
+  // "The notification looks like this" is true: every real one carries the same image.
+  const notify = read('lib/notify-assignment.ts')
+  assert.match(notify, /import \{ LOGO_SRC \} from '\.\/brand\.ts'/)
+  assert.equal(notify.match(/new Notification\(/g)?.length, 3)
+  assert.equal(notify.match(/icon: LOGO_SRC/g)?.length, 3)
 })

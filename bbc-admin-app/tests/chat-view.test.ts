@@ -9,10 +9,13 @@ import { fileURLToPath } from 'node:url'
 import type { Conversation, Lead } from '../src/lib/types.ts'
 import {
   aboutOf,
+  closedNote,
   countdown,
   crmView,
+  dayClock,
   deadlineLeft,
   firstName,
+  focusKey,
   fullDate,
   initials,
   levelOf,
@@ -27,6 +30,7 @@ import {
   routeLine,
   takenBlind,
   seconds,
+  showRail,
   signalOf,
   travelersText,
   tripRows,
@@ -322,4 +326,120 @@ test('about the client: the call back carries its number; airlines live on the t
   assert.deepEqual(aboutOf({ callback_requested: true }).rows, [{ label: 'Asks', value: 'A call back' }])
   assert.deepEqual(aboutOf({}, lead({ notes: 'CLIENT ASKED TO BE CALLED — number not captured' })).rows, [{ label: 'Asks', value: 'A call back' }])
   assert.deepEqual(aboutOf({}).rows, [])
+})
+
+// ── the page's columns ─────────────────────────────────────────────────
+
+test('the rail of faces is the wider view of an open chat: with none open, the whole list shows', () => {
+  assert.equal(showRail(true, 'wide', 'c1'), true)
+  // The trap of 11 Nov 2026: "Wider chat" remembered from another day and no
+  // open chats. The rail has no tabs and no search, and its switch sits in
+  // the open chat's header — so Closed and To read were out of reach.
+  assert.equal(showRail(true, 'wide', null), false)
+  assert.equal(showRail(true, 'wide', ''), false) // ?highlight= with no id
+  // Not chosen, or no room for three columns: never a rail.
+  assert.equal(showRail(false, 'wide', 'c1'), false)
+  assert.equal(showRail(true, 'medium', 'c1'), false)
+  assert.equal(showRail(true, 'narrow', 'c1'), false)
+  // The page asks the rule; it does not decide on its own again.
+  const page = read('src/features/chats/index.tsx')
+  assert.match(page, /const rail = showRail\(wide, layout, selectedId\)/)
+  assert.ok(!/const rail = wide && layout === 'wide'/.test(page))
+  // The way back stays where it was: in the open chat's header.
+  assert.match(read('src/features/chats/detail.tsx'), /layout === 'wide' && onToggleWide &&/)
+})
+
+test('the keyboard focus follows the same chat, or the same tab, when the column turns into another', () => {
+  // The list, the rail of faces and To read are different columns: the focused
+  // button is removed when one becomes another, and the browser drops focus to
+  // the page. (No DOM in these tests: the rule is tested here, the wiring is
+  // pinned on the source; the behaviour was checked in a browser with the
+  // keyboard: a pick, a resize across the wide layout and a tab, both ways.)
+
+  // What can be found again in the other column: a chat's row or face, a tab.
+  assert.equal(focusKey({ dataset: { chatId: 'c1' } }), 'chat:c1')
+  assert.equal(focusKey({ dataset: { tab: 'to_read' } }), 'tab:to_read')
+  // A chat and a tab never answer to each other's name.
+  assert.notEqual(focusKey({ dataset: { chatId: 'to_read' } }), focusKey({ dataset: { tab: 'to_read' } }))
+  // Anything else has no twin there: the search box, a filter, the page, nothing.
+  assert.equal(focusKey({ dataset: {} }), null)
+  assert.equal(focusKey({ dataset: { chatId: '' } }), null)
+  assert.equal(focusKey({}), null)
+  assert.equal(focusKey(null), null)
+  assert.equal(focusKey(undefined), null)
+
+  const page = read('src/features/chats/index.tsx')
+  // Every row and every face names its chat, every tab names itself.
+  assert.equal(page.match(/data-chat-id=\{conv\.id\}/g)?.length, 2)
+  assert.equal(page.match(/data-tab=\{t\.key\}/g)?.length, 1)
+  // The tabs are drawn once and handed to To read: the same buttons in both columns.
+  assert.equal(page.match(/\{tabBar\}/g)?.length, 2)
+  assert.match(read('src/features/chats/to-read.tsx'), /\{tabBar\}/)
+  // What holds the focus is read while drawing, before the column changes:
+  // whatever changes it (a pick, a tab, the window crossing the wide layout),
+  // not one handler at a time. 11 Nov 2026: only a pick remembered its chat,
+  // so a resize or a zoom with a face focused, and every press of To read,
+  // left the keyboard on the page.
+  assert.match(page, /const focusedNow = focusKey\(document\.activeElement as HTMLElement \| null\)/)
+  assert.ok(!/refocusId/.test(page), 'the pick no longer keeps a note of its own')
+  const wiring = page.slice(page.indexOf('const focusedNow ='), page.indexOf('}, [rail, activeTab])'))
+  assert.ok(wiring.length > 0 && wiring.length < 700, 'the focus wiring is where it was')
+  assert.match(wiring, /useLayoutEffect\(\(\) => \{\s*focusedBefore\.current = focusedNow\s*\}\)/)
+  // … and once the column changed, the same button takes the focus: only if it was lost.
+  assert.match(wiring, /if \(!key \|\| \(document\.activeElement && document\.activeElement !== document\.body\)\) return/)
+  assert.match(wiring, /querySelectorAll<HTMLElement>\('\[data-chat-id\], \[data-tab\]'\)/)
+  assert.match(wiring, /\.find\(\(el\) => focusKey\(el\) === key\)\s*\?\.focus\(\)/)
+})
+
+// ── times that stand alone ───────────────────────────────────────────
+
+// Local time on purpose: the helpers print the reader's own clock.
+const at = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m, d, h, min).toISOString()
+
+test('a time that stands alone carries its day when that is not today', () => {
+  const now = new Date(2026, 10, 11, 18, 0)
+  assert.equal(dayClock(at(2026, 10, 11, 0, 35), now), '00:35')
+  assert.equal(dayClock(at(2026, 10, 5, 12, 58), now), '5 Nov, 12:58')
+  assert.equal(dayClock(at(2025, 10, 5, 12, 58), now), '5 Nov 2025, 12:58')
+  assert.equal(dayClock(null, now), '')
+  assert.equal(dayClock('not-a-date', now), '')
+})
+
+test('under a closed chat: when it closed, with its day, and a stand-in time is called what it is', () => {
+  const now = new Date(2026, 10, 11, 18, 0)
+  // Closed today: the time alone.
+  assert.equal(
+    closedNote({ closed_at: at(2026, 10, 11, 0, 35), updated_at: at(2026, 10, 11, 0, 36) }, now),
+    'This chat is closed since 00:35. It stays in Closed.'
+  )
+  // Closed last week. On 11 Nov 2026 a chat from 5 Nov said "closed since 12:58".
+  assert.equal(
+    closedNote({ closed_at: at(2026, 10, 5, 12, 58), updated_at: at(2026, 10, 5, 12, 58) }, now),
+    'This chat is closed since 5 Nov, 12:58. It stays in Closed.'
+  )
+  // No closed_at: the "client left the site" sweep never wrote one. The chat
+  // said no time at all. updated_at is usually the close, but a later write
+  // (a lead number saved, say) moves it: it is shown as the last change, never
+  // as "closed since".
+  const swept = conv({ status: 'closed', closed_at: null, updated_at: at(2026, 10, 10, 23, 35) })
+  assert.equal(closedNote(swept, now), 'This chat is closed. Last change 10 Nov, 23:35. It stays in Closed.')
+  assert.doesNotMatch(closedNote(swept, now), /since/)
+  assert.equal(
+    closedNote({ closed_at: null, updated_at: at(2026, 10, 11, 1, 44) }, now),
+    'This chat is closed. Last change 01:44. It stays in Closed.'
+  )
+  // Nothing to go by: no time, and none invented.
+  assert.equal(closedNote({ closed_at: null, updated_at: '' }, now), 'This chat is closed. It stays in Closed.')
+  // A closed_at that is there always wins over a later updated_at.
+  assert.equal(
+    closedNote({ closed_at: at(2026, 10, 5, 12, 58), updated_at: at(2026, 10, 9, 9, 0) }, now),
+    'This chat is closed since 5 Nov, 12:58. It stays in Closed.'
+  )
+
+  // The chat's footer and its facts card ask these helpers, not the bare clock.
+  assert.match(read('src/features/chats/detail.tsx'), /text: closedNote\(conv, new Date\(nowMs\)\)/)
+  const panel = read('src/features/chats/components/details-panel.tsx')
+  assert.match(panel, /label: 'Started', value: dayClock\(conv\.created_at, now\)/)
+  assert.match(panel, /label: 'Asked for a person', value: dayClock\(handoff\.created_at, now\)/)
+  assert.ok(!/(?<!day)clock\(/i.test(panel), 'no bare clock() left in the facts card')
 })

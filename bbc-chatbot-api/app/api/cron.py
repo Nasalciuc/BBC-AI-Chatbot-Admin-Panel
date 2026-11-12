@@ -491,31 +491,53 @@ async def run_agent_sweep() -> dict:
 
 
 async def run_cleanup_stale_ready() -> dict:
-    """Auto-reset is_ready for operators who disconnected without toggling off."""
+    """Auto-reset is_ready for operators who disconnected without toggling off.
+
+    Says who by id. Until 11 Nov 2026 the line below, and the result the
+    scheduler writes at INFO whenever someone was reset, carried the agents'
+    names: the one place in the backend that logged a person's name at INFO
+    (rule 7)."""
     stale = await db.reset_stale_ready_users(settings.agent_timeout_seconds)
-    names = [u.get("name") or u["id"] for u in stale]
+    ids = [u["id"] for u in stale]
     if stale:
         # They left without switching off: their open tasks move, as on Not ready.
         from app.services.tasks_service import leave_shift
         for u in stale:
             await leave_shift(u["id"])
-    if names:
-        logger.info(f"[cron] Auto-reset is_ready: {names}")
-    return {"reset": len(stale), "names": names}
+    if ids:
+        logger.info(f"[cron] Auto-reset is_ready: {ids}")
+    return {"reset": len(stale), "ids": ids}
 
 
 async def run_close_stale_presence() -> dict:
-    """Auto-close conversations where client left website >5 min ago."""
+    """Auto-close conversations where client left website >5 min ago.
+
+    Writes closed_at like every other close. Until 11 Nov 2026 this one wrote
+    the status alone: 204 of the 1,154 chats closed in ten weeks (18%) had no
+    closing time, so the panel showed the chat as closed without saying when,
+    and anything that reads closed_at skipped them. The line it logs names the
+    chat by its id only (rule 7: no names at INFO).
+
+    update_conversation returns None when the write failed (it logs why) or
+    matched no row: such a chat is still open, so it is neither counted nor
+    logged as closed. The next run finds it again."""
     stale = await db.get_stale_presence_left_conversations(timeout_minutes=5)
     closed = 0
     for conv in stale:
         cid = conv["id"]
         try:
-            await db.update_conversation(cid, {"status": "closed"})
-            logger.info(f"[cron] Auto-closed {cid} ({conv.get('visitor_name','?')}): client left >5min")
-            closed += 1
+            row = await db.update_conversation(cid, {
+                "status": "closed",
+                "closed_at": datetime.now(timezone.utc).isoformat(),
+            })
         except Exception as e:
             logger.error(f"[cron] Failed to close {cid}: {e}")
+            continue
+        if not row:
+            logger.warning(f"[cron] Auto-close wrote nothing for {cid}: still open, the next run tries again")
+            continue
+        logger.info(f"[cron] Auto-closed {cid}: client left >5min")
+        closed += 1
     return {"closed": closed}
 
 
