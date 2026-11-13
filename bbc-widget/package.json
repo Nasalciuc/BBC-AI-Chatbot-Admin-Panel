@@ -14,6 +14,7 @@
     "test": "node --test tests/first-contact.test.mjs tests/sse-user-frame.test.mjs tests/stream-events.test.mjs tests/continuity.test.mjs tests/teardown.test.mjs && node --experimental-strip-types --test tests/reconcile.test.mjs tests/attribution-off.test.mjs tests/utm-capture.test.mjs tests/realtime-policy.test.mjs tests/visitor-token.test.mjs tests/remount.test.mjs tests/presence.test.mjs"
   },
   "dependencies": {
+    "posthog-js": "^1.448.0",
     "preact": "^10.25.0"
   },
   "devDependencies": {

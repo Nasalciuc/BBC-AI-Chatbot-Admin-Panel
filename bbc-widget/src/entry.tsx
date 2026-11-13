@@ -6,6 +6,7 @@ import { WIDGET_CSS } from './styles'
 import { setTurnstileSiteKey } from './turnstile'
 import { TRANSCRIPT_EXPORT_V0 } from './api'
 import { exposeRoutes } from './page-globals'
+import './posthog'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
