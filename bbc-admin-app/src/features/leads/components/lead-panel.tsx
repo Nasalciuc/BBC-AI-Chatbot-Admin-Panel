@@ -13,6 +13,7 @@ import {
   dayMonth,
   firstName,
   initials,
+  modelLabel,
   signalsOf,
   threadLines,
   tripRows,
@@ -322,6 +323,8 @@ export function LeadPanel({
                       >
                         {l.text}
                       </p>
+                      {/* Which model wrote it, for QA, as the lead drawer showed it before the redesign. */}
+                      {l.model && <span className='mt-0.5 text-[11px] text-k-6b6b6b'>{modelLabel(l.model)}</span>}
                     </div>
                   )}
                 </div>

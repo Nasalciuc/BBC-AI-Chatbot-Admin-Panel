@@ -26,6 +26,7 @@ import { useReadState, useToRead } from './to-read-state'
 import { unreadCount } from './to-read-view'
 import {
   avatarClasses,
+  closedByLine,
   focusKey,
   initials,
   ownerLine,
@@ -343,7 +344,13 @@ export function Chats() {
     const on = selectedId === conv.id
     const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
     const idle = idleMinutes(conv)
-    const ownerTxt = activeTab === 'all_active' ? ownerLine(conv, owner) : null
+    // Who has the chat in All active; who had it in Closed (QA reads Closed).
+    const ownerTxt =
+      activeTab === 'all_active'
+        ? ownerLine(conv, owner)
+        : activeTab === 'my_closed' || activeTab === 'all_closed'
+          ? closedByLine(conv, meId)
+          : null
     const attention = attentionIds.includes(conv.id)
     const preview = previewText(conv) || routeText(conv) || (conv.message_count ? `${conv.message_count} messages` : 'No messages yet')
     return (

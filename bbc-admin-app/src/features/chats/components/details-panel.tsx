@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { OperatorHistory } from '../operator-history'
 import {
   aboutOf,
+  agentOf,
   type CrmView,
   dayClock,
   firstName,
@@ -128,7 +129,10 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const [manualOpen, setManualOpen] = useState(false)
   const [manualId, setManualId] = useState('')
   const [savingManual, setSavingManual] = useState(false)
-  const closedByDefault: FoldKey[] = ['about', 'where', 'history', ...(p.wide ? [] : (['chat'] as FoldKey[]))]
+  // "Who handled it" opens with the chat, as Operator History did before the
+  // redesign: it is what QA and supervisors open a chat to read. For the same
+  // people "This chat" opens too, with its Agent row (the old Details card).
+  const closedByDefault: FoldKey[] = ['about', 'where', ...(p.wide || p.canViewHistory ? [] : (['chat'] as FoldKey[]))]
   const isOpen = (k: FoldKey) => (k in folds ? !!folds[k] : !closedByDefault.includes(k))
   const toggle = (k: FoldKey) => setFolds((f) => ({ ...f, [k]: !isOpen(k) }))
 
@@ -156,10 +160,12 @@ export function DetailsPanel(p: DetailsPanelProps) {
   // With the day when the chat is not from today: these stand alone, away
   // from the thread's day separators.
   const now = new Date()
+  const agent = agentOf(conv)
   const chatRows: Row[] = [
     { label: 'Chat', value: `${conv.chat_number != null ? `#${conv.chat_number} · ` : ''}${conv.tunnel === 'support' ? 'Support' : 'Sales'}` },
     { label: 'Started', value: dayClock(conv.created_at, now) || '—' },
     { label: 'Messages', value: String(p.messages.filter((m) => m.role !== 'system').length) },
+    ...(agent ? [{ label: 'Agent', value: agent }] : []),
     ...(handoff ? [{ label: 'Asked for a person', value: dayClock(handoff.created_at, now) }] : []),
     ...(firstReplyMin !== null ? [{ label: 'First reply', value: firstReplyMin < 1 ? 'in under a minute' : `in ${firstReplyMin} min` }] : []),
     ...(p.showCost ? [{ label: 'AI cost', value: `$${conv.ai_cost_total.toFixed(2)}` }] : []),
