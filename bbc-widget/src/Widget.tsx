@@ -8,6 +8,7 @@ import { apiFetch, clearVisitorToken, ensureVisitorToken, getVisitorId } from '.
 import { getUtm } from './utm'
 import brand from './config'
 import { usePhoneSheet } from './phoneSheet'
+import { posthog } from './posthog'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -264,6 +265,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   }, [step, tunnel])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
+    posthog?.capture('chat_tunnel_selected', {
+      tunnel: t,
+      returning_visitor: hasOptimisticSession && !!savedVisitor,
+    })
     setShowAttention(false)
     formFlowStartedRef.current = true
     autoOpenedRef.current = true
@@ -288,8 +293,8 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleFormSubmit = (data: { name?: string; email?: string; phone?: string; country_code?: string; booking_id?: string; form_check?: FormCheck }) => {
     setFormCheck(data.form_check)
-    // Ensure visitor_id exists before entering chat
-    ensureVisitorId()
+    // Ensure visitor_id exists before entering chat.
+    let visitorId = ensureVisitorId()
 
     const vis = { name: data.name, email: data.email, phone: data.phone, country_code: data.country_code }
     const meta = {
@@ -302,13 +307,23 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     const newKey = `${vis.name || ''}|${vis.email || ''}|${vis.phone || ''}`
     const savedKey = (() => { try { return localStorage.getItem('bbc_visitor_key') } catch { return null } })()
     if (savedKey && newKey && savedKey !== newKey) {
-      // Different visitor — new visitor_id + clear old conversation cache
-      const newId = makeVisitorId()
-      try { localStorage.setItem('bbc_visitor_id', newId) } catch {}
+      posthog?.reset()
+      visitorId = makeVisitorId()
+      try { localStorage.setItem('bbc_visitor_id', visitorId) } catch {}
       clearVisitorToken()  // PR-12: the old token proves the old id only
       try { localStorage.removeItem('bbc_conv_id') } catch {}
       try { localStorage.removeItem('bbc_conv_ts') } catch {}
     }
+    posthog?.identify(visitorId, {
+      name: vis.name,
+      email: vis.email,
+      phone: vis.phone,
+      country_code: vis.country_code,
+    })
+    posthog?.capture('contact_form_submitted', {
+      tunnel,
+      has_booking_id: Boolean(data.booking_id),
+    })
     // Save visitor fingerprint for display
     if (newKey !== '||') {
       try { localStorage.setItem('bbc_visitor_key', newKey) } catch {}
@@ -339,6 +354,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleCloseChat = () => {
     if (embedded) return  // panel is always open inside the CRM iframe
+    posthog?.capture('chat_closed', { tunnel })
     animateClose(() => {
       setFocusLauncher(true)
       setSwapped(false)

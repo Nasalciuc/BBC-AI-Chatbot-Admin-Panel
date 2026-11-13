@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import brand from './config'
 import { IconClose, IconPhone } from './icons'
+import { posthog } from './posthog'
 
 interface Props {
   /** The line under the company name. */
@@ -25,7 +26,13 @@ export function PanelTop({ subtitle, onClose, closeLabel = 'Close', children, ti
           <div class="bw-head__sub">{subtitle}</div>
         </div>
         <div class="bw-head__actions">
-          <a class="bw-iconbtn bw-iconbtn--call" href={tel} aria-label={`Call ${brand.contactPhone}`} title={`Call ${brand.contactPhone}`}>
+          <a
+            class="bw-iconbtn bw-iconbtn--call"
+            href={tel}
+            aria-label={`Call ${brand.contactPhone}`}
+            title={`Call ${brand.contactPhone}`}
+            onClick={() => posthog?.capture('call_initiated', { entry_point: 'widget_header' })}
+          >
             <span class="bw-call"><IconPhone /></span>
           </a>
           {onClose && (

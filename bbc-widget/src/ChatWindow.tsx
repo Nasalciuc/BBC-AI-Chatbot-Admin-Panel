@@ -11,6 +11,7 @@ import { PanelTop } from './PanelTop'
 import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
+import { posthog } from './posthog'
 
 interface Message {
   id: string
@@ -774,6 +775,7 @@ export function ChatWindow({
 
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
+    const isExistingConversation = Boolean(convId)
     lastActivityRef.current = Date.now()
     // Clear typing indicator immediately when sending
     if (convId) {
@@ -858,6 +860,15 @@ export function ChatWindow({
 
       if (!res.ok) throw new Error('API error')
       const data = await res.json()
+      const conversationState = isExistingConversation ? 'existing' : 'new'
+      posthog?.capture('chat_message_sent', {
+        tunnel,
+        conversation_state: conversationState,
+      })
+      posthog?.logger.info('chat_message_delivered', {
+        tunnel,
+        conversation_state: conversationState,
+      })
 
       // The 200 IS the save receipt: promote the optimistic bubble to
       // `sent-*` so no poll can ever drop it. When a batch later carries
@@ -910,6 +921,8 @@ export function ChatWindow({
       // Extend 30-minute rolling session on every successful message
       try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
     } catch {
+      posthog?.capture('chat_message_send_failed', { tunnel })
+      posthog?.logger.warn('chat_message_delivery_failed', { tunnel })
       setStreamingText('')
       setIsStreaming(false)
       isStreamingRef.current = false
@@ -966,6 +979,7 @@ export function ChatWindow({
   }
 
   const handleQuickReply = (text: string) => {
+    posthog?.capture('chat_quick_reply_selected', { tunnel })
     setQuickReplies(null)
     sendMessage(text)
   }
