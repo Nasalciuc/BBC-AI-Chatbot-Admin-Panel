@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight, ArrowUp, Clock, Info, Lock, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowUp, Check, Clock, Info, Lock, Maximize2, Minimize2, MoreHorizontal, Smile } from 'lucide-react'
 import type { Message, Lead, LeadDetails } from '@/lib/types'
 import {
   getConversation,
@@ -41,6 +41,7 @@ import { draftId, readDraft, withSuggestedQuestion, writeDraft } from '@/lib/cha
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
 import { DetailsPanel } from './components/details-panel'
+import { OperatorBadge } from './operator-history'
 import {
   avatarClasses,
   clock,
@@ -53,6 +54,7 @@ import {
   firstName,
   initials,
   confirmedOf,
+  leadLine,
   levelOf,
   minutesLabel,
   minutesSince,
@@ -635,6 +637,7 @@ export default function ConversationDetail({
   const canManage = permissions.canReassignConversations && conv.status !== 'closed'
   const canActOnLead = isAdmin || (role === 'sales' && (owner === 'mine' || engagedMe))
   const crm = crmView(conv, lead, { canAct: canActOnLead, ownerName: conv.assigned_agent_name ?? null })
+  const leadNow = leadLine(lead, crm, markingLead)
   const canPush = !!lead && crm.state === 'ready' && canActOnLead
   const canManual = !!lead && (crm.state === 'ready' || crm.state === 'missing') && canActOnLead
   const viewingDeadline = viewingGraceSeconds
@@ -817,6 +820,8 @@ export default function ConversationDetail({
             </div>
             {/* Presence is meaningless on a closed thread. */}
             {conv.status !== 'closed' && presence.label && <div className={cn('text-[13px]', presence.text)}>{presence.label}</div>}
+            {/* Who had the chat and how it went, at a glance (QA, supervisors, admins). */}
+            {canViewHistory && <OperatorBadge conversationId={conversationId} />}
           </div>
           {canWrite && (
             <CloseChat
@@ -1074,6 +1079,16 @@ export default function ConversationDetail({
         {/* Footer: what's next */}
         <div className={cn('flex flex-col gap-2', narrow ? 'px-2.5 pt-2 pb-2.5' : 'px-4 pt-2.5 pb-4')}>
           <div className={cn('flex w-full flex-col gap-2', wide && 'mx-auto max-w-[760px]')}>
+            {/* The lead, under the chat on every screen: it exists, and its number once in the CRM. */}
+            {leadNow && (
+              <div className='flex items-center gap-2 px-1 text-[13px]'>
+                <Check aria-hidden='true' className='size-3.5 flex-none text-k-0a6b35' strokeWidth={3} />
+                <span className='min-w-0'>
+                  <strong className={leadNow.done ? 'text-k-0a6b35' : 'text-k-202020'}>{leadNow.head}</strong>
+                  {leadNow.tail && <span className='text-k-555555'> · {leadNow.tail}</span>}
+                </span>
+              </div>
+            )}
             {canWrite && leftMin !== null && (
               <div className='flex items-center gap-2 px-1 text-[13px] text-k-555555'>
                 <span aria-hidden='true' className='size-[7px] rounded-full bg-k-c9c9c9' />

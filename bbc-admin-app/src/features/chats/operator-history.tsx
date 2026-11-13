@@ -38,6 +38,25 @@ const ICONS: Record<string, { Icon: typeof User; color: string; label: string }>
   agent_joined: { Icon: User, color: 'text-k-0a6b35', label: 'Joined' },
 }
 
+/** The chat header's one line for QA, supervisors and admins: who had the chat
+ *  and how it went ("👤 Ana → ✅ 35s", "→ ❌ timeout", "🤖 AI handled"). The
+ *  server writes it; this shares the history's query, so no extra request. */
+export function OperatorBadge({ conversationId }: { conversationId: string }) {
+  const canViewHistory = useCanViewHistory()
+  const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
+    queryKey: ['op-history', conversationId],
+    queryFn: () => getOperatorHistory(conversationId),
+    staleTime: 30_000,
+    enabled: canViewHistory,
+  })
+  if (!canViewHistory || !data?.summary) return null
+  return (
+    <div className='truncate text-[13px] text-k-555555' title={data.summary}>
+      {data.summary}
+    </div>
+  )
+}
+
 export function OperatorHistory({ conversationId }: { conversationId: string }) {
   const canViewHistory = useCanViewHistory()
   const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
