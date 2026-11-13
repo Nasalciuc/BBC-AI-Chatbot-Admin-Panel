@@ -314,12 +314,9 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       try { localStorage.removeItem('bbc_conv_id') } catch {}
       try { localStorage.removeItem('bbc_conv_ts') } catch {}
     }
-    posthog?.identify(visitorId, {
-      name: vis.name,
-      email: vis.email,
-      phone: vis.phone,
-      country_code: vis.country_code,
-    })
+    // Only the anonymous visitor id: the client's name, email and phone stay
+    // with us and never go to PostHog.
+    posthog?.identify(visitorId)
     posthog?.capture('contact_form_submitted', {
       tunnel,
       has_booking_id: Boolean(data.booking_id),
