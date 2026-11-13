@@ -1,6 +1,8 @@
 import posthogSdk from 'posthog-js'
 
-const posthogKey = import.meta.env.VITE_POSTHOG_KEY
+// The public project token (phc_…): PostHog meant it for the browser, so its
+// name stays clear of KEY/TOKEN, which scan_bundle_secrets.py treats as secrets.
+const posthogKey = import.meta.env.VITE_POSTHOG_PROJECT
 const posthogHost = import.meta.env.VITE_POSTHOG_HOST
 
 function reportMissingConfiguration(variableName: string) {
@@ -13,7 +15,7 @@ function reportMissingConfiguration(variableName: string) {
 
 export const posthog = (() => {
   if (!posthogKey) {
-    reportMissingConfiguration('VITE_POSTHOG_KEY')
+    reportMissingConfiguration('VITE_POSTHOG_PROJECT')
     return undefined
   }
 

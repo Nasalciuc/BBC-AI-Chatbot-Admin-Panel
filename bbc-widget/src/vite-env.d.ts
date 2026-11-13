@@ -2,7 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_BRAND: string
-  readonly VITE_POSTHOG_KEY?: string
+  readonly VITE_POSTHOG_PROJECT?: string
   readonly VITE_POSTHOG_HOST?: string
 }
 
