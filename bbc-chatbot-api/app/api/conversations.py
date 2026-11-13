@@ -1230,6 +1230,74 @@ def _parse_operator_events(messages: list[dict]) -> list[dict]:
     return events
 
 
+# A take: claim_won (every take since late October 2026) or assigned (the
+# routing before it, and the "being assisted by" system line of June chats).
+_TAKE_ACTIONS = ("claim_won", "assigned")
+
+
+def _event_time(value):
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):  # noqa: silent — a time that can't be read orders nothing: the line then leaves the reply time out
+        return None
+
+
+def _operator_summary(events: list[dict], conv: dict) -> str:
+    """The one line QA reads in the chat header: who had the chat, how it went.
+
+    It read the first `assigned` and `first_response`. Since late October a
+    take is logged as `claim_won` and those two are not: of the 219 chats with
+    operator events in the 30 days to 13 Nov, 188 have a take and no
+    `assigned`, so their line said "AI handled" over a chat an agent took.
+
+    Now: the last take names the agent, and the reply is the first operator
+    message at or after it, read from the chat. A logged `first_response` is
+    used only when the messages were not loaded. With no take at all, an agent
+    who wrote is still named (28 chats in the same 30 days).
+    """
+    messages = conv.get("messages")
+    takes = [e for e in events if e.get("action") in _TAKE_ACTIONS]
+    if not takes:
+        if any(m.get("role") == "agent" for m in messages or []):
+            return f"👤 {conv.get('assigned_agent_name') or conv.get('engaged_agent_name') or '?'}"
+        return "🤖 AI handled"
+    take = takes[-1]
+    name = take.get("agent_name") or "?"
+    took = _event_time(take.get("happened_at"))
+
+    def since_take(when) -> bool:
+        at = _event_time(when)
+        return took is None or (at is not None and at >= took)
+
+    reply_s: Optional[int] = None
+    if messages is not None:
+        reply = next(
+            (m for m in messages if m.get("role") == "agent" and since_take(m.get("created_at"))),
+            None,
+        )
+        replied = reply is not None
+        reply_at = _event_time(reply.get("created_at")) if reply else None
+        if took and reply_at:
+            reply_s = max(0, int((reply_at - took).total_seconds()))
+    else:
+        logged = next(
+            (e for e in events if e.get("action") == "first_response" and since_take(e.get("happened_at"))),
+            None,
+        )
+        replied = logged is not None
+        if logged and logged.get("response_seconds") is not None:
+            reply_s = int(logged["response_seconds"])
+    if replied:
+        return f"👤 {name} → ✅ {reply_s}s" if reply_s is not None else f"👤 {name} → ✅"
+    if any(e.get("action") == "deadline_fired" and since_take(e.get("happened_at")) for e in events):
+        return f"👤 {name} → ❌ timeout"
+    if conv.get("status") == "closed":
+        return f"👤 {name} → ❌ no reply"
+    return f"👤 {name} → ⏳ active"
+
+
 @router.get("/conversations/{conversation_id}/operator-history")
 async def get_operator_history(
     conversation_id: str,
@@ -1247,34 +1315,12 @@ async def get_operator_history(
 
     events = await db.get_activity_for_conversation(conversation_id)
     if events:
-        _a = next((e for e in events if e["action"] == "assigned"), None)
-        _r = next((e for e in events if e["action"] == "first_response"), None)
-        _d = next((e for e in events if e["action"] == "deadline_fired"), None)
-        if _a and _r:
-            summary = (
-                f"👤 {_a.get('agent_name', '?')} → ✅ "
-                f"{_r.get('response_seconds', '?')}s"
-            )
-        elif _a and _d:
-            summary = f"👤 {_a.get('agent_name', '?')} → ❌ timeout"
-        elif _a:
-            summary = f"👤 {_a.get('agent_name', '?')} → ⏳ active"
-        else:
-            summary = "🤖 AI handled"
-        return {"source": "activity_log", "events": events, "summary": summary}
+        return {"source": "activity_log", "events": events, "summary": _operator_summary(events, conv)}
 
     msgs = await db.get_system_messages_for_conversation(conversation_id)
     if msgs:
         parsed = _parse_operator_events(msgs)
         if parsed:
-            _a = next((e for e in parsed if e["action"] == "assigned"), None)
-            _d = next((e for e in parsed if e["action"] == "deadline_fired"), None)
-            if _a and _d:
-                summary = f"👤 {_a['agent_name']} → ❌ timeout"
-            elif _a:
-                summary = f"👤 {_a['agent_name']}"
-            else:
-                summary = "🤖 AI handled"
-            return {"source": "messages", "events": parsed, "summary": summary}
+            return {"source": "messages", "events": parsed, "summary": _operator_summary(parsed, conv)}
 
-    return {"source": "none", "events": [], "summary": "🤖 AI handled"}
+    return {"source": "none", "events": [], "summary": _operator_summary([], conv)}

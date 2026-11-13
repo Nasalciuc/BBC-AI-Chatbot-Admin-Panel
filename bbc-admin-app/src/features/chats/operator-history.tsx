@@ -38,9 +38,28 @@ const ICONS: Record<string, { Icon: typeof User; color: string; label: string }>
   agent_joined: { Icon: User, color: 'text-k-0a6b35', label: 'Joined' },
 }
 
-export function OperatorHistory({ conversationId }: { conversationId: string }) {
+/** The chat header's one line for QA, supervisors and admins: who had the chat
+ *  and how it went ("👤 Ana → ✅ 35s", "→ ❌ timeout", "🤖 AI handled"). The
+ *  server writes it; this shares the history's query, so no extra request. */
+export function OperatorBadge({ conversationId }: { conversationId: string }) {
   const canViewHistory = useCanViewHistory()
   const { data } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
+    queryKey: ['op-history', conversationId],
+    queryFn: () => getOperatorHistory(conversationId),
+    staleTime: 30_000,
+    enabled: canViewHistory,
+  })
+  if (!canViewHistory || !data?.summary) return null
+  return (
+    <div className='truncate text-[13px] text-k-555555' title={data.summary}>
+      {data.summary}
+    </div>
+  )
+}
+
+export function OperatorHistory({ conversationId }: { conversationId: string }) {
+  const canViewHistory = useCanViewHistory()
+  const { data, isLoading, isError } = useQuery<{ source: string; events: OpEvent[]; summary: string }>({
     queryKey: ['op-history', conversationId],
     queryFn: () => getOperatorHistory(conversationId),
     staleTime: 30_000,
@@ -49,7 +68,24 @@ export function OperatorHistory({ conversationId }: { conversationId: string }) 
 
   if (!canViewHistory) return null
 
-  if (!data?.events?.length) {
+  // Still loading, or a read that failed, is not "the assistant handled it"
+  // (review on #253: the fold now opens with the chat).
+  if (isLoading) return <div className="text-xs text-muted-foreground">Loading who handled it…</div>
+  if (isError || !data) {
+    return <div role="alert" className="text-xs text-k-8a4b00">Couldn’t load who handled this chat.</div>
+  }
+
+  if (!data.events?.length) {
+    // No event logged, yet the server still names an agent who wrote in the
+    // chat ("👤 Ana"): its "🤖" line is the only one that means the assistant alone.
+    if (data.summary && !data.summary.startsWith('🤖')) {
+      return (
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <User className="w-3.5 h-3.5" />
+          <span>{data.summary} · wrote in the chat, no take was logged</span>
+        </div>
+      )
+    }
     return (
       <div className="text-xs text-muted-foreground flex items-center gap-1.5">
         <Bot className="w-3.5 h-3.5" />

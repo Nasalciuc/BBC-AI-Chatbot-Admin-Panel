@@ -320,6 +320,34 @@ export function ownerLine(c: Conversation, owner: Owner): { text: string; cls: s
   return { text: c.assigned_agent_name ?? 'An agent', cls: 'text-k-444444' }
 }
 
+/** Who had a closed chat, on its row in Closed: the agent ("You" for your own),
+ *  the agent who let it go back to the assistant, or the assistant alone. The
+ *  list said it on every row before the redesign ("● name", "● name → AI",
+ *  "● AI"); the redesign kept it in All active only, so QA reading Closed lost it. */
+export function closedByLine(
+  c: Pick<Conversation, 'assigned_agent_id' | 'assigned_agent_name' | 'engaged_agent_name' | 'agent_state' | 'mode' | 'metadata'>,
+  meId?: string
+): { text: string; cls: string } | null {
+  if (c.assigned_agent_id) {
+    return meId && c.assigned_agent_id === meId
+      ? { text: 'You', cls: 'text-k-0a6b35' }
+      : { text: c.assigned_agent_name ?? 'An agent', cls: 'text-k-444444' }
+  }
+  if (c.agent_state === 'fallback') {
+    const mine = !!meId && (c.metadata?.engaged_agent_id as string | undefined) === meId
+    return { text: `${mine ? 'You' : c.engaged_agent_name ?? 'An agent'} → assistant`, cls: 'text-k-4a36c4' }
+  }
+  return c.mode === 'ai' ? { text: 'Only the AI', cls: 'text-k-4a36c4' } : null
+}
+
+/** "Agent" on the chat's facts: who has it, or who had it before it went back
+ *  to the assistant. Nothing when no agent ever had it. */
+export function agentOf(c: Pick<Conversation, 'assigned_agent_id' | 'assigned_agent_name' | 'engaged_agent_name' | 'agent_state'>): string | null {
+  if (c.assigned_agent_id) return c.assigned_agent_name ?? 'An agent'
+  if (c.agent_state === 'fallback') return `${c.engaged_agent_name ?? 'An agent'} → assistant`
+  return null
+}
+
 /** "You: …", "AI: …", "Rohan: …" or the client's own words. */
 export function previewText(c: Conversation): string {
   const m = c.last_message
@@ -352,6 +380,8 @@ export interface ThreadLine {
   showLabel: boolean
   showDay: boolean
   day: string
+  /** The model that wrote an AI reply (model_used); null on every other line. */
+  model: string | null
 }
 
 /** Messages → lines: same-speaker turns grouped, a day line when the date changes. */
@@ -365,12 +395,21 @@ export function threadLines(messages: Message[]): ThreadLine[] {
     prevDay = day || prevDay
     if (m.role === 'system') {
       prevWho = null
-      return { id: m.id, kind: 'system', who: m.role, text: m.content, at: m.created_at, showLabel: false, showDay, day }
+      return { id: m.id, kind: 'system', who: m.role, text: m.content, at: m.created_at, showLabel: false, showDay, day, model: null }
     }
     const showLabel = showDay || prevWho !== m.role
     prevWho = m.role
-    return { id: m.id, kind: 'message', who: m.role, text: m.content, at: m.created_at, showLabel, showDay, day }
+    const model = m.role === 'ai' ? m.model_used || null : null
+    return { id: m.id, kind: 'message', who: m.role, text: m.content, at: m.created_at, showLabel, showDay, day, model }
   })
+}
+
+/** An AI reply's model, as the lead drawer showed it before the redesign:
+ *  "template · $0" for a fixed text, otherwise the name the server stored
+ *  (sonnet, opus, …). */
+export function modelLabel(model: string | null | undefined): string {
+  if (!model) return ''
+  return model === 'template' ? 'template · $0' : model
 }
 
 // ── what the assistant collected ───────────────────────────────────────
@@ -721,6 +760,21 @@ export function crmView(
     dot: 'bg-kb-202020',
     fg: 'text-k-202020',
   }
+}
+
+/** Under the chat, always in sight: that a lead exists ("Lead created") and,
+ *  once it is sent, its number in the CRM. The chat said it there before the
+ *  redesign ("Lead Created", "In CRM · {id}"); the redesign moved it into the
+ *  details, which a narrower screen hides. Nothing when there is no lead. */
+export function leadLine(
+  lead: Lead | null | undefined,
+  crm: CrmView,
+  sending = false
+): { head: string; tail: string; done: boolean } | null {
+  if (!lead) return null
+  if (crm.state === 'in') return { head: crm.title, tail: '', done: true }
+  const tail = sending ? 'sending to the CRM…' : crm.title.charAt(0).toLowerCase() + crm.title.slice(1)
+  return { head: 'Lead created', tail, done: false }
 }
 
 /** The close dialog's sentence, by CRM state. */
