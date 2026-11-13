@@ -107,3 +107,24 @@ test('Leads: each AI reply says which model wrote it', () => {
   const panel = read('src/features/leads/components/lead-panel.tsx')
   assert.match(panel, /\{l\.model && <span className='mt-0\.5 text-\[11px\] text-k-6b6b6b'>\{modelLabel\(l\.model\)\}<\/span>\}/)
 })
+
+test('the history line follows a take, a reply and a reassignment (review on #253)', () => {
+  const src = read('src/features/chats/detail.tsx')
+  const claim = src.slice(src.indexOf('const handleClaim = async'), src.indexOf('const handleCloseConfirm = async'))
+  assert.match(claim, /\/claim`, \{ method: 'POST' \}\)\s+queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)\s+\/\/[^\n]*\n\s+queryClient\.invalidateQueries\(\{ queryKey: \['op-history', conversationId\] \}\)/)
+  const send = src.slice(src.indexOf('const handleSend = async'), src.indexOf('const handleClaim = async'))
+  const sent = send.slice(send.indexOf('await sendAgentMessage'), send.indexOf('} catch'))
+  assert.match(sent, /queryClient\.invalidateQueries\(\{ queryKey: \['op-history', sentFor\] \}\)/, 'only after a send that worked')
+  assert.equal(src.match(/onReassigned=\{\(\) => \{\s+queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)\s+queryClient\.invalidateQueries\(\{ queryKey: \['op-history', conversationId\] \}\)/g)?.length, 2, 'both "Give to…" panels')
+})
+
+test('"Who handled it" never says "the assistant" while loading, after a failed read, or for an agent who wrote', () => {
+  const oh = read('src/features/chats/operator-history.tsx')
+  const history = oh.slice(oh.indexOf('export function OperatorHistory'))
+  const loading = history.indexOf('if (isLoading) return')
+  const failed = history.indexOf('if (isError || !data) {')
+  const wrote = history.indexOf("if (data.summary && !data.summary.startsWith('🤖')) {")
+  const aiOnly = history.indexOf('The assistant handled the whole chat')
+  assert.ok(loading > 0 && failed > loading && wrote > failed && aiOnly > wrote, { loading, failed, wrote, aiOnly })
+  assert.match(history, /<span>\{data\.summary\} · wrote in the chat, no take was logged<\/span>/)
+})

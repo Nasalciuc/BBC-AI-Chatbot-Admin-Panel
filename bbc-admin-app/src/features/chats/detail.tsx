@@ -448,6 +448,8 @@ export default function ConversationDetail({
       // A promise in the reply ("I'll send you three options within the hour") is
       // now a task. chatTasks is this render's: it refreshes that chat's tasks.
       chatTasks.refresh()
+      // A first reply turns "⏳ active" into "✅ Ns" in the header's history line.
+      queryClient.invalidateQueries({ queryKey: ['op-history', sentFor] })
     } catch (_err) {
       // The trust-critical path: a reply to a LIVE customer must never
       // vanish silently. Input is preserved (cleared only on success).
@@ -482,6 +484,8 @@ export default function ConversationDetail({
     try {
       await apiFetch(`/api/conversations/${conversationId}/claim`, { method: 'POST' })
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      // The header's history line changes with a take (review on #253).
+      queryClient.invalidateQueries({ queryKey: ['op-history', conversationId] })
       if (onTaken) onTaken(conversationId)
       else onConversationChange?.()
     } catch (_err) {
@@ -617,6 +621,7 @@ export default function ConversationDetail({
             conversationId={conv.id}
             onReassigned={() => {
               queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+              queryClient.invalidateQueries({ queryKey: ['op-history', conversationId] })
               onConversationChange?.()
             }}
           />
@@ -849,6 +854,7 @@ export default function ConversationDetail({
                   conversationId={conv.id}
                   onReassigned={() => {
                     queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+                    queryClient.invalidateQueries({ queryKey: ['op-history', conversationId] })
                     onConversationChange?.()
                   }}
                 />
