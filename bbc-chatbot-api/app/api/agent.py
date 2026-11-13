@@ -209,9 +209,10 @@ async def _assign_pending_conversations(
 
             _conv_meta = (conv_data or {}).get("metadata") or {}
 
-            # 1.2 — Presence predicate: skip if visitor left the page.
+            # 1.2 — Presence predicate: skip if visitor left the site, by the
+            # rule the panel shows (a lost "left" beacon no longer hides it).
             # Candidate list (limit 5) prevents a dead conv from blocking the queue.
-            if _conv_meta.get("widget_presence") == "left":
+            if db.client_left(_conv_meta, (conv_data or {}).get("last_user_message_at")) is not None:
                 continue
 
             # 1.4 — Engaged ownership: return conv only to its engaged agent.

@@ -132,6 +132,7 @@ async def stream_sight(user: dict, conversation_id: str) -> str:
 _PRESENCE_KEYS = (
     "widget_presence", "widget_presence_effective", "widget_presence_age_seconds",
     "widget_last_event_at", "widget_last_event", "widget_open", "widget_pings",
+    *db.PRESENCE_V2_KEYS,
 )
 
 
@@ -496,6 +497,11 @@ async def get_conversation_presence(
             "widget_presence": metadata.get("widget_presence", "minimized"),
             "widget_presence_effective": effective,
             "widget_presence_age_seconds": age,
+            # When the answer changes by itself if nothing new comes: the
+            # panel reads it again then (silence is never pushed).
+            "widget_presence_changes_in": db.presence_changes_in(
+                metadata, last_user_message_at=conv.get("last_user_message_at")
+            ),
             "widget_last_close_reason": metadata.get("widget_last_close_reason"),
             "widget_last_event_at": metadata.get("widget_last_event_at"),
             "updated_at": conv.get("updated_at"),
@@ -1028,7 +1034,7 @@ async def close_conversation(
             candidates = await db.get_oldest_unassigned_conversations(t)
             for next_conv in candidates:
                 _nc_meta = (next_conv.get("metadata") or {})
-                if _nc_meta.get("widget_presence") == "left":
+                if db.client_left(_nc_meta, next_conv.get("last_user_message_at")) is not None:
                     continue
                 _sticky = _nc_meta.get("engaged_agent_id")
                 if _sticky and _sticky != agent_id:

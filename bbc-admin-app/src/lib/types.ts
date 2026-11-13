@@ -59,7 +59,9 @@ export interface Conversation {
   route?: { from: string; to: string } | null
   /** When the chat entered the shared queue (waiting for a person). */
   queued_at?: string | null
-  /** Presence derived on read (online / minimized / left / stale), list rows. */
+  /** The client's presence as the server's rule says it, on list rows and the
+   *  detail (online / minimized / idle / away / stale / left), and the seconds
+   *  that go with that state (features/chats/view.ts, presenceView). */
   client_presence?: string | null
   client_presence_age_seconds?: number | null
   /** Country of the client's phone number (detail payload). */
