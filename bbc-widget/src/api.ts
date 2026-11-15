@@ -14,6 +14,72 @@ export function getVisitorId(): string | null {
   try { return localStorage.getItem(VISITOR_KEY) } catch { return null }
 }
 
+/** Generate a visitor_id (crypto.randomUUID with fallback). */
+export function makeVisitorId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  // Fallback for older browsers — not cryptographically strong but unique enough
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
+}
+
+/** Ensure a visitor_id exists in localStorage, creating one if needed. */
+export function ensureVisitorId(): string {
+  const existing = getVisitorId()
+  if (existing) return existing
+  const id = makeVisitorId()
+  try { localStorage.setItem(VISITOR_KEY, id) } catch {}
+  return id
+}
+
+/** The server's answer to "open the chat now?" (bbc-chatbot-api app/services/proactive.py, offer). */
+export interface ProactiveOffer {
+  show: boolean
+  /** "proactive", "control" or "off" (the feature switched off on the server). */
+  arm: string
+  message: string | null
+  quick_replies: string[]
+}
+
+/**
+ * Ask whether to open the chat by itself now, and with what words (POST /chat/proactive/offer — it
+ * writes nothing). No answer within `timeoutMs`, an error or a reply of the wrong shape: null, and
+ * nothing is shown.
+ */
+export async function fetchProactiveOffer(
+  apiUrl: string,
+  body: { visitor_id: string; trigger: string; trip: unknown },
+  timeoutMs: number,
+): Promise<ProactiveOffer | null> {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
+  const timer = setTimeout(() => ctrl?.abort(), timeoutMs)
+  try {
+    const res = await apiFetch(`${apiUrl}/api/chat/proactive/offer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl?.signal,
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data || typeof data.show !== 'boolean' || typeof data.arm !== 'string') return null
+    const replies = Array.isArray(data.quick_replies)
+      ? data.quick_replies.filter((r: unknown): r is string => typeof r === 'string' && r.trim() !== '')
+      : []
+    return {
+      show: data.show,
+      arm: data.arm,
+      message: typeof data.message === 'string' && data.message.trim() ? data.message : null,
+      quick_replies: replies,
+    }
+  } catch {
+    return null  // a timeout or a network error is a "no": the visitor sees nothing
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function getVisitorToken(): string | null {
   try { return localStorage.getItem(TOKEN_KEY) } catch { return null }
 }

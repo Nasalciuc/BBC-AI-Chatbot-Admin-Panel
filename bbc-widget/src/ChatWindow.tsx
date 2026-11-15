@@ -11,7 +11,9 @@ import { PanelTop } from './PanelTop'
 import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
-import { posthog } from './posthog'
+import { posthog, posthogSessionId } from './posthog'
+import { markProactiveConversation, type ProactiveOpening } from './proactive'
+import { isNotNow } from './triggers'
 
 interface Message {
   id: string
@@ -56,6 +58,16 @@ interface Props {
   draft?: string
   /** Messages the visitor has not seen (chat closed or tab in the background), for the corner button. */
   onUnread?: (u: Unread) => void
+  /**
+   * The chat the proactive card opened (no form): the server's words for the page's trip, the replies and
+   * the trip itself. There is no /chat/start: the visitor's first message creates the conversation
+   * (/chat/init with `trip` and `proactive`), so a visitor who never answers leaves nothing behind.
+   */
+  proactive?: ProactiveOpening | null
+  /** "Not now", or ✕ before the conversation existed: the card stays away for 24 h. */
+  onProactiveDismiss?: (how: 'not_now' | 'close') => void
+  /** The visitor's first answer to the card (a button or typed text). */
+  onProactiveEngaged?: (reply: string) => void
 }
 
 export interface Unread {
@@ -96,23 +108,40 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
+/** The conversation's metadata with this visit's PostHog session, for the panel's replay link. */
+function withSession(metadata?: Record<string, unknown>): Record<string, unknown> {
+  const sid = posthogSessionId()
+  return { ...(metadata || {}), ...(sid ? { posthog_session_id: sid } : {}) }
+}
+
+const openingId = (o: ProactiveOpening) => `opening-${o.shownAt}`
+
 export function ChatWindow({
   tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false, swapped = false,
-  visible = true, draft = '', onUnread,
+  visible = true, draft = '', onUnread, proactive, onProactiveDismiss, onProactiveEngaged,
 }: Props) {
   const visibleRef = useRef(visible)
   visibleRef.current = visible
   const mountedAtRef = useRef(Date.now())
   const isPhone = useIsPhone()
   const savedConvId = getCachedConvId()
+  // The card's opening, for a visitor with no conversation yet. Fixed at mount: it is what the first
+  // /chat/init carries, and it is dropped once the conversation exists.
+  const openingRef = useRef<ProactiveOpening | null>(!savedConvId && proactive ? proactive : null)
 
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState<string>(() => ssGet(DRAFT_KEY) ?? (savedConvId ? '' : draft))
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const o = openingRef.current
+    return o ? [{ id: openingId(o), role: 'ai', content: o.message, created_at: new Date(o.shownAt).toISOString() }] : []
+  })
+  const [input, setInput] = useState<string>(() => ssGet(DRAFT_KEY) ?? (savedConvId || openingRef.current ? '' : draft))
   const [sending, setSending] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const isStreamingRef = useRef(false)
-  const [quickReplies, setQuickReplies] = useState<string[] | null>(null)
+  const [quickReplies, setQuickReplies] = useState<string[] | null>(() => {
+    const o = openingRef.current
+    return o && !o.firstReply && o.quickReplies.length ? o.quickReplies : null
+  })
   const [pendingGreeting, setPendingGreeting] = useState(false)
   const [convId, setConvId] = useState<string | null>(savedConvId)
   const logRef = useRef<HTMLDivElement>(null)
@@ -143,7 +172,7 @@ export function ChatWindow({
     try { return JSON.parse(ssGet(QUEUE_KEY) || '[]') } catch { return [] }
   })
   /** The greeting is on its way (fresh sessions): the log shows the assistant typing instead of nothing. */
-  const [starting, setStarting] = useState(!savedConvId)
+  const [starting, setStarting] = useState(!savedConvId && !openingRef.current)
   /** The visitor scrolled up to read: new messages no longer pull the log down; a button offers to. */
   const atBottomRef = useRef(true)
   const [hasUnseen, setHasUnseen] = useState(false)
@@ -330,7 +359,7 @@ export function ChatWindow({
             phone: visitor.phone || null,
             country_code: visitor.country_code || null,
           },
-          metadata: metadata || {},
+          metadata: withSession(metadata),
           visitor_id: getVisitorId(),
           turnstile_token,
           form_check: formCheck,
@@ -367,6 +396,16 @@ export function ChatWindow({
   useEffect(() => {
     if (initialized.current) return
     initialized.current = true
+    // The card opened this chat: its words are on screen and nothing exists on the server until the
+    // visitor answers. A button tapped on the phone card is that answer.
+    if (openingRef.current) {
+      const first = openingRef.current.firstReply
+      if (first) {
+        onProactiveEngaged?.(first)
+        sendMessage(first)
+      }
+      return
+    }
     if (savedConvId) return
     startConversation()
   // eslint-disable-next-line
@@ -798,6 +837,7 @@ export function ChatWindow({
     try {
       // Sprint 2: Pre-create conv for SSE streaming on first message
       let activeConvId = convId
+      const opening = convId ? null : openingRef.current
       if (!activeConvId) {
         try {
           const turnstile_token = await getTurnstileToken()
@@ -812,16 +852,35 @@ export function ChatWindow({
                 phone: visitor.phone || null,
                 country_code: visitor.country_code || null,
               },
-              metadata: metadata || {},
+              metadata: withSession(metadata),
               visitor_id: getVisitorId(),
               turnstile_token,
               form_check: formCheck,
+              // The card's moment and the page's trip: the server writes the opening as the assistant's
+              // first message and starts the lead with the trip (unconfirmed).
+              ...(opening ? { trip: opening.trip, proactive: { trigger: opening.trigger } } : {}),
             }),
           })
           if (initRes.ok) {
             const initData = await initRes.json()
             saveVisitorToken(initData.visitor_token)
             const newConvId = initData.conversation_id as string
+            if (opening) {
+              // The opening is stored now. Read messages after it (before the stream connects, so the
+              // first poll does not draw it twice), and show the words as stored, after the server's
+              // output guard. Not stored (the visitor's open chat came back, or the feature was switched
+              // off meanwhile): the conversation does not have it, so the visitor does not see it either.
+              if (typeof initData.opening_at === 'string') lastMsgTime.current = initData.opening_at
+              const stored = typeof initData.opening === 'string' ? initData.opening : null
+              setMessages(prev => stored
+                ? prev.map(m => (m.id === openingId(opening) ? { ...m, content: stored } : m))
+                : prev.filter(m => m.id !== openingId(opening)))
+              markProactiveConversation(newConvId)
+              openingRef.current = null
+              // Only the anonymous visitor id, as after the form: the client's details never go to PostHog.
+              const vid = getVisitorId()
+              if (vid) posthog?.identify(vid)
+            }
             activeConvId = newConvId
             setConvId(newConvId)
             apiFetch(`${apiUrl}/api/chat/session/${newConvId}/open`, { method: 'POST' }).catch(() => {})
@@ -946,6 +1005,11 @@ export function ChatWindow({
     const text = input.trim()
     if (!text) return
     atBottomRef.current = true
+    if (openingRef.current) {
+      // Typed instead of tapped: the card's buttons have done their job.
+      onProactiveEngaged?.(text)
+      setQuickReplies(null)
+    }
     if (sending) {
       // The assistant is still answering: one message at a time reaches the server, so this one waits
       // its turn on screen and goes out by itself when the answer is in.
@@ -981,6 +1045,13 @@ export function ChatWindow({
   const handleQuickReply = (text: string) => {
     posthog?.capture('chat_quick_reply_selected', { tunnel })
     setQuickReplies(null)
+    if (openingRef.current && isNotNow(text)) {
+      // "Not now" never reaches the server: the panel closes and the card stays away for 24 h.
+      onProactiveDismiss?.('not_now')
+      onClose()
+      return
+    }
+    if (openingRef.current) onProactiveEngaged?.(text)
     sendMessage(text)
   }
 
@@ -1036,7 +1107,11 @@ export function ChatWindow({
         titleId="bw-chat-title"
         subtitle={subtitle}
         closeLabel="Close chat"
-        onClose={embedded ? undefined : () => { notifySessionClose('minimized', true); onClose() }}
+        onClose={embedded ? undefined : () => {
+          if (openingRef.current && !convId) onProactiveDismiss?.('close')
+          notifySessionClose('minimized', true)
+          onClose()
+        }}
       />
 
       <div class="bw-logwrap">

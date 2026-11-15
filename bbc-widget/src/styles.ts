@@ -109,6 +109,24 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-nudge__x:hover { color: var(--bw-text); }
 #bbc-widget-root .bw-nudge__x svg { width: 16px; height: 16px; }
 
+/* The proactive card (phones): the visitor's own search in the assistant's words and two buttons, above
+   the corner button. It covers nothing else; the chat opens on a tap only. */
+#bbc-widget-root .bw-nudge--card { flex-direction: column; align-items: stretch; width: 320px; }
+#bbc-widget-root .bw-nudge--card .bw-nudge__open { padding: 16px 16px 4px; }
+#bbc-widget-root .bw-nudge--card .bw-nudge__text { -webkit-line-clamp: 5; font-size: 15px; color: var(--bw-text); }
+#bbc-widget-root .bw-card__actions { display: flex; align-items: center; gap: 8px; padding: 10px 16px 16px; }
+#bbc-widget-root .bw-card__yes {
+  flex: 1; min-height: 44px; padding: 10px 14px;
+  background: var(--bw-ink); color: #FFFFFF; font-size: 14px; font-weight: 600; line-height: 1.3;
+  transition: background-color 0.18s var(--bw-ease);
+}
+#bbc-widget-root .bw-card__yes:hover { background: #203359; }
+#bbc-widget-root .bw-card__no { min-height: 44px; padding: 10px 12px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
+#bbc-widget-root .bw-card__no:hover { color: var(--bw-text); }
+@media (max-width: 767px) {
+  #bbc-widget-root .bw-nudge--card { right: 0; bottom: calc(100% + 12px); width: min(340px, calc(100vw - 48px)); }
+}
+
 /* ── The panel ───────────────────────────────────────────────────────── */
 #bbc-widget-root .bw-panel {
   position: fixed; right: var(--bw-right); bottom: var(--bw-bottom); z-index: 2147483000;

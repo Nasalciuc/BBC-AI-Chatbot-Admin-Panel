@@ -3,6 +3,8 @@ import brand from './config'
 import { IconArrowRight, IconClose } from './icons'
 import type { PageContext } from './pageContext'
 import type { Unread } from './ChatWindow'
+import { markNoteClosed, type ProactiveOpening } from './proactive'
+import { isNotNow } from './triggers'
 
 interface Props {
   onSelect: (tunnel: 'sales' | 'support') => void
@@ -15,6 +17,12 @@ interface Props {
   context?: PageContext
   /** Messages that arrived while the chat was closed: a count on the button and a preview of the latest. */
   unread?: Unread
+  /** The proactive card (phones): the server's words for this visitor's search and two buttons. */
+  card?: ProactiveOpening | null
+  /** Open the chat from the card; `reply` is the button tapped, sent as the visitor's first message. */
+  onCardOpen?: (reply?: string) => void
+  /** "Not now" on the card. */
+  onCardDismiss?: () => void
 }
 
 /** How long the greeting stays before it steps aside by itself. */
@@ -27,6 +35,7 @@ const NUDGE_VISIBLE_MS = 30_000
  */
 export function FloatingButtons({
   onSelect, showAttention = false, onDismissAttention, autoFocus = false, context, unread,
+  card, onCardOpen, onCardDismiss,
 }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null)
   const count = unread?.count || 0
@@ -51,6 +60,14 @@ export function FloatingButtons({
   useEffect(() => {
     if (unread?.fresh) setPulseKey(k => k + 1)
   }, [unread?.count])
+
+  useEffect(() => {
+    if (card) setPulseKey(k => k + 1)
+  }, [card])
+
+  // The card: its first button is the server's first reply ("Yes, check fares"); "Not now" closes it.
+  const cardYes = card?.quickReplies.find(r => !isNotNow(r))
+  const cardNo = card?.quickReplies.find(isNotNow) || 'Not now'
 
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
@@ -89,6 +106,24 @@ export function FloatingButtons({
             <IconClose />
           </button>
         </div>
+      ) : card && count === 0 ? (
+        <div class="bw-nudge bw-nudge--card" role="status" aria-live="polite">
+          <button type="button" class="bw-nudge__open" onClick={() => onCardOpen?.()}>
+            <span class="bw-nudge__who">
+              <img class="bw-nudge__ava bw-nudge__ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
+              <b>{brand.name}</b>
+            </span>
+            <span class="bw-nudge__text">{card.message}</span>
+          </button>
+          <div class="bw-card__actions">
+            {cardYes && (
+              <button type="button" class="bw-card__yes" onClick={() => onCardOpen?.(cardYes)}>
+                {cardYes}
+              </button>
+            )}
+            <button type="button" class="bw-card__no" onClick={onCardDismiss}>{cardNo}</button>
+          </div>
+        </div>
       ) : showAttention && count === 0 ? (
         <div class="bw-nudge bw-nudge--message" role="status">
           <button type="button" class="bw-nudge__open" onClick={() => onSelect('sales')}>
@@ -100,7 +135,12 @@ export function FloatingButtons({
             <span class="bw-nudge__text">{context?.line || "Tell me where and when, and I'll check fares for you."}</span>
             <span class="bw-nudge__cta">Get a fare quote <IconArrowRight /></span>
           </button>
-          <button type="button" class="bw-nudge__x" onClick={onDismissAttention} aria-label="Hide this message">
+          <button
+            type="button"
+            class="bw-nudge__x"
+            onClick={() => { markNoteClosed(); onDismissAttention?.() }}
+            aria-label="Hide this message"
+          >
             <IconClose />
           </button>
         </div>
