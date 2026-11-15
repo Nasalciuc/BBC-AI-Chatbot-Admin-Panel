@@ -3620,6 +3620,9 @@ TASKS_HEALTH: dict = {
     "moved_unowned": 0, "moved_to_ready": 0, "move_failures": 0,
     # A history line not written after its task was saved: the task stands.
     "event_failures": 0,
+    # The departure task (app/services/departure.py): made, made Unowned
+    # (nobody Ready), and a run or a task that failed.
+    "departure": 0, "departure_unowned": 0, "departure_failures": 0,
 }
 _OPEN_LIMIT = 500
 
@@ -3892,6 +3895,39 @@ async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
         for r in rows:
             counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
     return counts
+
+
+async def get_departure_candidates() -> list[dict]:
+    """Open sales chats with a phone or an email, for the departure task
+    (app/services/departure.py decides the rest: the client wrote, left,
+    nobody is on the chat). With last_user_message_at when the clocks exist.
+    Raises: the job counts a failed read."""
+    db_client = get_client()
+    rows = await _rows_with_last_message(
+        lambda columns: db_client.table("conversations")
+        .select(columns)
+        .in_("status", list(OPEN_STATUSES))
+        .eq("tunnel", "sales")
+        .or_("visitor_phone.not.is.null,visitor_email.not.is.null"),
+        "id, visitor_name, visitor_phone, visitor_email, mode, assigned_agent_id, metadata, status",
+    )
+    return rows
+
+
+async def tasks_of_conversations(conversation_ids: list[str]) -> list[dict]:
+    """Every task of these chats, open or not: conversation_id, source and
+    whether it is open. Raises (TasksNotSetUp before migration 051)."""
+    ids = sorted({i for i in conversation_ids if i})
+    if not ids:
+        return []
+    db_client = get_client()
+    out: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        out.extend(await _task_pages(lambda chunk=chunk: db_client.table("tasks")
+                                     .select("id, conversation_id, source, done_at, dismissed_at")
+                                     .in_("conversation_id", chunk).order("id")))
+    return out
 
 
 async def get_task_people() -> list[dict]:

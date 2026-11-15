@@ -39,6 +39,7 @@ _QUIET_WHEN: dict[str, Callable[[dict], bool]] = {
     "stale_ready": lambda r: not r.get("reset"),
     "stale_presence": lambda r: not r.get("closed"),
     "attention_emails": lambda r: not r.get("sent"),
+    "departure_tasks": lambda r: not r.get("created"),
 }
 _was_quiet: dict[str, Any] = {}
 
@@ -137,6 +138,7 @@ async def _run_forever(job_name: str, job_fn, interval_seconds: int):
 
 def start(app_state, settings) -> list[asyncio.Task]:
     """Called from startup. Returns tasks so shutdown can cancel them."""
+    from app.services.departure import run_departure_tasks
     from app.services.ip_selftest import run_ip_selftest
     from app.services.learning import run_learning_tick
     from app.api.cron import (
@@ -170,6 +172,9 @@ def start(app_state, settings) -> list[asyncio.Task]:
         # Every 60s: the two-minute stall must be noticed inside the client's
         # attention window, not on the shared cadence.
         ("queue_stall_alert", run_queue_stall_alert, 60),
+        # Every 60s: a client who left with a contact becomes a task for the
+        # free agent while they are still warm (off until DEPARTURE_TASKS_ENABLED).
+        ("departure_tasks", run_departure_tasks, 60),
         # Hourly: does the edge let a client forge its IP? (ip_selftest)
         ("ip_selftest", run_ip_selftest, 3600),
         # Hourly tick; runs the daily learning once per day at LEARNING_HOUR_UTC.
