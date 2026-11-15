@@ -837,7 +837,10 @@ export function ChatWindow({
     try {
       // Sprint 2: Pre-create conv for SSE streaming on first message
       let activeConvId = convId
+      // This send owns the card's opening: a second one racing it (a reply typed while the first is on
+      // its way) goes out plain and finds the same conversation, never removing or re-labelling it.
       const opening = convId ? null : openingRef.current
+      if (opening) openingRef.current = null
       if (!activeConvId) {
         try {
           const turnstile_token = await getTurnstileToken()
@@ -876,7 +879,6 @@ export function ChatWindow({
                 ? prev.map(m => (m.id === openingId(opening) ? { ...m, content: stored } : m))
                 : prev.filter(m => m.id !== openingId(opening)))
               markProactiveConversation(newConvId)
-              openingRef.current = null
               // Only the anonymous visitor id, as after the form: the client's details never go to PostHog.
               const vid = getVisitorId()
               if (vid) posthog?.identify(vid)
@@ -893,8 +895,11 @@ export function ChatWindow({
                 resolve()
               }, 400)
             })
+          } else if (opening) {
+            openingRef.current = opening  // not created: the next send carries the opening again
           }
         } catch (e) {
+          if (opening) openingRef.current = opening
           console.warn('[bbc-widget] /init failed, falling back to direct POST', e)
         }
       }

@@ -433,7 +433,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     <div class={closing ? 'bw-closing' : undefined} style={{ display: 'contents' }}>
       {step === 'buttons' && !embedded && (
         <FloatingButtons
-          onSelect={handleTunnelSelect}
+          onSelect={(t) => (proactive.offer ? openProactive(proactive.offer) : handleTunnelSelect(t))}
           showAttention={showAttention && !sessionActive && !proactive.quiet}
           onDismissAttention={() => setShowAttention(false)}
           autoFocus={focusLauncher}

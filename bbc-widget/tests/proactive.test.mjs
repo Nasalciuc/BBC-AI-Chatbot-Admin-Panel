@@ -244,6 +244,18 @@ test('a conversation the card opened is the visitor\'s session: the button resto
   assert.match(widget, /if \(hasOptimisticSession && \(savedVisitor \|\| proactiveConv\)\) \{/)
 })
 
+test('the corner button next to a card opens the card\'s chat, not the form', () => {
+  assert.match(widget, /onSelect=\{\(t\) => \(proactive\.offer \? openProactive\(proactive\.offer\) : handleTunnelSelect\(t\)\)\}/)
+})
+
+test('the first send owns the opening: a racing second send goes out plain', () => {
+  const send = chat.slice(chat.indexOf('let activeConvId = convId'))
+  assert.match(send, /const opening = convId \? null : openingRef\.current\s+if \(opening\) openingRef\.current = null/)
+  // Not created: the next send carries it again.
+  assert.match(send, /\} else if \(opening\) \{\s+openingRef\.current = opening/)
+  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening/)
+})
+
 test('a phone gets the card, a computer the panel', () => {
   assert.match(hook, /const surface: Surface = phone \? 'card' : 'panel'/)
   assert.match(widget, /if \(proactive\.offer\?\.surface === 'panel'\) openProactive\(proactive\.offer\)/)
