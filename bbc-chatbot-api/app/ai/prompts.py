@@ -850,12 +850,23 @@ def build_conversational_prompt(
         tier = get_lead_tier(score)
         visitor_lines.append(f"Lead score: {score}/100 ({tier})")
         # Build visitor context for accurate missing-fields check
+        # A chat the proactive card opened has no form behind it: the search
+        # came from the page, and the contact is asked email first (the
+        # lightest thing to give), then name, then phone.
+        from app.services.proactive import page_trip_line
+        _page_line = page_trip_line(lead)
+        _any_meta = metadata if isinstance(metadata, dict) else (
+            (entities or {}).get("_metadata") if isinstance((entities or {}).get("_metadata"), dict) else {}
+        )
         conv_from_visitor = {
             "visitor_name": visitor.name if visitor else None,
             "visitor_email": visitor.email if visitor else None,
             "visitor_phone": visitor.phone if visitor else None,
+            "email_first": bool(_page_line or _any_meta.get("proactive_trigger")),
         }
         missing = get_missing_fields(lead, conv_from_visitor)
+        if _page_line:
+            visitor_lines.append(_page_line)
         # Show what IS collected (so AI doesn't re-ask)
         collected_items = []
         if visitor and visitor.name:

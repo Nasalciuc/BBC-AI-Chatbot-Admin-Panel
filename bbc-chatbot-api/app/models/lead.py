@@ -81,12 +81,13 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for
             missing.append("number of travelers (how many passengers?)")
         if not has_departure:
             missing.append("departure date")
-    # Contact info — only if NOT provided via form
-    if not has_name:
-        missing.append("name")
-    if not has_email:
-        missing.append("email")
-    if not has_phone:
-        missing.append("phone number")
+    # Contact info — only if NOT provided via form. A chat opened by the
+    # proactive card (no form) asks email first: the lightest thing to give.
+    contact = [("name", has_name), ("email", has_email), ("phone number", has_phone)]
+    if conv.get("email_first"):
+        contact = [("email", has_email), ("name", has_name), ("phone number", has_phone)]
+    for label, present in contact:
+        if not present:
+            missing.append(label)
 
     return missing

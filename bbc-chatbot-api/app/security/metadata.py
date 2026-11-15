@@ -10,6 +10,8 @@ engaged_agent_id. This drops anything outside the allowlist at ingress.
 
 from __future__ import annotations
 
+import re
+
 # Exact keys the widget may send: what bbc-widget/src/utm.ts captures (the
 # page, the referrer, every platform's click id, the Analytics client id) and
 # the visitor id. The server reads each of them: the CRM's utm block takes
@@ -29,6 +31,7 @@ _ALLOWED_PREFIXES = ("utm_", "landing_")
 _MAX_KEY = 64
 _MAX_VALUE = 2048  # a page URL or a referrer can be long; nothing else comes close
 _MAX_KEYS = 50     # attribution keys; the validated site and booking_id come on top
+_POSTHOG_ID = re.compile(r"[0-9A-Za-z-]{16,64}")
 
 
 def _known_sites() -> set[str]:
@@ -63,4 +66,9 @@ def allowed_widget_metadata(raw: dict | None) -> dict:
     booking = raw.get("booking_id")
     if isinstance(booking, str) and 0 < len(booking.strip()) <= 64:
         out["booking_id"] = booking.strip()
+    # The PostHog session of the visit, so the panel can link the agent to the
+    # replay of what the client did before writing. An id, nothing else.
+    ph = raw.get("posthog_session_id")
+    if isinstance(ph, str) and _POSTHOG_ID.fullmatch(ph.strip()):
+        out["posthog_session_id"] = ph.strip()
     return out
