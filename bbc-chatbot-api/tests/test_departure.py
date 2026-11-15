@@ -337,3 +337,35 @@ class TestMigration053:
     def test_the_code_uses_the_same_words(self):
         assert departure.SOURCE == "departure"
         assert departure.UNOWNED_REASON == "no_ready_agent"
+
+
+class TestPanelWords:
+    """What the Tasks page shows for a departure task (app/services/tasks_view.py)."""
+
+    def test_the_source_has_a_label(self):
+        from app.services.tasks_view import SOURCE_LABEL
+        assert SOURCE_LABEL["departure"] == "Client left"
+
+    def test_the_history_line(self):
+        from app.services.tasks_view import history_of
+        given = history_of(
+            [{"kind": "departure", "at": "2026-11-15T22:00:00+00:00", "details": {"left_minutes_ago": 3, "given": "ready"}}],
+            {}, client="Maria R.",
+        )
+        assert given[0]["text"] == (
+            "Maria R. left the site after leaving a contact, with nobody on the chat. "
+            "The task was made 3 min later. Due 15 minutes after they left."
+        )
+        unowned = history_of(
+            [{"kind": "departure", "at": "x", "details": {"left_minutes_ago": 0, "given": "unowned"}}],
+            {}, client="",
+        )
+        assert unowned[0]["text"] == (
+            "The client left the site after leaving a contact, with nobody on the chat. "
+            "Due 15 minutes after they left. Nobody was Ready, so it went to Unowned."
+        )
+
+    def test_unowned_reason_reads(self):
+        from app.services.tasks_view import history_of
+        line = history_of([{"kind": "unowned", "at": "x", "details": {"reason": "no_ready_agent"}}], {}, client="")
+        assert line[0]["text"] == "Went to Unowned: nobody was Ready when the client left."
