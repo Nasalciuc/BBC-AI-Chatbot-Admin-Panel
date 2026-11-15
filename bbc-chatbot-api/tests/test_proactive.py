@@ -77,7 +77,7 @@ def _switches(monkeypatch):
     for k in ("PROACTIVE_ENABLED", "PROACTIVE_PERCENT", "PROACTIVE_TRIGGERS"):
         monkeypatch.delenv(k, raising=False)
     saved = dict(proactive.PROACTIVE_HEALTH)
-    for k in ("offers", "shown", "opened", "seed_errors"):
+    for k in ("offers", "shown", "opened", "open_failures", "seed_errors"):
         proactive.PROACTIVE_HEALTH[k] = 0
     proactive.PROACTIVE_HEALTH["last_seed_error_at"] = None
     yield
@@ -134,6 +134,14 @@ class TestTripContext:
     def test_a_return_before_the_departure_is_dropped(self):
         t = _kayak_trip(return_date=_in(10).isoformat())
         assert t.depart_date == _in(30) and t.return_date is None
+
+    def test_a_digit_int_cannot_read_drops_only_that_field(self):
+        # CodeRabbit #255: "²".isdigit() is True and int("²") raises — that
+        # failed the whole request instead of dropping the travellers.
+        t = _kayak_trip(adults="²", children="³")
+        assert t.adults is None and t.children is None
+        assert t.destination_code == "ICN" and t.depart_date == _in(30)
+        assert ChatInitRequest(trip={"origin_code": "ATL", "adults": "²"}, proactive={"trigger": "kayak"}).trip.origin_code == "ATL"
 
     def test_people_out_of_range_are_dropped(self):
         assert TripContext(adults="0").adults is None
@@ -324,6 +332,21 @@ class TestOpenConversation:
         assert proactive.PROACTIVE_HEALTH["opened"] == 0
 
     @pytest.mark.asyncio
+    async def test_an_opening_not_saved_is_a_plain_chat(self, caplog):
+        # CodeRabbit #255: db.add_message returns None when the insert fails.
+        # Nothing may then say the opening was shown: no text back, no label,
+        # no page trip, no "opened".
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, patch("app.services.conversation_service.add_message", new=AsyncMock(return_value=None)), \
+             p_meta as meta, p_seed as seed, caplog.at_level(logging.ERROR):
+            assert await proactive.open_conversation(_CONV_ID, "kayak", _kayak_trip()) is None
+        meta.assert_not_awaited()
+        seed.assert_not_awaited()
+        assert proactive.PROACTIVE_HEALTH["opened"] == 0
+        assert proactive.PROACTIVE_HEALTH["open_failures"] == 1
+        assert "proactive opening not saved" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_no_trip_no_seed(self):
         p_count, p_add, p_meta, p_seed = _open_patches(stored={})
         with p_count, p_add, p_meta as meta, p_seed as seed:
@@ -369,7 +392,7 @@ async def _run_now(fn):
 class TestSeedLead:
     @pytest.mark.asyncio
     async def test_the_page_search_lands_on_the_lead(self):
-        with patch("app.services.lead_service.ensure_lead", new=AsyncMock(return_value={"id": "L1"})) as ensure, \
+        with patch("app.services.lead_service.ensure_lead", new=AsyncMock(return_value={"id": "L1", "trip_notes": None})) as ensure, \
              patch("app.services.lead_service.update_lead_from_entities", new=AsyncMock()) as upd, \
              patch("app.services.proactive._mark_page_trip", new=AsyncMock()) as mark:
             await proactive.seed_lead(_CONV_ID, _kayak_trip())
@@ -394,12 +417,33 @@ class TestSeedLead:
     async def test_premium_economy_is_not_sent_to_the_lead(self):
         """leads_cabin_class_check takes business/first/economy/mixed: a
         premium_economy cabin would refuse the whole update, route included."""
-        with patch("app.services.lead_service.ensure_lead", new=AsyncMock()), \
+        with patch("app.services.lead_service.ensure_lead", new=AsyncMock(return_value={"id": "L1", "trip_notes": {}})), \
              patch("app.services.lead_service.update_lead_from_entities", new=AsyncMock()) as upd, \
              patch("app.services.proactive._mark_page_trip", new=AsyncMock()):
             await proactive.seed_lead(_CONV_ID, _kayak_trip(cabin="premium_economy"))
         entities = upd.await_args.args[1]
         assert "cabin_class" not in entities and entities["destination"] == "ICN"
+
+    @pytest.mark.asyncio
+    async def test_without_trip_notes_nothing_is_written_as_the_clients(self):
+        # CodeRabbit #255: before migration 040 nothing could mark the route
+        # and dates as the page's; written anyway, the prompt and the CRM
+        # would take them as said by the client.
+        with patch("app.services.lead_service.ensure_lead", new=AsyncMock(return_value={"id": "L1"})), \
+             patch("app.services.lead_service.update_lead_from_entities", new=AsyncMock()) as upd, \
+             patch("app.services.proactive._mark_page_trip", new=AsyncMock()) as mark:
+            await proactive.seed_lead(_CONV_ID, _kayak_trip())
+        upd.assert_not_awaited()
+        mark.assert_not_awaited()
+        assert proactive.PROACTIVE_HEALTH["seed_errors"] == 0
+
+    @pytest.mark.asyncio
+    async def test_no_lead_row_is_a_counted_failure(self):
+        with patch("app.services.lead_service.ensure_lead", new=AsyncMock(return_value=None)), \
+             patch("app.services.lead_service.update_lead_from_entities", new=AsyncMock()) as upd:
+            await proactive.seed_lead(_CONV_ID, _kayak_trip())
+        upd.assert_not_awaited()
+        assert proactive.PROACTIVE_HEALTH["seed_errors"] == 1
 
     @pytest.mark.asyncio
     async def test_a_failed_seed_is_counted_and_logged_without_pii(self, caplog):
@@ -465,7 +509,9 @@ class TestPageTripLine:
         assert "the client's words win" in line
 
     def test_shown_when_the_seed_never_landed(self):
-        lead = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None)
+        # One update writes every seeded field, so a seed that failed left none of them.
+        lead = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None,
+                            passengers=None, cabin_class=None)
         assert proactive.page_trip_line(lead) is not None
 
     def test_gone_once_the_client_names_another_destination(self):
@@ -476,6 +522,26 @@ class TestPageTripLine:
 
     def test_gone_once_the_client_drops_the_return(self):
         assert proactive.page_trip_line(_seeded_lead(return_date=None)) is None
+
+    def test_gone_once_the_client_changes_the_travellers_or_the_cabin(self):
+        # CodeRabbit #255: the line shows "4 adults in First"; a client who
+        # said one traveller or Business must not be told it again.
+        assert proactive.page_trip_line(_seeded_lead(passengers=1)) is None
+        assert proactive.page_trip_line(_seeded_lead(cabin_class="business")) is None
+
+    def test_premium_economy_is_not_on_the_lead_and_is_no_change(self):
+        lead = _seeded_lead(cabin_class=None)
+        lead["trip_notes"]["page_trip"]["cabin"] = "premium_economy"
+        assert "in Premium Economy" in proactive.page_trip_line(lead)
+
+    def test_a_route_page_named_in_words_gives_way_to_the_clients_route(self):
+        # CodeRabbit #255: a page trip of "Paris" (a title, no code) stayed in
+        # the prompt after the client asked for Tokyo.
+        page = {"source": "route_page", "destination_name": "Paris", "confirmed": False}
+        lead = {"id": "L1", "trip_notes": {"page_trip": page}}
+        assert proactive.page_trip_line(lead).startswith("From the page")
+        lead_tokyo = {"id": "L1", "destination_code": "NRT", "trip_notes": {"page_trip": page}}
+        assert proactive.page_trip_line(lead_tokyo) is None
 
     def test_gone_once_confirmed(self):
         lead = _seeded_lead()
@@ -499,7 +565,8 @@ class TestCrmNote:
             "Route and dates from the Kayak link the client came from, not confirmed in chat"
         )
         assert proactive.page_trip_note(_seeded_lead(destination_code="NRT")) is None
-        absent = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None)
+        absent = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None,
+                              passengers=None, cabin_class=None)
         assert proactive.page_trip_note(absent) is None  # nothing of the page on the lead to warn about
         confirmed = _seeded_lead()
         confirmed["trip_notes"]["page_trip"]["confirmed"] = True
@@ -680,7 +747,7 @@ class TestChatInit:
         with p_block, p_conv, p_open, caplog.at_level(logging.ERROR):
             res = await chat_init(payload, _request_mock(), None)
         assert res.conversation_id == _CONV_ID and res.opening is None and res.opening_at is None
-        assert proactive.PROACTIVE_HEALTH["seed_errors"] == 1
+        assert proactive.PROACTIVE_HEALTH["open_failures"] == 1
         assert "proactive opening failed" in caplog.text
 
 
@@ -715,4 +782,6 @@ class TestHealth:
              patch("app.api.health.settings") as s:
             s.debug = False
             payload = await health_detail()
-        assert set(payload["proactive"]) == {"offers", "shown", "opened", "seed_errors", "last_seed_error_at"}
+        assert set(payload["proactive"]) == {
+            "offers", "shown", "opened", "open_failures", "seed_errors", "last_seed_error_at",
+        }

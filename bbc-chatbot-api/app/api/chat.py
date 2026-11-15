@@ -201,7 +201,7 @@ async def chat_init(
         try:
             _opening = await _proactive.open_conversation(conv_id, _proactive_trigger, payload.trip) or {}
         except Exception as e:
-            _proactive.PROACTIVE_HEALTH["seed_errors"] += 1
+            _proactive.PROACTIVE_HEALTH["open_failures"] += 1
             logger.error(f"[init] proactive opening failed (conv={conv_id}): {type(e).__name__}")
     from app.security.visitor_token import issue as _issue_token
     return ChatInitResponse(

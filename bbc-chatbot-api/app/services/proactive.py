@@ -54,7 +54,11 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
 _CABINS = {"economy": "Economy", "premium_economy": "Premium Economy", "business": "Business", "first": "First"}
 
 # Health of the proactive door, shown next to the other counters.
-PROACTIVE_HEALTH: dict = {"offers": 0, "shown": 0, "opened": 0, "seed_errors": 0, "last_seed_error_at": None}
+# open_failures: the opening message was not saved (the chat goes on as a
+# plain one); seed_errors: the lead could not start with the page's search.
+PROACTIVE_HEALTH: dict = {
+    "offers": 0, "shown": 0, "opened": 0, "open_failures": 0, "seed_errors": 0, "last_seed_error_at": None,
+}
 
 
 # --- switches -------------------------------------------------------------
@@ -232,6 +236,13 @@ async def open_conversation(conversation_id: str, trigger: str, trip: Optional[T
         return None
     text, _ = compose(trigger, trip)
     row = await conversation_service.add_message(conversation_id, "ai", text, model_used=MODEL_USED, cost=0.0)
+    if not isinstance(row, dict):
+        # Not saved (db.add_message logged why): the conversation does not
+        # have the opening, so nothing may say it does — no label, no page
+        # trip that "was shown in your opening message". A plain chat.
+        PROACTIVE_HEALTH["open_failures"] += 1
+        logger.error(f"[{conversation_id}] proactive opening not saved: the chat goes on as a plain one")
+        return None
     PROACTIVE_HEALTH["opened"] += 1
     # The label for the panel and the prompt (email first). Written here and
     # not at creation: /chat/init may hand back the visitor's open chat, and
@@ -239,9 +250,8 @@ async def open_conversation(conversation_id: str, trigger: str, trip: Optional[T
     await db._merge_conv_metadata(conversation_id, init_metadata(trigger, trip))
     if trip and not trip.is_empty():
         await seed_lead(conversation_id, trip)
-    stored = row if isinstance(row, dict) else {}
-    content = stored.get("content")
-    created_at = stored.get("created_at")
+    content = row.get("content")
+    created_at = row.get("created_at")
     return {
         "content": content if isinstance(content, str) else text,
         "created_at": created_at if isinstance(created_at, str) else None,
@@ -283,7 +293,15 @@ async def seed_lead(conversation_id: str, trip: TripContext) -> None:
 
     entities = _entities_from_trip(trip)
     try:
-        await lead_service.ensure_lead(conversation_id)
+        lead = await lead_service.ensure_lead(conversation_id)
+        if not isinstance(lead, dict):
+            raise RuntimeError("no lead row for the conversation")
+        if "trip_notes" not in lead:
+            # Migration 040 not applied: nothing could say these came from the
+            # page, so the prompt would take them as the client's and the CRM
+            # would get them unmarked. The opening still shows the search.
+            logger.warning(f"[{conversation_id}] proactive lead seed skipped: no trip_notes column to mark the page's search")
+            return
         if entities:
             await lead_service.update_lead_from_entities(conversation_id, entities)
         await _mark_page_trip(conversation_id, trip)
@@ -314,21 +332,39 @@ async def _mark_page_trip(conversation_id: str, trip: TripContext) -> None:
     await _run_sync(lambda: client.table("leads").update({"trip_notes": notes}).eq("id", lead_id).execute())
 
 
+def _norm(value) -> Optional[str]:
+    """A lead or page value as comparable text: "ATL", "2027-05-25", "4", "first"."""
+    if value is None or value == "":
+        return None
+    return str(value).strip()[:10].lower()
+
+
 def _page_state(lead: dict, trip: TripContext) -> str:
     """How the lead stands against what the page seeded:
 
-    - "held": the lead still holds the page's route and dates;
-    - "changed": the client named another route or other dates (or dropped
-      the return) — the lead's own fields are the truth now;
+    - "held": the lead still holds every field the page gave (route, dates,
+      travellers, cabin — what the page line shows);
+    - "changed": the client named another route, other dates, other
+      travellers or another cabin (or dropped the return) — the lead's own
+      fields are the truth now;
     - "absent": none of the seeded fields is on the lead (the seed never
       landed) — the page is all the bot knows."""
+    # A route the page named only in words (a route page's title) is never
+    # written on the lead: a code there is one the client gave.
+    if (trip.origin_name and not trip.origin_code and lead.get("origin_code")) or (
+        trip.destination_name and not trip.destination_code and lead.get("destination_code")
+    ):
+        return "changed"
     seeded = [
         (lead.get("origin_code"), trip.origin_code),
         (lead.get("destination_code"), trip.destination_code),
         (lead.get("departure_date"), trip.depart_date.isoformat() if trip.depart_date else None),
         (lead.get("return_date"), trip.return_date.isoformat() if trip.return_date else None),
+        (lead.get("passengers"), trip.passengers),
+        # Premium Economy is never written on the lead (_LEAD_CABINS): nothing to compare.
+        (lead.get("cabin_class"), trip.cabin if trip.cabin in _LEAD_CABINS else None),
     ]
-    held = [(str(have)[:10] if have else None, page) for have, page in seeded if page]
+    held = [(_norm(have), _norm(page)) for have, page in seeded if page is not None]
     if not any(have for have, _ in held):
         return "absent"
     return "changed" if any(have != page for have, page in held) else "held"

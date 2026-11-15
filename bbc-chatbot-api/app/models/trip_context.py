@@ -178,6 +178,8 @@ def _int(v) -> Optional[int]:
         return None
     if isinstance(v, int):
         return v
-    if isinstance(v, str) and v.strip().isdigit():
+    # ASCII digits only: "²" passes str.isdigit() and int() refuses it, which
+    # would fail the whole request instead of dropping this one field.
+    if isinstance(v, str) and v.strip().isascii() and v.strip().isdigit():
         return int(v.strip())
     return None
