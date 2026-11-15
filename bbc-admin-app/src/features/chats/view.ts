@@ -446,6 +446,8 @@ export interface Row {
   warn?: boolean
   /** A copy button: what goes on the clipboard, and what to call it. */
   copy?: { text: string; what: string }
+  /** The value is a link (opens in a new tab). */
+  href?: string
 }
 
 /** Who flies. `passengers` is everyone; the CRM takes adults as the rest
@@ -798,6 +800,73 @@ export function deviceOf(ua: unknown): string {
   if (/iPad|Tablet/i.test(ua)) return 'Tablet'
   if (/iPhone|Android|Mobile/i.test(ua)) return 'Phone'
   return 'Computer'
+}
+
+// ── the chat that opened by itself (bbc-chatbot-api app/services/proactive.py) ──
+
+/** Why the card opened the chat, in the words the agent reads. */
+const OPENED_BY: Record<string, string> = {
+  kayak: 'came from Kayak',
+  quote: 'pressed “Get free quote” and stopped',
+  reader: 'read the page for a while',
+  exit: 'was about to leave',
+}
+
+/** "By itself: the client came from Kayak · 23:41" for a chat the card opened (no form); '' otherwise. */
+export function openedByText(meta: Record<string, unknown> | undefined, now: Date): string {
+  const m = (meta ?? {}) as Record<string, unknown>
+  const trigger = typeof m.proactive_trigger === 'string' ? m.proactive_trigger : ''
+  if (!trigger) return ''
+  const at = typeof m.proactive_at === 'string' ? dayClock(m.proactive_at, now) : ''
+  return `By itself: the client ${OPENED_BY[trigger] ?? 'hesitated'}${at ? ` · ${at}` : ''}`
+}
+
+const CABIN_NAME: Record<string, string> = {
+  economy: 'Economy',
+  premium_economy: 'Premium Economy',
+  business: 'Business',
+  first: 'First',
+}
+
+function shortDay(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return ''
+  const d = new Date(`${iso}T12:00:00`)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+/** What the client searched on the page, as the card showed it (metadata.proactive_trip, checked
+ *  field by field on the server): "ATL → ICN · 25 May – 28 Jun · 4 adults · First". '' when none. */
+export function pageTripText(meta: Record<string, unknown> | undefined): string {
+  const raw = (meta ?? {}).proactive_trip
+  if (!raw || typeof raw !== 'object') return ''
+  const t = raw as Record<string, unknown>
+  const s = (k: string) => (typeof t[k] === 'string' ? (t[k] as string).trim() : '')
+  const n = (k: string) => (typeof t[k] === 'number' && Number.isFinite(t[k]) ? (t[k] as number) : 0)
+  const from = s('origin_code') || s('origin_name')
+  const to = s('destination_code') || s('destination_name')
+  const route = from && to ? `${from} → ${to}` : to ? `To ${to}` : from ? `From ${from}` : ''
+  const dates = [shortDay(s('depart_date')), shortDay(s('return_date'))].filter(Boolean).join(' – ')
+  const adults = n('adults')
+  const kids = n('children')
+  const babies = n('infants')
+  const people = adults
+    ? [
+        `${adults} ${adults === 1 ? 'adult' : 'adults'}`,
+        kids ? `${kids} ${kids === 1 ? 'child' : 'children'}` : '',
+        babies ? `${babies} ${babies === 1 ? 'infant' : 'infants'}` : '',
+      ].filter(Boolean).join(', ')
+    : ''
+  return [route, dates, people, CABIN_NAME[s('cabin')] ?? ''].filter(Boolean).join(' · ')
+}
+
+/** The PostHog project the site and the widget report to (EU, project 348558). */
+const POSTHOG_REPLAY = 'https://eu.posthog.com/project/348558/replay/'
+
+/** The replay of the visit that started the chat (metadata.posthog_session_id, an id the server
+ *  checked), or ''. */
+export function replayUrl(meta: Record<string, unknown> | undefined): string {
+  const id = (meta ?? {}).posthog_session_id
+  return typeof id === 'string' && /^[0-9A-Za-z-]{16,64}$/.test(id.trim()) ? `${POSTHOG_REPLAY}${id.trim()}` : ''
 }
 
 export function whereRows(meta: Record<string, unknown> | undefined, phoneCountry?: string | null): Row[] {

@@ -15,7 +15,10 @@ import {
   missingForReady,
   joinAnd,
   noSummaryText,
+  openedByText,
   type Owner,
+  pageTripText,
+  replayUrl,
   routeLine,
   signalsOf,
   summaryStamp,
@@ -93,7 +96,13 @@ function Rows({ rows, wide }: { rows: Row[]; wide: boolean }) {
         <div key={`${r.label}-${i}`} className={cn('flex gap-3 text-[13px] leading-[1.4]', r.copy && 'min-h-8 items-center')}>
           <dt className={cn('flex-none text-k-6b6b6b', wide ? 'w-[104px]' : 'w-[84px]')}>{r.label}</dt>
           <dd className={cn('m-0 min-w-0 flex-1 [overflow-wrap:anywhere]', r.warn ? 'font-bold text-k-8a4b00' : 'text-k-202020', r.strong && 'font-bold')}>
-            {r.value}
+            {r.href ? (
+              <a href={r.href} target='_blank' rel='noopener noreferrer' className='font-bold text-k-5b45e0 hover:underline'>
+                {r.value}
+              </a>
+            ) : (
+              r.value
+            )}
           </dd>
           {r.copy && <CopyButton text={r.copy.text} what={r.copy.what} />}
         </div>
@@ -143,7 +152,16 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const about = aboutOf(signals, lead)
   const level = levelOf(lead, confirmedOf(conv))
   const missing = conv.tunnel === 'support' ? [] : missingForReady(lead, confirmedOf(conv))
-  const where = p.isSupervisor ? [] : whereRows(conv.metadata, conv.visitor_phone_country)
+  // The chat the proactive card opened (no form): why it opened, the search the page gave, and the
+  // replay of the visit. The replay sits with "Where they came from", which supervisors don't get.
+  const replay = p.isSupervisor ? '' : replayUrl(conv.metadata)
+  const where = p.isSupervisor
+    ? []
+    : [
+        ...whereRows(conv.metadata, conv.visitor_phone_country),
+        ...(replay ? [{ label: 'Replay', value: 'Watch the visit in PostHog', href: replay }] : []),
+      ]
+  const pageTrip = conv.tunnel === 'support' ? '' : pageTripText(conv.metadata)
   const clientMsgs = p.messages.filter((m) => m.role === 'user').length
   const note = tripNote(conv, owner)
   const route = routeLine(lead)
@@ -161,9 +179,11 @@ export function DetailsPanel(p: DetailsPanelProps) {
   // from the thread's day separators.
   const now = new Date()
   const agent = agentOf(conv)
+  const opened = openedByText(conv.metadata, now)
   const chatRows: Row[] = [
     { label: 'Chat', value: `${conv.chat_number != null ? `#${conv.chat_number} · ` : ''}${conv.tunnel === 'support' ? 'Support' : 'Sales'}` },
     { label: 'Started', value: dayClock(conv.created_at, now) || '—' },
+    ...(opened ? [{ label: 'Opened', value: opened, strong: true }] : []),
     { label: 'Messages', value: String(p.messages.filter((m) => m.role !== 'system').length) },
     ...(agent ? [{ label: 'Agent', value: agent }] : []),
     ...(handoff ? [{ label: 'Asked for a person', value: dayClock(handoff.created_at, now) }] : []),
@@ -233,6 +253,12 @@ export function DetailsPanel(p: DetailsPanelProps) {
                   <Copy aria-hidden='true' className='size-3.5' />
                   Copy the {tripTitle.toLowerCase()}
                 </button>
+              )}
+              {pageTrip && (
+                <p className='m-0 text-xs leading-[1.45] text-k-555555'>
+                  <strong className='text-k-202020'>From the page:</strong> {pageTrip}. The client searched this before writing and
+                  hasn’t confirmed it in the chat.
+                </p>
               )}
               {note && <p className='m-0 text-xs leading-[1.45] text-k-6b6b6b'>{note}</p>}
             </>

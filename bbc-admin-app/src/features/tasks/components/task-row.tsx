@@ -16,6 +16,8 @@ const SOURCE_CHIP: Record<TaskSource, string> = {
   client_asked: 'bg-k-e6f0fb text-k-1f5fb0',
   added: 'bg-k-f2f2f2 text-k-555555',
   dashboard: 'bg-k-fff3e0 text-k-8a4b00',
+  // The client left the site after leaving a contact (bbc-chatbot-api app/services/departure.py).
+  departure: 'bg-k-fdecea text-k-b3261e',
 }
 
 export function KindIcon({ kind, size = 32 }: { kind: TaskKind; size?: 22 | 32 }) {
