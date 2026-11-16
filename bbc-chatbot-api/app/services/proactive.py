@@ -39,13 +39,22 @@ EXPERIMENT = "proactive_chat"
 MODEL_USED = "proactive_template"
 
 # What each card offers under its message. "Not now" never reaches the
-# server: the widget closes the card and stays quiet for 24 hours.
+# server: the widget closes the card and stays quiet for 24 hours. The first
+# button is a yes that asks for nothing personal (ADR 14, 16 Nov debate): the
+# bot asks for the email in the chat, after it, with the reason.
 _REPLIES: dict[str, list[str]] = {
     "kayak": ["Yes, check fares", "Change details", "Not now"],
-    "quote": ["Send me the fares", "I have a question", "Not now"],
+    "quote": ["Yes, check fares", "I have a question", "Not now"],
     "reader": ["Check fares", "I have a question", "Not now"],
     "exit": ["Check fares", "I have a question", "Not now"],
 }
+
+# Who speaks (ADR 12): the assistant has a name and says it is an AI. The
+# widget's header shows the same name over "AI assistant · <brand>"
+# (bbc-widget/src/config, `persona`); keep the two equal. The brands as the
+# widget's header writes them, by the validated `site` (bbc | bct).
+PERSONA = "Alex"
+_BRANDS: dict[str, str] = {"bbc": "BuyBusinessClass", "bct": "Business Class Tickets"}
 
 # The cabins the leads table accepts (leads_cabin_class_check).
 _LEAD_CABINS = ("business", "first", "economy")
@@ -162,36 +171,51 @@ def _trip_line(trip: Optional[TripContext]) -> Optional[str]:
     return line
 
 
-def compose(trigger: str, trip: Optional[TripContext]) -> tuple[str, list[str]]:
-    """The card's message and its quick replies. Pure: the same trigger and
-    trip always give the same words, so /offer and /init agree."""
+def brand_for(site: Optional[str]) -> str:
+    """The brand the visitor is on; BBC when the site is unknown or missing."""
+    return _BRANDS.get(site or "bbc", _BRANDS["bbc"])
+
+
+def compose(trigger: str, trip: Optional[TripContext], site: Optional[str] = None) -> tuple[str, list[str]]:
+    """The card's message and its quick replies. Pure: the same trigger, trip
+    and site always give the same words, so /offer and /init agree.
+
+    The 16 Nov debate (ADR 11-15): Alex introduces himself as the brand's
+    assistant, says what the page already told us and never asks for it again
+    (a third of the /flight chats stopped at "Where are you flying from?"),
+    names a difficulty only where there was one (the quote form that did not
+    send), and promises no time and no price."""
+    hello = f"Hi, I'm {PERSONA} from {brand_for(site)}."
     line = _trip_line(trip)
     dest = _place(trip.destination_name, trip.destination_code) if trip else None
+    full = bool(line and trip and (trip.origin_code or trip.origin_name) and trip.depart_date)
     replies = list(_REPLIES.get(trigger, _REPLIES["reader"]))
 
     if trigger == "quote":
         if line:
-            text = f"Prefer to skip the form? Tell me your email and I'll send fares for {line}."
+            text = f"{hello} Looks like the quote form is giving you trouble. Can I help? An agent can check fares for {line}."
         else:
-            text = "Prefer to skip the form? Tell me your email and I'll send you the fares."
+            text = (f"{hello} Looks like the quote form is giving you trouble. Can I help? "
+                    "Tell me where and roughly when, and an agent will check fares for you.")
     elif trigger == "exit":
         if line:
-            text = f"Before you go: want one of our agents to check fares for {line}? It takes a minute."
+            text = f"{hello} Before you go: want an agent to check fares for {line}?"
         else:
-            text = "Before you go: want one of our agents to check business class fares for you? It takes a minute."
-    elif line and (trip and (trip.origin_code or trip.origin_name) and trip.depart_date):
-        # A full search (Kayak, /search): repeat it, offer the one next step.
-        text = f"Flying {line}? I can have an agent check fares for exactly this trip."
+            text = f"{hello} Before you go: want an agent to check business class fares for you?"
+    elif full:
+        # A full search (Kayak, /search): say it back, offer the one next step.
+        text = f"{hello} I see you're looking at {line}. Want an agent to check private fares for exactly this trip?"
     elif dest:
-        text = f"Planning a trip to {dest}? Tell me your dates and I'll have an agent check business class fares."
+        text = f"{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check business class fares for you."
     else:
-        text = "Planning a business class trip? Tell me where and when, and I'll check fares for you."
+        text = (f"{hello} Planning a business class trip? "
+                "Tell me where and roughly when, and an agent will check fares for you.")
     return text, replies
 
 
 # --- the doors ------------------------------------------------------------
 
-def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext]) -> dict:
+def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], site: Optional[str] = None) -> dict:
     """Should this visitor see the card now, and what does it say.
 
     Always answers (never raises): {"show", "arm", "trigger", "message",
@@ -204,7 +228,7 @@ def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext]) 
     arm = arm_for(visitor_id)
     if arm != "proactive":
         return {"show": False, "arm": arm, "trigger": trigger, "message": None, "quick_replies": []}
-    text, replies = compose(trigger, trip)
+    text, replies = compose(trigger, trip, site)
     PROACTIVE_HEALTH["shown"] += 1
     return {"show": True, "arm": arm, "trigger": trigger, "message": text, "quick_replies": replies}
 
@@ -218,7 +242,9 @@ def init_metadata(trigger: str, trip: Optional[TripContext]) -> dict:
     return meta
 
 
-async def open_conversation(conversation_id: str, trigger: str, trip: Optional[TripContext]) -> Optional[dict]:
+async def open_conversation(
+    conversation_id: str, trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
+) -> Optional[dict]:
     """The visitor answered the card: write the card's words as the bot's
     first message and start the lead with the trip from the page.
 
@@ -234,7 +260,7 @@ async def open_conversation(conversation_id: str, trigger: str, trip: Optional[T
 
     if await db.count_messages(conversation_id) > 0:
         return None
-    text, _ = compose(trigger, trip)
+    text, _ = compose(trigger, trip, site)
     row = await conversation_service.add_message(conversation_id, "ai", text, model_used=MODEL_USED, cost=0.0)
     if not isinstance(row, dict):
         # Not saved (db.add_message logged why): the conversation does not

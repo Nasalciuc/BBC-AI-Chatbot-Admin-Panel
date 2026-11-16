@@ -18,6 +18,7 @@ Dates are relative to today: the suite also runs 120 days ahead (--as-of).
 
 import logging
 import os
+import re
 import sys
 from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -186,41 +187,79 @@ class TestTripContext:
 # ══════════════════════════════════════════════════════════════
 
 class TestCompose:
-    def test_kayak_full_search_is_repeated(self):
+    def test_kayak_full_search_is_said_back(self):
         text, replies = proactive.compose("kayak", _kayak_trip())
         assert text == (
-            f"Flying Atlanta → Seoul, {_day(_in(30))} – {_day(_in(60))}, 4 adults in First? "
-            "I can have an agent check fares for exactly this trip."
+            f"Hi, I'm Alex from BuyBusinessClass. I see you're looking at Atlanta → Seoul, "
+            f"{_day(_in(30))} – {_day(_in(60))}, 4 adults in First. "
+            "Want an agent to check private fares for exactly this trip?"
         )
         assert replies == ["Yes, check fares", "Change details", "Not now"]
 
-    def test_quote_with_and_without_a_route(self):
+    def test_quote_names_the_form_trouble_with_and_without_a_route(self):
         text, replies = proactive.compose("quote", _kayak_trip(return_date=None, adults="1", cabin="business"))
         assert text == (
-            f"Prefer to skip the form? Tell me your email and I'll send fares for "
-            f"Atlanta → Seoul, {_day(_in(30))}, 1 adult in Business."
+            "Hi, I'm Alex from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
+            f"An agent can check fares for Atlanta → Seoul, {_day(_in(30))}, 1 adult in Business."
         )
-        assert replies == ["Send me the fares", "I have a question", "Not now"]
+        # The first button asks for nothing personal (ADR 14): the email comes in the chat.
+        assert replies == ["Yes, check fares", "I have a question", "Not now"]
         assert proactive.compose("quote", None)[0] == (
-            "Prefer to skip the form? Tell me your email and I'll send you the fares."
+            "Hi, I'm Alex from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
+            "Tell me where and roughly when, and an agent will check fares for you."
         )
 
     def test_exit_with_and_without_a_route(self):
         text, _ = proactive.compose("exit", TripContext(origin_name="New York", destination_name="London"))
-        assert text == "Before you go: want one of our agents to check fares for New York → London? It takes a minute."
+        assert text == "Hi, I'm Alex from BuyBusinessClass. Before you go: want an agent to check fares for New York → London?"
         assert proactive.compose("exit", TripContext())[0] == (
-            "Before you go: want one of our agents to check business class fares for you? It takes a minute."
+            "Hi, I'm Alex from BuyBusinessClass. Before you go: want an agent to check business class fares for you?"
         )
 
-    def test_a_route_page_names_the_city_and_asks_for_dates(self):
+    def test_a_route_page_names_the_city_and_asks_roughly_when(self):
         text, replies = proactive.compose("reader", TripContext(source="route_page", destination_name="Paris"))
-        assert text == "Planning a trip to Paris? Tell me your dates and I'll have an agent check business class fares."
+        assert text == (
+            "Hi, I'm Alex from BuyBusinessClass. Planning a trip to Paris? "
+            "Tell me roughly when, and an agent will check business class fares for you."
+        )
         assert replies == ["Check fares", "I have a question", "Not now"]
 
     def test_nothing_known_is_generic(self):
         assert proactive.compose("reader", None)[0] == (
-            "Planning a business class trip? Tell me where and when, and I'll check fares for you."
+            "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
+            "Tell me where and roughly when, and an agent will check fares for you."
         )
+
+    def test_the_brand_follows_the_site(self):
+        assert proactive.compose("reader", None, "bct")[0].startswith("Hi, I'm Alex from Business Class Tickets.")
+        assert proactive.compose("kayak", _kayak_trip(), "bbc")[0].startswith("Hi, I'm Alex from BuyBusinessClass.")
+        # Unknown or missing: BBC, the way the prompt's brand defaults.
+        for site in (None, "", "evil.example", "BCT"):
+            assert proactive.compose("exit", None, site)[0].startswith("Hi, I'm Alex from BuyBusinessClass.")
+
+    @pytest.mark.parametrize("trigger", ["kayak", "quote", "reader", "exit"])
+    @pytest.mark.parametrize("trip_kind", ["full", "dest", "none"])
+    @pytest.mark.parametrize("site", ["bbc", "bct"])
+    def test_no_opening_promises_a_time_or_a_price_or_asks_what_the_page_knows(self, trigger, trip_kind, site):
+        """ADR 11 and 15 (16 Nov debate): a third of the /flight chats stopped at
+        "Where are you flying from?", and a third of the chats come at night."""
+        trip = {"full": _kayak_trip(), "dest": TripContext(destination_name="Paris"), "none": None}[trip_kind]
+        text, _ = proactive.compose(trigger, trip, site)
+        lowered = text.lower()
+        assert not re.search(r"\d+\s*(min|minute|hour|hr)", lowered), text
+        assert "$" not in text and "usd" not in lowered and "within" not in lowered, text
+        assert "where are you flying" not in lowered, text
+        if trip_kind == "full":
+            # The page gave the route and the dates: nothing asks for them.
+            assert "tell me where" not in lowered and "roughly when" not in lowered, text
+
+    def test_a_difficulty_is_named_only_where_there_was_one(self):
+        """ADR 13: the Kayak visitor hesitates, he has no problem; only the quote
+        form that did not send is a difficulty."""
+        for trigger in ("kayak", "reader", "exit"):
+            for trip in (_kayak_trip(), None):
+                assert "trouble" not in proactive.compose(trigger, trip)[0]
+        assert "trouble" in proactive.compose("quote", None)[0]
 
     def test_children_and_infants_are_counted(self):
         text, _ = proactive.compose("kayak", _kayak_trip(adults="2", children="1", infants="1"))
@@ -278,7 +317,21 @@ class TestOffer:
         _switch_on(monkeypatch, percent=100)
         req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="reader", trip="not an object")
         out = await proactive_offer(req, None)
-        assert out["show"] is True and out["message"].startswith("Planning a business class trip?")
+        assert out["show"] is True
+        assert out["message"].startswith("Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?")
+
+    @pytest.mark.asyncio
+    async def test_the_card_names_the_brand_of_the_site(self, monkeypatch):
+        _switch_on(monkeypatch, percent=100)
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="exit", site="bct")
+        assert req.site == "bct"
+        out = await proactive_offer(req, None)
+        assert out["message"].startswith("Hi, I'm Alex from Business Class Tickets.")
+
+    @pytest.mark.parametrize("site", ["evil.example", "BBC", 7, ["bct"], {"x": 1}, ""])
+    def test_an_unknown_site_is_dropped_never_a_422(self, site):
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="exit", site=site)
+        assert req.site is None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -320,6 +373,14 @@ class TestOpenConversation:
         assert written["proactive_trip"]["destination_code"] == "ICN"
         seed.assert_awaited_once_with(_CONV_ID, trip)
         assert proactive.PROACTIVE_HEALTH["opened"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_opening_names_the_brand_of_the_site(self):
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, p_add as add, p_meta, p_seed:
+            await proactive.open_conversation(_CONV_ID, "reader", None, "bct")
+        assert add.await_args.args[2] == proactive.compose("reader", None, "bct")[0]
+        assert add.await_args.args[2].startswith("Hi, I'm Alex from Business Class Tickets.")
 
     @pytest.mark.asyncio
     async def test_a_chat_with_messages_is_left_alone(self):
@@ -687,6 +748,19 @@ class TestCrmNote:
 
 
 class TestPrompt:
+    @pytest.mark.parametrize("site, brand", [("bbc", "Buy Business Class"), ("bct", "Business Class Tickets")])
+    def test_the_assistant_is_alex_and_says_it_is_an_ai(self, site, brand):
+        """ADR 12: the name the widget's header shows, on every chat, next to
+        the rule that it never passes for a human."""
+        from app.ai.prompts import build_conversational_prompt
+
+        static, dynamic = build_conversational_prompt(
+            tunnel="sales", visitor=VisitorInfo(), lead=None, entities={"site": site},
+        )
+        prompt = static + dynamic
+        assert f"Your name is Alex, the AI assistant of {brand}" in prompt
+        assert "NEVER imply you are a human" in prompt
+
     def test_proactive_chat_shows_the_page_and_asks_email_first(self):
         from app.ai.prompts import build_conversational_prompt
 
@@ -785,10 +859,23 @@ class TestChatInit:
         assert res.opening_at == "2026-11-15T03:00:00+00:00"
         args = opener.await_args.args
         assert args[0] == _CONV_ID and args[1] == "kayak" and args[2].destination_code == "ICN"
+        assert args[3] is None  # no site in the metadata: the opening speaks for BBC
         # The label is written with the opening, not at creation: a reused
         # chat must not be labelled proactive (first-touch metadata merge).
         created_meta = conv.await_args.kwargs["metadata"] or {}
         assert not any(k.startswith("proactive") for k in created_meta)
+
+    @pytest.mark.parametrize("sent, expected", [("bct", "bct"), ("bbc", "bbc"), ("evil.example", None)])
+    @pytest.mark.asyncio
+    async def test_the_opening_gets_the_validated_site(self, monkeypatch, sent, expected):
+        """The same brand the card named at /offer, as the metadata allowlist
+        validated it: an unknown site never reaches the words."""
+        _switch_on(monkeypatch)
+        payload = ChatInitRequest(visitor_id=_VISITOR, metadata={"site": sent}, proactive={"trigger": "exit"})
+        p_block, p_conv, p_open = _init_patches()
+        with p_block, p_conv, p_open as opener:
+            await chat_init(payload, _request_mock(), None)
+        assert opener.await_args.args[3] == expected
 
     @pytest.mark.asyncio
     async def test_off_means_a_plain_chat(self):

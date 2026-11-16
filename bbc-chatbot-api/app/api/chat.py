@@ -199,7 +199,11 @@ async def chat_init(
         # with the page's search. A failure here must not cost the visitor
         # the chat: it is counted and logged, and the chat goes on.
         try:
-            _opening = await _proactive.open_conversation(conv_id, _proactive_trigger, payload.trip) or {}
+            # `site` as the metadata allowlist validated it (bbc | bct): the
+            # same brand the card named at /offer.
+            _opening = await _proactive.open_conversation(
+                conv_id, _proactive_trigger, payload.trip, _meta.get("site"),
+            ) or {}
         except Exception as e:
             _proactive.PROACTIVE_HEALTH["open_failures"] += 1
             logger.error(f"[init] proactive opening failed (conv={conv_id}): {type(e).__name__}")
@@ -216,11 +220,20 @@ class ProactiveOfferRequest(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
     trigger: Literal["kayak", "quote", "reader", "exit"]
     trip: Optional[TripContext] = None
+    # The brand the visitor is on (bbc | bct), so the card names it. Anything
+    # else is dropped, never a 422: the card then speaks for BBC.
+    site: Optional[str] = None
 
     @field_validator("trip", mode="before")
     @classmethod
     def _trip_or_none(cls, v):
         return v if isinstance(v, (dict, TripContext)) else None
+
+    @field_validator("site", mode="before")
+    @classmethod
+    def _known_site_or_none(cls, v):
+        from app.ai.prompts import SITE_CONFIGS
+        return v if isinstance(v, str) and v in SITE_CONFIGS else None
 
 
 @router.post("/chat/proactive/offer")
@@ -234,7 +247,7 @@ async def proactive_offer(
     conversation, no lead and no row. The control arm is told show=False, so
     the widget counts the moment without showing anything."""
     from app.services import proactive
-    return proactive.offer(payload.visitor_id, payload.trigger, payload.trip)
+    return proactive.offer(payload.visitor_id, payload.trigger, payload.trip, payload.site)
 
 
 # --- Start endpoint: the AI greets FIRST — no fake client message ---
