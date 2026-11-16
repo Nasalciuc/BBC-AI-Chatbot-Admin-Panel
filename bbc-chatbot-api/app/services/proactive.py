@@ -21,6 +21,14 @@ Switches (``app_settings.flags``, read every 30 s, no deploy):
 - ``PROACTIVE_PERCENT`` (0) — the share of visitors in the proactive arm,
   bucketed by visitor id, so a visitor stays in one arm across visits;
 - ``PROACTIVE_TRIGGERS`` ("kayak,quote,reader,exit") — which moments may open it.
+
+One more door is not a moment and the switches above do not hold it:
+``note``, the visitor TAPPED the 10 s note beside the button ("Tell me where
+and when, and I'll check fares"). The owner's decision of 16 Nov: that tap
+opens the chat with the same words and no form, for every visitor — from
+13 Nov, 0 of the 35 visitors who opened the chat got past the form the note
+led to. Its own switch, ``PROACTIVE_NOTE_ENABLED`` (on at merge), sends the
+note back to the form in 30 s, without a deploy, if it ever must.
 """
 
 from __future__ import annotations
@@ -35,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 Trigger = Literal["kayak", "quote", "reader", "exit"]
 TRIGGERS: tuple[str, ...] = ("kayak", "quote", "reader", "exit")
+# The tapped note (module docstring): asked for by the visitor, so in no arm.
+NOTE = "note"
 EXPERIMENT = "proactive_chat"
 MODEL_USED = "proactive_template"
 
@@ -47,6 +57,8 @@ _REPLIES: dict[str, list[str]] = {
     "quote": ["Yes, check fares", "I have a question", "Not now"],
     "reader": ["Check fares", "I have a question", "Not now"],
     "exit": ["Check fares", "I have a question", "Not now"],
+    # The visitor asked for the chat: no "Not now" to offer them.
+    "note": ["Check fares", "I have a question"],
 }
 
 # Who speaks (ADR 12): the assistant has a name and says it is an AI. The
@@ -75,6 +87,13 @@ PROACTIVE_HEALTH: dict = {
 def enabled() -> bool:
     from app.flags import flag
     return bool(flag("PROACTIVE_ENABLED", False))
+
+
+def note_enabled() -> bool:
+    """The tapped note opens the chat (on at merge, the owner's decision);
+    off, the widget falls back to the form."""
+    from app.flags import flag
+    return bool(flag("PROACTIVE_NOTE_ENABLED", True))
 
 
 def active_triggers() -> set[str]:
@@ -223,6 +242,14 @@ def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], 
     the moment without showing anything — the comparison the test rests on.
     """
     PROACTIVE_HEALTH["offers"] += 1
+    if trigger == NOTE:
+        # The visitor tapped the note: the words, whatever the experiment's
+        # switches say; its own switch off → "no", and the widget shows the form.
+        if not note_enabled():
+            return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
+        text, replies = compose(trigger, trip, site)
+        PROACTIVE_HEALTH["shown"] += 1
+        return {"show": True, "arm": NOTE, "trigger": trigger, "message": text, "quick_replies": replies}
     if not enabled() or trigger not in active_triggers():
         return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
     arm = arm_for(visitor_id)

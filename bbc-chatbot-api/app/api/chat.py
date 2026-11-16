@@ -83,11 +83,12 @@ class ChatInitRequest(BaseModel):
         return None
 
 
-_PROACTIVE_TRIGGERS = ("kayak", "quote", "reader", "exit")
+_PROACTIVE_TRIGGERS = ("kayak", "quote", "reader", "exit", "note")
 
 
 class ProactiveInit(BaseModel):
-    trigger: Literal["kayak", "quote", "reader", "exit"]
+    # "note": the visitor tapped the note beside the button (app/services/proactive).
+    trigger: Literal["kayak", "quote", "reader", "exit", "note"]
 
 
 ChatInitRequest.model_rebuild()
@@ -164,9 +165,15 @@ async def chat_init(
         _meta.setdefault("visitor_id", payload.visitor_id)
 
     from app.services import proactive as _proactive
+    # The moments follow the experiment's switches; the tapped note has its
+    # own (on at merge): the visitor asked for the chat.
     _proactive_trigger = (
         payload.proactive.trigger
-        if payload.proactive and payload.tunnel == "sales" and _proactive.enabled()
+        if payload.proactive and payload.tunnel == "sales"
+        and (
+            _proactive.note_enabled() if payload.proactive.trigger == _proactive.NOTE
+            else _proactive.enabled()
+        )
         else None
     )
 
@@ -218,7 +225,7 @@ async def chat_init(
 
 class ProactiveOfferRequest(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
-    trigger: Literal["kayak", "quote", "reader", "exit"]
+    trigger: Literal["kayak", "quote", "reader", "exit", "note"]
     trip: Optional[TripContext] = None
     # The brand the visitor is on (bbc | bct), so the card names it. Anything
     # else is dropped, never a 422: the card then speaks for BBC.

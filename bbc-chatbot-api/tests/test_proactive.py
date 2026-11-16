@@ -75,7 +75,7 @@ def _day(d: date) -> str:
 def _switches(monkeypatch):
     """Every test starts from merge state (feature off, 0%) with fresh counters."""
     flags._reset_for_tests()
-    for k in ("PROACTIVE_ENABLED", "PROACTIVE_PERCENT", "PROACTIVE_TRIGGERS"):
+    for k in ("PROACTIVE_ENABLED", "PROACTIVE_PERCENT", "PROACTIVE_TRIGGERS", "PROACTIVE_NOTE_ENABLED"):
         monkeypatch.delenv(k, raising=False)
     saved = dict(proactive.PROACTIVE_HEALTH)
     for k in ("offers", "shown", "opened", "open_failures", "seed_errors"):
@@ -332,6 +332,100 @@ class TestOffer:
     def test_an_unknown_site_is_dropped_never_a_422(self, site):
         req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="exit", site=site)
         assert req.site is None
+
+
+class TestNote:
+    """The 10 s note the visitor TAPPED (owner's decision, 16 Nov): the chat
+    opens with Alex's words and no form, for every visitor, whatever the
+    experiment's switches say — the visitor asked for it."""
+
+    def test_the_note_gets_the_words_with_the_feature_off(self):
+        out = proactive.offer(_VISITOR, "note", None, "bbc")
+        assert out["show"] is True and out["arm"] == "note"
+        assert out["message"] == (
+            "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
+            "Tell me where and roughly when, and an agent will check fares for you."
+        )
+        assert out["quick_replies"] == ["Check fares", "I have a question"]
+        assert proactive.PROACTIVE_HEALTH["shown"] == 1
+
+    @pytest.mark.parametrize("percent", [0, 100])
+    def test_no_arm_and_no_trigger_switch_hold_it(self, monkeypatch, percent):
+        _switch_on(monkeypatch, percent=percent, triggers="kayak")
+        out = proactive.offer(_VISITOR, "note", _kayak_trip())
+        assert out["show"] is True and out["arm"] == "note"
+        assert out["message"] == proactive.compose("note", _kayak_trip())[0]
+
+    def test_the_words_are_the_readers_for_the_same_page(self):
+        """Same page, same words as the reader's card: only the buttons differ
+        (no "Not now" for a chat the visitor asked for)."""
+        for trip in (None, _kayak_trip(), TripContext(destination_code="LHR")):
+            assert proactive.compose("note", trip, "bct")[0] == proactive.compose("reader", trip, "bct")[0]
+        assert "Not now" not in proactive.compose("note", None)[1]
+
+    @pytest.mark.asyncio
+    async def test_the_endpoint_takes_the_note(self):
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="note", site="bct")
+        out = await proactive_offer(req, None)
+        assert out["show"] is True
+        assert out["message"].startswith("Hi, I'm Alex from Business Class Tickets.")
+
+    @pytest.mark.asyncio
+    async def test_the_answer_opens_the_chat_with_the_feature_off(self):
+        payload = ChatInitRequest(visitor_id=_VISITOR, proactive={"trigger": "note"})
+        p_block, p_conv, p_open = _init_patches()
+        with p_block, p_conv, p_open as opener:
+            res = await chat_init(payload, _request_mock(), None)
+        assert res.opening == "the opening"
+        assert opener.await_args.args[1] == "note"
+
+    @pytest.mark.asyncio
+    async def test_the_moments_stay_off_with_the_feature_off(self):
+        """Only the note passes without the switch: a moment still needs it."""
+        for trigger in ("kayak", "quote", "reader", "exit"):
+            payload = ChatInitRequest(visitor_id=_VISITOR, proactive={"trigger": trigger})
+            p_block, p_conv, p_open = _init_patches()
+            with p_block, p_conv, p_open as opener:
+                res = await chat_init(payload, _request_mock(), None)
+            assert res.opening is None
+            opener.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_its_own_switch_sends_it_back_to_the_form(self, monkeypatch):
+        """PROACTIVE_NOTE_ENABLED off: /offer says no (the widget then shows
+        the form) and /chat/init writes no opening for it."""
+        monkeypatch.setenv("PROACTIVE_NOTE_ENABLED", "false")
+        assert proactive.offer(_VISITOR, "note", None) == {
+            "show": False, "arm": "off", "trigger": "note", "message": None, "quick_replies": [],
+        }
+        payload = ChatInitRequest(visitor_id=_VISITOR, proactive={"trigger": "note"})
+        p_block, p_conv, p_open = _init_patches()
+        with p_block, p_conv, p_open as opener:
+            res = await chat_init(payload, _request_mock(), None)
+        assert res.opening is None
+        opener.assert_not_awaited()
+
+    def test_its_switch_is_on_at_merge(self):
+        assert proactive.note_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_never_on_the_support_tunnel(self):
+        payload = ChatInitRequest(tunnel="support", visitor_id=_VISITOR, proactive={"trigger": "note"})
+        p_block, p_conv, p_open = _init_patches()
+        with p_block, p_conv, p_open as opener:
+            await chat_init(payload, _request_mock(), None)
+        opener.assert_not_awaited()
+
+    def test_the_chat_it_opens_asks_the_email_first(self):
+        """Labelled like the card's chat: no form behind it, so the prompt
+        asks the email first (get_missing_fields with email_first)."""
+        from app.ai.prompts import build_conversational_prompt
+
+        _static, dynamic = build_conversational_prompt(
+            tunnel="sales", visitor=VisitorInfo(), lead={"id": "L1", "score": 10},
+            entities={"_metadata": {"proactive_trigger": "note"}},
+        )
+        assert "Still needed: route (origin and destination), email," in dynamic
 
 
 # ══════════════════════════════════════════════════════════════
