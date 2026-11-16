@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from app.pipeline.entity_extractor import merge_contact_channel
+from app.pipeline.entity_extractor import current_contact_channel
 from app.pipeline.intent import Intent
 from app.models.chat import VisitorInfo, RouteCard
 from app.models.lead import get_missing_fields
@@ -254,8 +254,10 @@ def _run_tiered_generation(
     if _ov.get("model"):
         from app.ai.claude import call_reply_plain
 
-        def plain_call(system, message, _model=_ov["model"]):
-            return call_reply_plain(_model, system, message)
+        # The re-call keeps the route's effort and room for thinking, not the
+        # plain call's defaults (CodeRabbit #255).
+        def plain_call(system, message, _model=_ov["model"], _effort=_ov.get("effort", "low"), _max=_ov.get("max_tokens")):
+            return call_reply_plain(_model, system, message, effort=_effort, max_tokens=_max)
 
     if on_chunk:
         ai_text, ai_cost, _te = stream_tools(
@@ -289,16 +291,9 @@ def _apply_slot_question(text, lead, tunnel):
 
 
 def _contact_channel_now(lead: Optional[dict], entities: dict) -> Optional[str]:
-    """Every channel wish so far, this message's included. The lead holds the
-    merged wishes; this turn's go on top, so a refusal said now counts even when
-    the lead refresh failed and the lead is a turn behind (merging again is a
-    no-op when it is current)."""
-    signals = (lead or {}).get("intent_signals")
-    stored = signals.get("contact_channel") if isinstance(signals, dict) else None
-    now = (entities or {}).get("contact_channel")
-    if isinstance(now, str) and now:
-        return merge_contact_channel(stored if isinstance(stored, str) else None, now)
-    return stored if isinstance(stored, str) else None
+    """Every channel wish so far, this message's included (entity_extractor.
+    current_contact_channel, shared with the prompt and the queue reply)."""
+    return current_contact_channel(lead, entities)
 
 
 def _all_channels_refused(lead: Optional[dict], entities: dict) -> bool:
@@ -547,7 +542,9 @@ def generate_response(
                             content = (msg.get("content") or "").lower()
                             # The handoff says "consultant": a guard that
                             # looked for "specialist" alone never saw it, and
-                            # one chat got the same promise five times.
+                            # one chat got the same promise five times. The
+                            # off-hours promise to a client who refused every
+                            # channel says only "first thing" (CodeRabbit #255).
                             if (
                                 ("specialist" in content or "consultant" in content)
                                 and (
@@ -555,6 +552,7 @@ def generate_response(
                                     or "contact you" in content
                                     or "connect" in content
                                     or "within" in content
+                                    or "first thing" in content
                                 )
                             ):
                                 already_sent = True

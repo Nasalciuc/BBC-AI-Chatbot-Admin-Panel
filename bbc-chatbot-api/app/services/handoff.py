@@ -356,6 +356,12 @@ async def get_handoff_response(
             # as the prompt asks it (ADR 05).
             "email_first": bool(_conv_meta.get("proactive_trigger")),
         })
+        # Never ask again for a channel the client turned down: no calls and
+        # no texts rules out the phone, "no email" the email (CodeRabbit #255).
+        from app.pipeline.entity_extractor import current_contact_channel, refused_contact_fields
+
+        _refused = refused_contact_fields(current_contact_channel(_lead))
+        _missing = [m for m in _missing if m not in _refused]
         _ask_map = {
             "route": None,  # route is two questions — keep it free-form
             "travel dates": "ask_dates",

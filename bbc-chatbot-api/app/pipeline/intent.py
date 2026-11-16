@@ -33,17 +33,26 @@ class Intent(str, Enum):
     OTHER = "other"
 
 
+# The answer to Alex's one offer of a real person (prompts: A REAL PERSON):
+# "yes, pass it on" / "send my request to a consultant".
+_TRANSFER_RE = re.compile(
+    r"\b(pass|hand)\s+(it|this|that|my\s+request)\s+(on|over|along)\b"
+    r"|\b(pass|hand|send)\s+(it|this|that|my\s+request)\s+to\s+(a|the|your|one\s+of\s+your)\s+"
+    r"(consultants?|agents?|person|human)\b",
+    re.I,
+)
+# ...and its refusal, which is a no, not a request for a person: "please don't
+# pass it on", "do not hand it over", "no need to send it to a consultant"
+# (CodeRabbit #255). Up to three words between, in the same clause.
+_TRANSFER_REFUSED_RE = re.compile(
+    r"\b(?:don[’']?t|do\s+not|never|no\s+need\s+to)\s+(?:\w+\s+){0,3}?(?:pass|hand|send)\b",
+    re.I,
+)
+
 # Ordered: most specific → most generic
 INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.TALK_TO_AGENT, re.compile(r"(talk|speak|connect).*(agent|human|person|someone)", re.I)),
-    # The answer to Alex's one offer of a real person (prompts: A REAL PERSON):
-    # "yes, pass it on" / "send my request to a consultant".
-    (Intent.TALK_TO_AGENT, re.compile(
-        r"\b(pass|hand)\s+(it|this|that|my\s+request)\s+(on|over|along)\b"
-        r"|\b(pass|hand|send)\s+(it|this|that|my\s+request)\s+to\s+(a|the|your|one\s+of\s+your)\s+"
-        r"(consultants?|agents?|person|human)\b",
-        re.I,
-    )),
+    (Intent.TALK_TO_AGENT, _TRANSFER_RE),
     (Intent.GREETING, re.compile(r"^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy)\b", re.I)),
     (Intent.CLOSING, re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)),
     (Intent.BOOKING_CHANGE, re.compile(r"(change|cancel|modify|reschedule|refund)", re.I)),
@@ -98,6 +107,8 @@ def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count:
     # 2. Regex patterns
     lower = message.lower()
     for intent, pattern in INTENT_PATTERNS:
+        if pattern is _TRANSFER_RE and _TRANSFER_REFUSED_RE.search(lower):
+            continue
         if pattern.search(lower):
             logger.debug(f"Intent from regex: {intent.value}")
             return intent

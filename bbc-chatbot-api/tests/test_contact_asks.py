@@ -188,6 +188,17 @@ class TestHandoffContact:
             text = _gen(lead=self._with("no calls, no email")).text
         assert "ann@example.com" not in text
 
+    # CodeRabbit #255, round 5: the off-hours promise to a client who refused
+    # every channel says "first thing", not "within" or "reach out" — the
+    # guard against repeating the handoff has to know it too.
+    def test_the_off_hours_no_channel_promise_is_not_repeated(self):
+        lead = self._with("no calls, no texts, no email")
+        with patch("app.services.closing.is_within_team_hours", return_value=False):
+            first = _gen(lead=lead).text
+            again = _gen(lead=lead, history=[{"role": "ai", "content": first}]).text
+        assert "just tell me here how you'd like them" in first
+        assert "just tell me here how you'd like them" not in again
+
     @pytest.mark.parametrize("online", [True, False])
     def test_every_channel_refused_promises_none(self, online):
         """"Don't call or text me. Never email me": no number, no email, and the
@@ -405,3 +416,55 @@ class TestContactChannel:
         from app.pipeline import orchestrator
 
         assert '"contact_channel": extracted.contact_channel' in inspect.getsource(orchestrator)
+
+
+# ── A refused channel stays refused in the prompt (CodeRabbit #255, round 5) ─
+
+class TestRefusedChannelInThePrompt:
+    """The prompt keeps the client's own contact wishes in VISITOR CONTEXT, so a
+    refusal still counts once its message has left the ten-message history,
+    and a refused field leaves "Still needed"."""
+
+    @staticmethod
+    def _dynamic(channel, visitor=None):
+        from app.ai.prompts import build_conversational_prompt
+
+        lead = _complete_lead()
+        if channel:
+            lead["intent_signals"] = {"contact_channel": channel}
+        _static, dynamic = build_conversational_prompt(
+            tunnel="sales", visitor=visitor or VisitorInfo(name="Ann", email="ann@example.com"), lead=lead,
+        )
+        return dynamic
+
+    def test_no_calls_and_no_texts_take_the_phone_off_the_list(self):
+        dynamic = self._dynamic("no calls, no texts")
+        assert "Still needed:" not in dynamic
+        assert "Contact wishes: no calls, no texts (the client's own words;" in dynamic
+        assert "CRM: Waiting on a contact the client turned down — do not ask for it" in dynamic
+
+    def test_no_calls_alone_still_needs_the_number_for_texts(self):
+        dynamic = self._dynamic("no calls")
+        assert "Still needed: phone number" in dynamic
+        assert "Contact wishes: no calls" in dynamic
+        assert "CRM: Waiting — collect missing data first" in dynamic
+
+    def test_no_email_takes_the_email_off_the_list(self):
+        dynamic = self._dynamic("no email", visitor=VisitorInfo(name="Ann", phone="+12125550187"))
+        assert "Still needed:" not in dynamic
+        assert "Contact wishes: no email" in dynamic
+
+    def test_without_a_wish_nothing_changes(self):
+        dynamic = self._dynamic(None)
+        assert "Still needed: phone number" in dynamic
+        assert "Contact wishes" not in dynamic
+
+    def test_a_wish_said_this_turn_counts_before_the_lead_has_it(self):
+        from app.ai.prompts import build_conversational_prompt
+
+        _static, dynamic = build_conversational_prompt(
+            tunnel="sales", visitor=VisitorInfo(name="Ann", email="ann@example.com"),
+            lead=_complete_lead(), entities={"contact_channel": "no calls, no texts"},
+        )
+        assert "Still needed:" not in dynamic
+        assert "Contact wishes: no calls, no texts" in dynamic

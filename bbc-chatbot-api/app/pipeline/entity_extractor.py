@@ -700,6 +700,34 @@ def merge_contact_channel(stored: Optional[str], new: str) -> str:
     kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts]
     return ", ".join(kept + new_parts)
 
+
+def current_contact_channel(lead: Optional[dict], entities: Optional[dict] = None) -> Optional[str]:
+    """Every channel wish so far, this message's included. The lead holds the
+    merged wishes; this turn's go on top, so a refusal said now counts even when
+    the lead refresh failed and the lead is a turn behind (merging again is a
+    no-op when it is current)."""
+    signals = (lead or {}).get("intent_signals")
+    stored = signals.get("contact_channel") if isinstance(signals, dict) else None
+    stored = stored if isinstance(stored, str) and stored else None
+    now = (entities or {}).get("contact_channel")
+    if isinstance(now, str) and now:
+        return merge_contact_channel(stored, now)
+    return stored
+
+
+def refused_contact_fields(channel: Optional[str]) -> set[str]:
+    """The missing-field labels (models.lead.get_missing_fields) the client's own
+    words rule out: the phone once calls AND texts are refused, the email once
+    email is. Nobody is asked again for a channel they turned down — not in the
+    prompt's "Still needed", not in the queue reply (CodeRabbit #255)."""
+    parts = {p.strip() for p in (channel or "").split(",")}
+    refused: set[str] = set()
+    if {"no calls", "no texts"} <= parts:
+        refused.add("phone number")
+    if "no email" in parts:
+        refused.add("email")
+    return refused
+
 # Reverse of CITY_TO_CODE for the landing-page hint. Short keys ("la", "sf")
 # match too much inside a slug, so only real city names are used.
 _SLUG_CITIES: dict[str, str] = {

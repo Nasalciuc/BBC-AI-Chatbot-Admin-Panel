@@ -146,13 +146,19 @@ def test_the_re_call_without_tools_stays_on_the_owners_model(monkeypatch):
     )
     monkeypatch.setattr(
         generator, "_router_override",
-        lambda tier, tunnel, cid: {"model": "claude-haiku-5-5", "effort": "low", "max_tokens": 1024},
+        lambda tier, tunnel, cid: {"model": "claude-haiku-5-5", "effort": "high", "max_tokens": 4096},
     )
-    monkeypatch.setattr(claude, "call_reply_plain", lambda model, s, m: (calls.append(model) or ("London it is!", 0.0001)))
+
+    def plain(model, s, m, effort="low", max_tokens=None):
+        calls.append((model, effort, max_tokens))
+        return "London it is!", 0.0001
+
+    monkeypatch.setattr(claude, "call_reply_plain", plain)
     text, *_ = generator._run_tiered_generation(
         Intent.NEW_BOOKING, None, "sales", ("static", "dynamic"), "London"
     )
-    assert calls == ["claude-haiku-5-5"]
+    # The route's effort and room for thinking go with it (CodeRabbit #255).
+    assert calls == [("claude-haiku-5-5", "high", 4096)]
     assert text == "London it is!"
 
 
@@ -162,10 +168,12 @@ def test_the_closing_follows_the_switch(monkeypatch):
 
     used = []
     efforts = []
+    room = []
 
-    def reply(model, system, user, on_chunk=None, effort="low"):
+    def reply(model, system, user, on_chunk=None, effort="low", max_tokens=None):
         used.append(model)
         efforts.append(effort)
+        room.append(max_tokens)
         if on_chunk:
             on_chunk("Thank you")
         return "Thank you, Robert.", 0.0001
@@ -195,6 +203,77 @@ def test_the_closing_follows_the_switch(monkeypatch):
     _text, model, _cost = asyncio.run(closing.generate_closing(lead, visitor, crm_ok=True))
     assert used == ["claude-sonnet-5-5"] and model == "claude-sonnet-5-5"
     assert efforts == ["low", "medium"]
+    # The whole route, max_tokens included (CodeRabbit #255).
+    assert room == [1024, 2048]
+
+
+class _FakeStream:
+    """Enough of messages.stream for _stream_model: one chunk, then usage."""
+
+    def __init__(self, text):
+        self._text = text
+        self.text_stream = iter([text])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=self._text)],
+            usage=SimpleNamespace(
+                input_tokens=10, output_tokens=5,
+                cache_read_input_tokens=0, cache_creation_input_tokens=0, cache_creation=None,
+            ),
+            stop_reason="end_turn",
+        )
+
+
+class _FakeClient:
+    def __init__(self, sent):
+        self.sent = sent
+        self.messages = self
+
+    def stream(self, **kwargs):
+        self.sent.append(kwargs)
+        return _FakeStream("Thank you, Robert.")
+
+    def create(self, **kwargs):
+        self.sent.append(kwargs)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="London it is!")],
+            usage=SimpleNamespace(
+                input_tokens=10, output_tokens=5,
+                cache_read_input_tokens=0, cache_creation_input_tokens=0, cache_creation=None,
+            ),
+            stop_reason="end_turn",
+        )
+
+
+def test_the_real_wrappers_send_the_routes_effort_and_room(monkeypatch):
+    """stream_reply (the closing) and call_reply_plain (the re-call) reach the
+    API with the route's effort and max_tokens, not 450 / 400 raised to 512."""
+    from app.ai import claude
+
+    sent = []
+    monkeypatch.setattr(claude, "_get_client", lambda: _FakeClient(sent))
+
+    text, _cost = claude.stream_reply("claude-haiku-5-5", "system", "user", effort="high", max_tokens=4096)
+    assert text == "Thank you, Robert."
+    assert sent[-1]["max_tokens"] == 4096
+    assert sent[-1]["output_config"] == {"effort": "high"}
+
+    text, _cost = claude.call_reply_plain("claude-haiku-5-5", "system", "user", effort="medium", max_tokens=2048)
+    assert text == "London it is!"
+    assert sent[-1]["max_tokens"] == 2048
+    assert sent[-1]["extra_body"] == {"output_config": {"effort": "medium"}}
+
+    # Without a route, today's defaults.
+    claude.call_reply_plain("claude-haiku-5-5", "system", "user")
+    assert sent[-1]["max_tokens"] == 512
+    assert sent[-1]["extra_body"] == {"output_config": {"effort": "low"}}
 
 
 def test_a_typical_reply_costs_thirty_times_less(monkeypatch):

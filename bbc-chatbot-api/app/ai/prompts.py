@@ -941,13 +941,30 @@ def build_conversational_prompt(
             collected_items.append(lead["cabin_class"])
         if collected_items:
             visitor_lines.append(f"Collected: {', '.join(collected_items)}")
-        if missing:
-            visitor_lines.append(f"Still needed: {', '.join(missing)}")
+        # A channel the client turned down is never asked for again, even once
+        # their words have left the ten-message history (CodeRabbit #255): the
+        # stored wishes ride here, and the refused field leaves "Still needed".
+        from app.pipeline.entity_extractor import current_contact_channel, refused_contact_fields
+
+        _channel = current_contact_channel(lead, entities)
+        _refused = refused_contact_fields(_channel)
+        asks = [m for m in missing if m not in _refused]
+        if asks:
+            visitor_lines.append(f"Still needed: {', '.join(asks)}")
+        if _channel:
+            visitor_lines.append(
+                f"Contact wishes: {_channel} (the client's own words; never ask again for a channel they turned down)"
+            )
         # CRM status — NEVER show "Submitted" while fields are still missing.
         if not missing and lead.get("created_in_crm"):
             visitor_lines.append("CRM: Submitted — consultant will call soon")
         elif not missing:
             visitor_lines.append("CRM: Ready to submit")
+        elif not asks:
+            visitor_lines.append(
+                "CRM: Waiting on a contact the client turned down — do not ask for it; "
+                "their consultant follows up the way they chose"
+            )
         else:
             visitor_lines.append("CRM: Waiting — collect missing data first")
     # Count only real user messages for stage detection
