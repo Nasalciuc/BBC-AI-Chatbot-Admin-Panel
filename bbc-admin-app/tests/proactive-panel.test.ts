@@ -26,6 +26,8 @@ test('why the chat opened by itself', () => {
   assert.equal(openedByText({ proactive_trigger: 'something_new' }, NOW), 'By itself: the client hesitated')
   assert.match(openedByText({ proactive_trigger: 'kayak', proactive_at: '2026-11-16T09:41:00Z' }, NOW), /^By itself: the client came from Kayak · \d{2}:\d{2}$/)
   assert.equal(openedByText({}, NOW), '')
+  // Only the table's own words: a key that reaches Object.prototype is an unknown one.
+  assert.equal(openedByText({ proactive_trigger: 'constructor' }, NOW), 'By itself: the client hesitated')
   assert.equal(openedByText(undefined, NOW), '')
 })
 
@@ -39,6 +41,7 @@ test('what the client searched on the page', () => {
   assert.equal(pageTripText({ proactive_trip: { origin_name: 'Chicago' } }), 'From Chicago')
   assert.equal(pageTripText({ proactive_trip: { depart_date: 'soon', adults: 'four', cabin: 'luxury' } }), '')
   assert.equal(pageTripText({ proactive_trip: 'ATL-ICN' }), '')
+  assert.equal(pageTripText({ proactive_trip: { destination_name: 'Paris', cabin: 'toString' } }), 'To Paris')
   assert.equal(pageTripText({}), '')
 })
 

@@ -804,6 +804,12 @@ export function deviceOf(ua: unknown): string {
 
 // ── the chat that opened by itself (bbc-chatbot-api app/services/proactive.py) ──
 
+/** A word from one of the fixed tables below, for a key that came with the data: only the table's
+ *  own keys count ("constructor" or "toString" would otherwise reach Object.prototype). */
+function wordFor(table: Record<string, string>, key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined
+}
+
 /** Why the card opened the chat, in the words the agent reads. */
 const OPENED_BY: Record<string, string> = {
   kayak: 'came from Kayak',
@@ -818,7 +824,7 @@ export function openedByText(meta: Record<string, unknown> | undefined, now: Dat
   const trigger = typeof m.proactive_trigger === 'string' ? m.proactive_trigger : ''
   if (!trigger) return ''
   const at = typeof m.proactive_at === 'string' ? dayClock(m.proactive_at, now) : ''
-  return `By itself: the client ${OPENED_BY[trigger] ?? 'hesitated'}${at ? ` · ${at}` : ''}`
+  return `By itself: the client ${wordFor(OPENED_BY, trigger) ?? 'hesitated'}${at ? ` · ${at}` : ''}`
 }
 
 const CABIN_NAME: Record<string, string> = {
@@ -856,7 +862,7 @@ export function pageTripText(meta: Record<string, unknown> | undefined): string 
         babies ? `${babies} ${babies === 1 ? 'infant' : 'infants'}` : '',
       ].filter(Boolean).join(', ')
     : ''
-  return [route, dates, people, CABIN_NAME[s('cabin')] ?? ''].filter(Boolean).join(' · ')
+  return [route, dates, people, wordFor(CABIN_NAME, s('cabin')) ?? ''].filter(Boolean).join(' · ')
 }
 
 /** The PostHog project the site and the widget report to (EU, project 348558). */
