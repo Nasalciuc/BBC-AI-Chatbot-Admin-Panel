@@ -264,7 +264,12 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata, ...kept }))
   }, [step, tunnel, opening])
 
+  // A tap on the note waits for Alex's words (proactive.noteOpening); whatever the visitor opens or closes
+  // meanwhile wins. Every flow that starts takes the turn, and a note answer that lost it does nothing:
+  // it neither replaces the form the visitor opened with the chat nor selects the tunnel again.
+  const noteRunRef = useRef(0)
   const handleTunnelSelect = (t: 'sales' | 'support', via: 'button' | 'note' = 'button') => {
+    noteRunRef.current++
     posthog?.capture('chat_tunnel_selected', {
       tunnel: t,
       returning_visitor: hasOptimisticSession && !!savedVisitor,
@@ -346,6 +351,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // the visitor answers. The control group keeps the note above exactly as it is.
   const proactive = useProactive({ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening })
   const openProactive = (o: ProactiveOpening) => {
+    noteRunRef.current++
     proactive.opened()
     formFlowStartedRef.current = true
     setShowAttention(false)
@@ -369,8 +375,12 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   const openNote = async () => {
     if (noteBusyRef.current) return
     noteBusyRef.current = true
+    const run = ++noteRunRef.current
+    const stillMine = () => run === noteRunRef.current
     try {
-      const o = await proactive.noteOpening()
+      const o = await proactive.noteOpening(stillMine)
+      // The visitor opened the form, or closed what was open, while the words were on their way: theirs.
+      if (!stillMine()) return
       if (o) {
         posthog?.capture('chat_tunnel_selected', { tunnel: 'sales', returning_visitor: false, via: 'note', form: false })
         openProactive(o)
@@ -384,6 +394,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleBack = () => {
     if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
+    noteRunRef.current++
     animateClose(() => {
       setFocusLauncher(true)
       setSwapped(false)
@@ -394,6 +405,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleCloseChat = () => {
     if (embedded) return  // panel is always open inside the CRM iframe
+    noteRunRef.current++
     posthog?.capture('chat_closed', { tunnel })
     animateClose(() => {
       setFocusLauncher(true)
@@ -469,7 +481,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
         <FloatingButtons
           onSelect={(t) => (proactive.offer ? openProactive(proactive.offer) : handleTunnelSelect(t))}
           showAttention={showAttention && !sessionActive && !proactive.quiet}
-          onDismissAttention={() => setShowAttention(false)}
+          onDismissAttention={() => { noteRunRef.current++; setShowAttention(false) }}
           autoFocus={focusLauncher}
           context={pageCtx}
           unread={unread}

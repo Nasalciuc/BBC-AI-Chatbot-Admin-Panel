@@ -44,6 +44,20 @@ test('a number with + names its own country, the way it is sent', () => {
   }
 })
 
+test('without +, what is shown is what is checked and sent: a short number is a short US number', () => {
+  // CodeRabbit: "491234567" showed US +1 but went out as +491234567, a valid German number (DE).
+  const sent = normalizePhone('491234567')
+  assert.equal(sent, '+1491234567')
+  assert.equal(shownCountry('491234567')?.code, 'US')
+  assert.equal(detectCountryFromPhone(sent)?.code, 'US')
+  assert.equal(validatePhone(sent, detectCountryFromPhone(sent)), false)
+  // Every length typed without "+": the country beside the field is the one the number goes out with.
+  for (let n = 7; n <= 14; n++) {
+    const typed = '4912345678901234'.slice(0, n)
+    assert.equal(detectCountryFromPhone(normalizePhone(typed))?.code, shownCountry(typed)?.code, typed)
+  }
+})
+
 test('eleven digits starting with 1 are a US number; too short is nothing yet', () => {
   assert.equal(normalizePhone('1 404 555 0143'), '+14045550143')
   assert.equal(shownCountry('14045550143')?.code, 'US')

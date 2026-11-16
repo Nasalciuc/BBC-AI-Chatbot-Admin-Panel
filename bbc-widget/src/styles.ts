@@ -312,7 +312,12 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-note--error { color: var(--bw-danger); }
 #bbc-widget-root .bw-day { align-self: center; margin-top: 20px; padding: 3px 10px; border-radius: 999px; background: var(--bw-glass); font-size: 12px; font-weight: 600; line-height: 1.3; color: var(--bw-muted); }
 #bbc-widget-root .bw-log > .bw-day:first-child { margin-top: 0; }
-#bbc-widget-root .bw-row--queued .bw-msg { opacity: 0.62; }
+/* A message waiting to go: a light bubble with a dashed edge and the text at full strength (faded white
+   on blue was 3:1, too faint to read; "Sends when the reply is in" says the rest). */
+#bbc-widget-root .bw-row--queued .bw-msg {
+  background: rgba(var(--bw-primary-rgb, 30,79,216), 0.08); color: var(--bw-text);
+  outline: 1.5px dashed rgba(var(--bw-primary-rgb, 30,79,216), 0.55); outline-offset: -1.5px;
+}
 #bbc-widget-root .bw-retry { display: block; margin-left: auto; text-align: right; }
 #bbc-widget-root .bw-retry u { text-decoration-thickness: 1px; text-underline-offset: 3px; }
 #bbc-widget-root .bw-retry:hover u { text-decoration-thickness: 2px; }

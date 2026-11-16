@@ -142,8 +142,9 @@ export interface Proactive {
   engaged: (reply: string) => void
   /** The visitor tapped the 10 s note: Alex's words for this page, from the server like a card's, to
    *  open the chat with and no form. Null when the server did not answer in time: the caller falls back
-   *  to the form, as before. */
-  noteOpening: () => Promise<ProactiveOpening | null>
+   *  to the form, as before. Null too, with nothing recorded, when `stillWanted` says the visitor did
+   *  something else while the words were on their way. */
+  noteOpening: (stillWanted?: () => boolean) => Promise<ProactiveOpening | null>
 }
 
 export function useProactive({ apiUrl, step, allowed, restored = null }: {
@@ -389,12 +390,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         site: brand.id,
       })
     },
-    noteOpening: async () => {
+    noteOpening: async (stillWanted) => {
       const trip = readTrip(location.href, pageTitle(), kayakVisit())
       const res = await fetchProactiveOffer(
         apiUrl, { visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id }, OFFER_TIMEOUT_MS,
       )
       if (!res || !res.show || !res.message) return null
+      // The visitor did something else while the words were on their way (Widget's note turn): they are
+      // not shown, so nothing says they were — no proactive_shown, and the cards of this visit stay possible.
+      if (stillWanted && !stillWanted()) return null
       const opening: ProactiveOpening = {
         trigger: 'note', message: res.message, quickReplies: res.quick_replies, trip, surface: 'panel',
         shownAt: Date.now(),

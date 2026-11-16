@@ -436,6 +436,15 @@ test('the site goes with the offer and with every proactive event, so BBC and BC
   assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string \}/)
 })
 
+test('a message waiting to go reads at full strength, not faded white on the brand colour', () => {
+  // CodeRabbit: opacity 0.62 put white text on blue at about 3:1, below the 4.5:1 normal text needs.
+  const rule = WIDGET_CSS.slice(WIDGET_CSS.indexOf('.bw-row--queued .bw-msg {'))
+  const block = rule.slice(0, rule.indexOf('}'))
+  assert.doesNotMatch(block, /opacity/)
+  assert.match(block, /color: var\(--bw-text\)/)
+  assert.match(block, /outline: 1\.5px dashed/)
+})
+
 // ── The note the visitor taps: the chat with Alex, no form (owner's decision, 16 Nov) ──────────────
 
 test('a tap on the 10 s note opens the chat with no form; without an answer in time, the form as before', () => {
@@ -444,23 +453,48 @@ test('a tap on the 10 s note opens the chat with no form; without an answer in t
   assert.match(buttons, /class="bw-launch"\s+onClick=\{\(\) => onSelect\('sales'\)\}/)
   assert.match(widget, /onNoteOpen=\{\(\) => \{ if \(proactive\.offer\) openProactive\(proactive\.offer\); else void openNote\(\) \}\}/)
   // The words come from the server like a card's; no answer → handleTunnelSelect, which shows the form.
-  assert.match(widget, /const o = await proactive\.noteOpening\(\)\s+if \(o\) \{[\s\S]*?openProactive\(o\)\s+\} else \{\s+handleTunnelSelect\('sales', 'note'\)/)
+  assert.match(widget, /const o = await proactive\.noteOpening\(stillMine\)[\s\S]*?if \(o\) \{[\s\S]*?openProactive\(o\)\s+\} else \{\s+handleTunnelSelect\('sales', 'note'\)/)
   // One tap at a time, and the note stays until the chat opens (nothing hides it first).
   assert.match(widget, /if \(noteBusyRef\.current\) return\s+noteBusyRef\.current = true/)
   const openNoteBody = widget.slice(widget.indexOf('const openNote = async'), widget.indexOf('const handleBack'))
-  assert.doesNotMatch(openNoteBody.split('await proactive.noteOpening()')[0], /setShowAttention\(false\)/)
+  assert.doesNotMatch(openNoteBody.split('await proactive.noteOpening(stillMine)')[0], /setShowAttention\(false\)/)
   // Measured apart from the button's opening.
   assert.match(widget, /posthog\?\.capture\('chat_tunnel_selected', \{ tunnel: 'sales', returning_visitor: false, via: 'note', form: false \}\)/)
 })
 
 test('the note asks the server for its words with trigger "note", the brand and the page, and gives up in time', () => {
-  const body = hook.slice(hook.indexOf('noteOpening: async () =>'))
+  const body = hook.slice(hook.indexOf('noteOpening: async (stillWanted) =>'))
   assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id \}, OFFER_TIMEOUT_MS,\s+\)/)
   assert.match(body, /if \(!res \|\| !res\.show \|\| !res\.message\) return null/)
   assert.match(body, /trigger: 'note', message: res\.message, quickReplies: res\.quick_replies, trip, surface: 'panel'/)
   // The visitor opened the chat: no card follows in this visit.
   assert.match(body, /ssSet\(DONE_KEY, 'chat'\)/)
   assert.match(body, /posthog\?\.capture\('proactive_shown', \{\s+trigger: 'note', surface: 'panel'/)
+})
+
+test('a note answer that comes after the visitor opened the form, or closed it, changes nothing', () => {
+  // CodeRabbit: tap the note, open the form from the corner button before the words arrive — the late
+  // answer replaced the form with the chat (or selected the tunnel again). Every flow takes the turn.
+  const body = (from, to) => widget.slice(widget.indexOf(from), widget.indexOf(to, widget.indexOf(from)))
+  for (const [from, to] of [
+    ['const handleTunnelSelect = (', 'posthog?.capture'],
+    ['const openProactive = (', 'proactive.opened()'],
+    ['const handleBack = () => {', 'animateClose('],
+    ['const handleCloseChat = () => {', "posthog?.capture('chat_closed'"],
+  ]) {
+    assert.match(body(from, to), /noteRunRef\.current\+\+/, from)
+  }
+  // The note's own ✕ while the words are on their way: the visitor said no to it.
+  assert.match(widget, /onDismissAttention=\{\(\) => \{ noteRunRef\.current\+\+; setShowAttention\(false\) \}\}/)
+  const openNoteBody = widget.slice(widget.indexOf('const openNote = async'), widget.indexOf('const handleBack'))
+  assert.match(openNoteBody, /const run = \+\+noteRunRef\.current\s+const stillMine = \(\) => run === noteRunRef\.current/)
+  // Checked after the wait and before either continuation: the chat and the form fallback.
+  assert.match(openNoteBody, /await proactive\.noteOpening\(stillMine\)\s+\/\/[^\n]*\n\s+if \(!stillMine\(\)\) return\s+if \(o\) \{/)
+  // And the hook records nothing for words that were never shown.
+  const hookBody = hook.slice(hook.indexOf('noteOpening: async (stillWanted) =>'))
+  const guard = hookBody.indexOf('if (stillWanted && !stillWanted()) return null')
+  assert.ok(guard > -1)
+  assert.ok(guard < hookBody.indexOf("ssSet(DONE_KEY, 'chat')") && guard < hookBody.indexOf("capture('proactive_shown'"))
 })
 
 test('an unanswered note chat comes back on the next page like a card chat', () => {

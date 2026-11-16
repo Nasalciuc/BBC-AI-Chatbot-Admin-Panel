@@ -112,16 +112,17 @@ export function detectCountryFromPhone(phone: string): Country | null {
 
 /**
  * The number as it will be sent (E.164), or '' while it is too short. A number typed with "+" names its
- * own country; ten digits typed without it are a US number, the way the sites' visitors write one.
- * (The field used to start with "+" and turned any ten digits into +1, so "+65 8123 4567" from Singapore
- * went out as a US number.)
+ * own country; up to ten digits typed without it are a US number, the way the sites' visitors write one,
+ * the same rule as shownCountry: "491234567" is a US number one digit short (an error the visitor sees),
+ * never a German one sent while the field said US. (The field used to start with "+" and turned any ten
+ * digits into +1, so "+65 8123 4567" from Singapore went out as a US number.)
  */
 export function normalizePhone(value: string): string {
   const trimmed = (value || '').trim()
   const digits = trimmed.replace(/\D/g, '')
   if (digits.length < 7) return ''
   if (trimmed.startsWith('+')) return `+${digits}`
-  if (digits.length === 10) return `+1${digits}`
+  if (digits.length <= 10) return `+1${digits}`
   return `+${digits}`
 }
 
