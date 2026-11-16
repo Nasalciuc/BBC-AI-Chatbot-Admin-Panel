@@ -158,11 +158,12 @@ export interface Proactive {
   dismiss: (how: 'not_now' | 'close') => void
   /** The visitor answered (a button or typed text): measured once. */
   engaged: (reply: string) => void
-  /** The visitor tapped the 10 s note: Alex's words for this page, from the server like a card's, to
-   *  open the chat with and no form. Null when the server did not answer in time: the caller falls back
-   *  to the form, as before. Null too, with nothing recorded, when `stillWanted` says the visitor did
-   *  something else while the words were on their way. */
-  noteOpening: (stillWanted?: () => boolean) => Promise<ProactiveOpening | null>
+  /** The visitor tapped the 10 s note or the corner button (`door`): Alex's words for this page, from the
+   *  server like a card's (the note's door, trigger "note"), to open the chat with and no form. Null when
+   *  the server did not answer in time: the caller falls back to the form, as before. Null too, with
+   *  nothing recorded, when `stillWanted` says the visitor did something else while the words were on
+   *  their way. */
+  noteOpening: (stillWanted?: () => boolean, door?: 'note' | 'button') => Promise<ProactiveOpening | null>
 }
 
 export function useProactive({ apiUrl, step, allowed, restored = null }: {
@@ -465,7 +466,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         site: brand.id,
       })
     },
-    noteOpening: async (stillWanted) => {
+    noteOpening: async (stillWanted, door = 'note') => {
       const trip = currentTrip()
       const res = await fetchProactiveOffer(
         apiUrl, { visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id }, OFFER_TIMEOUT_MS,
@@ -483,7 +484,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       shownRef.current = opening
       engagedRef.current = false
       posthog?.capture('proactive_shown', {
-        trigger: 'note', surface: 'panel', device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
+        trigger: 'note', surface: 'panel', door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
       })
       return opening
     },
