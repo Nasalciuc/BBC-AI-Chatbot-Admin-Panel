@@ -431,6 +431,11 @@ async def chat_start(
         )
         model_used = "template"
 
+    # Every chat's first message says who writes it, whichever way above made it (owner, 16 Nov): the
+    # widget's line under Alex's name says "Travel Agent", the badge on his photo and this say "AI".
+    from app.services.proactive import introduced
+    text = introduced(text, _meta.get("site"))
+
     row = await conversation_service.add_message(
         conv_id, "ai", text, model_used=model_used, cost=cost,
     )
