@@ -333,6 +333,13 @@ async def get_handoff_response(
     # The queue reply COLLECTS instead of deflecting to a phone number —
     # acknowledge, promise the teammate, and ask the next missing piece so
     # the wait is never a dead end. (The phone stays in closing flows only.)
+    # Outside the team's hours nobody is about to join (16 Nov): the reply
+    # says the team is back later instead of "while they join", and still
+    # collects, so the request waits first in line with a contact on it.
+    from app.services.closing import is_within_team_hours
+
+    _team_in = is_within_team_hours()
+    _bridge = " While they join — " if _team_in else " So they have everything ready — "
     _next_question = ""
     try:
         from app.services import lead_service
@@ -340,10 +347,14 @@ async def get_handoff_response(
 
         _lead = await lead_service.get_or_create_lead(conversation_id)
         _conv_row = await db.get_conversation_simple(conversation_id) or {}
+        _conv_meta = _conv_row.get("metadata") if isinstance(_conv_row.get("metadata"), dict) else {}
         _missing = get_missing_fields(_lead or {}, {
             "visitor_name": _conv_row.get("visitor_name") or getattr(visitor, "name", None),
             "visitor_email": _conv_row.get("visitor_email") or getattr(visitor, "email", None),
             "visitor_phone": _conv_row.get("visitor_phone") or getattr(visitor, "phone", None),
+            # No form behind a chat the card or the note opened: email first,
+            # as the prompt asks it (ADR 05).
+            "email_first": bool(_conv_meta.get("proactive_trigger")),
         })
         _ask_map = {
             "route": None,  # route is two questions — keep it free-form
@@ -359,11 +370,17 @@ async def get_handoff_response(
             if _tpl_key:
                 _q = get_template(_tpl_key, tunnel, visitor)
                 if _q:
-                    _next_question = f" While they join — {_q[0].lower()}{_q[1:]}"
+                    _next_question = f"{_bridge}{_q[0].lower()}{_q[1:]}"
                     break
     except Exception as _e:
         logger.warning(f"[{conversation_id}] queue-reply question skipped: {_e}")
 
+    if not _team_in:
+        return (
+            "You got it — our consultants are offline right now, so your request is "
+            f"first in line for when the team is back.{_next_question}",
+            "template",
+        )
     return (
         "You got it — I'm flagging a teammate right now, and your chat is "
         f"first in line.{_next_question}",
