@@ -256,8 +256,8 @@ export function DetailsPanel(p: DetailsPanelProps) {
               )}
               {pageTrip && (
                 <p className='m-0 text-xs leading-[1.45] text-k-555555'>
-                  <strong className='text-k-202020'>From the page:</strong> {pageTrip}. The client searched this before writing and
-                  hasn’t confirmed it in the chat.
+                  <strong className='text-k-202020'>From the page:</strong> {pageTrip}. What the client searched before
+                  writing, not what they said in the chat.
                 </p>
               )}
               {note && <p className='m-0 text-xs leading-[1.45] text-k-6b6b6b'>{note}</p>}

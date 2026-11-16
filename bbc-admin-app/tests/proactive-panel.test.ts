@@ -54,6 +54,10 @@ test('the details panel: opened, from the page, replay — the replay never for 
   assert.match(panel, /const replay = p\.isSupervisor \? '' : replayUrl\(conv\.metadata\)/)
   assert.match(panel, /\.\.\.\(opened \? \[\{ label: 'Opened', value: opened, strong: true \}\] : \[\]\)/)
   assert.match(panel, /<strong className='text-k-202020'>From the page:<\/strong> \{pageTrip\}/)
+  // Always true, whatever the chat did since: the Trip rows above are what the client said. A note that
+  // the trip is unconfirmed would stay after the client confirmed or changed it.
+  assert.match(panel, /What the client searched before\s+writing, not what they said in the chat\./)
+  assert.doesNotMatch(panel, /confirmed it in the chat/)
   // A link out opens a new tab and gives the page nothing back.
   assert.match(panel, /<a href=\{r\.href\} target='_blank' rel='noopener noreferrer'/)
 })
