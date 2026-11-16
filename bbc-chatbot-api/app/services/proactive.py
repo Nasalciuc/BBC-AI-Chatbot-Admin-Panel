@@ -339,6 +339,10 @@ def _norm(value) -> Optional[str]:
     return str(value).strip()[:10].lower()
 
 
+# leads.cabin_class's column default: every new lead has it, said or not.
+_CABIN_DEFAULT = "business"
+
+
 def _page_state(lead: dict, trip: TripContext) -> str:
     """How the lead stands against what the page seeded:
 
@@ -348,7 +352,8 @@ def _page_state(lead: dict, trip: TripContext) -> str:
       travellers or another cabin (or dropped the return) — the lead's own
       fields are the truth now;
     - "absent": none of the seeded fields is on the lead (the seed never
-      landed) — the page is all the bot knows."""
+      landed) — the page is all the bot knows. A cabin of "business" does
+      not count as landed: it is the column's default on every new lead."""
     # A route the page named only in words (a route page's title) is never
     # written on the lead: a code there is one the client gave.
     if (trip.origin_name and not trip.origin_code and lead.get("origin_code")) or (
@@ -361,12 +366,18 @@ def _page_state(lead: dict, trip: TripContext) -> str:
         (lead.get("departure_date"), trip.depart_date.isoformat() if trip.depart_date else None),
         (lead.get("return_date"), trip.return_date.isoformat() if trip.return_date else None),
         (lead.get("passengers"), trip.passengers),
-        # Premium Economy is never written on the lead (_LEAD_CABINS): nothing to compare.
-        (lead.get("cabin_class"), trip.cabin if trip.cabin in _LEAD_CABINS else None),
     ]
     held = [(_norm(have), _norm(page)) for have, page in seeded if page is not None]
-    if not any(have for have, _ in held):
+    # Premium Economy is never written on the lead (_LEAD_CABINS): nothing to compare.
+    page_cabin = trip.cabin if trip.cabin in _LEAD_CABINS else None
+    lead_cabin = _norm(lead.get("cabin_class"))
+    # Did the seed land? A lead the seed never reached still has cabin_class
+    # "business" (the column's default): only another cabin shows a write.
+    landed = any(have for have, _ in held) or (page_cabin is not None and lead_cabin not in (None, _CABIN_DEFAULT))
+    if not landed:
         return "absent"
+    if page_cabin:
+        held.append((lead_cabin, page_cabin))
     return "changed" if any(have != page for have, page in held) else "held"
 
 

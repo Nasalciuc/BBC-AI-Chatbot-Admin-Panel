@@ -508,11 +508,24 @@ class TestPageTripLine:
         assert f"Atlanta → Seoul, {_day(_in(30))} – {_day(_in(60))}, 4 adults in First." in line
         assert "the client's words win" in line
 
-    def test_shown_when_the_seed_never_landed(self):
-        # One update writes every seeded field, so a seed that failed left none of them.
+    @pytest.mark.parametrize("cabin", ["business", None])
+    def test_shown_when_the_seed_never_landed(self, cabin):
+        # One update writes every seeded field, so a seed that failed left none of them. The cabin
+        # stays at the column's default ("business", on every new lead), which says nothing.
         lead = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None,
-                            passengers=None, cabin_class=None)
+                            passengers=None, cabin_class=cabin)
         assert proactive.page_trip_line(lead) is not None
+
+    def test_a_route_page_with_only_a_cabin(self):
+        # A route page's title gives a city (never written on the lead) and a cabin (written).
+        page = {"source": "route_page", "destination_name": "Paris", "cabin": "first", "confirmed": False}
+        lead = lambda cabin: {"id": "L1", "cabin_class": cabin, "trip_notes": {"page_trip": dict(page)}}
+        assert proactive.page_trip_line(lead("first")) is not None      # the seed wrote First
+        assert proactive.page_trip_line(lead("business")) is not None   # the default: the seed never landed
+        assert proactive.page_trip_line(lead("economy")) is None        # the client said Economy
+        page["cabin"] = "business"
+        assert proactive.page_trip_line(lead("business")) is not None
+        assert proactive.page_trip_line(lead("economy")) is None
 
     def test_gone_once_the_client_names_another_destination(self):
         assert proactive.page_trip_line(_seeded_lead(destination_code="NRT")) is None
@@ -566,7 +579,7 @@ class TestCrmNote:
         )
         assert proactive.page_trip_note(_seeded_lead(destination_code="NRT")) is None
         absent = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None,
-                              passengers=None, cabin_class=None)
+                              passengers=None, cabin_class="business")
         assert proactive.page_trip_note(absent) is None  # nothing of the page on the lead to warn about
         confirmed = _seeded_lead()
         confirmed["trip_notes"]["page_trip"]["confirmed"] = True
