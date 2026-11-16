@@ -848,6 +848,34 @@ def stream_opus(
     )
 
 
+def stream_reply(
+    model: str,
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+    effort: str = "low",
+) -> tuple[Optional[str], float]:
+    """Stream a customer-facing text on an explicit model (the REPLY_MODEL switch,
+    router.owner_reply_model): the closing. Returns (text, cost)."""
+    return _stream_model(
+        model, system_prompt, user_message,
+        max_tokens=OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk, effort=effort,
+    )
+
+
+def call_reply_plain(model: str, system_prompt, user_message: str) -> tuple[Optional[str], float]:
+    """A customer reply without tools on an explicit model (REPLY_MODEL): the
+    re-call when the tool call brought entities but no text. Returns (text, cost)."""
+    return _call_model(
+        model=model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        max_tokens=SONNET_MAX_TOKENS,
+        temperature=0.6,
+        task="sales_reply",
+    )
+
+
 def _stream_model(
     model: str,
     system_prompt,

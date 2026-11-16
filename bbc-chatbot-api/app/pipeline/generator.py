@@ -207,9 +207,15 @@ def _router_override(tier: str, tunnel: str, conversation_id: Optional[str]) -> 
     """Ask the router for model/effort/max_tokens. Returns {} (today's defaults)
     when nothing special applies, so the legacy path is byte-identical."""
     from app.ai import ledger
-    from app.ai.router import decide, SALES_REPLY, SUPPORT_REPLY
+    from app.ai.router import decide, owner_reply_route, SALES_REPLY, SUPPORT_REPLY
 
     from app.flags import flag
+
+    # The owner's cost switch wins over the tiers and the families (REPLY_MODEL).
+    # The 100% budget template still answers first, upstream (budget_remaining).
+    _owner = owner_reply_route(decisive=(tier == "opus"))
+    if _owner:
+        return _owner
 
     family_55 = _family_55_active(conversation_id)
     frac = ledger.budget_fraction()
@@ -239,10 +245,17 @@ def _run_tiered_generation(
 
     Shared by the AI-FIRST path and the step-5 fallback so streaming, tool-entity
     normalization, empty-tool re-call, and the default recovery text stay identical.
+    When the router overrides the model, the returned "tier" is that model id, so
+    messages.model_used says which model really answered.
     """
     tier, reason = _generation_tier(intent, lead, tunnel)
     call_tools, stream_tools, plain_call = _tier_calls(tier)
     _ov = _router_override(tier, tunnel, conversation_id)
+    if _ov.get("model"):
+        from app.ai.claude import call_reply_plain
+
+        def plain_call(system, message, _model=_ov["model"]):
+            return call_reply_plain(_model, system, message)
 
     if on_chunk:
         ai_text, ai_cost, _te = stream_tools(
@@ -261,7 +274,7 @@ def _run_tiered_generation(
 
     # One question per turn while details are missing (PR-7, SLOT_POLICY_ENABLED).
     ai_text = _apply_slot_question(ai_text, lead, tunnel)
-    return ai_text, ai_cost, tool_entities, tier, reason
+    return ai_text, ai_cost, tool_entities, (_ov.get("model") or tier), reason
 
 
 def _apply_slot_question(text, lead, tunnel):
