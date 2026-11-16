@@ -3456,23 +3456,33 @@ async def increment_chats_served(agent: dict) -> None:
         logger.warning(f"increment_chats_served error (non-blocking): {e}")
 
 
-async def _rows_with_last_message(build, base_columns: str) -> list[dict]:
+async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") -> list[dict]:
     """build(columns) → rows, with last_user_message_at (migration 024) when
     the activity clocks exist: a message is presence too, and the presence
     rule reads it. A database without the column is a normal case, not a
     failure: the read is made again without it and the flag is downgraded,
-    as get_conversations does. Any other failure is raised to the caller."""
+    as get_conversations does. Any other failure is raised to the caller.
+
+    paged="<label>": every matching row, page after page by id (_select_after),
+    for a read that must not stop at PostgREST's 1000; the builder then orders
+    the rows by id."""
     with_clock = _supervisor_columns_available()
     columns = base_columns + (", last_user_message_at" if with_clock else "")
+
+    async def read(cols: str) -> list[dict]:
+        if paged:
+            return await _select_after(lambda: build(cols), label=paged)
+        res = await _run_sync(lambda: build(cols).execute())
+        return res.data or []
+
     try:
-        res = await _run_sync(lambda: build(columns).execute())
+        return await read(columns)
     except Exception as e:
         if not (with_clock and _is_missing_column_error(e)):
             raise
         logger.warning(f"last_user_message_at missing, read again without it: {e}")
         _downgrade_supervisor_columns(e)
-        res = await _run_sync(lambda: build(base_columns).execute())
-    return res.data or []
+        return await read(base_columns)
 
 
 async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> list:
@@ -3620,6 +3630,9 @@ TASKS_HEALTH: dict = {
     "moved_unowned": 0, "moved_to_ready": 0, "move_failures": 0,
     # A history line not written after its task was saved: the task stands.
     "event_failures": 0,
+    # The departure task (app/services/departure.py): made, made Unowned
+    # (nobody Ready), and a run or a task that failed.
+    "departure": 0, "departure_unowned": 0, "departure_failures": 0,
 }
 _OPEN_LIMIT = 500
 
@@ -3724,9 +3737,10 @@ async def insert_follow_up(row: dict) -> Optional[dict]:
     except TasksNotSetUp:
         raise
     except Exception as e:
-        # A retry of the same chat message (uq_tasks_message is the table's one
-        # unique index besides the id), by the code only: the whole text
-        # includes the refused row, and a quote can hold "23505".
+        # A retry of the same chat message (uq_tasks_message), or a second
+        # departure task for the same chat (uq_tasks_departure, migration 053),
+        # by the code only: the whole text includes the refused row, and a
+        # quote can hold "23505".
         if _error_code(e) == "23505":
             return None
         raise
@@ -3892,6 +3906,69 @@ async def open_task_counts(user_ids: list[str]) -> dict[str, int]:
         for r in rows:
             counts[r["assignee_id"]] = counts.get(r["assignee_id"], 0) + 1
     return counts
+
+
+async def get_departure_candidates() -> list[dict]:
+    """Open sales chats with a phone or an email, for the departure task
+    (app/services/departure.py decides the rest: the client wrote, left,
+    nobody is on the chat). With last_user_message_at when the clocks exist.
+    Every row, page after page by id: a chat past PostgREST's 1000 would never
+    get its task (open chats close ~35 minutes after the client goes, so a
+    normal hour has a handful; a stuck close job must not hide the rest), and
+    a chat that closes while the pages are read must not push another past a
+    page boundary, as an offset would.
+    Raises: the job counts a failed read."""
+    db_client = get_client()
+    rows = await _rows_with_last_message(
+        lambda columns: db_client.table("conversations")
+        .select(columns)
+        .in_("status", list(OPEN_STATUSES))
+        .eq("tunnel", "sales")
+        .or_("visitor_phone.not.is.null,visitor_email.not.is.null")
+        .order("id"),
+        "id, visitor_name, visitor_phone, visitor_email, mode, assigned_agent_id, metadata, status",
+        paged="departure",
+    )
+    return rows
+
+
+async def departure_still_free(conversation_id: str) -> bool:
+    """The chat is still open and nobody's, read again just before its
+    departure task is made: the candidates were read a few queries earlier,
+    and an agent may have taken the chat meanwhile. This narrows that window;
+    it does not close it (the database guards only the second departure task
+    of a chat: uq_tasks_departure, migration 053).
+    Raises: the job counts a failed read and tries the chat on its next run."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select("status, mode, assigned_agent_id")
+        .eq("id", conversation_id)
+        .limit(1)
+        .execute(),
+        label="departure",
+    )
+    rows = res.data or []
+    if not rows:
+        return False
+    row = rows[0]
+    return row.get("status") in OPEN_STATUSES and row.get("mode") != "human" and not row.get("assigned_agent_id")
+
+
+async def tasks_of_conversations(conversation_ids: list[str]) -> list[dict]:
+    """Every task of these chats, open or not: conversation_id, source and
+    whether it is open. Raises (TasksNotSetUp before migration 051)."""
+    ids = sorted({i for i in conversation_ids if i})
+    if not ids:
+        return []
+    db_client = get_client()
+    out: list[dict] = []
+    for i in range(0, len(ids), _IDS_PER_REQUEST):
+        chunk = ids[i:i + _IDS_PER_REQUEST]
+        out.extend(await _task_pages(lambda chunk=chunk: db_client.table("tasks")
+                                     .select("id, conversation_id, source, done_at, dismissed_at")
+                                     .in_("conversation_id", chunk).order("id")))
+    return out
 
 
 async def get_task_people() -> list[dict]:
@@ -4599,6 +4676,40 @@ async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> 
     if not (more.data or []):
         return rows
     logger.error(f"_select_pages[{label}]: still full after {max_pages} pages ({len(rows)} rows); refusing a partial read")
+    raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
+
+
+async def _select_after(build, *, key: str = "id", label: str = "other", max_pages: int = 20) -> list[dict]:
+    """Every row of a read ordered by a unique `key`, one page at a time, each
+    page after the last row seen (`key > last`), not at an offset.
+
+    For a set that changes while it is read (open chats that close): under
+    .range(), a row that leaves the set between two pages shifts the next page
+    by one and the row at the seam is never read. `build()` returns a fresh
+    builder ordered by `key`. Raises like _select_pages: a partial list is
+    never passed off as the whole one."""
+    rows: list[dict] = []
+    last = None
+    for _ in range(max_pages):
+        def page(after=last):
+            q = build()
+            if after is not None:
+                q = q.gt(key, after)
+            return q.limit(_PAGE).execute()
+
+        res = await _run_sync(page, label=label)
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE:
+            return rows
+        last = chunk[-1].get(key)
+        if last is None:
+            raise RuntimeError(f"{label}: a row without {key}, the read can't go on after it")
+    # Full at the cap: one more row says whether anything was left out.
+    more = await _run_sync(lambda: build().gt(key, last).limit(1).execute(), label=label)
+    if not (more.data or []):
+        return rows
+    logger.error(f"_select_after[{label}]: still full after {max_pages} pages ({len(rows)} rows); refusing a partial read")
     raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
 
 

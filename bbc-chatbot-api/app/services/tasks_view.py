@@ -26,6 +26,7 @@ SOURCE_LABEL = {
     "client_asked": "Client asked",
     "added": "Added",
     "dashboard": "From Dashboard",
+    "departure": "Client left",
 }
 
 
@@ -185,6 +186,7 @@ EVENT_TEXT = {
     "client_asked": "{client} asked to be called, in a chat with {with_}.",
     "added": "Added by {actor}.",
     "dashboard": "Made from the Dashboard by {actor}.",
+    "departure": "{client} left the site after leaving a contact, with nobody on the chat.",
     "due_changed": "{actor} moved it to {due}.",
     "given": "{actor} gave it to {to}.",
     "unowned": "Went to Unowned: {why}.",
@@ -217,13 +219,23 @@ def history_of(events: list[dict], names: dict[str, str], *, client: str, tz=tim
         if not text:
             continue
         why = "the chat was only with the AI" if d.get("reason") == "ai_only" else (
-            f"{names.get(d.get('from') or '', 'they')} went Not ready" if d.get("reason") == "left_shift" else "nobody had it"
+            f"{names.get(d.get('from') or '', 'they')} went Not ready" if d.get("reason") == "left_shift" else
+            "nobody was Ready when the client left" if d.get("reason") == "no_ready_agent" else "nobody had it"
         )
         line = text.format(
             actor=actor, client=client or "The client", with_=d.get("with") or "the AI",
             due=when_text(parse_ts(d.get("due_at")), tz), to=names.get(d.get("to") or "", "someone"),
             from_=names.get(d.get("from") or "", "they"), why=why,
         )
+        if e.get("kind") == "departure":
+            mins = d.get("left_minutes_ago")
+            if isinstance(mins, int) and mins >= 1:
+                line += f" The task was made {mins} min later."
+            due = d.get("due_minutes")
+            if isinstance(due, int) and due > 0:
+                line += f" Due {due} minutes after they left."
+            if d.get("given") == "unowned":
+                line += " Nobody was Ready, so it went to Unowned."
         if e.get("kind") in ("caught", "client_asked") and d.get("due_words"):
             line += f" Due {d['due_words']}, as written." if d.get("due_kind") == "said" else ""
         if e.get("kind") in ("caught", "client_asked") and d.get("due_kind") == "default":
