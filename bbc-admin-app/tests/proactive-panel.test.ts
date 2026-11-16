@@ -24,7 +24,8 @@ test('why the chat opened by itself', () => {
   assert.equal(openedByText({ proactive_trigger: 'reader' }, NOW), 'By itself: the client read the page for a while')
   assert.equal(openedByText({ proactive_trigger: 'exit' }, NOW), 'By itself: the client was about to leave')
   assert.equal(openedByText({ proactive_trigger: 'something_new' }, NOW), 'By itself: the client hesitated')
-  assert.match(openedByText({ proactive_trigger: 'kayak', proactive_at: '2026-11-16T09:41:00Z' }, NOW), /^By itself: the client came from Kayak · \d{2}:\d{2}$/)
+  // The same instant as NOW: the same local day in every zone (a fixed 09:41Z is the day before in Honolulu).
+  assert.match(openedByText({ proactive_trigger: 'kayak', proactive_at: NOW.toISOString() }, NOW), /^By itself: the client came from Kayak · \d{2}:\d{2}$/)
   assert.equal(openedByText({}, NOW), '')
   // Only the table's own words: a key that reaches Object.prototype is an unknown one.
   assert.equal(openedByText({ proactive_trigger: 'constructor' }, NOW), 'By itself: the client hesitated')
@@ -52,16 +53,31 @@ test('what the client searched on the page', () => {
   assert.equal(pageTripText({}), '')
 })
 
-test('the replay link: only for an id', () => {
+test('the replay link: only for an id, under an https base from the build', () => {
   const id = '0192f3a4-5b6c-7d8e-9f01-23456789abcd'
-  assert.equal(replayUrl({ posthog_session_id: id }), `https://eu.posthog.com/project/348558/replay/${id}`)
-  assert.equal(replayUrl({ posthog_session_id: 'javascript:alert(1)' }), '')
-  assert.equal(replayUrl({ posthog_session_id: 'short' }), '')
-  assert.equal(replayUrl({}), '')
+  const base = 'https://eu.posthog.example/project/1/replay/'
+  assert.equal(replayUrl({ posthog_session_id: id }, base), `${base}${id}`)
+  assert.equal(replayUrl({ posthog_session_id: id }, 'https://eu.posthog.example/project/1/replay'), `${base}${id}`)
+  assert.equal(replayUrl({ posthog_session_id: 'javascript:alert(1)' }, base), '')
+  assert.equal(replayUrl({ posthog_session_id: 'short' }, base), '')
+  assert.equal(replayUrl({}, base), '')
+  // No base, or one that isn't a plain https address: no link (the Replay row is left out).
+  assert.equal(replayUrl({ posthog_session_id: id }, undefined), '')
+  assert.equal(replayUrl({ posthog_session_id: id }, ''), '')
+  assert.equal(replayUrl({ posthog_session_id: id }, 'not a url'), '')
+  assert.equal(replayUrl({ posthog_session_id: id }, 'http://eu.posthog.example/project/1/replay/'), '')
+  assert.equal(replayUrl({ posthog_session_id: id }, 'javascript:alert(1)//'), '')
+  assert.equal(replayUrl({ posthog_session_id: id }, 'https://eu.posthog.example/replay/?x=1'), '')
+  assert.equal(replayUrl({ posthog_session_id: id }, 'https://user:pw@eu.posthog.example/replay/'), '')
 })
 
 test('the details panel: opened, from the page, replay — the replay never for supervisors', () => {
-  assert.match(panel, /const replay = p\.isSupervisor \? '' : replayUrl\(conv\.metadata\)/)
+  assert.match(panel, /const replay = p\.isSupervisor \? '' : replayUrl\(conv\.metadata, REPLAY_BASE\)/)
+  // The address comes from the build, not from the code (bbc-admin-app/CLAUDE.md: never hardcode URLs).
+  assert.match(panel, /const REPLAY_BASE = import\.meta\.env\.VITE_POSTHOG_REPLAY_URL as string \| undefined/)
+  assert.doesNotMatch(readFileSync(join(root, 'src/features/chats/view.ts'), 'utf-8'), /posthog\.com/)
+  // A closed chat with no lead still shows the page's search.
+  assert.match(panel, /\{\(lead \|\| pageTrip \|\| \(conv\.tunnel === 'sales' && owner !== 'closed'\)\) && \(/)
   assert.match(panel, /\.\.\.\(opened \? \[\{ label: 'Opened', value: opened, strong: true \}\] : \[\]\)/)
   assert.match(panel, /<strong className='text-k-202020'>From the page:<\/strong> \{pageTrip\}/)
   // Always true, whatever the chat did since: the Trip rows above are what the client said. A note that

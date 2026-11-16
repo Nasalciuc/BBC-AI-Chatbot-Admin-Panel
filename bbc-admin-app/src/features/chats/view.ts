@@ -874,14 +874,21 @@ export function pageTripText(meta: Record<string, unknown> | undefined): string 
   return [route, dates, people, wordFor(CABIN_NAME, s('cabin')) ?? ''].filter(Boolean).join(' · ')
 }
 
-/** The PostHog project the site and the widget report to (EU, project 348558). */
-const POSTHOG_REPLAY = 'https://eu.posthog.com/project/348558/replay/'
-
 /** The replay of the visit that started the chat (metadata.posthog_session_id, an id the server
- *  checked), or ''. */
-export function replayUrl(meta: Record<string, unknown> | undefined): string {
-  const id = (meta ?? {}).posthog_session_id
-  return typeof id === 'string' && /^[0-9A-Za-z-]{16,64}$/.test(id.trim()) ? `${POSTHOG_REPLAY}${id.trim()}` : ''
+ *  checked) under `base`, the PostHog project's replay address (VITE_POSTHOG_REPLAY_URL, see
+ *  .env.example). '' without an id, or without an https base. */
+export function replayUrl(meta: Record<string, unknown> | undefined, base: string | undefined): string {
+  const raw = (meta ?? {}).posthog_session_id
+  const id = typeof raw === 'string' ? raw.trim() : ''
+  if (!/^[0-9A-Za-z-]{16,64}$/.test(id) || !base) return ''
+  let root: URL
+  try {
+    root = new URL(base.trim())
+  } catch {
+    return ''  // not an address: no link, as without one
+  }
+  if (root.protocol !== 'https:' || root.username || root.password || root.search || root.hash) return ''
+  return `${root.origin}${root.pathname.endsWith('/') ? root.pathname : `${root.pathname}/`}${id}`
 }
 
 export function whereRows(meta: Record<string, unknown> | undefined, phoneCountry?: string | null): Row[] {

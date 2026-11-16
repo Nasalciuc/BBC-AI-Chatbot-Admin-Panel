@@ -29,6 +29,9 @@ import {
   type Row,
 } from '../view'
 
+/** The PostHog project's replay address, from the build (.env.example). Unset: no Replay row. */
+const REPLAY_BASE = import.meta.env.VITE_POSTHOG_REPLAY_URL as string | undefined
+
 type FoldKey = 'ai' | 'trip' | 'about' | 'contact' | 'lead' | 'where' | 'chat' | 'history'
 
 function Fold({
@@ -154,7 +157,7 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const missing = conv.tunnel === 'support' ? [] : missingForReady(lead, confirmedOf(conv))
   // The chat the proactive card opened (no form): why it opened, the search the page gave, and the
   // replay of the visit. The replay sits with "Where they came from", which supervisors don't get.
-  const replay = p.isSupervisor ? '' : replayUrl(conv.metadata)
+  const replay = p.isSupervisor ? '' : replayUrl(conv.metadata, REPLAY_BASE)
   const where = p.isSupervisor
     ? []
     : [
@@ -232,7 +235,8 @@ export function DetailsPanel(p: DetailsPanelProps) {
           ))}
       </Fold>
 
-      {(lead || (conv.tunnel === 'sales' && owner !== 'closed')) && (
+      {/* A closed chat with no lead keeps the section when the page gave a search: it is what's left. */}
+      {(lead || pageTrip || (conv.tunnel === 'sales' && owner !== 'closed')) && (
         <Fold id='trip' open={isOpen('trip')} onToggle={toggle} title={tripTitle}>
           <div className='flex items-center gap-2'>
             <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
