@@ -824,6 +824,9 @@ export function openedByText(meta: Record<string, unknown> | undefined, now: Dat
   const trigger = typeof m.proactive_trigger === 'string' ? m.proactive_trigger : ''
   if (!trigger) return ''
   const at = typeof m.proactive_at === 'string' ? dayClock(m.proactive_at, now) : ''
+  // The note beside the button did not open the chat by itself: the client tapped it, and got the chat
+  // without the form (owner's decision, 16 Nov) — which is why no name, email or phone came first.
+  if (trigger === 'note') return `No form: the client tapped the note beside the button${at ? ` · ${at}` : ''}`
   return `By itself: the client ${wordFor(OPENED_BY, trigger) ?? 'hesitated'}${at ? ` · ${at}` : ''}`
 }
 

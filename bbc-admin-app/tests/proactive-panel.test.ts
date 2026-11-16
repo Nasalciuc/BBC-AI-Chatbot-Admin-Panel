@@ -32,6 +32,11 @@ test('why the chat opened by itself', () => {
   assert.equal(openedByText(undefined, NOW), '')
 })
 
+test('the note the client tapped is no chat that opened by itself, and says why no form came first', () => {
+  assert.equal(openedByText({ proactive_trigger: 'note' }, NOW), 'No form: the client tapped the note beside the button')
+  assert.match(openedByText({ proactive_trigger: 'note', proactive_at: NOW.toISOString() }, NOW), /^No form: the client tapped the note beside the button · \d{2}:\d{2}$/)
+})
+
 test('what the client searched on the page', () => {
   const trip = {
     source: 'kayak', origin_code: 'ATL', destination_code: 'ICN', depart_date: '2027-05-25', return_date: '2027-06-28',
