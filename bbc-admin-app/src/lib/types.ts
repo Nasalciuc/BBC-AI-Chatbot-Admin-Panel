@@ -542,7 +542,7 @@ export interface NotificationsResponse {
 
 // ── Tasks: follow-ups (migration 051) ──────────────────
 export type TaskKind = 'call' | 'email' | 'todo'
-export type TaskSource = 'caught' | 'client_asked' | 'added' | 'dashboard'
+export type TaskSource = 'caught' | 'client_asked' | 'added' | 'dashboard' | 'departure'
 /** Late, due today (business zone), later; done for the week's list. */
 export type TaskState = 'late' | 'today' | 'later' | 'done'
 /** How the due time was decided. */
@@ -579,7 +579,7 @@ export interface TaskRow {
   assignee_name: string | null
   /** The assignee's photo; null = initials. */
   assignee_avatar_url: string | null
-  unowned_reason: 'ai_only' | 'left_shift' | null
+  unowned_reason: 'ai_only' | 'left_shift' | 'no_ready_agent' | null
   unowned_from_name: string | null
   unowned_at: string | null
   created_by_name: string | null

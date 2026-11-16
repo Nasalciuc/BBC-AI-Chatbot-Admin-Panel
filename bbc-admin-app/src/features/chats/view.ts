@@ -446,6 +446,8 @@ export interface Row {
   warn?: boolean
   /** A copy button: what goes on the clipboard, and what to call it. */
   copy?: { text: string; what: string }
+  /** The value is a link (opens in a new tab). */
+  href?: string
 }
 
 /** Who flies. `passengers` is everyone; the CRM takes adults as the rest
@@ -798,6 +800,98 @@ export function deviceOf(ua: unknown): string {
   if (/iPad|Tablet/i.test(ua)) return 'Tablet'
   if (/iPhone|Android|Mobile/i.test(ua)) return 'Phone'
   return 'Computer'
+}
+
+// ── the chat that opened by itself (bbc-chatbot-api app/services/proactive.py) ──
+
+/** A word from one of the fixed tables below, for a key that came with the data: only the table's
+ *  own keys count ("constructor" or "toString" would otherwise reach Object.prototype). */
+function wordFor(table: Record<string, string>, key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined
+}
+
+/** Why the card opened the chat, in the words the agent reads. */
+const OPENED_BY: Record<string, string> = {
+  kayak: 'came from Kayak',
+  quote: 'pressed “Get free quote” and stopped',
+  reader: 'read the page for a while',
+  exit: 'was about to leave',
+}
+
+/** "By itself: the client came from Kayak · 23:41" for a chat the card opened (no form); '' otherwise. */
+export function openedByText(meta: Record<string, unknown> | undefined, now: Date): string {
+  const m = (meta ?? {}) as Record<string, unknown>
+  const trigger = typeof m.proactive_trigger === 'string' ? m.proactive_trigger : ''
+  if (!trigger) return ''
+  const at = typeof m.proactive_at === 'string' ? dayClock(m.proactive_at, now) : ''
+  // The note beside the button did not open the chat by itself: the client tapped it, and got the chat
+  // without the form (owner's decision, 16 Nov) — which is why no name, email or phone came first.
+  if (trigger === 'note') return `No form: the client tapped the note beside the button${at ? ` · ${at}` : ''}`
+  return `By itself: the client ${wordFor(OPENED_BY, trigger) ?? 'hesitated'}${at ? ` · ${at}` : ''}`
+}
+
+const CABIN_NAME: Record<string, string> = {
+  economy: 'Economy',
+  premium_economy: 'Premium Economy',
+  business: 'Business',
+  first: 'First',
+}
+
+/** "25 May", only for a day the calendar has. Not dayMonth: that one reads the CRM's date column,
+ *  always a real day; this reads a JSON blob, where "2026-02-31" would roll over into "3 Mar". */
+function shortDay(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!m) return ''
+  const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
+  const day = new Date(y, mo, d, 12)
+  if (day.getFullYear() !== y || day.getMonth() !== mo || day.getDate() !== d) return ''
+  return day.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+/** What the client searched on the page, as the card showed it (metadata.proactive_trip, checked
+ *  field by field on the server): "ATL → ICN · 25 May – 28 Jun · 4 adults · First". '' when none. */
+export function pageTripText(meta: Record<string, unknown> | undefined): string {
+  const raw = (meta ?? {}).proactive_trip
+  if (!raw || typeof raw !== 'object') return ''
+  const t = raw as Record<string, unknown>
+  const s = (k: string) => (typeof t[k] === 'string' ? (t[k] as string).trim() : '')
+  // A count of people: a whole number above zero, or none ("2.5 adults" and "-1 children" are no count).
+  const n = (k: string) => {
+    const v = t[k]
+    return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0
+  }
+  const from = s('origin_code') || s('origin_name')
+  const to = s('destination_code') || s('destination_name')
+  const route = from && to ? `${from} → ${to}` : to ? `To ${to}` : from ? `From ${from}` : ''
+  const dates = [shortDay(s('depart_date')), shortDay(s('return_date'))].filter(Boolean).join(' – ')
+  const adults = n('adults')
+  const kids = n('children')
+  const babies = n('infants')
+  const people = adults
+    ? [
+        `${adults} ${adults === 1 ? 'adult' : 'adults'}`,
+        kids ? `${kids} ${kids === 1 ? 'child' : 'children'}` : '',
+        babies ? `${babies} ${babies === 1 ? 'infant' : 'infants'}` : '',
+      ].filter(Boolean).join(', ')
+    : ''
+  return [route, dates, people, wordFor(CABIN_NAME, s('cabin')) ?? ''].filter(Boolean).join(' · ')
+}
+
+/** The replay of the visit that started the chat (metadata.posthog_session_id, an id the server
+ *  checked) under `base`, the PostHog project's replay address (VITE_POSTHOG_REPLAY_URL, see
+ *  .env.example). '' without an id, or without an https base. */
+export function replayUrl(meta: Record<string, unknown> | undefined, base: string | undefined): string {
+  const raw = (meta ?? {}).posthog_session_id
+  const id = typeof raw === 'string' ? raw.trim() : ''
+  if (!/^[0-9A-Za-z-]{16,64}$/.test(id) || !base) return ''
+  let root: URL
+  try {
+    root = new URL(base.trim())
+  } catch {
+    return ''  // not an address: no link, as without one
+  }
+  if (root.protocol !== 'https:' || root.username || root.password || root.search || root.hash) return ''
+  return `${root.origin}${root.pathname.endsWith('/') ? root.pathname : `${root.pathname}/`}${id}`
 }
 
 export function whereRows(meta: Record<string, unknown> | undefined, phoneCountry?: string | null): Row[] {

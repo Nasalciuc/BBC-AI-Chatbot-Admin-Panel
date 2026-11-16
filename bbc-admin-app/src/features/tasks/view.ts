@@ -170,6 +170,7 @@ export function unownedNote(r: Pick<TaskRow, 'unowned_reason' | 'unowned_from_na
     return r.unowned_at ? `${who} went Not ready at ${clockIn(Date.parse(r.unowned_at), tz)}` : `${who} went Not ready`
   }
   if (r.unowned_reason === 'ai_only') return 'Asked in a chat with the AI'
+  if (r.unowned_reason === 'no_ready_agent') return 'Nobody was Ready when the client left'
   return null
 }
 
