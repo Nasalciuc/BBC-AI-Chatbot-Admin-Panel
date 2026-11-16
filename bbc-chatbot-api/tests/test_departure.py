@@ -9,6 +9,7 @@ without names, phones or e-mails; the job registered every minute; migration
 053 marked not applied.
 """
 
+import asyncio
 import logging
 import os
 import pathlib
@@ -306,6 +307,67 @@ class TestJob:
         note.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_task_another_run_made_first_is_not_counted(self, caplog):
+        """CodeRabbit #257: the unique index refuses the second departure task of a chat, and
+        insert_follow_up returns that refusal (23505) as None. Read why: made elsewhere is no failure."""
+        patches = _job([_conv(id="c-1")], insert=AsyncMock(return_value=None))
+        reads = AsyncMock(side_effect=[[], [{"id": "t-9", "source": "departure", "conversation_id": "c-1"}]])
+        patches[2] = patch.object(db, "tasks_of_conversations", new=reads)
+        with _Patched(patches) as p, caplog.at_level(logging.INFO):
+            out = await departure.run_departure_tasks()
+            note = p.mocks[7]
+        assert out["created"] == 0
+        assert db.TASKS_HEALTH["departure_failures"] == 0 and db.TASKS_HEALTH["departure"] == 0
+        assert "got its task from another run" in caplog.text
+        assert reads.await_args_list[1].args == (["c-1"],)
+        note.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reading_why_no_row_came_back_can_fail_and_is_counted(self, caplog):
+        patches = _job([_conv(id="c-1")], insert=AsyncMock(return_value=None))
+        patches[2] = patch.object(db, "tasks_of_conversations", new=AsyncMock(side_effect=[[], RuntimeError("db down")]))
+        with _Patched(patches), caplog.at_level(logging.ERROR):
+            out = await departure.run_departure_tasks()
+        assert out["created"] == 0
+        assert db.TASKS_HEALTH["departure_failures"] == 1
+        assert "reading why failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_two_runs_at_once_make_one_task(self, caplog):
+        """The old and the new process of a deploy each run the job: both read the chat as free and
+        both insert. A store with the index's rule lets one in; the other run sees why, quietly."""
+        made: list[dict] = []
+
+        async def candidates():
+            await asyncio.sleep(0)
+            return [_conv(id="c-1")]
+
+        async def tasks_of(ids):
+            await asyncio.sleep(0)
+            return [t for t in made if t["conversation_id"] in ids]
+
+        async def still_free(cid):
+            await asyncio.sleep(0)  # both runs pass their checks before either inserts
+            return True
+
+        async def insert(row):
+            await asyncio.sleep(0)
+            if any(t["conversation_id"] == row["conversation_id"] and t["source"] == "departure" for t in made):
+                return None  # uq_tasks_departure refused it (23505 → None)
+            made.append({"id": f"t-{len(made)}", **row})
+            return made[-1]
+
+        patches = _job([], insert=AsyncMock(side_effect=insert), free=AsyncMock(side_effect=still_free))
+        patches[1] = patch.object(db, "get_departure_candidates", new=AsyncMock(side_effect=candidates))
+        patches[2] = patch.object(db, "tasks_of_conversations", new=AsyncMock(side_effect=tasks_of))
+        with _Patched(patches), caplog.at_level(logging.INFO):
+            first, second = await asyncio.gather(departure.run_departure_tasks(), departure.run_departure_tasks())
+        assert len(made) == 1
+        assert first["created"] + second["created"] == 1
+        assert db.TASKS_HEALTH["departure"] == 1 and db.TASKS_HEALTH["departure_failures"] == 0
+        assert "got its task from another run" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_the_history_line_carries_the_due_minutes(self):
         with _Patched(_job([_conv()], ready=[{"id": "agent-a", "role": "sales"}])) as p:
             await departure.run_departure_tasks()
@@ -566,6 +628,15 @@ class TestMigration053:
         body = self.sql[self.sql.index("BEGIN;"):]
         assert body.rstrip().endswith("COMMIT;")
         assert "SET LOCAL lock_timeout" in body
+
+    def test_one_departure_task_per_chat_is_the_databases_rule_too(self):
+        """CodeRabbit #257: the job's own reads can't stop two overlapping runs (a deploy's two processes)."""
+        body = self.sql[self.sql.index("BEGIN;"):]
+        assert ("CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_departure ON public.tasks (conversation_id)\n"
+                "  WHERE source = 'departure';") in body
+        assert body.index("uq_tasks_departure") < body.index("COMMIT;")
+        # The insert reads its refusal as "already made" (None), by the code, not as a failure.
+        assert "uq_tasks_departure, migration 053" in (ROOT / "app" / "db" / "supabase.py").read_text(encoding="utf-8")
 
     def test_the_code_uses_the_same_words(self):
         assert departure.SOURCE == "departure"

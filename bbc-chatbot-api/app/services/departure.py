@@ -177,7 +177,9 @@ async def run_departure_tasks() -> dict:
     for conv, gone in due:
         cid = conv["id"]
         # Read again just before the insert: an agent may have taken the chat (or it closed) since the
-        # candidates were read. A narrower window, not none: the database guards no such write.
+        # candidates were read. A narrower window, not none. A second departure task for the chat is
+        # the database's to refuse (uq_tasks_departure, migration 053): two runs can overlap during a
+        # deploy, when the old and the new process each run the scheduler.
         try:
             free = await db.departure_still_free(cid)
         except Exception as e:
@@ -212,7 +214,18 @@ async def run_departure_tasks() -> dict:
             logger.error(f"[departure] the task for {cid} wasn't made: {what_failed(e)}")
             continue
         if not task:
-            # The database answered without the row: no task, and nothing says why. Counted like a refusal.
+            # No row back: either another run made this chat's task first (the unique index refused
+            # this one, which insert_follow_up returns as None), or the database answered without the
+            # row. Read which, so only the second is counted.
+            try:
+                made_elsewhere = any(t.get("source") == SOURCE for t in await db.tasks_of_conversations([cid]))
+            except Exception as e:
+                db.TASKS_HEALTH["departure_failures"] += 1
+                logger.error(f"[departure] the task for {cid} wasn't made, and reading why failed: {what_failed(e)}")
+                continue
+            if made_elsewhere:
+                logger.info(f"[departure] {cid} got its task from another run at the same time: not made twice")
+                continue
             db.TASKS_HEALTH["departure_failures"] += 1
             logger.error(f"[departure] the task for {cid} wasn't made: the insert returned no row")
             continue

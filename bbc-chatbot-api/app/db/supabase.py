@@ -3737,9 +3737,10 @@ async def insert_follow_up(row: dict) -> Optional[dict]:
     except TasksNotSetUp:
         raise
     except Exception as e:
-        # A retry of the same chat message (uq_tasks_message is the table's one
-        # unique index besides the id), by the code only: the whole text
-        # includes the refused row, and a quote can hold "23505".
+        # A retry of the same chat message (uq_tasks_message), or a second
+        # departure task for the same chat (uq_tasks_departure, migration 053),
+        # by the code only: the whole text includes the refused row, and a
+        # quote can hold "23505".
         if _error_code(e) == "23505":
             return None
         raise
@@ -3935,7 +3936,8 @@ async def departure_still_free(conversation_id: str) -> bool:
     """The chat is still open and nobody's, read again just before its
     departure task is made: the candidates were read a few queries earlier,
     and an agent may have taken the chat meanwhile. This narrows that window;
-    it does not close it (the database guards no such write).
+    it does not close it (the database guards only the second departure task
+    of a chat: uq_tasks_departure, migration 053).
     Raises: the job counts a failed read and tries the chat on its next run."""
     db_client = get_client()
     res = await _run_sync(
