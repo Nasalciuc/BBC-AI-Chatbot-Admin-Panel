@@ -65,6 +65,9 @@ def _ensure_collection_sync() -> bool:
         resp = client.put(_collection_url(), json=create_body)
         resp.raise_for_status()
         logger.info(f"Qdrant collection '{settings.qdrant_collection}' created ({_VECTOR_SIZE}d)")
+        # A new collection has no indexes: without this one every search
+        # would be refused again.
+        _ensure_tunnel_index_sync()
         return True
     except Exception as e:
         logger.error(f"Qdrant ensure_collection failed: {e}")
@@ -73,6 +76,56 @@ def _ensure_collection_sync() -> bool:
 
 async def ensure_collection() -> bool:
     return await asyncio.to_thread(_ensure_collection_sync)
+
+
+# Every search filters on `tunnel`, and Qdrant Cloud refuses a filter on a
+# field that has no index: "Index required but not found for "tunnel" of one
+# of the following types: [keyword]" (HTTP 400). That refusal is why no turn
+# has had a KB entry since 29 May 2026 (QDRANT_HEALTH.refused_because, 16 Nov).
+# The index is made once; every start checks that it is there.
+_TUNNEL_INDEX = {"field_name": "tunnel", "field_schema": "keyword"}
+_INDEX_TIMEOUT = 30.0  # wait=true: the answer comes once the index is built
+
+
+def _ensure_tunnel_index_sync() -> str:
+    """Make sure `tunnel` has its keyword index. Looks first and creates it
+    only when it is missing, so running it on every start changes nothing
+    once it is there. Returns what it found or did — "present", "created",
+    "not configured" or "failed (…)" — and keeps it in
+    QDRANT_HEALTH["tunnel_index"]. Never raises: a start never waits on it."""
+    client = _get_client()
+    if not client:
+        state = "not configured"
+        QDRANT_HEALTH["tunnel_index"] = state
+        return state
+    try:
+        resp = client.get(_collection_url())
+        resp.raise_for_status()
+        schema = (resp.json().get("result") or {}).get("payload_schema") or {}
+        if (schema.get("tunnel") or {}).get("data_type") == "keyword":
+            state = "present"
+        else:
+            made = client.put(
+                _collection_url("/index"), params={"wait": "true"},
+                json=_TUNNEL_INDEX, timeout=_INDEX_TIMEOUT,
+            )
+            made.raise_for_status()
+            state = "created"
+            logger.info(f"[qdrant] keyword index on 'tunnel' created in '{settings.qdrant_collection}'")
+    except Exception as e:  # noqa: BLE001 — broad on purpose: a start must never fail over this
+        # The kind and the status, not the answer's text.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        state = f"failed ({type(e).__name__}{f', HTTP {status}' if status else ''})"
+        logger.error(
+            f"[qdrant] keyword index on 'tunnel' not ensured ({type(e).__name__}, status {status}): "
+            "KB searches stay refused (HTTP 400)"
+        )
+    QDRANT_HEALTH["tunnel_index"] = state
+    return state
+
+
+async def ensure_tunnel_index() -> str:
+    return await asyncio.to_thread(_ensure_tunnel_index_sync)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -204,8 +257,11 @@ _QUERY_BODY_LOGGED = False  # dump the failing /points/query body once per proce
 # turn with a KB entry after 29 May 2026. `last_error` is the kind of the
 # latest failure ("HTTP 400", "ReadTimeout"); `refused_because` is the reason
 # Qdrant gives, which the status line alone never said (see _why_refused).
+# `tunnel_index` is what this start found or did about the index every search
+# needs (_ensure_tunnel_index_sync).
 QDRANT_HEALTH: dict = {
     "searches": 0, "failed": 0, "last_status": None, "last_error": None, "refused_because": None,
+    "tunnel_index": None,
 }
 
 # Our words, not a visitor's: what Qdrant answers to them can be kept whole.

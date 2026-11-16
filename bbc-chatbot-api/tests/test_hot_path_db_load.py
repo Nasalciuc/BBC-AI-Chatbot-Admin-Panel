@@ -531,7 +531,7 @@ class TestPresenceTick:
 @pytest.fixture
 def _qdrant_state():
     before = dict(qdrant.QDRANT_HEALTH)
-    qdrant.QDRANT_HEALTH.update({"searches": 0, "failed": 0, "last_status": None, "last_error": None, "refused_because": None})
+    qdrant.QDRANT_HEALTH.update({"searches": 0, "failed": 0, "last_status": None, "last_error": None, "refused_because": None, "tunnel_index": None})
     logged = qdrant._QUERY_BODY_LOGGED
     qdrant._QUERY_BODY_LOGGED = False
     yield qdrant.QDRANT_HEALTH
@@ -652,7 +652,7 @@ class TestKbSearchSaysWhy:
         with patch.object(qdrant, "_get_client", return_value=_qdrant_client((200, ok))):
             got = qdrant._search_sync("can I pay by card", tunnel="sales")
         assert [g["id"] for g in got] == ["e1"]
-        assert _qdrant_state == {"searches": 1, "failed": 0, "last_status": None, "last_error": None, "refused_because": None}
+        assert _qdrant_state == {"searches": 1, "failed": 0, "last_status": None, "last_error": None, "refused_because": None, "tunnel_index": None}
 
     def test_a_timeout_is_counted_without_a_status(self, _qdrant_state):
         client = MagicMock()
@@ -833,7 +833,7 @@ def test_health_detail_reports_the_new_counters():
     with patch.object(health, "get_scheduler_health", return_value={}), \
          patch.object(health, "supervisor_columns_status", return_value={}):
         out = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(health.health_detail(full=False))
-    assert set(out["kb_search"]) == {"searches", "failed", "last_status", "last_error", "refused_because"}
+    assert set(out["kb_search"]) == {"searches", "failed", "last_status", "last_error", "refused_because", "tunnel_index"}
     assert set(out["presence_ticks"]) == {"ticks", "read_failed", "write_failed", "started_twice"}
     assert set(out["abandoned_scan"]) == {"scans", "embedded", "embedded_failed", "message_reads"}
     assert set(out["user_lookup"]) == {"failed"}
