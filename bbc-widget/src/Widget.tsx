@@ -13,6 +13,7 @@ import {
   forgetProactiveConversation, isProactiveConversation, proactiveChatStarted, proactiveMetadata, useProactive,
   type ProactiveOpening,
 } from './proactive'
+import { keepOpening, readKeptOpening } from './keptOpening'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -115,6 +116,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // visitor's conversation: the button brings it back, and it stays connected while closed.
   const proactiveConv = isProactiveConversation(cachedConvId)
 
+  // The card's chat the visitor had not answered on the page before (kept with the open panel, below): the
+  // same words come back, and the conversation still starts with their answer. Never over a conversation.
+  const keptOpening = cachedConvId ? null : readKeptOpening(restored?.opening)
+
   // A conversation this visitor already has (conversation id and identity cached): it is kept connected
   // in the background on every page, so nothing it says is missed.
   const sessionActive = !!(hasOptimisticSession && (savedVisitor || proactiveConv))
@@ -151,6 +156,8 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   /** The panel is on its way out (a short exit animation before it unmounts). */
   const [closing, setClosing] = useState(false)
   const closingRef = useRef(false)
+  /** The opening of the chat the card opened: its words, replies and the page's trip. */
+  const [opening, setOpening] = useState<ProactiveOpening | null>(keptOpening)
 
   /** Close with the exit animation; reduced motion and the CRM iframe close at once. */
   const animateClose = (done: () => void) => {
@@ -249,10 +256,13 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   }, [step])
 
   // Keep an open chat open across this tab's pages (also when it was restored by a tap on the button).
+  // The card's chat not answered yet keeps its opening: without it the next page would open a chat with
+  // nothing behind it, and ChatWindow would start one on the server (/chat/start) that nobody answered.
   useEffect(() => {
     if (embedded || step !== 'chat') return
-    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata }))
-  }, [step, tunnel])
+    const kept = opening && !proactiveChatStarted() ? { opening: keepOpening(opening) } : {}
+    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata, ...kept }))
+  }, [step, tunnel, opening])
 
   const handleTunnelSelect = (t: 'sales' | 'support') => {
     posthog?.capture('chat_tunnel_selected', {
@@ -333,9 +343,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // At the visitor's moment the server may answer with words for their own search: a card above the
   // button on a phone, the panel with those words on a computer. No form, and nothing is written until
   // the visitor answers. The control group keeps the note above exactly as it is.
-  const proactive = useProactive({ apiUrl, step, allowed: !embedded && !hasOptimisticSession })
-  /** The opening of the chat the card opened: its words, replies and the page's trip. */
-  const [opening, setOpening] = useState<ProactiveOpening | null>(null)
+  const proactive = useProactive({ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening })
   const openProactive = (o: ProactiveOpening) => {
     proactive.opened()
     formFlowStartedRef.current = true

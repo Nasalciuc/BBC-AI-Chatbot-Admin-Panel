@@ -17,6 +17,7 @@ import {
   EXIT_AFTER_S, KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, READER_VISIBLE_S,
   blockedPath, isNotNow, pauseRunning, pickTrigger, replyKind,
 } from '../src/triggers.ts'
+import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (f) => readFileSync(join(SRC, f), 'utf8')
@@ -233,7 +234,7 @@ test('the offer has its 1.5 s answer or nothing', () => {
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
   assert.match(hook, /if \(ssGet\(DONE_KEY\) \|\| ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
   assert.match(hook, /if \(!allowed \|\| step !== 'buttons'\) return/)
-  assert.match(widget, /useProactive\(\{ apiUrl, step, allowed: !embedded && !hasOptimisticSession \}\)/)
+  assert.match(widget, /useProactive\(\{ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening \}\)/)
   assert.match(buttons, /onClick=\{\(\) => \{ markNoteClosed\(\); onDismissAttention\?\.\(\) \}\}/)
   // The card replaces the note for the rest of the visit.
   assert.match(widget, /showAttention=\{showAttention && !sessionActive && !proactive\.quiet\}/)
@@ -296,4 +297,45 @@ test('Escape on the card\'s unanswered chat is a dismissal; on a conversation it
   const dismiss = esc.indexOf("if (opening && !proactiveChatStarted()) proactive.dismiss('close')")
   assert.ok(dismiss > 0 && dismiss < esc.indexOf('animateClose('))
   assert.match(hook, /export function proactiveChatStarted\(\): boolean \{ return isProactiveConversation\(lsGet\('bbc_conv_id'\)\) \}/)
+})
+
+// ── CodeRabbit round 2 on #256 ───────────────────────────────────────────────────────
+
+test('the open panel keeps its unanswered opening across the tab\'s pages: never a chat with nothing behind it', () => {
+  // Kept while the visitor has not answered; read back only where no conversation exists yet.
+  const keep = widget.slice(widget.indexOf("// Keep an open chat open across this tab's pages"))
+  assert.match(keep, /const kept = opening && !proactiveChatStarted\(\) \? \{ opening: keepOpening\(opening\) \} : \{\}/)
+  assert.match(keep, /safeSet\('bbc_widget', JSON\.stringify\(\{ step: 'chat', tunnel, visitor, metadata, \.\.\.kept \}\)\)/)
+  assert.match(keep, /\}, \[step, tunnel, opening\]\)/)
+  assert.match(widget, /const keptOpening = cachedConvId \? null : readKeptOpening\(restored\?\.opening\)/)
+  assert.match(widget, /const \[opening, setOpening\] = useState<ProactiveOpening \| null>\(keptOpening\)/)
+  // Its answer or dismissal on the next page is still measured against the moment it was shown.
+  assert.match(hook, /const shownRef = useRef<ProactiveOpening \| null>\(restored\)/)
+  // With the opening, ChatWindow shows its words and waits: no /chat/start.
+  assert.match(chat, /if \(openingRef\.current\) \{[\s\S]*?return\s+\}\s+if \(savedConvId\) return\s+startConversation\(\)/)
+})
+
+test('a kept opening reads back whole, without the reply already sent; anything else is no opening', () => {
+  const o = {
+    trigger: 'kayak', message: 'Flying Atlanta → Seoul?', quickReplies: ['Yes, check fares', 'Not now'],
+    trip: { source: 'kayak', origin_code: 'ATL', destination_code: 'ICN' }, surface: 'panel', shownAt: 1763250000000,
+    firstReply: 'Yes, check fares',
+  }
+  const kept = keepOpening(o)
+  assert.equal('firstReply' in kept, false)
+  assert.deepEqual(readKeptOpening(JSON.parse(JSON.stringify(kept))), kept)
+  for (const bad of [null, 'x', 5, {}, { ...kept, trigger: 'other' }, { ...kept, message: ' ' }, { ...kept, surface: 'sheet' }]) {
+    assert.equal(readKeptOpening(bad), null)
+  }
+  const odd = readKeptOpening({ ...kept, quickReplies: ['ok', 3, ' '], trip: 'ATL-ICN', shownAt: 'soon' })
+  assert.deepEqual(odd.quickReplies, ['ok'])
+  assert.equal(odd.trip, null)
+  assert.equal(typeof odd.shownAt, 'number')
+})
+
+test('the quote form\'s send is read off its submit button by the press\'s own rule (a <button> without a type)', () => {
+  assert.match(hook, /function submitControl\(form: HTMLFormElement\)/)
+  assert.match(hook, /return Array\.from\(controls\)\.find\(isSubmitControl\) \?\? null/)
+  assert.match(hook, /const btn = submitControl\(form\)/)
+  assert.doesNotMatch(hook, /querySelector<HTMLButtonElement \| HTMLInputElement>\('button\[type="submit"\], input\[type="submit"\]'\)/)
 })

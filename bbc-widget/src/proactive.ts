@@ -105,13 +105,19 @@ function isSubmitControl(el: Element): boolean {
   return (control.getAttribute('type') || 'submit').toLowerCase() === 'submit'
 }
 
+/** The form's submit button, by the rule a press is read with (a <button> without a type submits too). */
+function submitControl(form: HTMLFormElement): HTMLButtonElement | HTMLInputElement | null {
+  const controls = form.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input[type="submit"]')
+  return Array.from(controls).find(isSubmitControl) ?? null
+}
+
 /** The quote form says a send is in flight, for as long as it says so: time passing is no sign the send
  *  is done. `aria-busy` on the form or its button says it outright. A disabled button says it when every
  *  field is right: a disabled button takes no press, so after one it is the send that disabled it, unless
  *  a field is flagged — then the form is waiting for the visitor, not for the server. */
 function sending(form: HTMLFormElement | null): boolean {
   if (!form) return false
-  const btn = form.querySelector<HTMLButtonElement | HTMLInputElement>('button[type="submit"], input[type="submit"]')
+  const btn = submitControl(form)
   if (form.getAttribute('aria-busy') === 'true' || btn?.getAttribute('aria-busy') === 'true') return true
   return !!btn && btn.disabled && !form.querySelector(':invalid, [aria-invalid="true"]')
 }
@@ -136,10 +142,16 @@ export interface Proactive {
   engaged: (reply: string) => void
 }
 
-export function useProactive({ apiUrl, step, allowed }: { apiUrl: string; step: string; allowed: boolean }): Proactive {
+export function useProactive({ apiUrl, step, allowed, restored = null }: {
+  apiUrl: string
+  step: string
+  allowed: boolean
+  /** The opening the panel came back with on this page (kept with it): its answer or dismissal is measured. */
+  restored?: ProactiveOpening | null
+}): Proactive {
   const [offer, setOffer] = useState<ProactiveOpening | null>(null)
   const [quiet, setQuiet] = useState(() => ssGet(DONE_KEY) === 'shown')
-  const shownRef = useRef<ProactiveOpening | null>(null)
+  const shownRef = useRef<ProactiveOpening | null>(restored)
   const engagedRef = useRef(false)
   const stepRef = useRef(step)
   stepRef.current = step
