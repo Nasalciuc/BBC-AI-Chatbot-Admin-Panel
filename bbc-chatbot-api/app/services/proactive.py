@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
@@ -65,10 +64,10 @@ _REPLIES: dict[str, list[str]] = {
 
 # Who speaks (ADR 12; owner, 16 Nov): Alex, the brand's AI Travel Agent. The
 # widget's header shows the same name over "Travel Agent · <brand>", with an
-# "AI" badge on his photo (bbc-widget/src/config, `persona`); the first message
-# of every chat says it in words (compose, introduced). Keep the name equal on
-# both sides. The brands as the widget's header writes them, by the validated
-# `site` (bbc | bct).
+# "AI" badge on his photo: that is where the visitor sees it is an AI, so the
+# opening says the name and the brand only (bbc-widget/src/config, `persona`;
+# keep the name equal on both sides). The brands as the widget's header writes
+# them, by the validated `site` (bbc | bct).
 PERSONA = "Alex"
 _BRANDS: dict[str, str] = {"bbc": "BuyBusinessClass", "bct": "Business Class Tickets"}
 
@@ -199,44 +198,16 @@ def brand_for(site: Optional[str]) -> str:
     return _BRANDS.get(site or "bbc", _BRANDS["bbc"])
 
 
-# An opening that already says "AI" as a word ("I'm Alex, your AI Travel Agent").
-_SAYS_AI = re.compile(r"\bAI\b")
-# The greeting an opening starts with, up to its first full stop or "!": "Hi Maria!", "Welcome!",
-# "Hi — you're in the right place." A question is not a greeting: nothing goes after the opening's ask.
-_GREETING = re.compile(r"\s*((?:hi|hello|hey|welcome|good (?:morning|afternoon|evening))\b[^.!?\n]{0,60}[.!])\s*", re.I)
-
-
-def introduced(text: str, site: Optional[str]) -> str:
-    """The first message of a chat, saying who writes it (owner, 16 Nov).
-
-    The widget's line under Alex's name says "Travel Agent" and the badge on
-    his photo says "AI"; the first message says both in words, whichever way
-    the chat opened: the AI's greeting (the prompt asks it to), the
-    template greeting, the support greeting, the fallback. An opening that
-    already says AI is kept as it is; any other gets "I'm Alex, the AI Travel
-    Agent at <brand>." after its greeting ("Welcome, Maria! I'm Alex, …"),
-    or "Hi, I'm Alex, …" before it when it has none."""
-    if not isinstance(text, str) or _SAYS_AI.search(text):
-        return text
-    intro = f"I'm {PERSONA}, the AI Travel Agent at {brand_for(site)}."
-    greeting = _GREETING.match(text)
-    if greeting:
-        rest = text[greeting.end():]
-        return f"{greeting.group(1)} {intro} {rest}".rstrip()
-    return f"Hi, {intro} {text.strip()}".rstrip()
-
-
 def compose(trigger: str, trip: Optional[TripContext], site: Optional[str] = None) -> tuple[str, list[str]]:
     """The card's message and its quick replies. Pure: the same trigger, trip
     and site always give the same words, so /offer and /init agree.
 
-    The 16 Nov debate (ADR 11-15): Alex introduces himself as the brand's AI
-    Travel Agent (owner, 16 Nov: the widget's line says "Travel Agent", the
-    first message says AI), says what the page already told us and never asks
-    for it again (a third of the /flight chats stopped at "Where are you
-    flying from?"), names a difficulty only where there was one (the quote
-    form that did not send), and promises no time and no price."""
-    hello = f"Hi, I'm {PERSONA}, the AI Travel Agent at {brand_for(site)}."
+    The 16 Nov debate (ADR 11-15): Alex introduces himself as the brand's
+    assistant, says what the page already told us and never asks for it again
+    (a third of the /flight chats stopped at "Where are you flying from?"),
+    names a difficulty only where there was one (the quote form that did not
+    send), and promises no time and no price."""
+    hello = f"Hi, I'm {PERSONA} from {brand_for(site)}."
     line = _trip_line(trip)
     dest = _place(trip.destination_name, trip.destination_code) if trip else None
     full = bool(line and trip and (trip.origin_code or trip.origin_name) and trip.depart_date)

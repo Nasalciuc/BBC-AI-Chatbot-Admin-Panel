@@ -25,7 +25,6 @@ from app.ai.templates import TEMPLATES
 from app.models.chat import VisitorInfo
 from app.pipeline.generator import GeneratedResponse
 from app.pipeline.intent import Intent
-from app.services.proactive import introduced
 
 _CONV_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -110,12 +109,12 @@ class TestChatStart:
              patch("app.services.conversation_service.add_message", new=AsyncMock(return_value=stored)):
             res = await chat_start(_start_request(), _request_mock(), None)
         assert res.message == "Welcome! Book now at [removed]"
-        # Not stored: guarded on the way out all the same (with the sentence that says who writes it).
+        # Not stored: guarded on the way out all the same.
         with p_block, p_conv, p_count, p_gen, \
              patch("app.services.conversation_service.add_message", new=AsyncMock(return_value=None)), \
              patch("app.services.email.send_ops_alert_email", new=AsyncMock()):
             res = await chat_start(_start_request(), _request_mock(), None)
-        assert res.message == "Welcome! I'm Alex, the AI Travel Agent at BuyBusinessClass. Book now at [removed]"
+        assert res.message == "Welcome! Book now at [removed]"
         flags._reset_for_tests()
 
     @pytest.mark.asyncio
@@ -125,7 +124,7 @@ class TestChatStart:
         with p_block, p_conv, p_count, p_gen, p_add as add_mock:
             res = await chat_start(_start_request(visitor=visitor), _request_mock(), None)
 
-        assert res.message in [introduced(t, None) for t in TEMPLATES["welcome:sales:anonymous"]]
+        assert res.message in TEMPLATES["welcome:sales:anonymous"]
         assert add_mock.await_count == 1
         assert add_mock.await_args.args[1] == "ai"
 
@@ -142,7 +141,7 @@ class TestChatStart:
                 _request_mock(),
                 None,
             )
-        assert res.message in [introduced(t, None) for t in TEMPLATES["welcome:support:anonymous"]]
+        assert res.message in TEMPLATES["welcome:support:anonymous"]
         haiku.assert_not_called()
         sonnet.assert_not_called()
         assert add_mock.await_count == 1
@@ -229,59 +228,3 @@ class TestStartVisitorToken:
         assert meta["suspect"] == "form_trap"
         assert res.conversation_id == _CONV_ID
         flags._reset_for_tests()
-
-
-# ── Owner, 16 Nov: the first message says who writes it ──
-
-class TestTheOpeningSaysAI:
-    """The widget's line under Alex's name says "Travel Agent" (capital T and
-    A) and the badge on his photo says "AI"; every chat's first message says
-    it in words, whichever way /chat/start made it."""
-
-    @pytest.mark.asyncio
-    async def test_the_ai_greeting_gets_the_sentence_after_its_greeting(self):
-        gen = GeneratedResponse(
-            text="Good evening, Sheniquia! When are you planning to travel?", model_used="sonnet", cost=0.004,
-        )
-        p_block, p_conv, p_count, p_gen, p_add = _patches(gen=gen)
-        with p_block, p_conv, p_count, p_gen, p_add as add_mock:
-            await chat_start(_start_request(), _request_mock(), None)
-        assert add_mock.await_args.args[2] == (
-            "Good evening, Sheniquia! I'm Alex, the AI Travel Agent at BuyBusinessClass. "
-            "When are you planning to travel?"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_greeting_that_already_says_it_is_stored_as_written(self):
-        said = "Hi Sheniquia, I'm Alex, the AI Travel Agent at Buy Business Class. Where are you flying?"
-        gen = GeneratedResponse(text=said, model_used="sonnet", cost=0.004)
-        p_block, p_conv, p_count, p_gen, p_add = _patches(gen=gen)
-        with p_block, p_conv, p_count, p_gen, p_add as add_mock:
-            await chat_start(_start_request(), _request_mock(), None)
-        assert add_mock.await_args.args[2] == said
-
-    @pytest.mark.asyncio
-    async def test_the_template_greeting_says_it_with_the_site_brand(self, monkeypatch):
-        from app import flags
-
-        flags._reset_for_tests()
-        monkeypatch.setenv("GREETING_TEMPLATE_PERCENT", "100")
-        p_block, p_conv, p_count, p_gen, p_add = _patches()
-        with p_block, p_conv, p_count, p_gen as gen_mock, p_add as add_mock:
-            await chat_start(_start_request(metadata={"site": "bct"}), _request_mock(), None)
-        assert add_mock.await_args.args[2] == (
-            "Welcome, Sheniquia! I'm Alex, the AI Travel Agent at Business Class Tickets. "
-            "Where are you flying from and to?"
-        )
-        gen_mock.assert_not_called()
-        flags._reset_for_tests()
-
-    @pytest.mark.asyncio
-    async def test_a_second_start_returns_the_stored_opening_untouched(self):
-        p_block, p_conv, p_count, p_gen, p_add = _patches(msg_count=1)
-        with p_block, p_conv, p_count, p_gen, p_add as add_mock, \
-             patch("app.api.chat._existing_opening", new=AsyncMock(return_value="Welcome! Where are you flying?")):
-            res = await chat_start(_start_request(), _request_mock(), None)
-        # Written before this rule: the client sees what is in the conversation, never a second version.
-        assert res.message == "Welcome! Where are you flying?"
-        add_mock.assert_not_awaited()
