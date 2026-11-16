@@ -8,6 +8,7 @@ import type { FormCheck } from './TunnelForm'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
 import { PanelTop, personaLine } from './PanelTop'
+import { PersonaAvatar } from './PersonaAvatar'
 import { useLarge } from './largeView'
 import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
@@ -1092,8 +1093,8 @@ export function ChatWindow({
   const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
   const lastAgentName = (lastAgent?.agent_name || '').trim()
   const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : personaLine
-  // Alex's avatar: a letter on the brand colour, never an image that can fail to load (ADR 17).
-  const brandAvatar = <span class="bw-ava bw-ava--persona" aria-hidden="true">{brand.persona.initial}</span>
+  // Alex's avatar: his photo, part of the bundle (PersonaAvatar.tsx).
+  const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).
   const dayKey = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toDateString() }

@@ -309,6 +309,8 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-ava--brand { box-shadow: 0 0 0 1px var(--bw-line-strong); }
 #bbc-widget-root .bw-ava--initials { display: flex; align-items: center; justify-content: center; background: var(--bw-text); color: #FFFFFF; font-size: 11px; font-weight: 700; }
 #bbc-widget-root .bw-ava--persona { display: flex; align-items: center; justify-content: center; background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 12px; font-weight: 700; }
+/* Alex's photo fills his round avatar in all three spots; the brand colour stays behind it while it decodes. */
+#bbc-widget-root .bw-photo > img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 #bbc-widget-root .bw-msg { padding: 10px 14px; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 #bbc-widget-root .bw-row--in .bw-msg { background: var(--bw-glass); color: var(--bw-text); border-radius: 6px 18px 18px 18px; box-shadow: var(--bw-lift); }
 #bbc-widget-root .bw-row--in:not(.bw-row--first) .bw-msg { border-radius: 18px; }

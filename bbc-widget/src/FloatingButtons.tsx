@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import brand from './config'
 import { IconArrowRight, IconClose } from './icons'
 import { personaLine } from './PanelTop'
+import { PersonaAvatar } from './PersonaAvatar'
 import type { PageContext } from './pageContext'
 import type { Unread } from './ChatWindow'
 import { markNoteClosed, type ProactiveOpening } from './proactive'
@@ -75,8 +76,8 @@ export function FloatingButtons({
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
     : `Chat with ${brand.name}`
-  // Alex's avatar beside the button: a letter on the brand colour, never an image (ADR 17).
-  const personaAvatar = <span class="bw-nudge__ava bw-nudge__ava--persona" aria-hidden="true">{brand.persona.initial}</span>
+  // Alex's avatar beside the button: his photo, part of the bundle (PersonaAvatar.tsx).
+  const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" />
   const personaWho = (
     <span class="bw-nudge__id"><b>{brand.persona.name}</b><small>{personaLine}</small></span>
   )

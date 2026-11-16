@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact'
 import brand from './config'
 import { IconClose, IconExpand, IconPhone, IconShrink } from './icons'
 import { useLarge } from './largeView'
+import { PersonaAvatar } from './PersonaAvatar'
 import { posthog } from './posthog'
 
 interface Props {
@@ -21,8 +22,8 @@ interface Props {
 export const personaLine = `${brand.persona.role} · ${brand.name}`
 
 /**
- * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (a letter, never an image that
- * can fail to load), the name, the line that says it is an AI travel agent of the brand, a call button,
+ * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (his photo, part of the bundle:
+ * PersonaAvatar.tsx), the name, the line that says it is an AI travel agent of the brand, a call button,
  * the whole-screen button (largeView.ts) and close.
  */
 export function PanelTop({ subtitle = personaLine, onClose, closeLabel = 'Close', canEnlarge = true, children, titleId }: Props) {
@@ -32,10 +33,9 @@ export function PanelTop({ subtitle = personaLine, onClose, closeLabel = 'Close'
   return (
     <div class="bw-top">
       <div class="bw-head">
-        <span class="bw-head__ava" aria-hidden="true">
-          {brand.persona.initial}
+        <PersonaAvatar cls="bw-head__ava">
           <i class="bw-head__live" />
-        </span>
+        </PersonaAvatar>
         <div class="bw-head__text">
           <div class="bw-head__name" id={titleId}>{brand.persona.name}</div>
           <div class="bw-head__sub">{subtitle}</div>

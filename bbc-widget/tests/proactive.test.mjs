@@ -20,6 +20,7 @@ import {
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
 import bbc from '../src/config/bbc.ts'
 import bct from '../src/config/bct.ts'
+import { ALEX_PHOTO } from '../src/alexPhoto.ts'
 import { WIDGET_CSS } from '../src/styles.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
@@ -384,14 +385,28 @@ test('Alex speaks on both sites as an AI travel agent, the word AI included; the
   assert.match(read('config/types.ts'), /PERSONA\): keep them equal/)
 })
 
-test('no image can fail to load in the panel or beside the button: Alex is a letter on the brand colour', () => {
-  assert.doesNotMatch(top, /<img/)
-  assert.match(top, /<span class="bw-head__ava" aria-hidden="true">/)
-  assert.match(chat, /const brandAvatar = <span class="bw-ava bw-ava--persona" aria-hidden="true">\{brand\.persona\.initial\}<\/span>/)
+test('Alex has his photo in the header, beside his messages and beside the button; the word AI stays beside it', () => {
+  // A colleague's photo, with his permission (owner, 16 Nov). Part of the bundle, not a link: small,
+  // and no request can fail on its way to it.
+  assert.match(ALEX_PHOTO, /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/)
+  assert.ok(ALEX_PHOTO.length < 16000, `${ALEX_PHOTO.length} characters`)
+  // One component in all three spots.
+  assert.match(top, /<PersonaAvatar cls="bw-head__ava">\s*<i class="bw-head__live" \/>\s*<\/PersonaAvatar>/)
+  assert.match(chat, /const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" \/>/)
+  assert.match(buttons, /const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" \/>/)
+  assert.match(buttons, /<span class="bw-nudge__who">\{personaAvatar\}\{personaWho\}<\/span>/)
+  // A page that refuses embedded images gets the letter on the brand colour, as before.
+  const avatar = read('PersonaAvatar.tsx')
+  assert.match(avatar, /<img src=\{ALEX_PHOTO\} alt="" draggable=\{false\} onError=\{\(\) => setRefused\(true\)\} \/>/)
+  assert.match(avatar, /\? brand\.persona\.initial/)
+  assert.match(avatar, /aria-hidden="true"/)
+  assert.match(WIDGET_CSS, /\.bw-photo > img \{ display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; \}/)
+  // Beside the face, every spot still says who is typing: "AI travel agent · <brand>".
+  assert.match(buttons, /const personaWho = \(\s*<span class="bw-nudge__id"><b>\{brand\.persona\.name\}<\/b><small>\{personaLine\}<\/small><\/span>/)
+  assert.match(top, /<div class="bw-head__sub">\{subtitle\}<\/div>/)
   // The logo stays only on the corner button, which the site draws a stand-in of before this script loads.
   assert.equal(buttons.match(/brand\.logoUrl/g)?.length, 1)
   assert.match(buttons, /<img src=\{brand\.logoUrl\} alt="" width=\{30\} height=\{30\} draggable=\{false\} \/>/)
-  assert.match(buttons, /<span class="bw-nudge__who">\{personaAvatar\}\{personaWho\}<\/span>/)
 })
 
 test('BBC is blue and BCT burgundy, and every word on them stays readable', () => {

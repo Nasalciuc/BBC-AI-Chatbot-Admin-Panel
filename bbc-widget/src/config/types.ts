@@ -25,7 +25,7 @@ export interface BrandConfig {
    */
   persona: {
     name: string
-    /** The letter in the round avatar: no image, so nothing can fail to load. */
+    /** The letter in the round avatar when the page refuses Alex's photo (PersonaAvatar.tsx). */
     initial: string
     /** Under the name, before the brand: "AI travel agent · BuyBusinessClass". The word AI stays:
      *  the visitor is never led to think a person is typing. */
