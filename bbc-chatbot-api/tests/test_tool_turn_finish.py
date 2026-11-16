@@ -11,6 +11,7 @@ to the client after the words already sent; it cannot call the tool again.
 import json
 import os
 import sys
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -237,6 +238,103 @@ class TestTheTurnSentBack:
         assert claude._join_reply(" I'll note that. ", "\nWhen do you fly? ") == "I'll note that. When do you fly?"
         assert claude._join_reply("", "When do you fly?") == "When do you fly?"
         assert claude._join_reply("Noted.", "") == "Noted."
+
+
+# ── the tool's answer is what was really saved (CodeRabbit #261) ─────────────
+
+def _day(n):
+    return (date.today() + timedelta(days=n)).isoformat()
+
+
+class TestTheToolsAnswer:
+    def test_everything_kept_is_simply_saved(self):
+        assert claude._tool_answer(ROUTE, dict(ROUTE)) == claude._TOOL_SAVED
+
+    def test_a_value_the_check_only_tidied_is_kept(self):
+        """'jfk' is kept as 'JFK'; an empty field was never sent."""
+        sent = {"origin": "jfk", "destination": "LHR ", "cabin_class": None}
+        assert claude._tool_answer(sent, {"origin": "JFK", "destination": "LHR"}) == claude._TOOL_SAVED
+
+    def test_a_dropped_field_is_named_and_not_confirmed(self):
+        sent = {**ROUTE, "departure_date": _day(60), "return_date": _day(50)}
+        kept = {**ROUTE, "departure_date": _day(60)}
+        answer = claude._tool_answer(sent, kept)
+        assert answer.startswith(f"Saved as: origin JFK, destination LHR, departure_date {_day(60)}.")
+        assert "Not saved, not valid: return_date." in answer
+        assert "Confirm only the details as saved above; ask the client again for what was not saved." in answer
+        assert "end your turn" not in answer  # the reply must not stop on a wrong confirmation
+
+    def test_a_value_a_reprompt_changed_is_given_as_saved(self):
+        sent = {**ROUTE, "departure_date": _day(60), "return_date": _day(50)}
+        kept = {**ROUTE, "departure_date": _day(60), "return_date": _day(70)}
+        answer = claude._tool_answer(sent, kept)
+        assert f"return_date {_day(70)}" in answer and "Not saved" not in answer
+
+    def test_nothing_kept(self):
+        answer = claude._tool_answer({"origin": "London"}, {})
+        assert answer.startswith("Saved as: nothing. Not saved, not valid: origin.")
+
+
+class TestOnlyWhatWasSavedIsConfirmed:
+    def test_streamed_a_return_before_the_departure_is_not_answered_saved(self):
+        sent = {**ROUTE, "departure_date": _day(60), "return_date": _day(50)}
+        client = _client(streams=[
+            _Stream([PREAMBLE], _message(_text(PREAMBLE), _tool(sent), stop="tool_use")),
+            _Stream([REST], _message(_text(REST))),
+        ])
+        _text_out, _cost, entities = _stream_turn(client, [])
+        assert entities == {**ROUTE, "departure_date": _day(60)}
+        answer = client.messages.stream.call_args_list[1].kwargs["messages"][2]["content"][0]["content"]
+        assert answer == claude._tool_answer(sent, entities)
+        assert "Not saved, not valid: return_date." in answer
+
+    def test_called_the_check_runs_first_and_the_corrected_dates_are_answered(self):
+        sent = {**ROUTE, "departure_date": _day(60), "return_date": _day(50)}
+        fixed = {**ROUTE, "departure_date": _day(60), "return_date": _day(70)}
+        client = _client(creates=[
+            _message(_text(PREAMBLE), _tool(sent), stop="tool_use"),
+            _message(_tool(fixed, "toolu_fix"), stop="tool_use"),  # the re-prompt
+            _message(_text(REST)),
+        ])
+        with patch.object(claude, "_get_client", return_value=client):
+            text, _cost, entities = claude._call_model_with_tools(
+                MODEL, SYSTEM, "jfk to london please", max_tokens=450, temperature=0.6,
+            )
+        assert entities == fixed and text == f"{PREAMBLE} {REST}"
+        calls = client.messages.create.call_args_list
+        assert len(calls) == 3
+        assert "tool_choice" not in calls[1].kwargs          # the re-prompt, before the rest
+        rest_call = calls[2].kwargs
+        assert rest_call["tool_choice"] == {"type": "none"}
+        # The rest answers the call the client's turn made, with the corrected values.
+        result = rest_call["messages"][2]["content"][0]
+        assert result["tool_use_id"] == "toolu_01"
+        assert f"return_date {_day(70)}" in result["content"] and "Not saved" not in result["content"]
+
+
+class TestEveryCallIsKept:
+    def test_two_calls_in_one_reply_are_merged_not_replaced(self):
+        response = _message(_text(PREAMBLE), _tool(ROUTE, "toolu_a"),
+                            _tool({"cabin_class": "business"}, "toolu_b"), stop="tool_use")
+        assert claude._tool_input(response) == {**ROUTE, "cabin_class": "business"}
+        assert claude._parse_tool_response(response) == (PREAMBLE, {**ROUTE, "cabin_class": "business"})
+
+    def test_a_later_call_wins_on_the_same_field(self):
+        response = _message(_tool({"origin": "JFK"}, "toolu_a"), _tool({"origin": "EWR"}, "toolu_b"), stop="tool_use")
+        assert claude._tool_input(response) == {"origin": "EWR"}
+
+    def test_streamed_both_calls_reach_the_lead_and_both_are_answered(self):
+        client = _client(streams=[
+            _Stream([PREAMBLE], _message(_text(PREAMBLE), _tool(ROUTE, "toolu_a"),
+                                         _tool({"cabin_class": "business"}, "toolu_b"), stop="tool_use")),
+            _Stream([REST], _message(_text(REST))),
+        ])
+        _text_out, _cost, entities = _stream_turn(client, [])
+        assert entities == {**ROUTE, "cabin_class": "business"}
+        results = client.messages.stream.call_args_list[1].kwargs["messages"][2]["content"]
+        assert [(r["tool_use_id"], r["content"]) for r in results] == [
+            ("toolu_a", claude._TOOL_SAVED), ("toolu_b", claude._TOOL_SAVED),
+        ]
 
 
 # ── non-streamed path ─────────────────────────────────────────────────────────

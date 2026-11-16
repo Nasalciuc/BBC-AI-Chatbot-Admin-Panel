@@ -523,18 +523,26 @@ def call_opus_with_tools(
     )
 
 
+def _tool_input(response) -> dict:
+    """The arguments of every save_travel_details call in a response, merged:
+    a second call adds to the first (a later value wins), it does not erase
+    it — every call is answered "saved" (CodeRabbit #261)."""
+    merged: dict = {}
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "save_travel_details":
+            raw_in = getattr(block, "input", None)
+            if isinstance(raw_in, dict):
+                merged.update(raw_in)
+    return merged
+
+
 def _parse_tool_response(response) -> tuple[str, dict]:
     """(text, raw_tool_entities) from a messages response."""
     text = ""
-    tool_entities: dict = {}
     for block in response.content:
-        btype = getattr(block, "type", None)
-        if btype == "text":
+        if getattr(block, "type", None) == "text":
             text = (getattr(block, "text", None) or "").strip()
-        elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
-            raw_in = getattr(block, "input", None) or {}
-            tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
-    return text, tool_entities
+    return text, _tool_input(response)
 
 
 def _validate_with_reprompt(
@@ -609,6 +617,32 @@ _TOOL_SAVED = (
 _NO_TOOL = {"type": "none"}
 
 
+def _same_value(sent, kept) -> bool:
+    # The check only tidies a value ("jfk" is kept as "JFK"); that is not a change.
+    return str(sent).strip().upper() == str(kept).strip().upper()
+
+
+def _tool_answer(sent: dict, kept: dict) -> str:
+    """What the tool answers. Everything the model sent was kept: _TOOL_SAVED.
+    The typed check dropped or a re-prompt changed something: exactly what the
+    lead now holds and what it does not, so the reply never confirms a detail
+    that was not saved (a return before the departure, say — CodeRabbit #261).
+    Travel details only (codes, dates, counts, cabin): no contact data."""
+    sent = {k: v for k, v in (sent or {}).items() if v is not None}
+    kept = kept or {}
+    if all(k in kept and _same_value(v, kept[k]) for k, v in sent.items()):
+        return _TOOL_SAVED
+    held = ", ".join(f"{k} {v}" for k, v in kept.items()) or "nothing"
+    lost = [k for k in sent if k not in kept]
+    return (
+        f"Saved as: {held}."
+        + (f" Not saved, not valid: {', '.join(lost)}." if lost else "")
+        + " Now write the rest of your reply to the client, without saying that you "
+        "saved anything. Confirm only the details as saved above"
+        + ("; ask the client again for what was not saved." if lost else ".")
+    )
+
+
 def _assistant_turn(response) -> list[dict]:
     """The model's own turn, sent back as plain params: its thinking (with the
     signature the API checks), its words and its tool calls. Empty words are
@@ -639,7 +673,7 @@ def _assistant_turn(response) -> list[dict]:
     return blocks
 
 
-def _after_tool_messages(user_message: str, response) -> Optional[list[dict]]:
+def _after_tool_messages(user_message: str, response, answer: str = _TOOL_SAVED) -> Optional[list[dict]]:
     """The conversation that lets the model finish: the client's message, the
     model's turn up to the tool call, and the tool's answer for every call in
     it (the API wants one per call). None when the turn did not stop at a
@@ -648,7 +682,7 @@ def _after_tool_messages(user_message: str, response) -> Optional[list[dict]]:
         return None
     turn = _assistant_turn(response)
     answers = [
-        {"type": "tool_result", "tool_use_id": block["id"], "content": _TOOL_SAVED}
+        {"type": "tool_result", "tool_use_id": block["id"], "content": answer}
         for block in turn
         if block["type"] == "tool_use" and block["id"]
     ]
@@ -670,12 +704,13 @@ def _join_reply(before: str, after: str) -> str:
 
 def _finish_after_tool(
     model: str, system_prompt, user_message: str, response, tool: dict,
-    max_tokens: int, temperature: float, effort: str,
+    max_tokens: int, temperature: float, effort: str, answer: str = _TOOL_SAVED,
 ) -> tuple[str, float]:
     """The rest of a reply that stopped at the tool call: (words, cost).
     ('', 0.0) when it did not stop there, or when this call fails — the turn
-    then keeps what it has, as before; it is never lost over this call."""
-    messages = _after_tool_messages(user_message, response)
+    then keeps what it has, as before; it is never lost over this call.
+    `answer` is the tool's answer (_tool_answer: what was really saved)."""
+    messages = _after_tool_messages(user_message, response, answer)
     if messages is None:
         return "", 0.0
     start = time.time()
@@ -704,13 +739,13 @@ def _finish_after_tool(
 def _stream_finish_after_tool(
     model: str, system_prompt, user_message: str, response, tool: dict,
     max_tokens: int, temperature: float, effort: str,
-    on_chunk=None, after_words: bool = False,
+    on_chunk=None, after_words: bool = False, answer: str = _TOOL_SAVED,
 ) -> tuple[str, float]:
     """_finish_after_tool, streamed: the rest goes to the client as it comes,
     one space after the words already sent (`after_words`). A stream that
     breaks halfway gives ('', 0.0): what it sent is replaced at stream_end by
     the stored reply, which keeps the words before the tool call."""
-    messages = _after_tool_messages(user_message, response)
+    messages = _after_tool_messages(user_message, response, answer)
     if messages is None:
         return "", 0.0
     start = time.time()
@@ -783,18 +818,20 @@ def _call_model_with_tools(
                        request_id=getattr(response, "id", None))
 
         text, raw_entities = _parse_tool_response(response)
-        rest, rest_cost = _finish_after_tool(
-            model, system_prompt, user_message, response, tool,
-            max_tokens, temperature, effort,
-        )
-        if rest:
-            text = _join_reply(text, rest)
-        cost += rest_cost
         tool_entities, extra_cost = _validate_with_reprompt(
             model, system_prompt, user_message, max_tokens, temperature,
             raw_entities,
         )
         cost += extra_cost
+        # After the check: the tool answers with what was really saved.
+        rest, rest_cost = _finish_after_tool(
+            model, system_prompt, user_message, response, tool,
+            max_tokens, temperature, effort,
+            answer=_tool_answer(raw_entities, tool_entities),
+        )
+        if rest:
+            text = _join_reply(text, rest)
+        cost += rest_cost
 
         logger.info(
             f"Claude+Tool SUCCESS | text={len(text)}ch entities={list(tool_entities.keys())} "
@@ -820,18 +857,19 @@ def _call_model_with_tools(
                            latency_ms=int(elapsed * 1000), status="ok",
                            request_id=getattr(response, "id", None))
             text, raw_entities = _parse_tool_response(response)
-            rest, rest_cost = _finish_after_tool(
-                model, system_prompt, user_message, response, tool,
-                max_tokens, temperature, effort,
-            )
-            if rest:
-                text = _join_reply(text, rest)
-            cost += rest_cost
             tool_entities, extra_cost = _validate_with_reprompt(
                 model, system_prompt, user_message, max_tokens, temperature,
                 raw_entities,
             )
             cost += extra_cost
+            rest, rest_cost = _finish_after_tool(
+                model, system_prompt, user_message, response, tool,
+                max_tokens, temperature, effort,
+                answer=_tool_answer(raw_entities, tool_entities),
+            )
+            if rest:
+                text = _join_reply(text, rest)
+            cost += rest_cost
             logger.info(f"Claude+Tool RETRY SUCCESS | time={elapsed}s")
             return text, cost, tool_entities
         except Exception as retry_err:
@@ -943,12 +981,7 @@ def _stream_model_with_tools(
                        latency_ms=int(elapsed * 1000), status="ok",
                        request_id=getattr(final, "id", None))
 
-        raw_entities: dict = {}
-        for block in final.content:
-            btype = getattr(block, "type", None)
-            if btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
-                raw_in = getattr(block, "input", None) or {}
-                raw_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+        raw_entities = _tool_input(final)
 
         # Typed boundary. No re-prompt on the streamed path — the reply text
         # already reached the client chunk by chunk; invalid fields are
@@ -973,6 +1006,7 @@ def _stream_model_with_tools(
             model, system_prompt, user_message, final, tool,
             max_tokens, temperature, effort,
             on_chunk=on_chunk, after_words=bool(full_text.strip()),
+            answer=_tool_answer(raw_entities, tool_entities),
         )
         if rest:
             full_text = _join_reply(full_text, rest)
