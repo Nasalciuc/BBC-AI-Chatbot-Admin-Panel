@@ -24,6 +24,8 @@ interface Props {
   onCardOpen?: (reply?: string) => void
   /** "Not now" on the card. */
   onCardDismiss?: () => void
+  /** A tap on the 10 s note: the chat with Alex and no form (Widget.tsx). Without it, the form. */
+  onNoteOpen?: () => void
 }
 
 /** How long the greeting stays before it steps aside by itself. */
@@ -36,7 +38,7 @@ const NUDGE_VISIBLE_MS = 30_000
  */
 export function FloatingButtons({
   onSelect, showAttention = false, onDismissAttention, autoFocus = false, context, unread,
-  card, onCardOpen, onCardDismiss,
+  card, onCardOpen, onCardDismiss, onNoteOpen,
 }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null)
   const count = unread?.count || 0
@@ -129,7 +131,7 @@ export function FloatingButtons({
         </div>
       ) : showAttention && count === 0 ? (
         <div class="bw-nudge bw-nudge--message" role="status">
-          <button type="button" class="bw-nudge__open" onClick={() => onSelect('sales')}>
+          <button type="button" class="bw-nudge__open" onClick={() => (onNoteOpen ? onNoteOpen() : onSelect('sales'))}>
             <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
             <span class="bw-nudge__title">{context?.title || 'Planning a business class trip?'}</span>
             <span class="bw-nudge__text">{context?.line || "Tell me where and when, and I'll check fares for you."}</span>

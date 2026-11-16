@@ -430,7 +430,41 @@ test('few messages sit by the buttons and the composer, never under an empty ban
 
 test('the site goes with the offer and with every proactive event, so BBC and BCT are never mixed', () => {
   const captures = hook.match(/posthog\?\.capture\('proactive_[a-z_]+', \{[\s\S]*?\}\)/g) || []
-  assert.equal(captures.length, 5)
+  // The five of the moments, and the note's proactive_shown.
+  assert.equal(captures.length, 6)
   for (const call of captures) assert.match(call, /site: brand\.id/, call.slice(0, 60))
   assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string \}/)
+})
+
+// ── The note the visitor taps: the chat with Alex, no form (owner's decision, 16 Nov) ──────────────
+
+test('a tap on the 10 s note opens the chat with no form; without an answer in time, the form as before', () => {
+  // The note's own button, not the corner button: that one keeps the form.
+  assert.match(buttons, /class="bw-nudge__open" onClick=\{\(\) => \(onNoteOpen \? onNoteOpen\(\) : onSelect\('sales'\)\)\}/)
+  assert.match(buttons, /class="bw-launch"\s+onClick=\{\(\) => onSelect\('sales'\)\}/)
+  assert.match(widget, /onNoteOpen=\{\(\) => \{ if \(proactive\.offer\) openProactive\(proactive\.offer\); else void openNote\(\) \}\}/)
+  // The words come from the server like a card's; no answer → handleTunnelSelect, which shows the form.
+  assert.match(widget, /const o = await proactive\.noteOpening\(\)\s+if \(o\) \{[\s\S]*?openProactive\(o\)\s+\} else \{\s+handleTunnelSelect\('sales', 'note'\)/)
+  // One tap at a time, and the note stays until the chat opens (nothing hides it first).
+  assert.match(widget, /if \(noteBusyRef\.current\) return\s+noteBusyRef\.current = true/)
+  const openNoteBody = widget.slice(widget.indexOf('const openNote = async'), widget.indexOf('const handleBack'))
+  assert.doesNotMatch(openNoteBody.split('await proactive.noteOpening()')[0], /setShowAttention\(false\)/)
+  // Measured apart from the button's opening.
+  assert.match(widget, /posthog\?\.capture\('chat_tunnel_selected', \{ tunnel: 'sales', returning_visitor: false, via: 'note', form: false \}\)/)
+})
+
+test('the note asks the server for its words with trigger "note", the brand and the page, and gives up in time', () => {
+  const body = hook.slice(hook.indexOf('noteOpening: async () =>'))
+  assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id \}, OFFER_TIMEOUT_MS,\s+\)/)
+  assert.match(body, /if \(!res \|\| !res\.show \|\| !res\.message\) return null/)
+  assert.match(body, /trigger: 'note', message: res\.message, quickReplies: res\.quick_replies, trip, surface: 'panel'/)
+  // The visitor opened the chat: no card follows in this visit.
+  assert.match(body, /ssSet\(DONE_KEY, 'chat'\)/)
+  assert.match(body, /posthog\?\.capture\('proactive_shown', \{\s+trigger: 'note', surface: 'panel'/)
+})
+
+test('an unanswered note chat comes back on the next page like a card chat', () => {
+  const o = { trigger: 'note', message: "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?", quickReplies: ['Check fares', 'I have a question'], trip: null, surface: 'panel', shownAt: 1 }
+  assert.deepEqual(readKeptOpening(JSON.parse(JSON.stringify(keepOpening(o)))), o)
+  assert.equal(readKeptOpening({ ...o, trigger: 'something_else' }), null)
 })

@@ -22,6 +22,11 @@
 
 export type Trigger = 'kayak' | 'quote' | 'reader' | 'exit'
 
+/** What can open the chat without the form: one of the moments, or `note` — the visitor tapped the 10 s
+ *  note beside the button (owner's decision, 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the
+ *  chat got past the form the note led to). The note is no moment: no arm and no switch holds it. */
+export type OpeningTrigger = Trigger | 'note'
+
 export const KAYAK_VISIBLE_S = 5
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5

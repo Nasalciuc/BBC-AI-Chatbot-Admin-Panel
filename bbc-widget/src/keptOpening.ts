@@ -7,10 +7,12 @@
  * Pure (no DOM, no storage): Widget.tsx reads and writes the value; tests/proactive.test.mjs tests these.
  */
 import type { ProactiveOpening } from './proactive'
-import type { Trigger } from './triggers'
+import type { OpeningTrigger } from './triggers'
 import type { TripPayload } from './tripContext'
 
-const TRIGGERS: readonly Trigger[] = ['kayak', 'quote', 'reader', 'exit']
+// Every OpeningTrigger (triggers.ts): the four moments and the tapped note. Kept here, not imported:
+// this file has no runtime imports, so the node tests load it as it is.
+const OPENING_TRIGGERS: readonly OpeningTrigger[] = ['kayak', 'quote', 'reader', 'exit', 'note']
 
 /** The opening as it is kept. The reply tapped on the card is not kept: it went out already. */
 export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstReply'> {
@@ -21,7 +23,7 @@ export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstR
 export function readKeptOpening(v: unknown): ProactiveOpening | null {
   if (!v || typeof v !== 'object') return null
   const o = v as Record<string, unknown>
-  const trigger = TRIGGERS.find(t => t === o.trigger)
+  const trigger = OPENING_TRIGGERS.find(t => t === o.trigger)
   if (!trigger || typeof o.message !== 'string' || !o.message.trim()) return null
   if (o.surface !== 'card' && o.surface !== 'panel') return null
   const quickReplies = Array.isArray(o.quickReplies)

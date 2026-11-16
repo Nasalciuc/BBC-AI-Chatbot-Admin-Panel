@@ -264,10 +264,11 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata, ...kept }))
   }, [step, tunnel, opening])
 
-  const handleTunnelSelect = (t: 'sales' | 'support') => {
+  const handleTunnelSelect = (t: 'sales' | 'support', via: 'button' | 'note' = 'button') => {
     posthog?.capture('chat_tunnel_selected', {
       tunnel: t,
       returning_visitor: hasOptimisticSession && !!savedVisitor,
+      via,
     })
     setShowAttention(false)
     formFlowStartedRef.current = true
@@ -358,6 +359,28 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (proactive.offer?.surface === 'panel') openProactive(proactive.offer)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proactive.offer])
+
+  // The 10 s note promises a conversation ("Tell me where and when, and I'll check fares"): a tap on it
+  // opens the chat with Alex's words for this page and no form, like the card's chat (owner's decision,
+  // 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the chat got past the form the note led to).
+  // The words come from the server; no answer in time → the form, as before. The corner button keeps
+  // the form. The note stays on screen until the chat opens, and a second tap meanwhile does nothing.
+  const noteBusyRef = useRef(false)
+  const openNote = async () => {
+    if (noteBusyRef.current) return
+    noteBusyRef.current = true
+    try {
+      const o = await proactive.noteOpening()
+      if (o) {
+        posthog?.capture('chat_tunnel_selected', { tunnel: 'sales', returning_visitor: false, via: 'note', form: false })
+        openProactive(o)
+      } else {
+        handleTunnelSelect('sales', 'note')
+      }
+    } finally {
+      noteBusyRef.current = false
+    }
+  }
 
   const handleBack = () => {
     if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
@@ -453,6 +476,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           card={proactive.offer?.surface === 'card' ? proactive.offer : null}
           onCardOpen={(reply) => { if (proactive.offer) openProactive({ ...proactive.offer, firstReply: reply }) }}
           onCardDismiss={() => proactive.dismiss('not_now')}
+          onNoteOpen={() => { if (proactive.offer) openProactive(proactive.offer); else void openNote() }}
         />
       )}
       {step === 'form' && (
