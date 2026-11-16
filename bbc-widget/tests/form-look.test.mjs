@@ -28,6 +28,16 @@ test('the form for older eyes: big type, tall fields, the number to call', () =>
   assert.match(form, /entry_point: 'widget_form'/)
 })
 
+test('a flagged field still shows where the keyboard is, with one ring on the number (CodeRabbit #256)', () => {
+  // A failed send moves the focus to the first flagged field; its red ring alone looks the same either way.
+  const field = css.indexOf('.bw-input[aria-invalid="true"]:focus-visible { outline: 2px solid var(--bw-danger); outline-offset: 2px; }')
+  assert.ok(field > css.indexOf('.bw-input[aria-invalid="true"] {'), 'after the flagged look, so it adds to it')
+  assert.match(css, /\.bw-phone\[data-invalid="true"\]:focus-within \{ outline: 2px solid var\(--bw-danger\); outline-offset: 2px; \}/)
+  // The field inside the number's box draws no ring of its own: the same weight, later, so it wins.
+  const inner = css.indexOf('.bw-phone .bw-input:focus-visible { outline: none; }')
+  assert.ok(field > -1 && inner > field)
+})
+
 /** The text of the top-level `@media <cond> {` block. */
 function media(cond) {
   const at = css.indexOf(`@media ${cond} {`)

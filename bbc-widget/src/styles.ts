@@ -239,6 +239,9 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-input:focus { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 4px rgba(var(--bw-primary-rgb, 30,79,216), 0.18); }
 #bbc-widget-root .bw-input:focus-visible { outline: none; }
 #bbc-widget-root .bw-input[aria-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 4px rgba(179, 38, 30, 0.14); }
+/* A flagged field still shows where the keyboard is: the red ring looks the same focused or not, and a
+   failed send moves the focus to the first flagged field. The ring of every other control, in red. */
+#bbc-widget-root .bw-input[aria-invalid="true"]:focus-visible { outline: 2px solid var(--bw-danger); outline-offset: 2px; }
 #bbc-widget-root .bw-phone {
   display: flex; align-items: stretch; height: 56px; border-radius: 14px; overflow: hidden;
   background: var(--bw-paper); border: 2px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.32);
@@ -247,12 +250,15 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-phone:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.6); }
 #bbc-widget-root .bw-phone:focus-within { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 4px rgba(var(--bw-primary-rgb, 30,79,216), 0.18); }
 #bbc-widget-root .bw-phone[data-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 4px rgba(179, 38, 30, 0.14); }
+#bbc-widget-root .bw-phone[data-invalid="true"]:focus-within { outline: 2px solid var(--bw-danger); outline-offset: 2px; }
 #bbc-widget-root .bw-phone__cc {
   display: flex; align-items: center; justify-content: center; min-width: 76px; padding: 0 14px;
   background: var(--bw-band); font-size: 16px; font-weight: 700; color: var(--bw-text-2);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 #bbc-widget-root .bw-phone .bw-input { flex: 1; height: 52px; border: 0; border-radius: 0; box-shadow: none; }
+/* The number's box draws the ring for the field inside it: one ring, not two. */
+#bbc-widget-root .bw-phone .bw-input:focus-visible { outline: none; }
 #bbc-widget-root .bw-hint { font-size: 15px; line-height: 1.45; color: var(--bw-text-2); }
 #bbc-widget-root .bw-error { display: flex; align-items: flex-start; gap: 8px; font-size: 16px; font-weight: 600; line-height: 1.4; color: var(--bw-danger); }
 #bbc-widget-root .bw-error svg { width: 18px; height: 18px; margin-top: 2px; }
