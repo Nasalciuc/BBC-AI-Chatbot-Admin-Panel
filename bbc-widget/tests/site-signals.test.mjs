@@ -227,6 +227,12 @@ test('the store reads the queue the page kept before the widget, then listens; s
   assert.deepEqual(heard, ['quote_form_invalid'], 'a listener that stopped hears nothing more')
   assert.equal(siteEvents().length, 4)
 
+  // Each search is its own object, so proactive.ts can tell a new one from the last (momentPassed).
+  const before = lastSearch()
+  win.dispatchEvent(new CustomEvent('bbc:search_submitted', { detail: { origin_code: 'JFK', destination_code: 'LHR', depart_date: '2027-03-15' } }))
+  assert.notEqual(lastSearch(), before)
+  assert.deepEqual(lastSearch(), before)
+
   // The queue's search kept its trip, never the rest of what the site put in it.
   win.bbcQueue.push({ name: 'search_submitted', detail: { origin_code: 'BOS', email: 'ann@example.com' }, at: 4 })
   startSiteSignals(win)
@@ -368,6 +374,9 @@ test('the card and the note start from the newest trip; a visitor who sent the f
   // became one while the server's answer was on its way.
   assert.match(hook, /if \(ssGet\(NOTE_CLOSED_KEY\)\) return\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return/)
   assert.match(hook, /if \(blockedPath\(location\.pathname\)\) return 'left_page'\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return 'left_page'/)
+  // A search on the site while the answer was on its way: the trip it was asked with is an old one.
+  assert.match(hook, /formAt: press\?\.activityAt \?\? null, search: lastSearch\(\),/)
+  assert.match(hook, /if \(lastSearch\(\) !== before\.search\) return 'searched'/)
   assert.match(stop, /for \(const e of siteEvents\(\)\) stopFor\(e\)\s+return onSiteEvent\(stopFor\)/)
   // The watch hears the queue first, then the page; and lets go of it on cleanup.
   assert.match(hook, /for \(const e of siteEvents\(\)\) onSite\(e\)\s+const offSite = onSiteEvent\(onSite\)/)

@@ -315,7 +315,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
 
     // What the moment was decided on. The server answers within OFFER_TIMEOUT_MS; by then the visitor
     // may have moved on, and an answer that comes after that is dropped (and measured), never shown.
-    const seen = () => ({ typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null })
+    // `search`: the site's last search (each one a new object, siteSignals.cleanDetail): a new search on the
+    // way makes the trip the answer was asked with an old one.
+    const seen = () => ({
+      typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null, search: lastSearch(),
+    })
     const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>): string | null => {
       if (stopped) return stopped
       if (stepRef.current !== 'buttons') return 'chat_opened'
@@ -326,6 +330,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (noMomentPage(sitePage())) return 'left_page'
       if (lastSiteTyping !== before.typing) return 'typing'
       if ((press?.at ?? null) !== before.pressAt || (press?.activityAt ?? null) !== before.formAt) return 'quote_form'
+      if (lastSearch() !== before.search) return 'searched'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
       return null
     }
