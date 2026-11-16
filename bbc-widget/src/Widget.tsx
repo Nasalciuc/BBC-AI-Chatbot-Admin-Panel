@@ -10,7 +10,8 @@ import brand from './config'
 import { usePhoneSheet } from './phoneSheet'
 import { posthog } from './posthog'
 import {
-  forgetProactiveConversation, isProactiveConversation, proactiveMetadata, useProactive, type ProactiveOpening,
+  forgetProactiveConversation, isProactiveConversation, proactiveChatStarted, proactiveMetadata, useProactive,
+  type ProactiveOpening,
 } from './proactive'
 
 type Step = 'buttons' | 'form' | 'chat'
@@ -382,6 +383,8 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
+        // The card's chat left unanswered: the same 24 h of quiet as its ✕ and "Not now".
+        if (opening && !proactiveChatStarted()) proactive.dismiss('close')
         animateClose(() => {
           setFocusLauncher(true)
           setSwapped(false)
@@ -395,7 +398,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [step])
+  }, [step, opening])
 
   usePhoneSheet(step !== 'buttons', embedded, brand.colors.ink)
 

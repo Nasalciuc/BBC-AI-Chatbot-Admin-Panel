@@ -900,8 +900,12 @@ export function ChatWindow({
           }
         } catch (e) {
           if (opening) openingRef.current = opening
-          console.warn('[bbc-widget] /init failed, falling back to direct POST', e)
+          console.warn(`[bbc-widget] /init failed${opening ? '' : ', falling back to direct POST'}`, e)
         }
+        // The card's chat exists only through /chat/init (its opening, the page's trip, the label): the
+        // direct POST would make a plain one the widget can't find again. The send fails instead, and
+        // Retry carries the opening again.
+        if (opening && !activeConvId) throw new Error('init failed')
       }
 
       const res = await apiFetch(`${apiUrl}/api/chat`, {

@@ -12,7 +12,8 @@
  * tab's session); 24 h of quiet after "Not now" or ✕; only with the page in view.
  *
  * Measurements (PostHog, no personal data): proactive_eligible (any group, also with the feature off —
- * the shadow mode), proactive_shown, proactive_engaged, proactive_dismissed, and
+ * the shadow mode; `moment_passed` says why an answer that came after the visitor moved on was not
+ * shown), proactive_shown, proactive_engaged, proactive_dismissed, and
  * proactive_quote_unrecognized when a "Get free quote" button sits outside a form we recognise (the
  * site's HTML changed: the quote moment would otherwise die silently).
  */
@@ -22,7 +23,7 @@ import brand from './config'
 import { posthog } from './posthog'
 import { hasContext, readTrip, type TripPayload } from './tripContext'
 import {
-  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, pauseRunning, pickTrigger, replyKind,
+  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, blockedPath, pauseRunning, pickTrigger, replyKind,
   type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
@@ -56,8 +57,6 @@ const ATTENTION_KEY = 'bbc_attention_shown'
 
 const PHONE = '(max-width: 767px)'
 const QUOTE_TEXT = /get (?:a )?free quote/i
-/** A send in flight lasts a few seconds; a submit button disabled longer than this is not "sending". */
-const SEND_IN_FLIGHT_MS = 10_000
 
 function ssGet(k: string): string | null { try { return sessionStorage.getItem(k) } catch { return null } }
 function ssSet(k: string, v: string) { try { sessionStorage.setItem(k, v) } catch { /* storage off: the guard lives in memory only */ } }
@@ -71,6 +70,8 @@ export function isProactiveConversation(convId: string | null): boolean {
   return !!convId && lsGet(CONV_KEY) === convId
 }
 export function markProactiveConversation(convId: string): void { lsSet(CONV_KEY, convId) }
+/** The card's chat became a conversation (the visitor answered): closing it is no dismissal. */
+export function proactiveChatStarted(): boolean { return isProactiveConversation(lsGet('bbc_conv_id')) }
 export function forgetProactiveConversation(): void { lsRemove(CONV_KEY) }
 
 /** The 10 s note was closed with ✕: no card for the rest of the visit. */
@@ -104,11 +105,15 @@ function isSubmitControl(el: Element): boolean {
   return (control.getAttribute('type') || 'submit').toLowerCase() === 'submit'
 }
 
+/** The quote form says a send is in flight, for as long as it says so: time passing is no sign the send
+ *  is done. `aria-busy` on the form or its button says it outright. A disabled button says it when every
+ *  field is right: a disabled button takes no press, so after one it is the send that disabled it, unless
+ *  a field is flagged — then the form is waiting for the visitor, not for the server. */
 function sending(form: HTMLFormElement | null): boolean {
   if (!form) return false
-  if (form.getAttribute('aria-busy') === 'true') return true
   const btn = form.querySelector<HTMLButtonElement | HTMLInputElement>('button[type="submit"], input[type="submit"]')
-  return !!btn && (btn.disabled || btn.getAttribute('aria-busy') === 'true')
+  if (form.getAttribute('aria-busy') === 'true' || btn?.getAttribute('aria-busy') === 'true') return true
+  return !!btn && btn.disabled && !form.querySelector(':invalid, [aria-invalid="true"]')
 }
 
 interface Press {
@@ -232,17 +237,33 @@ export function useProactive({ apiUrl, step, allowed }: { apiUrl: string; step: 
       evaluate()
     }
 
+    // What the moment was decided on. The server answers within OFFER_TIMEOUT_MS; by then the visitor
+    // may have moved on, and an answer that comes after that is dropped (and measured), never shown.
+    const seen = () => ({ typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null })
+    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>): string | null => {
+      if (stepRef.current !== 'buttons') return 'chat_opened'
+      if (document.visibilityState !== 'visible') return 'hidden'
+      if (ssGet(NOTE_CLOSED_KEY)) return 'note_closed'
+      if (blockedPath(location.pathname)) return 'left_page'
+      if (lastSiteTyping !== before.typing) return 'typing'
+      if ((press?.at ?? null) !== before.pressAt || (press?.activityAt ?? null) !== before.formAt) return 'quote_form'
+      if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
+      return null
+    }
+
     const ask = async (trigger: Trigger, phone: boolean) => {
+      const before = seen()
       const trip = readTrip(location.href, pageTitle(), kayakVisit())
       const device = phone ? 'phone' : 'computer'
       const res = await fetchProactiveOffer(
         apiUrl, { visitor_id: ensureVisitorId(), trigger, trip }, OFFER_TIMEOUT_MS,
       )
+      const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before) : null
       posthog?.capture('proactive_eligible', {
         trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip),
+        ...(passed ? { moment_passed: passed } : {}),
       })
-      if (disposed || !res || !res.show || !res.message) return
-      if (stepRef.current !== 'buttons') return  // the visitor opened the chat meanwhile
+      if (disposed || !res || !res.show || !res.message || passed) return
       const surface: Surface = phone ? 'card' : 'panel'
       const opening: ProactiveOpening = {
         trigger, message: res.message, quickReplies: res.quick_replies, trip, surface, shownAt: Date.now(),
@@ -257,6 +278,8 @@ export function useProactive({ apiUrl, step, allowed }: { apiUrl: string; step: 
 
     const evaluate = () => {
       if (fired || disposed || document.visibilityState !== 'visible') return
+      // The note closed with ✕ while this page was open: no card for the rest of the visit.
+      if (ssGet(NOTE_CLOSED_KEY)) return
       // The quote form went away after the press: it was sent in place. Nothing on this page after that.
       if (press?.form && !press.form.isConnected) {
         sentInline = true
@@ -268,7 +291,7 @@ export function useProactive({ apiUrl, step, allowed }: { apiUrl: string; step: 
         sincePressS: (now - press.at) / 1000,
         sinceFormActivityS: (now - Math.max(press.at, press.activityAt)) / 1000,
         invalid: press.invalid,
-        busy: now - press.at < SEND_IN_FLIGHT_MS && sending(press.form),
+        busy: sending(press.form),
       } : null
       const state: PageState = {
         path: location.pathname,

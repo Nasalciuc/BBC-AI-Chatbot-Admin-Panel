@@ -261,3 +261,39 @@ test('a phone gets the card, a computer the panel', () => {
   assert.match(widget, /if \(proactive\.offer\?\.surface === 'panel'\) openProactive\(proactive\.offer\)/)
   assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' \? proactive\.offer : null\}/)
 })
+
+// ── CodeRabbit round on #256 ─────────────────────────────────────────────────────────
+
+test('the card\'s chat never falls back to a plain conversation: the send fails, Retry carries the opening', () => {
+  const send = chat.slice(chat.indexOf('let activeConvId = convId'), chat.indexOf("const res = await apiFetch(`${apiUrl}/api/chat`, {"))
+  assert.match(send, /if \(opening && !activeConvId\) throw new Error\('init failed'\)/)
+})
+
+test('the note closed with ✕ stops the moments on the next tick, not only on the next page', () => {
+  const tick = hook.slice(hook.indexOf('const evaluate = () => {'), hook.indexOf('const quote: QuoteState | null'))
+  assert.match(tick, /if \(ssGet\(NOTE_CLOSED_KEY\)\) return/)
+})
+
+test('an answer that comes after the visitor moved on is dropped and measured, never shown', () => {
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.ok(ask.indexOf('const before = seen()') < ask.indexOf('await fetchProactiveOffer('))
+  assert.match(ask, /\.\.\.\(passed \? \{ moment_passed: passed \} : \{\}\)/)
+  assert.match(ask, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
+  const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
+  for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'sent']) {
+    assert.match(why, new RegExp(`return '${reason}'`), reason)
+  }
+})
+
+test('a send in flight holds the quote moment for as long as the form says so, not for a set time', () => {
+  assert.doesNotMatch(hook, /SEND_IN_FLIGHT_MS|sincePressMs/)
+  assert.match(hook, /busy: sending\(press\.form\),/)
+  assert.match(hook, /return !!btn && btn\.disabled && !form\.querySelector\(':invalid, \[aria-invalid="true"\]'\)/)
+})
+
+test('Escape on the card\'s unanswered chat is a dismissal; on a conversation it only closes', () => {
+  const esc = widget.slice(widget.indexOf("if (e.key === 'Escape' && step !== 'buttons') {"))
+  const dismiss = esc.indexOf("if (opening && !proactiveChatStarted()) proactive.dismiss('close')")
+  assert.ok(dismiss > 0 && dismiss < esc.indexOf('animateClose('))
+  assert.match(hook, /export function proactiveChatStarted\(\): boolean \{ return isProactiveConversation\(lsGet\('bbc_conv_id'\)\) \}/)
+})
