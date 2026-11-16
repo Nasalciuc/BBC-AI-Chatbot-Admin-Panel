@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import brand from './config'
-import { IconClose, IconPhone } from './icons'
+import { IconClose, IconExpand, IconPhone, IconShrink } from './icons'
+import { useLarge } from './largeView'
 import { posthog } from './posthog'
 
 interface Props {
@@ -9,6 +10,8 @@ interface Props {
   /** Hidden in the CRM iframe, where the panel is always open. */
   onClose?: () => void
   closeLabel?: string
+  /** The button that opens the chat over the whole screen (computers). Not in the CRM iframe. */
+  canEnlarge?: boolean
   /** The form's intro (title and one sentence), drawn under the header on the same soft ground. */
   children?: ComponentChildren
   titleId?: string
@@ -19,11 +22,13 @@ export const personaLine = `${brand.persona.role} · ${brand.name}`
 
 /**
  * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (a letter, never an image that
- * can fail to load), the name, the line that says it is an AI travel agent of the brand, a call button
- * and close.
+ * can fail to load), the name, the line that says it is an AI travel agent of the brand, a call button,
+ * the whole-screen button (largeView.ts) and close.
  */
-export function PanelTop({ subtitle = personaLine, onClose, closeLabel = 'Close', children, titleId }: Props) {
+export function PanelTop({ subtitle = personaLine, onClose, closeLabel = 'Close', canEnlarge = true, children, titleId }: Props) {
   const tel = `tel:+${brand.contactPhone.replace(/\D/g, '')}`
+  const [large, setLarge] = useLarge()
+  const sizeLabel = large ? 'Make the chat smaller' : 'Make the chat bigger'
   return (
     <div class="bw-top">
       <div class="bw-head">
@@ -45,6 +50,22 @@ export function PanelTop({ subtitle = personaLine, onClose, closeLabel = 'Close'
           >
             <IconPhone />
           </a>
+          {canEnlarge && (
+            // The label says what a press does (no aria-pressed: a label that changes with the state
+            // and a pressed state together read twice to a screen reader).
+            <button
+              type="button"
+              class="bw-iconbtn bw-iconbtn--size"
+              aria-label={sizeLabel}
+              title={sizeLabel}
+              onClick={() => {
+                setLarge(!large)
+                posthog?.capture('widget_large_view', { on: !large })
+              }}
+            >
+              {large ? <IconShrink /> : <IconExpand />}
+            </button>
+          )}
           {onClose && (
             <button type="button" class="bw-iconbtn" onClick={onClose} aria-label={closeLabel} title={closeLabel}>
               <IconClose />

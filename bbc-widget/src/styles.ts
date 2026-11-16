@@ -12,7 +12,7 @@
 //
 // Phones (under 768px): the panel is a full-screen sheet that slides up, as native chat apps do;
 // fields are 16px or more so iOS never zooms on focus. Computers: a 400px panel rising from the corner
-// button (the form 440px).
+// button (the form 440px), or, from the button in its top, the whole screen with bigger text (largeView.ts).
 
 export const WIDGET_CSS = `
 #bbc-widget-root {
@@ -396,6 +396,73 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--form .bw-form { gap: 12px; padding-top: 14px; padding-bottom: 14px; }
 }
 #bbc-widget-root .bw-panel--embedded { animation: none; }
+
+/* ── The whole screen, with bigger text (computers; largeView.ts) ──────────
+   Asked for the clients over 70 who read the corner panel with difficulty (16 Nov). The panel covers the
+   page; the header, the conversation and the composer sit in one column a person can read; every size
+   goes up. Phones are full-screen sheets already, so none of this applies under 768px. */
+@media (min-width: 768px) {
+  #bbc-widget-root .bw-panel.bw-panel--large {
+    top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483001;
+    width: 100%; max-width: none; height: 100%; max-height: none;
+    border-radius: 0; box-shadow: none; animation: bw-fade 0.22s var(--bw-ease) both;
+  }
+  #bbc-widget-root .bw-panel--large .bw-top,
+  #bbc-widget-root .bw-panel--large .bw-logwrap,
+  #bbc-widget-root .bw-panel--large .bw-chips { width: 100%; max-width: 880px; margin-left: auto; margin-right: auto; }
+  #bbc-widget-root .bw-panel--large .bw-head { min-height: 88px; gap: 16px; padding: 20px 12px 12px 20px; }
+  #bbc-widget-root .bw-panel--large .bw-head__ava { width: 52px; height: 52px; font-size: 21px; }
+  #bbc-widget-root .bw-panel--large .bw-head__name { font-size: 21px; }
+  #bbc-widget-root .bw-panel--large .bw-head__sub { font-size: 16px; }
+  #bbc-widget-root .bw-panel--large .bw-iconbtn { width: 52px; height: 52px; }
+  #bbc-widget-root .bw-panel--large .bw-iconbtn svg { width: 24px; height: 24px; }
+  #bbc-widget-root .bw-panel--large .bw-log { padding: 12px 20px 16px; }
+  #bbc-widget-root .bw-panel--large .bw-row { max-width: 80%; margin-top: 6px; }
+  #bbc-widget-root .bw-panel--large .bw-row--first { margin-top: 20px; }
+  #bbc-widget-root .bw-panel--large .bw-msg { padding: 14px 18px; font-size: 20px; line-height: 1.55; }
+  #bbc-widget-root .bw-panel--large .bw-who { gap: 10px; font-size: 16px; }
+  #bbc-widget-root .bw-panel--large .bw-ava { width: 32px; height: 32px; }
+  #bbc-widget-root .bw-panel--large .bw-ava--initials,
+  #bbc-widget-root .bw-panel--large .bw-ava--persona { font-size: 14px; }
+  #bbc-widget-root .bw-panel--large .bw-meta { font-size: 14px; }
+  #bbc-widget-root .bw-panel--large .bw-note { font-size: 16px; }
+  #bbc-widget-root .bw-panel--large .bw-day { padding: 4px 12px; font-size: 14px; }
+  #bbc-widget-root .bw-panel--large .bw-dots { padding: 18px 20px; }
+  #bbc-widget-root .bw-panel--large .bw-dots i { width: 8px; height: 8px; }
+  #bbc-widget-root .bw-panel--large .bw-unseen { height: 44px; padding: 0 20px; font-size: 16px; }
+  #bbc-widget-root .bw-panel--large .bw-chips { gap: 10px; padding: 4px 20px 16px; }
+  #bbc-widget-root .bw-panel--large .bw-chip { min-height: 54px; padding: 12px 22px; font-size: 18px; }
+  #bbc-widget-root .bw-panel--large .bw-compose {
+    width: calc(100% - 24px); max-width: 856px; margin: 0 auto 24px; padding: 6px 6px 6px 20px; border-radius: 32px;
+  }
+  #bbc-widget-root .bw-panel--large .bw-compose .bw-input { height: 60px; min-height: 60px; max-height: 180px; padding: 16px 0; font-size: 20px; }
+  #bbc-widget-root .bw-panel--large .bw-send { width: 52px; height: 52px; margin: 4px; }
+  #bbc-widget-root .bw-panel--large .bw-send svg { width: 24px; height: 24px; }
+  /* The form, big: in the middle of the page, in a column of its own. */
+  #bbc-widget-root .bw-panel--large.bw-panel--form { overflow-y: auto; }
+  #bbc-widget-root .bw-panel--large.bw-panel--form .bw-top { max-width: 624px; }
+  #bbc-widget-root .bw-panel--large .bw-intro { padding: 12px 24px 24px; }
+  #bbc-widget-root .bw-panel--large .bw-intro__title { font-size: 34px; }
+  #bbc-widget-root .bw-panel--large .bw-intro__lead { font-size: 20px; max-width: 40ch; }
+  #bbc-widget-root .bw-panel--large .bw-form {
+    flex: 0 0 auto; overflow: visible; width: calc(100% - 24px); max-width: 600px;
+    margin: 0 auto 32px; padding: 28px 24px 22px; gap: 24px;
+  }
+  #bbc-widget-root .bw-panel--large .bw-label { font-size: 20px; }
+  #bbc-widget-root .bw-panel--large .bw-input { height: 62px; font-size: 21px; }
+  #bbc-widget-root .bw-panel--large .bw-phone { height: 62px; }
+  #bbc-widget-root .bw-panel--large .bw-phone .bw-input { height: 58px; }
+  #bbc-widget-root .bw-panel--large .bw-phone__cc { min-width: 88px; font-size: 18px; }
+  #bbc-widget-root .bw-panel--large .bw-hint { font-size: 17px; }
+  #bbc-widget-root .bw-panel--large .bw-error { font-size: 18px; }
+  #bbc-widget-root .bw-panel--large .bw-error svg { width: 20px; height: 20px; }
+  #bbc-widget-root .bw-panel--large .bw-cta { height: 66px; font-size: 21px; }
+  #bbc-widget-root .bw-panel--large .bw-form__call { font-size: 18px; }
+}
+/* Phones: already full-screen; the button that makes the panel bigger is not drawn. */
+@media (max-width: 767px) {
+  #bbc-widget-root .bw-iconbtn--size { display: none; }
+}
 
 /* The chat replacing the form in an open panel: the frame stays, the conversation fades in. */
 #bbc-widget-root .bw-panel.bw-panel--swap { animation: none; }

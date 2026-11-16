@@ -3,6 +3,7 @@ import { COUNTRIES, detectCountryFromPhone, normalizePhone, shownCountry, valida
 import brand from './config'
 import { PanelTop } from './PanelTop'
 import { IconAlert, IconArrowRight, IconPhone } from './icons'
+import { useLarge } from './largeView'
 import { posthog } from './posthog'
 import { useIsPhone } from './phoneSheet'
 
@@ -43,6 +44,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
   const firstRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const isPhone = useIsPhone()
+  const [large] = useLarge()
   // PR-12 trap: a hidden field no person fills, and how long the form was open.
   const [website, setWebsite] = useState('')
   const shownAt = useRef(Date.now())
@@ -123,12 +125,12 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
 
   return (
     <div
-      class={`bw-panel bw-panel--form${embedded ? ' bw-panel--embedded' : ''}`}
+      class={`bw-panel bw-panel--form${embedded ? ' bw-panel--embedded' : ''}${large && !embedded ? ' bw-panel--large' : ''}`}
       role="dialog"
       aria-modal={isPhone && !embedded ? 'true' : 'false'}
       aria-labelledby="bw-form-title"
     >
-      <PanelTop onClose={embedded ? undefined : onBack}>
+      <PanelTop onClose={embedded ? undefined : onBack} canEnlarge={!embedded}>
         <div class="bw-intro">
           <h2 class="bw-intro__title" id="bw-form-title">
             {heading[0]} <em>{heading[1]}</em>

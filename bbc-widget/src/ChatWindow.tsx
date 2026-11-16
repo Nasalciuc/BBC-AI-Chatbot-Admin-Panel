@@ -8,6 +8,7 @@ import type { FormCheck } from './TunnelForm'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
 import { PanelTop, personaLine } from './PanelTop'
+import { useLarge } from './largeView'
 import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
@@ -124,6 +125,8 @@ export function ChatWindow({
   visibleRef.current = visible
   const mountedAtRef = useRef(Date.now())
   const isPhone = useIsPhone()
+  // The whole-screen view with bigger text (computers; largeView.ts): set from the panel's top.
+  const [large] = useLarge()
   const savedConvId = getCachedConvId()
   // The card's opening, for a visitor with no conversation yet. Fixed at mount: it is what the first
   // /chat/init carries, and it is dropped once the conversation exists.
@@ -1107,7 +1110,7 @@ export function ChatWindow({
 
   return (
     <div
-      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}${swapped ? ' bw-panel--swap' : ''}${visible ? '' : ' bw-panel--hidden'}`}
+      class={`bw-panel${embedded ? ' bw-panel--embedded' : ''}${swapped ? ' bw-panel--swap' : ''}${large && !embedded ? ' bw-panel--large' : ''}${visible ? '' : ' bw-panel--hidden'}`}
       aria-hidden={visible ? undefined : 'true'}
       role="dialog"
       aria-modal={isPhone && !embedded ? 'true' : 'false'}
@@ -1117,6 +1120,7 @@ export function ChatWindow({
         titleId="bw-chat-title"
         subtitle={subtitle}
         closeLabel="Close chat"
+        canEnlarge={!embedded}
         onClose={embedded ? undefined : () => {
           if (openingRef.current && !convId) onProactiveDismiss?.('close')
           notifySessionClose('minimized', true)
