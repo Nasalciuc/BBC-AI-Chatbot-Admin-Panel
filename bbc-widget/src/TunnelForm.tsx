@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from './countries'
+import { COUNTRIES, detectCountryFromPhone, normalizePhone, shownCountry, validatePhone, type Country } from './countries'
 import brand from './config'
 import { PanelTop } from './PanelTop'
 import { IconAlert, IconArrowRight } from './icons'
@@ -32,7 +32,9 @@ function Err({ id, text }: { id: string; text?: string }) {
 
 export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded = false }: Props) {
   const [name, setName] = useState('')
-  const [phone, setPhone] = useState('+')
+  // Empty, not "+": ten digits typed the US way are a US number, "+" and a code any other country
+  // (countries.ts normalizePhone / shownCountry). With "+" already there, "404 555 0143" read as Romania.
+  const [phone, setPhone] = useState('')
   const [detectedCountry, setDetectedCountry] = useState<Country>(COUNTRIES[0])
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
@@ -55,18 +57,9 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
 
   const clear = (f: Field) => setErrors(prev => (prev[f] ? { ...prev, [f]: undefined } : prev))
 
-  const normalizePhone = (value: string): string => {
-    const trimmed = value.trim()
-    const raw = trimmed === '+' ? '' : trimmed
-    const digits = raw.replace(/\D/g, '')
-    if (digits.length < 7) return ''
-    const withCountry = digits.length === 10 ? `1${digits}` : digits
-    return `+${withCountry}`
-  }
-
   const phoneProblem = (value: string): string | undefined => {
     const normalized = normalizePhone(value)
-    if (!normalized || normalized.length < 8) return 'Enter your phone number with the country code'
+    if (!normalized || normalized.length < 8) return 'Enter your phone number'
     const country = detectCountryFromPhone(normalized) || detectedCountry
     if (!validatePhone(normalized, country)) return `This doesn't look like a ${country.name} number`
     return undefined
@@ -125,7 +118,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
 
   const heading = tunnel === 'sales' ? brand.formHeading : brand.supportHeading
   const lead = tunnel === 'sales' ? brand.formLead : brand.supportLead
-  const phoneShown = phone.length > 1 && phone !== '+'
+  const phoneShown = /\d/.test(phone)
 
   return (
     <div
@@ -190,17 +183,15 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
                   inputMode="tel"
                   autoComplete="tel"
                   enterkeyhint="next"
+                  placeholder="(555) 000-0000"
                   value={phone}
                   aria-invalid={errors.phone ? 'true' : undefined}
                   aria-describedby={errors.phone ? 'bw-phone-err' : 'bw-phone-hint'}
                   onInput={(e) => {
-                    const raw = (e.target as HTMLInputElement).value
-                    const trimmed = raw.trim()
-                    const val = /^\d/.test(trimmed) ? `+${trimmed}` : (trimmed || '+')
+                    const val = (e.target as HTMLInputElement).value
                     setPhone(val)
-                    const country = detectCountryFromPhone(val)
-                    if (country) setDetectedCountry(country)
-                    else if (val.startsWith('+')) setDetectedCountry(COUNTRIES[0])
+                    // The country the number will be sent with, the same rule as the send (countries.ts).
+                    setDetectedCountry(shownCountry(val) || COUNTRIES[0])
                     // A shown error clears as soon as the number becomes valid; a new one waits for blur or submit.
                     if (errors.phone && !phoneProblem(val)) clear('phone')
                     onInteraction?.()
@@ -210,7 +201,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
               </div>
               {errors.phone
                 ? <Err id="bw-phone-err" text={errors.phone} />
-                : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'Start with your country code, for example +1'}</div>}
+                : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'A US number, or + and your country code'}</div>}
             </div>
 
             <div class="bw-field">
