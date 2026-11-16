@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from app.pipeline.entity_extractor import merge_contact_channel
 from app.pipeline.intent import Intent
 from app.models.chat import VisitorInfo, RouteCard
 from app.models.lead import get_missing_fields
@@ -274,20 +275,41 @@ def _apply_slot_question(text, lead, tunnel):
         return text
 
 
+def _contact_channel_now(lead: Optional[dict], entities: dict) -> Optional[str]:
+    """Every channel wish so far, this message's included. The lead holds the
+    merged wishes; this turn's go on top, so a refusal said now counts even when
+    the lead refresh failed and the lead is a turn behind (merging again is a
+    no-op when it is current)."""
+    signals = (lead or {}).get("intent_signals")
+    stored = signals.get("contact_channel") if isinstance(signals, dict) else None
+    now = (entities or {}).get("contact_channel")
+    if isinstance(now, str) and now:
+        return merge_contact_channel(stored if isinstance(stored, str) else None, now)
+    return stored if isinstance(stored, str) else None
+
+
+def _all_channels_refused(lead: Optional[dict], entities: dict) -> bool:
+    """No calls, no texts and no email: no channel may be promised."""
+    parts = {p.strip() for p in (_contact_channel_now(lead, entities) or "").split(",")}
+    return {"no calls", "no texts", "no email"} <= parts
+
+
 def _preferred_contact(visitor: VisitorInfo, lead: Optional[dict], entities: dict) -> Optional[str]:
     """The email when that is how the client asked to be reached ("email me
-    the quotes", or no calls and no texts); None keeps the templates' default,
-    the phone first. The lead holds every wish so far (merged), this turn's
-    entities the newest when the lead does not have it yet."""
-    if not visitor.email:
+    the quotes", or no calls and no texts) and email is not refused; None keeps
+    the templates' default, the phone first. The email can be the one typed in
+    this very message (the visitor object predates it) or the lead's."""
+    email = visitor.email or (entities or {}).get("email") or (lead or {}).get("visitor_email")
+    if not email:
         return None
-    signals = (lead or {}).get("intent_signals")
-    channel = (signals.get("contact_channel") if isinstance(signals, dict) else None) or entities.get("contact_channel")
-    if not isinstance(channel, str):
+    channel = _contact_channel_now(lead, entities)
+    if not channel:
         return None
     parts = {p.strip() for p in channel.split(",")}
+    if "no email" in parts:
+        return None
     if ("email" in parts and "text" not in parts) or {"no calls", "no texts"} <= parts:
-        return visitor.email
+        return email
     return None
 
 
@@ -531,11 +553,17 @@ def generate_response(
                     from app.services.closing import is_within_team_hours
 
                     # "We'll contact you at …" names the channel the client
-                    # asked for: an "email me" client is not promised a call.
+                    # asked for: an "email me" client is not promised a call,
+                    # and one who refused every channel is promised none.
                     _contact = _preferred_contact(visitor, lead, entities)
-                    text = get_template(
+                    _handoff_key = (
                         "specialist_handoff" if is_within_team_hours()
-                        else "specialist_handoff_off_hours",
+                        else "specialist_handoff_off_hours"
+                    )
+                    if _all_channels_refused(lead, entities):
+                        _handoff_key += "_no_channel"
+                    text = get_template(
+                        _handoff_key,
                         tunnel, visitor,
                         route=lead.get("route_display", "your route"),
                         **({"contact": _contact} if _contact else {}),

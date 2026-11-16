@@ -672,15 +672,21 @@ def contact_channel_of(text: str) -> Optional[str]:
     after a negation does not count as the wish; the withdrawal is read by its
     own phrases ("no texts"), so it can replace an earlier "text only". "Not
     only text" withdraws nothing and says nothing.
+
+    A wish and its withdrawal in the same message ("Email me the options.
+    Actually, don't email me") keep only the later one: the client's last word.
     """
     text = text or ""
-    found: list[str] = []
+    last_at: dict[str, int] = {}
     for label, rx in CONTACT_CHANNEL_RES:
         for m in rx.finditer(text):
             if label in ("text", "email") and _NEGATED_BEFORE.search(text[max(0, m.start() - 24):m.start()]):
                 continue
-            found.append(label)
-            break
+            last_at[label] = max(m.start(), last_at.get(label, -1))
+    for label, opposite in _CHANNEL_OPPOSITES.items():
+        if label in last_at and opposite in last_at:
+            last_at.pop(label if last_at[label] < last_at[opposite] else opposite)
+    found = list(dict.fromkeys(label for label, _ in CONTACT_CHANNEL_RES if label in last_at))
     return ", ".join(found) or None
 
 

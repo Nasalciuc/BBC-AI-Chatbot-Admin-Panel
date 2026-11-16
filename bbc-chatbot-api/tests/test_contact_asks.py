@@ -162,6 +162,43 @@ class TestHandoffContact:
             text = _gen(lead=lead).text
         assert "We'll contact you at +12125550187." in text
 
+    # CodeRabbit #255, round 4.
+    def test_the_email_typed_in_this_message_counts(self):
+        """The visitor object predates this message: "email me, ann@…" still
+        gets the email promised, not the number."""
+        from app.pipeline.generator import _preferred_contact
+
+        bare = VisitorInfo(name="Ann", phone="+12125550187")
+        assert _preferred_contact(bare, _complete_lead(), {"contact_channel": "email", "email": "ann@example.com"}) == "ann@example.com"
+        assert _preferred_contact(bare, {**_complete_lead(), "visitor_email": "ann@example.com"}, {"contact_channel": "email"}) == "ann@example.com"
+        assert _preferred_contact(bare, _complete_lead(), {"contact_channel": "email"}) is None
+
+    def test_a_refusal_said_now_beats_a_lead_a_turn_behind(self):
+        """The lead refresh failed and the lead still says "email": this
+        message's "no email, text" is the one that counts."""
+        from app.pipeline.generator import _preferred_contact
+
+        stale = self._with("email")
+        assert _preferred_contact(_visitor(), stale, {"contact_channel": "no email, text"}) is None
+        assert _preferred_contact(_visitor(), stale, {}) == "ann@example.com"
+
+    @pytest.mark.parametrize("online", [True, False])
+    def test_no_email_is_never_promised_an_email(self, online):
+        with patch("app.services.closing.is_within_team_hours", return_value=online):
+            text = _gen(lead=self._with("no calls, no email")).text
+        assert "ann@example.com" not in text
+
+    @pytest.mark.parametrize("online", [True, False])
+    def test_every_channel_refused_promises_none(self, online):
+        """"Don't call or text me. Never email me": no number, no email, and the
+        client is asked how they would like the options."""
+        with patch("app.services.closing.is_within_team_hours", return_value=online):
+            text = _gen(lead=self._with("no calls, no texts, no email")).text
+        assert "+12125550187" not in text and "ann@example.com" not in text
+        assert "We'll contact you" not in text
+        assert "just tell me here how you'd like them" in text
+        assert ("~30 minutes" in text) == online
+
 
 # ── The Team line every time promise follows ───────────────────────────────
 
@@ -262,6 +299,11 @@ class TestContactChannel:
         ("stop texting me", "no texts"),
         ("never email me", "no email"),
         ("don't text me, email me instead", "email, no texts"),
+        # CodeRabbit #255, round 4: a wish and its withdrawal in one message —
+        # the later one is the client's last word, never both.
+        ("Email me the options. Actually, don't email me", "no email"),
+        ("Don't email me. Actually, email me the options", "email"),
+        ("text only please. no wait, please don't text me", "no texts"),
         ("I don't text much", None),
     ])
     def test_read_from_the_words(self, text, channel):

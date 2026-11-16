@@ -68,6 +68,18 @@ TEMPLATES: dict[str, list[str]] = {
         "They'll reach out first thing when the team is back, with hand-picked options. "
         "We'll contact you at {contact}.",
     ],
+    # The client refused calls, texts and email (CodeRabbit #255): no channel is
+    # promised, and the way to get the options stays theirs to name.
+    "specialist_handoff_no_channel:sales": [
+        "All set{name_suffix} — I have everything your consultant needs. "
+        f"They'll have hand-picked options ready within {CONSULTANT_SLA_TEXT}. "
+        "Since you'd rather not get calls, texts or emails, just tell me here how you'd like them, whenever it suits you.",
+    ],
+    "specialist_handoff_off_hours_no_channel:sales": [
+        "All set{name_suffix} — I have everything your consultant needs. "
+        "They'll prepare hand-picked options first thing when the team is back. "
+        "Since you'd rather not get calls, texts or emails, just tell me here how you'd like them, whenever it suits you.",
+    ],
     "lead_captured:sales": [
         "That's everything, {name} — your consultant will reach out "
         f"within {CONSULTANT_SLA_TEXT} with the best {{route}} options. "
