@@ -71,14 +71,39 @@ test('the button in the top says what it does, and is not drawn in the CRM ifram
   }
 })
 
+/** Every top-level `@media` block of the stylesheet: its condition and where it starts and ends. */
+function mediaBlocks(text) {
+  const out = []
+  let at = text.indexOf('@media ')
+  while (at > -1) {
+    const open = text.indexOf('{', at)
+    let depth = 0
+    let i = open
+    for (; i < text.length; i++) {
+      if (text[i] === '{') depth++
+      else if (text[i] === '}' && --depth === 0) break
+    }
+    out.push({ cond: text.slice(at + 7, open).trim(), start: at, end: i })
+    at = text.indexOf('@media ', i)
+  }
+  return out
+}
+
 test('computers only: the big view lives under min-width 768px, the button is hidden on phones', () => {
-  const start = css.indexOf('@media (min-width: 768px) {')
-  assert.ok(start > -1)
-  const block = css.slice(start, css.indexOf('\n}\n', start))
-  assert.match(block, /\.bw-panel\.bw-panel--large \{/)
+  const blocks = mediaBlocks(css)
+  const main = blocks.find(b => b.cond === '(min-width: 768px)' && css.slice(b.start, b.end).includes('.bw-panel.bw-panel--large {'))
+  assert.ok(main)
+  const block = css.slice(main.start, main.end)
   assert.match(block, /top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483001;/)
   assert.match(block, /\.bw-panel--large \.bw-msg \{[^}]*font-size: 20px/)
-  // Nowhere else: a phone never gets the big rules.
-  assert.equal(css.split('.bw-panel--large').length - 1, block.split('.bw-panel--large').length - 1)
+  // Nowhere else: every big rule sits in a block for computers (the short-screen ones included), so a
+  // phone never gets one.
+  const forComputers = blocks.filter(b => b.cond.startsWith('(min-width: 768px)'))
+  let at = css.indexOf('.bw-panel--large')
+  assert.ok(at > -1)
+  while (at > -1) {
+    assert.ok(forComputers.some(b => b.start < at && at < b.end), `a big rule outside the computer blocks, at ${at}`)
+    at = css.indexOf('.bw-panel--large', at + 1)
+  }
   assert.match(css, /@media \(max-width: 767px\) \{\s*#bbc-widget-root \.bw-iconbtn--size \{ display: none; \}/)
 })

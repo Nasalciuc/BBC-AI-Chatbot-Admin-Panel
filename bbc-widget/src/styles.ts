@@ -222,6 +222,9 @@ export const WIDGET_CSS = `
   display: flex; flex-direction: column; gap: 20px; margin: 0 12px 12px; padding: 24px 20px 18px;
   border-radius: 20px; background: var(--bw-glass); box-shadow: var(--bw-lift);
 }
+/* The fields, then the button with the number to call: spaced like the form itself. */
+#bbc-widget-root .bw-form__fields,
+#bbc-widget-root .bw-form__foot { display: flex; flex-direction: column; gap: inherit; }
 #bbc-widget-root .bw-field { display: flex; flex-direction: column; gap: 8px; }
 #bbc-widget-root .bw-label { font-size: 17px; font-weight: 700; line-height: 1.3; color: var(--bw-text); }
 #bbc-widget-root .bw-input {
@@ -395,12 +398,38 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-chip { min-height: 44px; font-size: 15px; }
   #bbc-widget-root .bw-nudge { right: 0; bottom: calc(100% + 12px); width: min(300px, calc(100vw - 32px)); }
 }
+/* Most phones show 560–760 px of page: the button (and on most, the number to call) on the first screen,
+   with the keyboard closed. The space around the fields shrinks and the line under the title goes; the
+   fields, their type and the button keep their size. With the keyboard open the sheet still scrolls. */
+@media (max-width: 767px) and (max-height: 760px) {
+  #bbc-widget-root .bw-panel--form .bw-head { min-height: 60px; padding-bottom: 6px; }
+  #bbc-widget-root .bw-panel--form .bw-intro { padding: 0 20px 12px; }
+  #bbc-widget-root .bw-panel--form .bw-intro__title { font-size: clamp(22px, 6.4vw, 25px); }
+  #bbc-widget-root .bw-panel--form .bw-intro__lead { display: none; }
+  #bbc-widget-root .bw-panel--form .bw-form { gap: 14px; padding-top: 18px; padding-bottom: 14px; }
+  #bbc-widget-root .bw-panel--form .bw-field { gap: 6px; }
+}
 @media (max-width: 767px) and (max-height: 620px) {
   #bbc-widget-root .bw-head { min-height: 60px; padding-top: 8px; padding-bottom: 8px; }
   #bbc-widget-root .bw-intro { padding-bottom: 12px; }
   #bbc-widget-root .bw-panel--form .bw-form { gap: 12px; padding-top: 14px; padding-bottom: 14px; }
 }
 #bbc-widget-root .bw-panel--embedded { animation: none; }
+
+/* ── Computers: the form's button never leaves the screen ──────────────
+   A 1366×768 laptop leaves the page some 620–660 px of height once the browser and the taskbar take
+   theirs, and many older clients zoom to 125% or more. The fields scroll inside the card when they must;
+   the button and the number to call stay under them, in sight. */
+@media (min-width: 768px) {
+  #bbc-widget-root .bw-panel--form .bw-form { overflow: hidden; }
+  #bbc-widget-root .bw-panel--form .bw-form__fields {
+    flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    margin: -4px; padding: 4px; /* room for the focus ring inside the scrolling part */
+  }
+  /* A field brought into view by the keyboard comes with its label above it and its whole ring. */
+  #bbc-widget-root .bw-panel--form .bw-form__fields .bw-input { scroll-margin: 36px 0 10px; }
+  #bbc-widget-root .bw-panel--form .bw-form__foot { flex-shrink: 0; }
+}
 
 /* ── The whole screen, with bigger text (computers; largeView.ts) ──────────
    Asked for the clients over 70 who read the corner panel with difficulty (16 Nov). The panel covers the
@@ -443,14 +472,15 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--large .bw-compose .bw-input { height: 60px; min-height: 60px; max-height: 180px; padding: 16px 0; font-size: 20px; }
   #bbc-widget-root .bw-panel--large .bw-send { width: 52px; height: 52px; margin: 4px; }
   #bbc-widget-root .bw-panel--large .bw-send svg { width: 24px; height: 24px; }
-  /* The form, big: in the middle of the page, in a column of its own. */
+  /* The form, big: in the middle of the page, in a column of its own; on a short screen the card stops
+     at the screen's bottom with the button in it, and the fields scroll inside the card. */
   #bbc-widget-root .bw-panel--large.bw-panel--form { overflow-y: auto; }
   #bbc-widget-root .bw-panel--large.bw-panel--form .bw-top { max-width: 624px; }
   #bbc-widget-root .bw-panel--large .bw-intro { padding: 12px 24px 24px; }
   #bbc-widget-root .bw-panel--large .bw-intro__title { font-size: 34px; }
   #bbc-widget-root .bw-panel--large .bw-intro__lead { font-size: 20px; max-width: 40ch; }
   #bbc-widget-root .bw-panel--large .bw-form {
-    flex: 0 0 auto; overflow: visible; width: calc(100% - 24px); max-width: 600px;
+    flex: 0 1 auto; min-height: 0; overflow: hidden; width: calc(100% - 24px); max-width: 600px;
     margin: 0 auto 32px; padding: 28px 24px 22px; gap: 24px;
   }
   #bbc-widget-root .bw-panel--large .bw-label { font-size: 20px; }
@@ -463,6 +493,35 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--large .bw-error svg { width: 20px; height: 20px; }
   #bbc-widget-root .bw-panel--large .bw-cta { height: 66px; font-size: 21px; }
   #bbc-widget-root .bw-panel--large .bw-form__call { font-size: 18px; }
+}
+/* A short computer screen: the space around the fields shrinks first, then the line under the title
+   goes. The fields, their type and the button keep their size. */
+@media (min-width: 768px) and (max-height: 840px) {
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-head { min-height: 64px; padding-top: 10px; padding-bottom: 6px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-intro { padding: 0 24px 12px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-intro__title { font-size: 24px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-intro__lead { margin-top: 4px; font-size: 16px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-form { gap: 16px; padding: 18px 20px 14px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-field { gap: 6px; }
+  #bbc-widget-root .bw-panel--large.bw-panel--form .bw-head { min-height: 72px; padding-top: 12px; padding-bottom: 8px; }
+  #bbc-widget-root .bw-panel--large .bw-intro { padding: 0 24px 16px; }
+  #bbc-widget-root .bw-panel--large .bw-form { gap: 18px; padding: 22px 24px 16px; margin-bottom: 16px; }
+}
+@media (min-width: 768px) and (max-height: 760px) {
+  #bbc-widget-root .bw-panel--form .bw-intro__lead { display: none; }
+  #bbc-widget-root .bw-panel--form .bw-form__call a { min-height: 36px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-form { gap: 14px; padding-top: 16px; }
+  #bbc-widget-root .bw-panel--large.bw-panel--form .bw-head { min-height: 64px; padding-top: 8px; padding-bottom: 4px; }
+  #bbc-widget-root .bw-panel--large .bw-intro { padding-bottom: 12px; }
+  #bbc-widget-root .bw-panel--large .bw-form { gap: 14px; padding-top: 16px; padding-bottom: 12px; margin-bottom: 12px; }
+  #bbc-widget-root .bw-panel--large .bw-field { gap: 6px; }
+}
+@media (min-width: 768px) and (max-height: 640px) {
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-head { padding-top: 6px; padding-bottom: 4px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-intro { padding-bottom: 8px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-intro__title { font-size: 22px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-form { gap: 12px; padding-top: 12px; padding-bottom: 10px; }
+  #bbc-widget-root .bw-panel--form:not(.bw-panel--large) .bw-form__call a { min-height: 30px; }
 }
 /* Phones: already full-screen; the button that makes the panel bigger is not drawn. */
 @media (max-width: 767px) {
