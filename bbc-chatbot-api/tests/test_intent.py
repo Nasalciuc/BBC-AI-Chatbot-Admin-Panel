@@ -75,6 +75,27 @@ class TestIntentRegex:
         assert detect_intent("Connect me with someone") == Intent.TALK_TO_AGENT
         assert detect_intent("I want to talk to a human") == Intent.TALK_TO_AGENT
 
+    @pytest.mark.parametrize("text", [
+        "yes, pass it on",
+        "ok hand it over",
+        "Sure, pass it along please",
+        "please send my request to a consultant",
+        "pass this to one of your consultants",
+    ])
+    def test_the_answer_to_the_real_person_offer_reaches_a_person(self, text):
+        """Alex offers once to pass the request to a consultant (16 Nov); the
+        client's "pass it on" must take the handoff path, live or queued."""
+        assert detect_intent(text, use_llm=False) == Intent.TALK_TO_AGENT
+
+    @pytest.mark.parametrize("text", [
+        "can you send it over by email?",
+        "I'll pass on that one",
+        "can you pass this to my wife",
+        "send me the options",
+    ])
+    def test_ordinary_words_do_not_call_a_person(self, text):
+        assert detect_intent(text, use_llm=False) != Intent.TALK_TO_AGENT
+
     def test_route_info(self):
         assert detect_intent("What airlines fly direct?") == Intent.ROUTE_INFO
         assert detect_intent("Is there a nonstop option?") == Intent.ROUTE_INFO

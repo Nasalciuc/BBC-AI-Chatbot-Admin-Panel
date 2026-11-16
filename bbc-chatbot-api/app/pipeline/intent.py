@@ -36,6 +36,14 @@ class Intent(str, Enum):
 # Ordered: most specific → most generic
 INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.TALK_TO_AGENT, re.compile(r"(talk|speak|connect).*(agent|human|person|someone)", re.I)),
+    # The answer to Alex's one offer of a real person (prompts: A REAL PERSON):
+    # "yes, pass it on" / "send my request to a consultant".
+    (Intent.TALK_TO_AGENT, re.compile(
+        r"\b(pass|hand)\s+(it|this|that|my\s+request)\s+(on|over|along)\b"
+        r"|\b(pass|hand|send)\s+(it|this|that|my\s+request)\s+to\s+(a|the|your|one\s+of\s+your)\s+"
+        r"(consultants?|agents?|person|human)\b",
+        re.I,
+    )),
     (Intent.GREETING, re.compile(r"^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy)\b", re.I)),
     (Intent.CLOSING, re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)),
     (Intent.BOOKING_CHANGE, re.compile(r"(change|cancel|modify|reschedule|refund)", re.I)),

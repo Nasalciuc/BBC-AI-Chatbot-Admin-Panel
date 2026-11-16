@@ -200,6 +200,31 @@ class TestHandoffContact:
         assert ("~30 minutes" in text) == online
 
 
+# ── The one offer of a real person (owner, 16 Nov) ─────────────────────────
+
+class TestRealPersonOffer:
+    """A client who hesitates hears once that a consultant, a real person, can
+    take the request; a plain yes is asked for the missing contact, a "pass it
+    on" goes to the handoff, and nobody is promised a person who is not coming."""
+
+    @staticmethod
+    def _static():
+        from app.ai.prompts import build_conversational_prompt
+
+        static, _d = build_conversational_prompt(tunnel="sales", visitor=VisitorInfo())
+        return static if isinstance(static, str) else str(static)
+
+    def test_the_offer_is_in_the_sales_prompt_once_and_honest(self):
+        text = self._static()
+        assert text.count("A REAL PERSON, WHEN THEY ARE READY") == 1
+        assert "one of our consultants, a real person" in text
+        assert "you never promise that a person is joining" in text
+        assert 'A "no thanks" ends the offer' in text
+
+    def test_the_rule_against_early_consultant_talk_names_the_exception(self):
+        assert "the one offer of a real person (A REAL PERSON above)" in self._static()
+
+
 # ── The Team line every time promise follows ───────────────────────────────
 
 class TestTeamLine:
