@@ -132,6 +132,14 @@ async def startup() -> None:
         logger.warning(f"[flags] first read took over 5 s ({type(e).__name__}) — continuing on env/defaults")
     app.state.flags_task = runtime_flags.start_refresher()
 
+    # KB search by meaning filters on `tunnel`, and Qdrant refuses that filter
+    # without a keyword index (every search was a 400 until 16 Nov 2026). In
+    # the background: a slow Qdrant must not hold the healthcheck, and the
+    # answer is in /health (kb_search.tunnel_index).
+    from app.db import qdrant
+
+    app.state.qdrant_index_task = asyncio.create_task(qdrant.ensure_tunnel_index(), name="qdrant_tunnel_index")
+
     # AI cost ledger: drain the record queue into ai_calls in the background.
     from app.ai import ledger
 
@@ -175,6 +183,9 @@ async def shutdown() -> None:
             )
     for task in getattr(app.state, "scheduler_tasks", []):
         task.cancel()
+    qdrant_index_task = getattr(app.state, "qdrant_index_task", None)
+    if qdrant_index_task is not None:
+        qdrant_index_task.cancel()
     log_flush_task = getattr(app.state, "log_flush_task", None)
     if log_flush_task is not None:
         log_flush_task.cancel()

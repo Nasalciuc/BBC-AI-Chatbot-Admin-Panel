@@ -369,27 +369,40 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // The 10 s note promises a conversation ("Tell me where and when, and I'll check fares"): a tap on it
   // opens the chat with Alex's words for this page and no form, like the card's chat (owner's decision,
   // 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the chat got past the form the note led to).
-  // The words come from the server; no answer in time → the form, as before. The corner button keeps
-  // the form. The note stays on screen until the chat opens, and a second tap meanwhile does nothing.
+  // The corner button does the same (owner's decision, 16 Nov, later: "straight into the conversation,
+  // not with a form"); `via` tells the two apart in the measurements. The words come from the server
+  // (the note's door); no answer in time → the form, as before. The note stays on screen until the chat
+  // opens, and a second tap of either meanwhile does nothing.
   const noteBusyRef = useRef(false)
-  const openNote = async () => {
+  const openNote = async (via: 'note' | 'button' = 'note') => {
     if (noteBusyRef.current) return
     noteBusyRef.current = true
     const run = ++noteRunRef.current
     const stillMine = () => run === noteRunRef.current
     try {
-      const o = await proactive.noteOpening(stillMine)
+      const o = await proactive.noteOpening(stillMine, via)
       // The visitor opened the form, or closed what was open, while the words were on their way: theirs.
       if (!stillMine()) return
       if (o) {
-        posthog?.capture('chat_tunnel_selected', { tunnel: 'sales', returning_visitor: false, via: 'note', form: false })
+        posthog?.capture('chat_tunnel_selected', { tunnel: 'sales', returning_visitor: false, via, form: false })
         openProactive(o)
       } else {
-        handleTunnelSelect('sales', 'note')
+        handleTunnelSelect('sales', via)
       }
     } finally {
       noteBusyRef.current = false
     }
+  }
+
+  // The corner button: a visitor with a conversation gets it back (handleTunnelSelect, as before); anyone
+  // else goes straight into a conversation with Alex, no form first. Support keeps its form (the ticket
+  // number comes first there).
+  const openFromButton = (t: 'sales' | 'support') => {
+    if (t !== 'sales' || sessionActive) {
+      handleTunnelSelect(t)
+      return
+    }
+    void openNote('button')
   }
 
   const handleBack = () => {
@@ -479,7 +492,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     <div class={closing ? 'bw-closing' : undefined} style={{ display: 'contents' }}>
       {step === 'buttons' && !embedded && (
         <FloatingButtons
-          onSelect={(t) => (proactive.offer ? openProactive(proactive.offer) : handleTunnelSelect(t))}
+          onSelect={(t) => (proactive.offer ? openProactive(proactive.offer) : openFromButton(t))}
           showAttention={showAttention && !sessionActive && !proactive.quiet}
           onDismissAttention={() => { noteRunRef.current++; setShowAttention(false) }}
           autoFocus={focusLauncher}

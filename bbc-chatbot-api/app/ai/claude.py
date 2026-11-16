@@ -523,18 +523,26 @@ def call_opus_with_tools(
     )
 
 
+def _tool_input(response) -> dict:
+    """The arguments of every save_travel_details call in a response, merged:
+    a second call adds to the first (a later value wins), it does not erase
+    it — every call is answered "saved" (CodeRabbit #261)."""
+    merged: dict = {}
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "save_travel_details":
+            raw_in = getattr(block, "input", None)
+            if isinstance(raw_in, dict):
+                merged.update(raw_in)
+    return merged
+
+
 def _parse_tool_response(response) -> tuple[str, dict]:
     """(text, raw_tool_entities) from a messages response."""
     text = ""
-    tool_entities: dict = {}
     for block in response.content:
-        btype = getattr(block, "type", None)
-        if btype == "text":
+        if getattr(block, "type", None) == "text":
             text = (getattr(block, "text", None) or "").strip()
-        elif btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
-            raw_in = getattr(block, "input", None) or {}
-            tool_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
-    return text, tool_entities
+    return text, _tool_input(response)
 
 
 def _validate_with_reprompt(
@@ -591,6 +599,189 @@ def _validate_with_reprompt(
         return salvage_tool_entities(raw_entities), 0.0
 
 
+# ── The rest of a reply that stopped at the tool call ─────────
+# stop_reason "tool_use" is a turn that is not finished: the model waits for
+# the tool's answer and writes its reply after it. It often calls the tool
+# first, or writes one short line before it ("I'll save those details for
+# you.") — and the reply ended there: the client got that line alone (16 Nov
+# 2026), or no words at all, which the plain re-call without the tool then
+# had to cover (generator._run_tiered_generation). Railway, 1-16 Nov: of the
+# streamed turns that saved details, about half had no words and most of the
+# rest one short line. The tool's answer now goes back and the model finishes
+# its reply; it cannot call the tool a second time (tool_choice none).
+_TOOL_SAVED = (
+    "Saved. Now write the rest of your reply to the client, without saying "
+    "that you saved anything — or, if your words before the tool call already "
+    "answer the client, end your turn without writing more."
+)
+_NO_TOOL = {"type": "none"}
+
+
+def _same_value(sent, kept) -> bool:
+    # The check only tidies a value ("jfk" is kept as "JFK"); that is not a change.
+    return str(sent).strip().upper() == str(kept).strip().upper()
+
+
+def _tool_answer(sent: dict, kept: dict) -> str:
+    """What the tool answers. Everything the model sent was kept: _TOOL_SAVED.
+    The typed check dropped or a re-prompt changed something: exactly what the
+    lead now holds and what it does not, so the reply never confirms a detail
+    that was not saved (a return before the departure, say — CodeRabbit #261).
+    Travel details only (codes, dates, counts, cabin): no contact data."""
+    sent = {k: v for k, v in (sent or {}).items() if v is not None}
+    kept = kept or {}
+    if all(k in kept and _same_value(v, kept[k]) for k, v in sent.items()):
+        return _TOOL_SAVED
+    held = ", ".join(f"{k} {v}" for k, v in kept.items()) or "nothing"
+    lost = [k for k in sent if k not in kept]
+    return (
+        f"Saved as: {held}."
+        + (f" Not saved, not valid: {', '.join(lost)}." if lost else "")
+        + " Now write the rest of your reply to the client, without saying that you "
+        "saved anything. Confirm only the details as saved above"
+        + ("; ask the client again for what was not saved." if lost else ".")
+    )
+
+
+def _assistant_turn(response) -> list[dict]:
+    """The model's own turn, sent back as plain params: its thinking (with the
+    signature the API checks), its words and its tool calls. Empty words are
+    left out — the API refuses an empty text block."""
+    blocks: list[dict] = []
+    for block in getattr(response, "content", None) or []:
+        kind = getattr(block, "type", None)
+        if kind == "thinking":
+            blocks.append({
+                "type": "thinking",
+                "thinking": getattr(block, "thinking", "") or "",
+                "signature": getattr(block, "signature", "") or "",
+            })
+        elif kind == "redacted_thinking":
+            blocks.append({"type": "redacted_thinking", "data": getattr(block, "data", "") or ""})
+        elif kind == "text":
+            words = getattr(block, "text", None) or ""
+            if words.strip():
+                blocks.append({"type": "text", "text": words})
+        elif kind == "tool_use":
+            raw_in = getattr(block, "input", None)
+            blocks.append({
+                "type": "tool_use",
+                "id": getattr(block, "id", None),
+                "name": getattr(block, "name", None),
+                "input": dict(raw_in) if isinstance(raw_in, dict) else {},
+            })
+    return blocks
+
+
+def _after_tool_messages(user_message: str, response, answer: str = _TOOL_SAVED) -> Optional[list[dict]]:
+    """The conversation that lets the model finish: the client's message, the
+    model's turn up to the tool call, and the tool's answer for every call in
+    it (the API wants one per call). None when the turn did not stop at a
+    tool call."""
+    if getattr(response, "stop_reason", None) != "tool_use":
+        return None
+    turn = _assistant_turn(response)
+    answers = [
+        {"type": "tool_result", "tool_use_id": block["id"], "content": answer}
+        for block in turn
+        if block["type"] == "tool_use" and block["id"]
+    ]
+    if not answers:
+        return None
+    return _build_messages(user_message) + [
+        {"role": "assistant", "content": turn},
+        {"role": "user", "content": answers},
+    ]
+
+
+def _join_reply(before: str, after: str) -> str:
+    """The words before the tool call and the rest, as one reply."""
+    before, after = (before or "").strip(), (after or "").strip()
+    if before and after:
+        return f"{before} {after}"
+    return before or after
+
+
+def _finish_after_tool(
+    model: str, system_prompt, user_message: str, response, tool: dict,
+    max_tokens: int, temperature: float, effort: str, answer: str = _TOOL_SAVED,
+) -> tuple[str, float]:
+    """The rest of a reply that stopped at the tool call: (words, cost).
+    ('', 0.0) when it did not stop there, or when this call fails — the turn
+    then keeps what it has, as before; it is never lost over this call.
+    `answer` is the tool's answer (_tool_answer: what was really saved)."""
+    messages = _after_tool_messages(user_message, response, answer)
+    if messages is None:
+        return "", 0.0
+    start = time.time()
+    try:
+        rest = _get_client().messages.create(
+            model=model,
+            **_family_call_kwargs(model, temperature, max_tokens, effort),
+            system=_build_system(system_prompt),
+            messages=messages,
+            tools=[tool],
+            tool_choice=_NO_TOOL,
+            timeout=settings.claude_timeout,
+        )
+        words = _text_from_blocks(rest)
+    except Exception as e:  # noqa: BLE001 — broad on purpose: the reply must survive this call
+        logger.warning(f"Claude+Tool rest of the reply failed ({type(e).__name__}): keeping the words before the tool call")
+        record_ai_call(task="sales_reply", model=model, cost=0.0, status="error")
+        return "", 0.0
+    cost = cost_from_usage(model, rest.usage)
+    record_ai_call(task="sales_reply", model=model, usage=rest.usage,
+                   latency_ms=int((time.time() - start) * 1000), status="ok",
+                   request_id=getattr(rest, "id", None))
+    return words, cost
+
+
+def _stream_finish_after_tool(
+    model: str, system_prompt, user_message: str, response, tool: dict,
+    max_tokens: int, temperature: float, effort: str,
+    on_chunk=None, after_words: bool = False, answer: str = _TOOL_SAVED,
+) -> tuple[str, float]:
+    """_finish_after_tool, streamed: the rest goes to the client as it comes,
+    one space after the words already sent (`after_words`). A stream that
+    breaks halfway gives ('', 0.0): what it sent is replaced at stream_end by
+    the stored reply, which keeps the words before the tool call."""
+    messages = _after_tool_messages(user_message, response, answer)
+    if messages is None:
+        return "", 0.0
+    start = time.time()
+    words = ""
+    try:
+        with _get_client().messages.stream(
+            model=model,
+            **_family_call_kwargs(model, temperature, max_tokens, effort),
+            system=_build_system(system_prompt),
+            messages=messages,
+            tools=[tool],
+            tool_choice=_NO_TOOL,
+            timeout=settings.claude_timeout,
+        ) as stream:
+            for chunk in stream.text_stream:
+                if not words:
+                    chunk = (chunk or "").lstrip()
+                    if not chunk:
+                        continue
+                    if after_words and on_chunk:
+                        on_chunk(" ")
+                words += chunk
+                if on_chunk and chunk:
+                    on_chunk(chunk)
+            rest = stream.get_final_message()
+    except Exception as e:  # noqa: BLE001 — broad on purpose: the reply must survive this call
+        logger.warning(f"Claude+Tool STREAM rest of the reply failed ({type(e).__name__}): keeping the words before the tool call")
+        record_ai_call(task="sales_reply", model=model, cost=0.0, status="error")
+        return "", 0.0
+    cost = cost_from_usage(model, rest.usage)
+    record_ai_call(task="sales_reply", model=model, usage=rest.usage,
+                   latency_ms=int((time.time() - start) * 1000), status="ok",
+                   request_id=getattr(rest, "id", None))
+    return words.strip(), cost
+
+
 def _call_model_with_tools(
     model: str,
     system_prompt,
@@ -608,6 +799,7 @@ def _call_model_with_tools(
     """
     start = time.time()
     logger.info(f"Claude+Tool START | model={model}")
+    tool = travel_tool()
 
     try:
         response = _get_client().messages.create(
@@ -615,7 +807,7 @@ def _call_model_with_tools(
             **_family_call_kwargs(model, temperature, max_tokens, effort),
             system=_build_system(system_prompt),
             messages=_build_messages(user_message),
-            tools=[travel_tool()],
+            tools=[tool],
             timeout=settings.claude_timeout,
         )
 
@@ -631,10 +823,20 @@ def _call_model_with_tools(
             raw_entities,
         )
         cost += extra_cost
+        # After the check: the tool answers with what was really saved.
+        rest, rest_cost = _finish_after_tool(
+            model, system_prompt, user_message, response, tool,
+            max_tokens, temperature, effort,
+            answer=_tool_answer(raw_entities, tool_entities),
+        )
+        if rest:
+            text = _join_reply(text, rest)
+        cost += rest_cost
 
         logger.info(
             f"Claude+Tool SUCCESS | text={len(text)}ch entities={list(tool_entities.keys())} "
             f"cost=${cost:.6f} time={elapsed}s"
+            + (f" after_tool={len(rest)}ch total={round(time.time() - start, 3)}s" if rest else "")
         )
         return text, cost, tool_entities
 
@@ -646,7 +848,7 @@ def _call_model_with_tools(
                 **_family_call_kwargs(model, temperature, max_tokens, effort),
                 system=_build_system(system_prompt),
                 messages=_build_messages(user_message),
-                tools=[travel_tool()],
+                tools=[tool],
                 timeout=settings.claude_timeout,
             )
             elapsed = round(time.time() - start, 3)
@@ -660,6 +862,14 @@ def _call_model_with_tools(
                 raw_entities,
             )
             cost += extra_cost
+            rest, rest_cost = _finish_after_tool(
+                model, system_prompt, user_message, response, tool,
+                max_tokens, temperature, effort,
+                answer=_tool_answer(raw_entities, tool_entities),
+            )
+            if rest:
+                text = _join_reply(text, rest)
+            cost += rest_cost
             logger.info(f"Claude+Tool RETRY SUCCESS | time={elapsed}s")
             return text, cost, tool_entities
         except Exception as retry_err:
@@ -732,6 +942,7 @@ def _stream_model_with_tools(
     """
     start = time.time()
     logger.info(f"Claude+Tool STREAM START | model={model}")
+    tool = travel_tool()
 
     try:
         with _get_client().messages.stream(
@@ -739,7 +950,7 @@ def _stream_model_with_tools(
             **_family_call_kwargs(model, temperature, max_tokens, effort),
             system=_build_system(system_prompt),
             messages=_build_messages(user_message),
-            tools=[travel_tool()],
+            tools=[tool],
             timeout=settings.claude_timeout,
         ) as stream:
             full_text = ""
@@ -770,12 +981,7 @@ def _stream_model_with_tools(
                        latency_ms=int(elapsed * 1000), status="ok",
                        request_id=getattr(final, "id", None))
 
-        raw_entities: dict = {}
-        for block in final.content:
-            btype = getattr(block, "type", None)
-            if btype == "tool_use" and getattr(block, "name", None) == "save_travel_details":
-                raw_in = getattr(block, "input", None) or {}
-                raw_entities = dict(raw_in) if isinstance(raw_in, dict) else {}
+        raw_entities = _tool_input(final)
 
         # Typed boundary. No re-prompt on the streamed path — the reply text
         # already reached the client chunk by chunk; invalid fields are
@@ -796,9 +1002,20 @@ def _stream_model_with_tools(
                 if getattr(block, "type", None) == "text":
                     full_text = (getattr(block, "text", None) or "").strip()
 
+        rest, rest_cost = _stream_finish_after_tool(
+            model, system_prompt, user_message, final, tool,
+            max_tokens, temperature, effort,
+            on_chunk=on_chunk, after_words=bool(full_text.strip()),
+            answer=_tool_answer(raw_entities, tool_entities),
+        )
+        if rest:
+            full_text = _join_reply(full_text, rest)
+        cost += rest_cost
+
         logger.info(
             f"Claude+Tool STREAM SUCCESS | text={len(full_text)}ch entities={list(tool_entities.keys())} "
             f"cost=${cost:.6f} time={elapsed}s"
+            + (f" after_tool={len(rest)}ch total={round(time.time() - start, 3)}s" if rest else "")
         )
         return full_text, cost, tool_entities
 
