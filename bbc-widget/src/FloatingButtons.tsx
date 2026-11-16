@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import brand from './config'
 import { IconArrowRight, IconClose } from './icons'
+import { personaLine } from './PanelTop'
 import type { PageContext } from './pageContext'
 import type { Unread } from './ChatWindow'
 import { markNoteClosed, type ProactiveOpening } from './proactive'
@@ -72,6 +73,11 @@ export function FloatingButtons({
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
     : `Chat with ${brand.name}`
+  // Alex's avatar beside the button: a letter on the brand colour, never an image (ADR 17).
+  const personaAvatar = <span class="bw-nudge__ava bw-nudge__ava--persona" aria-hidden="true">{brand.persona.initial}</span>
+  const personaWho = (
+    <span class="bw-nudge__id"><b>{brand.persona.name}</b><small>{personaLine}</small></span>
+  )
 
   return (
     // The round button comes first: the site's hand-over code clicks `#bbc-floating-btn button`.
@@ -96,7 +102,7 @@ export function FloatingButtons({
                 ? (preview.avatar
                     ? <img class="bw-nudge__ava" src={preview.avatar} alt="" width={28} height={28} />
                     : <span class="bw-nudge__ava bw-nudge__ava--initials">{preview.initials}</span>)
-                : <img class="bw-nudge__ava bw-nudge__ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />}
+                : personaAvatar}
               <b>{preview.name}</b>
             </span>
             <span class="bw-nudge__text">{preview.text}</span>
@@ -109,10 +115,7 @@ export function FloatingButtons({
       ) : card && count === 0 ? (
         <div class="bw-nudge bw-nudge--card" role="status" aria-live="polite">
           <button type="button" class="bw-nudge__open" onClick={() => onCardOpen?.()}>
-            <span class="bw-nudge__who">
-              <img class="bw-nudge__ava bw-nudge__ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
-              <b>{brand.name}</b>
-            </span>
+            <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
             <span class="bw-nudge__text">{card.message}</span>
           </button>
           <div class="bw-card__actions">
@@ -127,10 +130,7 @@ export function FloatingButtons({
       ) : showAttention && count === 0 ? (
         <div class="bw-nudge bw-nudge--message" role="status">
           <button type="button" class="bw-nudge__open" onClick={() => onSelect('sales')}>
-            <span class="bw-nudge__who">
-              <img class="bw-nudge__ava bw-nudge__ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
-              <b>{brand.name}</b>
-            </span>
+            <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
             <span class="bw-nudge__title">{context?.title || 'Planning a business class trip?'}</span>
             <span class="bw-nudge__text">{context?.line || "Tell me where and when, and I'll check fares for you."}</span>
             <span class="bw-nudge__cta">Get a fare quote <IconArrowRight /></span>

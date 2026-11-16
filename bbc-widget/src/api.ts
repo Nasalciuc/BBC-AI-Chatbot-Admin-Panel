@@ -49,7 +49,8 @@ export interface ProactiveOffer {
  */
 export async function fetchProactiveOffer(
   apiUrl: string,
-  body: { visitor_id: string; trigger: string; trip: unknown },
+  /** `site`: bbc | bct, so the server's opening names the brand the visitor is on. */
+  body: { visitor_id: string; trigger: string; trip: unknown; site: string },
   timeoutMs: number,
 ): Promise<ProactiveOffer | null> {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null

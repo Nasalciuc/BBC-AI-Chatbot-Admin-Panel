@@ -134,7 +134,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
       aria-modal={isPhone && !embedded ? 'true' : 'false'}
       aria-labelledby="bw-form-title"
     >
-      <PanelTop subtitle={brand.tagline} onClose={embedded ? undefined : onBack}>
+      <PanelTop onClose={embedded ? undefined : onBack}>
         <div class="bw-intro">
           <h2 class="bw-intro__title" id="bw-form-title">
             {heading[0]} <em>{heading[1]}</em>

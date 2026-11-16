@@ -7,7 +7,7 @@ import { getTurnstileToken } from './turnstile'
 import type { FormCheck } from './TunnelForm'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
-import { PanelTop } from './PanelTop'
+import { PanelTop, personaLine } from './PanelTop'
 import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
@@ -299,7 +299,7 @@ export function ChatWindow({
     const last = unseen[unseen.length - 1]
     const name = !last ? '' : last.role === 'agent'
       ? ((last.agent_name || '').trim() || CONSULTANT_LABEL)
-      : 'Assistant'
+      : brand.persona.name
     onUnread({
       count,
       fresh,
@@ -1088,8 +1088,9 @@ export function ChatWindow({
   const endsGroup = (i: number) => i === shown.length - 1 || startsGroup(i + 1)
   const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
   const lastAgentName = (lastAgent?.agent_name || '').trim()
-  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : brand.tagline
-  const brandAvatar = <img class="bw-ava bw-ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
+  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : personaLine
+  // Alex's avatar: a letter on the brand colour, never an image that can fail to load (ADR 17).
+  const brandAvatar = <span class="bw-ava bw-ava--persona" aria-hidden="true">{brand.persona.initial}</span>
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).
   const dayKey = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toDateString() }
@@ -1159,7 +1160,7 @@ export function ChatWindow({
                         : <span class="bw-ava bw-ava--initials" aria-hidden="true">{agentInitials(operatorName)}</span>)
                     : brandAvatar}
                   <span>
-                    <b>{isOperator ? operatorName : 'Assistant'}</b>
+                    <b>{isOperator ? operatorName : brand.persona.name}</b>
                     {isOperator && operatorName !== CONSULTANT_LABEL ? `, ${CONSULTANT_LABEL.toLowerCase()}` : ''}
                     {' · '}{timeOf(msg.created_at)}
                   </span>
@@ -1185,7 +1186,7 @@ export function ChatWindow({
         {streamingText && (
           <div class={`bw-row bw-row--in${shown.length && speaker(shown[shown.length - 1]) === 'ai' ? '' : ' bw-row--first'}`}>
             {!(shown.length && speaker(shown[shown.length - 1]) === 'ai') && (
-              <div class="bw-who">{brandAvatar}<span><b>Assistant</b></span></div>
+              <div class="bw-who">{brandAvatar}<span><b>{brand.persona.name}</b></span></div>
             )}
             <div class="bw-msg">{streamingText}</div>
           </div>
@@ -1193,9 +1194,9 @@ export function ChatWindow({
 
         {aiWaiting && !agentTyping.is_typing && (
           <div class="bw-row bw-row--in bw-row--first">
-            <div class="bw-who">{brandAvatar}<span><b>Assistant</b> is typing</span></div>
+            <div class="bw-who">{brandAvatar}<span><b>{brand.persona.name}</b> is typing</span></div>
             {dots}
-            <span class="bw-sr">The assistant is typing</span>
+            <span class="bw-sr">{`${brand.persona.name}, the AI assistant, is typing`}</span>
           </div>
         )}
 

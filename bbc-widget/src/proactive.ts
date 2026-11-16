@@ -228,7 +228,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         press = { at: Date.now(), form: null, activityAt: Date.now(), invalid: false }
         if (!warnedShape) {
           warnedShape = true
-          posthog?.capture('proactive_quote_unrecognized', { path: location.pathname })
+          posthog?.capture('proactive_quote_unrecognized', { path: location.pathname, site: brand.id })
         }
       }
     }
@@ -268,11 +268,12 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const trip = readTrip(location.href, pageTitle(), kayakVisit())
       const device = phone ? 'phone' : 'computer'
       const res = await fetchProactiveOffer(
-        apiUrl, { visitor_id: ensureVisitorId(), trigger, trip }, OFFER_TIMEOUT_MS,
+        apiUrl, { visitor_id: ensureVisitorId(), trigger, trip, site: brand.id }, OFFER_TIMEOUT_MS,
       )
       const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before) : null
+      // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
-        trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip),
+        trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip), site: brand.id,
         ...(passed ? { moment_passed: passed } : {}),
       })
       if (disposed || !res || !res.show || !res.message || passed) return
@@ -285,7 +286,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       shownRef.current = opening
       setQuiet(true)
       setOffer(opening)
-      posthog?.capture('proactive_shown', { trigger, surface, device })
+      posthog?.capture('proactive_shown', { trigger, surface, device, site: brand.id })
     }
 
     const evaluate = () => {
@@ -367,6 +368,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (o) {
         posthog?.capture('proactive_dismissed', {
           trigger: o.trigger, how, surface: o.surface, seconds_visible: Math.round((Date.now() - o.shownAt) / 1000),
+          site: brand.id,
         })
       }
       setOffer(null)
@@ -380,6 +382,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         surface: o.surface,
         reply: replyKind(reply, o.quickReplies),
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
+        site: brand.id,
       })
     },
   }

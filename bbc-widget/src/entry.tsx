@@ -83,6 +83,17 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     s.setProperty('--bw-launcher', c.launcher)
     s.setProperty('--bw-launcher-ring', c.launcherRing)
     s.setProperty('--bw-launcher-ring-rgb', c.launcherRingRgb)
+    // The panel's look (BBC Chatbot canvas): one colour per site and a soft tint of it.
+    const l = brand.look
+    s.setProperty('--bw-primary', l.primary)
+    s.setProperty('--bw-primary-rgb', l.primaryRgb)
+    s.setProperty('--bw-primary-hover', l.primaryHover)
+    s.setProperty('--bw-deep', l.deep)
+    s.setProperty('--bw-quiet', l.quiet)
+    s.setProperty('--bw-soft', l.soft)
+    s.setProperty('--bw-blob-1', l.blobs[0])
+    s.setProperty('--bw-blob-2', l.blobs[1])
+    s.setProperty('--bw-blob-3', l.blobs[2])
 
     render(<Widget apiUrl={apiUrl} embedded={embedded} />, root)
 

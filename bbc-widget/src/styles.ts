@@ -4,24 +4,31 @@
 // and the reset below stops the site's own button/input/heading styles from leaking in. Brand colours
 // arrive as custom properties set on the root from src/config (entry.tsx).
 //
+// The look is the BBC Chatbot canvas's visitor widget (the 16 Nov debate, ADR 16): one colour per site
+// (blue on buybusinessclass.com, burgundy on businessclass-tickets.com), a soft tint of it behind the
+// conversation, Alex's round avatar, rounded bubbles, pill buttons under the last message and a rounded
+// composer with a round send button. The corner button is the exception: the site draws a stand-in of it
+// before this script loads, so it keeps its exact look.
+//
 // Phones (under 768px): the panel is a full-screen sheet that slides up, as native chat apps do;
 // fields are 16px so iOS never zooms on focus. Computers: a 400px panel rising from the corner button.
 
 export const WIDGET_CSS = `
 #bbc-widget-root {
-  --bw-text: #0E1D3A;
-  --bw-text-2: #36496B;
-  --bw-muted: #56657F;
-  --bw-placeholder: #6B7890;
-  --bw-band: #F3F2EF;
-  --bw-line: #E3DFD7;
-  --bw-line-strong: #CFCAC0;
+  --bw-text: var(--bw-deep, #0E1D3A);
+  --bw-text-2: var(--bw-deep, #36496B);
+  --bw-muted: var(--bw-quiet, #56657F);
+  --bw-placeholder: var(--bw-quiet, #6B7890);
+  --bw-band: var(--bw-soft, #F3F5FA);
+  --bw-line: rgba(var(--bw-primary-rgb, 30,79,216), 0.12);
+  --bw-line-strong: rgba(var(--bw-primary-rgb, 30,79,216), 0.24);
   --bw-paper: #FFFFFF;
-  --bw-on-ink-2: #E3E8F0;
+  --bw-glass: rgba(255, 255, 255, 0.9);
+  --bw-glass-edge: rgba(255, 255, 255, 0.95);
+  --bw-lift: 0 1px 2px rgba(16, 24, 40, 0.06), 0 0 0 1px rgba(var(--bw-primary-rgb, 30,79,216), 0.06);
   --bw-danger: #B3261E;
-  --bw-call: #0B7A5A;
+  --bw-live: #16A34A;
   --bw-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --bw-serif: 'Source Serif 4 Variable', 'Source Serif 4', Georgia, 'Times New Roman', serif;
   --bw-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --bw-right: var(--fc-right, 24px);
   --bw-bottom: var(--fc-bottom, 24px);
@@ -42,11 +49,11 @@ export const WIDGET_CSS = `
 #bbc-widget-root svg { display: block; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 #bbc-widget-root button { cursor: pointer; -webkit-appearance: none; appearance: none; }
 #bbc-widget-root :focus { outline: none; }
-#bbc-widget-root :focus-visible { outline: 2px solid var(--bw-ink); outline-offset: 2px; }
-#bbc-widget-root ::selection { background: rgba(var(--bw-ink-rgb), 0.16); color: inherit; }
+#bbc-widget-root :focus-visible { outline: 2px solid var(--bw-primary, var(--bw-ink)); outline-offset: 2px; }
+#bbc-widget-root ::selection { background: rgba(var(--bw-primary-rgb, 30,79,216), 0.16); color: inherit; }
 #bbc-widget-root .bw-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* ── The corner button and its greeting ─────────────────────────────── */
+/* ── The corner button: kept exactly as the site's stand-in draws it ───── */
 #bbc-widget-root .bw-launcher {
   position: fixed; right: 24px; bottom: 24px; z-index: 2147483000;
   display: flex; align-items: center;
@@ -77,52 +84,62 @@ export const WIDGET_CSS = `
   animation: bw-pulse 1.1s cubic-bezier(0.22, 1, 0.36, 1) 2 both;
 }
 
-/* The greeting and the preview of a new message: a short message card beside the button. */
+/* ── Beside the button: the greeting, a new message, the proactive card ── */
 #bbc-widget-root .bw-nudge {
   position: absolute; right: calc(100% + 14px); bottom: -2px;
-  display: flex; align-items: flex-start; width: 300px;
-  background: var(--bw-paper); color: var(--bw-text);
-  box-shadow: 0 16px 40px rgba(10, 27, 65, 0.2), 0 0 0 1px rgba(10, 27, 65, 0.06);
+  display: flex; align-items: flex-start; width: 300px; border-radius: 20px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.97); color: var(--bw-text);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  box-shadow: 0 14px 44px rgba(16, 24, 40, 0.18), 0 0 0 1px rgba(16, 24, 40, 0.06);
   animation: bw-rise 0.5s var(--bw-ease) both;
 }
 #bbc-widget-root .bw-nudge__open { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; padding: 14px 4px 16px 16px; text-align: left; }
-#bbc-widget-root .bw-nudge__who { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; line-height: 1.3; color: var(--bw-muted); }
-#bbc-widget-root .bw-nudge__who b { font-weight: 600; color: var(--bw-text); }
-#bbc-widget-root .bw-nudge__ava { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+#bbc-widget-root .bw-nudge__who { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; line-height: 1.3; color: var(--bw-muted); }
+#bbc-widget-root .bw-nudge__who b { font-weight: 700; color: var(--bw-text); }
+#bbc-widget-root .bw-nudge__id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+#bbc-widget-root .bw-nudge__id b { font-size: 15px; line-height: 1.25; letter-spacing: -0.01em; }
+#bbc-widget-root .bw-nudge__id small { font-size: 12px; line-height: 1.3; color: var(--bw-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#bbc-widget-root .bw-nudge__ava { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
 #bbc-widget-root .bw-nudge__ava--brand { box-shadow: 0 0 0 1px var(--bw-line-strong); }
-#bbc-widget-root .bw-nudge__ava--initials { display: flex; align-items: center; justify-content: center; background: var(--bw-ink); color: #FFFFFF; font-size: 12px; font-weight: 600; }
-#bbc-widget-root .bw-nudge__title { font-size: 16px; font-weight: 600; line-height: 1.35; color: var(--bw-text); }
+#bbc-widget-root .bw-nudge__ava--initials,
+#bbc-widget-root .bw-nudge__ava--persona {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 14px; font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.12);
+}
+#bbc-widget-root .bw-nudge__title { font-size: 16px; font-weight: 700; line-height: 1.35; color: var(--bw-text); letter-spacing: -0.01em; }
 #bbc-widget-root .bw-nudge__text {
-  margin-top: 2px; font-size: 14px; line-height: 1.45; color: var(--bw-text-2);
+  margin-top: 2px; font-size: 14px; line-height: 1.5; color: var(--bw-text);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-#bbc-widget-root .bw-nudge__a { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 14px; font-weight: 600; color: var(--bw-ink); }
+#bbc-widget-root .bw-nudge__a { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 14px; font-weight: 600; color: var(--bw-primary, var(--bw-ink)); }
 #bbc-widget-root .bw-nudge__cta {
-  display: flex; align-items: center; gap: 8px; margin-top: 14px; height: 40px; padding: 0 16px;
-  background: var(--bw-ink); color: #FFFFFF; font-size: 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 8px; margin-top: 14px; min-height: 44px; padding: 0 18px; border-radius: 999px;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 14px; font-weight: 600;
   transition: background-color 0.18s var(--bw-ease);
 }
-#bbc-widget-root .bw-nudge__open:hover .bw-nudge__cta { background: #203359; }
+#bbc-widget-root .bw-nudge__open:hover .bw-nudge__cta { background: var(--bw-primary-hover, #203359); }
 #bbc-widget-root .bw-nudge__a svg, #bbc-widget-root .bw-nudge__cta svg { width: 16px; height: 16px; transition: transform 0.2s var(--bw-ease); }
 #bbc-widget-root .bw-nudge__open:hover .bw-nudge__a svg, #bbc-widget-root .bw-nudge__open:hover .bw-nudge__cta svg { transform: translateX(3px); }
 #bbc-widget-root .bw-nudge__x { display: flex; justify-content: center; width: 44px; height: 44px; padding-top: 14px; color: var(--bw-muted); }
 #bbc-widget-root .bw-nudge__x:hover { color: var(--bw-text); }
 #bbc-widget-root .bw-nudge__x svg { width: 16px; height: 16px; }
 
-/* The proactive card (phones): the visitor's own search in the assistant's words and two buttons, above
-   the corner button. It covers nothing else; the chat opens on a tap only. */
-#bbc-widget-root .bw-nudge--card { flex-direction: column; align-items: stretch; width: 320px; }
+/* The proactive card (phones): Alex, the visitor's own search in his words and two buttons, above the
+   corner button. It covers nothing else; the chat opens on a tap only. */
+#bbc-widget-root .bw-nudge--card { flex-direction: column; align-items: stretch; width: 330px; }
 #bbc-widget-root .bw-nudge--card .bw-nudge__open { padding: 16px 16px 4px; }
-#bbc-widget-root .bw-nudge--card .bw-nudge__text { -webkit-line-clamp: 5; font-size: 15px; color: var(--bw-text); }
-#bbc-widget-root .bw-card__actions { display: flex; align-items: center; gap: 8px; padding: 10px 16px 16px; }
+#bbc-widget-root .bw-nudge--card .bw-nudge__text { -webkit-line-clamp: 6; font-size: 15px; }
+#bbc-widget-root .bw-card__actions { display: flex; align-items: center; gap: 8px; padding: 12px 16px 16px; }
 #bbc-widget-root .bw-card__yes {
-  flex: 1; min-height: 44px; padding: 10px 14px;
-  background: var(--bw-ink); color: #FFFFFF; font-size: 14px; font-weight: 600; line-height: 1.3;
+  flex: 1; min-height: 44px; padding: 10px 18px; border-radius: 999px;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 15px; font-weight: 600; line-height: 1.3;
+  box-shadow: 0 6px 16px rgba(var(--bw-primary-rgb, 30,79,216), 0.24);
   transition: background-color 0.18s var(--bw-ease);
 }
-#bbc-widget-root .bw-card__yes:hover { background: #203359; }
-#bbc-widget-root .bw-card__no { min-height: 44px; padding: 10px 12px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
-#bbc-widget-root .bw-card__no:hover { color: var(--bw-text); }
+#bbc-widget-root .bw-card__yes:hover { background: var(--bw-primary-hover, #203359); }
+#bbc-widget-root .bw-card__no { min-height: 44px; padding: 10px 14px; border-radius: 999px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
+#bbc-widget-root .bw-card__no:hover { color: var(--bw-text); background: rgba(var(--bw-primary-rgb, 30,79,216), 0.06); }
 @media (max-width: 767px) {
   #bbc-widget-root .bw-nudge--card { right: 0; bottom: calc(100% + 12px); width: min(340px, calc(100vw - 48px)); }
 }
@@ -133,8 +150,14 @@ export const WIDGET_CSS = `
   display: flex; flex-direction: column; overflow: hidden;
   width: 400px; max-width: calc(100vw - 32px);
   height: min(680px, calc(100vh - 48px)); height: min(680px, calc(100dvh - 48px));
-  background: var(--bw-paper);
-  box-shadow: 0 24px 48px rgba(10, 27, 65, 0.28), 0 0 0 1px rgba(10, 27, 65, 0.08);
+  border-radius: 24px;
+  background:
+    radial-gradient(260px 240px at 0% 0%, var(--bw-blob-1, transparent), transparent 72%),
+    radial-gradient(260px 260px at 100% 22%, var(--bw-blob-2, transparent), transparent 72%),
+    radial-gradient(300px 260px at 85% 100%, var(--bw-blob-3, transparent), transparent 72%),
+    var(--bw-soft, #F4F7FE);
+  color: var(--bw-text);
+  box-shadow: 0 24px 56px rgba(16, 24, 40, 0.22), 0 0 0 1px rgba(16, 24, 40, 0.06);
   transform-origin: 100% 100%;
   animation: bw-panel-in 0.38s var(--bw-ease) both;
 }
@@ -142,124 +165,136 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-panel--form { height: auto; max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); }
 #bbc-widget-root .bw-panel--embedded {
   position: absolute; inset: 0; right: 0; bottom: 0; width: 100%; max-width: none;
-  height: 100%; max-height: none; box-shadow: none; animation: none;
+  height: 100%; max-height: none; border-radius: 0; box-shadow: none; animation: none;
 }
 
-/* The top: the site header's navy gradient, under one hairline. */
-#bbc-widget-root .bw-top { position: relative; flex-shrink: 0; background: var(--bw-header-bg); color: #FFFFFF; }
-#bbc-widget-root .bw-top::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--bw-header-rule); }
+/* The top: Alex, said to be an AI assistant of the brand, a call button and close. */
+#bbc-widget-root .bw-top { position: relative; flex-shrink: 0; color: var(--bw-text); }
 #bbc-widget-root .bw-head {
   display: flex; align-items: center; gap: 12px;
-  min-height: 68px; padding: 12px 8px 12px 16px;
+  min-height: 72px; padding: 14px 10px 10px 16px;
 }
-#bbc-widget-root .bw-head__mark { width: 40px; height: 40px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22); }
+#bbc-widget-root .bw-head__ava {
+  position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 17px; font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.85);
+}
+#bbc-widget-root .bw-head__live {
+  position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--bw-live); box-shadow: 0 0 0 2px #FFFFFF;
+}
 #bbc-widget-root .bw-head__text { flex: 1; min-width: 0; }
-#bbc-widget-root .bw-head__name { font-size: 16px; font-weight: 600; line-height: 1.3; color: #FFFFFF; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#bbc-widget-root .bw-head__sub { font-size: 13px; line-height: 1.35; color: var(--bw-on-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#bbc-widget-root .bw-head__actions { display: flex; align-items: center; gap: 2px; }
+#bbc-widget-root .bw-head__name { font-size: 17px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; color: var(--bw-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Two lines when the brand is long ("AI assistant · Business Class Tickets"): the disclosure is never cut. */
+#bbc-widget-root .bw-head__sub {
+  margin-top: 1px; font-size: 13px; line-height: 1.35; color: var(--bw-muted);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+#bbc-widget-root .bw-head__actions { display: flex; align-items: center; gap: 4px; }
 #bbc-widget-root .bw-iconbtn {
   display: flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px; border-radius: 50%; color: #FFFFFF;
-  transition: background-color 0.18s var(--bw-ease);
+  width: 44px; height: 44px; border-radius: 50%; color: var(--bw-text);
+  transition: background-color 0.18s var(--bw-ease), color 0.18s var(--bw-ease);
 }
-#bbc-widget-root .bw-iconbtn:hover { background: rgba(255, 255, 255, 0.1); }
-#bbc-widget-root .bw-iconbtn:focus-visible { outline-color: #FFFFFF; outline-offset: -3px; }
+#bbc-widget-root .bw-iconbtn:hover { background: rgba(var(--bw-primary-rgb, 30,79,216), 0.08); }
 #bbc-widget-root .bw-iconbtn svg { width: 20px; height: 20px; }
-#bbc-widget-root .bw-iconbtn--call:hover { background: none; }
-#bbc-widget-root .bw-call {
-  display: flex; align-items: center; justify-content: center;
-  width: 36px; height: 36px; border-radius: 50%; background: var(--bw-call);
-  transition: transform 0.18s var(--bw-ease), filter 0.18s var(--bw-ease);
-}
-#bbc-widget-root .bw-iconbtn--call:hover .bw-call { transform: scale(1.06); filter: brightness(1.08); }
-#bbc-widget-root .bw-call svg { width: 17px; height: 17px; }
+#bbc-widget-root .bw-iconbtn--call { color: var(--bw-primary, var(--bw-ink)); background: var(--bw-glass); box-shadow: var(--bw-lift); }
+#bbc-widget-root .bw-iconbtn--call svg { width: 18px; height: 18px; }
+#bbc-widget-root .bw-iconbtn--call:hover { background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; }
 
-#bbc-widget-root .bw-intro { padding: 4px 24px 26px; }
+#bbc-widget-root .bw-intro { padding: 6px 24px 18px; }
 #bbc-widget-root .bw-intro__title {
-  font-family: var(--bw-serif); font-size: 27px; font-weight: 600; line-height: 1.2;
-  color: #FFFFFF; text-wrap: balance;
+  font-size: 24px; font-weight: 700; line-height: 1.22; letter-spacing: -0.02em;
+  color: var(--bw-text); text-wrap: balance;
 }
-#bbc-widget-root .bw-intro__title em { font-style: normal; font-weight: 700; color: var(--bw-accent-on-ink); }
-#bbc-widget-root .bw-intro__lead { margin-top: 8px; font-size: 15px; line-height: 1.5; color: var(--bw-on-ink-2); max-width: 34ch; }
+#bbc-widget-root .bw-intro__title em { font-style: normal; font-weight: 700; color: var(--bw-primary, var(--bw-accent)); }
+#bbc-widget-root .bw-intro__lead { margin-top: 8px; font-size: 15px; line-height: 1.5; color: var(--bw-muted); max-width: 34ch; }
 
 /* ── The form ────────────────────────────────────────────────────────── */
 #bbc-widget-root .bw-form {
   flex: 1; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 18px; padding: 24px;
+  display: flex; flex-direction: column; gap: 16px; margin: 0 12px 12px; padding: 20px 16px;
+  border-radius: 20px; background: var(--bw-glass); box-shadow: var(--bw-lift);
 }
 #bbc-widget-root .bw-field { display: flex; flex-direction: column; gap: 6px; }
 #bbc-widget-root .bw-label { font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--bw-text); }
 #bbc-widget-root .bw-input {
-  display: block; width: 100%; height: 48px; padding: 0 14px;
-  font-size: 16px; line-height: 1.3; color: var(--bw-text); caret-color: var(--bw-ink);
+  display: block; width: 100%; height: 48px; padding: 0 14px; border-radius: 12px;
+  font-size: 16px; line-height: 1.3; color: var(--bw-text); caret-color: var(--bw-primary, var(--bw-ink));
   background: var(--bw-paper); border: 1px solid var(--bw-line-strong);
   -webkit-appearance: none; appearance: none;
   transition: border-color 0.15s var(--bw-ease), box-shadow 0.15s var(--bw-ease);
 }
 #bbc-widget-root .bw-input::placeholder { color: var(--bw-placeholder); opacity: 1; }
-#bbc-widget-root .bw-input:hover { border-color: var(--bw-text-2); }
-#bbc-widget-root .bw-input:focus { border-color: var(--bw-ink); box-shadow: inset 0 0 0 1px var(--bw-ink); }
+#bbc-widget-root .bw-input:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.45); }
+#bbc-widget-root .bw-input:focus { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.16); }
 #bbc-widget-root .bw-input:focus-visible { outline: none; }
-#bbc-widget-root .bw-input[aria-invalid="true"] { border-color: var(--bw-danger); box-shadow: inset 0 0 0 1px var(--bw-danger); }
+#bbc-widget-root .bw-input[aria-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 3px rgba(179, 38, 30, 0.14); }
 #bbc-widget-root .bw-phone {
-  display: flex; align-items: stretch; height: 48px;
+  display: flex; align-items: stretch; height: 48px; border-radius: 12px; overflow: hidden;
   background: var(--bw-paper); border: 1px solid var(--bw-line-strong);
   transition: border-color 0.15s var(--bw-ease), box-shadow 0.15s var(--bw-ease);
 }
-#bbc-widget-root .bw-phone:hover { border-color: var(--bw-text-2); }
-#bbc-widget-root .bw-phone:focus-within { border-color: var(--bw-ink); box-shadow: inset 0 0 0 1px var(--bw-ink); }
-#bbc-widget-root .bw-phone[data-invalid="true"] { border-color: var(--bw-danger); box-shadow: inset 0 0 0 1px var(--bw-danger); }
+#bbc-widget-root .bw-phone:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.45); }
+#bbc-widget-root .bw-phone:focus-within { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.16); }
+#bbc-widget-root .bw-phone[data-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 3px rgba(179, 38, 30, 0.14); }
 #bbc-widget-root .bw-phone__cc {
   display: flex; align-items: center; justify-content: center; min-width: 64px; padding: 0 12px;
-  background: var(--bw-band); font-size: 14px; font-weight: 600; color: var(--bw-text-2);
+  background: var(--bw-band); font-size: 14px; font-weight: 600; color: var(--bw-muted);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-#bbc-widget-root .bw-phone .bw-input { flex: 1; height: 46px; border: 0; box-shadow: none; }
+#bbc-widget-root .bw-phone .bw-input { flex: 1; height: 46px; border: 0; border-radius: 0; box-shadow: none; }
 #bbc-widget-root .bw-hint { font-size: 13px; line-height: 1.4; color: var(--bw-muted); }
 #bbc-widget-root .bw-error { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; line-height: 1.4; color: var(--bw-danger); }
 #bbc-widget-root .bw-error svg { width: 15px; height: 15px; margin-top: 1px; }
 #bbc-widget-root .bw-cta {
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  width: 100%; height: 52px; margin-top: 4px;
-  background: var(--bw-cta); color: var(--bw-cta-text);
+  width: 100%; height: 52px; margin-top: 4px; border-radius: 999px;
+  background: var(--bw-primary, var(--bw-cta)); color: #FFFFFF;
   font-size: 16px; font-weight: 700; line-height: 1;
+  box-shadow: 0 8px 20px rgba(var(--bw-primary-rgb, 30,79,216), 0.24);
   transition: background-color 0.18s var(--bw-ease);
 }
-#bbc-widget-root .bw-cta:hover { background: var(--bw-cta-hover); }
+#bbc-widget-root .bw-cta:hover { background: var(--bw-primary-hover, var(--bw-cta-hover)); }
 #bbc-widget-root .bw-cta:active { transform: translateY(1px); }
 #bbc-widget-root .bw-cta svg { width: 18px; height: 18px; transition: transform 0.2s var(--bw-ease); }
 #bbc-widget-root .bw-cta:hover svg { transform: translateX(3px); }
 
 /* ── The conversation ────────────────────────────────────────────────── */
-#bbc-widget-root .bw-logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bw-band); }
+#bbc-widget-root .bw-logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #bbc-widget-root .bw-log {
   flex: 1; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; padding: 20px 16px 16px;
-  background: var(--bw-band);
+  display: flex; flex-direction: column; padding: 8px 16px 12px;
   scrollbar-width: thin; scrollbar-color: var(--bw-line-strong) transparent;
 }
+/* Few messages sit at the bottom, by the buttons and the composer, never under an empty band (ADR 17). A
+   flexible first item, not justify-content: flex-end, so a long conversation still scrolls to its top. */
+#bbc-widget-root .bw-log::before { content: ''; flex: 1 1 auto; }
 #bbc-widget-root .bw-log::-webkit-scrollbar { width: 6px; }
-#bbc-widget-root .bw-log::-webkit-scrollbar-thumb { background: var(--bw-line-strong); }
+#bbc-widget-root .bw-log::-webkit-scrollbar-thumb { background: var(--bw-line-strong); border-radius: 3px; }
 #bbc-widget-root .bw-row { display: flex; flex-direction: column; max-width: 86%; margin-top: 4px; animation: bw-msg-in 0.32s var(--bw-ease) both; }
-#bbc-widget-root .bw-row--first { margin-top: 18px; }
+#bbc-widget-root .bw-row--first { margin-top: 16px; }
 #bbc-widget-root .bw-log > .bw-row:first-child { margin-top: 0; }
 #bbc-widget-root .bw-row--in { align-self: flex-start; }
 #bbc-widget-root .bw-row--out { align-self: flex-end; align-items: flex-end; }
-#bbc-widget-root .bw-who { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; line-height: 1.3; color: var(--bw-muted); }
-#bbc-widget-root .bw-who b { font-weight: 600; color: var(--bw-text); }
-#bbc-widget-root .bw-ava { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: var(--bw-band); }
+#bbc-widget-root .bw-who { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12.5px; line-height: 1.3; color: var(--bw-muted); }
+#bbc-widget-root .bw-who b { font-weight: 700; color: var(--bw-text); }
+#bbc-widget-root .bw-ava { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; background: var(--bw-band); flex-shrink: 0; }
 #bbc-widget-root .bw-ava--brand { box-shadow: 0 0 0 1px var(--bw-line-strong); }
-#bbc-widget-root .bw-ava--initials { display: flex; align-items: center; justify-content: center; background: var(--bw-ink); color: #FFFFFF; font-size: 12px; font-weight: 600; }
-#bbc-widget-root .bw-msg { padding: 11px 15px; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-#bbc-widget-root .bw-row--in .bw-msg { background: var(--bw-paper); color: var(--bw-text); }
-#bbc-widget-root .bw-row--out .bw-msg { background: var(--bw-ink); color: #FFFFFF; }
-#bbc-widget-root .bw-msg a { color: var(--bw-accent); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+#bbc-widget-root .bw-ava--initials { display: flex; align-items: center; justify-content: center; background: var(--bw-text); color: #FFFFFF; font-size: 11px; font-weight: 700; }
+#bbc-widget-root .bw-ava--persona { display: flex; align-items: center; justify-content: center; background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 12px; font-weight: 700; }
+#bbc-widget-root .bw-msg { padding: 10px 14px; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+#bbc-widget-root .bw-row--in .bw-msg { background: var(--bw-glass); color: var(--bw-text); border-radius: 6px 18px 18px 18px; box-shadow: var(--bw-lift); }
+#bbc-widget-root .bw-row--in:not(.bw-row--first) .bw-msg { border-radius: 18px; }
+#bbc-widget-root .bw-row--out .bw-msg { background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; border-radius: 18px 18px 6px 18px; }
+#bbc-widget-root .bw-msg a { color: var(--bw-primary, var(--bw-accent)); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 #bbc-widget-root .bw-row--out .bw-msg a { color: #FFFFFF; }
 #bbc-widget-root .bw-msg a[href^="tel:"] { white-space: nowrap; }
-#bbc-widget-root .bw-meta { margin-top: 5px; font-size: 13px; line-height: 1.3; color: var(--bw-muted); font-variant-numeric: tabular-nums; }
-#bbc-widget-root .bw-note { align-self: center; max-width: 92%; margin-top: 18px; text-align: center; font-size: 13px; line-height: 1.45; color: var(--bw-muted); animation: bw-msg-in 0.32s var(--bw-ease) both; }
+#bbc-widget-root .bw-meta { margin-top: 5px; font-size: 12px; line-height: 1.3; color: var(--bw-muted); font-variant-numeric: tabular-nums; }
+#bbc-widget-root .bw-note { align-self: center; max-width: 92%; margin-top: 16px; text-align: center; font-size: 13px; line-height: 1.45; color: var(--bw-muted); animation: bw-msg-in 0.32s var(--bw-ease) both; }
 #bbc-widget-root .bw-note--error { color: var(--bw-danger); }
-#bbc-widget-root .bw-day { align-self: center; margin-top: 22px; font-size: 13px; font-weight: 600; line-height: 1.3; color: var(--bw-muted); }
+#bbc-widget-root .bw-day { align-self: center; margin-top: 20px; padding: 3px 10px; border-radius: 999px; background: var(--bw-glass); font-size: 12px; font-weight: 600; line-height: 1.3; color: var(--bw-muted); }
 #bbc-widget-root .bw-log > .bw-day:first-child { margin-top: 0; }
 #bbc-widget-root .bw-row--queued .bw-msg { opacity: 0.62; }
 #bbc-widget-root .bw-retry { display: block; margin-left: auto; text-align: right; }
@@ -267,72 +302,82 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-retry:hover u { text-decoration-thickness: 2px; }
 #bbc-widget-root .bw-unseen {
   position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px;
-  background: var(--bw-ink); color: #FFFFFF; font-size: 13px; font-weight: 600; white-space: nowrap;
-  box-shadow: 0 12px 32px rgba(10, 27, 65, 0.22);
+  display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 999px;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 13px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.22);
   animation: bw-unseen-in 0.28s var(--bw-ease) both;
 }
 #bbc-widget-root .bw-unseen svg { width: 15px; height: 15px; }
 #bbc-widget-root .bw-note a { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; white-space: nowrap; }
 #bbc-widget-root .bw-meta--failed { color: var(--bw-danger); }
-#bbc-widget-root .bw-dots { display: inline-flex; align-items: center; gap: 5px; padding: 16px; background: var(--bw-paper); }
+#bbc-widget-root .bw-dots { display: inline-flex; align-items: center; gap: 5px; padding: 14px 16px; border-radius: 6px 18px 18px 18px; background: var(--bw-glass); box-shadow: var(--bw-lift); }
 #bbc-widget-root .bw-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--bw-muted); animation: bw-dot 1.2s infinite ease-in-out; }
 #bbc-widget-root .bw-dots i:nth-child(2) { animation-delay: 0.15s; }
 #bbc-widget-root .bw-dots i:nth-child(3) { animation-delay: 0.3s; }
 
-#bbc-widget-root .bw-chips { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 16px; background: var(--bw-band); }
+/* The replies offered under the last message: pills, as in the canvas. */
+#bbc-widget-root .bw-chips { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 16px 12px; }
 #bbc-widget-root .bw-chip {
-  min-height: 44px; padding: 10px 14px; border: 1px solid var(--bw-ink);
-  background: var(--bw-paper); color: var(--bw-ink);
+  min-height: 40px; padding: 8px 16px; border-radius: 999px;
+  border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.3);
+  background: rgba(255, 255, 255, 0.92); color: var(--bw-primary, var(--bw-ink));
   font-size: 14px; font-weight: 600; line-height: 1.3; text-align: left;
-  transition: background-color 0.15s var(--bw-ease), color 0.15s var(--bw-ease);
+  transition: background-color 0.15s var(--bw-ease), color 0.15s var(--bw-ease), border-color 0.15s var(--bw-ease);
 }
-#bbc-widget-root .bw-chip:hover { background: var(--bw-ink); color: #FFFFFF; }
+#bbc-widget-root .bw-chip:hover { background: var(--bw-primary, var(--bw-ink)); border-color: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; }
 
+/* The composer: a rounded field with a round send button inside it. */
 #bbc-widget-root .bw-compose {
   flex-shrink: 0; display: flex; align-items: flex-end; gap: 8px;
-  padding: 12px 16px; background: var(--bw-paper);
+  margin: 0 12px 12px; padding: 4px 4px 4px 14px; border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.16);
+  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.06);
+  transition: border-color 0.15s var(--bw-ease), box-shadow 0.15s var(--bw-ease);
 }
+#bbc-widget-root .bw-compose:focus-within { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.55); box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.12); }
 #bbc-widget-root .bw-compose .bw-input {
-  flex: 1; height: 48px; min-height: 48px; max-height: 136px; padding: 13px 14px;
-  line-height: 1.35; resize: none; overflow-y: auto;
+  flex: 1; height: 44px; min-height: 44px; max-height: 136px; padding: 11px 0;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  line-height: 1.4; resize: none; overflow-y: auto;
 }
+#bbc-widget-root .bw-compose .bw-input:focus { box-shadow: none; }
 #bbc-widget-root .bw-send {
   display: flex; align-items: center; justify-content: center;
-  width: 48px; height: 48px; flex-shrink: 0;
-  background: var(--bw-ink); color: #FFFFFF;
-  transition: background-color 0.18s var(--bw-ease), color 0.18s var(--bw-ease);
+  width: 40px; height: 40px; margin: 2px; flex-shrink: 0; border-radius: 50%;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF;
+  transition: background-color 0.18s var(--bw-ease), opacity 0.18s var(--bw-ease), transform 0.12s var(--bw-ease);
 }
-#bbc-widget-root .bw-send:hover:not(:disabled) { background: #203359; }
+#bbc-widget-root .bw-send:hover:not(:disabled) { background: var(--bw-primary-hover, #203359); }
 #bbc-widget-root .bw-send:active:not(:disabled) { transform: scale(0.94); }
-#bbc-widget-root .bw-send { transition: background-color 0.18s var(--bw-ease), color 0.18s var(--bw-ease), transform 0.12s var(--bw-ease); }
-#bbc-widget-root .bw-send:disabled { background: var(--bw-band); color: #8A95A8; cursor: default; }
-#bbc-widget-root .bw-send svg { width: 20px; height: 20px; }
+#bbc-widget-root .bw-send:disabled { opacity: 0.35; cursor: default; }
+#bbc-widget-root .bw-send svg { width: 18px; height: 18px; }
 
 /* ── Phones: a full-screen sheet ─────────────────────────────────────── */
 @media (max-width: 767px) {
   #bbc-widget-root .bw-panel,
   #bbc-widget-root .bw-panel--form {
     top: var(--bw-vvt, 0px); left: 0; right: 0; bottom: auto; width: 100%; max-width: none;
-    height: 100%; height: var(--bw-vvh, 100dvh); max-height: none;
+    height: 100%; height: var(--bw-vvh, 100dvh); max-height: none; border-radius: 0;
     box-shadow: none; animation-name: bw-sheet-in; animation-duration: 0.34s;
   }
-  #bbc-widget-root .bw-head { padding-top: max(12px, env(safe-area-inset-top)); }
-  #bbc-widget-root .bw-intro { padding: 4px 20px 28px; }
-  #bbc-widget-root .bw-intro__title { font-size: clamp(25px, 8vw, 32px); }
-  /* The form screen: a navy field on top with the title low, the form under it near the thumb. On a short
-     phone the whole sheet scrolls, so the button is never cut in half. */
+  #bbc-widget-root .bw-head { padding-top: max(14px, env(safe-area-inset-top)); }
+  #bbc-widget-root .bw-intro { padding: 6px 20px 18px; }
+  #bbc-widget-root .bw-intro__title { font-size: clamp(23px, 7vw, 28px); }
+  /* The form screen: the title on top, the form under it near the thumb. On a short phone the whole
+     sheet scrolls, so the button is never cut in half. */
   #bbc-widget-root .bw-panel--form { overflow-y: auto; overscroll-behavior: contain; }
   #bbc-widget-root .bw-panel--form .bw-top { flex: 1 0 auto; display: flex; flex-direction: column; justify-content: space-between; }
-  #bbc-widget-root .bw-panel--form .bw-form { flex: 0 0 auto; overflow: visible; padding: 24px 20px max(24px, env(safe-area-inset-bottom)); }
-  #bbc-widget-root .bw-compose { padding: 10px 12px max(10px, env(safe-area-inset-bottom)); }
+  #bbc-widget-root .bw-panel--form .bw-form { flex: 0 0 auto; overflow: visible; margin-bottom: max(12px, env(safe-area-inset-bottom)); }
+  #bbc-widget-root .bw-compose { margin-bottom: max(12px, env(safe-area-inset-bottom)); }
   #bbc-widget-root .bw-msg { font-size: 16px; }
+  #bbc-widget-root .bw-chip { min-height: 44px; font-size: 15px; }
   #bbc-widget-root .bw-nudge { right: 0; bottom: calc(100% + 12px); width: min(300px, calc(100vw - 32px)); }
 }
 @media (max-width: 767px) and (max-height: 620px) {
   #bbc-widget-root .bw-head { min-height: 60px; padding-top: 8px; padding-bottom: 8px; }
-  #bbc-widget-root .bw-intro { padding-bottom: 18px; }
-  #bbc-widget-root .bw-panel--form .bw-form { gap: 12px; padding-top: 16px; padding-bottom: 16px; }
+  #bbc-widget-root .bw-intro { padding-bottom: 12px; }
+  #bbc-widget-root .bw-panel--form .bw-form { gap: 12px; padding-top: 14px; padding-bottom: 14px; }
 }
 #bbc-widget-root .bw-panel--embedded { animation: none; }
 

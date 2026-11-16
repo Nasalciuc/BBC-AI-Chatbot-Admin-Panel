@@ -17,6 +17,17 @@ const config: BrandConfig = {
   csEmail: 'cs@businessclass-tickets.com',
   websiteUrl: 'businessclass-tickets.com',
   closingMessage: 'Your flight request is confirmed! A travel specialist will contact you shortly. For immediate help, call +1 (888) 668-3009.',
+  // The BBC Chatbot canvas on businessclass-tickets.com's burgundy (ADR 16).
+  persona: { name: 'Alex', initial: 'A', role: 'AI assistant' },
+  look: {
+    primary: '#800020',
+    primaryRgb: '128,0,32',
+    primaryHover: '#66001A',
+    deep: '#2A0E14',
+    quiet: '#6B4A51',
+    soft: '#FBF5F6',
+    blobs: ['hsla(346, 65%, 82%, 0.5)', 'hsla(14, 75%, 85%, 0.45)', 'hsla(322, 50%, 86%, 0.45)'],
+  },
   colors: {
     ink: '#0B1829',
     inkRgb: '11,24,41',

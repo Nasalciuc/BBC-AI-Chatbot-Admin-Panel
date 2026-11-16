@@ -18,6 +18,9 @@ import {
   blockedPath, isNotNow, pauseRunning, pickTrigger, replyKind,
 } from '../src/triggers.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
+import bbc from '../src/config/bbc.ts'
+import bct from '../src/config/bct.ts'
+import { WIDGET_CSS } from '../src/styles.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (f) => readFileSync(join(SRC, f), 'utf8')
@@ -26,6 +29,7 @@ const widget = read('Widget.tsx')
 const buttons = read('FloatingButtons.tsx')
 const hook = read('proactive.ts')
 const api = read('api.ts')
+const top = read('PanelTop.tsx')
 
 // ── The trip from the page ───────────────────────────────────────────────────────────
 
@@ -228,7 +232,7 @@ test('the conversation carries the PostHog session for the replay link', () => {
 test('the offer has its 1.5 s answer or nothing', () => {
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(\s*apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger, trip \}, OFFER_TIMEOUT_MS,/)
+  assert.match(hook, /fetchProactiveOffer\(\s*apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id \}, OFFER_TIMEOUT_MS,/)
 })
 
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
@@ -338,4 +342,93 @@ test('the quote form\'s send is read off its submit button by the press\'s own r
   assert.match(hook, /return Array\.from\(controls\)\.find\(isSubmitControl\) \?\? null/)
   assert.match(hook, /const btn = submitControl\(form\)/)
   assert.doesNotMatch(hook, /querySelector<HTMLButtonElement \| HTMLInputElement>\('button\[type="submit"\], input\[type="submit"\]'\)/)
+})
+
+// ── Alex and the look (the 16 Nov debate: ADR 12, 16, 17, 18) ───────────────────────
+
+/** WCAG contrast of two #RRGGBB colours. */
+function contrast(a, b) {
+  const lum = (hex) => {
+    const [r, g, bl] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl
+  }
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/** Hue in degrees of a #RRGGBB colour. */
+function hue(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min
+  if (!d) return 0
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+  return (h * 60 + 360) % 360
+}
+
+test('Alex speaks on both sites and says he is an AI assistant; the server uses the same name', () => {
+  for (const site of [bbc, bct]) {
+    assert.equal(site.persona.name, 'Alex')
+    assert.equal(site.persona.initial, 'A')
+    assert.equal(site.persona.role, 'AI assistant')
+  }
+  // The header: the name over "AI assistant · <brand>", the line every surface shares.
+  assert.match(top, /export const personaLine = `\$\{brand\.persona\.role\} · \$\{brand\.name\}`/)
+  assert.match(top, /<div class="bw-head__name" id=\{titleId\}>\{brand\.persona\.name\}<\/div>/)
+  assert.match(chat, /const subtitle = lastAgentName \? `Chatting with \$\{lastAgentName\}` : personaLine/)
+  // No bubble is signed "Assistant" any more, the unread preview included.
+  assert.doesNotMatch(chat, /'Assistant'|<b>Assistant<\/b>/)
+  // The server's openings: "Hi, I'm Alex from …" (bbc-chatbot-api/app/services/proactive.py, PERSONA).
+  assert.match(read('config/types.ts'), /PERSONA\): keep them equal/)
+})
+
+test('no image can fail to load in the panel or beside the button: Alex is a letter on the brand colour', () => {
+  assert.doesNotMatch(top, /<img/)
+  assert.match(top, /<span class="bw-head__ava" aria-hidden="true">/)
+  assert.match(chat, /const brandAvatar = <span class="bw-ava bw-ava--persona" aria-hidden="true">\{brand\.persona\.initial\}<\/span>/)
+  // The logo stays only on the corner button, which the site draws a stand-in of before this script loads.
+  assert.equal(buttons.match(/brand\.logoUrl/g)?.length, 1)
+  assert.match(buttons, /<img src=\{brand\.logoUrl\} alt="" width=\{30\} height=\{30\} draggable=\{false\} \/>/)
+  assert.match(buttons, /<span class="bw-nudge__who">\{personaAvatar\}\{personaWho\}<\/span>/)
+})
+
+test('BBC is blue and BCT burgundy, and every word on them stays readable', () => {
+  assert.ok(hue(bbc.look.primary) >= 200 && hue(bbc.look.primary) <= 250, `BBC ${bbc.look.primary}`)
+  const bctHue = hue(bct.look.primary)
+  assert.ok(bctHue >= 330 || bctHue <= 10, `BCT ${bct.look.primary}`)
+  for (const { look } of [bbc, bct]) {
+    assert.ok(contrast('#FFFFFF', look.primary) >= 4.5, `white on ${look.primary}`)   // buttons, the visitor's bubbles
+    assert.ok(contrast(look.primary, '#FFFFFF') >= 4.5, `${look.primary} on white`)   // the reply pills
+    assert.ok(contrast(look.deep, look.soft) >= 7, `${look.deep} on ${look.soft}`)
+    assert.ok(contrast(look.quiet, look.soft) >= 4.5, `${look.quiet} on ${look.soft}`)
+    assert.equal(look.blobs.length, 3)
+    assert.equal(look.primaryRgb, [1, 3, 5].map(i => parseInt(look.primary.slice(i, i + 2), 16)).join(','))
+  }
+  // The corner button keeps the site's stand-in: changing it is a change on the site too.
+  assert.equal(bbc.colors.launcher, '#0B1829')
+  assert.equal(bbc.colors.launcherRing, '#C9A54E')
+  assert.equal(bct.colors.launcherRing, '#800020')
+  for (const v of ['--bw-primary', '--bw-primary-rgb', '--bw-primary-hover', '--bw-deep', '--bw-quiet', '--bw-soft', '--bw-blob-1', '--bw-blob-2', '--bw-blob-3']) {
+    assert.match(read('entry.tsx'), new RegExp(`s\\.setProperty\\('${v}', `))
+  }
+})
+
+test('few messages sit by the buttons and the composer, never under an empty band', () => {
+  // A flexible first item, not justify-content: flex-end, so a long chat still scrolls to its top.
+  assert.match(WIDGET_CSS, /#bbc-widget-root \.bw-log::before \{ content: ''; flex: 1 1 auto; \}/)
+  assert.doesNotMatch(WIDGET_CSS, /\.bw-log \{[^}]*justify-content: flex-end/)
+  // The canvas's shapes: pill replies, a rounded composer with a round send button, rounded bubbles.
+  assert.match(WIDGET_CSS, /\.bw-chip \{[^}]*border-radius: 999px/)
+  assert.match(WIDGET_CSS, /\.bw-compose \{[^}]*border-radius: 24px/)
+  assert.match(WIDGET_CSS, /\.bw-send \{[^}]*border-radius: 50%/)
+  assert.match(WIDGET_CSS, /\.bw-row--out \.bw-msg \{[^}]*border-radius: 18px 18px 6px 18px/)
+  // Touch targets: the pills reach 44 px on a phone.
+  assert.match(WIDGET_CSS, /@media \(max-width: 767px\) \{[\s\S]*\.bw-chip \{ min-height: 44px/)
+})
+
+test('the site goes with the offer and with every proactive event, so BBC and BCT are never mixed', () => {
+  const captures = hook.match(/posthog\?\.capture\('proactive_[a-z_]+', \{[\s\S]*?\}\)/g) || []
+  assert.equal(captures.length, 5)
+  for (const call of captures) assert.match(call, /site: brand\.id/, call.slice(0, 60))
+  assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string \}/)
 })
