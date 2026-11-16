@@ -609,6 +609,12 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         # Every gap the AAA defaults paper over becomes an honest line the
         # consultant reads BEFORE dialing. Silent leads lead with that fact.
         _notes = compute_defaults_notes(lead, _ab_meta)
+        # A chat the proactive card opened: the route and dates came from the
+        # page the client landed on and were never confirmed in chat.
+        from app.services.proactive import page_trip_note
+        _page_note = page_trip_note(lead)
+        if _page_note:
+            _notes.append(_page_note)
         if conv.get("_twin_count"):
             _notes.append(
                 f"{conv['_twin_count']} duplicate contact conversation(s) — "

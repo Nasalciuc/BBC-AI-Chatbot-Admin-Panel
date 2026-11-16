@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from app.pipeline.entity_extractor import current_contact_channel, refused_contact_fields
 from app.pipeline.intent import Intent
 from app.models.chat import VisitorInfo, RouteCard
 from app.models.lead import get_missing_fields
@@ -206,9 +207,15 @@ def _router_override(tier: str, tunnel: str, conversation_id: Optional[str]) -> 
     """Ask the router for model/effort/max_tokens. Returns {} (today's defaults)
     when nothing special applies, so the legacy path is byte-identical."""
     from app.ai import ledger
-    from app.ai.router import decide, SALES_REPLY, SUPPORT_REPLY
+    from app.ai.router import decide, owner_reply_route, SALES_REPLY, SUPPORT_REPLY
 
     from app.flags import flag
+
+    # The owner's cost switch wins over the tiers and the families (REPLY_MODEL).
+    # The 100% budget template still answers first, upstream (budget_remaining).
+    _owner = owner_reply_route(decisive=(tier == "opus"))
+    if _owner:
+        return _owner
 
     family_55 = _family_55_active(conversation_id)
     frac = ledger.budget_fraction()
@@ -238,10 +245,19 @@ def _run_tiered_generation(
 
     Shared by the AI-FIRST path and the step-5 fallback so streaming, tool-entity
     normalization, empty-tool re-call, and the default recovery text stay identical.
+    When the router overrides the model, the returned "tier" is that model id, so
+    messages.model_used says which model really answered.
     """
     tier, reason = _generation_tier(intent, lead, tunnel)
     call_tools, stream_tools, plain_call = _tier_calls(tier)
     _ov = _router_override(tier, tunnel, conversation_id)
+    if _ov.get("model"):
+        from app.ai.claude import call_reply_plain
+
+        # The re-call keeps the route's effort and room for thinking, not the
+        # plain call's defaults (CodeRabbit #255).
+        def plain_call(system, message, _model=_ov["model"], _effort=_ov.get("effort", "low"), _max=_ov.get("max_tokens")):
+            return call_reply_plain(_model, system, message, effort=_effort, max_tokens=_max)
 
     if on_chunk:
         ai_text, ai_cost, _te = stream_tools(
@@ -260,7 +276,7 @@ def _run_tiered_generation(
 
     # One question per turn while details are missing (PR-7, SLOT_POLICY_ENABLED).
     ai_text = _apply_slot_question(ai_text, lead, tunnel)
-    return ai_text, ai_cost, tool_entities, tier, reason
+    return ai_text, ai_cost, tool_entities, (_ov.get("model") or tier), reason
 
 
 def _apply_slot_question(text, lead, tunnel):
@@ -272,6 +288,37 @@ def _apply_slot_question(text, lead, tunnel):
         return ensure_one_question(text, question_for(next_slot(lead or {})))
     except Exception:  # noqa: silent — the slot nudge must never break a reply
         return text
+
+
+def _contact_channel_now(lead: Optional[dict], entities: dict) -> Optional[str]:
+    """Every channel wish so far, this message's included (entity_extractor.
+    current_contact_channel, shared with the prompt and the queue reply)."""
+    return current_contact_channel(lead, entities)
+
+
+def _all_channels_refused(lead: Optional[dict], entities: dict) -> bool:
+    """No calls, no texts and no email: no channel may be promised."""
+    parts = {p.strip() for p in (_contact_channel_now(lead, entities) or "").split(",")}
+    return {"no calls", "no texts", "no email"} <= parts
+
+
+def _preferred_contact(visitor: VisitorInfo, lead: Optional[dict], entities: dict) -> Optional[str]:
+    """The email when that is how the client asked to be reached ("email me
+    the quotes", or no calls and no texts) and email is not refused; None keeps
+    the templates' default, the phone first. The email can be the one typed in
+    this very message (the visitor object predates it) or the lead's."""
+    email = visitor.email or (entities or {}).get("email") or (lead or {}).get("visitor_email")
+    if not email:
+        return None
+    channel = _contact_channel_now(lead, entities)
+    if not channel:
+        return None
+    parts = {p.strip() for p in channel.split(",")}
+    if "no email" in parts:
+        return None
+    if ("email" in parts and "text" not in parts) or {"no calls", "no texts"} <= parts:
+        return email
+    return None
 
 
 def generate_response(
@@ -493,22 +540,44 @@ def generate_response(
                         role = msg.get("role", "")
                         if role in ("ai", "system"):
                             content = (msg.get("content") or "").lower()
+                            # The handoff says "consultant": a guard that
+                            # looked for "specialist" alone never saw it, and
+                            # one chat got the same promise five times. The
+                            # off-hours promise to a client who refused every
+                            # channel says only "first thing" (CodeRabbit #255).
                             if (
-                                "specialist" in content
+                                ("specialist" in content or "consultant" in content)
                                 and (
                                     "reach out" in content
                                     or "contact you" in content
                                     or "connect" in content
                                     or "within" in content
+                                    or "first thing" in content
                                 )
                             ):
                                 already_sent = True
                                 break
 
                 if not already_sent:
+                    # The 30-minute promise only while the team is at its
+                    # desks; otherwise "first thing when the team is back".
+                    from app.services.closing import is_within_team_hours
+
+                    # "We'll contact you at …" names the channel the client
+                    # asked for: an "email me" client is not promised a call,
+                    # and one who refused every channel is promised none.
+                    _contact = _preferred_contact(visitor, lead, entities)
+                    _handoff_key = (
+                        "specialist_handoff" if is_within_team_hours()
+                        else "specialist_handoff_off_hours"
+                    )
+                    if _all_channels_refused(lead, entities):
+                        _handoff_key += "_no_channel"
                     text = get_template(
-                        "specialist_handoff", tunnel, visitor,
+                        _handoff_key,
+                        tunnel, visitor,
                         route=lead.get("route_display", "your route"),
+                        **({"contact": _contact} if _contact else {}),
                     )
                     if text:
                         logger.info(
@@ -521,8 +590,12 @@ def generate_response(
                     )
                 # Fall through to AI-first generation
 
-            # Check what's missing in CONVERSATION order (not scoring order)
-            missing_str = " ".join(missing)
+            # Check what's missing in CONVERSATION order (not scoring order). A
+            # channel the client turned down is never asked for: not by the
+            # prompt, not by the queue reply, not by a template either
+            # (CodeRabbit #255). "Complete" above still counts it as missing.
+            _refused = refused_contact_fields(_contact_channel_now(lead, entities))
+            missing_str = " ".join(m for m in missing if m not in _refused)
 
             # Loop prevention: if last AI message already asked for this field, skip
             last_ai = ""

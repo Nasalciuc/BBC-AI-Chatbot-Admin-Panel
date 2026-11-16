@@ -33,9 +33,39 @@ class Intent(str, Enum):
     OTHER = "other"
 
 
+# The answer to Alex's one offer of a real person (prompts: A REAL PERSON):
+# "yes, pass it on" / "send my request to a consultant".
+_TRANSFER_RE = re.compile(
+    r"\b(pass|hand)\s+(it|this|that|my\s+request)\s+(on|over|along)\b"
+    r"|\b(pass|hand|send)\s+(it|this|that|my\s+request)\s+to\s+(a|the|your|one\s+of\s+your)\s+"
+    r"(consultants?|agents?|person|human)\b",
+    re.I,
+)
+# ...and its refusal, which is a no, not a request for a person: "please don't
+# pass it on", "do not hand it over", "no need to send it to a consultant"
+# (CodeRabbit #255). Up to three words between, in the same clause, and ending
+# on the transfer's own verb: "Don't send emails; pass my request to a
+# consultant" refuses the emails, not the consultant.
+_TRANSFER_REFUSED_HERE_RE = re.compile(
+    r"\b(?:don[’']?t|do\s+not|never|no\s+need\s+to)\s+(?:\w+\s+){0,3}?(?:pass|hand|send)$",
+    re.I,
+)
+
+
+def _asks_for_transfer(lower: str) -> bool:
+    """A transfer phrase that its own clause does not refuse. Every transfer
+    phrase starts with its verb (pass, hand, send): the refusal has to end on
+    that very verb, so a "don't" elsewhere in the message refuses nothing here."""
+    for m in _TRANSFER_RE.finditer(lower):
+        verb_end = m.start() + len(m.group(0).split()[0])
+        if not _TRANSFER_REFUSED_HERE_RE.search(lower[max(0, m.start() - 80):verb_end]):
+            return True
+    return False
+
 # Ordered: most specific → most generic
 INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.TALK_TO_AGENT, re.compile(r"(talk|speak|connect).*(agent|human|person|someone)", re.I)),
+    (Intent.TALK_TO_AGENT, _TRANSFER_RE),
     (Intent.GREETING, re.compile(r"^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy)\b", re.I)),
     (Intent.CLOSING, re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)),
     (Intent.BOOKING_CHANGE, re.compile(r"(change|cancel|modify|reschedule|refund)", re.I)),
@@ -90,6 +120,11 @@ def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count:
     # 2. Regex patterns
     lower = message.lower()
     for intent, pattern in INTENT_PATTERNS:
+        if pattern is _TRANSFER_RE:
+            if _asks_for_transfer(lower):
+                logger.debug(f"Intent from regex: {intent.value}")
+                return intent
+            continue
         if pattern.search(lower):
             logger.debug(f"Intent from regex: {intent.value}")
             return intent

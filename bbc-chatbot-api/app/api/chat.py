@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from config.settings import settings
 from app.models.chat import ChatRequest, ChatResponse, VisitorInfo
+from app.models.trip_context import TripContext
 from app.security.input_sanitizer import sanitize_message, is_suspicious
 from app.security.rate_limiter import check_rate_limit
 from app.pipeline.orchestrator import process_message, _fire_and_forget
@@ -24,7 +25,7 @@ from app.services import conversation_service, lead_service
 from app.services.routing import route_conversation
 from app.services.handoff import perform_handoff_to_agent
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.deps.ownership import require_visitor_ownership
 from app.services.blocklist import is_blocked, REFUSAL_MESSAGE as BLOCK_REFUSAL
@@ -58,11 +59,49 @@ class ChatInitRequest(BaseModel):
     # metadata allowlist would drop them, and they must not be stored raw.
     turnstile_token: Optional[str] = Field(default=None, max_length=4096)
     form_check: Optional[dict] = None
+    # The proactive chat (no form): the visitor answered the card the widget
+    # opened by itself. `trip` is what the page said they searched for; the
+    # server composes the card's words from it again (app/services/proactive).
+    trip: Optional[TripContext] = None
+    proactive: Optional["ProactiveInit"] = None
+
+    # Neither may cost the visitor the chat: a trip that is not an object, or
+    # a trigger this server does not know yet (a newer widget), is dropped and
+    # the conversation opens as a plain one — never a 422.
+    @field_validator("trip", mode="before")
+    @classmethod
+    def _trip_or_none(cls, v):
+        return v if isinstance(v, (dict, TripContext)) else None
+
+    @field_validator("proactive", mode="before")
+    @classmethod
+    def _proactive_or_none(cls, v):
+        if isinstance(v, ProactiveInit):
+            return v
+        if isinstance(v, dict) and v.get("trigger") in _PROACTIVE_TRIGGERS:
+            return v
+        return None
+
+
+_PROACTIVE_TRIGGERS = ("kayak", "quote", "reader", "exit", "note")
+
+
+class ProactiveInit(BaseModel):
+    # "note": the visitor tapped the note beside the button (app/services/proactive).
+    trigger: Literal["kayak", "quote", "reader", "exit", "note"]
+
+
+ChatInitRequest.model_rebuild()
 
 
 class ChatInitResponse(BaseModel):
     conversation_id: str
     visitor_token: Optional[str] = None
+    # The bot's first message as stored (after the output guard), when the
+    # proactive card opened this conversation; the widget shows these words,
+    # and reads messages after `opening_at` so the opening is not shown twice.
+    opening: Optional[str] = None
+    opening_at: Optional[str] = None
 
 
 async def _widget_gate(request: Request, turnstile_token: Optional[str], form_check: Optional[dict], meta: dict) -> None:
@@ -125,6 +164,19 @@ async def chat_init(
     if payload.visitor_id:
         _meta.setdefault("visitor_id", payload.visitor_id)
 
+    from app.services import proactive as _proactive
+    # The moments follow the experiment's switches; the tapped note has its
+    # own (on at merge): the visitor asked for the chat.
+    _proactive_trigger = (
+        payload.proactive.trigger
+        if payload.proactive and payload.tunnel == "sales"
+        and (
+            _proactive.note_enabled() if payload.proactive.trigger == _proactive.NOTE
+            else _proactive.enabled()
+        )
+        else None
+    )
+
     await _widget_gate(request, payload.turnstile_token, payload.form_check, _meta)
 
     # Blocklist — identity chokepoint. Only phone/email refuse; a blocked IP
@@ -148,11 +200,61 @@ async def chat_init(
 
     conv_id = conv["id"]
     logger.info(f"[init] Conv {conv_id} created/found for SSE pre-connect")
+    _opening: dict = {}
+    if _proactive_trigger:
+        # The card's words become the bot's first message; the lead starts
+        # with the page's search. A failure here must not cost the visitor
+        # the chat: it is counted and logged, and the chat goes on.
+        try:
+            # `site` as the metadata allowlist validated it (bbc | bct): the
+            # same brand the card named at /offer.
+            _opening = await _proactive.open_conversation(
+                conv_id, _proactive_trigger, payload.trip, _meta.get("site"),
+            ) or {}
+        except Exception as e:
+            _proactive.PROACTIVE_HEALTH["open_failures"] += 1
+            logger.error(f"[init] proactive opening failed (conv={conv_id}): {type(e).__name__}")
     from app.security.visitor_token import issue as _issue_token
     return ChatInitResponse(
         conversation_id=conv_id,
         visitor_token=_issue_token(payload.visitor_id) if payload.visitor_id else None,
+        opening=_opening.get("content"),
+        opening_at=_opening.get("created_at"),
     )
+
+
+class ProactiveOfferRequest(BaseModel):
+    visitor_id: str = Field(..., min_length=8, max_length=64)
+    trigger: Literal["kayak", "quote", "reader", "exit", "note"]
+    trip: Optional[TripContext] = None
+    # The brand the visitor is on (bbc | bct), so the card names it. Anything
+    # else is dropped, never a 422: the card then speaks for BBC.
+    site: Optional[str] = None
+
+    @field_validator("trip", mode="before")
+    @classmethod
+    def _trip_or_none(cls, v):
+        return v if isinstance(v, (dict, TripContext)) else None
+
+    @field_validator("site", mode="before")
+    @classmethod
+    def _known_site_or_none(cls, v):
+        from app.ai.prompts import SITE_CONFIGS
+        return v if isinstance(v, str) and v in SITE_CONFIGS else None
+
+
+@router.post("/chat/proactive/offer")
+async def proactive_offer(
+    payload: ProactiveOfferRequest,
+    _rate: None = Depends(check_rate_limit),
+):
+    """Should the widget open the chat by itself now, and with what words.
+
+    Writes nothing: a visitor who sees the card and never answers leaves no
+    conversation, no lead and no row. The control arm is told show=False, so
+    the widget counts the moment without showing anything."""
+    from app.services import proactive
+    return proactive.offer(payload.visitor_id, payload.trigger, payload.trip, payload.site)
 
 
 # --- Start endpoint: the AI greets FIRST — no fake client message ---

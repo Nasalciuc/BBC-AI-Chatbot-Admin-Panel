@@ -154,7 +154,15 @@ async def generate_closing(
     abandoned: warmth is worth six seconds, not sixteen."""
     import asyncio
 
-    from app.ai.claude import stream_opus
+    from app.ai.claude import stream_opus, stream_reply
+    from app.ai.router import owner_reply_route
+
+    # The owner's cost switch (REPLY_MODEL) covers the closing too; it counts
+    # as a decisive turn, so DECISIVE_MODEL=sonnet55 lifts it to Sonnet 5.5.
+    # The whole route goes through — effort AND max_tokens — so a higher
+    # REPLY_EFFORT keeps its room for thinking (CodeRabbit #255).
+    owner = owner_reply_route(decisive=True)
+    owner_model = owner.get("model")
 
     brand = get_brand_vars(site)
     phone = brand.get("contact_phone") or ""
@@ -171,7 +179,12 @@ async def generate_closing(
             on_chunk(text)
 
     task = asyncio.create_task(
-        asyncio.to_thread(stream_opus, system, user, _chunk)
+        asyncio.to_thread(
+            stream_reply, owner_model, system, user, _chunk,
+            effort=owner["effort"], max_tokens=owner["max_tokens"],
+        )
+        if owner_model
+        else asyncio.to_thread(stream_opus, system, user, _chunk)
     )
     try:
         await asyncio.wait_for(first_chunk.wait(), timeout=CLOSING_FIRST_CHUNK_BUDGET)
@@ -187,7 +200,7 @@ async def generate_closing(
     if not text or not text.strip():
         logger.warning("Closing generation returned empty — brand template served")
         return None, "template", 0.0
-    return text.strip(), settings.claude_opus_model, cost
+    return text.strip(), (owner_model or settings.claude_opus_model), cost
 
 
 async def claim_closing_sent(conversation_id: str) -> bool:

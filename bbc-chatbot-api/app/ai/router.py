@@ -60,6 +60,41 @@ def _model_for(tier: str, family_55: bool) -> str:
     }[tier]
 
 
+def owner_reply_model(decisive: bool) -> Optional[str]:
+    """The owner's cost switch (16 Nov: "Haiku 5.5 as the base, or that volume
+    bankrupts us"). REPLY_MODEL=haiku55 puts every customer reply on Haiku 5.5,
+    the closing included, on either engine and either family. DECISIVE_MODEL=
+    sonnet55 lets the decisive turns (price, talk-to-agent, First, gold) step up
+    to Sonnet 5.5 instead. Unset = None = today's tiers, unchanged. Read per
+    turn, so a flip in app_settings.flags lands within 30 s, no deploy."""
+    if str(flag("REPLY_MODEL", "")).strip().lower() != "haiku55":
+        return None
+    if decisive and str(flag("DECISIVE_MODEL", "")).strip().lower() == "sonnet55":
+        return settings.claude_sonnet_55_model
+    return settings.claude_haiku_55_model
+
+
+# Thinking counts toward max_tokens on 5.5, so a higher effort needs more room.
+_EFFORT_MAX_TOKENS = {"low": 1024, "medium": 2048, "high": 4096}
+
+
+def owner_reply_effort() -> str:
+    """REPLY_EFFORT for the REPLY_MODEL switch. low (the default) is the docs'
+    choice for chat and high-volume requests; medium or high when QA finds Alex
+    skipping instructions of the long sales prompt. Anything else reads as low."""
+    effort = str(flag("REPLY_EFFORT", "low")).strip().lower()
+    return effort if effort in _EFFORT_MAX_TOKENS else "low"
+
+
+def owner_reply_route(decisive: bool) -> dict:
+    """{model, effort, max_tokens} for the REPLY_MODEL switch; {} when it is off."""
+    model = owner_reply_model(decisive)
+    if not model:
+        return {}
+    effort = owner_reply_effort()
+    return {"model": model, "effort": effort, "max_tokens": _EFFORT_MAX_TOKENS[effort]}
+
+
 def _cache_ttl() -> str:
     ttl = str(flag("CACHE_TTL", "5m")).strip().lower()
     return "1h" if ttl in ("1h", "60m", "3600") else "5m"

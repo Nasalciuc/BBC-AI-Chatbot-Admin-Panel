@@ -44,6 +44,9 @@ class ExtractedEntities:
     budget_hint: Optional[str] = None
     price_seen: Optional[str] = None
     best_call_time: Optional[str] = None
+    # How the client wants to be reached, when they say it: "text", "email",
+    # "no calls" (comma-joined). The consultant reads it before dialling.
+    contact_channel: Optional[str] = None
     # Set ONLY on the correction path (context given): "17th am" — the
     # morning/evening preference rides into the lead notes.
     time_preference: Optional[str] = None
@@ -623,6 +626,110 @@ CALL_TIME_RE = re.compile(
     r"\b(?:call|reach|phone|ring)\s+me\s+((?:after|before|around|at|in the|during)"
     r"\s+[\w:\. ]{1,20})", re.I
 )
+# How the client wants to be reached. In 3,255 chats the clients who said no
+# were refusing calls, not contact: "text only", "email me the quotes",
+# "I'll chat, don't want to talk". A consultant who calls anyway loses them.
+CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
+    ("text", re.compile(
+        r"\b(?:text(?:ing)?\s+only|only\s+(?:by\s+)?text|text\s+me|txt\s+me|sms\s+only"
+        r"|only\s+sms|prefer\s+(?:a\s+)?text(?:ing|s)?|text\s+message\s+chats?)\b", re.I)),
+    ("email", re.compile(
+        r"\b(?:e-?mail\s+only|only\s+(?:by\s+)?e-?mail|e-?mail\s+me|just\s+e-?mail"
+        r"|prefer\s+(?:an\s+)?e-?mail|(?:quotes?|options|fares|prices?)\s+(?:on|to|via|by)\s+(?:my\s+)?e-?mail)\b",
+        re.I)),
+    ("no calls", re.compile(
+        r"\b(?:no\s+(?:phone\s+)?calls?|don'?t\s+call|do\s+not\s+call|please\s+don'?t\s+call"
+        r"|can'?t\s+talk|cannot\s+talk|don'?t\s+want\s+to\s+talk|no\s+talking|stop\s+calling"
+        r"|(?:don'?t|do\s+not|never)\s+(?:text|txt|sms)\s+(?:or|and|nor)\s+call)\b", re.I)),
+    # A channel withdrawn: "Please don't text me", "stop texting me". It is a
+    # wish of its own, not silence: the consultant must not text a client who
+    # said so, and an earlier "text only" gives way to it (merge_contact_channel).
+    # "don't text me", "don't text." — not "I don't text much". The bare "no
+    # texts" / "no email" too, like "no calls" ("No calls, no texts, no email."),
+    # but not "no texts from you yet": that is news, not a wish (CodeRabbit #255).
+    ("no texts", re.compile(
+        r"\b(?:(?:don'?t|do\s+not|never)\s+(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?(?:text|txt|sms)"
+        r"(?:\s+me\b|(?=\s*(?:[.,!?;]|$))|(?=\s+(?:or|and|nor)\s+(?:call|phone|ring)))"
+        r"|stop\s+(?:texting|txting|sending\s+(?:me\s+)?(?:texts?|sms))|no\s+more\s+(?:texts?|sms)"
+        r"|no\s+(?:texts?|txts?|sms|text\s+messages?)(?!\s+(?:from|yet)\b))\b", re.I)),
+    ("no email", re.compile(
+        r"\b(?:(?:don'?t|do\s+not|never)\s+e-?mail(?:\s+me\b|(?=\s*(?:[.,!?;]|$)))"
+        r"|stop\s+e-?mailing|no\s+more\s+e-?mails?|no\s+e-?mails?(?!\s+(?:from|yet)\b))\b", re.I)),
+)
+
+# A wish and its withdrawal: the later one wins (merge_contact_channel).
+_CHANNEL_OPPOSITES = {"text": "no texts", "no texts": "text", "email": "no email", "no email": "email"}
+
+# "don't text me", "never email me", "don't call or text me", "not only text":
+# what follows is no wish for that channel.
+_NEGATED_BEFORE = re.compile(
+    r"\b(?:don'?t|do\s+not|never|not|no)\s*(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?$", re.I
+)
+
+
+def contact_channel_of(text: str) -> Optional[str]:
+    """'text', 'email', 'no calls', 'no texts', 'no email' or a comma-joined
+    mix — None when the message says nothing about it.
+
+    "Please don't text me" is no wish for texts: a text or email phrase right
+    after a negation does not count as the wish; the withdrawal is read by its
+    own phrases ("no texts"), so it can replace an earlier "text only". "Not
+    only text" withdraws nothing and says nothing.
+
+    A wish and its withdrawal in the same message ("Email me the options.
+    Actually, don't email me") keep only the later one: the client's last word.
+    """
+    text = text or ""
+    last_at: dict[str, int] = {}
+    for label, rx in CONTACT_CHANNEL_RES:
+        for m in rx.finditer(text):
+            if label in ("text", "email") and _NEGATED_BEFORE.search(text[max(0, m.start() - 24):m.start()]):
+                continue
+            last_at[label] = max(m.start(), last_at.get(label, -1))
+    for label, opposite in _CHANNEL_OPPOSITES.items():
+        if label in last_at and opposite in last_at:
+            last_at.pop(label if last_at[label] < last_at[opposite] else opposite)
+    found = list(dict.fromkeys(label for label, _ in CONTACT_CHANNEL_RES if label in last_at))
+    return ", ".join(found) or None
+
+
+def merge_contact_channel(stored: Optional[str], new: str) -> str:
+    """The channel wishes so far, with this message's: a later withdrawal
+    replaces the wish ("text only", then "please don't text me" → "no texts"),
+    a later wish replaces the withdrawal, and unrelated wishes stay ("no calls",
+    then "no texts" → "no calls, no texts")."""
+    new_parts = [p.strip() for p in (new or "").split(",") if p.strip()]
+    old_parts = [p.strip() for p in stored.split(",") if p.strip()] if isinstance(stored, str) else []
+    kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts]
+    return ", ".join(kept + new_parts)
+
+
+def current_contact_channel(lead: Optional[dict], entities: Optional[dict] = None) -> Optional[str]:
+    """Every channel wish so far, this message's included. The lead holds the
+    merged wishes; this turn's go on top, so a refusal said now counts even when
+    the lead refresh failed and the lead is a turn behind (merging again is a
+    no-op when it is current)."""
+    signals = (lead or {}).get("intent_signals")
+    stored = signals.get("contact_channel") if isinstance(signals, dict) else None
+    stored = stored if isinstance(stored, str) and stored else None
+    now = (entities or {}).get("contact_channel")
+    if isinstance(now, str) and now:
+        return merge_contact_channel(stored, now)
+    return stored
+
+
+def refused_contact_fields(channel: Optional[str]) -> set[str]:
+    """The missing-field labels (models.lead.get_missing_fields) the client's own
+    words rule out: the phone once calls AND texts are refused, the email once
+    email is. Nobody is asked again for a channel they turned down — not in the
+    prompt's "Still needed", not in the queue reply (CodeRabbit #255)."""
+    parts = {p.strip() for p in (channel or "").split(",")}
+    refused: set[str] = set()
+    if {"no calls", "no texts"} <= parts:
+        refused.add("phone number")
+    if "no email" in parts:
+        refused.add("email")
+    return refused
 
 # Reverse of CITY_TO_CODE for the landing-page hint. Short keys ("la", "sf")
 # match too much inside a slug, so only real city names are used.
@@ -1529,6 +1636,8 @@ def extract_entities(
     if call_time:
         entities.best_call_time = call_time.group(1).strip().rstrip(".")[:40]
 
+    entities.contact_channel = contact_channel_of(text)
+
     # Correction-path only: day-only return mentions resolve against the
     # summary's departure. Runs AFTER the normal parsers so a full date
     # with a month always wins.
@@ -1578,7 +1687,7 @@ def extract_entities(
                           "passengers", "cabin_class", "departure_date", "return_date", "trip_type",
                           "occasion", "booking_for", "nonstop_only", "airline_preference",
                           "airline_avoid", "budget_hint", "price_seen", "best_call_time",
-                          "time_preference"]
+                          "contact_channel", "time_preference"]
              if getattr(entities, k) is not None]
     if found:
         logger.info(f"Entities extracted: {', '.join(found)}")

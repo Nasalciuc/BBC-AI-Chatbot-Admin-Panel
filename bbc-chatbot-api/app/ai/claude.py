@@ -292,8 +292,11 @@ def _call_model(
     temperature: float,
     _is_fallback: bool = False,
     task: str = "other",
+    effort: str = "low",
 ) -> tuple[Optional[str], float]:
-    """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost)."""
+    """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost).
+    `effort` applies to the 5.5 family only (output_config); every caller but
+    the REPLY_MODEL re-call keeps the default."""
     # Never on the fallback: fallback_model is the old Haiku, and routing it
     # back to Haiku 5.5 would retry the model that just failed.
     if not _is_fallback:
@@ -309,7 +312,7 @@ def _call_model(
                 # Through extra_body: requirements allow SDKs older than the
                 # typed output_config parameter, and there a keyword is a
                 # TypeError that never reaches the provider fallback.
-                params = dict(extra_body={"output_config": {"effort": "low"}})
+                params = dict(extra_body={"output_config": {"effort": effort}})
                 call_max = max(max_tokens, 512)
             else:
                 params = _sampling_params(model, temperature=temperature)
@@ -845,6 +848,44 @@ def stream_opus(
     return _stream_model(
         settings.claude_opus_model, system_prompt, user_message,
         max_tokens=OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk,
+    )
+
+
+def stream_reply(
+    model: str,
+    system_prompt,
+    user_message: str,
+    on_chunk=None,
+    effort: str = "low",
+    max_tokens: Optional[int] = None,
+) -> tuple[Optional[str], float]:
+    """Stream a customer-facing text on an explicit model (the REPLY_MODEL switch,
+    router.owner_reply_route): the closing. `max_tokens` is the route's, so a
+    higher effort keeps its room for thinking. Returns (text, cost)."""
+    return _stream_model(
+        model, system_prompt, user_message,
+        max_tokens=max_tokens or OPUS_MAX_TOKENS, temperature=0.6, on_chunk=on_chunk, effort=effort,
+    )
+
+
+def call_reply_plain(
+    model: str,
+    system_prompt,
+    user_message: str,
+    effort: str = "low",
+    max_tokens: Optional[int] = None,
+) -> tuple[Optional[str], float]:
+    """A customer reply without tools on an explicit model (REPLY_MODEL): the
+    re-call when the tool call brought entities but no text, with the route's
+    effort and max_tokens. Returns (text, cost)."""
+    return _call_model(
+        model=model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        max_tokens=max_tokens or SONNET_MAX_TOKENS,
+        temperature=0.6,
+        task="sales_reply",
+        effort=effort,
     )
 
 

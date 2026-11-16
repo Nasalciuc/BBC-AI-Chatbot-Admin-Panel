@@ -74,6 +74,8 @@ class TestFirstRequestCounts:
                    new=AsyncMock(return_value={"id": _CID, "visitor_name": "Costa"})), \
              patch("app.services.lead_service.get_or_create_lead",
                    new=AsyncMock(return_value={"origin_code": "JFK", "destination_code": "LHR"})), \
+             patch("app.services.closing.is_within_team_hours", return_value=True), \
+             patch("app.services.routing.queue_for_person", new=AsyncMock()), \
              patch("app.pipeline.orchestrator._fire_and_forget", lambda coro: coro.close()):
             text, model = await get_handoff_response(_CID, "sales", visitor)
 
@@ -81,6 +83,62 @@ class TestFirstRequestCounts:
         assert "888" not in text            # no bare phone deflection
         assert model == "template"
         assert "?" in text                  # keeps collecting — asks something
+
+
+class TestQueueReplyIsHonestAboutTheHour:
+    """Nobody is about to join outside the team's hours (16 Nov): the queue
+    reply says the team is back later, never "while they join", and still
+    asks for something, so the request waits first in line with a contact."""
+
+    @staticmethod
+    async def _reply(online: bool, metadata: dict | None = None, lead: dict | None = None, conv: dict | None = None):
+        visitor = MagicMock(name="v")
+        visitor.name = None; visitor.email = None; visitor.phone = None
+        with patch("app.services.routing.route_conversation",
+                   new=AsyncMock(return_value={"agent_id": None, "mode": "ai", "agent_name": None})), \
+             patch("app.services.handoff._handoff_phrase_recently_sent",
+                   new=AsyncMock(return_value=False)), \
+             patch("app.services.handoff.db.update_conversation", new=AsyncMock()), \
+             patch("app.services.handoff.db.get_conversation_simple",
+                   new=AsyncMock(return_value={"id": _CID, "metadata": metadata or {}, **(conv or {})})), \
+             patch("app.services.lead_service.get_or_create_lead",
+                   new=AsyncMock(return_value=lead or {"origin_code": "JFK", "destination_code": "LHR"})), \
+             patch("app.services.closing.is_within_team_hours", return_value=online), \
+             patch("app.services.routing.queue_for_person", new=AsyncMock()) as queued, \
+             patch("app.pipeline.orchestrator._fire_and_forget", lambda coro: coro.close()):
+            reply = await get_handoff_response(_CID, "sales", visitor)
+        queued.assert_awaited_once()  # the request is in the line either way
+        return reply
+
+    @pytest.mark.asyncio
+    async def test_off_hours_says_the_team_is_back_later(self):
+        text, model = await self._reply(online=False)
+        assert text.startswith("You got it — our consultants are offline right now")
+        assert "first in line for when the team is back." in text
+        assert "flagging a teammate" not in text and "While they join" not in text
+        assert "So they have everything ready — " in text and "?" in text
+        assert "888" not in text and model == "template"
+
+    @pytest.mark.asyncio
+    async def test_in_hours_a_teammate_is_flagged(self):
+        text, _model = await self._reply(online=True)
+        assert "flagging a teammate" in text and "While they join — " in text
+        assert "offline" not in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("online", [True, False])
+    async def test_a_chat_without_a_form_is_asked_the_email_first(self, online):
+        """The card or the note opened it: no form, so the email comes before
+        the dates, as the prompt asks it (ADR 05)."""
+        text, _model = await self._reply(online, metadata={"proactive_trigger": "kayak"})
+        question = text.split(" — ")[-1].lower()
+        assert "email" in question
+
+    @pytest.mark.asyncio
+    async def test_a_chat_with_a_form_keeps_today_s_order(self):
+        text, _model = await self._reply(online=True)
+        question = text.split(" — ")[-1].lower()
+        assert "email" not in question and ("travel" in question or "dates" in question)
 
 
 # ── Leak 2: the dispatcher drains the queue ──────────────────────────────
@@ -216,3 +274,37 @@ class TestFallbackTrace:
             payload = await health_detail()
         assert "handoffs_expired" in payload
         assert "expired_since_boot" in payload["handoffs_expired"]
+
+
+class TestQueueNeverAsksARefusedChannel:
+    """CodeRabbit #255, round 5: a channel the client turned down is never the
+    queue reply's next question."""
+
+    _reply = staticmethod(TestQueueReplyIsHonestAboutTheHour._reply)
+    _TRIP = {
+        "origin_code": "JFK", "destination_code": "LHR", "departure_date": "2027-03-15",
+        "return_date": "2027-03-29", "trip_type": "round_trip", "passengers": 1,
+    }
+    _CONTACT = {"visitor_name": "Ann", "visitor_email": "ann@example.com"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("online", [True, False])
+    async def test_a_refused_phone_is_never_asked(self, online):
+        lead = {**self._TRIP, "intent_signals": {"contact_channel": "no calls, no texts"}}
+        text, _model = await self._reply(online, lead=lead, conv=self._CONTACT)
+        assert "number" not in text.lower() and "call" not in text.lower()
+        assert text.endswith("first in line.") or text.endswith("when the team is back.")
+
+    @pytest.mark.asyncio
+    async def test_without_a_refusal_the_number_is_asked(self):
+        text, _model = await self._reply(True, lead=dict(self._TRIP), conv=self._CONTACT)
+        assert "number" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_email_is_never_asked(self):
+        lead = {**self._TRIP, "intent_signals": {"contact_channel": "no email"}}
+        text, _model = await self._reply(
+            True, metadata={"proactive_trigger": "kayak"}, lead=lead, conv={"visitor_name": "Ann"},
+        )
+        assert "email" not in text.lower()
+        assert "number" in text.lower()

@@ -154,6 +154,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.behavior import BEHAVIOR_HEALTH
     from app.learning.outcomes import OUTCOMES_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
+    from app.services.proactive import PROACTIVE_HEALTH
 
     if not full:
         return {
@@ -177,6 +178,7 @@ async def health_detail(full: bool = False) -> dict:
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
+            "proactive": dict(PROACTIVE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
@@ -268,6 +270,7 @@ async def health_detail(full: bool = False) -> dict:
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),
+        "proactive": dict(PROACTIVE_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),

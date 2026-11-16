@@ -65,6 +65,13 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for
     # Priority: travel data first (contact usually from form)
     if not has_route:
         missing.append("route (origin and destination)")
+    # A chat with no form behind it (the proactive card) asks the email as
+    # soon as the route is known, before the other details: a client who
+    # leaves after giving it can still be helped, one who leaves before is
+    # gone (16 Nov contact analysis). The CRM order of a form chat is unchanged.
+    _email_now = bool(conv.get("email_first")) and not for_crm and not has_email
+    if _email_now:
+        missing.append("email")
     if not for_crm:
         # Strict mode: AI prompts need all fields for collection
         if not has_departure:
@@ -81,12 +88,13 @@ def get_missing_fields(lead_dict: dict, conv_dict: Optional[dict] = None, *, for
             missing.append("number of travelers (how many passengers?)")
         if not has_departure:
             missing.append("departure date")
-    # Contact info — only if NOT provided via form
-    if not has_name:
-        missing.append("name")
-    if not has_email:
-        missing.append("email")
-    if not has_phone:
-        missing.append("phone number")
+    # Contact info — only if NOT provided via form. A chat opened by the
+    # proactive card (no form) asks email first: the lightest thing to give.
+    contact = [("name", has_name), ("email", has_email), ("phone number", has_phone)]
+    if conv.get("email_first"):
+        contact = [("email", has_email or _email_now), ("name", has_name), ("phone number", has_phone)]
+    for label, present in contact:
+        if not present:
+            missing.append(label)
 
     return missing
