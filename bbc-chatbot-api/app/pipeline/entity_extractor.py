@@ -643,9 +643,23 @@ CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
 )
 
 
+_NEGATED_BEFORE = re.compile(r"\b(?:don'?t|do\s+not|never|not|no)\s*$", re.I)
+
+
 def contact_channel_of(text: str) -> Optional[str]:
-    """'text', 'email', 'no calls' or a comma-joined mix — None when unsaid."""
-    found = [label for label, rx in CONTACT_CHANNEL_RES if rx.search(text or "")]
+    """'text', 'email', 'no calls' or a comma-joined mix — None when unsaid.
+
+    "Please don't text me" is no wish for texts: a text or email phrase right
+    after a negation does not count ("no calls" phrases are negations already).
+    """
+    text = text or ""
+    found: list[str] = []
+    for label, rx in CONTACT_CHANNEL_RES:
+        for m in rx.finditer(text):
+            if label != "no calls" and _NEGATED_BEFORE.search(text[max(0, m.start() - 12):m.start()]):
+                continue
+            found.append(label)
+            break
     return ", ".join(found) or None
 
 # Reverse of CITY_TO_CODE for the landing-page hint. Short keys ("la", "sf")

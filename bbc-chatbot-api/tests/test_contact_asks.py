@@ -208,6 +208,10 @@ class TestContactChannel:
         ("JFK to London in March, 2 adults", None),
         ("call me after 2", None),
         ("", None),
+        # a negated wish is no wish
+        ("Please don't text me", None),
+        ("do not email me, text only", "text"),
+        ("not only text, a call is fine too", None),
     ])
     def test_read_from_the_words(self, text, channel):
         from app.pipeline.entity_extractor import contact_channel_of
