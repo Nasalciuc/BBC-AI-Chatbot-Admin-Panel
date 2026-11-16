@@ -196,6 +196,9 @@ async def run_departure_tasks() -> dict:
             logger.error(f"[departure] the task for {cid} wasn't made: {what_failed(e)}")
             continue
         if not task:
+            # The database answered without the row: no task, and nothing says why. Counted like a refusal.
+            db.TASKS_HEALTH["departure_failures"] += 1
+            logger.error(f"[departure] the task for {cid} wasn't made: the insert returned no row")
             continue
         created += 1
         db.TASKS_HEALTH["departure"] += 1
@@ -204,6 +207,8 @@ async def run_departure_tasks() -> dict:
             db.TASKS_HEALTH["departure_unowned"] += 1
         await note(task["id"], "departure", None, {
             "kind": kind, "left_minutes_ago": round(gone / 60), "given": "ready" if owner else "unowned",
+            # The Tasks page says when it was due from this, not from today's constant.
+            "due_minutes": int(DUE_AFTER.total_seconds() // 60),
         })
         logger.info(f"[departure] {kind} task for {cid}: {'given to a Ready agent' if owner else 'Unowned, nobody Ready'}")
     return {"candidates": len(convs), "due": len(due), "created": created, "unowned": unowned}

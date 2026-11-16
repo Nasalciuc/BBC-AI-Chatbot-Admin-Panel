@@ -3901,6 +3901,9 @@ async def get_departure_candidates() -> list[dict]:
     """Open sales chats with a phone or an email, for the departure task
     (app/services/departure.py decides the rest: the client wrote, left,
     nobody is on the chat). With last_user_message_at when the clocks exist.
+    One request, no pages: an open chat closes after ~35 minutes without the
+    client (the abandoned job), so these are the last half hour's sales chats
+    with a contact — at most 3 started in any hour of 1–15 Nov 2026.
     Raises: the job counts a failed read."""
     db_client = get_client()
     rows = await _rows_with_last_message(

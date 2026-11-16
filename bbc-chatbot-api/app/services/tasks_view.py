@@ -231,7 +231,9 @@ def history_of(events: list[dict], names: dict[str, str], *, client: str, tz=tim
             mins = d.get("left_minutes_ago")
             if isinstance(mins, int) and mins >= 1:
                 line += f" The task was made {mins} min later."
-            line += " Due 15 minutes after they left."
+            due = d.get("due_minutes")
+            if isinstance(due, int) and due > 0:
+                line += f" Due {due} minutes after they left."
             if d.get("given") == "unowned":
                 line += " Nobody was Ready, so it went to Unowned."
         if e.get("kind") in ("caught", "client_asked") and d.get("due_words"):

@@ -266,6 +266,23 @@ class TestJob:
             assert pii not in caplog.text
 
     @pytest.mark.asyncio
+    async def test_an_insert_without_a_row_is_counted(self, caplog):
+        with _Patched(_job([_conv(id="c-1")], insert=AsyncMock(return_value=None))) as p, caplog.at_level(logging.ERROR):
+            out = await departure.run_departure_tasks()
+            note = p.mocks[7]
+        assert out["created"] == 0
+        assert db.TASKS_HEALTH["departure_failures"] == 1 and db.TASKS_HEALTH["departure"] == 0
+        assert "the insert returned no row" in caplog.text
+        note.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_history_line_carries_the_due_minutes(self):
+        with _Patched(_job([_conv()], ready=[{"id": "agent-a", "role": "sales"}])) as p:
+            await departure.run_departure_tasks()
+            details = p.mocks[7].await_args.args[3]
+        assert details["due_minutes"] == 15 and details["given"] == "ready" and details["kind"] == "call"
+
+    @pytest.mark.asyncio
     async def test_a_failed_read_is_counted(self):
         patches = _job([_conv()])
         patches[1] = patch.object(db, "get_departure_candidates", new=AsyncMock(side_effect=RuntimeError("down")))
@@ -349,7 +366,8 @@ class TestPanelWords:
     def test_the_history_line(self):
         from app.services.tasks_view import history_of
         given = history_of(
-            [{"kind": "departure", "at": "2026-11-15T22:00:00+00:00", "details": {"left_minutes_ago": 3, "given": "ready"}}],
+            [{"kind": "departure", "at": "2026-11-15T22:00:00+00:00",
+              "details": {"left_minutes_ago": 3, "given": "ready", "due_minutes": 15}}],
             {}, client="Maria R.",
         )
         assert given[0]["text"] == (
@@ -357,13 +375,23 @@ class TestPanelWords:
             "The task was made 3 min later. Due 15 minutes after they left."
         )
         unowned = history_of(
-            [{"kind": "departure", "at": "x", "details": {"left_minutes_ago": 0, "given": "unowned"}}],
+            [{"kind": "departure", "at": "x", "details": {"left_minutes_ago": 0, "given": "unowned", "due_minutes": 15}}],
             {}, client="",
         )
         assert unowned[0]["text"] == (
             "The client left the site after leaving a contact, with nobody on the chat. "
             "Due 15 minutes after they left. Nobody was Ready, so it went to Unowned."
         )
+
+    def test_the_due_words_come_from_the_task_not_from_today(self):
+        from app.services.tasks_view import history_of
+        line = history_of(
+            [{"kind": "departure", "at": "x", "details": {"left_minutes_ago": 2, "given": "ready", "due_minutes": 10}}],
+            {}, client="",
+        )
+        assert line[0]["text"].endswith("The task was made 2 min later. Due 10 minutes after they left.")
+        bare = history_of([{"kind": "departure", "at": "x", "details": {"given": "ready"}}], {}, client="")
+        assert bare[0]["text"] == "The client left the site after leaving a contact, with nobody on the chat."
 
     def test_unowned_reason_reads(self):
         from app.services.tasks_view import history_of
