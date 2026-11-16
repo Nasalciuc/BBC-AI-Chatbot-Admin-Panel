@@ -21,7 +21,10 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { ensureVisitorId, fetchProactiveOffer } from './api'
 import brand from './config'
 import { posthog } from './posthog'
-import { hasContext, readTrip, type TripPayload } from './tripContext'
+import {
+  applySiteEvent, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage, type SiteEvent,
+} from './siteSignals'
+import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, blockedPath, pauseRunning, pickTrigger, replyKind,
   type OpeningTrigger, type PageState, type QuoteState, type Trigger,
@@ -88,6 +91,21 @@ function kayakVisit(): boolean {
 
 function pageTitle(): string {
   try { return document.querySelector('h1')?.textContent || '' } catch { return '' }
+}
+
+/** The trip the card and the note start from (tripContext.pickTrip), the newest word first: the search
+ *  the visitor ran on the site, the address, what the page says it is about (bbc-signals), its title. */
+function currentTrip(): TripPayload | null {
+  const page = sitePage()
+  const pageSource = page?.pageType === 'search' || page?.pageType === 'flight' ? 'search' : 'route_page'
+  let search = ''
+  try { search = location.search } catch { /* no address: the rest */ }
+  return pickTrip(
+    tripFromFields(lastSearch(), 'search'),
+    tripFromUrl(search, kayakVisit()),
+    tripFromFields(page?.trip, pageSource),
+    tripFromTitle(pageTitle()),
+  )
 }
 
 /** A form the site asks for a quote with: form.qf on buybusinessclass.com, or one labelled as a quote. */
@@ -166,6 +184,23 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     if (step !== 'buttons' && !ssGet(DONE_KEY)) ssSet(DONE_KEY, 'chat')
   }, [step])
 
+  // The site says the visitor sent the quote request, or reached out by phone, WhatsApp or email
+  // (bbc-signals: quote_form_submitted, contact_clicked): no moment and no 10 s note for the rest of the
+  // visit — they are already talking to us. Read from what the page queued before the widget loaded too.
+  useEffect(() => {
+    const stopFor = (e: SiteEvent) => {
+      const { stop } = applySiteEvent(null, e)
+      if (!stop) return
+      // A moment this visit already used keeps its word ('shown' keeps the next pages quiet too).
+      if (!ssGet(DONE_KEY)) ssSet(DONE_KEY, stop)
+      ssSet(ATTENTION_KEY, '1')
+      // A note already waiting (or on screen) goes away too: Widget shows it only while not quiet.
+      setQuiet(true)
+    }
+    for (const e of siteEvents()) stopFor(e)
+    return onSiteEvent(stopFor)
+  }, [])
+
   useEffect(() => {
     if (!allowed || step !== 'buttons') return
     if (ssGet(DONE_KEY) || ssGet(NOTE_CLOSED_KEY) || pauseRunning(lsGet(PAUSE_KEY), Date.now())) return
@@ -182,6 +217,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let lastSiteTyping: number | null = null
     let press: Press | null = null
     let exitAt = 0
+    // What the site itself says about its quote form (siteSignals.applySiteEvent): a send in flight, and
+    // whether the visitor already sent the request or reached out (then nothing on this page).
+    let siteBusy = false
+    let stopped: 'sent' | 'contact' | null = null
 
     const visibleS = () => (visibleAcc + (visibleSince !== null ? Date.now() - visibleSince : 0)) / 1000
     const inWidget = (t: EventTarget | null) => t instanceof Element && !!t.closest('#bbc-widget-root')
@@ -253,11 +292,30 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       exitAt = Date.now()
       evaluate()
     }
+    // The site's word about the visitor (bbc-signals): a refused or failed send of the quote form is a
+    // press with a flagged field, a send in flight holds every moment off, and working on the form keeps
+    // it from going quiet. It joins what the page's HTML shows; a site without bbc-signals keeps that alone.
+    const onSite = (e: SiteEvent) => {
+      lastActivity = Math.max(lastActivity, Math.min(e.at, Date.now()))
+      const fx = applySiteEvent(
+        press ? { at: press.at, activityAt: press.activityAt, invalid: press.invalid, busy: siteBusy } : null, e,
+      )
+      if (fx.stop) {
+        stopped = fx.stop
+        press = null
+        return
+      }
+      siteBusy = fx.press?.busy ?? false
+      press = fx.press
+        ? { form: press?.form ?? null, at: fx.press.at, activityAt: fx.press.activityAt, invalid: fx.press.invalid }
+        : null
+    }
 
     // What the moment was decided on. The server answers within OFFER_TIMEOUT_MS; by then the visitor
     // may have moved on, and an answer that comes after that is dropped (and measured), never shown.
     const seen = () => ({ typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null })
     const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>): string | null => {
+      if (stopped) return stopped
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
       if (ssGet(NOTE_CLOSED_KEY)) return 'note_closed'
@@ -270,7 +328,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
 
     const ask = async (trigger: Trigger, phone: boolean) => {
       const before = seen()
-      const trip = readTrip(location.href, pageTitle(), kayakVisit())
+      const trip = currentTrip()
       const device = phone ? 'phone' : 'computer'
       const res = await fetchProactiveOffer(
         apiUrl, { visitor_id: ensureVisitorId(), trigger, trip, site: brand.id }, OFFER_TIMEOUT_MS,
@@ -279,6 +337,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
         trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip), site: brand.id,
+        // The page carries bbc-signals: the moments with the site's word against those without it.
+        site_signals: !!sitePage(),
         ...(passed ? { moment_passed: passed } : {}),
       })
       if (disposed || !res || !res.show || !res.message || passed) return
@@ -295,9 +355,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     }
 
     const evaluate = () => {
-      if (fired || disposed || document.visibilityState !== 'visible') return
+      if (fired || disposed || stopped || document.visibilityState !== 'visible') return
       // The note closed with ✕ while this page was open: no card for the rest of the visit.
       if (ssGet(NOTE_CLOSED_KEY)) return
+      // The site says this is its thank-you or a legal page (bbc-signals), whatever the address.
+      if (noMomentPage(sitePage())) return
       // The quote form went away after the press: it was sent in place. Nothing on this page after that.
       if (press?.form && !press.form.isConnected) {
         sentInline = true
@@ -309,7 +371,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         sincePressS: (now - press.at) / 1000,
         sinceFormActivityS: (now - Math.max(press.at, press.activityAt)) / 1000,
         invalid: press.invalid,
-        busy: sending(press.form),
+        busy: sending(press.form) || siteBusy,
       } : null
       const state: PageState = {
         path: location.pathname,
@@ -344,11 +406,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     document.addEventListener('visibilitychange', onVisibility)
     const exitWatch = matches('(pointer: fine)') && !matches(PHONE)
     if (exitWatch) document.documentElement.addEventListener('mouseleave', onLeave)
+    // What the site said before this watch started (the queue), then what it says from now on.
+    for (const e of siteEvents()) onSite(e)
+    const offSite = onSiteEvent(onSite)
     const tick = setInterval(evaluate, 1000)
 
     return () => {
       disposed = true
       clearInterval(tick)
+      offSite()
       for (const ev of pointerEvents) window.removeEventListener(ev, onActivity, cap)
       window.removeEventListener('scroll', onScroll, cap)
       document.removeEventListener('keydown', onType, cap)
@@ -391,7 +457,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       })
     },
     noteOpening: async (stillWanted) => {
-      const trip = readTrip(location.href, pageTitle(), kayakVisit())
+      const trip = currentTrip()
       const res = await fetchProactiveOffer(
         apiUrl, { visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id }, OFFER_TIMEOUT_MS,
       )

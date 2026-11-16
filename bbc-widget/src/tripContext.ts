@@ -108,11 +108,36 @@ export function tripFromTitle(h1: string): TripPayload | null {
   return null
 }
 
-/** What this page says the visitor is looking for: the address first, then the title. */
-export function readTrip(href: string, h1: string, kayakVisit = false): TripPayload | null {
-  let search = ''
-  try { search = new URL(href).search } catch { /* not an address: the title alone */ }
-  return tripFromUrl(search, kayakVisit) || tripFromTitle(h1)
+/** A trip the site handed over as fields (bbc-signals.astro: `window.bbcPage.trip`, or the detail of a
+ *  `search_submitted` event), held to the same rules as the address. Numbers or strings; anything else,
+ *  and any field of the wrong shape, is left out. Null when nothing places a trip. */
+export function tripFromFields(raw: unknown, source: TripSource): TripPayload | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const s = (v: unknown): string | null =>
+    typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : null
+  const t: TripPayload = {
+    source,
+    origin_code: code(s(r.origin_code)),
+    destination_code: code(s(r.destination_code)),
+    origin_name: city(s(r.origin_name)),
+    destination_name: city(s(r.destination_name)),
+    depart_date: day(s(r.depart_date)),
+    return_date: day(s(r.return_date)),
+    trip_type: word(s(r.trip_type)),
+    cabin: word(s(r.cabin)),
+    adults: count(s(r.adults)),
+    children: count(s(r.children)),
+    infants: count(s(r.infants)),
+  }
+  const hasTrip = t.origin_code || t.destination_code || t.destination_name || t.depart_date
+  return hasTrip ? compact(t) : null
+}
+
+/** The trip the chat starts from, the newest word first: the search the visitor just ran on the site, the
+ *  address they came in with, what the page itself says it is about (bbc-signals), and last its title. */
+export function pickTrip(...trips: (TripPayload | null | undefined)[]): TripPayload | null {
+  return trips.find((t): t is TripPayload => !!t) ?? null
 }
 
 /** The card can name a place: the server opens with the trip, not with the general question. */
