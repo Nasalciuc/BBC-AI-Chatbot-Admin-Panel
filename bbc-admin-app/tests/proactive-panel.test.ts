@@ -42,6 +42,13 @@ test('what the client searched on the page', () => {
   assert.equal(pageTripText({ proactive_trip: { depart_date: 'soon', adults: 'four', cabin: 'luxury' } }), '')
   assert.equal(pageTripText({ proactive_trip: 'ATL-ICN' }), '')
   assert.equal(pageTripText({ proactive_trip: { destination_name: 'Paris', cabin: 'toString' } }), 'To Paris')
+  // A day the month doesn't have is no day (not "3 Mar"), and a count is a whole number above zero.
+  assert.equal(
+    pageTripText({ proactive_trip: { origin_code: 'ATL', destination_code: 'ICN', depart_date: '2027-02-31', return_date: '2027-13-01', adults: 2.5 } }),
+    'ATL → ICN',
+  )
+  assert.equal(pageTripText({ proactive_trip: { destination_code: 'ICN', adults: 2, children: -1, infants: 0.5 } }), 'To ICN · 2 adults')
+  assert.equal(pageTripText({ proactive_trip: { destination_code: 'ICN', depart_date: '2028-02-29' } }), 'To ICN · 29 Feb')
   assert.equal(pageTripText({}), '')
 })
 

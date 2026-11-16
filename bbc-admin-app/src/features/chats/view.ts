@@ -834,10 +834,15 @@ const CABIN_NAME: Record<string, string> = {
   first: 'First',
 }
 
+/** "25 May", only for a day the calendar has. Not dayMonth: that one reads the CRM's date column,
+ *  always a real day; this reads a JSON blob, where "2026-02-31" would roll over into "3 Mar". */
 function shortDay(iso: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return ''
-  const d = new Date(`${iso}T12:00:00`)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!m) return ''
+  const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
+  const day = new Date(y, mo, d, 12)
+  if (day.getFullYear() !== y || day.getMonth() !== mo || day.getDate() !== d) return ''
+  return day.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
 /** What the client searched on the page, as the card showed it (metadata.proactive_trip, checked
@@ -847,7 +852,11 @@ export function pageTripText(meta: Record<string, unknown> | undefined): string 
   if (!raw || typeof raw !== 'object') return ''
   const t = raw as Record<string, unknown>
   const s = (k: string) => (typeof t[k] === 'string' ? (t[k] as string).trim() : '')
-  const n = (k: string) => (typeof t[k] === 'number' && Number.isFinite(t[k]) ? (t[k] as number) : 0)
+  // A count of people: a whole number above zero, or none ("2.5 adults" and "-1 children" are no count).
+  const n = (k: string) => {
+    const v = t[k]
+    return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0
+  }
   const from = s('origin_code') || s('origin_name')
   const to = s('destination_code') || s('destination_name')
   const route = from && to ? `${from} → ${to}` : to ? `To ${to}` : from ? `From ${from}` : ''
