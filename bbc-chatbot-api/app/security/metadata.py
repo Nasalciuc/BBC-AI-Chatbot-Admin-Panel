@@ -30,8 +30,52 @@ _ALLOWED_PREFIXES = ("utm_", "landing_")
 # conversation row, the panel or the CRM.
 _MAX_KEY = 64
 _MAX_VALUE = 2048  # a page URL or a referrer can be long; nothing else comes close
-_MAX_KEYS = 50     # attribution keys; the validated site and booking_id come on top
+_MAX_KEYS = 50     # attribution keys; the validated keys below come on top
 _POSTHOG_ID = re.compile(r"[0-9A-Za-z-]{16,64}")
+
+# What the site says the page is (bbc-signals.astro, window.bbcPage.page_type): one word of
+# bbc-widget/src/siteSignals.ts PAGE_TYPES, the same list.
+_PAGE_TYPES = frozenset({
+    "home", "route", "destination", "origin", "airline", "deals", "search",
+    "flight", "quote", "thank_you", "blog", "about", "legal", "other",
+})
+
+# What the visitor did on the site before the chat (siteSignals.ts activityLine): up to 12 tokens
+# joined by ';', at most 300 characters, each one of the widget's fixed shapes (activityToken). The
+# shapes hold codes, dates, small numbers and fixed words only, so nothing the visitor typed can
+# ride the line; a single token outside them drops the whole line.
+_FIELD_KIND = (
+    r"(?:name|email|phone|origin|destination|dates|passengers|cabin|trip_type|message"
+    r"|consent|captcha|other)"
+)
+_ACTIVITY_TOKEN = re.compile(
+    r"search(?::(?:[A-Z]{3}-(?:[A-Z]{3}|\?)|\?-[A-Z]{3}))?(?::[0-9]{4}-[0-9]{2}-[0-9]{2})?"
+    r"|quote_opened"
+    r"|quote_step(?::(?:[1-9]|1[0-9]|20))?"
+    rf"|quote_invalid(?::{_FIELD_KIND}(?:\|{_FIELD_KIND}){{0,5}})?"
+    r"|quote_submitting"
+    r"|quote_failed:(?:server|network|captcha|other)"
+    r"|quote_submitted"
+    r"|contact(?::(?:phone|whatsapp|email))?"
+)
+_MAX_ACTIVITY = 300
+_MAX_ACTIVITY_TOKENS = 12
+
+
+def page_activity_tokens(value: object) -> list[str] | None:
+    """The tokens of a page_activity line, or None when the line is not the widget's.
+
+    Shared by the allowlist below and the prompt (app.ai.prompts), so the prompt
+    only ever reads tokens that passed this check.
+    """
+    if not isinstance(value, str) or not value or len(value) > _MAX_ACTIVITY:
+        return None
+    tokens = value.split(";")
+    if len(tokens) > _MAX_ACTIVITY_TOKENS:
+        return None
+    if not all(_ACTIVITY_TOKEN.fullmatch(t) for t in tokens):
+        return None
+    return tokens
 
 
 def _known_sites() -> set[str]:
@@ -42,12 +86,15 @@ def _known_sites() -> set[str]:
 def allowed_widget_metadata(raw: dict | None) -> dict:
     """Keep only the attribution/landing fields; drop everything else.
 
-    Two widget values are needed and validated rather than dropped:
+    Some widget values are needed and validated rather than dropped:
     - `site` — which brand the chat belongs to (bbc | bct). Nothing on the
       server derives it; dropping it made every businessclass-tickets chat a
       BBC chat (prompts, phone, closing, CRM base). Kept only when it names a
       configured brand.
     - `booking_id` — the support tunnel's ticket number, a short string.
+    - `page_type` / `page_activity` — what the site says the page is and what
+      the visitor did on it before the chat (bbc-signals), for the prompt.
+      Kept only in the widget's own vocabulary (_PAGE_TYPES, _ACTIVITY_TOKEN).
     """
     if not raw:
         return {}
@@ -71,4 +118,10 @@ def allowed_widget_metadata(raw: dict | None) -> dict:
     ph = raw.get("posthog_session_id")
     if isinstance(ph, str) and _POSTHOG_ID.fullmatch(ph.strip()):
         out["posthog_session_id"] = ph.strip()
+    page_type = raw.get("page_type")
+    if isinstance(page_type, str) and page_type in _PAGE_TYPES:
+        out["page_type"] = page_type
+    activity = raw.get("page_activity")
+    if page_activity_tokens(activity):
+        out["page_activity"] = activity
     return out

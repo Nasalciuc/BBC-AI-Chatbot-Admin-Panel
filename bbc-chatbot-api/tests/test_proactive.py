@@ -73,10 +73,14 @@ def _day(d: date) -> str:
 
 @pytest.fixture(autouse=True)
 def _switches(monkeypatch):
-    """Every test starts from merge state (feature off, 0%) with fresh counters."""
+    """Every test starts with the moments switched off (PROACTIVE_ENABLED=false,
+    as app_settings.flags would say it) and fresh counters; a test that wants
+    them calls _switch_on. What a deploy with no switch set does is
+    TestMergeDefaults' business."""
     flags._reset_for_tests()
     for k in ("PROACTIVE_ENABLED", "PROACTIVE_PERCENT", "PROACTIVE_TRIGGERS", "PROACTIVE_NOTE_ENABLED"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("PROACTIVE_ENABLED", "false")
     saved = dict(proactive.PROACTIVE_HEALTH)
     for k in ("offers", "shown", "opened", "open_failures", "seed_errors"):
         proactive.PROACTIVE_HEALTH[k] = 0
@@ -307,8 +311,37 @@ class TestCompose:
 # 3. /chat/proactive/offer: writes nothing, answers per arm
 # ══════════════════════════════════════════════════════════════
 
+class TestMergeDefaults:
+    """The owner's decision of 16 Nov: with no switch set anywhere, the moments
+    open the card for every visitor; PROACTIVE_ENABLED=false in
+    app_settings.flags turns them off in 30 s, without a deploy."""
+
+    def test_on_for_every_visitor_with_no_switch_set(self, monkeypatch):
+        monkeypatch.delenv("PROACTIVE_ENABLED", raising=False)
+        assert proactive.enabled() is True
+        for visitor in (_VISITOR, "v-2", "v-3", "visitor-with-another-bucket"):
+            out = proactive.offer(visitor, "kayak", _kayak_trip())
+            assert out["show"] is True and out["arm"] == "proactive"
+        assert proactive.active_triggers() == {"kayak", "quote", "reader", "exit"}
+
+    @pytest.mark.parametrize("off", ["false", "False", "0", "off", "no"])
+    def test_the_switch_turns_it_off(self, monkeypatch, off):
+        monkeypatch.setenv("PROACTIVE_ENABLED", off)
+        out = proactive.offer(_VISITOR, "kayak", _kayak_trip())
+        assert out == {"show": False, "arm": "off", "trigger": "kayak", "message": None, "quick_replies": []}
+
+    def test_a_lower_percent_brings_the_control_arm_back(self, monkeypatch):
+        monkeypatch.delenv("PROACTIVE_ENABLED", raising=False)
+        monkeypatch.setenv("PROACTIVE_PERCENT", "0")
+        assert proactive.offer(_VISITOR, "kayak", _kayak_trip())["arm"] == "control"
+
+    def test_no_visitor_id_stays_control(self, monkeypatch):
+        monkeypatch.delenv("PROACTIVE_ENABLED", raising=False)
+        assert proactive.offer(None, "kayak", _kayak_trip())["show"] is False
+
+
 class TestOffer:
-    def test_off_at_merge(self):
+    def test_off_when_switched_off(self):
         out = proactive.offer(_VISITOR, "kayak", _kayak_trip())
         assert out == {"show": False, "arm": "off", "trigger": "kayak", "message": None, "quick_replies": []}
         assert proactive.PROACTIVE_HEALTH["offers"] == 1 and proactive.PROACTIVE_HEALTH["shown"] == 0

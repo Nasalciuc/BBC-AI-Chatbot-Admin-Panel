@@ -17,9 +17,12 @@ never taken from the widget: both doors write the same sentence, and nothing
 typed into a URL reaches a prompt, a message or the panel as free text.
 
 Switches (``app_settings.flags``, read every 30 s, no deploy):
-- ``PROACTIVE_ENABLED`` (off at merge) — the whole feature;
-- ``PROACTIVE_PERCENT`` (0) — the share of visitors in the proactive arm,
-  bucketed by visitor id, so a visitor stays in one arm across visits;
+- ``PROACTIVE_ENABLED`` (on: the owner's decision of 16 Nov) — the whole
+  feature; ``false`` in ``app_settings.flags`` turns it off in 30 s;
+- ``PROACTIVE_PERCENT`` (100: every visitor, the owner's decision of 16 Nov,
+  over an A/B half) — the share of visitors in the proactive arm, bucketed by
+  visitor id, so a visitor stays in one arm across visits; a lower value
+  brings the control arm back for a comparison;
 - ``PROACTIVE_TRIGGERS`` ("kayak,quote,reader,exit") — which moments may open it.
 
 One more door is not a moment and the switches above do not hold it:
@@ -88,8 +91,9 @@ PROACTIVE_HEALTH: dict = {
 # --- switches -------------------------------------------------------------
 
 def enabled() -> bool:
+    """On unless app_settings.flags (or the env) says ``false`` (owner, 16 Nov)."""
     from app.flags import flag
-    return bool(flag("PROACTIVE_ENABLED", False))
+    return bool(flag("PROACTIVE_ENABLED", True))
 
 
 def note_enabled() -> bool:
@@ -112,7 +116,7 @@ def arm_for(visitor_id: Optional[str]) -> str:
     from app.flags import flag
     if not visitor_id:
         return "control"
-    percent = int(flag("PROACTIVE_PERCENT", 0) or 0)
+    percent = int(flag("PROACTIVE_PERCENT", 100) or 0)
     return "proactive" if in_arm(EXPERIMENT, visitor_id, percent) else "control"
 
 

@@ -634,6 +634,96 @@ def _page_path(page_url: Optional[str]) -> Optional[str]:
     return path if path and path != "/" else None
 
 
+# The site's word for the page (bbc-signals page_type), as the prompt says it. "other" says nothing.
+_PAGE_TYPE_WORDS = {
+    "home": "the home page",
+    "route": "a route page",
+    "destination": "a destination page",
+    "origin": "a departure-city page",
+    "airline": "an airline page",
+    "deals": "the deals page",
+    "search": "search results",
+    "flight": "a flight page",
+    "quote": "the quote form page",
+    "thank_you": "the thank-you page shown after the quote form is sent",
+    "blog": "a blog article",
+    "about": "an about page",
+    "legal": "a legal page",
+}
+_CONTACT_WORDS = {"phone": "the phone number", "whatsapp": "WhatsApp", "email": "the email address"}
+_FAIL_WORDS = {
+    "server": "a server error",
+    "network": "a network error",
+    "captcha": "the captcha",
+    "other": "an unknown error",
+}
+_ISO_DATE = _re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _activity_phrase(token: str) -> str:
+    """One page_activity token, already checked by app.security.metadata, in plain words."""
+    name, _, rest = token.partition(":")
+    if name == "search":
+        route, when = None, None
+        for part in rest.split(":") if rest else []:
+            if _ISO_DATE.fullmatch(part):
+                when = part
+            else:
+                route = part
+        phrase = "searched flights"
+        if route:
+            origin, _, dest = route.partition("-")
+            if origin != "?" and dest != "?":
+                phrase += f" {origin} → {dest}"
+            elif origin != "?":
+                phrase += f" from {origin}"
+            else:
+                phrase += f" to {dest}"
+        if when:
+            phrase += f", departing {when}"
+        return phrase
+    if name == "quote_opened":
+        return "opened the quote form"
+    if name == "quote_step":
+        return f"reached step {rest} of the quote form" if rest else "moved on in the quote form"
+    if name == "quote_invalid":
+        if not rest:
+            return "the quote form refused a field"
+        return "the quote form refused: " + ", ".join(k.replace("_", " ") for k in rest.split("|"))
+    if name == "quote_submitting":
+        return "pressed send on the quote form"
+    if name == "quote_failed":
+        return f"the quote form did not go through ({_FAIL_WORDS.get(rest, 'an unknown error')})"
+    if name == "quote_submitted":
+        return "sent the quote request"
+    if name == "contact":
+        return f"clicked {_CONTACT_WORDS[rest]}" if rest in _CONTACT_WORDS else "clicked a contact link"
+    return name.replace("_", " ")
+
+
+def site_activity_lines(metadata: dict | None) -> list[str]:
+    """What the site said about the page and the visit before the chat (bbc-signals), as
+    SITE CONTEXT lines. Only the widget's checked vocabulary gets here (page_type from a fixed
+    list, page_activity re-checked token by token), so no word the visitor typed can."""
+    if not metadata:
+        return []
+    from app.security.metadata import page_activity_tokens
+
+    lines: list[str] = []
+    page_type = metadata.get("page_type")
+    kind = _PAGE_TYPE_WORDS.get(page_type) if isinstance(page_type, str) else None
+    if kind:
+        lines.append(f"Site page type: {kind}")
+    tokens = page_activity_tokens(metadata.get("page_activity"))
+    if tokens:
+        lines.append(
+            "On the site before the chat (site events, oldest first): "
+            + "; ".join(_activity_phrase(t) for t in tokens)
+            + ". Context only; the client's words win."
+        )
+    return lines
+
+
 def build_site_context(metadata: dict | None) -> Optional[str]:
     """Where the visitor came from, as prompt lines. None when we know nothing.
 
@@ -685,6 +775,7 @@ def build_site_context(metadata: dict | None) -> Optional[str]:
         lines.append(came_from)
     if page_path:
         lines.append(f"Opened chat on page: {page_path}")
+    lines.extend(site_activity_lines(metadata))
     if utm_term:
         lines.append(f"Search keyword hint: {utm_term}")
     if utm_campaign:
