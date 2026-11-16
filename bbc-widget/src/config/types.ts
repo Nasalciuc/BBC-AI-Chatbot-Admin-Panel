@@ -28,9 +28,9 @@ export interface BrandConfig {
     /** The letter in the round avatar when the page refuses Alex's photo (PersonaAvatar.tsx). */
     initial: string
     /** Under the name, before the brand: "Travel Agent · BuyBusinessClass" (owner, 16 Nov). The word AI
-     *  is not in it, and is never gone: the "AI" badge on his photo in every spot that shows him
-     *  (PersonaAvatar.tsx), the same word read to screen readers before this line (PanelTop.tsx,
-     *  PersonaLine), and Alex's first message of every chat ("I'm Alex, the AI Travel Agent at …"). */
+     *  is not in it, and is never gone: the "AI" badge on his photo in the panel's header (PersonaAvatar.tsx,
+     *  `badge`; one place, the owner's choice) and the same word read to screen readers before this line
+     *  (PanelTop.tsx, PersonaLine). */
     role: string
   }
   /**

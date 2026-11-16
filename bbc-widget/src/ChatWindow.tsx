@@ -1094,7 +1094,7 @@ export function ChatWindow({
   const lastAgentName = (lastAgent?.agent_name || '').trim()
   // Alex's own line (PersonaLine) until a person writes in the chat.
   const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : undefined
-  // Alex's avatar: his photo with the "AI" badge (PersonaAvatar.tsx).
+  // Alex's avatar: his photo (PersonaAvatar.tsx). The "AI" badge is the header's alone.
   const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).

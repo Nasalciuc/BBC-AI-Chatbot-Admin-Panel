@@ -76,7 +76,7 @@ export function FloatingButtons({
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
     : `Chat with ${brand.name}`
-  // Alex's avatar beside the button: his photo with the "AI" badge (PersonaAvatar.tsx).
+  // Alex's avatar beside the button: his photo (PersonaAvatar.tsx). The "AI" badge is the header's alone.
   const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" />
   const personaWho = (
     <span class="bw-nudge__id"><b>{brand.persona.name}</b><small><PersonaLine /></small></span>

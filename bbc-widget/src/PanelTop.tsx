@@ -24,8 +24,8 @@ export const personaLine = `${brand.persona.role} · ${brand.name}`
 
 /**
  * Alex's line as the page shows it: "Travel Agent · BuyBusinessClass", with "AI" before it for screen
- * readers ("AI Travel Agent · BuyBusinessClass"). Seen, the word is the badge on his photo
- * (PersonaAvatar.tsx), a picture that screen readers skip, so they get it here, in the same place.
+ * readers ("AI Travel Agent · BuyBusinessClass"). Seen, the word is the badge on his photo in the header
+ * (PersonaAvatar.tsx, `badge`), a picture that screen readers skip, so they get it here, in the line.
  */
 export function PersonaLine() {
   return <><span class="bw-sr">AI </span>{personaLine}</>
@@ -43,7 +43,7 @@ export function PanelTop({ subtitle, onClose, closeLabel = 'Close', canEnlarge =
   return (
     <div class="bw-top">
       <div class="bw-head">
-        <PersonaAvatar cls="bw-head__ava">
+        <PersonaAvatar cls="bw-head__ava" badge>
           <i class="bw-head__live" />
         </PersonaAvatar>
         <div class="bw-head__text">

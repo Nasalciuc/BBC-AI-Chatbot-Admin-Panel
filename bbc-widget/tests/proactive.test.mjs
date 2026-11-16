@@ -371,8 +371,8 @@ test('Alex is a "Travel Agent" on both sites and the word AI is never gone; the 
   for (const site of [bbc, bct]) {
     assert.equal(site.persona.name, 'Alex')
     assert.equal(site.persona.initial, 'A')
-    // Capital T and A, and no "AI" in the line itself (owner, 16 Nov): the badge on his photo, the word
-    // read to screen readers and his first message say it.
+    // Capital T and A, and no "AI" in the line itself (owner, 16 Nov): the badge on his photo in the
+    // header and the word read to screen readers say it.
     assert.equal(site.persona.role, 'Travel Agent')
   }
   // The header: the name over "Travel Agent · <brand>", read as "AI Travel Agent · <brand>".
@@ -387,17 +387,17 @@ test('Alex is a "Travel Agent" on both sites and the word AI is never gone; the 
   assert.match(chat, /`\$\{brand\.persona\.name\}, the AI \$\{brand\.persona\.role\}, is typing`/)
   // No bubble is signed "Assistant" any more, the unread preview included.
   assert.doesNotMatch(chat, /'Assistant'|<b>Assistant<\/b>/)
-  // The server's openings: "Hi, I'm Alex, the AI Travel Agent at …" (bbc-chatbot-api/app/services/proactive.py, PERSONA).
+  // The server's openings: "Hi, I'm Alex from …" (bbc-chatbot-api/app/services/proactive.py, PERSONA).
   assert.match(read('config/types.ts'), /PERSONA\): keep them equal/)
 })
 
-test('Alex has his photo in the header, beside his messages and beside the button, with the "AI" badge on it in all three', () => {
+test('Alex has his photo in the header, beside his messages and beside the button; the "AI" badge only in the header', () => {
   // A colleague's photo, with his permission (owner, 16 Nov). Part of the bundle, not a link: small,
   // and no request can fail on its way to it.
   assert.match(ALEX_PHOTO, /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/)
   assert.ok(ALEX_PHOTO.length < 16000, `${ALEX_PHOTO.length} characters`)
   // One component in all three spots.
-  assert.match(top, /<PersonaAvatar cls="bw-head__ava">\s*<i class="bw-head__live" \/>\s*<\/PersonaAvatar>/)
+  assert.match(top, /<PersonaAvatar cls="bw-head__ava" badge>\s*<i class="bw-head__live" \/>\s*<\/PersonaAvatar>/)
   assert.match(chat, /const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" \/>/)
   assert.match(buttons, /const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" \/>/)
   assert.match(buttons, /<span class="bw-nudge__who">\{personaAvatar\}\{personaWho\}<\/span>/)
@@ -407,17 +407,18 @@ test('Alex has his photo in the header, beside his messages and beside the butto
   assert.match(avatar, /\? brand\.persona\.initial/)
   assert.match(avatar, /aria-hidden="true"/)
   assert.match(WIDGET_CSS, /\.bw-photo > img \{ display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; \}/)
-  // The "AI" badge, after the photo-or-letter, so the letter fallback keeps it too; one component, so
-  // all three spots have it.
-  assert.match(avatar, /onError=\{\(\) => setRefused\(true\)\} \/>\}\s*<i class="bw-ai">AI<\/i>\s*\{children\}/)
-  // On the avatar's edge: each spot's avatar is the badge's frame, the header's green dot keeps its corner.
-  assert.match(WIDGET_CSS, /\.bw-ai \{\s*position: absolute; left: -5px; bottom: -3px;/)
+  // The "AI" badge: the header only (owner, 16 Nov: one place is enough), after the photo-or-letter, so
+  // the letter fallback keeps it too.
+  assert.match(avatar, /badge = false/)
+  assert.match(avatar, /onError=\{\(\) => setRefused\(true\)\} \/>\}\s*\{badge && <i class="bw-ai">AI<\/i>\}\s*\{children\}/)
+  assert.equal((top + chat + buttons).match(/<PersonaAvatar [^>]*\bbadge\b/g)?.length, 1)
+  // On the header avatar's edge, bottom left: the green dot keeps the bottom right.
+  assert.match(WIDGET_CSS, /\.bw-ai \{\s*position: absolute; left: -4px; bottom: -2px;/)
   assert.match(WIDGET_CSS, /\.bw-head__ava \{\s*position: relative;/)
-  assert.match(WIDGET_CSS, /\.bw-ava--persona,\s*#bbc-widget-root \.bw-nudge__ava--persona \{ position: relative; \}/)
   assert.match(WIDGET_CSS, /\.bw-head__live \{\s*position: absolute; right: -1px; bottom: -1px;/)
   // White on the brand colour, the pair the colour test below holds to 4.5:1.
   assert.match(WIDGET_CSS, /\.bw-ai \{[^}]*background: var\(--bw-primary, var\(--bw-ink\)\); color: #FFFFFF;/)
-  // Beside the face, the button's card says it as the header does: "Travel Agent · <brand>", "AI" read first.
+  // Beside the face, the button's card has the header's line: "Travel Agent · <brand>", "AI" read first.
   assert.match(buttons, /const personaWho = \(\s*<span class="bw-nudge__id"><b>\{brand\.persona\.name\}<\/b><small><PersonaLine \/><\/small><\/span>/)
   // The logo stays only on the corner button, which the site draws a stand-in of before this script loads.
   assert.equal(buttons.match(/brand\.logoUrl/g)?.length, 1)
