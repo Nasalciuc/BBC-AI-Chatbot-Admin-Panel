@@ -196,6 +196,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       ssSet(ATTENTION_KEY, '1')
       // A note already waiting (or on screen) goes away too: Widget shows it only while not quiet.
       setQuiet(true)
+      // So does a card still waiting for an answer (an answered one became the chat: `opened` cleared it).
+      setOffer(null)
     }
     for (const e of siteEvents()) stopFor(e)
     return onSiteEvent(stopFor)
@@ -320,6 +322,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (document.visibilityState !== 'visible') return 'hidden'
       if (ssGet(NOTE_CLOSED_KEY)) return 'note_closed'
       if (blockedPath(location.pathname)) return 'left_page'
+      // The site moved on to its thank-you or a legal page while the answer was on its way.
+      if (noMomentPage(sitePage())) return 'left_page'
       if (lastSiteTyping !== before.typing) return 'typing'
       if ((press?.at ?? null) !== before.pressAt || (press?.activityAt ?? null) !== before.formAt) return 'quote_form'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'

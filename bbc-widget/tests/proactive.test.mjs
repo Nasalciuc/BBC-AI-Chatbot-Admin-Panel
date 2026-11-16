@@ -179,6 +179,9 @@ test('quote comes first, and a form being worked on holds every other moment', (
   assert.equal(at({ kayak: true, visibleS: 30, quote: pressed({ sinceFormActivityS: 9 }) }), 'quote')
   // Long after the press the form is part of the page again.
   assert.equal(at({ kayak: true, visibleS: 300, quote: pressed({ sincePressS: 200, sinceFormActivityS: 1 }) }), 'kayak')
+  // …unless its send is still in flight: that holds every moment, however long it takes.
+  assert.equal(at({ kayak: true, visibleS: 300, scrolledScreens: 3, quote: pressed({ sincePressS: 200, busy: true }) }), null)
+  assert.equal(at({ exitIntent: true, visibleS: 300, quote: pressed({ sincePressS: 900, busy: true }) }), null)
 })
 
 test('kayak before reader before exit', () => {

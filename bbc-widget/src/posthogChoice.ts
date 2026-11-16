@@ -1,5 +1,5 @@
 /**
- * Whose PostHog the widget sends to, and how it recognises the site's. Pure and import-free, so
+ * Whose PostHog the widget sends to, and how it recognises the site's. Import-free, so
  * tests/site-signals.test.mjs runs it as it is; posthog.ts does the starting and the sending.
  */
 
@@ -43,4 +43,28 @@ export function sitePostHogOf(w: unknown): PostHogLike | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Calls `onSite` once, as soon as the site's PostHog is on (sitePostHogOf), looking every `everyMs` for at
+ * most `forMs`. posthog.ts starts it with the widget's own copy, so the copy goes quiet when the visitor
+ * accepts the cookies later, without waiting for the widget's next event. Returns the way to stop it.
+ */
+export function watchSitePostHog(w: unknown, onSite: () => void, everyMs = 1000, forMs = 30 * 60 * 1000): () => void {
+  let waited = 0
+  let id: ReturnType<typeof setInterval> | null = null
+  const stop = () => {
+    if (id !== null) clearInterval(id)
+    id = null
+  }
+  id = setInterval(() => {
+    waited += everyMs
+    if (sitePostHogOf(w)) {
+      stop()
+      try { onSite() } catch { /* tracking never breaks the page */ }
+    } else if (waited >= forMs) {
+      stop()  // after this, the next event of the widget still moves to the site's PostHog (posthog.ts)
+    }
+  }, everyMs)
+  return stop
 }

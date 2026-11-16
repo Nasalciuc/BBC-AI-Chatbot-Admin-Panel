@@ -68,11 +68,12 @@ export function noMomentPage(page: SitePage | null): boolean {
 }
 
 /** One entry of window.bbcQueue or one bbc:* event, or null when it is none the widget knows. A time that
- *  is missing, not a number or in the future (a clock the site got wrong) reads as `now`. */
+ *  is missing, not a number or in the future (a clock the site got wrong) reads as `now`. The detail is
+ *  rebuilt from the fields that event may carry (cleanDetail): nothing else the site put in it is kept. */
 export function readSiteEvent(name: unknown, detail: unknown, at: unknown, now: number): SiteEvent | null {
   if (typeof name !== 'string' || !(SITE_EVENTS as readonly string[]).includes(name)) return null
   const t = typeof at === 'number' && Number.isFinite(at) && at > 0 && at <= now ? at : now
-  return { name: name as SiteEventName, detail: isObj(detail) ? detail : {}, at: t }
+  return { name: name as SiteEventName, detail: cleanDetail(name as SiteEventName, isObj(detail) ? detail : {}), at: t }
 }
 
 // The few shapes an event's detail may carry into the activity line. Codes and dates follow
@@ -138,6 +139,62 @@ function failReason(v: unknown): typeof REASONS[number] {
   return typeof v === 'string' && (REASONS as readonly string[]).includes(v) ? v as typeof REASONS[number] : 'other'
 }
 
+// A place as a search form names it ("Chicago (CHI)", "St. Louis", "São Paulo"): letters and the few marks
+// a city name has, 2–40 characters. An email, a phone number or a sentence is no place.
+const PLACE = /^\p{L}[\p{L} .'’()-]{0,38}[\p{L}.)]$/u
+const WORD = /^[A-Za-z_ -]{2,20}$/
+const FORMS = ['main', 'popup'] as const
+
+const place = (v: unknown) => (typeof v === 'string' && PLACE.test(v.trim()) ? v.trim() : null)
+const word = (v: unknown) => (typeof v === 'string' && WORD.test(v.trim()) ? v.trim().toLowerCase() : null)
+/** A number of passengers (0–9), as a number or a string of digits. */
+const count = (v: unknown) => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d{1,2}$/.test(v.trim()) ? Number(v.trim()) : NaN
+  return Number.isInteger(n) && n >= 0 && n <= 9 ? n : null
+}
+/** The step a multi-step form moved to (1–20). */
+const step = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v > 0 && v < 21 ? v : null)
+
+/** The detail an event may carry, rebuilt from the fields of its kind that pass their check; anything
+ *  else the site put in it (a name, an email, a message) is dropped on arrival and never kept here. */
+function cleanDetail(name: SiteEventName, d: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const put = (k: string, v: unknown) => { if (v !== null) out[k] = v }
+  switch (name) {
+    case 'search_submitted':
+      put('origin_code', code(d.origin_code))
+      put('destination_code', code(d.destination_code))
+      put('origin_name', place(d.origin_name))
+      put('destination_name', place(d.destination_name))
+      put('depart_date', date(d.depart_date))
+      put('return_date', date(d.return_date))
+      put('trip_type', word(d.trip_type))
+      put('cabin', word(d.cabin))
+      put('adults', count(d.adults))
+      put('children', count(d.children))
+      put('infants', count(d.infants))
+      break
+    case 'quote_form_opened':
+      put('form', typeof d.form === 'string' && (FORMS as readonly string[]).includes(d.form) ? d.form : null)
+      break
+    case 'quote_form_step':
+      put('step', step(d.step))
+      break
+    case 'quote_form_invalid':
+      out.fields = fieldKinds(d.fields)
+      break
+    case 'quote_form_failed':
+      out.reason = failReason(d.reason)
+      break
+    case 'contact_clicked':
+      put('channel', contactChannel(d.channel))
+      break
+    default:
+      break
+  }
+  return out
+}
+
 /** One event as a short token for the server's line about the visit (metadata.page_activity): what the
  *  visitor did, never what they typed. */
 export function activityToken(e: SiteEvent): string {
@@ -151,7 +208,7 @@ export function activityToken(e: SiteEvent): string {
     }
     case 'quote_form_opened': return 'quote_opened'
     case 'quote_form_step': {
-      const n = typeof d.step === 'number' && Number.isInteger(d.step) && d.step > 0 && d.step < 21 ? d.step : null
+      const n = step(d.step)
       return n ? `quote_step:${n}` : 'quote_step'
     }
     case 'quote_form_invalid': {
@@ -268,10 +325,13 @@ export function startSiteSignals(w: Window): void {
   }
 }
 
+/** Stops listening and forgets the page (the widget's teardown): nothing the site said stays here. */
 export function stopSiteSignals(): void {
   detach?.()
   detach = null
   listeners.clear()
+  events = []
+  pageSource = () => undefined
 }
 
 /** What the page says it is about (read each time: a site may set it after the widget loaded). */

@@ -84,9 +84,12 @@ export function pickTrigger(s: PageState): Trigger | null {
   if (blockedPath(s.path)) return null
   if (s.sinceActivityS > ACTIVE_WITHIN_S) return null
 
+  // A send in flight holds every moment off for as long as the form (or the site) says it is in flight,
+  // also past the quote watch below: the visitor is waiting for the answer, not for us.
+  if (s.quote?.busy) return null
+
   // A press of "Get free quote" puts the form first: until it goes quiet nothing else interrupts.
   if (s.quote && s.quote.sincePressS <= QUOTE_WATCH_S) {
-    if (s.quote.busy) return null
     const idle = s.quote.invalid ? QUOTE_INVALID_IDLE_S : QUOTE_IDLE_S
     if (s.exitIntent || s.quote.sinceFormActivityS >= idle) return 'quote'
     return null

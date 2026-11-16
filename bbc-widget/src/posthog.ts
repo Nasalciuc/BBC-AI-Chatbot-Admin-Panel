@@ -1,5 +1,5 @@
 import posthogSdk from 'posthog-js'
-import { choosePostHog, sitePostHogOf, type PostHogLike } from './posthogChoice'
+import { choosePostHog, sitePostHogOf, watchSitePostHog, type PostHogLike } from './posthogChoice'
 
 // The public project token (phc_…): PostHog meant it for the browser, so its
 // name stays clear of KEY/TOKEN, which scan_bundle_secrets.py treats as secrets.
@@ -48,21 +48,28 @@ export function startPostHog({ consent }: { consent: boolean }): void {
     },
   })
   ownStarted = true
+  // The site's PostHog may come on later in the visit (the visitor accepts the cookies): the copy goes
+  // quiet then, not at the widget's next event, so the two never record the same page together.
+  if (typeof window !== 'undefined') watchSitePostHog(window, quietOwnCopy)
+}
+
+/** The widget's own copy stops recording and capturing by itself once the site's PostHog is on, so
+ *  nothing is counted twice; the widget's own events already go to the site's (active()). Once. */
+function quietOwnCopy(): void {
+  if (!ownStarted || ownQuiet) return
+  ownQuiet = true
+  try {
+    posthogSdk.set_config({ autocapture: false, capture_pageview: false, capture_pageleave: false })
+    posthogSdk.stopSessionRecording()
+  } catch { /* the copy keeps running; the events still go to the site's PostHog */ }
 }
 
 /** The PostHog in use right now. The site's wins whenever it is on: a visitor who accepts the cookies
- *  after the widget loaded moves to it from the next event. If the widget's own copy was already running
- *  then, it stops recording and capturing by itself, so nothing is counted twice. */
+ *  after the widget loaded moves to it from the next event. */
 function active(): PostHogLike | undefined {
   const site = sitePostHog()
   if (site) {
-    if (ownStarted && !ownQuiet) {
-      ownQuiet = true
-      try {
-        posthogSdk.set_config({ autocapture: false, capture_pageview: false, capture_pageleave: false })
-        posthogSdk.stopSessionRecording()
-      } catch { /* the copy keeps running; the events still go to the site's PostHog */ }
-    }
+    quietOwnCopy()
     return site
   }
   return ownStarted ? (posthogSdk as unknown as PostHogLike) : undefined
