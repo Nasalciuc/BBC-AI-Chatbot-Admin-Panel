@@ -3456,23 +3456,33 @@ async def increment_chats_served(agent: dict) -> None:
         logger.warning(f"increment_chats_served error (non-blocking): {e}")
 
 
-async def _rows_with_last_message(build, base_columns: str) -> list[dict]:
+async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") -> list[dict]:
     """build(columns) → rows, with last_user_message_at (migration 024) when
     the activity clocks exist: a message is presence too, and the presence
     rule reads it. A database without the column is a normal case, not a
     failure: the read is made again without it and the flag is downgraded,
-    as get_conversations does. Any other failure is raised to the caller."""
+    as get_conversations does. Any other failure is raised to the caller.
+
+    paged="<label>": every matching row, page by page (_select_pages), for a
+    read that must not stop at PostgREST's 1000; the builder then orders the
+    rows by a unique column."""
     with_clock = _supervisor_columns_available()
     columns = base_columns + (", last_user_message_at" if with_clock else "")
+
+    async def read(cols: str) -> list[dict]:
+        if paged:
+            return await _select_pages(lambda: build(cols), label=paged)
+        res = await _run_sync(lambda: build(cols).execute())
+        return res.data or []
+
     try:
-        res = await _run_sync(lambda: build(columns).execute())
+        return await read(columns)
     except Exception as e:
         if not (with_clock and _is_missing_column_error(e)):
             raise
         logger.warning(f"last_user_message_at missing, read again without it: {e}")
         _downgrade_supervisor_columns(e)
-        res = await _run_sync(lambda: build(base_columns).execute())
-    return res.data or []
+        return await read(base_columns)
 
 
 async def get_oldest_unassigned_conversations(tunnel: str, limit: int = 5) -> list:
@@ -3901,9 +3911,9 @@ async def get_departure_candidates() -> list[dict]:
     """Open sales chats with a phone or an email, for the departure task
     (app/services/departure.py decides the rest: the client wrote, left,
     nobody is on the chat). With last_user_message_at when the clocks exist.
-    One request, no pages: an open chat closes after ~35 minutes without the
-    client (the abandoned job), so these are the last half hour's sales chats
-    with a contact — at most 3 started in any hour of 1–15 Nov 2026.
+    Every row, page by page: a chat past PostgREST's 1000 would never get its
+    task (open chats close ~35 minutes after the client goes, so a normal
+    hour has a handful; a stuck close job must not hide the rest).
     Raises: the job counts a failed read."""
     db_client = get_client()
     rows = await _rows_with_last_message(
@@ -3911,8 +3921,10 @@ async def get_departure_candidates() -> list[dict]:
         .select(columns)
         .in_("status", list(OPEN_STATUSES))
         .eq("tunnel", "sales")
-        .or_("visitor_phone.not.is.null,visitor_email.not.is.null"),
+        .or_("visitor_phone.not.is.null,visitor_email.not.is.null")
+        .order("id"),
         "id, visitor_name, visitor_phone, visitor_email, mode, assigned_agent_id, metadata, status",
+        paged="departure",
     )
     return rows
 

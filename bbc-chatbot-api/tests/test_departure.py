@@ -223,6 +223,28 @@ class TestJob:
         assert [r["assignee_id"] for r in rows] == ["agent-a", "agent-a", "agent-b", "agent-a"]
 
     @pytest.mark.asyncio
+    async def test_a_refused_insert_leaves_the_agents_count_as_it_was(self):
+        # CodeRabbit #257: the pick counted before the insert, so a refused row made the agent look busier.
+        outcomes = iter(["raise", "none", "ok"])
+        rows = []
+
+        async def insert(row):
+            rows.append(row)
+            outcome = next(outcomes)
+            if outcome == "raise":
+                raise RuntimeError("refused")
+            return None if outcome == "none" else {"id": f"t-{row['conversation_id']}", **row}
+
+        ready = [{"id": "agent-a", "role": "sales"}, {"id": "agent-b", "role": "sales"}]
+        convs = [_conv(id="c-1"), _conv(id="c-2"), _conv(id="c-3")]
+        with _Patched(_job(convs, ready=ready, counts={"agent-a": 0, "agent-b": 1}, insert=insert)):
+            out = await departure.run_departure_tasks()
+        assert out["created"] == 1
+        # agent-a still has 0 when the third chat is given out: it goes to agent-a, not agent-b.
+        assert [r["assignee_id"] for r in rows] == ["agent-a", "agent-a", "agent-a"]
+        assert db.TASKS_HEALTH["departure_failures"] == 2
+
+    @pytest.mark.asyncio
     async def test_nobody_ready_goes_unowned(self):
         with _Patched(_job([_conv()], ready=[])) as p:
             out = await departure.run_departure_tasks()
@@ -330,6 +352,67 @@ class TestWiring:
         assert '.in_("status", list(OPEN_STATUSES))' in body
         assert '.eq("tunnel", "sales")' in body
         assert '.or_("visitor_phone.not.is.null,visitor_email.not.is.null")' in body
+        assert '.order("id")' in body and 'paged="departure"' in body
+
+
+class TestCandidatesRead:
+    """CodeRabbit #257: one request stops at PostgREST's 1000 rows without a word; a chat past it
+    would never get its task. Every page is read, and the clock fallback still works."""
+
+    @pytest.mark.asyncio
+    async def test_every_page_in_a_stable_order(self):
+        seen = {}
+
+        async def pages(build, *, label="other", max_pages=20):
+            seen["label"] = label
+            build()
+            return [{"id": f"c-{i}"} for i in range(1003)]
+
+        client = MagicMock()
+        with patch.object(db, "get_client", return_value=client), \
+                patch.object(db, "_supervisor_columns_available", return_value=True), \
+                patch.object(db, "_select_pages", new=pages):
+            rows = await db.get_departure_candidates()
+        assert len(rows) == 1003 and seen["label"] == "departure"
+        select = client.table.return_value.select
+        assert "last_user_message_at" in select.call_args.args[0]
+        select.return_value.in_.return_value.eq.return_value.or_.return_value.order.assert_called_with("id")
+
+    @pytest.mark.asyncio
+    async def test_without_the_clock_column_every_page_is_read_again_without_it(self):
+        class Missing(Exception):
+            code = "42703"
+
+        calls = []
+
+        async def pages(build, *, label="other", max_pages=20):
+            calls.append(label)
+            build()
+            if len(calls) == 1:
+                raise Missing("column conversations.last_user_message_at does not exist")
+            return [{"id": "c-1"}]
+
+        client = MagicMock()
+        with patch.object(db, "get_client", return_value=client), \
+                patch.object(db, "_supervisor_columns_available", return_value=True), \
+                patch.object(db, "_downgrade_supervisor_columns") as down, \
+                patch.object(db, "_select_pages", new=pages):
+            rows = await db.get_departure_candidates()
+        assert rows == [{"id": "c-1"}] and calls == ["departure", "departure"]
+        down.assert_called_once()
+        cols = [c.args[0] for c in client.table.return_value.select.call_args_list]
+        assert "last_user_message_at" in cols[0] and "last_user_message_at" not in cols[-1]
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_is_raised(self):
+        async def pages(build, *, label="other", max_pages=20):
+            raise RuntimeError("timeout")
+
+        with patch.object(db, "get_client", return_value=MagicMock()), \
+                patch.object(db, "_supervisor_columns_available", return_value=True), \
+                patch.object(db, "_select_pages", new=pages):
+            with pytest.raises(RuntimeError):
+                await db.get_departure_candidates()
 
     def test_health_carries_the_counters(self):
         for k in ("departure", "departure_unowned", "departure_failures"):

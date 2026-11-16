@@ -111,7 +111,9 @@ def seconds_since_left(
 
 class _Assigner:
     """The Ready sales agent with the fewest open tasks, counting the tasks
-    this run gives out, so a burst of departures is spread, not piled."""
+    this run gives out, so a burst of departures is spread, not piled. A task
+    counts once it is made (took), not when its agent is picked: a refused
+    insert leaves the agent's count as it was."""
 
     def __init__(self, ready_ids: list[str], counts: dict[str, int]):
         self.ready_ids = ready_ids
@@ -120,9 +122,10 @@ class _Assigner:
     def pick(self) -> Optional[str]:
         if not self.ready_ids:
             return None
-        uid = min(self.ready_ids, key=lambda i: (self.counts.get(i, 0), i))
+        return min(self.ready_ids, key=lambda i: (self.counts.get(i, 0), i))
+
+    def took(self, uid: str) -> None:
         self.counts[uid] = self.counts.get(uid, 0) + 1
-        return uid
 
 
 async def _assigner() -> _Assigner:
@@ -202,7 +205,9 @@ async def run_departure_tasks() -> dict:
             continue
         created += 1
         db.TASKS_HEALTH["departure"] += 1
-        if not owner:
+        if owner:
+            assign.took(owner)
+        else:
             unowned += 1
             db.TASKS_HEALTH["departure_unowned"] += 1
         await note(task["id"], "departure", None, {
