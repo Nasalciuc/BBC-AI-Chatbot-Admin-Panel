@@ -1196,7 +1196,7 @@ export function ChatWindow({
           <div class="bw-row bw-row--in bw-row--first">
             <div class="bw-who">{brandAvatar}<span><b>{brand.persona.name}</b> is typing</span></div>
             {dots}
-            <span class="bw-sr">{`${brand.persona.name}, the AI assistant, is typing`}</span>
+            <span class="bw-sr">{`${brand.persona.name}, the AI travel agent, is typing`}</span>
           </div>
         )}
 

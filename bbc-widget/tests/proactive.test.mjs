@@ -366,13 +366,15 @@ function hue(hex) {
   return (h * 60 + 360) % 360
 }
 
-test('Alex speaks on both sites and says he is an AI assistant; the server uses the same name', () => {
+test('Alex speaks on both sites as an AI travel agent, the word AI included; the server uses the same name', () => {
   for (const site of [bbc, bct]) {
     assert.equal(site.persona.name, 'Alex')
     assert.equal(site.persona.initial, 'A')
-    assert.equal(site.persona.role, 'AI assistant')
+    assert.equal(site.persona.role, 'AI travel agent')
+    // A travel agent, never passed off as a person: the word AI is part of the role.
+    assert.match(site.persona.role, /^AI /)
   }
-  // The header: the name over "AI assistant · <brand>", the line every surface shares.
+  // The header: the name over "AI travel agent · <brand>", the line every surface shares.
   assert.match(top, /export const personaLine = `\$\{brand\.persona\.role\} · \$\{brand\.name\}`/)
   assert.match(top, /<div class="bw-head__name" id=\{titleId\}>\{brand\.persona\.name\}<\/div>/)
   assert.match(chat, /const subtitle = lastAgentName \? `Chatting with \$\{lastAgentName\}` : personaLine/)

@@ -19,7 +19,7 @@ const config: BrandConfig = {
   contactEmail: 'info@buybusinessclass.com',
   websiteUrl: 'buybusinessclass.com',
   closingMessage: 'Your flight request is confirmed! A travel consultant will contact you shortly. For immediate help, call +1 (888) 322-7999.',
-  persona: { name: 'Alex', initial: 'A', role: 'AI assistant' },
+  persona: { name: 'Alex', initial: 'A', role: 'AI travel agent' },
   look: {
     primary: '#1E4FD8',
     primaryRgb: '30,79,216',

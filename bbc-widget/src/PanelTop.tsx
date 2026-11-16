@@ -4,7 +4,7 @@ import { IconClose, IconPhone } from './icons'
 import { posthog } from './posthog'
 
 interface Props {
-  /** The line under the name; by default "AI assistant · <brand>". */
+  /** The line under the name; by default "AI travel agent · <brand>". */
   subtitle?: string
   /** Hidden in the CRM iframe, where the panel is always open. */
   onClose?: () => void
@@ -14,12 +14,12 @@ interface Props {
   titleId?: string
 }
 
-/** "AI assistant · BuyBusinessClass": who Alex is, said on every screen (ADR 12). */
+/** "AI travel agent · BuyBusinessClass": who Alex is, said on every screen (ADR 12). */
 export const personaLine = `${brand.persona.role} · ${brand.name}`
 
 /**
  * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (a letter, never an image that
- * can fail to load), the name, the line that says it is an AI assistant of the brand, a call button
+ * can fail to load), the name, the line that says it is an AI travel agent of the brand, a call button
  * and close.
  */
 export function PanelTop({ subtitle = personaLine, onClose, closeLabel = 'Close', children, titleId }: Props) {

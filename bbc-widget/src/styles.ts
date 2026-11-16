@@ -168,7 +168,7 @@ export const WIDGET_CSS = `
   height: 100%; max-height: none; border-radius: 0; box-shadow: none; animation: none;
 }
 
-/* The top: Alex, said to be an AI assistant of the brand, a call button and close. */
+/* The top: Alex, said to be an AI travel agent of the brand, a call button and close. */
 #bbc-widget-root .bw-top { position: relative; flex-shrink: 0; color: var(--bw-text); }
 #bbc-widget-root .bw-head {
   display: flex; align-items: center; gap: 12px;
@@ -186,7 +186,7 @@ export const WIDGET_CSS = `
 }
 #bbc-widget-root .bw-head__text { flex: 1; min-width: 0; }
 #bbc-widget-root .bw-head__name { font-size: 17px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; color: var(--bw-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Two lines when the brand is long ("AI assistant · Business Class Tickets"): the disclosure is never cut. */
+/* Two lines when the brand is long ("AI travel agent · Business Class Tickets"): the disclosure is never cut. */
 #bbc-widget-root .bw-head__sub {
   margin-top: 1px; font-size: 13px; line-height: 1.35; color: var(--bw-muted);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
