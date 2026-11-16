@@ -82,6 +82,9 @@ class TestIntentRegex:
         "please send my request to a consultant",
         "pass this to one of your consultants",
         "don't worry, pass it on",
+        # A refusal in another clause refuses that clause only (CodeRabbit #255).
+        "Don't send emails; pass my request to a consultant for this flight.",
+        "No need to email me, just pass it on",
     ])
     def test_the_answer_to_the_real_person_offer_reaches_a_person(self, text):
         """Alex offers once to pass the request to a consultant (16 Nov); the
@@ -100,6 +103,7 @@ class TestIntentRegex:
         "never send my request to a consultant",
         "no need to pass it on",
         "I don't want you to pass it on",
+        "don't send or pass it on",
     ])
     def test_ordinary_words_do_not_call_a_person(self, text):
         assert detect_intent(text, use_llm=False) != Intent.TALK_TO_AGENT

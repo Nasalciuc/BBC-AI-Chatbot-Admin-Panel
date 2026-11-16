@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from app.pipeline.entity_extractor import current_contact_channel
+from app.pipeline.entity_extractor import current_contact_channel, refused_contact_fields
 from app.pipeline.intent import Intent
 from app.models.chat import VisitorInfo, RouteCard
 from app.models.lead import get_missing_fields
@@ -590,8 +590,12 @@ def generate_response(
                     )
                 # Fall through to AI-first generation
 
-            # Check what's missing in CONVERSATION order (not scoring order)
-            missing_str = " ".join(missing)
+            # Check what's missing in CONVERSATION order (not scoring order). A
+            # channel the client turned down is never asked for: not by the
+            # prompt, not by the queue reply, not by a template either
+            # (CodeRabbit #255). "Complete" above still counts it as missing.
+            _refused = refused_contact_fields(_contact_channel_now(lead, entities))
+            missing_str = " ".join(m for m in missing if m not in _refused)
 
             # Loop prevention: if last AI message already asked for this field, skip
             last_ai = ""

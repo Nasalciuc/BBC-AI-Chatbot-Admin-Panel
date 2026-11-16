@@ -341,6 +341,13 @@ class TestContactChannel:
         ("Don't email me. Actually, email me the options", "email"),
         ("text only please. no wait, please don't text me", "no texts"),
         ("I don't text much", None),
+        # CodeRabbit #255, last round: the bare forms, like "no calls" — but
+        # "no texts from you yet" is news, not a wish.
+        ("No calls, no texts, no email.", "no calls, no texts, no email"),
+        ("no texts please", "no texts"),
+        ("no email, text only", "text, no email"),
+        ("I got no texts from you yet", None),
+        ("no email from you yet", None),
     ])
     def test_read_from_the_words(self, text, channel):
         from app.pipeline.entity_extractor import contact_channel_of
@@ -441,7 +448,20 @@ class TestRefusedChannelInThePrompt:
         dynamic = self._dynamic("no calls, no texts")
         assert "Still needed:" not in dynamic
         assert "Contact wishes: no calls, no texts (the client's own words;" in dynamic
-        assert "CRM: Waiting on a contact the client turned down — do not ask for it" in dynamic
+        # Nothing reaches the CRM without the number, so nobody is lined up to
+        # follow up: the status says so instead of promising it (CodeRabbit #255).
+        assert "CRM: Not sent — it needs the contact the client turned down." in dynamic
+        assert "promise no call, no follow-up and no time" in dynamic
+        assert "follows up the way they chose" not in dynamic
+
+    def test_the_refusal_is_read_from_the_clients_own_words(self):
+        """"No calls, no texts, no email." through contact_channel_of, not a
+        hand-made signal: the phone and the email both leave the list."""
+        from app.pipeline.entity_extractor import contact_channel_of, refused_contact_fields
+
+        assert refused_contact_fields(contact_channel_of("No calls, no texts, no email.")) == {
+            "phone number", "email",
+        }
 
     def test_no_calls_alone_still_needs_the_number_for_texts(self):
         dynamic = self._dynamic("no calls")
@@ -468,3 +488,33 @@ class TestRefusedChannelInThePrompt:
         )
         assert "Still needed:" not in dynamic
         assert "Contact wishes: no calls, no texts" in dynamic
+
+
+class TestRefusedChannelInTheTemplates:
+    """Without a model (the day's budget spent, or the call failed) the templates
+    ask for what is missing: never for a channel the client turned down
+    (CodeRabbit #255)."""
+
+    @staticmethod
+    def _asked(channel):
+        from app.pipeline import generator
+
+        lead = _complete_lead()
+        if channel:
+            lead["intent_signals"] = {"contact_channel": channel}
+        with patch.object(generator, "get_template", wraps=generator.get_template) as tpl:
+            generator.generate_response(
+                intent=Intent.NEW_BOOKING, entities={"_raw_message": "ok"}, kb_results=[],
+                visitor=VisitorInfo(name="Ann", email="ann@example.com"), lead=lead, history=[],
+                tunnel="sales", budget_remaining=0,
+            )
+        return [c.args[0] for c in tpl.call_args_list]
+
+    def test_no_calls_and_no_texts_are_never_asked_for_the_number(self):
+        asked = self._asked("no calls, no texts")
+        assert "ask_phone" not in asked
+        # ...and the request is not complete either: no consultant is promised.
+        assert not any(k.startswith("specialist_handoff") for k in asked)
+
+    def test_no_calls_alone_still_asks_for_the_number(self):
+        assert "ask_phone" in self._asked("no calls")

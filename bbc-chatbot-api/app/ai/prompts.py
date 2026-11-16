@@ -961,9 +961,13 @@ def build_conversational_prompt(
         elif not missing:
             visitor_lines.append("CRM: Ready to submit")
         elif not asks:
+            # Nothing is sent: a request reaches the CRM only with every contact
+            # field (crm.has_required_fields), so no consultant is lined up to
+            # follow up, and Alex must not say one is (CodeRabbit #255). Whether
+            # such a request should reach the CRM is the owner's call.
             visitor_lines.append(
-                "CRM: Waiting on a contact the client turned down — do not ask for it; "
-                "their consultant follows up the way they chose"
+                "CRM: Not sent — it needs the contact the client turned down. Do not ask for it again, "
+                "and promise no call, no follow-up and no time"
             )
         else:
             visitor_lines.append("CRM: Waiting — collect missing data first")

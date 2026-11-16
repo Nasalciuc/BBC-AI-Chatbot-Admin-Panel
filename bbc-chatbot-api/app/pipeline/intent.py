@@ -43,11 +43,24 @@ _TRANSFER_RE = re.compile(
 )
 # ...and its refusal, which is a no, not a request for a person: "please don't
 # pass it on", "do not hand it over", "no need to send it to a consultant"
-# (CodeRabbit #255). Up to three words between, in the same clause.
-_TRANSFER_REFUSED_RE = re.compile(
-    r"\b(?:don[’']?t|do\s+not|never|no\s+need\s+to)\s+(?:\w+\s+){0,3}?(?:pass|hand|send)\b",
+# (CodeRabbit #255). Up to three words between, in the same clause, and ending
+# on the transfer's own verb: "Don't send emails; pass my request to a
+# consultant" refuses the emails, not the consultant.
+_TRANSFER_REFUSED_HERE_RE = re.compile(
+    r"\b(?:don[’']?t|do\s+not|never|no\s+need\s+to)\s+(?:\w+\s+){0,3}?(?:pass|hand|send)$",
     re.I,
 )
+
+
+def _asks_for_transfer(lower: str) -> bool:
+    """A transfer phrase that its own clause does not refuse. Every transfer
+    phrase starts with its verb (pass, hand, send): the refusal has to end on
+    that very verb, so a "don't" elsewhere in the message refuses nothing here."""
+    for m in _TRANSFER_RE.finditer(lower):
+        verb_end = m.start() + len(m.group(0).split()[0])
+        if not _TRANSFER_REFUSED_HERE_RE.search(lower[max(0, m.start() - 80):verb_end]):
+            return True
+    return False
 
 # Ordered: most specific → most generic
 INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
@@ -107,7 +120,10 @@ def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count:
     # 2. Regex patterns
     lower = message.lower()
     for intent, pattern in INTENT_PATTERNS:
-        if pattern is _TRANSFER_RE and _TRANSFER_REFUSED_RE.search(lower):
+        if pattern is _TRANSFER_RE:
+            if _asks_for_transfer(lower):
+                logger.debug(f"Intent from regex: {intent.value}")
+                return intent
             continue
         if pattern.search(lower):
             logger.debug(f"Intent from regex: {intent.value}")

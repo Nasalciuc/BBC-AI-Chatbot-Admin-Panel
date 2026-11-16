@@ -644,14 +644,17 @@ CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
     # A channel withdrawn: "Please don't text me", "stop texting me". It is a
     # wish of its own, not silence: the consultant must not text a client who
     # said so, and an earlier "text only" gives way to it (merge_contact_channel).
-    # "don't text me", "don't text." — not "I don't text much".
+    # "don't text me", "don't text." — not "I don't text much". The bare "no
+    # texts" / "no email" too, like "no calls" ("No calls, no texts, no email."),
+    # but not "no texts from you yet": that is news, not a wish (CodeRabbit #255).
     ("no texts", re.compile(
         r"\b(?:(?:don'?t|do\s+not|never)\s+(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?(?:text|txt|sms)"
         r"(?:\s+me\b|(?=\s*(?:[.,!?;]|$))|(?=\s+(?:or|and|nor)\s+(?:call|phone|ring)))"
-        r"|stop\s+(?:texting|txting|sending\s+(?:me\s+)?(?:texts?|sms))|no\s+more\s+(?:texts?|sms))\b", re.I)),
+        r"|stop\s+(?:texting|txting|sending\s+(?:me\s+)?(?:texts?|sms))|no\s+more\s+(?:texts?|sms)"
+        r"|no\s+(?:texts?|txts?|sms|text\s+messages?)(?!\s+(?:from|yet)\b))\b", re.I)),
     ("no email", re.compile(
         r"\b(?:(?:don'?t|do\s+not|never)\s+e-?mail(?:\s+me\b|(?=\s*(?:[.,!?;]|$)))"
-        r"|stop\s+e-?mailing|no\s+more\s+e-?mails?)\b", re.I)),
+        r"|stop\s+e-?mailing|no\s+more\s+e-?mails?|no\s+e-?mails?(?!\s+(?:from|yet)\b))\b", re.I)),
 )
 
 # A wish and its withdrawal: the later one wins (merge_contact_channel).
