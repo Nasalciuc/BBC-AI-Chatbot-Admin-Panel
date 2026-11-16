@@ -471,6 +471,35 @@ class TestSeedLead:
         assert notes["page_trip"]["source"] == "kayak"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["all_landed", "refused", "page_said_business", "premium_economy"])
+    async def test_the_page_trip_records_what_the_seed_wrote(self, case):
+        row, trip, landed = {
+            # The whole seed landed.
+            "all_landed": (
+                {"origin_code": "ATL", "destination_code": "ICN", "departure_date": _in(30).isoformat(),
+                 "return_date": _in(60).isoformat(), "passengers": 4, "cabin_class": "first"},
+                _kayak_trip(), _ALL_SEEDED,
+            ),
+            # The update was refused (logged by the writer, not raised): the lead is as new.
+            "refused": ({"cabin_class": "business"}, _kayak_trip(), []),
+            # The page said Business: the lead says the same, written or not.
+            "page_said_business": (
+                {"cabin_class": "business"}, TripContext(destination_name="Paris", cabin="business"), ["cabin_class"],
+            ),
+            # Premium Economy is never written on the lead.
+            "premium_economy": (
+                {"destination_code": "ICN", "cabin_class": "business"},
+                TripContext(destination_code="ICN", cabin="premium_economy"), ["destination_code"],
+            ),
+        }[case]
+        table = _Table([{"id": "L1", "trip_notes": {}, **row}])
+        client = MagicMock(table=MagicMock(return_value=table))
+        with patch("app.db.supabase.get_client", return_value=client), \
+             patch("app.db.supabase._run_sync", new=_run_now):
+            await proactive._mark_page_trip(_CONV_ID, trip)
+        assert table.updates[0]["trip_notes"]["page_trip"]["landed"] == landed
+
+    @pytest.mark.asyncio
     async def test_no_trip_notes_column_no_write(self):
         table = _Table([{"id": "L1"}])  # migration 040 not applied
         client = MagicMock(table=MagicMock(return_value=table))
@@ -484,8 +513,16 @@ class TestSeedLead:
 # 6. The prompt: the page's search until the client changes it
 # ══════════════════════════════════════════════════════════════
 
-def _seeded_lead(**over) -> dict:
+_ALL_SEEDED = ["origin_code", "destination_code", "departure_date", "return_date", "passengers", "cabin_class"]
+
+
+def _seeded_lead(landed=_ALL_SEEDED, **over) -> dict:
+    """A lead the Kayak seed reached. `landed` is what the seed recorded it
+    wrote (all of it by default); None: a page trip without the record."""
     trip = _kayak_trip()
+    page = {**trip.model_dump(mode="json", exclude_none=True), "confirmed": False}
+    if landed is not None:
+        page["landed"] = list(landed)
     lead = {
         "id": "L1",
         "score": 20,
@@ -495,7 +532,7 @@ def _seeded_lead(**over) -> dict:
         "return_date": _in(60).isoformat(),
         "passengers": 4,
         "cabin_class": "first",
-        "trip_notes": {"page_trip": {**trip.model_dump(mode="json", exclude_none=True), "confirmed": False}},
+        "trip_notes": {"page_trip": page},
     }
     lead.update(over)
     return lead
@@ -508,13 +545,30 @@ class TestPageTripLine:
         assert f"Atlanta → Seoul, {_day(_in(30))} – {_day(_in(60))}, 4 adults in First." in line
         assert "the client's words win" in line
 
+    @pytest.mark.parametrize("landed", [[], None])
     @pytest.mark.parametrize("cabin", ["business", None])
-    def test_shown_when_the_seed_never_landed(self, cabin):
-        # One update writes every seeded field, so a seed that failed left none of them. The cabin
-        # stays at the column's default ("business", on every new lead), which says nothing.
-        lead = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None,
-                            passengers=None, cabin_class=cabin)
+    def test_shown_when_the_seed_never_landed(self, cabin, landed):
+        # One update writes every seeded field, so a seed that failed left none of them (and recorded
+        # none). The cabin stays at the column's default ("business", on every new lead), which says
+        # nothing.
+        lead = _seeded_lead(landed=landed, origin_code=None, destination_code=None, departure_date=None,
+                            return_date=None, passengers=None, cabin_class=cabin)
         assert proactive.page_trip_line(lead) is not None
+
+    def test_a_cabin_the_seed_wrote_then_the_client_set_to_business(self):
+        # CodeRabbit #255 (round 2): a route page gave a city (never on the lead) and First (written).
+        # The client then said Business, the column's default: the record says the seed wrote the
+        # cabin, so Business is the client's and the page's "First" must go.
+        page = {"source": "route_page", "destination_name": "Paris", "cabin": "first", "confirmed": False,
+                "landed": ["cabin_class"]}
+        lead = lambda cabin: {"id": "L1", "cabin_class": cabin, "trip_notes": {"page_trip": dict(page)}}
+        assert proactive.page_trip_line(lead("business")) is None
+        assert proactive.page_trip_line(lead("first")) is not None
+
+    def test_a_seed_that_never_landed_still_gives_way_to_the_clients_route(self):
+        lead = _seeded_lead(landed=[], origin_code=None, destination_code="NRT", departure_date=None,
+                            return_date=None, passengers=None, cabin_class="business")
+        assert proactive.page_trip_line(lead) is None
 
     def test_a_route_page_with_only_a_cabin(self):
         # A route page's title gives a city (never written on the lead) and a cabin (written).
@@ -578,13 +632,29 @@ class TestCrmNote:
             "Route and dates from the Kayak link the client came from, not confirmed in chat"
         )
         assert proactive.page_trip_note(_seeded_lead(destination_code="NRT")) is None
-        absent = _seeded_lead(origin_code=None, destination_code=None, departure_date=None, return_date=None,
-                              passengers=None, cabin_class="business")
+        absent = _seeded_lead(landed=[], origin_code=None, destination_code=None, departure_date=None,
+                              return_date=None, passengers=None, cabin_class="business")
         assert proactive.page_trip_note(absent) is None  # nothing of the page on the lead to warn about
         confirmed = _seeded_lead()
         confirmed["trip_notes"]["page_trip"]["confirmed"] = True
         assert proactive.page_trip_note(confirmed) is None
         assert proactive.page_trip_note({"id": "L1"}) is None
+
+    def test_the_note_stays_when_only_the_travellers_or_the_cabin_change(self):
+        # CodeRabbit #255 (round 2): the note is about the route and the dates. A client who changed
+        # the travellers or the cabin never confirmed those; the prompt's line goes (it repeats the
+        # travellers and the cabin), the consultant's warning stays.
+        for lead in (_seeded_lead(passengers=1), _seeded_lead(cabin_class="business")):
+            assert proactive.page_trip_note(lead) == (
+                "Route and dates from the Kayak link the client came from, not confirmed in chat"
+            )
+            assert proactive.page_trip_line(lead) is None
+        # A page trip without the record: the same.
+        assert proactive.page_trip_note(_seeded_lead(landed=None, passengers=1)) is not None
+
+    def test_no_note_for_the_route_the_client_gave_after_a_failed_seed(self):
+        # The seed wrote nothing; the route on the lead is the client's, even where it matches the page.
+        assert proactive.page_trip_note(_seeded_lead(landed=[])) is None
 
     def test_a_search_on_the_site_names_the_page(self):
         lead = _seeded_lead()

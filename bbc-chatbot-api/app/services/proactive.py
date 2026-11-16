@@ -327,6 +327,10 @@ async def _mark_page_trip(conversation_id: str, trip: TripContext) -> None:
     notes["page_trip"] = {
         **trip.model_dump(mode="json", exclude_none=True),
         "confirmed": False,
+        # What the seed wrote, read back now: later the lead cannot tell a
+        # field the seed never wrote from one the client set back to the
+        # column's default (cabin_class "business").
+        "landed": _landed_now(lead, trip),
     }
     lead_id = lead["id"]
     await _run_sync(lambda: client.table("leads").update({"trip_notes": notes}).eq("id", lead_id).execute())
@@ -342,43 +346,84 @@ def _norm(value) -> Optional[str]:
 # leads.cabin_class's column default: every new lead has it, said or not.
 _CABIN_DEFAULT = "business"
 
+# The lead columns the seed writes from the page (_entities_from_trip), and
+# the ones the CRM note is about.
+_SEED_FIELDS = ("origin_code", "destination_code", "departure_date", "return_date", "passengers", "cabin_class")
+_ROUTE_AND_DATES = ("origin_code", "destination_code", "departure_date", "return_date")
 
-def _page_state(lead: dict, trip: TripContext) -> str:
-    """How the lead stands against what the page seeded:
 
-    - "held": the lead still holds every field the page gave (route, dates,
-      travellers, cabin — what the page line shows);
-    - "changed": the client named another route, other dates, other
-      travellers or another cabin (or dropped the return) — the lead's own
-      fields are the truth now;
-    - "absent": none of the seeded fields is on the lead (the seed never
-      landed) — the page is all the bot knows. A cabin of "business" does
-      not count as landed: it is the column's default on every new lead."""
+def _pairs(lead: dict, trip: TripContext) -> dict:
+    """Each seeded field as (on the lead, from the page), comparable; only the
+    fields the page gave. Premium Economy is never written on the lead
+    (_LEAD_CABINS): nothing to compare."""
+    page = {
+        "origin_code": trip.origin_code,
+        "destination_code": trip.destination_code,
+        "departure_date": trip.depart_date.isoformat() if trip.depart_date else None,
+        "return_date": trip.return_date.isoformat() if trip.return_date else None,
+        "passengers": trip.passengers,
+        "cabin_class": trip.cabin if trip.cabin in _LEAD_CABINS else None,
+    }
+    return {f: (_norm(lead.get(f)), _norm(page[f])) for f in _SEED_FIELDS if page[f] is not None}
+
+
+def _landed_now(lead: dict, trip: TripContext) -> list[str]:
+    """The page's fields the lead holds right after the seed: what it wrote.
+    A cabin equal to the column's default counts: the lead says the same as
+    the page, written or not."""
+    return [f for f, (have, page) in _pairs(lead, trip).items() if have == page]
+
+
+def _recorded_landed(lead: dict) -> Optional[list[str]]:
+    """What the seed wrote, as recorded with the page trip; None when not recorded."""
+    notes = lead.get("trip_notes")
+    page = notes.get("page_trip") if isinstance(notes, dict) else None
+    landed = page.get("landed") if isinstance(page, dict) else None
+    if not isinstance(landed, list):
+        return None
+    return [f for f in landed if f in _SEED_FIELDS]
+
+
+def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> str:
+    """How the lead stands against what the page seeded, over `fields` (all
+    the seeded ones for the prompt, route and dates for the CRM note):
+
+    - "changed": the client changed one of them (another route, other dates,
+      other travellers or another cabin, or dropped the return) — the lead's
+      own fields are the truth now;
+    - "held": the lead still holds what the seed wrote of them;
+    - "absent": the seed wrote none of them — the page is all the bot knows.
+
+    The seed writes only the page's values, so another value on the lead is
+    the client's. Two cases need to know what the seed wrote: a field now
+    empty (the client cleared it, or the seed never wrote it), and the cabin
+    "business", the column's default on every new lead (the client chose it,
+    or nobody did). The seed records what it wrote ("landed"); a page trip
+    without the record counts the seed as written when the lead holds any of
+    the page's fields, the cabin "business" aside (one update writes them
+    all or none)."""
     # A route the page named only in words (a route page's title) is never
     # written on the lead: a code there is one the client gave.
     if (trip.origin_name and not trip.origin_code and lead.get("origin_code")) or (
         trip.destination_name and not trip.destination_code and lead.get("destination_code")
     ):
         return "changed"
-    seeded = [
-        (lead.get("origin_code"), trip.origin_code),
-        (lead.get("destination_code"), trip.destination_code),
-        (lead.get("departure_date"), trip.depart_date.isoformat() if trip.depart_date else None),
-        (lead.get("return_date"), trip.return_date.isoformat() if trip.return_date else None),
-        (lead.get("passengers"), trip.passengers),
-    ]
-    held = [(_norm(have), _norm(page)) for have, page in seeded if page is not None]
-    # Premium Economy is never written on the lead (_LEAD_CABINS): nothing to compare.
-    page_cabin = trip.cabin if trip.cabin in _LEAD_CABINS else None
-    lead_cabin = _norm(lead.get("cabin_class"))
-    # Did the seed land? A lead the seed never reached still has cabin_class
-    # "business" (the column's default): only another cabin shows a write.
-    landed = any(have for have, _ in held) or (page_cabin is not None and lead_cabin not in (None, _CABIN_DEFAULT))
-    if not landed:
-        return "absent"
-    if page_cabin:
-        held.append((lead_cabin, page_cabin))
-    return "changed" if any(have != page for have, page in held) else "held"
+    every = _pairs(lead, trip)
+    recorded = _recorded_landed(lead)
+    if recorded is None:
+        seeded = any(have is not None and not (f == "cabin_class" and have == _CABIN_DEFAULT)
+                     for f, (have, _) in every.items())
+        wrote = set(every) if seeded else set()
+    else:
+        wrote = set(recorded)
+    pairs = {f: p for f, p in every.items() if f in fields}
+    for f, (have, page) in pairs.items():
+        if have == page:
+            continue
+        untouched = have is None or (f == "cabin_class" and have == _CABIN_DEFAULT)
+        if not untouched or f in wrote:
+            return "changed"
+    return "held" if any(have == page and f in wrote for f, (have, page) in pairs.items()) else "absent"
 
 
 def _unconfirmed_page_trip(lead: Optional[dict]) -> Optional[TripContext]:
@@ -392,7 +437,7 @@ def _unconfirmed_page_trip(lead: Optional[dict]) -> Optional[TripContext]:
     if not isinstance(page, dict) or page.get("confirmed"):
         return None
     try:
-        return TripContext(**{k: v for k, v in page.items() if k != "confirmed"})
+        return TripContext(**{k: v for k, v in page.items() if k not in ("confirmed", "landed")})
     except Exception as e:
         logger.warning(f"page_trip unreadable ({type(e).__name__}) — no page line")
         return None
@@ -416,9 +461,11 @@ def page_trip_line(lead: Optional[dict]) -> Optional[str]:
 def page_trip_note(lead: Optional[dict]) -> Optional[str]:
     """The CRM line for a lead the abandoned-lead job sends while its route
     and dates are still the page's: the client never confirmed them in chat,
-    so the consultant checks them first."""
+    so the consultant checks them first. Only the route and the dates count
+    here: a client who changed the travellers or the cabin still never
+    confirmed the route and the dates."""
     trip = _unconfirmed_page_trip(lead)
-    if trip is None or _page_state(lead, trip) != "held":
+    if trip is None or _page_state(lead, trip, _ROUTE_AND_DATES) != "held":
         return None
     where = "the Kayak link" if trip.source == "kayak" else "the page"
     return f"Route and dates from {where} the client came from, not confirmed in chat"
