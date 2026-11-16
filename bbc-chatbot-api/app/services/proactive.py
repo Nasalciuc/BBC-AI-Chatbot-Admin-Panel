@@ -33,6 +33,7 @@ note back to the form in 30 s, without a deploy, if it ever must.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timezone
 from typing import Literal, Optional
@@ -224,6 +225,11 @@ def compose(trigger: str, trip: Optional[TripContext], site: Optional[str] = Non
     elif full:
         # A full search (Kayak, /search): say it back, offer the one next step.
         text = f"{hello} I see you're looking at {line}. Want an agent to check private fares for exactly this trip?"
+    elif dest and trip and trip.depart_date:
+        # Where to and when, not where from: said back, nothing it gave asked
+        # again. The origin is asked in the chat, after the visitor answers —
+        # never "Where are you flying from?" in the opening (ADR 11).
+        text = f"{hello} I see you're looking at {line}. Want an agent to check business class fares for these dates?"
     elif dest:
         text = f"{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check business class fares for you."
     else:
@@ -269,6 +275,79 @@ def init_metadata(trigger: str, trip: Optional[TripContext]) -> dict:
     return meta
 
 
+# Conversation metadata key: set once, by the one /chat/init that writes the opening.
+OPENING_CLAIM_KEY = "proactive_opening_at"
+
+
+async def _claim_opening(conversation_id: str) -> Optional[bool]:
+    """Win the right to write this conversation's opening, once.
+
+    The message count is check-then-act: two /chat/init for the same visitor
+    (a request the browser sent again, two tabs) both read 0 and both wrote an
+    opening. The decision moves into one UPDATE whose WHERE requires the flag
+    absent — Postgres gives the row to exactly one caller (the pattern of
+    handoff._claim_fallback_notice). True: write it. False: another request
+    has. None: the claim could not be made (logged) — the opening is written as
+    before: a rare duplicate is better than a chat without the words the
+    visitor already sees."""
+    from app.db import supabase as db
+
+    try:
+        client = db.get_client()
+        res = await db._run_sync(
+            lambda: client.table("conversations").select("metadata").eq("id", conversation_id).single().execute()
+        )
+        existing = (res.data or {}).get("metadata") or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        if existing.get(OPENING_CLAIM_KEY):
+            return False
+        payload = {**existing, OPENING_CLAIM_KEY: datetime.now(timezone.utc).isoformat()}
+        res = await db._run_sync(
+            lambda: client.table("conversations")
+            .update({"metadata": payload})
+            .eq("id", conversation_id)
+            .is_(f"metadata->>{OPENING_CLAIM_KEY}", "null")
+            .execute(),
+            idempotent=False,
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.warning(
+            f"[{conversation_id}] proactive opening claim failed ({type(e).__name__}): written without it"
+        )
+        return None
+
+
+async def _stored_opening(conversation_id: str, tries: int = 3) -> Optional[dict]:
+    """The opening the request that won the claim stored: {"content",
+    "created_at"}, waiting a moment for its write; None when it is not there."""
+    from app.db import supabase as db
+
+    for attempt in range(tries):
+        try:
+            client = db.get_client()
+            res = await db._run_sync(
+                lambda: client.table("messages")
+                .select("content, created_at, model_used")
+                .eq("conversation_id", conversation_id)
+                .eq("role", "ai")
+                .order("created_at")
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            logger.warning(f"[{conversation_id}] stored proactive opening not read ({type(e).__name__})")
+            return None
+        row = (res.data or [None])[0]
+        if isinstance(row, dict) and row.get("model_used") == MODEL_USED and isinstance(row.get("content"), str):
+            created_at = row.get("created_at")
+            return {"content": row["content"], "created_at": created_at if isinstance(created_at, str) else None}
+        if attempt + 1 < tries:
+            await asyncio.sleep(0.25)
+    return None
+
+
 async def open_conversation(
     conversation_id: str, trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
 ) -> Optional[dict]:
@@ -278,15 +357,21 @@ async def open_conversation(
     Idempotent: a conversation that already has messages (the visitor's
     active chat was reused, or a retried /init) is left as it is — no
     opening, no seed and no proactive label on a chat the card did not open.
-    Returns {"content", "created_at"} of the stored opening (after the output
-    guard), or None when nothing was written. The widget already shows the
-    card's words: it takes the stored text and moves its poll cursor past
-    `created_at`, so the opening is not shown twice."""
+    Two at once write one opening (_claim_opening); the other hands back the
+    stored one. Returns {"content", "created_at"} of the stored opening (after
+    the output guard), or None when nothing was written. The widget already
+    shows the card's words: it takes the stored text and moves its poll cursor
+    past `created_at`, so the opening is not shown twice."""
     from app.db import supabase as db
     from app.services import conversation_service
 
     if await db.count_messages(conversation_id) > 0:
         return None
+    if await _claim_opening(conversation_id) is False:
+        # A concurrent /chat/init for this conversation writes the opening,
+        # the label and the seed. Its words and time go back to this widget too.
+        logger.info(f"[{conversation_id}] proactive opening written by a concurrent /chat/init")
+        return await _stored_opening(conversation_id)
     text, _ = compose(trigger, trip, site)
     row = await conversation_service.add_message(conversation_id, "ai", text, model_used=MODEL_USED, cost=0.0)
     if not isinstance(row, dict):

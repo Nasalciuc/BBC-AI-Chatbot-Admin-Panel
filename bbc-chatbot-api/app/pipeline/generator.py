@@ -274,6 +274,23 @@ def _apply_slot_question(text, lead, tunnel):
         return text
 
 
+def _preferred_contact(visitor: VisitorInfo, lead: Optional[dict], entities: dict) -> Optional[str]:
+    """The email when that is how the client asked to be reached ("email me
+    the quotes", or no calls and no texts); None keeps the templates' default,
+    the phone first. The lead holds every wish so far (merged), this turn's
+    entities the newest when the lead does not have it yet."""
+    if not visitor.email:
+        return None
+    signals = (lead or {}).get("intent_signals")
+    channel = (signals.get("contact_channel") if isinstance(signals, dict) else None) or entities.get("contact_channel")
+    if not isinstance(channel, str):
+        return None
+    parts = {p.strip() for p in channel.split(",")}
+    if ("email" in parts and "text" not in parts) or {"no calls", "no texts"} <= parts:
+        return visitor.email
+    return None
+
+
 def generate_response(
     intent: Intent,
     entities: dict,
@@ -513,11 +530,15 @@ def generate_response(
                     # desks; otherwise "first thing when the team is back".
                     from app.services.closing import is_within_team_hours
 
+                    # "We'll contact you at …" names the channel the client
+                    # asked for: an "email me" client is not promised a call.
+                    _contact = _preferred_contact(visitor, lead, entities)
                     text = get_template(
                         "specialist_handoff" if is_within_team_hours()
                         else "specialist_handoff_off_hours",
                         tunnel, visitor,
                         route=lead.get("route_display", "your route"),
+                        **({"contact": _contact} if _contact else {}),
                     )
                     if text:
                         logger.info(

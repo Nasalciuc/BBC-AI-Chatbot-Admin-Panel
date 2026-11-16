@@ -5,7 +5,7 @@ import re
 from datetime import date
 from typing import Optional
 
-from app.pipeline.entity_extractor import DREAM_OUTCOMES
+from app.pipeline.entity_extractor import DREAM_OUTCOMES, merge_contact_channel
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +345,13 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 else ({} if not raw_existing else {"legacy": raw_existing})
             )
             merged_signals = {**existing_signals, **signals}
+            if signals.get("contact_channel"):
+                # "text only", then "please don't text me": the withdrawal
+                # replaces the wish instead of both standing, and an earlier
+                # "no calls" survives a later "no texts".
+                merged_signals["contact_channel"] = merge_contact_channel(
+                    existing_signals.get("contact_channel"), signals["contact_channel"],
+                )
             if merged_signals != existing_signals or raw_existing != existing_signals:
                 lead_payload["intent_signals"] = merged_signals
                 context_line = build_chat_context_line(merged_signals)

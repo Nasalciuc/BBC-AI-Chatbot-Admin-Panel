@@ -87,6 +87,18 @@ def _switches(monkeypatch):
     flags._reset_for_tests()
 
 
+# The real claim and lookup, for the tests that drive them against a fake table.
+_REAL_CLAIM_OPENING = proactive._claim_opening
+_REAL_STORED_OPENING = proactive._stored_opening
+
+
+@pytest.fixture(autouse=True)
+def _claim_won(monkeypatch):
+    """Every opening wins its claim unless a test says otherwise: no test
+    reaches a database through the claim."""
+    monkeypatch.setattr(proactive, "_claim_opening", AsyncMock(return_value=True))
+
+
 def _switch_on(monkeypatch, percent: int = 100, triggers: str | None = None):
     monkeypatch.setenv("PROACTIVE_ENABLED", "true")
     monkeypatch.setenv("PROACTIVE_PERCENT", str(percent))
@@ -224,6 +236,18 @@ class TestCompose:
         )
         assert replies == ["Check fares", "I have a question", "Not now"]
 
+    @pytest.mark.parametrize("trigger", ["reader", "kayak", "note"])
+    def test_where_to_and_when_without_where_from_is_said_back(self, trigger):
+        """CodeRabbit #255: the page gave the dates and the opening still said
+        "Tell me roughly when". The origin is asked in the chat, after the
+        visitor answers — never in the opening (ADR 11)."""
+        trip = TripContext(destination_name="Seoul", depart_date=_in(30).isoformat(), adults="2")
+        text, _ = proactive.compose(trigger, trip)
+        assert text == (
+            f"Hi, I'm Alex from BuyBusinessClass. I see you're looking at Seoul, {_day(_in(30))}, 2 adults. "
+            "Want an agent to check business class fares for these dates?"
+        )
+
     def test_nothing_known_is_generic(self):
         assert proactive.compose("reader", None)[0] == (
             "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
@@ -238,19 +262,24 @@ class TestCompose:
             assert proactive.compose("exit", None, site)[0].startswith("Hi, I'm Alex from BuyBusinessClass.")
 
     @pytest.mark.parametrize("trigger", ["kayak", "quote", "reader", "exit"])
-    @pytest.mark.parametrize("trip_kind", ["full", "dest", "none"])
+    @pytest.mark.parametrize("trip_kind", ["full", "dest", "dest_dated", "none"])
     @pytest.mark.parametrize("site", ["bbc", "bct"])
     def test_no_opening_promises_a_time_or_a_price_or_asks_what_the_page_knows(self, trigger, trip_kind, site):
         """ADR 11 and 15 (16 Nov debate): a third of the /flight chats stopped at
         "Where are you flying from?", and a third of the chats come at night."""
-        trip = {"full": _kayak_trip(), "dest": TripContext(destination_name="Paris"), "none": None}[trip_kind]
+        trip = {
+            "full": _kayak_trip(),
+            "dest": TripContext(destination_name="Paris"),
+            "dest_dated": TripContext(destination_name="Paris", depart_date=_in(30).isoformat()),
+            "none": None,
+        }[trip_kind]
         text, _ = proactive.compose(trigger, trip, site)
         lowered = text.lower()
         assert not re.search(r"\d+\s*(min|minute|hour|hr)", lowered), text
         assert "$" not in text and "usd" not in lowered and "within" not in lowered, text
         assert "where are you flying" not in lowered, text
-        if trip_kind == "full":
-            # The page gave the route and the dates: nothing asks for them.
+        if trip_kind in ("full", "dest_dated"):
+            # The page gave the dates (and the route): nothing asks for them.
             assert "tell me where" not in lowered and "roughly when" not in lowered, text
 
     def test_a_difficulty_is_named_only_where_there_was_one(self):
@@ -510,6 +539,213 @@ class TestOpenConversation:
         assert out == {"content": proactive.compose("reader", None)[0], "created_at": None}
         assert "proactive_trip" not in meta.await_args.args[1]
         seed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_init_that_lost_the_claim_writes_nothing_and_hands_back_the_opening(self):
+        """CodeRabbit #255: two /chat/init at once both counted 0 messages and
+        both wrote an opening. The one that lost the claim writes nothing —
+        no message, label or seed — and returns the stored opening, so its
+        widget moves the poll cursor past it all the same."""
+        stored = {"content": "the winner's words", "created_at": "2026-11-16T09:00:00.000001+00:00"}
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, p_add as add, p_meta as meta, p_seed as seed, \
+             patch.object(proactive, "_claim_opening", new=AsyncMock(return_value=False)), \
+             patch.object(proactive, "_stored_opening", new=AsyncMock(return_value=stored)) as look:
+            out = await proactive.open_conversation(_CONV_ID, "kayak", _kayak_trip())
+        assert out == stored
+        look.assert_awaited_once_with(_CONV_ID)
+        add.assert_not_awaited()
+        meta.assert_not_awaited()
+        seed.assert_not_awaited()
+        assert proactive.PROACTIVE_HEALTH["opened"] == 0
+        assert proactive.PROACTIVE_HEALTH["open_failures"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_claim_that_could_not_be_made_still_writes_the_opening(self):
+        """A broken claim (None) is today's behaviour, not a lost opening."""
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, p_add as add, p_meta, p_seed, \
+             patch.object(proactive, "_claim_opening", new=AsyncMock(return_value=None)):
+            out = await proactive.open_conversation(_CONV_ID, "kayak", _kayak_trip())
+        add.assert_awaited_once()
+        assert out["content"] == "stored words"
+        assert proactive.PROACTIVE_HEALTH["opened"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_claim_comes_after_the_message_count(self):
+        """A chat with messages is left alone without touching the claim."""
+        p_count, p_add, p_meta, p_seed = _open_patches(msg_count=2)
+        claim = AsyncMock(return_value=True)
+        with p_count, p_add, p_meta, p_seed, patch.object(proactive, "_claim_opening", new=claim):
+            assert await proactive.open_conversation(_CONV_ID, "kayak", _kayak_trip()) is None
+        claim.assert_not_awaited()
+
+
+class _FakeConversations:
+    """conversations, as Postgres runs one conditional UPDATE: the row goes to
+    the first caller only; after it the flag is set and the WHERE matches nothing."""
+
+    def __init__(self, metadata=None):
+        self.metadata = dict(metadata or {})
+        self.updates: list[dict] = []
+        self.where: list[tuple] = []
+        self._op = None
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_a):
+        self._op = "select"
+        return self
+
+    def update(self, payload):
+        self._op = "update"
+        self.updates.append(payload)
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def is_(self, column, value):
+        self.where.append((column, value))
+        return self
+
+    def single(self):
+        return self
+
+    def execute(self):
+        if self._op == "select":
+            return MagicMock(data={"metadata": dict(self.metadata)})
+        if self.metadata.get(proactive.OPENING_CLAIM_KEY):
+            return MagicMock(data=[])
+        self.metadata = dict(self.updates[-1]["metadata"])
+        return MagicMock(data=[{"id": _CONV_ID}])
+
+
+async def _yielding_run_sync(fn, *_a, **_k):
+    """The thread hop of the real _run_sync: other requests run in between."""
+    import asyncio
+
+    await asyncio.sleep(0)
+    return fn()
+
+
+async def _plain_run_sync(fn, *_a, **_k):
+    return fn()
+
+
+class TestOpeningClaim:
+    @pytest.mark.asyncio
+    async def test_two_inits_at_once_one_wins(self):
+        """Both read the metadata before either writes — the race the message
+        count lost. The conditional UPDATE leaves one winner."""
+        import asyncio
+
+        fake = _FakeConversations({"site": "bbc"})
+        with patch("app.db.supabase.get_client", return_value=fake), \
+             patch("app.db.supabase._run_sync", new=_yielding_run_sync):
+            results = await asyncio.gather(_REAL_CLAIM_OPENING(_CONV_ID), _REAL_CLAIM_OPENING(_CONV_ID))
+        assert sorted(results) == [False, True]
+        assert len(fake.updates) == 2, "both passed the read: the UPDATE decided"
+        assert fake.where == [(f"metadata->>{proactive.OPENING_CLAIM_KEY}", "null")] * 2
+
+    @pytest.mark.asyncio
+    async def test_a_claimed_chat_is_lost_without_an_update(self):
+        fake = _FakeConversations({proactive.OPENING_CLAIM_KEY: "2026-11-16T09:00:00+00:00"})
+        with patch("app.db.supabase.get_client", return_value=fake), \
+             patch("app.db.supabase._run_sync", new=_yielding_run_sync):
+            assert await _REAL_CLAIM_OPENING(_CONV_ID) is False
+        assert fake.updates == []
+
+    @pytest.mark.asyncio
+    async def test_the_claim_keeps_the_metadata_it_read(self):
+        fake = _FakeConversations({"site": "bct", "utm_source": "kayak"})
+        with patch("app.db.supabase.get_client", return_value=fake), \
+             patch("app.db.supabase._run_sync", new=_yielding_run_sync):
+            assert await _REAL_CLAIM_OPENING(_CONV_ID) is True
+        written = fake.updates[0]["metadata"]
+        assert written["site"] == "bct" and written["utm_source"] == "kayak"
+        assert written[proactive.OPENING_CLAIM_KEY]
+
+    @pytest.mark.asyncio
+    async def test_a_broken_claim_says_so_and_returns_none(self, caplog):
+        with patch("app.db.supabase.get_client", side_effect=RuntimeError("db down: a@b.co")), \
+             caplog.at_level(logging.WARNING):
+            assert await _REAL_CLAIM_OPENING(_CONV_ID) is None
+        assert "proactive opening claim failed (RuntimeError)" in caplog.text
+        assert "a@b.co" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_insert_is_not_retried(self):
+        """A conditional UPDATE re-run after a dropped connection would lose a
+        claim it had won: idempotent=False, like the fallback-notice claim."""
+        calls = []
+
+        async def _record(fn, *a, **k):
+            calls.append(k.get("idempotent", True))
+            return fn()
+
+        fake = _FakeConversations()
+        with patch("app.db.supabase.get_client", return_value=fake), \
+             patch("app.db.supabase._run_sync", new=_record):
+            assert await _REAL_CLAIM_OPENING(_CONV_ID) is True
+        assert calls == [True, False]
+
+
+class _FakeMessages:
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = 0
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        self.calls += 1
+        return MagicMock(data=self.answers.pop(0) if self.answers else [])
+
+
+class TestStoredOpening:
+    _ROW = {"content": "Hi, I'm Alex", "created_at": "2026-11-16T09:00:00.000001+00:00", "model_used": "proactive_template"}
+
+    @pytest.mark.asyncio
+    async def test_the_winners_opening_once_it_is_written(self):
+        fake = _FakeMessages([], [self._ROW])
+        with patch("app.db.supabase.get_client", return_value=fake), \
+             patch("app.db.supabase._run_sync", new=_plain_run_sync), \
+             patch("asyncio.sleep", new=AsyncMock()) as nap:
+            out = await _REAL_STORED_OPENING(_CONV_ID)
+        assert out == {"content": "Hi, I'm Alex", "created_at": "2026-11-16T09:00:00.000001+00:00"}
+        assert fake.calls == 2
+        nap.assert_awaited_once_with(0.25)
+
+    @pytest.mark.asyncio
+    async def test_another_first_reply_is_no_opening(self):
+        fake = _FakeMessages(*([{**self._ROW, "model_used": "claude-sonnet-4-6"}],) * 3)
+        with patch("app.db.supabase.get_client", return_value=fake), \
+             patch("app.db.supabase._run_sync", new=_plain_run_sync), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            assert await _REAL_STORED_OPENING(_CONV_ID) is None
+        assert fake.calls == 3
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_is_none(self, caplog):
+        with patch("app.db.supabase.get_client", side_effect=RuntimeError("down")), \
+             caplog.at_level(logging.WARNING):
+            assert await _REAL_STORED_OPENING(_CONV_ID) is None
+        assert "stored proactive opening not read (RuntimeError)" in caplog.text
 
 
 # ══════════════════════════════════════════════════════════════

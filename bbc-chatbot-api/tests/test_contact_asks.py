@@ -81,12 +81,16 @@ def _visitor() -> VisitorInfo:
     return VisitorInfo(name="Ann", email="ann@example.com", phone="+12125550187")
 
 
-def _gen(history=None):
+def _gen(history=None, lead=None, entities=None):
     from app.pipeline.generator import generate_response
 
+    # budget_remaining=0: the templates, never a live model call. Left at None,
+    # every call here went to the Anthropic API first (401 with the CI key) and
+    # reached the template only because that call failed (CodeRabbit #255).
     return generate_response(
-        intent=Intent.NEW_BOOKING, entities={"_raw_message": "ok"}, kb_results=[],
-        visitor=_visitor(), lead=_complete_lead(), history=history or [], tunnel="sales",
+        intent=Intent.NEW_BOOKING, entities={"_raw_message": "ok", **(entities or {})}, kb_results=[],
+        visitor=_visitor(), lead=lead or _complete_lead(), history=history or [], tunnel="sales",
+        budget_remaining=0,
     )
 
 
@@ -116,6 +120,47 @@ class TestHandoffPromise:
                 {"role": "user", "content": "thanks"},
             ])
         assert again.text != first
+
+    def test_no_model_is_called_for_the_handoff(self):
+        with patch("app.pipeline.generator._run_tiered_generation") as model, \
+             patch("app.services.closing.is_within_team_hours", return_value=False):
+            _gen()
+        model.assert_not_called()
+
+
+class TestHandoffContact:
+    """"We'll contact you at …" names the channel the client asked for
+    (CodeRabbit #255): it took the phone even after "email me the quotes"."""
+
+    @staticmethod
+    def _with(channel):
+        return {**_complete_lead(), "intent_signals": {"contact_channel": channel}}
+
+    @pytest.mark.parametrize("online", [True, False])
+    @pytest.mark.parametrize("channel", ["email", "email, no calls", "no calls, no texts"])
+    def test_an_email_client_is_promised_an_email(self, online, channel):
+        with patch("app.services.closing.is_within_team_hours", return_value=online):
+            text = _gen(lead=self._with(channel)).text
+        assert "We'll contact you at ann@example.com." in text
+        assert "+12125550187" not in text
+
+    @pytest.mark.parametrize("channel", [None, "text", "no calls", "no texts", "text, email"])
+    def test_otherwise_the_number_as_before(self, channel):
+        lead = self._with(channel) if channel else _complete_lead()
+        with patch("app.services.closing.is_within_team_hours", return_value=False):
+            text = _gen(lead=lead).text
+        assert "We'll contact you at +12125550187." in text
+
+    def test_this_turns_wish_counts_before_the_lead_has_it(self):
+        with patch("app.services.closing.is_within_team_hours", return_value=False):
+            text = _gen(entities={"contact_channel": "email"}).text
+        assert "We'll contact you at ann@example.com." in text
+
+    def test_legacy_list_signals_keep_the_default(self):
+        lead = {**_complete_lead(), "intent_signals": ["legacy_marker"]}
+        with patch("app.services.closing.is_within_team_hours", return_value=False):
+            text = _gen(lead=lead).text
+        assert "We'll contact you at +12125550187." in text
 
 
 # ── The Team line every time promise follows ───────────────────────────────
@@ -208,15 +253,72 @@ class TestContactChannel:
         ("JFK to London in March, 2 adults", None),
         ("call me after 2", None),
         ("", None),
-        # a negated wish is no wish
-        ("Please don't text me", None),
-        ("do not email me, text only", "text"),
+        # a negated wish is no wish; a withdrawn channel is a wish of its own
+        ("Please don't text me", "no texts"),
+        ("do not email me, text only", "text, no email"),
         ("not only text, a call is fine too", None),
+        ("Please don't call or text me", "no calls, no texts"),
+        ("don't text or call me", "no calls, no texts"),
+        ("stop texting me", "no texts"),
+        ("never email me", "no email"),
+        ("don't text me, email me instead", "email, no texts"),
+        ("I don't text much", None),
     ])
     def test_read_from_the_words(self, text, channel):
         from app.pipeline.entity_extractor import contact_channel_of
 
         assert contact_channel_of(text) == channel
+
+    @pytest.mark.parametrize("stored, new, merged", [
+        (None, "text", "text"),
+        # CodeRabbit #255: "text only", then "please don't text me" kept "text"
+        ("text", "no texts", "no texts"),
+        ("no texts", "text", "text"),
+        ("no calls", "no texts", "no calls, no texts"),
+        ("text, no calls", "email", "text, no calls, email"),
+        ("email", "no email, text", "no email, text"),
+        ("text", "text", "text"),
+    ])
+    def test_a_later_wish_replaces_its_opposite_and_keeps_the_rest(self, stored, new, merged):
+        from app.pipeline.entity_extractor import merge_contact_channel
+
+        assert merge_contact_channel(stored, new) == merged
+
+    @pytest.mark.asyncio
+    async def test_the_lead_drops_a_withdrawn_channel(self):
+        """The merge in update_lead_from_entities, not only the helper: the
+        consultant's line reads "no texts", never "text" any more."""
+        from unittest.mock import MagicMock
+
+        from app.services.lead_service import update_lead_from_entities
+
+        lead_row = {
+            "id": "L1", "score": 0, "origin_code": None, "destination_code": None,
+            "departure_date": None, "passengers": None, "cabin_class": None,
+            "return_date": None, "trip_type": None, "children_count": None,
+            "infant_count": None, "notes": "",
+            "intent_signals": {"contact_channel": "text, no calls", "occasion": "business"},
+        }
+        leads, convs = MagicMock(), MagicMock()
+        for t, data in ((leads, [lead_row]), (convs, [])):
+            for m in ("select", "eq", "limit", "update", "insert"):
+                getattr(t, m).return_value = t
+            t.execute.return_value = MagicMock(data=data)
+        client = MagicMock()
+        client.table.side_effect = lambda name: {"leads": leads, "conversations": convs}[name]
+
+        async def _sync(fn, *a, **k):
+            return fn()
+
+        with patch("app.db.supabase.get_client", return_value=client), \
+             patch("app.db.supabase._run_sync", side_effect=_sync):
+            await update_lead_from_entities("conv-1", {"contact_channel": "no texts"})
+
+        written = [c.args[0] for c in leads.update.call_args_list if "intent_signals" in c.args[0]]
+        assert written, "the withdrawal must be written"
+        assert written[0]["intent_signals"]["contact_channel"] == "no calls, no texts"
+        assert written[0]["intent_signals"]["occasion"] == "business"
+        assert "Reach by: no calls, no texts" in written[0]["notes"]
 
     def test_extracted_with_the_rest(self):
         from app.pipeline.entity_extractor import extract_entities

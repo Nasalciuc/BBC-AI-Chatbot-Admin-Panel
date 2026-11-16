@@ -639,28 +639,60 @@ CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
         re.I)),
     ("no calls", re.compile(
         r"\b(?:no\s+(?:phone\s+)?calls?|don'?t\s+call|do\s+not\s+call|please\s+don'?t\s+call"
-        r"|can'?t\s+talk|cannot\s+talk|don'?t\s+want\s+to\s+talk|no\s+talking)\b", re.I)),
+        r"|can'?t\s+talk|cannot\s+talk|don'?t\s+want\s+to\s+talk|no\s+talking|stop\s+calling"
+        r"|(?:don'?t|do\s+not|never)\s+(?:text|txt|sms)\s+(?:or|and|nor)\s+call)\b", re.I)),
+    # A channel withdrawn: "Please don't text me", "stop texting me". It is a
+    # wish of its own, not silence: the consultant must not text a client who
+    # said so, and an earlier "text only" gives way to it (merge_contact_channel).
+    # "don't text me", "don't text." — not "I don't text much".
+    ("no texts", re.compile(
+        r"\b(?:(?:don'?t|do\s+not|never)\s+(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?(?:text|txt|sms)"
+        r"(?:\s+me\b|(?=\s*(?:[.,!?;]|$))|(?=\s+(?:or|and|nor)\s+(?:call|phone|ring)))"
+        r"|stop\s+(?:texting|txting|sending\s+(?:me\s+)?(?:texts?|sms))|no\s+more\s+(?:texts?|sms))\b", re.I)),
+    ("no email", re.compile(
+        r"\b(?:(?:don'?t|do\s+not|never)\s+e-?mail(?:\s+me\b|(?=\s*(?:[.,!?;]|$)))"
+        r"|stop\s+e-?mailing|no\s+more\s+e-?mails?)\b", re.I)),
+)
+
+# A wish and its withdrawal: the later one wins (merge_contact_channel).
+_CHANNEL_OPPOSITES = {"text": "no texts", "no texts": "text", "email": "no email", "no email": "email"}
+
+# "don't text me", "never email me", "don't call or text me", "not only text":
+# what follows is no wish for that channel.
+_NEGATED_BEFORE = re.compile(
+    r"\b(?:don'?t|do\s+not|never|not|no)\s*(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?$", re.I
 )
 
 
-_NEGATED_BEFORE = re.compile(r"\b(?:don'?t|do\s+not|never|not|no)\s*$", re.I)
-
-
 def contact_channel_of(text: str) -> Optional[str]:
-    """'text', 'email', 'no calls' or a comma-joined mix — None when unsaid.
+    """'text', 'email', 'no calls', 'no texts', 'no email' or a comma-joined
+    mix — None when the message says nothing about it.
 
     "Please don't text me" is no wish for texts: a text or email phrase right
-    after a negation does not count ("no calls" phrases are negations already).
+    after a negation does not count as the wish; the withdrawal is read by its
+    own phrases ("no texts"), so it can replace an earlier "text only". "Not
+    only text" withdraws nothing and says nothing.
     """
     text = text or ""
     found: list[str] = []
     for label, rx in CONTACT_CHANNEL_RES:
         for m in rx.finditer(text):
-            if label != "no calls" and _NEGATED_BEFORE.search(text[max(0, m.start() - 12):m.start()]):
+            if label in ("text", "email") and _NEGATED_BEFORE.search(text[max(0, m.start() - 24):m.start()]):
                 continue
             found.append(label)
             break
     return ", ".join(found) or None
+
+
+def merge_contact_channel(stored: Optional[str], new: str) -> str:
+    """The channel wishes so far, with this message's: a later withdrawal
+    replaces the wish ("text only", then "please don't text me" → "no texts"),
+    a later wish replaces the withdrawal, and unrelated wishes stay ("no calls",
+    then "no texts" → "no calls, no texts")."""
+    new_parts = [p.strip() for p in (new or "").split(",") if p.strip()]
+    old_parts = [p.strip() for p in stored.split(",") if p.strip()] if isinstance(stored, str) else []
+    kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts]
+    return ", ".join(kept + new_parts)
 
 # Reverse of CITY_TO_CODE for the landing-page hint. Short keys ("la", "sf")
 # match too much inside a slug, so only real city names are used.
