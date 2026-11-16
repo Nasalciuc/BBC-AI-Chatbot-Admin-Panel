@@ -169,7 +169,7 @@ export const WIDGET_CSS = `
   height: 100%; max-height: none; border-radius: 0; box-shadow: none; animation: none;
 }
 
-/* The top: Alex, said to be an AI travel agent of the brand, a call button and close. */
+/* The top: Alex with the "AI" badge on his photo, his line, a call button and close. */
 #bbc-widget-root .bw-top { position: relative; flex-shrink: 0; color: var(--bw-text); }
 #bbc-widget-root .bw-head {
   display: flex; align-items: center; gap: 12px;
@@ -187,7 +187,7 @@ export const WIDGET_CSS = `
 }
 #bbc-widget-root .bw-head__text { flex: 1; min-width: 0; }
 #bbc-widget-root .bw-head__name { font-size: 17px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; color: var(--bw-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Two lines when the brand is long ("AI travel agent · Business Class Tickets"): the disclosure is never cut. */
+/* Two lines when the brand is long ("Travel Agent · Business Class Tickets"): the line is never cut. */
 #bbc-widget-root .bw-head__sub {
   margin-top: 1px; font-size: 13px; line-height: 1.35; color: var(--bw-muted);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -311,6 +311,19 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-ava--persona { display: flex; align-items: center; justify-content: center; background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 12px; font-weight: 700; }
 /* Alex's photo fills his round avatar in all three spots; the brand colour stays behind it while it decodes. */
 #bbc-widget-root .bw-photo > img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+/* "AI" on Alex's avatar in all three spots (owner, 16 Nov): his line says "Travel Agent", the badge says
+   what kind. Bottom left, so the header's green dot keeps the bottom right; a white ring parts it from the photo. */
+#bbc-widget-root .bw-ava--persona,
+#bbc-widget-root .bw-nudge__ava--persona { position: relative; }
+#bbc-widget-root .bw-ai {
+  position: absolute; left: -5px; bottom: -3px;
+  padding: 2px 4px; border-radius: 999px;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF;
+  font-size: 9px; font-style: normal; font-weight: 800; line-height: 1; letter-spacing: 0.04em;
+  box-shadow: 0 0 0 1.5px #FFFFFF;
+}
+#bbc-widget-root .bw-head__ava .bw-ai { left: -4px; bottom: -2px; font-size: 10px; }
+#bbc-widget-root .bw-ava .bw-ai { left: -6px; bottom: -4px; padding: 2px 3px; font-size: 8px; }
 #bbc-widget-root .bw-msg { padding: 10px 14px; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 #bbc-widget-root .bw-row--in .bw-msg { background: var(--bw-glass); color: var(--bw-text); border-radius: 6px 18px 18px 18px; box-shadow: var(--bw-lift); }
 #bbc-widget-root .bw-row--in:not(.bw-row--first) .bw-msg { border-radius: 18px; }
@@ -454,6 +467,7 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--large .bw-chips { width: 100%; max-width: 880px; margin-left: auto; margin-right: auto; }
   #bbc-widget-root .bw-panel--large .bw-head { min-height: 88px; gap: 16px; padding: 20px 12px 12px 20px; }
   #bbc-widget-root .bw-panel--large .bw-head__ava { width: 52px; height: 52px; font-size: 21px; }
+  #bbc-widget-root .bw-panel--large .bw-head__ava .bw-ai { left: -5px; bottom: -3px; padding: 3px 5px; font-size: 12px; }
   #bbc-widget-root .bw-panel--large .bw-head__name { font-size: 21px; }
   #bbc-widget-root .bw-panel--large .bw-head__sub { font-size: 16px; }
   #bbc-widget-root .bw-panel--large .bw-iconbtn { width: 52px; height: 52px; }
@@ -466,6 +480,7 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--large .bw-ava { width: 32px; height: 32px; }
   #bbc-widget-root .bw-panel--large .bw-ava--initials,
   #bbc-widget-root .bw-panel--large .bw-ava--persona { font-size: 14px; }
+  #bbc-widget-root .bw-panel--large .bw-ava .bw-ai { left: -6px; bottom: -4px; padding: 2px 4px; font-size: 9.5px; }
   #bbc-widget-root .bw-panel--large .bw-meta { font-size: 14px; }
   #bbc-widget-root .bw-panel--large .bw-note { font-size: 16px; }
   #bbc-widget-root .bw-panel--large .bw-day { padding: 4px 12px; font-size: 14px; }

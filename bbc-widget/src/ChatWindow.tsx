@@ -7,7 +7,7 @@ import { getTurnstileToken } from './turnstile'
 import type { FormCheck } from './TunnelForm'
 import brand from './config'
 import { promoteTemp, reconcileBatch } from './reconcile'
-import { PanelTop, personaLine } from './PanelTop'
+import { PanelTop } from './PanelTop'
 import { PersonaAvatar } from './PersonaAvatar'
 import { useLarge } from './largeView'
 import { IconArrowDown, IconArrowUp } from './icons'
@@ -1092,8 +1092,9 @@ export function ChatWindow({
   const endsGroup = (i: number) => i === shown.length - 1 || startsGroup(i + 1)
   const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
   const lastAgentName = (lastAgent?.agent_name || '').trim()
-  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : personaLine
-  // Alex's avatar: his photo, part of the bundle (PersonaAvatar.tsx).
+  // Alex's own line (PersonaLine) until a person writes in the chat.
+  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : undefined
+  // Alex's avatar: his photo with the "AI" badge (PersonaAvatar.tsx).
   const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).
@@ -1201,7 +1202,7 @@ export function ChatWindow({
           <div class="bw-row bw-row--in bw-row--first">
             <div class="bw-who">{brandAvatar}<span><b>{brand.persona.name}</b> is typing</span></div>
             {dots}
-            <span class="bw-sr">{`${brand.persona.name}, the AI travel agent, is typing`}</span>
+            <span class="bw-sr">{`${brand.persona.name}, the AI ${brand.persona.role}, is typing`}</span>
           </div>
         )}
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import brand from './config'
 import { IconArrowRight, IconClose } from './icons'
-import { personaLine } from './PanelTop'
+import { PersonaLine } from './PanelTop'
 import { PersonaAvatar } from './PersonaAvatar'
 import type { PageContext } from './pageContext'
 import type { Unread } from './ChatWindow'
@@ -76,10 +76,10 @@ export function FloatingButtons({
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
     : `Chat with ${brand.name}`
-  // Alex's avatar beside the button: his photo, part of the bundle (PersonaAvatar.tsx).
+  // Alex's avatar beside the button: his photo with the "AI" badge (PersonaAvatar.tsx).
   const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" />
   const personaWho = (
-    <span class="bw-nudge__id"><b>{brand.persona.name}</b><small>{personaLine}</small></span>
+    <span class="bw-nudge__id"><b>{brand.persona.name}</b><small><PersonaLine /></small></span>
   )
 
   return (
