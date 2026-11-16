@@ -59,5 +59,12 @@ test('the form starts empty, shows the country of what it will send, and says ho
   assert.match(form, /setDetectedCountry\(shownCountry\(val\) \|\| COUNTRIES\[0\]\)/)
   // No "+" is put in front of what the visitor types any more.
   assert.doesNotMatch(form, /`\+\$\{trimmed\}`/)
-  assert.match(form, /'A US number, or \+ and your country code'/)
+  assert.match(form, /'A US number, or \+ and your country code\. For example 404 555 0143'/)
+})
+
+test('the example is under the field, never grey text inside it (read as filled in by older clients)', () => {
+  assert.doesNotMatch(form, /placeholder=/)
+  for (const label of ['Your name', 'Phone number', 'Email address']) {
+    assert.match(form, new RegExp(`class="bw-label"[^>]*>${label}</label>`), label)
+  }
 })

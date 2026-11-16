@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { COUNTRIES, detectCountryFromPhone, normalizePhone, shownCountry, validatePhone, type Country } from './countries'
 import brand from './config'
 import { PanelTop } from './PanelTop'
-import { IconAlert, IconArrowRight } from './icons'
+import { IconAlert, IconArrowRight, IconPhone } from './icons'
+import { posthog } from './posthog'
 import { useIsPhone } from './phoneSheet'
 
 /** PR-12: the trap a person never trips — a hidden field and the fill time.
@@ -149,7 +150,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
         {tunnel === 'sales' ? (
           <>
             <div class="bw-field">
-              <label class="bw-label" for="bw-name">Name</label>
+              <label class="bw-label" for="bw-name">Your name</label>
               <input
                 ref={firstRef}
                 id="bw-name"
@@ -169,7 +170,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
             </div>
 
             <div class="bw-field">
-              <label class="bw-label" for="bw-phone">Phone</label>
+              <label class="bw-label" for="bw-phone">Phone number</label>
               <div class="bw-phone" data-invalid={errors.phone ? 'true' : undefined}>
                 {phoneShown && (
                   <span class="bw-phone__cc" aria-hidden="true">{detectedCountry.code} {detectedCountry.dial}</span>
@@ -183,7 +184,6 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
                   inputMode="tel"
                   autoComplete="tel"
                   enterkeyhint="next"
-                  placeholder="(555) 000-0000"
                   value={phone}
                   aria-invalid={errors.phone ? 'true' : undefined}
                   aria-describedby={errors.phone ? 'bw-phone-err' : 'bw-phone-hint'}
@@ -201,11 +201,11 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
               </div>
               {errors.phone
                 ? <Err id="bw-phone-err" text={errors.phone} />
-                : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'A US number, or + and your country code'}</div>}
+                : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'A US number, or + and your country code. For example 404 555 0143'}</div>}
             </div>
 
             <div class="bw-field">
-              <label class="bw-label" for="bw-email">Email</label>
+              <label class="bw-label" for="bw-email">Email address</label>
               <input
                 id="bw-email"
                 data-field="email"
@@ -265,6 +265,16 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
         <button type="submit" class="bw-cta">
           {brand.ctaSubmit} <IconArrowRight />
         </button>
+        {/* For the client who would rather speak to a person than type: the number, big and tappable. */}
+        <p class="bw-form__call">
+          Prefer to talk?{' '}
+          <a
+            href={`tel:+${brand.contactPhone.replace(/\D/g, '')}`}
+            onClick={() => posthog?.capture('call_initiated', { entry_point: 'widget_form' })}
+          >
+            <IconPhone /> {brand.contactPhone}
+          </a>
+        </p>
       </form>
     </div>
   )

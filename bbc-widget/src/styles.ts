@@ -11,7 +11,8 @@
 // before this script loads, so it keeps its exact look.
 //
 // Phones (under 768px): the panel is a full-screen sheet that slides up, as native chat apps do;
-// fields are 16px so iOS never zooms on focus. Computers: a 400px panel rising from the corner button.
+// fields are 16px or more so iOS never zooms on focus. Computers: a 400px panel rising from the corner
+// button (the form 440px).
 
 export const WIDGET_CSS = `
 #bbc-widget-root {
@@ -162,7 +163,7 @@ export const WIDGET_CSS = `
   animation: bw-panel-in 0.38s var(--bw-ease) both;
 }
 #bbc-widget-root .bw-panel.bw-panel--hidden { display: none !important; }
-#bbc-widget-root .bw-panel--form { height: auto; max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); }
+#bbc-widget-root .bw-panel--form { width: 440px; height: auto; max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); }
 #bbc-widget-root .bw-panel--embedded {
   position: absolute; inset: 0; right: 0; bottom: 0; width: 100%; max-width: none;
   height: 100%; max-height: none; border-radius: 0; box-shadow: none; animation: none;
@@ -205,61 +206,76 @@ export const WIDGET_CSS = `
 
 #bbc-widget-root .bw-intro { padding: 6px 24px 18px; }
 #bbc-widget-root .bw-intro__title {
-  font-size: 24px; font-weight: 700; line-height: 1.22; letter-spacing: -0.02em;
+  font-size: 26px; font-weight: 700; line-height: 1.22; letter-spacing: -0.02em;
   color: var(--bw-text); text-wrap: balance;
 }
 #bbc-widget-root .bw-intro__title em { font-style: normal; font-weight: 700; color: var(--bw-primary, var(--bw-accent)); }
-#bbc-widget-root .bw-intro__lead { margin-top: 8px; font-size: 15px; line-height: 1.5; color: var(--bw-muted); max-width: 34ch; }
+#bbc-widget-root .bw-intro__lead { margin-top: 8px; font-size: 17px; line-height: 1.5; color: var(--bw-text-2); max-width: 34ch; }
 
-/* ── The form ────────────────────────────────────────────────────────── */
+/* ── The form ──────────────────────────────────────────────────────────
+   Read by many clients over 70 (16 Nov): large type, tall fields with strong edges, the label above
+   each field and what goes in it, the example under the field (never grey text inside it, which reads
+   as already filled in), errors in words a person can see, and the number to call for who would rather
+   talk. */
 #bbc-widget-root .bw-form {
   flex: 1; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 16px; margin: 0 12px 12px; padding: 20px 16px;
+  display: flex; flex-direction: column; gap: 20px; margin: 0 12px 12px; padding: 24px 20px 18px;
   border-radius: 20px; background: var(--bw-glass); box-shadow: var(--bw-lift);
 }
-#bbc-widget-root .bw-field { display: flex; flex-direction: column; gap: 6px; }
-#bbc-widget-root .bw-label { font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--bw-text); }
+#bbc-widget-root .bw-field { display: flex; flex-direction: column; gap: 8px; }
+#bbc-widget-root .bw-label { font-size: 17px; font-weight: 700; line-height: 1.3; color: var(--bw-text); }
 #bbc-widget-root .bw-input {
-  display: block; width: 100%; height: 48px; padding: 0 14px; border-radius: 12px;
-  font-size: 16px; line-height: 1.3; color: var(--bw-text); caret-color: var(--bw-primary, var(--bw-ink));
-  background: var(--bw-paper); border: 1px solid var(--bw-line-strong);
+  display: block; width: 100%; height: 56px; padding: 0 16px; border-radius: 14px;
+  font-size: 18px; line-height: 1.3; color: var(--bw-text); caret-color: var(--bw-primary, var(--bw-ink));
+  background: var(--bw-paper); border: 2px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.32);
   -webkit-appearance: none; appearance: none;
   transition: border-color 0.15s var(--bw-ease), box-shadow 0.15s var(--bw-ease);
 }
 #bbc-widget-root .bw-input::placeholder { color: var(--bw-placeholder); opacity: 1; }
-#bbc-widget-root .bw-input:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.45); }
-#bbc-widget-root .bw-input:focus { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.16); }
+#bbc-widget-root .bw-input:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.6); }
+#bbc-widget-root .bw-input:focus { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 4px rgba(var(--bw-primary-rgb, 30,79,216), 0.18); }
 #bbc-widget-root .bw-input:focus-visible { outline: none; }
-#bbc-widget-root .bw-input[aria-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 3px rgba(179, 38, 30, 0.14); }
+#bbc-widget-root .bw-input[aria-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 4px rgba(179, 38, 30, 0.14); }
 #bbc-widget-root .bw-phone {
-  display: flex; align-items: stretch; height: 48px; border-radius: 12px; overflow: hidden;
-  background: var(--bw-paper); border: 1px solid var(--bw-line-strong);
+  display: flex; align-items: stretch; height: 56px; border-radius: 14px; overflow: hidden;
+  background: var(--bw-paper); border: 2px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.32);
   transition: border-color 0.15s var(--bw-ease), box-shadow 0.15s var(--bw-ease);
 }
-#bbc-widget-root .bw-phone:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.45); }
-#bbc-widget-root .bw-phone:focus-within { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.16); }
-#bbc-widget-root .bw-phone[data-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 3px rgba(179, 38, 30, 0.14); }
+#bbc-widget-root .bw-phone:hover { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.6); }
+#bbc-widget-root .bw-phone:focus-within { border-color: var(--bw-primary, var(--bw-ink)); box-shadow: 0 0 0 4px rgba(var(--bw-primary-rgb, 30,79,216), 0.18); }
+#bbc-widget-root .bw-phone[data-invalid="true"] { border-color: var(--bw-danger); box-shadow: 0 0 0 4px rgba(179, 38, 30, 0.14); }
 #bbc-widget-root .bw-phone__cc {
-  display: flex; align-items: center; justify-content: center; min-width: 64px; padding: 0 12px;
-  background: var(--bw-band); font-size: 14px; font-weight: 600; color: var(--bw-muted);
+  display: flex; align-items: center; justify-content: center; min-width: 76px; padding: 0 14px;
+  background: var(--bw-band); font-size: 16px; font-weight: 700; color: var(--bw-text-2);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-#bbc-widget-root .bw-phone .bw-input { flex: 1; height: 46px; border: 0; border-radius: 0; box-shadow: none; }
-#bbc-widget-root .bw-hint { font-size: 13px; line-height: 1.4; color: var(--bw-muted); }
-#bbc-widget-root .bw-error { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; line-height: 1.4; color: var(--bw-danger); }
-#bbc-widget-root .bw-error svg { width: 15px; height: 15px; margin-top: 1px; }
+#bbc-widget-root .bw-phone .bw-input { flex: 1; height: 52px; border: 0; border-radius: 0; box-shadow: none; }
+#bbc-widget-root .bw-hint { font-size: 15px; line-height: 1.45; color: var(--bw-text-2); }
+#bbc-widget-root .bw-error { display: flex; align-items: flex-start; gap: 8px; font-size: 16px; font-weight: 600; line-height: 1.4; color: var(--bw-danger); }
+#bbc-widget-root .bw-error svg { width: 18px; height: 18px; margin-top: 2px; }
 #bbc-widget-root .bw-cta {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  width: 100%; height: 52px; margin-top: 4px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; height: 60px; margin-top: 4px; border-radius: 999px;
   background: var(--bw-primary, var(--bw-cta)); color: #FFFFFF;
-  font-size: 16px; font-weight: 700; line-height: 1;
+  font-size: 19px; font-weight: 700; line-height: 1;
   box-shadow: 0 8px 20px rgba(var(--bw-primary-rgb, 30,79,216), 0.24);
   transition: background-color 0.18s var(--bw-ease);
 }
 #bbc-widget-root .bw-cta:hover { background: var(--bw-primary-hover, var(--bw-cta-hover)); }
 #bbc-widget-root .bw-cta:active { transform: translateY(1px); }
-#bbc-widget-root .bw-cta svg { width: 18px; height: 18px; transition: transform 0.2s var(--bw-ease); }
+#bbc-widget-root .bw-cta svg { width: 20px; height: 20px; transition: transform 0.2s var(--bw-ease); }
 #bbc-widget-root .bw-cta:hover svg { transform: translateX(3px); }
+#bbc-widget-root .bw-form__call {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; column-gap: 6px;
+  margin-top: -6px; font-size: 16px; line-height: 1.4; color: var(--bw-text-2); text-align: center;
+}
+#bbc-widget-root .bw-form__call a {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 4px;
+  font-weight: 700; color: var(--bw-primary, var(--bw-ink)); white-space: nowrap;
+  text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 1px;
+}
+#bbc-widget-root .bw-form__call a:hover { text-decoration-thickness: 2px; }
+#bbc-widget-root .bw-form__call svg { width: 18px; height: 18px; }
 
 /* ── The conversation ────────────────────────────────────────────────── */
 #bbc-widget-root .bw-logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -339,7 +355,7 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-compose .bw-input {
   flex: 1; height: 44px; min-height: 44px; max-height: 136px; padding: 11px 0;
   border: 0; border-radius: 0; background: transparent; box-shadow: none;
-  line-height: 1.4; resize: none; overflow-y: auto;
+  font-size: 16px; line-height: 1.4; resize: none; overflow-y: auto;
 }
 #bbc-widget-root .bw-compose .bw-input:focus { box-shadow: none; }
 #bbc-widget-root .bw-send {
