@@ -40,3 +40,16 @@ export const posthog = (() => {
 
   return posthogSdk
 })()
+
+/**
+ * The PostHog session of this visit, sent with the conversation it starts (metadata.posthog_session_id),
+ * so the panel can take the agent to the replay of what the client did before writing. An id only.
+ */
+export function posthogSessionId(): string | undefined {
+  try {
+    const id = posthog?.get_session_id?.()
+    return typeof id === 'string' && id ? id : undefined
+  } catch {
+    return undefined  // PostHog not loaded or blocked: the conversation starts without it
+  }
+}

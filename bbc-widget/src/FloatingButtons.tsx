@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import brand from './config'
 import { IconArrowRight, IconClose } from './icons'
+import { PersonaLine } from './PanelTop'
+import { PersonaAvatar } from './PersonaAvatar'
 import type { PageContext } from './pageContext'
 import type { Unread } from './ChatWindow'
+import { markNoteClosed, type ProactiveOpening } from './proactive'
+import { isNotNow } from './triggers'
 
 interface Props {
   onSelect: (tunnel: 'sales' | 'support') => void
@@ -15,6 +19,14 @@ interface Props {
   context?: PageContext
   /** Messages that arrived while the chat was closed: a count on the button and a preview of the latest. */
   unread?: Unread
+  /** The proactive card (phones): the server's words for this visitor's search and two buttons. */
+  card?: ProactiveOpening | null
+  /** Open the chat from the card; `reply` is the button tapped, sent as the visitor's first message. */
+  onCardOpen?: (reply?: string) => void
+  /** "Not now" on the card. */
+  onCardDismiss?: () => void
+  /** A tap on the 10 s note: the chat with Alex and no form (Widget.tsx). Without it, the form. */
+  onNoteOpen?: () => void
 }
 
 /** How long the greeting stays before it steps aside by itself. */
@@ -27,6 +39,7 @@ const NUDGE_VISIBLE_MS = 30_000
  */
 export function FloatingButtons({
   onSelect, showAttention = false, onDismissAttention, autoFocus = false, context, unread,
+  card, onCardOpen, onCardDismiss, onNoteOpen,
 }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null)
   const count = unread?.count || 0
@@ -52,9 +65,22 @@ export function FloatingButtons({
     if (unread?.fresh) setPulseKey(k => k + 1)
   }, [unread?.count])
 
+  useEffect(() => {
+    if (card) setPulseKey(k => k + 1)
+  }, [card])
+
+  // The card: its first button is the server's first reply ("Yes, check fares"); "Not now" closes it.
+  const cardYes = card?.quickReplies.find(r => !isNotNow(r))
+  const cardNo = card?.quickReplies.find(isNotNow) || 'Not now'
+
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
     : `Chat with ${brand.name}`
+  // Alex's avatar beside the button: his photo (PersonaAvatar.tsx). The "AI" badge is the header's alone.
+  const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" />
+  const personaWho = (
+    <span class="bw-nudge__id"><b>{brand.persona.name}</b><small><PersonaLine /></small></span>
+  )
 
   return (
     // The round button comes first: the site's hand-over code clicks `#bbc-floating-btn button`.
@@ -79,7 +105,7 @@ export function FloatingButtons({
                 ? (preview.avatar
                     ? <img class="bw-nudge__ava" src={preview.avatar} alt="" width={28} height={28} />
                     : <span class="bw-nudge__ava bw-nudge__ava--initials">{preview.initials}</span>)
-                : <img class="bw-nudge__ava bw-nudge__ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />}
+                : personaAvatar}
               <b>{preview.name}</b>
             </span>
             <span class="bw-nudge__text">{preview.text}</span>
@@ -89,18 +115,35 @@ export function FloatingButtons({
             <IconClose />
           </button>
         </div>
+      ) : card && count === 0 ? (
+        <div class="bw-nudge bw-nudge--card" role="status" aria-live="polite">
+          <button type="button" class="bw-nudge__open" onClick={() => onCardOpen?.()}>
+            <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
+            <span class="bw-nudge__text">{card.message}</span>
+          </button>
+          <div class="bw-card__actions">
+            {cardYes && (
+              <button type="button" class="bw-card__yes" onClick={() => onCardOpen?.(cardYes)}>
+                {cardYes}
+              </button>
+            )}
+            <button type="button" class="bw-card__no" onClick={onCardDismiss}>{cardNo}</button>
+          </div>
+        </div>
       ) : showAttention && count === 0 ? (
         <div class="bw-nudge bw-nudge--message" role="status">
-          <button type="button" class="bw-nudge__open" onClick={() => onSelect('sales')}>
-            <span class="bw-nudge__who">
-              <img class="bw-nudge__ava bw-nudge__ava--brand" src={brand.logoUrl} alt="" width={28} height={28} />
-              <b>{brand.name}</b>
-            </span>
+          <button type="button" class="bw-nudge__open" onClick={() => (onNoteOpen ? onNoteOpen() : onSelect('sales'))}>
+            <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
             <span class="bw-nudge__title">{context?.title || 'Planning a business class trip?'}</span>
             <span class="bw-nudge__text">{context?.line || "Tell me where and when, and I'll check fares for you."}</span>
             <span class="bw-nudge__cta">Get a fare quote <IconArrowRight /></span>
           </button>
-          <button type="button" class="bw-nudge__x" onClick={onDismissAttention} aria-label="Hide this message">
+          <button
+            type="button"
+            class="bw-nudge__x"
+            onClick={() => { markNoteClosed(); onDismissAttention?.() }}
+            aria-label="Hide this message"
+          >
             <IconClose />
           </button>
         </div>

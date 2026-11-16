@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { COUNTRIES, detectCountryFromPhone, validatePhone, type Country } from './countries'
+import { COUNTRIES, detectCountryFromPhone, normalizePhone, shownCountry, validatePhone, type Country } from './countries'
 import brand from './config'
 import { PanelTop } from './PanelTop'
-import { IconAlert, IconArrowRight } from './icons'
+import { IconAlert, IconArrowRight, IconPhone } from './icons'
+import { useLarge } from './largeView'
+import { posthog } from './posthog'
 import { useIsPhone } from './phoneSheet'
 
 /** PR-12: the trap a person never trips — a hidden field and the fill time.
@@ -32,7 +34,9 @@ function Err({ id, text }: { id: string; text?: string }) {
 
 export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded = false }: Props) {
   const [name, setName] = useState('')
-  const [phone, setPhone] = useState('+')
+  // Empty, not "+": ten digits typed the US way are a US number, "+" and a code any other country
+  // (countries.ts normalizePhone / shownCountry). With "+" already there, "404 555 0143" read as Romania.
+  const [phone, setPhone] = useState('')
   const [detectedCountry, setDetectedCountry] = useState<Country>(COUNTRIES[0])
   const [email, setEmail] = useState('')
   const [bookingId, setBookingId] = useState('')
@@ -40,6 +44,7 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
   const firstRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const isPhone = useIsPhone()
+  const [large] = useLarge()
   // PR-12 trap: a hidden field no person fills, and how long the form was open.
   const [website, setWebsite] = useState('')
   const shownAt = useRef(Date.now())
@@ -55,18 +60,9 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
 
   const clear = (f: Field) => setErrors(prev => (prev[f] ? { ...prev, [f]: undefined } : prev))
 
-  const normalizePhone = (value: string): string => {
-    const trimmed = value.trim()
-    const raw = trimmed === '+' ? '' : trimmed
-    const digits = raw.replace(/\D/g, '')
-    if (digits.length < 7) return ''
-    const withCountry = digits.length === 10 ? `1${digits}` : digits
-    return `+${withCountry}`
-  }
-
   const phoneProblem = (value: string): string | undefined => {
     const normalized = normalizePhone(value)
-    if (!normalized || normalized.length < 8) return 'Enter your phone number with the country code'
+    if (!normalized || normalized.length < 8) return 'Enter your phone number'
     const country = detectCountryFromPhone(normalized) || detectedCountry
     if (!validatePhone(normalized, country)) return `This doesn't look like a ${country.name} number`
     return undefined
@@ -125,16 +121,16 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
 
   const heading = tunnel === 'sales' ? brand.formHeading : brand.supportHeading
   const lead = tunnel === 'sales' ? brand.formLead : brand.supportLead
-  const phoneShown = phone.length > 1 && phone !== '+'
+  const phoneShown = /\d/.test(phone)
 
   return (
     <div
-      class={`bw-panel bw-panel--form${embedded ? ' bw-panel--embedded' : ''}`}
+      class={`bw-panel bw-panel--form${embedded ? ' bw-panel--embedded' : ''}${large && !embedded ? ' bw-panel--large' : ''}`}
       role="dialog"
       aria-modal={isPhone && !embedded ? 'true' : 'false'}
       aria-labelledby="bw-form-title"
     >
-      <PanelTop subtitle={brand.tagline} onClose={embedded ? undefined : onBack}>
+      <PanelTop onClose={embedded ? undefined : onBack} canEnlarge={!embedded}>
         <div class="bw-intro">
           <h2 class="bw-intro__title" id="bw-form-title">
             {heading[0]} <em>{heading[1]}</em>
@@ -153,127 +149,140 @@ export function TunnelForm({ tunnel, onSubmit, onBack, onInteraction, embedded =
               onInput={e => setWebsite((e.target as HTMLInputElement).value)} />
           </label>
         </div>
-        {tunnel === 'sales' ? (
-          <>
-            <div class="bw-field">
-              <label class="bw-label" for="bw-name">Name</label>
-              <input
-                ref={firstRef}
-                id="bw-name"
-                onKeyDown={nextOnEnter}
-                data-field="name"
-                class="bw-input"
-                type="text"
-                autoComplete="name"
-                autoCapitalize="words"
-                enterkeyhint="next"
-                value={name}
-                aria-invalid={errors.name ? 'true' : undefined}
-                aria-describedby={errors.name ? 'bw-name-err' : undefined}
-                onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value); clear('name') }}
-              />
-              <Err id="bw-name-err" text={errors.name} />
-            </div>
-
-            <div class="bw-field">
-              <label class="bw-label" for="bw-phone">Phone</label>
-              <div class="bw-phone" data-invalid={errors.phone ? 'true' : undefined}>
-                {phoneShown && (
-                  <span class="bw-phone__cc" aria-hidden="true">{detectedCountry.code} {detectedCountry.dial}</span>
-                )}
+        {/* Two parts: the fields, and under them the button with the number to call. On a computer the
+            fields scroll inside the card when the screen is short, and the button stays in sight. */}
+        <div class="bw-form__fields">
+          {tunnel === 'sales' ? (
+            <>
+              <div class="bw-field">
+                <label class="bw-label" for="bw-name">Your name</label>
                 <input
-                  id="bw-phone"
-                onKeyDown={nextOnEnter}
-                  data-field="phone"
+                  ref={firstRef}
+                  id="bw-name"
+                  onKeyDown={nextOnEnter}
+                  data-field="name"
                   class="bw-input"
-                  type="tel"
-                  inputMode="tel"
-                  autoComplete="tel"
+                  type="text"
+                  autoComplete="name"
+                  autoCapitalize="words"
                   enterkeyhint="next"
-                  value={phone}
-                  aria-invalid={errors.phone ? 'true' : undefined}
-                  aria-describedby={errors.phone ? 'bw-phone-err' : 'bw-phone-hint'}
-                  onInput={(e) => {
-                    const raw = (e.target as HTMLInputElement).value
-                    const trimmed = raw.trim()
-                    const val = /^\d/.test(trimmed) ? `+${trimmed}` : (trimmed || '+')
-                    setPhone(val)
-                    const country = detectCountryFromPhone(val)
-                    if (country) setDetectedCountry(country)
-                    else if (val.startsWith('+')) setDetectedCountry(COUNTRIES[0])
-                    // A shown error clears as soon as the number becomes valid; a new one waits for blur or submit.
-                    if (errors.phone && !phoneProblem(val)) clear('phone')
-                    onInteraction?.()
-                  }}
-                  onBlur={() => { if (phoneShown) setErrors(prev => ({ ...prev, phone: phoneProblem(phone) })) }}
+                  value={name}
+                  aria-invalid={errors.name ? 'true' : undefined}
+                  aria-describedby={errors.name ? 'bw-name-err' : undefined}
+                  onInput={e => { onInteraction?.(); setName((e.target as HTMLInputElement).value); clear('name') }}
                 />
+                <Err id="bw-name-err" text={errors.name} />
               </div>
-              {errors.phone
-                ? <Err id="bw-phone-err" text={errors.phone} />
-                : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'Start with your country code, for example +1'}</div>}
-            </div>
 
-            <div class="bw-field">
-              <label class="bw-label" for="bw-email">Email</label>
-              <input
-                id="bw-email"
-                data-field="email"
-                class="bw-input"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                autoCapitalize="off"
-                spellcheck={false}
-                enterkeyhint="go"
-                value={email}
-                aria-invalid={errors.email ? 'true' : undefined}
-                aria-describedby={errors.email ? 'bw-email-err' : undefined}
-                onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value); clear('email') }}
-              />
-              <Err id="bw-email-err" text={errors.email} />
-            </div>
-          </>
-        ) : (
-          <>
-            <div class="bw-field">
-              <label class="bw-label" for="bw-contact">Email or phone</label>
-              <input
-                ref={firstRef}
-                id="bw-contact"
-                onKeyDown={nextOnEnter}
-                data-field="contact"
-                class="bw-input"
-                type="text"
-                autoComplete="email"
-                autoCapitalize="off"
-                value={email}
-                aria-invalid={errors.contact ? 'true' : undefined}
-                aria-describedby={errors.contact ? 'bw-contact-err' : undefined}
-                onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value); clear('contact') }}
-              />
-              <Err id="bw-contact-err" text={errors.contact} />
-            </div>
-            <div class="bw-field">
-              <label class="bw-label" for="bw-booking">Ticket number</label>
-              <input
-                id="bw-booking"
-                data-field="booking"
-                class="bw-input"
-                type="text"
-                autoCapitalize="characters"
-                spellcheck={false}
-                value={bookingId}
-                aria-invalid={errors.booking ? 'true' : undefined}
-                aria-describedby={errors.booking ? 'bw-booking-err' : undefined}
-                onInput={e => { onInteraction?.(); setBookingId((e.target as HTMLInputElement).value); clear('booking') }}
-              />
-              <Err id="bw-booking-err" text={errors.booking} />
-            </div>
-          </>
-        )}
-        <button type="submit" class="bw-cta">
-          {brand.ctaSubmit} <IconArrowRight />
-        </button>
+              <div class="bw-field">
+                <label class="bw-label" for="bw-phone">Phone number</label>
+                <div class="bw-phone" data-invalid={errors.phone ? 'true' : undefined}>
+                  {phoneShown && (
+                    <span class="bw-phone__cc" aria-hidden="true">{detectedCountry.code} {detectedCountry.dial}</span>
+                  )}
+                  <input
+                    id="bw-phone"
+                  onKeyDown={nextOnEnter}
+                    data-field="phone"
+                    class="bw-input"
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="tel"
+                    enterkeyhint="next"
+                    value={phone}
+                    aria-invalid={errors.phone ? 'true' : undefined}
+                    aria-describedby={errors.phone ? 'bw-phone-err' : 'bw-phone-hint'}
+                    onInput={(e) => {
+                      const val = (e.target as HTMLInputElement).value
+                      setPhone(val)
+                      // The country the number will be sent with, the same rule as the send (countries.ts).
+                      setDetectedCountry(shownCountry(val) || COUNTRIES[0])
+                      // A shown error clears as soon as the number becomes valid; a new one waits for blur or submit.
+                      if (errors.phone && !phoneProblem(val)) clear('phone')
+                      onInteraction?.()
+                    }}
+                    onBlur={() => { if (phoneShown) setErrors(prev => ({ ...prev, phone: phoneProblem(phone) })) }}
+                  />
+                </div>
+                {errors.phone
+                  ? <Err id="bw-phone-err" text={errors.phone} />
+                  : <div class="bw-hint" id="bw-phone-hint">{phoneShown ? detectedCountry.name : 'A US number, or + and your country code. For example 404 555 0143'}</div>}
+              </div>
+
+              <div class="bw-field">
+                <label class="bw-label" for="bw-email">Email address</label>
+                <input
+                  id="bw-email"
+                  data-field="email"
+                  class="bw-input"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="off"
+                  spellcheck={false}
+                  enterkeyhint="go"
+                  value={email}
+                  aria-invalid={errors.email ? 'true' : undefined}
+                  aria-describedby={errors.email ? 'bw-email-err' : undefined}
+                  onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value); clear('email') }}
+                />
+                <Err id="bw-email-err" text={errors.email} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div class="bw-field">
+                <label class="bw-label" for="bw-contact">Email or phone</label>
+                <input
+                  ref={firstRef}
+                  id="bw-contact"
+                  onKeyDown={nextOnEnter}
+                  data-field="contact"
+                  class="bw-input"
+                  type="text"
+                  autoComplete="email"
+                  autoCapitalize="off"
+                  value={email}
+                  aria-invalid={errors.contact ? 'true' : undefined}
+                  aria-describedby={errors.contact ? 'bw-contact-err' : undefined}
+                  onInput={e => { onInteraction?.(); setEmail((e.target as HTMLInputElement).value); clear('contact') }}
+                />
+                <Err id="bw-contact-err" text={errors.contact} />
+              </div>
+              <div class="bw-field">
+                <label class="bw-label" for="bw-booking">Ticket number</label>
+                <input
+                  id="bw-booking"
+                  data-field="booking"
+                  class="bw-input"
+                  type="text"
+                  autoCapitalize="characters"
+                  spellcheck={false}
+                  value={bookingId}
+                  aria-invalid={errors.booking ? 'true' : undefined}
+                  aria-describedby={errors.booking ? 'bw-booking-err' : undefined}
+                  onInput={e => { onInteraction?.(); setBookingId((e.target as HTMLInputElement).value); clear('booking') }}
+                />
+                <Err id="bw-booking-err" text={errors.booking} />
+              </div>
+            </>
+          )}
+        </div>
+        <div class="bw-form__foot">
+          <button type="submit" class="bw-cta">
+            {brand.ctaSubmit} <IconArrowRight />
+          </button>
+          {/* For the client who would rather speak to a person than type: the number, big and tappable. */}
+          <p class="bw-form__call">
+            Prefer to talk?{' '}
+            <a
+              href={`tel:+${brand.contactPhone.replace(/\D/g, '')}`}
+              onClick={() => posthog?.capture('call_initiated', { entry_point: 'widget_form' })}
+            >
+              <IconPhone /> {brand.contactPhone}
+            </a>
+          </p>
+        </div>
       </form>
     </div>
   )

@@ -37,3 +37,12 @@ export const IconAlert = (p: IconProps) => (
 export const IconArrowDown = (p: IconProps) => (
   <Svg {...p}><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></Svg>
 )
+
+// lucide maximize-2 / minimize-2: the chat over the whole screen, and back.
+export const IconExpand = (p: IconProps) => (
+  <Svg {...p}><path d="M15 3h6v6" /><path d="m21 3-7 7" /><path d="m3 21 7-7" /><path d="M9 21H3v-6" /></Svg>
+)
+
+export const IconShrink = (p: IconProps) => (
+  <Svg {...p}><path d="m14 10 7-7" /><path d="M20 10h-6V4" /><path d="m3 21 7-7" /><path d="M4 14h6v6" /></Svg>
+)

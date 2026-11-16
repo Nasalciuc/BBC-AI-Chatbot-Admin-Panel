@@ -4,11 +4,16 @@ import { TunnelForm, type FormCheck } from './TunnelForm'
 import { ChatWindow, type Unread } from './ChatWindow'
 import { armChime, playChime } from './chime'
 import { readPageContext } from './pageContext'
-import { apiFetch, clearVisitorToken, ensureVisitorToken, getVisitorId } from './api'
+import { apiFetch, clearVisitorToken, ensureVisitorId, ensureVisitorToken, getVisitorId, makeVisitorId } from './api'
 import { getUtm } from './utm'
 import brand from './config'
 import { usePhoneSheet } from './phoneSheet'
 import { posthog } from './posthog'
+import {
+  forgetProactiveConversation, isProactiveConversation, proactiveChatStarted, proactiveMetadata, useProactive,
+  type ProactiveOpening,
+} from './proactive'
+import { keepOpening, readKeptOpening } from './keptOpening'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -23,25 +28,6 @@ function safeRemove(key: string): void {
   try { sessionStorage.removeItem(key) } catch {}
 }
 
-/** Generate a visitor_id (crypto.randomUUID with fallback). */
-function makeVisitorId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-  // Fallback for older browsers — not cryptographically strong but unique enough
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
-  })
-}
-
-/** Ensure a visitor_id exists in localStorage, creating one if needed. */
-function ensureVisitorId(): string {
-  const existing = getVisitorId()
-  if (existing) return existing
-  const id = makeVisitorId()
-  try { localStorage.setItem('bbc_visitor_id', id) } catch {}
-  return id
-}
-
 function clearWidgetStorage() {
   safeRemove('bbc_widget')       // sessionStorage
   // Clear localStorage session cache (but NOT bbc_visitor_id — that persists forever)
@@ -49,6 +35,7 @@ function clearWidgetStorage() {
   try { localStorage.removeItem('bbc_conv_ts') } catch {}
   try { localStorage.removeItem('bbc_visitor_key') } catch {}
   try { localStorage.removeItem('bbc_conv_booking_id') } catch {}
+  forgetProactiveConversation()
 }
 
 export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?: boolean }) {
@@ -125,9 +112,17 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     } catch { return null }
   })()
 
+  // A conversation the proactive card opened has no form behind it (no visitor key), and it is still this
+  // visitor's conversation: the button brings it back, and it stays connected while closed.
+  const proactiveConv = isProactiveConversation(cachedConvId)
+
+  // The card's chat the visitor had not answered on the page before (kept with the open panel, below): the
+  // same words come back, and the conversation still starts with their answer. Never over a conversation.
+  const keptOpening = cachedConvId ? null : readKeptOpening(restored?.opening)
+
   // A conversation this visitor already has (conversation id and identity cached): it is kept connected
   // in the background on every page, so nothing it says is missed.
-  const sessionActive = !!(hasOptimisticSession && savedVisitor)
+  const sessionActive = !!(hasOptimisticSession && (savedVisitor || proactiveConv))
 
   // Embedded (CRM iframe): no bubble step — mount straight on the form
   // (or chat when a session restores).
@@ -161,6 +156,8 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   /** The panel is on its way out (a short exit animation before it unmounts). */
   const [closing, setClosing] = useState(false)
   const closingRef = useRef(false)
+  /** The opening of the chat the card opened: its words, replies and the page's trip. */
+  const [opening, setOpening] = useState<ProactiveOpening | null>(keptOpening)
 
   /** Close with the exit animation; reduced motion and the CRM iframe close at once. */
   const animateClose = (done: () => void) => {
@@ -259,23 +256,32 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   }, [step])
 
   // Keep an open chat open across this tab's pages (also when it was restored by a tap on the button).
+  // The card's chat not answered yet keeps its opening: without it the next page would open a chat with
+  // nothing behind it, and ChatWindow would start one on the server (/chat/start) that nobody answered.
   useEffect(() => {
     if (embedded || step !== 'chat') return
-    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata }))
-  }, [step, tunnel])
+    const kept = opening && !proactiveChatStarted() ? { opening: keepOpening(opening) } : {}
+    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata, ...kept }))
+  }, [step, tunnel, opening])
 
-  const handleTunnelSelect = (t: 'sales' | 'support') => {
+  // A tap on the note waits for Alex's words (proactive.noteOpening); whatever the visitor opens or closes
+  // meanwhile wins. Every flow that starts takes the turn, and a note answer that lost it does nothing:
+  // it neither replaces the form the visitor opened with the chat nor selects the tunnel again.
+  const noteRunRef = useRef(0)
+  const handleTunnelSelect = (t: 'sales' | 'support', via: 'button' | 'note' = 'button') => {
+    noteRunRef.current++
     posthog?.capture('chat_tunnel_selected', {
       tunnel: t,
       returning_visitor: hasOptimisticSession && !!savedVisitor,
+      via,
     })
     setShowAttention(false)
     formFlowStartedRef.current = true
     autoOpenedRef.current = true
     setTunnel(t)
 
-    // Skip form ONLY if visitor completed form before (has name+email+phone)
-    if (hasOptimisticSession && savedVisitor) {
+    // Skip the form if the visitor completed it before (name+email+phone), or the card opened their chat
+    if (hasOptimisticSession && (savedVisitor || proactiveConv)) {
       setStep('chat')
     } else {
       setStep('form')
@@ -339,8 +345,56 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     }
   }
 
+  // ─── The chat that opens by itself (proactive.ts) ─────────────────────────────────────────────────
+  // At the visitor's moment the server may answer with words for their own search: a card above the
+  // button on a phone, the panel with those words on a computer. No form, and nothing is written until
+  // the visitor answers. The control group keeps the note above exactly as it is.
+  const proactive = useProactive({ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening })
+  const openProactive = (o: ProactiveOpening) => {
+    noteRunRef.current++
+    proactive.opened()
+    formFlowStartedRef.current = true
+    setShowAttention(false)
+    setTunnel('sales')
+    setMetadata(proactiveMetadata())
+    setOpening(o)
+    setSwapped(false)
+    setStep('chat')
+  }
+  useEffect(() => {
+    if (proactive.offer?.surface === 'panel') openProactive(proactive.offer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proactive.offer])
+
+  // The 10 s note promises a conversation ("Tell me where and when, and I'll check fares"): a tap on it
+  // opens the chat with Alex's words for this page and no form, like the card's chat (owner's decision,
+  // 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the chat got past the form the note led to).
+  // The words come from the server; no answer in time → the form, as before. The corner button keeps
+  // the form. The note stays on screen until the chat opens, and a second tap meanwhile does nothing.
+  const noteBusyRef = useRef(false)
+  const openNote = async () => {
+    if (noteBusyRef.current) return
+    noteBusyRef.current = true
+    const run = ++noteRunRef.current
+    const stillMine = () => run === noteRunRef.current
+    try {
+      const o = await proactive.noteOpening(stillMine)
+      // The visitor opened the form, or closed what was open, while the words were on their way: theirs.
+      if (!stillMine()) return
+      if (o) {
+        posthog?.capture('chat_tunnel_selected', { tunnel: 'sales', returning_visitor: false, via: 'note', form: false })
+        openProactive(o)
+      } else {
+        handleTunnelSelect('sales', 'note')
+      }
+    } finally {
+      noteBusyRef.current = false
+    }
+  }
+
   const handleBack = () => {
     if (embedded) return  // no bubble to go back to; ✕ is hidden anyway
+    noteRunRef.current++
     animateClose(() => {
       setFocusLauncher(true)
       setSwapped(false)
@@ -351,11 +405,13 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   const handleCloseChat = () => {
     if (embedded) return  // panel is always open inside the CRM iframe
+    noteRunRef.current++
     posthog?.capture('chat_closed', { tunnel })
     animateClose(() => {
       setFocusLauncher(true)
       setSwapped(false)
       setStep('buttons')
+      setOpening(null)
     })
     // Keep localStorage intact (visitor_id, conv_id, visitor_key) — "X → reopen"
     // will use the optimistic path to restore the session. Only clear sessionStorage.
@@ -370,10 +426,13 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
+        // The card's chat left unanswered: the same 24 h of quiet as its ✕ and "Not now".
+        if (opening && !proactiveChatStarted()) proactive.dismiss('close')
         animateClose(() => {
           setFocusLauncher(true)
           setSwapped(false)
           setStep('buttons')
+          setOpening(null)
         })
         safeRemove('bbc_widget')
         formFlowStartedRef.current = false
@@ -382,7 +441,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [step])
+  }, [step, opening])
 
   usePhoneSheet(step !== 'buttons', embedded, brand.colors.ink)
 
@@ -420,12 +479,16 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     <div class={closing ? 'bw-closing' : undefined} style={{ display: 'contents' }}>
       {step === 'buttons' && !embedded && (
         <FloatingButtons
-          onSelect={handleTunnelSelect}
-          showAttention={showAttention && !sessionActive}
-          onDismissAttention={() => setShowAttention(false)}
+          onSelect={(t) => (proactive.offer ? openProactive(proactive.offer) : handleTunnelSelect(t))}
+          showAttention={showAttention && !sessionActive && !proactive.quiet}
+          onDismissAttention={() => { noteRunRef.current++; setShowAttention(false) }}
           autoFocus={focusLauncher}
           context={pageCtx}
           unread={unread}
+          card={proactive.offer?.surface === 'card' ? proactive.offer : null}
+          onCardOpen={(reply) => { if (proactive.offer) openProactive({ ...proactive.offer, firstReply: reply }) }}
+          onCardDismiss={() => proactive.dismiss('not_now')}
+          onNoteOpen={() => { if (proactive.offer) openProactive(proactive.offer); else void openNote() }}
         />
       )}
       {step === 'form' && (
@@ -450,6 +513,9 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           visible={step === 'chat'}
           draft={pageCtx.draft}
           onUnread={handleUnread}
+          proactive={opening}
+          onProactiveDismiss={(how) => proactive.dismiss(how)}
+          onProactiveEngaged={(reply) => proactive.engaged(reply)}
         />
       )}
     </div>

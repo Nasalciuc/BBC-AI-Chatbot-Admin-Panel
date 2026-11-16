@@ -111,6 +111,36 @@ export function detectCountryFromPhone(phone: string): Country | null {
 }
 
 /**
+ * The number as it will be sent (E.164), or '' while it is too short. A number typed with "+" names its
+ * own country; up to ten digits typed without it are a US number, the way the sites' visitors write one,
+ * the same rule as shownCountry: "491234567" is a US number one digit short (an error the visitor sees),
+ * never a German one sent while the field said US. (The field used to start with "+" and turned any ten
+ * digits into +1, so "+65 8123 4567" from Singapore went out as a US number.)
+ */
+export function normalizePhone(value: string): string {
+  const trimmed = (value || '').trim()
+  const digits = trimmed.replace(/\D/g, '')
+  if (digits.length < 7) return ''
+  if (trimmed.startsWith('+')) return `+${digits}`
+  if (digits.length <= 10) return `+1${digits}`
+  return `+${digits}`
+}
+
+/**
+ * The country shown beside the field while the visitor types: the one the number will be sent with.
+ * Without "+" it is a US number in the making until it has more than ten digits, so "404 555 0143"
+ * never reads as Romania (+40) on the way; with "+", the longest dial code it starts with.
+ */
+export function shownCountry(value: string): Country | null {
+  const trimmed = (value || '').trim()
+  const digits = trimmed.replace(/\D/g, '')
+  if (!digits) return null
+  if (trimmed.startsWith('+')) return detectCountryFromPhone(trimmed)
+  if (digits.length <= 10) return COUNTRIES[0]
+  return detectCountryFromPhone(`+${digits}`)
+}
+
+/**
  * Validate full phone number with country-specific local length range.
  */
 export function validatePhone(phone: string, country: Country | null): boolean {

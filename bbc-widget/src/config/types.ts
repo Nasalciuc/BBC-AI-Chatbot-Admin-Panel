@@ -19,6 +19,38 @@ export interface BrandConfig {
   csEmail?: string
   websiteUrl: string
   closingMessage: string
+  /**
+   * Who speaks in the panel: a name, said to be an AI (the 16 Nov debate, ADR 12). The server's
+   * openings use the same name (bbc-chatbot-api/app/services/proactive.py, PERSONA): keep them equal.
+   */
+  persona: {
+    name: string
+    /** The letter in the round avatar when the page refuses Alex's photo (PersonaAvatar.tsx). */
+    initial: string
+    /** Under the name, before the brand: "Travel Agent · BuyBusinessClass" (owner, 16 Nov). The word AI
+     *  is not in it, and is never gone: the "AI" badge on his photo in the panel's header (PersonaAvatar.tsx,
+     *  `badge`; one place, the owner's choice) and the same word read to screen readers before this line
+     *  (PanelTop.tsx, PersonaLine). */
+    role: string
+  }
+  /**
+   * The panel's look (the BBC Chatbot canvas, ADR 16): one colour per site, a soft tint of it behind
+   * the conversation. The corner button keeps `launcher*` below: the site draws a stand-in of it.
+   */
+  look: {
+    /** Buttons, the visitor's bubbles, the avatar, links. White text on it passes 4.5:1. */
+    primary: string
+    primaryRgb: string
+    primaryHover: string
+    /** Text, dark and slightly tinted by the primary. */
+    deep: string
+    /** Quiet text: names, times, the line under the name. 4.5:1 on `soft`. */
+    quiet: string
+    /** The panel's ground: a very light tint of the primary. */
+    soft: string
+    /** Three blurred patches of colour behind the conversation (decor only). */
+    blobs: [string, string, string]
+  }
   // ── Theme ──
   colors: {
     /** The frame: visitor messages, the send button, focus rings. */
