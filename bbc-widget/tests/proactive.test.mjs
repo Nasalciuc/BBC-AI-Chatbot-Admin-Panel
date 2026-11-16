@@ -12,7 +12,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { hasContext, readTrip, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
+import { hasContext, pickTrip, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
+
+// The address, then the title: what a page without bbc-signals gives (proactive.ts currentTrip puts the
+// site's search before the address and the page's own trip before the title; site-signals.test.mjs).
+const readTrip = (href, h1) => {
+  let search = ''
+  try { search = new URL(href).search } catch { /* not an address: the title alone */ }
+  return pickTrip(tripFromUrl(search), tripFromTitle(h1))
+}
 import {
   EXIT_AFTER_S, KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, READER_VISIBLE_S,
   blockedPath, isNotNow, pauseRunning, pickTrigger, replyKind,
@@ -171,6 +179,9 @@ test('quote comes first, and a form being worked on holds every other moment', (
   assert.equal(at({ kayak: true, visibleS: 30, quote: pressed({ sinceFormActivityS: 9 }) }), 'quote')
   // Long after the press the form is part of the page again.
   assert.equal(at({ kayak: true, visibleS: 300, quote: pressed({ sincePressS: 200, sinceFormActivityS: 1 }) }), 'kayak')
+  // …unless its send is still in flight: that holds every moment, however long it takes.
+  assert.equal(at({ kayak: true, visibleS: 300, scrolledScreens: 3, quote: pressed({ sincePressS: 200, busy: true }) }), null)
+  assert.equal(at({ exitIntent: true, visibleS: 300, quote: pressed({ sincePressS: 900, busy: true }) }), null)
 })
 
 test('kayak before reader before exit', () => {
@@ -293,7 +304,8 @@ test('an answer that comes after the visitor moved on is dropped and measured, n
 
 test('a send in flight holds the quote moment for as long as the form says so, not for a set time', () => {
   assert.doesNotMatch(hook, /SEND_IN_FLIGHT_MS|sincePressMs/)
-  assert.match(hook, /busy: sending\(press\.form\),/)
+  // The form's own state, or the site's word that a send is in flight (bbc-signals: quote_form_submitting).
+  assert.match(hook, /busy: sending\(press\.form\) \|\| siteBusy,/)
   assert.match(hook, /return !!btn && btn\.disabled && !form\.querySelector\(':invalid, \[aria-invalid="true"\]'\)/)
 })
 

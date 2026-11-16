@@ -6,7 +6,8 @@ import { WIDGET_CSS } from './styles'
 import { setTurnstileSiteKey } from './turnstile'
 import { TRANSCRIPT_EXPORT_V0 } from './api'
 import { exposeRoutes } from './page-globals'
-import './posthog'
+import { startPostHog } from './posthog'
+import { startSiteSignals, stopSiteSignals } from './siteSignals'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
@@ -25,7 +26,14 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     || document.querySelector('script[src*="-widget"]') as HTMLScriptElement | null
   // data-attribution="off": the site loaded the chat for a visitor without marketing consent (they tapped the
   // chat button), so no click ids, campaign tags or Analytics id are kept (utm.ts). Without it, as before.
-  captureUtm({ attribution: script?.getAttribute('data-attribution') !== 'off' })
+  const attribution = script?.getAttribute('data-attribution') !== 'off'
+  captureUtm({ attribution })
+  // PostHog: the site's once it started it (posthog.astro, with the visitor's consent); otherwise the
+  // widget's own copy, for a visitor with consent only (posthog.ts, choosePostHog).
+  startPostHog({ consent: attribution })
+  // What the site says about the page and the visitor's steps (bbc-signals.astro): the queue so far,
+  // then every event as it comes (siteSignals.ts).
+  startSiteSignals(window)
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
   // PR-12: invisible Turnstile only when the site opts in with its key.
@@ -105,6 +113,7 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
     ;(window as any).__BBC_WIDGET_TEARDOWN__ = () => {
       render(null, root)
       root.remove()
+      stopSiteSignals()
       ;(window as any).__BBC_WIDGET_TEARDOWN__ = undefined
       ;(window as any).__BBC_WIDGET_LOADED__ = false
     }

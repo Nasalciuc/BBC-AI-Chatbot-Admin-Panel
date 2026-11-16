@@ -64,5 +64,10 @@ test('the script tag decides before anything is captured', () => {
   const capture = entry.indexOf('captureUtm(')
   assert.ok(script > -1, 'entry.tsx finds its script tag')
   assert.ok(capture > script, 'captureUtm runs after the script tag is found')
-  assert.match(entry, /captureUtm\(\{\s*attribution:\s*script\?\.getAttribute\('data-attribution'\) !== 'off'\s*\}\)/)
+  assert.match(entry, /const attribution = script\?\.getAttribute\('data-attribution'\) !== 'off'\s+captureUtm\(\{ attribution \}\)/)
+  // PostHog decides after the script tag too, with the same consent: no PostHog starts at import time
+  // (it did before: `import './posthog'` ran posthog.init before the tag was read).
+  const startPh = entry.indexOf('startPostHog({ consent: attribution })')
+  assert.ok(startPh > capture, 'PostHog starts after the script tag says whether the visitor consented')
+  assert.doesNotMatch(entry, /import '\.\/posthog'/)
 })

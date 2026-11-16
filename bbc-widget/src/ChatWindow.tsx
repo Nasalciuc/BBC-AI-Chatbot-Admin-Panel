@@ -15,6 +15,7 @@ import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
 import { posthog, posthogSessionId } from './posthog'
 import { markProactiveConversation, type ProactiveOpening } from './proactive'
+import { siteMetadata } from './siteSignals'
 import { isNotNow } from './triggers'
 
 interface Message {
@@ -110,10 +111,12 @@ function getCachedConvId(): string | null {
   try { return localStorage.getItem('bbc_conv_id') } catch { return null }
 }
 
-/** The conversation's metadata with this visit's PostHog session, for the panel's replay link. */
+/** The conversation's metadata with this visit's PostHog session, for the panel's replay link, and what
+ *  the site said about the page and the visitor's steps before the chat (bbc-signals: page_type,
+ *  page_activity; codes and step names only, never what the visitor typed). */
 function withSession(metadata?: Record<string, unknown>): Record<string, unknown> {
   const sid = posthogSessionId()
-  return { ...(metadata || {}), ...(sid ? { posthog_session_id: sid } : {}) }
+  return { ...(metadata || {}), ...(sid ? { posthog_session_id: sid } : {}), ...siteMetadata() }
 }
 
 const openingId = (o: ProactiveOpening) => `opening-${o.shownAt}`
