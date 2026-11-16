@@ -140,9 +140,11 @@ class TestWords:
 # 2. The job
 # ══════════════════════════════════════════════════════════════
 
-def _job(convs, *, tasks=(), leads=None, ready=(), counts=None, insert=None, left=150):
-    """Patches for one run of the job, with the switch on."""
+def _job(convs, *, tasks=(), leads=None, ready=(), counts=None, insert=None, left=150, free=None):
+    """Patches for one run of the job, with the switch on. `free`: the re-read just before each insert
+    (still open and nobody's by default); it is the last patch, the tests index the others by position."""
     insert = insert or AsyncMock(side_effect=lambda row: {"id": f"t-{row['conversation_id']}", **row})
+    free = free or AsyncMock(return_value=True)
     return [
         patch("app.services.departure.enabled", return_value=True),
         patch.object(db, "get_departure_candidates", new=AsyncMock(return_value=list(convs))),
@@ -153,7 +155,13 @@ def _job(convs, *, tasks=(), leads=None, ready=(), counts=None, insert=None, lef
         patch.object(db, "insert_follow_up", new=insert),
         patch("app.services.tasks_service.note", new=AsyncMock()),
         _left(left),
+        patch.object(db, "departure_still_free", new=free),
     ]
+
+
+async def _run_now(fn, *args, **kwargs):
+    """_run_sync without the thread pool: the query runs where it is awaited."""
+    return fn()
 
 
 class _Patched:
@@ -357,13 +365,14 @@ class TestWiring:
 
 class TestCandidatesRead:
     """CodeRabbit #257: one request stops at PostgREST's 1000 rows without a word; a chat past it
-    would never get its task. Every page is read, and the clock fallback still works."""
+    would never get its task. Every page is read (after the last id, round 2), and the clock fallback
+    still works."""
 
     @pytest.mark.asyncio
     async def test_every_page_in_a_stable_order(self):
         seen = {}
 
-        async def pages(build, *, label="other", max_pages=20):
+        async def pages(build, *, key="id", label="other", max_pages=20):
             seen["label"] = label
             build()
             return [{"id": f"c-{i}"} for i in range(1003)]
@@ -371,7 +380,7 @@ class TestCandidatesRead:
         client = MagicMock()
         with patch.object(db, "get_client", return_value=client), \
                 patch.object(db, "_supervisor_columns_available", return_value=True), \
-                patch.object(db, "_select_pages", new=pages):
+                patch.object(db, "_select_after", new=pages):
             rows = await db.get_departure_candidates()
         assert len(rows) == 1003 and seen["label"] == "departure"
         select = client.table.return_value.select
@@ -385,7 +394,7 @@ class TestCandidatesRead:
 
         calls = []
 
-        async def pages(build, *, label="other", max_pages=20):
+        async def pages(build, *, key="id", label="other", max_pages=20):
             calls.append(label)
             build()
             if len(calls) == 1:
@@ -396,7 +405,7 @@ class TestCandidatesRead:
         with patch.object(db, "get_client", return_value=client), \
                 patch.object(db, "_supervisor_columns_available", return_value=True), \
                 patch.object(db, "_downgrade_supervisor_columns") as down, \
-                patch.object(db, "_select_pages", new=pages):
+                patch.object(db, "_select_after", new=pages):
             rows = await db.get_departure_candidates()
         assert rows == [{"id": "c-1"}] and calls == ["departure", "departure"]
         down.assert_called_once()
@@ -405,18 +414,142 @@ class TestCandidatesRead:
 
     @pytest.mark.asyncio
     async def test_any_other_failure_is_raised(self):
-        async def pages(build, *, label="other", max_pages=20):
+        async def pages(build, *, key="id", label="other", max_pages=20):
             raise RuntimeError("timeout")
 
         with patch.object(db, "get_client", return_value=MagicMock()), \
                 patch.object(db, "_supervisor_columns_available", return_value=True), \
-                patch.object(db, "_select_pages", new=pages):
+                patch.object(db, "_select_after", new=pages):
             with pytest.raises(RuntimeError):
                 await db.get_departure_candidates()
 
     def test_health_carries_the_counters(self):
         for k in ("departure", "departure_unowned", "departure_failures"):
             assert k in db.TASKS_HEALTH
+
+
+class _KeysetTable:
+    """A conversations read ordered by id: .gt(id, last) and .limit(n), and nothing else."""
+
+    def __init__(self, ids, *, leave_after_first_page=()):
+        self.ids = sorted(ids)
+        self.leave = set(leave_after_first_page)
+        self.pages = 0
+        self.gts = []
+        self._after = None
+        self._limit = None
+
+    def gt(self, key, value):
+        assert key == "id"
+        self.gts.append(value)
+        self._after = value
+        return self
+
+    def limit(self, n):
+        self._limit = n
+        return self
+
+    def execute(self):
+        live = [i for i in self.ids if not (self.pages >= 1 and i in self.leave)]
+        rows = [{"id": i} for i in live if self._after is None or i > self._after][: self._limit]
+        self.pages += 1
+        self._after = None
+        return MagicMock(data=rows)
+
+
+class TestRoundTwoJob:
+    """CodeRabbit #257 (round 2): the job itself."""
+
+    @pytest.mark.asyncio
+    async def test_a_chat_taken_or_closed_since_the_read_gets_no_task(self):
+        free = AsyncMock(side_effect=lambda cid: cid != "c-1")
+        with _Patched(_job([_conv(id="c-1"), _conv(id="c-2")], free=free)) as p:
+            with patch("app.services.departure.datetime") as clock:
+                clock.now.return_value = NOW
+                out = await departure.run_departure_tasks()
+            insert = p.mocks[6]
+        assert out["created"] == 1
+        assert [c.args[0]["conversation_id"] for c in insert.await_args_list] == ["c-2"]
+        assert [c.args[0] for c in free.await_args_list] == ["c-1", "c-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_re_read_is_counted_and_the_chat_waits_for_the_next_run(self, caplog):
+        free = AsyncMock(side_effect=RuntimeError("timeout"))
+        before = db.TASKS_HEALTH["departure_failures"]
+        with _Patched(_job([_conv(id="c-1")], free=free)) as p, caplog.at_level(logging.INFO):
+            with patch("app.services.departure.datetime") as clock:
+                clock.now.return_value = NOW
+                out = await departure.run_departure_tasks()
+            insert = p.mocks[6]
+        insert.assert_not_awaited()
+        assert out["created"] == 0
+        assert db.TASKS_HEALTH["departure_failures"] == before + 1
+        assert "re-reading c-1 before its task failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_chat_read_twice_gets_one_task(self):
+        with _Patched(_job([_conv(id="c-1"), _conv(id="c-1"), _conv(id="c-2")])) as p:
+            with patch("app.services.departure.datetime") as clock:
+                clock.now.return_value = NOW
+                out = await departure.run_departure_tasks()
+            insert = p.mocks[6]
+        assert out["candidates"] == 2 and out["created"] == 2
+        assert sorted(c.args[0]["conversation_id"] for c in insert.await_args_list) == ["c-1", "c-2"]
+
+
+class TestReadAfterTheLastId:
+    """CodeRabbit #257 (round 2): under .range(), a chat that closes between two pages shifts the next
+    page by one and the chat at the seam is never read. Each page now starts after the last id seen."""
+
+    @pytest.mark.asyncio
+    async def test_a_chat_that_closes_between_pages_does_not_hide_another(self, monkeypatch):
+        monkeypatch.setattr(db, "_PAGE", 3)
+        ids = [f"c-{i:02d}" for i in range(7)]
+        table = _KeysetTable(ids, leave_after_first_page={"c-01"})  # closes once page 1 is read
+        with patch.object(db, "_run_sync", new=_run_now):
+            rows = await db._select_after(lambda: table, label="departure")
+        assert [r["id"] for r in rows] == ids  # c-03 is read: page 2 starts after c-02, not at row 3
+        assert table.gts == ["c-02", "c-05"]
+
+    @pytest.mark.asyncio
+    async def test_a_short_first_page_is_the_whole_read(self, monkeypatch):
+        monkeypatch.setattr(db, "_PAGE", 3)
+        table = _KeysetTable(["c-1", "c-2"])
+        with patch.object(db, "_run_sync", new=_run_now):
+            rows = await db._select_after(lambda: table, label="departure")
+        assert [r["id"] for r in rows] == ["c-1", "c-2"] and table.gts == []
+
+    @pytest.mark.asyncio
+    async def test_still_full_at_the_cap_is_refused_not_cut(self, monkeypatch):
+        monkeypatch.setattr(db, "_PAGE", 2)
+        table = _KeysetTable([f"c-{i}" for i in range(7)])
+        with patch.object(db, "_run_sync", new=_run_now):
+            with pytest.raises(RuntimeError, match="partial"):
+                await db._select_after(lambda: table, label="departure", max_pages=2)
+            rows = await db._select_after(lambda: _KeysetTable([f"c-{i}" for i in range(4)]), label="departure",
+                                          max_pages=2)
+        assert len(rows) == 4  # full at the cap, and nothing after it: the whole read
+
+
+class TestStillFree:
+    """CodeRabbit #257 (round 2): the chat is read again just before its task is made."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("row, free", [
+        ({"status": "active", "mode": "ai", "assigned_agent_id": None}, True),
+        ({"status": "needs_agent", "mode": "waiting_for_agent", "assigned_agent_id": None}, True),
+        ({"status": "active", "mode": "human", "assigned_agent_id": None}, False),
+        ({"status": "active", "mode": "ai", "assigned_agent_id": "agent-a"}, False),
+        ({"status": "closed", "mode": "ai", "assigned_agent_id": None}, False),
+        (None, False),
+    ])
+    async def test_open_and_nobodys(self, row, free):
+        client = MagicMock()
+        q = client.table.return_value.select.return_value.eq.return_value.limit.return_value
+        q.execute.return_value = MagicMock(data=[row] if row else [])
+        with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=_run_now):
+            assert await db.departure_still_free("c-1") is free
+        client.table.return_value.select.assert_called_with("status, mode, assigned_agent_id")
 
 
 class TestMigration053:

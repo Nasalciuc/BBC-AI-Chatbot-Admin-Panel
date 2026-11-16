@@ -3463,15 +3463,15 @@ async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") 
     failure: the read is made again without it and the flag is downgraded,
     as get_conversations does. Any other failure is raised to the caller.
 
-    paged="<label>": every matching row, page by page (_select_pages), for a
-    read that must not stop at PostgREST's 1000; the builder then orders the
-    rows by a unique column."""
+    paged="<label>": every matching row, page after page by id (_select_after),
+    for a read that must not stop at PostgREST's 1000; the builder then orders
+    the rows by id."""
     with_clock = _supervisor_columns_available()
     columns = base_columns + (", last_user_message_at" if with_clock else "")
 
     async def read(cols: str) -> list[dict]:
         if paged:
-            return await _select_pages(lambda: build(cols), label=paged)
+            return await _select_after(lambda: build(cols), label=paged)
         res = await _run_sync(lambda: build(cols).execute())
         return res.data or []
 
@@ -3911,9 +3911,11 @@ async def get_departure_candidates() -> list[dict]:
     """Open sales chats with a phone or an email, for the departure task
     (app/services/departure.py decides the rest: the client wrote, left,
     nobody is on the chat). With last_user_message_at when the clocks exist.
-    Every row, page by page: a chat past PostgREST's 1000 would never get its
-    task (open chats close ~35 minutes after the client goes, so a normal
-    hour has a handful; a stuck close job must not hide the rest).
+    Every row, page after page by id: a chat past PostgREST's 1000 would never
+    get its task (open chats close ~35 minutes after the client goes, so a
+    normal hour has a handful; a stuck close job must not hide the rest), and
+    a chat that closes while the pages are read must not push another past a
+    page boundary, as an offset would.
     Raises: the job counts a failed read."""
     db_client = get_client()
     rows = await _rows_with_last_message(
@@ -3927,6 +3929,28 @@ async def get_departure_candidates() -> list[dict]:
         paged="departure",
     )
     return rows
+
+
+async def departure_still_free(conversation_id: str) -> bool:
+    """The chat is still open and nobody's, read again just before its
+    departure task is made: the candidates were read a few queries earlier,
+    and an agent may have taken the chat meanwhile. This narrows that window;
+    it does not close it (the database guards no such write).
+    Raises: the job counts a failed read and tries the chat on its next run."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .select("status, mode, assigned_agent_id")
+        .eq("id", conversation_id)
+        .limit(1)
+        .execute(),
+        label="departure",
+    )
+    rows = res.data or []
+    if not rows:
+        return False
+    row = rows[0]
+    return row.get("status") in OPEN_STATUSES and row.get("mode") != "human" and not row.get("assigned_agent_id")
 
 
 async def tasks_of_conversations(conversation_ids: list[str]) -> list[dict]:
@@ -4650,6 +4674,40 @@ async def _select_pages(build, *, label: str = "other", max_pages: int = 20) -> 
     if not (more.data or []):
         return rows
     logger.error(f"_select_pages[{label}]: still full after {max_pages} pages ({len(rows)} rows); refusing a partial read")
+    raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
+
+
+async def _select_after(build, *, key: str = "id", label: str = "other", max_pages: int = 20) -> list[dict]:
+    """Every row of a read ordered by a unique `key`, one page at a time, each
+    page after the last row seen (`key > last`), not at an offset.
+
+    For a set that changes while it is read (open chats that close): under
+    .range(), a row that leaves the set between two pages shifts the next page
+    by one and the row at the seam is never read. `build()` returns a fresh
+    builder ordered by `key`. Raises like _select_pages: a partial list is
+    never passed off as the whole one."""
+    rows: list[dict] = []
+    last = None
+    for _ in range(max_pages):
+        def page(after=last):
+            q = build()
+            if after is not None:
+                q = q.gt(key, after)
+            return q.limit(_PAGE).execute()
+
+        res = await _run_sync(page, label=label)
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE:
+            return rows
+        last = chunk[-1].get(key)
+        if last is None:
+            raise RuntimeError(f"{label}: a row without {key}, the read can't go on after it")
+    # Full at the cap: one more row says whether anything was left out.
+    more = await _run_sync(lambda: build().gt(key, last).limit(1).execute(), label=label)
+    if not (more.data or []):
+        return rows
+    logger.error(f"_select_after[{label}]: still full after {max_pages} pages ({len(rows)} rows); refusing a partial read")
     raise RuntimeError(f"{label}: more than {max_pages * _PAGE} rows, the read would be partial")
 
 

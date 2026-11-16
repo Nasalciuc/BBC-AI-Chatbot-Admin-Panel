@@ -142,7 +142,9 @@ async def run_departure_tasks() -> dict:
 
     created = unowned = 0
     try:
-        convs = await db.get_departure_candidates()
+        # One row per chat: "at most one departure task per chat" is checked against the tasks read
+        # below, before any insert, so a chat read twice would get two.
+        convs = list({c["id"]: c for c in await db.get_departure_candidates() if c.get("id")}.values())
         if not convs:
             return {"candidates": 0, "created": 0}
         ids = [c["id"] for c in convs if c.get("id")]
@@ -174,6 +176,17 @@ async def run_departure_tasks() -> dict:
 
     for conv, gone in due:
         cid = conv["id"]
+        # Read again just before the insert: an agent may have taken the chat (or it closed) since the
+        # candidates were read. A narrower window, not none: the database guards no such write.
+        try:
+            free = await db.departure_still_free(cid)
+        except Exception as e:
+            db.TASKS_HEALTH["departure_failures"] += 1
+            logger.error(f"[departure] re-reading {cid} before its task failed, tried again next run: {what_failed(e)}")
+            continue
+        if not free:
+            logger.info(f"[departure] {cid} was taken or closed since the read: no task")
+            continue
         lead = leads.get(cid) or {}
         kind = "call" if _present(conv.get("visitor_phone")) else "email"
         owner = assign.pick()
