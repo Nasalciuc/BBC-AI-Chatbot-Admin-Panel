@@ -153,6 +153,7 @@ SIGNAL_KEYS = (
     "budget_hint",
     "price_seen",
     "best_call_time",
+    "contact_channel",
     "returning_client",
 )
 
@@ -166,6 +167,7 @@ _SIGNAL_LABELS: tuple[tuple[str, str], ...] = (
     ("budget_hint", "Budget~{}"),
     ("price_seen", "Seen: ~{}"),
     ("best_call_time", "Call {}"),
+    ("contact_channel", "Reach by: {}"),
 )
 
 _CONTACT_IN_TEXT_RE = re.compile(

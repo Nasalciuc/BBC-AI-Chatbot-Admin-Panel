@@ -50,7 +50,7 @@ _REPLIES: dict[str, list[str]] = {
 }
 
 # Who speaks (ADR 12): the assistant has a name and says it is an AI. The
-# widget's header shows the same name over "AI assistant · <brand>"
+# widget's header shows the same name over "AI travel agent · <brand>"
 # (bbc-widget/src/config, `persona`); keep the two equal. The brands as the
 # widget's header writes them, by the validated `site` (bbc | bct).
 PERSONA = "Alex"

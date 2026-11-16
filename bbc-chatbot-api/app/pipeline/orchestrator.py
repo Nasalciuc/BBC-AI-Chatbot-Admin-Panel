@@ -1151,6 +1151,7 @@ async def _pipeline(
         "budget_hint": extracted.budget_hint,
         "price_seen": extracted.price_seen,
         "best_call_time": extracted.best_call_time,
+        "contact_channel": extracted.contact_channel,
         "must_haves": _open_door_reply,
         "_metadata": _site_metadata,
     }

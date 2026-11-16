@@ -493,8 +493,11 @@ def generate_response(
                         role = msg.get("role", "")
                         if role in ("ai", "system"):
                             content = (msg.get("content") or "").lower()
+                            # The handoff says "consultant": a guard that
+                            # looked for "specialist" alone never saw it, and
+                            # one chat got the same promise five times.
                             if (
-                                "specialist" in content
+                                ("specialist" in content or "consultant" in content)
                                 and (
                                     "reach out" in content
                                     or "contact you" in content
@@ -506,8 +509,14 @@ def generate_response(
                                 break
 
                 if not already_sent:
+                    # The 30-minute promise only while the team is at its
+                    # desks; otherwise "first thing when the team is back".
+                    from app.services.closing import is_within_team_hours
+
                     text = get_template(
-                        "specialist_handoff", tunnel, visitor,
+                        "specialist_handoff" if is_within_team_hours()
+                        else "specialist_handoff_off_hours",
+                        tunnel, visitor,
                         route=lead.get("route_display", "your route"),
                     )
                     if text:

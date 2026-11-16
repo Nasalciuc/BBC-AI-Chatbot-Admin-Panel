@@ -60,6 +60,14 @@ TEMPLATES: dict[str, list[str]] = {
         f"They'll reach out within {CONSULTANT_SLA_TEXT} with hand-picked options. "
         "We'll contact you at {contact}.",
     ],
+    # The same, outside team hours (app.services.closing.is_within_team_hours):
+    # 183 of the 305 "within 30 minutes" the chat ever promised were said at
+    # night or on a weekend, US Eastern, with nobody at a desk.
+    "specialist_handoff_off_hours:sales": [
+        "All set{name_suffix} — I have everything your consultant needs. "
+        "They'll reach out first thing when the team is back, with hand-picked options. "
+        "We'll contact you at {contact}.",
+    ],
     "lead_captured:sales": [
         "That's everything, {name} — your consultant will reach out "
         f"within {CONSULTANT_SLA_TEXT} with the best {{route}} options. "
@@ -122,9 +130,15 @@ TEMPLATES: dict[str, list[str]] = {
         "Let's reset this cleanly — tell me the trip in one line, "
         "e.g. 'round trip, Oct 1 to Oct 20, 2 travelers'.",
     ],
+    # Reached only when nothing is missing (orchestrator, Step 7.5), so the
+    # number is ALWAYS on file. It used to ask for it again, and promise "a
+    # minute": 36 times from 26 Aug to 2 Nov 2026 the phone was on file all
+    # 36 times, 9 of those clients left right there, and a person answered
+    # in 2 of the 36 chats. No question and no time: the client hears what
+    # is true.
     "summary_loop_consultant:sales": [
-        "Let me get a consultant on this with you — they'll sort the "
-        "details in a minute. What's the best number to reach you?",
+        "Let me get a consultant on this with you — they have your details "
+        "and will go over the trip with you.",
     ],
     "closing:sales": [
         "Thanks{name_suffix} — your consultant takes it from here. Speak soon.",

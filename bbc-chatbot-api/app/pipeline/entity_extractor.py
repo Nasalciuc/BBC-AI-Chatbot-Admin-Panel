@@ -44,6 +44,9 @@ class ExtractedEntities:
     budget_hint: Optional[str] = None
     price_seen: Optional[str] = None
     best_call_time: Optional[str] = None
+    # How the client wants to be reached, when they say it: "text", "email",
+    # "no calls" (comma-joined). The consultant reads it before dialling.
+    contact_channel: Optional[str] = None
     # Set ONLY on the correction path (context given): "17th am" — the
     # morning/evening preference rides into the lead notes.
     time_preference: Optional[str] = None
@@ -623,6 +626,27 @@ CALL_TIME_RE = re.compile(
     r"\b(?:call|reach|phone|ring)\s+me\s+((?:after|before|around|at|in the|during)"
     r"\s+[\w:\. ]{1,20})", re.I
 )
+# How the client wants to be reached. In 3,255 chats the clients who said no
+# were refusing calls, not contact: "text only", "email me the quotes",
+# "I'll chat, don't want to talk". A consultant who calls anyway loses them.
+CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
+    ("text", re.compile(
+        r"\b(?:text(?:ing)?\s+only|only\s+(?:by\s+)?text|text\s+me|txt\s+me|sms\s+only"
+        r"|only\s+sms|prefer\s+(?:a\s+)?text(?:ing|s)?|text\s+message\s+chats?)\b", re.I)),
+    ("email", re.compile(
+        r"\b(?:e-?mail\s+only|only\s+(?:by\s+)?e-?mail|e-?mail\s+me|just\s+e-?mail"
+        r"|prefer\s+(?:an\s+)?e-?mail|(?:quotes?|options|fares|prices?)\s+(?:on|to|via|by)\s+(?:my\s+)?e-?mail)\b",
+        re.I)),
+    ("no calls", re.compile(
+        r"\b(?:no\s+(?:phone\s+)?calls?|don'?t\s+call|do\s+not\s+call|please\s+don'?t\s+call"
+        r"|can'?t\s+talk|cannot\s+talk|don'?t\s+want\s+to\s+talk|no\s+talking)\b", re.I)),
+)
+
+
+def contact_channel_of(text: str) -> Optional[str]:
+    """'text', 'email', 'no calls' or a comma-joined mix — None when unsaid."""
+    found = [label for label, rx in CONTACT_CHANNEL_RES if rx.search(text or "")]
+    return ", ".join(found) or None
 
 # Reverse of CITY_TO_CODE for the landing-page hint. Short keys ("la", "sf")
 # match too much inside a slug, so only real city names are used.
@@ -1529,6 +1553,8 @@ def extract_entities(
     if call_time:
         entities.best_call_time = call_time.group(1).strip().rstrip(".")[:40]
 
+    entities.contact_channel = contact_channel_of(text)
+
     # Correction-path only: day-only return mentions resolve against the
     # summary's departure. Runs AFTER the normal parsers so a full date
     # with a month always wins.
@@ -1578,7 +1604,7 @@ def extract_entities(
                           "passengers", "cabin_class", "departure_date", "return_date", "trip_type",
                           "occasion", "booking_for", "nonstop_only", "airline_preference",
                           "airline_avoid", "budget_hint", "price_seen", "best_call_time",
-                          "time_preference"]
+                          "contact_channel", "time_preference"]
              if getattr(entities, k) is not None]
     if found:
         logger.info(f"Entities extracted: {', '.join(found)}")

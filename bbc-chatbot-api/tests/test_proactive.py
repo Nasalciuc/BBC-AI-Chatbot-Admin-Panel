@@ -758,7 +758,8 @@ class TestPrompt:
             tunnel="sales", visitor=VisitorInfo(), lead=None, entities={"site": site},
         )
         prompt = static + dynamic
-        assert f"Your name is Alex, the AI assistant of {brand}" in prompt
+        assert f"Your name is Alex, the AI travel agent of {brand}" in prompt
+        assert "You ARE an AI travel agent, never a person." in prompt
         assert "NEVER imply you are a human" in prompt
 
     def test_proactive_chat_shows_the_page_and_asks_email_first(self):
@@ -816,6 +817,34 @@ class TestMissingFieldsOrder:
         from app.models.lead import get_missing_fields
         got = get_missing_fields(self._lead(), {"email_first": True, "visitor_email": "x"})
         assert got == ["name", "phone number"]
+
+    def test_email_comes_right_after_the_route(self):
+        """16 Nov contact analysis: a client who leaves after giving an email
+        can still be helped; the dates and travellers can follow it."""
+        from app.models.lead import get_missing_fields
+        lead = {"origin_code": "ATL", "destination_code": "ICN"}
+        assert get_missing_fields(lead, {"email_first": True}) == [
+            "email", "departure date", "number of travelers (adults, children, infants)",
+            "name", "phone number",
+        ]
+
+    def test_without_a_route_the_route_comes_first_then_the_email(self):
+        from app.models.lead import get_missing_fields
+        assert get_missing_fields({"destination_code": "LHR"}, {"email_first": True})[:3] == [
+            "route (origin and destination)", "email", "departure date",
+        ]
+
+    def test_the_email_is_asked_once(self):
+        from app.models.lead import get_missing_fields
+        got = get_missing_fields({"origin_code": "ATL", "destination_code": "ICN"}, {"email_first": True})
+        assert got.count("email") == 1
+
+    def test_a_form_chat_and_the_crm_keep_their_order(self):
+        from app.models.lead import get_missing_fields
+        lead = {"origin_code": "ATL", "destination_code": "ICN"}
+        assert get_missing_fields(lead, {})[-3:] == ["name", "email", "phone number"]
+        crm = get_missing_fields(lead, {"email_first": True}, for_crm=True)
+        assert crm == ["number of travelers (how many passengers?)", "departure date", "email", "name", "phone number"]
 
 
 # ══════════════════════════════════════════════════════════════
