@@ -7,6 +7,7 @@
 //   "Emirates business class deals"                airline
 //   "First class flights to London"                (the same, in first class)
 // Anything else, or another site, gets the general greeting.
+// Alex speaks the note, and he never checks fares himself: only an agent can (owner, 17 Nov 2026).
 
 export interface PageContext {
   /** The greeting's first line, a question. */
@@ -29,7 +30,7 @@ export function readPageContext(): PageContext {
     const [, from, to, cabin] = m
     return {
       title: `Flying ${from} to ${to}?`,
-      line: `Tell me your dates and I'll check ${cabin.toLowerCase()} class fares.`,
+      line: `Tell me your dates and an agent will check ${cabin.toLowerCase()} class fares.`,
       draft: `${from} to ${to}, `,
     }
   }
@@ -37,7 +38,7 @@ export function readPageContext(): PageContext {
     const [, cabin, to] = m
     return {
       title: `Flying to ${to}?`,
-      line: `Tell me where from and when, and I'll check ${cabin.toLowerCase()} class fares.`,
+      line: `Tell me where from and when, and an agent will check ${cabin.toLowerCase()} class fares.`,
       draft: `To ${to}, from `,
     }
   }
@@ -45,7 +46,7 @@ export function readPageContext(): PageContext {
     const [, cabin, from] = m
     return {
       title: `Flying from ${from}?`,
-      line: `Tell me where to and when, and I'll check ${cabin.toLowerCase()} class fares.`,
+      line: `Tell me where to and when, and an agent will check ${cabin.toLowerCase()} class fares.`,
       draft: `From ${from} to `,
     }
   }
@@ -53,13 +54,13 @@ export function readPageContext(): PageContext {
     const [, airline, cabin] = m
     return {
       title: `Looking at ${airline}?`,
-      line: `Tell me your route and dates, and I'll check ${cabin.toLowerCase()} class fares.`,
+      line: `Tell me your route and dates, and an agent will check ${cabin.toLowerCase()} class fares.`,
       draft: `${airline}, `,
     }
   }
   return {
     title: 'Planning a business class trip?',
-    line: "Tell me where and when, and I'll check fares for you.",
+    line: 'Tell me where and when, and an agent will check fares for you.',
     draft: '',
   }
 }

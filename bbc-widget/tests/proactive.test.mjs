@@ -208,8 +208,8 @@ test('the 24 h pause, "Not now" and what a reply was', () => {
   assert.equal(pauseRunning('soon', 1_000), false)
   assert.equal(isNotNow(' Not now '), true)
   assert.equal(isNotNow('Not now, thanks'), false)
-  const replies = ['Yes, check fares', 'Change details', 'Not now']
-  assert.equal(replyKind('Yes, check fares', replies), 'button_1')
+  const replies = ['Yes, send me fares', 'Change details', 'Not now']
+  assert.equal(replyKind('Yes, send me fares', replies), 'button_1')
   assert.equal(replyKind('change details', replies), 'button_2')
   assert.equal(replyKind('my email is …', replies), 'text')
 })
@@ -334,9 +334,9 @@ test('the open panel keeps its unanswered opening across the tab\'s pages: never
 
 test('a kept opening reads back whole, without the reply already sent; anything else is no opening', () => {
   const o = {
-    trigger: 'kayak', message: 'Flying Atlanta → Seoul?', quickReplies: ['Yes, check fares', 'Not now'],
+    trigger: 'kayak', message: 'Flying Atlanta → Seoul?', quickReplies: ['Yes, send me fares', 'Not now'],
     trip: { source: 'kayak', origin_code: 'ATL', destination_code: 'ICN' }, surface: 'panel', shownAt: 1763250000000,
-    firstReply: 'Yes, check fares',
+    firstReply: 'Yes, send me fares',
   }
   const kept = keepOpening(o)
   assert.equal('firstReply' in kept, false)
@@ -555,7 +555,7 @@ test('a note answer that comes after the visitor opened the form, or closed it, 
 })
 
 test('an unanswered note chat comes back on the next page like a card chat', () => {
-  const o = { trigger: 'note', message: "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?", quickReplies: ['Check fares', 'I have a question'], trip: null, surface: 'panel', shownAt: 1 }
+  const o = { trigger: 'note', message: "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?", quickReplies: ['Get a fare quote', 'I have a question'], trip: null, surface: 'panel', shownAt: 1 }
   assert.deepEqual(readKeptOpening(JSON.parse(JSON.stringify(keepOpening(o)))), o)
   assert.equal(readKeptOpening({ ...o, trigger: 'something_else' }), null)
 })
