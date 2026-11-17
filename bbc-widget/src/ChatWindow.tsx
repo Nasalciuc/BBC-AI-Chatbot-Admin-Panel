@@ -145,6 +145,13 @@ export function ChatWindow({
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const isStreamingRef = useRef(false)
+  /** The number of the latest send, and the latest send whose reply's
+   *  stream_end has come in. The server pushes stream_end over SSE and only
+   *  then answers the POST with {streaming: true}; either can arrive first,
+   *  so a send's answer may mark its reply streaming only while
+   *  streamEndSeqRef is still below its number (17 Nov 2026). */
+  const sendSeqRef = useRef(0)
+  const streamEndSeqRef = useRef(0)
   const [quickReplies, setQuickReplies] = useState<string[] | null>(() => {
     const o = openingRef.current
     return o && !o.firstReply && o.quickReplies.length ? o.quickReplies : null
@@ -186,16 +193,19 @@ export function ChatWindow({
   /** Operator photos that failed to load → show initials instead of a broken image. */
   const [brokenAvatars, setBrokenAvatars] = useState<Record<string, boolean>>({})
 
-  // Safety net: force-unlock sending after 15s (protects against any stuck state)
+  // Safety net: after 15s, unlock sending and drop the typing dots (protects
+  // against any stuck state). It watches isStreaming too: on 17 Nov 2026 the
+  // dots stayed under Alex's finished reply with sending already off, so a
+  // net that watched sending alone never ran.
   useEffect(() => {
-    if (!sending) return
+    if (!sending && !isStreaming) return
     const timeout = setTimeout(() => {
       setSending(false)
       setIsStreaming(false)
       isStreamingRef.current = false
     }, 15000)
     return () => clearTimeout(timeout)
-  }, [sending])
+  }, [sending, isStreaming])
 
   const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false): Promise<void> => {
     if (!convId || closeSentRef.current) return Promise.resolve()
@@ -558,6 +568,9 @@ export function ChatWindow({
             // cursor past its timestamp.
             const { next, sawAi } = reconcileBatch(prev, incoming, Date.now())
             if (sawAi) {
+              // Polled instead of streamed (SSE down): the same "reply is in"
+              // as a stream_end, so a late POST answer cannot undo it.
+              streamEndSeqRef.current = sendSeqRef.current
               setIsStreaming(false)
               isStreamingRef.current = false
               setSending(false)
@@ -629,6 +642,10 @@ export function ChatWindow({
           }
 
           if (parsed.event === 'stream_end') {
+            // The reply of the latest send is in. That send's POST answer can
+            // still arrive after this frame and must not mark it streaming
+            // again: "Alex is typing" then stayed on screen for good.
+            streamEndSeqRef.current = sendSeqRef.current
             setStreamingText('')
             setIsStreaming(false)
             isStreamingRef.current = false
@@ -821,6 +838,9 @@ export function ChatWindow({
 
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
+    // This send's number: a late answer to an earlier send (the queue sends
+    // the next message as soon as a reply is in) never changes this one.
+    const seq = ++sendSeqRef.current
     const isExistingConversation = Boolean(convId)
     lastActivityRef.current = Date.now()
     // Clear typing indicator immediately when sending
@@ -979,7 +999,10 @@ export function ChatWindow({
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.streaming) {
-        if (activeConvId || convId) {
+        // Only while this send's reply is still on its way. When its
+        // stream_end came in first, marking it streaming here left the typing
+        // dots under the finished reply until the next send (17 Nov 2026).
+        if ((activeConvId || convId) && streamEndSeqRef.current < seq) {
           setIsStreaming(true)
           isStreamingRef.current = true
         }
@@ -998,9 +1021,12 @@ export function ChatWindow({
     } catch {
       posthog?.capture('chat_message_send_failed', { tunnel })
       posthog?.logger.warn('chat_message_delivery_failed', { tunnel })
-      setStreamingText('')
-      setIsStreaming(false)
-      isStreamingRef.current = false
+      // A later send may already be streaming its own reply: leave it be.
+      if (seq === sendSeqRef.current) {
+        setStreamingText('')
+        setIsStreaming(false)
+        isStreamingRef.current = false
+      }
       // Clean up optimistic message if the request failed
       setMessages(prev => prev.filter(m => m.id !== '__connecting_temp__'))
       const errMsg: Message = {
@@ -1011,7 +1037,9 @@ export function ChatWindow({
       }
       setMessages(prev => [...prev, errMsg])
     } finally {
-      if (!isStreamingRef.current) {
+      // Only the latest send unlocks: an earlier one answering late would
+      // drop the dots while the next reply is still coming.
+      if (!isStreamingRef.current && seq === sendSeqRef.current) {
         setSending(false)
       }
     }
