@@ -242,6 +242,36 @@ def _append_note(existing: Optional[str], line: str) -> Optional[str]:
     return updated if updated != current else None
 
 
+_CONTACT_FIELDS = ("visitor_name", "visitor_email", "visitor_phone")
+
+
+async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
+    """The contacts the conversation already holds, for the score.
+
+    The contacts live on the conversation, not the lead, and a call often
+    carries one of them (an email typed to an operator) or none (a route):
+    scored from the call alone, the name and phone points the client already
+    earned would drop (CodeRabbit #268). None when the read fails.
+    """
+    from app.db.supabase import _run_sync
+
+    try:
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select(",".join(_CONTACT_FIELDS))
+            .eq("id", conversation_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        # By type only: the row holds the client's contacts.
+        logger.warning(f"[{conversation_id}] stored contacts not read for the score ({type(e).__name__})")
+        return None
+    rows = res.data if isinstance(res.data, list) else []
+    row = rows[0] if rows and isinstance(rows[0], dict) else {}
+    return {k: row.get(k) for k in _CONTACT_FIELDS}
+
+
 async def update_lead_from_entities(conversation_id: str, entities: dict) -> None:
     """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7."""
     try:
@@ -250,13 +280,17 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
 
         # RT 1: Select lead. "*" rather than a column list so trip_notes comes
         # back when migration 040 is applied and is simply absent when it is
-        # not (naming a missing column would fail the whole read).
-        res = await _run_sync(
-            lambda: db_client.table("leads")
-            .select("*")
-            .eq("conversation_id", conversation_id)
-            .limit(1)
-            .execute()
+        # not (naming a missing column would fail the whole read). The stored
+        # contacts are read alongside it, for the score.
+        res, stored = await asyncio.gather(
+            _run_sync(
+                lambda: db_client.table("leads")
+                .select("*")
+                .eq("conversation_id", conversation_id)
+                .limit(1)
+                .execute()
+            ),
+            _stored_contacts(db_client, conversation_id),
         )
 
         if not res.data:
@@ -292,7 +326,11 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             conv_payload["visitor_email"] = entities["email"]
         if entities.get("phone"):
             from app.services.crm import format_phone_international
-            conv_payload["visitor_phone"] = format_phone_international(entities["phone"])
+            # A number too short to dial formats to "": it must not wipe the
+            # phone the conversation already holds.
+            _phone = format_phone_international(entities["phone"])
+            if _phone:
+                conv_payload["visitor_phone"] = _phone
 
         lead_payload: dict = {}
         if entities.get("origin"):
@@ -412,21 +450,18 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         if tasks:
             await asyncio.gather(*tasks)
 
-        # Score from merged local state (no re-select lead + conv)
+        # Score from merged local state (no re-select lead + conv): this
+        # call's contacts first, then the ones the conversation already holds.
         merged_lead = {**lead_data, **lead_payload}
-        merged_conv = {
-            "visitor_name": conv_payload.get("visitor_name") or entities.get("name"),
-            "visitor_email": conv_payload.get("visitor_email") or entities.get("email"),
-            "visitor_phone": conv_payload.get("visitor_phone"),
-        }
-        if not merged_conv.get("visitor_phone") and entities.get("phone"):
-            from app.services.crm import format_phone_international
-            merged_conv["visitor_phone"] = format_phone_international(entities["phone"])
+        merged_conv = {k: conv_payload.get(k) or (stored or {}).get(k) for k in _CONTACT_FIELDS}
 
         new_score = _calculate_score(merged_lead, merged_conv)
         new_tier = "gold" if new_score >= 80 else "silver" if new_score >= 50 else "bronze"
 
-        if new_score != lead_data.get("score"):
+        # Stored contacts unread: this score is a floor, not the truth. It may
+        # raise the stored score, never lower it.
+        floor_below_stored = stored is None and new_score < (lead_data.get("score") or 0)
+        if new_score != lead_data.get("score") and not floor_below_stored:
             await _run_sync(
                 lambda: db_client.table("leads")
                 .update({"score": new_score, "tier": new_tier})

@@ -156,3 +156,120 @@ async def test_a_message_to_the_operator_records_its_contact_beside_the_queued_r
     assert seen == [(cid, "my email is paul.moreau@example.com")]
     for t in list(orchestrator._background_tasks):
         t.cancel()
+
+
+# ── The score keeps what the conversation already holds (CodeRabbit #268) ──
+# The contacts live on the conversation, not the lead: an email typed to an
+# operator arrives alone, and scored from it alone the name and phone points
+# the client already earned would drop.
+
+
+class _Res:
+    def __init__(self, data):
+        self.data = data
+
+
+class _Table:
+    """One table of the Supabase client: rows to read, every update written down."""
+
+    def __init__(self, rows=None, read_fails=False):
+        self.rows, self.read_fails, self.updates = rows or [], read_fails, []
+        self._op = None
+
+    def select(self, *_a, **_k):
+        self._op = "select"
+        return self
+
+    def update(self, payload):
+        self._op = "update"
+        self.updates.append(payload)
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        if self._op == "select" and self.read_fails:
+            raise ConnectionError("read refused")
+        return _Res([dict(r) for r in self.rows] if self._op == "select" else [])
+
+
+STORED = {"visitor_name": "Ana Test", "visitor_email": None, "visitor_phone": "+12105550100"}
+
+
+async def _update(entities, *, score, conv=None, conv_read_fails=False, lead=None):
+    from app.db import supabase as db
+    from app.services import lead_service
+
+    tables = {
+        "leads": _Table([{"id": "L1", "score": score, **(lead or {})}]),
+        "conversations": _Table([conv] if conv else [], read_fails=conv_read_fails),
+    }
+    client = MagicMock()
+    client.table.side_effect = lambda name: tables[name]
+
+    async def _sync(fn, *_a, **_k):
+        return fn()
+
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", _sync):
+        await lead_service.update_lead_from_entities("c1", entities)
+    return tables
+
+
+def _score_written(tables):
+    return next((u for u in tables["leads"].updates if "score" in u), None)
+
+
+@pytest.mark.asyncio
+async def test_an_email_alone_keeps_the_name_and_phone_points():
+    tables = await _update({"email": "ana@example.com"}, score=35, conv=STORED)
+    assert _score_written(tables) == {"score": 45, "tier": "bronze"}  # name 20 + phone 15 + email 10
+
+
+@pytest.mark.asyncio
+async def test_a_route_alone_keeps_the_contact_points():
+    conv = {**STORED, "visitor_email": "ana@example.com"}
+    tables = await _update({"origin": "JFK", "destination": "LHR"}, score=45, conv=conv)
+    assert _score_written(tables) == {"score": 60, "tier": "silver"}
+
+
+@pytest.mark.asyncio
+async def test_the_calls_contact_counts_beside_the_stored_ones():
+    tables = await _update({"phone": "2105550100"}, score=20, conv={"visitor_name": "Ana Test"})
+    assert {"visitor_phone": "+12105550100"} in tables["conversations"].updates
+    assert _score_written(tables) == {"score": 35, "tier": "bronze"}
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_score_is_not_written_again():
+    tables = await _update({"email": "ana@example.com"}, score=45, conv=STORED)
+    assert _score_written(tables) is None
+
+
+@pytest.mark.asyncio
+async def test_a_number_too_short_to_dial_never_wipes_the_stored_phone():
+    tables = await _update({"phone": "12345"}, score=35, conv=STORED)
+    assert all("visitor_phone" not in u for u in tables["conversations"].updates)
+    assert _score_written(tables) is None  # the stored phone still counts: 35 stands
+
+
+@pytest.mark.asyncio
+async def test_unread_contacts_never_lower_the_score(caplog):
+    with caplog.at_level(logging.INFO):
+        tables = await _update({"email": "ana@example.com"}, score=45, conv=STORED, conv_read_fails=True)
+    assert _score_written(tables) is None  # 10 from this call alone would have dropped 35 points
+    assert "stored contacts not read for the score (ConnectionError)" in caplog.text
+    assert "ana@example.com" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unread_contacts_still_let_the_score_rise():
+    tables = await _update(
+        {"origin": "JFK", "destination": "LHR", "email": "ana@example.com"},
+        score=0, conv=STORED, conv_read_fails=True,
+    )
+    assert _score_written(tables) == {"score": 25, "tier": "bronze"}  # route 15 + email 10, a floor
+    assert {"visitor_email": "ana@example.com"} in tables["conversations"].updates
