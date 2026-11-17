@@ -56,8 +56,9 @@ export function offerVariant(v: unknown): string | undefined {
  */
 export async function fetchProactiveOffer(
   apiUrl: string,
-  /** `site`: bbc | bct, so the server's opening names the brand the visitor is on. */
-  body: { visitor_id: string; trigger: string; trip: unknown; site: string },
+  /** `site`: bbc | bct, so the server's opening names the brand the visitor is on. `refused`: on the quote
+   *  moment, the kinds of the fields the form refused (siteSignals FIELD_KINDS, never a value). */
+  body: { visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[] },
   timeoutMs: number,
 ): Promise<ProactiveOffer | null> {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
