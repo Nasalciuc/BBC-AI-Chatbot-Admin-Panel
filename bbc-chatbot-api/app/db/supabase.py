@@ -3633,6 +3633,9 @@ TASKS_HEALTH: dict = {
     # The departure task (app/services/departure.py): made, made Unowned
     # (nobody Ready), and a run or a task that failed.
     "departure": 0, "departure_unowned": 0, "departure_failures": 0,
+    # A client's call task withdrawn when they then chose texts or said no
+    # calls (tasks_service.withdraw_call_tasks), and a withdrawal that failed.
+    "withdrawn": 0, "withdraw_failures": 0,
 }
 _OPEN_LIMIT = 500
 
@@ -3806,6 +3809,21 @@ async def update_follow_up(task_id: str, payload: dict) -> Optional[dict]:
     return rows[0] if rows else None
 
 
+async def withdraw_open_call_task(task_id: str, at: str) -> Optional[dict]:
+    """Dismiss the task only while it is still the open call a client asked
+    for — client_asked, a call, not done, not dismissed — checked by the same
+    UPDATE. A task someone finished, dismissed or turned into another kind
+    after it was read stays as it is (CodeRabbit #262). None when it no longer
+    matched."""
+    db_client = get_client()
+    body = {"dismissed_at": at, "updated_at": datetime.now(timezone.utc).isoformat()}
+    res = await _tasks_call(lambda: db_client.table("tasks").update(body)
+                            .eq("id", task_id).eq("source", "client_asked").eq("kind", "call")
+                            .is_("done_at", "null").is_("dismissed_at", "null").execute())
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 async def delete_follow_up(task_id: str) -> bool:
     db_client = get_client()
     res = await _tasks_call(lambda: db_client.table("tasks").delete().eq("id", task_id).execute())
@@ -3956,8 +3974,8 @@ async def departure_still_free(conversation_id: str) -> bool:
 
 
 async def tasks_of_conversations(conversation_ids: list[str]) -> list[dict]:
-    """Every task of these chats, open or not: conversation_id, source and
-    whether it is open. Raises (TasksNotSetUp before migration 051)."""
+    """Every task of these chats, open or not: conversation_id, source, kind
+    and whether it is open. Raises (TasksNotSetUp before migration 051)."""
     ids = sorted({i for i in conversation_ids if i})
     if not ids:
         return []
@@ -3966,7 +3984,7 @@ async def tasks_of_conversations(conversation_ids: list[str]) -> list[dict]:
     for i in range(0, len(ids), _IDS_PER_REQUEST):
         chunk = ids[i:i + _IDS_PER_REQUEST]
         out.extend(await _task_pages(lambda chunk=chunk: db_client.table("tasks")
-                                     .select("id, conversation_id, source, done_at, dismissed_at")
+                                     .select("id, conversation_id, source, kind, done_at, dismissed_at")
                                      .in_("conversation_id", chunk).order("id")))
     return out
 

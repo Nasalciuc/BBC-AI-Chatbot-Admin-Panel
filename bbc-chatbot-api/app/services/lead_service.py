@@ -5,7 +5,8 @@ import re
 from datetime import date
 from typing import Optional
 
-from app.pipeline.entity_extractor import DREAM_OUTCOMES, merge_contact_channel
+from app.pipeline.callback_intent import notes_without_call
+from app.pipeline.entity_extractor import DREAM_OUTCOMES, merge_contact_channel, turns_down_calls
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,9 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 else ({} if not raw_existing else {"legacy": raw_existing})
             )
             merged_signals = {**existing_signals, **signals}
+            # "Call me", then "text only" or "no calls": the newest wish wins
+            # and the call is no longer owed (CodeRabbit #262).
+            call_turned_down = turns_down_calls(signals.get("contact_channel"))
             if signals.get("contact_channel"):
                 # "text only", then "please don't text me": the withdrawal
                 # replaces the wish instead of both standing, and an earlier
@@ -352,11 +356,23 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 merged_signals["contact_channel"] = merge_contact_channel(
                     existing_signals.get("contact_channel"), signals["contact_channel"],
                 )
+                if call_turned_down and merged_signals.get("callback_requested"):
+                    merged_signals["callback_requested"] = False
             if merged_signals != existing_signals or raw_existing != existing_signals:
                 lead_payload["intent_signals"] = merged_signals
+                base_notes = lead_data.get("notes")
+                if call_turned_down:
+                    # The panel reads a CLIENT ASKED TO BE CALLED line as
+                    # "Asks: a call back": it goes with the wish.
+                    without_call = notes_without_call(
+                        base_notes, texts="text" in {p.strip() for p in signals["contact_channel"].split(",")},
+                    )
+                    if without_call is not None:
+                        base_notes = without_call
+                        lead_payload["notes"] = without_call
                 context_line = build_chat_context_line(merged_signals)
                 if context_line:
-                    notes = _append_note(lead_data.get("notes"), context_line)
+                    notes = _append_note(base_notes, context_line)
                     if notes is not None:
                         lead_payload["notes"] = notes
 

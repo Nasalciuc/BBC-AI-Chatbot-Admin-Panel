@@ -64,8 +64,11 @@ def detect_callback_request(message: str) -> Optional[dict]:
     """{'number': str|None, 'cue': 'words'|'number'} or None.
 
     A bare phone number counts: post-greeting, a client who types only
-    their number is asking to be reached on it."""
-    text = (message or "").strip()
+    their number is asking to be reached on it.
+
+    A phone types "don’t" (U+2019) by default; read it as "don't", or
+    "don’t call me" is heard as "call me" — the opposite of what was said."""
+    text = (message or "").replace("’", "'").replace("‘", "'").strip()
     if not text or _NOT_A_REQUEST_RE.search(text):
         return None
     if _CALL_ME_NAME_RE.search(text) and not find_phone(text):
@@ -101,6 +104,49 @@ def _is_phone_shaped(text: str) -> bool:
     return bool(_PHONE_SHAPE_RE.search(text))
 
 
-def callback_note(number: Optional[str]) -> str:
-    """The line the consultant sees at the top of the lead."""
-    return f"CLIENT ASKED TO BE CALLED — {number or 'number not captured'}"
+_NOTE_CALL = "CLIENT ASKED TO BE CALLED"
+_NOTE_TEXT = "CLIENT ASKED FOR TEXTS, NOT CALLS"
+_NOTE_ANY = "CLIENT GAVE A NUMBER (no preference stated)"
+
+
+def callback_note(number: Optional[str], channel: str = "call") -> str:
+    """The line the consultant sees at the top of the lead: how the client
+    wants to be reached on the number ('call', 'text', or 'any' when they
+    gave the number and said nothing more — contact_capture.callback_channel).
+    The panel reads a CLIENT ASKED TO BE CALLED line as "Asks: a call back"."""
+    shown = number or "number not captured"
+    if channel == "text":
+        return f"{_NOTE_TEXT} — {shown}"
+    if channel == "any":
+        return f"{_NOTE_ANY} — {shown}"
+    return f"{_NOTE_CALL} — {shown}"
+
+
+def notes_with_callback(notes: Optional[str], note: str) -> str:
+    """The lead's notes with `note` on top and no earlier call-back line: the
+    client's newest wish is the one the consultant reads. A client who asked
+    for a call and then chose texts must not still show "a call back"."""
+    kept = [
+        line for line in (notes or "").splitlines()
+        if not line.strip().startswith((_NOTE_CALL, _NOTE_TEXT, _NOTE_ANY))
+    ]
+    return "\n".join([note, *kept]).strip()
+
+
+def notes_without_call(notes: Optional[str], *, texts: bool) -> Optional[str]:
+    """The lead's notes once the client turned the call down in a later
+    message: the CLIENT ASKED TO BE CALLED line becomes the texts line for the
+    same number when they chose texts, and goes when they only said no calls,
+    so the panel stops saying "Asks: a call back" (CodeRabbit #262). None when
+    there was no such line."""
+    out: list[str] = []
+    changed = False
+    for line in (notes or "").splitlines():
+        if not line.strip().startswith(_NOTE_CALL):
+            out.append(line)
+            continue
+        changed = True
+        if texts:
+            _, dash, number = line.strip().partition("—")
+            out.append(callback_note(number.strip() if dash and number.strip() else None, channel="text"))
+    return "\n".join(out).strip() if changed else None

@@ -10,12 +10,27 @@ from config.settings import settings
 from app.models.chat import ChatResponse, VisitorInfo
 from app.models.kb import KBResult
 from app.services import conversation_service, lead_service
-from app.services.crm import check_crm_ready, submit_to_crm
+from app.services.crm import check_crm_ready, format_phone_international, submit_to_crm
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response, GeneratedResponse
 from app.pipeline.validator import validate_response
 from app.ai.templates import get_template
+from app.pipeline.contact_capture import (
+    asks_for_channel,
+    asks_for_last_name,
+    asks_for_name,
+    callback_channel,
+    calls_refused,
+    channel_after_call_request,
+    channel_from_answer,
+    last_question,
+    name_from_answer,
+    name_to_store,
+    with_stored_contact,
+    with_turn_contact,
+)
+from app.pipeline.entity_extractor import turns_down_calls
 from app.realtime.manager import manager
 from app.flags import flag
 
@@ -495,6 +510,15 @@ async def _pipeline(
 
     cid = conv["id"]
     logger.info(f"[{cid}] Pipeline start | tunnel={tunnel}")
+    # A chat with no form behind it (card, note, corner button) collects the
+    # contact IN the conversation: the row holds it, the request never does.
+    # Every check below — the missing fields, the summary, the CRM gate and
+    # its payload — reads `visitor`; the row fills what the widget left empty
+    # (16-17 Nov: 0 of 13 chats could reach the CRM). What the widget itself
+    # sent is kept apart: only a value it did not send gives way to a newer
+    # one from this turn (a corrected email, a new number).
+    _widget_visitor = visitor
+    visitor = with_stored_contact(visitor, conv)
 
     # Save user message immediately (never lose data).
     # FIX-C reprocess: the message is already in the DB — skip the insert.
@@ -938,56 +962,117 @@ async def _pipeline(
     # JOSEF typed his number and asked us to ring him; the pipeline asked
     # what he meant. A callback request is never ambiguous — hear it,
     # keep the number, queue a human, and carry on collecting.
-    from app.pipeline.callback_intent import callback_note
+    from app.pipeline.callback_intent import callback_note, notes_with_callback
 
     _callback = _callback_pending
     if _callback:
         logger.info(f"[{cid}] Callback requested (cue={_callback['cue']})")
+        _cb_lead = None
         try:
             _cb_lead = await lead_service.get_or_create_lead(cid)
+        except Exception as e:
+            logger.warning(f"[{cid}] callback: lead read failed ({type(e).__name__})")
+        _cb_signals = (_cb_lead or {}).get("intent_signals")
+        _cb_signals = dict(_cb_signals) if isinstance(_cb_signals, dict) else {}
+        # How the client wants to be reached. A number given after "a text or
+        # a quick call?" is not a request to be CALLED: all three such clients
+        # on 17 Nov had chosen texts, one "can't always take a call", and each
+        # was told "a consultant will call you" (contact_capture).
+        _cb_stored = _cb_signals.get("contact_channel")
+        _cb_channel = callback_channel(message, _callback["cue"], _cb_stored)
+        # A call is owed when the client asked for one, or gave a number with
+        # nothing against calls; never over an earlier "no calls" — and never
+        # guessed when the lead holding that earlier wish could not be read
+        # (CodeRabbit #262): "Text", then the number, would be a call again.
+        _cb_wants_call = _cb_channel == "call" or (
+            _cb_channel == "any" and _cb_lead is not None and not calls_refused(_cb_stored)
+        )
+        # The number lands on the CONVERSATION, the row the CRM gate, the
+        # abandoned-chat push and the panel read. It used to go to
+        # leads.visitor_phone, a column that does not exist: the whole lead
+        # write failed (PGRST204, 3 times on 17 Nov), the consultant's note and
+        # the flag with it, and the number was nowhere but in the chat text.
+        # A number the widget sent stays; one the chat gave earlier gives way
+        # to the newer one.
+        if _callback["number"] and not getattr(_widget_visitor, "phone", None) and _callback["number"] != visitor.phone:
+            if not await db.update_conversation(cid, {"visitor_phone": _callback["number"]}):
+                logger.warning(f"[{cid}] callback: number not saved on the conversation")
+            visitor = visitor.model_copy(update={"phone": _callback["number"]})
+        try:
             if _cb_lead:
-                _cb_signals = _cb_lead.get("intent_signals")
-                _cb_signals = dict(_cb_signals) if isinstance(_cb_signals, dict) else {}
-                _cb_signals["callback_requested"] = True
-                _cb_note = callback_note(_callback["number"])
-                _cb_notes = (_cb_lead.get("notes") or "").strip()
-                _cb_payload: dict = {"intent_signals": _cb_signals}
-                if _cb_note not in _cb_notes:
-                    # The consultant must see it FIRST, above everything else.
-                    _cb_payload["notes"] = f"{_cb_note}\n{_cb_notes}".strip()
-                if _callback["number"] and not _cb_lead.get("visitor_phone"):
-                    _cb_payload["visitor_phone"] = _callback["number"]
-                await db.update_lead(_cb_lead["id"], _cb_payload)
+                if _cb_channel == "text":
+                    from app.pipeline.entity_extractor import merge_contact_channel as _cb_merge
+
+                    _cb_signals["contact_channel"] = _cb_merge(_cb_stored, "text")
+                    # An older "call me" is over: the panel must not still say
+                    # "Asks: a call back" to a client who chose texts.
+                    _cb_signals["callback_requested"] = False
+                else:
+                    if _cb_channel == "call":
+                        # "Call me" now withdraws an older "no calls" / "text".
+                        _cb_left = channel_after_call_request(_cb_stored)
+                        if _cb_left:
+                            _cb_signals["contact_channel"] = _cb_left
+                        else:
+                            _cb_signals.pop("contact_channel", None)
+                    if _cb_wants_call:
+                        # The panel reads this as "Asks: a call back".
+                        _cb_signals["callback_requested"] = True
+                _cb_note = callback_note(_callback["number"], channel=_cb_channel)
+                # The consultant must see it FIRST, above everything else —
+                # and only the newest call-back wish.
+                await db.update_lead(_cb_lead["id"], {
+                    "intent_signals": _cb_signals,
+                    "notes": notes_with_callback(_cb_lead.get("notes"), _cb_note),
+                })
         except Exception as e:
             logger.warning(f"[{cid}] callback note failed: {e}")
         # A human owns this now — same queue the explicit agent request uses.
         try:
             from app.services.routing import queue_for_person
 
-            await queue_for_person(cid, reason="call-back request")
+            await queue_for_person(
+                cid,
+                reason=(
+                    "text request" if _cb_channel == "text"
+                    else "call-back request" if _cb_wants_call else "number given"
+                ),
+            )
         except Exception as e:
             logger.warning(f"[{cid}] callback dispatch failed: {e}")
 
         # The AI is about to tell the client a consultant will call: that
         # promise becomes someone's task (Tasks). It never delays the reply
         # and never fails the turn (task_from_callback logs and counts).
-        if user_msg:
-            from app.services.tasks_service import task_from_callback
+        # A client who chose texts, or said no calls, gets no "Call X back" task
+        # — and loses the one an earlier "call me" made (CodeRabbit #262).
+        if _cb_wants_call:
+            if user_msg:
+                from app.services.tasks_service import task_from_callback
 
-            _fire_and_forget(task_from_callback(conv, user_msg, message))
+                _fire_and_forget(task_from_callback(conv, user_msg, message))
+        elif _cb_channel == "text" or calls_refused(_cb_stored):
+            from app.services.tasks_service import withdraw_call_tasks
+
+            _fire_and_forget(withdraw_call_tasks(cid))
 
         # Confirm warmly and keep collecting — deterministic, because the
         # one thing this turn must never do is ask him what he meant.
         from app.ai.templates import get_template as _cb_tpl
 
         if _callback["number"]:
+            _cb_key = {
+                "call": "callback_confirmed", "text": "number_confirmed_text",
+            }.get(_cb_channel, "number_confirmed")
             _cb_text = _cb_tpl(
-                "callback_confirmed", tunnel, visitor, number=_callback["number"]
-            ) or f"Of course — a consultant will call you on {_callback['number']}."
+                _cb_key, tunnel, visitor, number=_callback["number"]
+            ) or f"Of course — a consultant will reach you on {_callback['number']}."
             _cb_next = ""
             try:
                 from app.models.lead import get_missing_fields as _cb_gmf
 
+                # `visitor` carries the conversation's name and email: a name
+                # the client already gave is never asked for again.
                 _cb_missing = _cb_gmf(_cb_lead or {}, {
                     "visitor_name": getattr(visitor, "name", None),
                     "visitor_email": getattr(visitor, "email", None),
@@ -1101,6 +1186,21 @@ async def _pipeline(
         else:
             logger.info(f"[{cid}] Open-door window closed (no must-have stored)")
 
+    # The short answer to the question Alex (or an operator) just asked
+    # (contact_capture): "Paul Moreau" to "your name?", "Text" to "a text
+    # or a quick call?". Free text never names the client (see "name" below);
+    # an answer to that very question does. 17 Nov: all six names given in
+    # chat were lost, and three texters were promised a call.
+    _asked = last_question(history)
+    _answer_name = None
+    _answer_channel = None
+    if asks_for_name(_asked):
+        _answer_name = name_to_store(visitor.name, name_from_answer(message), asks_for_last_name(_asked))
+        if _answer_name:
+            logger.info(f"[{cid}] Name taken from the answer to the name question")
+    if not extracted.contact_channel and asks_for_channel(_asked):
+        _answer_channel = {"text": "text", "email": "email"}.get(channel_from_answer(message) or "")
+
     entities: dict = {
         # HARD RULE while a summary awaits confirmation: the LLM never speaks
         # "done". The state machine owns confirmation; prose must not outrun
@@ -1120,8 +1220,10 @@ async def _pipeline(
         ),
         # name: ALWAYS from visitor form data — never extract from message text
         # extracting name from message causes "looking for" or other text fragments
-        # to override the real visitor name submitted in the form
-        "name": visitor.name if visitor.name else None,
+        # to override the real visitor name submitted in the form. The one
+        # exception is the answer to Alex's own name question (above) — the
+        # only way a chat with no form ever learns the name.
+        "name": _answer_name or (visitor.name if visitor.name else None),
         "email": extracted.email or (visitor.email if visitor.email else None),
         "phone": extracted.phone or (visitor.phone if visitor.phone else None),
         # A client-stated extra leg describes the LEG — writing its cities
@@ -1151,7 +1253,7 @@ async def _pipeline(
         "budget_hint": extracted.budget_hint,
         "price_seen": extracted.price_seen,
         "best_call_time": extracted.best_call_time,
-        "contact_channel": extracted.contact_channel,
+        "contact_channel": extracted.contact_channel or _answer_channel,
         "must_haves": _open_door_reply,
         "_metadata": _site_metadata,
     }
@@ -1276,7 +1378,26 @@ async def _pipeline(
     has_signals = any(entities.get(k) for k in lead_service.SIGNAL_KEYS)
     if has_useful or has_signals:
         await lead_service.update_lead_from_entities(cid, entities)
+        # What this turn just learned counts for the rest of the turn — the
+        # next question, the CRM gate and its payload: a name answered to
+        # "your name?" is never asked for again in the same reply.
+        if _answer_name:
+            visitor = visitor.model_copy(update={"name": _answer_name})
+        visitor = with_turn_contact(
+            visitor,
+            _widget_visitor,
+            {
+                "email": entities.get("email"),
+                "phone": format_phone_international(entities["phone"]) if entities.get("phone") else None,
+            },
+        )
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
+        # "Call me", then "text only" or "no calls": the lead dropped the call
+        # (lead_service); the task the earlier ask made goes too (CodeRabbit #262).
+        if turns_down_calls(entities.get("contact_channel")):
+            from app.services.tasks_service import withdraw_call_tasks
+
+            _fire_and_forget(withdraw_call_tasks(cid))
         # Reward loop (PR-8): a detail just landed — resolve any open "did this
         # question get answered?" rows. Best-effort, never blocks the turn.
         try:

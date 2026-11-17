@@ -194,6 +194,7 @@ EVENT_TEXT = {
     "done": "{actor} marked it done.",
     "reopened": "{actor} opened it again.",
     "dismissed": "{actor} said it was not a promise.",
+    "withdrawn": "Withdrawn: {client} then chose texts or said no calls.",
     "edited": "{actor} changed it.",
 }
 

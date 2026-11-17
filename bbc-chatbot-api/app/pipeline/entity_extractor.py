@@ -678,8 +678,11 @@ def contact_channel_of(text: str) -> Optional[str]:
 
     A wish and its withdrawal in the same message ("Email me the options.
     Actually, don't email me") keep only the later one: the client's last word.
+
+    A phone types "don’t" (U+2019) by default: "don’t call me" is the same
+    refusal as "don't call me" (17 Nov: "I can’t always take a call").
     """
-    text = text or ""
+    text = (text or "").replace("’", "'").replace("‘", "'")
     last_at: dict[str, int] = {}
     for label, rx in CONTACT_CHANNEL_RES:
         for m in rx.finditer(text):
@@ -702,6 +705,14 @@ def merge_contact_channel(stored: Optional[str], new: str) -> str:
     old_parts = [p.strip() for p in stored.split(",") if p.strip()] if isinstance(stored, str) else []
     kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts]
     return ", ".join(kept + new_parts)
+
+
+def turns_down_calls(channel: Optional[str]) -> bool:
+    """These channel words turn a call down: the client chose texts or said no
+    calls. A call they asked for earlier is no longer owed — the newest wish
+    wins, as a later "call me" wins over an older "text only" (CodeRabbit #262)."""
+    parts = {p.strip() for p in (channel or "").split(",")}
+    return "text" in parts or "no calls" in parts
 
 
 def current_contact_channel(lead: Optional[dict], entities: Optional[dict] = None) -> Optional[str]:
