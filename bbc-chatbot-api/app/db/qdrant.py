@@ -370,7 +370,7 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
 # loose match would only put an unrelated entry in front of Alex. The labels
 # of 16 Nov stay: a card shown before a deploy still sends them.
 _BUTTON_TAPS = frozenset({
-    "yes, send me fares", "get a fare quote",
+    "yes, send me fares", "get a fare quote", "email me the fares",
     "yes, check fares", "check fares", "change details", "i have a question", "not now",
 })
 _NO_QUESTION_WORDS = frozenset("""

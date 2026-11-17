@@ -1691,3 +1691,111 @@ class TestHealth:
         assert set(payload["proactive"]) == {
             "offers", "shown", "opened", "open_failures", "seed_errors", "last_seed_error_at",
         }
+
+
+# ══════════════════════════════════════════════════════════════
+# The quote card after a send refused for its contact fields (owner, 18 Nov)
+# ══════════════════════════════════════════════════════════════
+
+class TestQuoteContact:
+    """16-17 Nov: 138 of the 436 visitors who opened the quote form were refused at its button, almost
+    always for the name, the email and the phone, and 101 of them never sent it. The quote card then
+    offers the chat instead of the rest of the form; an agent emails the fares."""
+
+    def test_the_words_offer_the_chat_instead_of_the_rest_of_the_form(self):
+        text, replies = proactive.compose("quote", _kayak_trip(return_date=None, adults="1", cabin="business"),
+                                          "bbc", proactive.CONTACT)
+        assert text == (
+            "Hi, I'm Alex from BuyBusinessClass. Rather not fill in the whole form? I can pass Atlanta → Seoul, "
+            f"{_day(_in(30))}, 1 adult in Business to an agent right here, and they'll email you the fares."
+        )
+        assert replies == ["Email me the fares", "I have a question", "Not now"]
+        assert proactive.compose("quote", None, "bct", proactive.CONTACT)[0] == (
+            "Hi, I'm Alex from Business Class Tickets. Rather not fill in the whole form? Tell me here where and "
+            "roughly when, and an agent will email you the fares."
+        )
+
+    @pytest.mark.parametrize("trip", [None, TripContext(destination_name="Paris"), _kayak_trip()])
+    @pytest.mark.parametrize("site", ["bbc", "bct"])
+    def test_the_openings_rules_hold(self, trip, site):
+        """Only an agent checks fares (owner, 17 Nov); no time, no price; never "where are you flying
+        from" (ADR 11); a difficulty only where there was one: the form that refused the send."""
+        text, replies = proactive.compose("quote", trip, site, proactive.CONTACT)
+        lowered = text.lower()
+        assert not re.search(r"\bI(?:'ll| will)? (?:check|pull|find|get)\b", text), text
+        assert not re.search(r"\d+\s*(min|minute|hour|hr)", lowered) and "$" not in text and "within" not in lowered
+        assert "where are you flying" not in lowered and "form" in lowered
+        assert "check fares" not in " ".join(replies).lower()
+
+    @pytest.mark.parametrize("refused, variant", [
+        (["name"], "contact"), (["email", "dates"], "contact"), (["phone"], "contact"),
+        (["dates"], None), (["origin", "destination"], None), ([], None), (None, None),
+    ])
+    def test_only_a_refused_contact_field_brings_it(self, refused, variant):
+        assert proactive.quote_variant(refused) == variant
+
+    def test_the_offer_carries_it_only_for_the_quote_card(self, monkeypatch):
+        _switch_on(monkeypatch, percent=100)
+        trip = _kayak_trip()
+        out = proactive.offer(_VISITOR, "quote", trip, "bbc", ["name", "email", "phone"])
+        assert out["variant"] == "contact"
+        assert (out["message"], out["quick_replies"]) == proactive.compose("quote", trip, "bbc", "contact")
+        # Refused for the trip only, or nothing named: the words of before, and no variant.
+        for refused in (["dates"], None):
+            out = proactive.offer(_VISITOR, "quote", trip, "bbc", refused)
+            assert "variant" not in out and out["message"] == proactive.compose("quote", trip, "bbc")[0]
+        # The other moments never take it.
+        assert "variant" not in proactive.offer(_VISITOR, "kayak", trip, "bbc", ["email"])
+        # The control arm hears no words at all.
+        _switch_on(monkeypatch, percent=0)
+        assert proactive.offer(_VISITOR, "quote", trip, "bbc", ["email"])["show"] is False
+
+    def test_only_known_kinds_reach_the_offer_never_a_422(self):
+        def refused(v):
+            return ProactiveOfferRequest(visitor_id=_VISITOR, trigger="quote", refused=v).refused
+
+        assert refused(["email", "evil", "email", 3, None, "phone"]) == ["email", "phone"]
+        assert refused(["name", "email", "phone", "origin", "destination", "dates", "passengers"]) == [
+            "name", "email", "phone", "origin", "destination", "dates"]
+        for bad in ("email", {"email": 1}, [], ["ann@example.com"], 7):
+            assert refused(bad) is None
+        assert refused(None) is None
+
+    @pytest.mark.asyncio
+    async def test_the_endpoint_hands_the_kinds_to_the_offer(self, monkeypatch):
+        _switch_on(monkeypatch, percent=100)
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="quote", refused=["phone", "email"])
+        out = await proactive_offer(req, None)
+        assert out["variant"] == "contact" and out["quick_replies"][0] == "Email me the fares"
+
+    def test_it_comes_back_with_the_answer_and_is_written_with_the_chat(self):
+        assert proactive.applied_variant("quote", _kayak_trip(), "contact") == "contact"
+        for trigger in ("kayak", "reader", "exit", "note"):
+            assert proactive.applied_variant(trigger, None, "contact") is None
+        assert proactive.applied_variant("quote", None, "places") is None
+        assert [proactive.known_variant(v) for v in ("contact", "open", "places", "evil", None)] == [
+            "contact", "open", "places", None, None]
+        assert ChatInitRequest(proactive={"trigger": "quote", "variant": "contact"}).proactive.variant == "contact"
+        assert proactive.init_metadata("quote", None, "contact")["proactive_variant"] == "contact"
+
+    @pytest.mark.asyncio
+    async def test_the_opening_is_the_cards_words(self):
+        trip = _kayak_trip()
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, p_add as add, p_meta as meta, p_seed:
+            await proactive.open_conversation(_CONV_ID, "quote", trip, "bbc", "contact")
+        assert add.await_args.args[2] == proactive.compose("quote", trip, "bbc", "contact")[0]
+        assert meta.await_args.args[1]["proactive_variant"] == "contact"
+
+    def test_the_note_bandit_counts_only_the_notes_chats(self):
+        """A quote chat carries proactive_variant 'contact': the bandit's read keeps to the note."""
+        import inspect
+
+        src = inspect.getsource(note_bandit._read_counts)
+        assert '.eq("metadata->>proactive_trigger", "note")' in src
+
+    def test_every_card_button_is_a_tap_that_asks_the_knowledge_base_nothing(self):
+        from app.db import qdrant
+
+        for label in {r for replies in proactive._REPLIES.values() for r in replies}:
+            assert qdrant.worth_searching(label) is False, label
