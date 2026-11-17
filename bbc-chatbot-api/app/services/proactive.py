@@ -226,7 +226,8 @@ def _names_a_destination(trip: Optional[TripContext]) -> bool:
 # for the name, the email and the phone (the trip was filled), and 101 of them never sent it. The card
 # then offers the chat instead of the rest of the form: an agent emails the fares.
 CONTACT = "contact"
-# The kinds a widget may name for a refused field (bbc-widget/src/siteSignals.ts FIELD_KINDS: keep equal).
+# The kinds a widget may name for a refused field: bbc-widget/src/siteSignals.ts FIELD_KINDS, the same list
+# (tests/test_site_signals.py holds them equal).
 REFUSED_KINDS: tuple[str, ...] = (
     "name", "email", "phone", "origin", "destination", "dates", "passengers", "cabin", "trip_type", "message",
     "consent", "captcha", "other",
@@ -477,7 +478,8 @@ async def open_conversation(
         # the label and the seed. Its words and time go back to this widget too.
         logger.info(f"[{conversation_id}] proactive opening written by a concurrent /chat/init")
         return await _stored_opening(conversation_id)
-    # The variant the widget sent back, kept only where it shaped the words (the note, no destination).
+    # The variant the widget sent back, kept only where it shaped the words (the note with no destination
+    # named, or the quote card's CONTACT).
     variant = applied_variant(trigger, trip, variant)
     text, _ = compose(trigger, trip, site, variant)
     row = await conversation_service.add_message(conversation_id, "ai", text, model_used=MODEL_USED, cost=0.0)

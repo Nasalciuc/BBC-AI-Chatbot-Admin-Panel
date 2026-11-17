@@ -158,6 +158,13 @@ class TestSameWordsAsTheWidget:
         for k in kinds:
             assert page_activity_tokens(f"quote_invalid:{k}") == [f"quote_invalid:{k}"]
 
+    def test_the_quote_card_knows_every_kind_the_widget_sends(self):
+        """/proactive/offer drops a kind it does not know: one the widget added alone would never
+        bring the quote card's contact words (proactive.quote_variant)."""
+        from app.services.proactive import REFUSED_KINDS
+
+        assert tuple(_widget_list("FIELD_KINDS")) == REFUSED_KINDS
+
     def test_contact_channels_and_fail_reasons(self):
         for c in _widget_list("CHANNELS"):
             assert page_activity_tokens(f"contact:{c}") == [f"contact:{c}"]
