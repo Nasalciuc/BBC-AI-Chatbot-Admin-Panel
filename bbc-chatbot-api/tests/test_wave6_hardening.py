@@ -439,9 +439,26 @@ class TestPresenceTruth:
         if diff.returncode != 0:
             pytest.fail(f"git diff {base} failed: {diff.stderr.strip()[:200]}")
         changed = [
-            line[1:] for line in diff.stdout.splitlines()
+            (line[:1], line[1:]) for line in diff.stdout.splitlines()
             if line[:1] in "+-" and not line.startswith(("+++", "---"))
         ]
         timer = re.compile(r"setTimeout|setInterval|clearTimeout|Timer|autoOpened|\b\d{3,}\b")
-        touched = [line for line in changed if timer.search(line)]
+        touched = [
+            text for sign, text in changed
+            if timer.search(text) and (sign, text) not in _OWNER_APPROVED_TIMER_LINES
+        ]
         assert touched == [], touched
+
+
+# The owner's exceptions to the timer lock above, each line exactly as approved and with its sign: the same
+# text changed again, or taken out later, is locked like any other timer line.
+_OWNER_APPROVED_TIMER_LINES = frozenset({
+    # Owner, 17 Nov 2026 (PR #267): the 10 s note beside the button waits while the visitor works on the
+    # site's quote form, and QUOTE_WATCH_S after (triggers.noteWaitMs); the 10 s delay itself is unchanged.
+    ("+", "    let attentionTimer: ReturnType<typeof setTimeout> | undefined"),
+    ("+", "      const wait = noteWaitMs(formAt === null ? null : (Date.now() - formAt) / 1000)"),
+    ("+", "        clearTimeout(attentionTimer)"),
+    ("+", "        attentionTimer = setTimeout(show, wait)"),
+    ("-", "    const attentionTimer = setTimeout(show, 10_000)"),
+    ("+", "    attentionTimer = setTimeout(show, 10_000)"),
+})
