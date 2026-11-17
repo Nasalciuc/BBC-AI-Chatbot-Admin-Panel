@@ -90,6 +90,15 @@ TEMPLATES: dict[str, list[str]] = {
     "callback_confirmed:sales": [
         "Of course — I'm putting a consultant on this to call you on {number}.",
     ],
+    # A number given in answer to "a text or a quick call?": the reply keeps
+    # the channel the client chose. 17 Nov: three clients who had chosen texts
+    # (one "can't always take a call") were each told "to call you".
+    "number_confirmed_text:sales": [
+        "Got it — your consultant will text you on {number}.",
+    ],
+    "number_confirmed:sales": [
+        "Got it — your consultant will reach you on {number}.",
+    ],
     "callback_confirmed_no_number:sales": [
         "Of course — a consultant will call you. "
         "What's the best number to reach you on?",

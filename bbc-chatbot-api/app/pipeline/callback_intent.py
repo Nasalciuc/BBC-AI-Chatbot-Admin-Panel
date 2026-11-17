@@ -64,8 +64,11 @@ def detect_callback_request(message: str) -> Optional[dict]:
     """{'number': str|None, 'cue': 'words'|'number'} or None.
 
     A bare phone number counts: post-greeting, a client who types only
-    their number is asking to be reached on it."""
-    text = (message or "").strip()
+    their number is asking to be reached on it.
+
+    A phone types "don’t" (U+2019) by default; read it as "don't", or
+    "don’t call me" is heard as "call me" — the opposite of what was said."""
+    text = (message or "").replace("’", "'").replace("‘", "'").strip()
     if not text or _NOT_A_REQUEST_RE.search(text):
         return None
     if _CALL_ME_NAME_RE.search(text) and not find_phone(text):
@@ -101,6 +104,13 @@ def _is_phone_shaped(text: str) -> bool:
     return bool(_PHONE_SHAPE_RE.search(text))
 
 
-def callback_note(number: Optional[str]) -> str:
-    """The line the consultant sees at the top of the lead."""
-    return f"CLIENT ASKED TO BE CALLED — {number or 'number not captured'}"
+def callback_note(number: Optional[str], channel: str = "call") -> str:
+    """The line the consultant sees at the top of the lead: how the client
+    wants to be reached on the number ('call', 'text', or 'any' when they
+    gave the number and said nothing more — contact_capture.callback_channel)."""
+    shown = number or "number not captured"
+    if channel == "text":
+        return f"CLIENT ASKED FOR TEXTS, NOT CALLS — {shown}"
+    if channel == "any":
+        return f"CLIENT GAVE A NUMBER (no preference stated) — {shown}"
+    return f"CLIENT ASKED TO BE CALLED — {shown}"

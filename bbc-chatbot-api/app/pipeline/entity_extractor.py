@@ -678,8 +678,11 @@ def contact_channel_of(text: str) -> Optional[str]:
 
     A wish and its withdrawal in the same message ("Email me the options.
     Actually, don't email me") keep only the later one: the client's last word.
+
+    A phone types "don’t" (U+2019) by default: "don’t call me" is the same
+    refusal as "don't call me" (17 Nov: "I can’t always take a call").
     """
-    text = text or ""
+    text = (text or "").replace("’", "'").replace("‘", "'")
     last_at: dict[str, int] = {}
     for label, rx in CONTACT_CHANNEL_RES:
         for m in rx.finditer(text):
