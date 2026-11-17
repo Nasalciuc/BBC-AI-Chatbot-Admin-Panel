@@ -61,6 +61,25 @@ class TestTheYearOfADate:
         out = roll_past_dates_forward({"departure_date": "2026-12-20", "return_date": "2026-01-05"}, today=NOV_17)
         assert out == {"departure_date": "2026-12-20", "return_date": "2027-01-05"}
 
+    def test_a_trip_that_straddles_today_moves_as_one(self):
+        """CodeRabbit #263: "June 14 to June 25" said on June 20 — the moved
+        departure must not land after the return."""
+        june_20 = date(2026, 6, 20)
+        out = roll_past_dates_forward({"departure_date": "2026-06-14", "return_date": "2026-06-25"}, today=june_20)
+        assert out == {"departure_date": "2027-06-14", "return_date": "2027-06-25"}
+        # A return already given in the right year stays as it is.
+        out = roll_past_dates_forward({"departure_date": "2026-06-14", "return_date": "2027-06-25"}, today=june_20)
+        assert out == {"departure_date": "2027-06-14", "return_date": "2027-06-25"}
+
+    @freeze_time("2026-06-20")
+    def test_the_check_keeps_the_whole_trip(self):
+        kept, err = validate_tool_entities({**ROUTE, "departure_date": "2026-06-14", "return_date": "2026-06-25"})
+        assert err is None
+        assert (kept["departure_date"], kept["return_date"]) == ("2027-06-14", "2027-06-25")
+        assert salvage_tool_entities({"departure_date": "2026-06-14", "return_date": "2026-06-25"}) == {
+            "departure_date": "2027-06-14", "return_date": "2027-06-25",
+        }
+
     @pytest.mark.parametrize("value", [
         "2026-11-16",      # yesterday: the check's own one-day grace
         "2026-11-17",      # today
@@ -202,6 +221,21 @@ class TestTheCut:
         assert len(out) <= MAX_LENGTH
         assert out.endswith(".")
         assert out.startswith("This is sentence number 0.")
+
+    def test_an_early_space_still_beats_a_cut_inside_a_word(self):
+        """CodeRabbit #263: never half a web address, even when the only
+        space is near the start."""
+        out = validate_response("See https://example.com/" + "a" * 400 + ".")
+        assert out == "See…"
+
+    def test_a_bold_closing_question_is_still_the_question(self):
+        """CodeRabbit #263: the markdown goes before the cut, so the closing
+        "**When do you fly?**" is kept — and kept without the stars."""
+        out = validate_response("Welcome. " + "We can compare cabin layouts. " * 14 + "**When do you fly?**")
+        assert len(out) <= MAX_LENGTH
+        assert out.startswith("Welcome.")
+        assert out.endswith("When do you fly?")
+        assert "*" not in out
 
     def test_a_price_sentence_with_cents_is_replaced_whole(self):
         out = validate_response("That will be $2,800.00 per person. When do you fly?")

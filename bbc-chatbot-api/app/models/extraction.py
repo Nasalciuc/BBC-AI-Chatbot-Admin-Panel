@@ -128,22 +128,40 @@ def roll_past_dates_forward(raw: Optional[dict], today: Optional[date] = None) -
     prompt says a date that already passed is its next occurrence; this
     applies it to what the model sent. Only a date of the past twelve
     months moves — anything older stays for the check to refuse.
+
+    A trip moves as one: "June 14 to June 25" said on June 20 is June 14 to
+    June 25 of next year — the return goes forward with the departure
+    whenever the moved departure would pass it (CodeRabbit #263).
     """
     out = dict(raw or {})
     today = today or date.today()
+    moved_years = 0
     for key in ("departure_date", "return_date"):
-        value = out.get(key)
-        if not isinstance(value, str):
-            continue
-        try:
-            d = date.fromisoformat(value.strip())
-        except ValueError:  # noqa: silent — not a date: left as sent, the check right after refuses it
+        d = _iso_date(out.get(key))
+        if d is None:
             continue
         if today - timedelta(days=365) <= d < today - timedelta(days=1):
             moved = _next_occurrence(d, today)
             if moved:
                 out[key] = moved.isoformat()
+                if key == "departure_date":
+                    moved_years = moved.year - d.year
+    departure, back = _iso_date(out.get("departure_date")), _iso_date(out.get("return_date"))
+    if moved_years and departure and back and back < departure:
+        try:
+            out["return_date"] = back.replace(year=back.year + moved_years).isoformat()
+        except ValueError:  # noqa: silent — 29 February with no twin: the check refuses the pair, as before
+            pass
     return out
+
+
+def _iso_date(value) -> Optional[date]:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:  # noqa: silent — not a date: left as sent, the check right after refuses it
+        return None
 
 
 def validate_tool_entities(raw: dict) -> tuple[Optional[dict], Optional[str]]:

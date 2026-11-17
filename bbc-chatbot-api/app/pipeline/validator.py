@@ -156,7 +156,10 @@ def _shorten(text: str, limit: int = MAX_LENGTH) -> str:
         return _render(parts, kept)
     cut = text[: limit - 1]
     space = cut.rfind(" ")
-    return (cut[:space] if space > limit // 2 else cut).rstrip(" ,;:—-") + "…"
+    # Any space will do, however early: a cut inside a word can leave half a
+    # web address or number (CodeRabbit #263). Only text with no space at all
+    # is cut where it stands.
+    return (cut[:space] if space > 0 else cut).rstrip(" ,;:—-") + "…"
 
 
 def validate_response(text: str) -> str:
@@ -166,8 +169,9 @@ def validate_response(text: str) -> str:
     1. Exact prices → replace containing sentence
     2. Competitor names → drop containing sentence
     3. Hallucination phrases → replace containing sentence
-    4. Length → whole sentences, the closing question kept
-    5. Empty → fallback
+    4-5. Markdown and HTML → stripped
+    6. Length → whole sentences, the closing question kept
+    7. Empty → fallback
     """
     if not text or not text.strip():
         return EMPTY_FALLBACK
@@ -187,20 +191,22 @@ def validate_response(text: str) -> str:
             result, _HALLUCINATION_RE, HALLUCINATION_REPLACEMENT
         )
 
-    # 4. Too long: whole sentences, and the closing question kept
-    result = _shorten(result)
-
-    # 5. Empty check (after all processing)
-    if not result.strip():
-        return EMPTY_FALLBACK
-
-    # 5b. Strip markdown formatting — widget renders plain text
+    # 4. Strip markdown formatting — widget renders plain text. Before the
+    # length check, so the cut measures what the client reads and a closing
+    # "**When do you fly?**" is still seen as the question (CodeRabbit #263).
     result = re.sub(r"\*\*(.+?)\*\*", r"\1", result)  # **bold** → bold
     result = re.sub(r"\*(.+?)\*", r"\1", result)  # *italic* → italic
     result = re.sub(r"#{1,3}\s*", "", result)  # ## headers → remove
     result = re.sub(r"^[-•]\s+", "", result, flags=re.MULTILINE)  # bullet points → remove
 
-    # 6. XSS prevention: strip any HTML tags from AI output
-    result = re.sub(r"<[^>]+>", "", result)
+    # 5. XSS prevention: strip any HTML tags from AI output
+    result = re.sub(r"<[^>]+>", "", result).strip()
+
+    # 6. Too long: whole sentences, and the closing question kept
+    result = _shorten(result)
+
+    # 7. Empty check (after all processing)
+    if not result.strip():
+        return EMPTY_FALLBACK
 
     return result
