@@ -31,18 +31,21 @@ os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from app.models.chat import VisitorInfo
-from app.pipeline.callback_intent import callback_note, detect_callback_request
+from app.pipeline.callback_intent import callback_note, detect_callback_request, notes_with_callback
 from app.pipeline.contact_capture import (
     asks_for_channel,
     asks_for_last_name,
     asks_for_name,
     callback_channel,
+    calls_refused,
+    channel_after_call_request,
     channel_from_answer,
     full_name,
     last_question,
     name_from_answer,
     name_to_store,
     with_stored_contact,
+    with_turn_contact,
 )
 from app.pipeline.entity_extractor import contact_channel_of
 
@@ -208,6 +211,27 @@ class TestCallbackChannel:
         assert callback_channel("2105550100", "number", None) == "any"
         assert callback_channel("2105550100", "number", "email") == "any"
 
+    def test_an_earlier_no_texts_is_never_overridden(self):
+        """A number alone withdraws no refusal (CodeRabbit #262)."""
+        assert callback_channel("2105550100", "number", "no calls, no texts") == "any"
+        assert callback_channel("2105550100", "number", "no texts") == "any"
+        assert calls_refused("no calls, no texts") is True
+        assert calls_refused("text") is False
+
+    def test_a_call_asked_for_now_withdraws_no_calls_and_texts_only(self):
+        assert channel_after_call_request("text, no calls") is None
+        assert channel_after_call_request("email, text, no calls") == "email"
+        assert channel_after_call_request("no calls, no texts") == "no texts"
+        assert channel_after_call_request(None) is None
+
+    def test_only_the_newest_callback_wish_stays_in_the_notes(self):
+        notes = "CLIENT ASKED TO BE CALLED — +12105550100\nItinerary: BOS-LHR\nCLIENT GAVE A NUMBER (no preference stated) — +12105550100"
+        out = notes_with_callback(notes, "CLIENT ASKED FOR TEXTS, NOT CALLS — +12105550100")
+        assert out == "CLIENT ASKED FOR TEXTS, NOT CALLS — +12105550100\nItinerary: BOS-LHR"
+        assert notes_with_callback(None, "CLIENT ASKED TO BE CALLED — +12105550100") == (
+            "CLIENT ASKED TO BE CALLED — +12105550100"
+        )
+
     def test_the_note_says_what_the_client_asked_for(self):
         assert callback_note("+12105550100", channel="text").startswith("CLIENT ASKED FOR TEXTS, NOT CALLS")
         assert callback_note("+12105550100", channel="any").startswith("CLIENT GAVE A NUMBER (no preference stated)")
@@ -250,6 +274,16 @@ class TestStoredContact:
         assert with_stored_contact(VisitorInfo(name="John"), {"visitor_name": "John Smith"}).name == "John Smith"
         assert with_stored_contact(VisitorInfo(name="Johnny"), {"visitor_name": "John Smith"}).name == "Johnny"
         assert with_stored_contact(VisitorInfo(name="John"), {"visitor_name": "Mary Smith"}).name == "John"
+
+    def test_this_turns_value_replaces_only_what_the_widget_did_not_send(self):
+        """A corrected email replaces the row's; the widget's own stays
+        (CodeRabbit #262)."""
+        stored = with_stored_contact(VisitorInfo(), {"visitor_email": "old@example.com"})
+        assert with_turn_contact(stored, VisitorInfo(), {"email": "new@example.com"}).email == "new@example.com"
+        form = VisitorInfo(email="form@example.com")
+        assert with_turn_contact(form, form, {"email": "other@example.com"}).email == "form@example.com"
+        same = with_turn_contact(stored, VisitorInfo(), {"email": "old@example.com", "phone": "  "})
+        assert same is stored
 
     def test_nothing_usable_changes_nothing(self):
         v = VisitorInfo(name="Anna")
@@ -387,6 +421,56 @@ class TestTheCallbackTurn:
         assert "email" not in resp.message.lower()
 
     @pytest.mark.asyncio
+    async def test_an_earlier_no_texts_gets_no_text_and_no_call(self):
+        """CodeRabbit #262: "no calls, no texts" then a bare number."""
+        run, mocks = _callback_turn("2105550100", lead_signals={"contact_channel": "no calls, no texts"})
+        resp = await run()
+        assert "text you" not in resp.message and "call you" not in resp.message
+        assert "reach you on +12105550100" in resp.message
+        signals = _lead_payloads(mocks)[-1]["intent_signals"]
+        assert signals["contact_channel"] == "no calls, no texts"
+        assert not signals.get("callback_requested")
+        mocks["task_from_callback"].assert_not_called()
+        assert mocks["queue_for_person"].await_args.kwargs["reason"] == "number given"
+
+    @pytest.mark.asyncio
+    async def test_call_me_withdraws_an_older_no_calls(self):
+        """CodeRabbit #262: "call me" after "text only, no calls"."""
+        run, mocks = _callback_turn("please call me on 210-555-0100",
+                                    lead_signals={"contact_channel": "email, text, no calls"})
+        await run()
+        signals = _lead_payloads(mocks)[-1]["intent_signals"]
+        assert signals["contact_channel"] == "email"
+        assert signals["callback_requested"] is True
+
+    @pytest.mark.asyncio
+    async def test_choosing_texts_ends_an_older_call_back(self):
+        """CodeRabbit #262: the panel must not still say "Asks: a call back"."""
+        run, mocks = _callback_turn(
+            "2105550100  text please",
+            lead_signals={"callback_requested": True},
+            lead_extra={"notes": "CLIENT ASKED TO BE CALLED — +12105550100\nItinerary: BOS-LHR"},
+        )
+        await run()
+        payload = _lead_payloads(mocks)[-1]
+        assert payload["intent_signals"]["callback_requested"] is False
+        assert payload["intent_signals"]["contact_channel"] == "text"
+        assert payload["notes"] == "CLIENT ASKED FOR TEXTS, NOT CALLS — +12105550100\nItinerary: BOS-LHR"
+
+    @pytest.mark.asyncio
+    async def test_a_newer_number_replaces_the_one_the_chat_gave(self):
+        run, mocks = _callback_turn("2105550199", conv_extra={"visitor_phone": "+12105550100"})
+        await run()
+        mocks["update_conversation"].assert_any_await(_CID, {"visitor_phone": "+12105550199"})
+
+    @pytest.mark.asyncio
+    async def test_the_same_number_again_is_no_write(self):
+        run, mocks = _callback_turn("2105550100", conv_extra={"visitor_phone": "+12105550100"})
+        await run()
+        for call in mocks["update_conversation"].await_args_list:
+            assert "visitor_phone" not in call.args[1]
+
+    @pytest.mark.asyncio
     async def test_a_phone_already_on_file_is_not_overwritten(self):
         run, mocks = _callback_turn("2105550199", visitor=VisitorInfo(name="Anna", phone="+12105550100"))
         await run()
@@ -429,13 +513,11 @@ def _ordinary_turn(message, history, *, conv_extra=None, visitor=None):
             stack.enter_context(patch("app.pipeline.orchestrator.lead_service.update_lead_from_entities",
                                       new=update_entities))
             stack.enter_context(patch("app.pipeline.orchestrator.generate_response", new=MagicMock(side_effect=_gen)))
-            try:
+            with pytest.raises(_Stop):
                 await _pipeline(
                     _CID, message, "sales", visitor or VisitorInfo(), None,
                     _persist_state={"ai_persisted": False},
                 )
-            except Exception:  # noqa: silent — the generator is stopped on purpose
-                pass
         captured["entities"] = [c.args[1] for c in update_entities.await_args_list]
 
     return run, captured
@@ -520,3 +602,30 @@ class TestTheAnswerToAlexsQuestion:
         await run()
         assert got["entities"], "the turn must reach the lead write"
         assert all(not e.get("contact_channel") for e in got["entities"])
+
+
+class TestACorrectedContact:
+    """CodeRabbit #262: a value the client corrects this turn is the one the
+    rest of the turn (the CRM gate and its payload) uses — unless the widget
+    sent its own."""
+
+    @pytest.mark.asyncio
+    async def test_a_corrected_email_replaces_the_stored_one(self):
+        q = "Where should the options land — best email to reach you?"
+        run, got = _ordinary_turn(
+            "It's paul.new@example.com", _history(q, "It's paul.new@example.com"),
+            conv_extra={"visitor_name": "Paul Moreau", "visitor_email": "paul.old@example.com"},
+        )
+        await run()
+        assert got["entities"][0]["email"] == "paul.new@example.com"
+        assert got["visitor"].email == "paul.new@example.com"
+
+    @pytest.mark.asyncio
+    async def test_the_widgets_email_keeps_priority(self):
+        q = "Where should the options land — best email to reach you?"
+        run, got = _ordinary_turn(
+            "It's paul.new@example.com", _history(q, "It's paul.new@example.com"),
+            visitor=VisitorInfo(name="Paul Moreau", email="paul.form@example.com"),
+        )
+        await run()
+        assert got["visitor"].email == "paul.form@example.com"

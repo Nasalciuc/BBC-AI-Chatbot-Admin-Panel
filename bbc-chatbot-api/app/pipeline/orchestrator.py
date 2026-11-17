@@ -21,11 +21,14 @@ from app.pipeline.contact_capture import (
     asks_for_last_name,
     asks_for_name,
     callback_channel,
+    calls_refused,
+    channel_after_call_request,
     channel_from_answer,
     last_question,
     name_from_answer,
     name_to_store,
     with_stored_contact,
+    with_turn_contact,
 )
 from app.realtime.manager import manager
 from app.flags import flag
@@ -510,7 +513,10 @@ async def _pipeline(
     # contact IN the conversation: the row holds it, the request never does.
     # Every check below — the missing fields, the summary, the CRM gate and
     # its payload — reads `visitor`; the row fills what the widget left empty
-    # (16-17 Nov: 0 of 13 chats could reach the CRM).
+    # (16-17 Nov: 0 of 13 chats could reach the CRM). What the widget itself
+    # sent is kept apart: only a value it did not send gives way to a newer
+    # one from this turn (a corrected email, a new number).
+    _widget_visitor = visitor
     visitor = with_stored_contact(visitor, conv)
 
     # Save user message immediately (never lose data).
@@ -955,7 +961,7 @@ async def _pipeline(
     # JOSEF typed his number and asked us to ring him; the pipeline asked
     # what he meant. A callback request is never ambiguous — hear it,
     # keep the number, queue a human, and carry on collecting.
-    from app.pipeline.callback_intent import callback_note
+    from app.pipeline.callback_intent import callback_note, notes_with_callback
 
     _callback = _callback_pending
     if _callback:
@@ -971,13 +977,19 @@ async def _pipeline(
         # a quick call?" is not a request to be CALLED: all three such clients
         # on 17 Nov had chosen texts, one "can't always take a call", and each
         # was told "a consultant will call you" (contact_capture).
-        _cb_channel = callback_channel(message, _callback["cue"], _cb_signals.get("contact_channel"))
+        _cb_stored = _cb_signals.get("contact_channel")
+        _cb_channel = callback_channel(message, _callback["cue"], _cb_stored)
+        # A call is owed when the client asked for one, or gave a number with
+        # nothing against calls; never over an earlier "no calls".
+        _cb_wants_call = _cb_channel == "call" or (_cb_channel == "any" and not calls_refused(_cb_stored))
         # The number lands on the CONVERSATION, the row the CRM gate, the
         # abandoned-chat push and the panel read. It used to go to
         # leads.visitor_phone, a column that does not exist: the whole lead
         # write failed (PGRST204, 3 times on 17 Nov), the consultant's note and
         # the flag with it, and the number was nowhere but in the chat text.
-        if _callback["number"] and not visitor.phone:
+        # A number the widget sent stays; one the chat gave earlier gives way
+        # to the newer one.
+        if _callback["number"] and not getattr(_widget_visitor, "phone", None) and _callback["number"] != visitor.phone:
             if not await db.update_conversation(cid, {"visitor_phone": _callback["number"]}):
                 logger.warning(f"[{cid}] callback: number not saved on the conversation")
             visitor = visitor.model_copy(update={"phone": _callback["number"]})
@@ -986,17 +998,28 @@ async def _pipeline(
                 if _cb_channel == "text":
                     from app.pipeline.entity_extractor import merge_contact_channel as _cb_merge
 
-                    _cb_signals["contact_channel"] = _cb_merge(_cb_signals.get("contact_channel"), "text")
+                    _cb_signals["contact_channel"] = _cb_merge(_cb_stored, "text")
+                    # An older "call me" is over: the panel must not still say
+                    # "Asks: a call back" to a client who chose texts.
+                    _cb_signals["callback_requested"] = False
                 else:
-                    # The panel reads this as "Asks: a call back".
-                    _cb_signals["callback_requested"] = True
+                    if _cb_channel == "call":
+                        # "Call me" now withdraws an older "no calls" / "text".
+                        _cb_left = channel_after_call_request(_cb_stored)
+                        if _cb_left:
+                            _cb_signals["contact_channel"] = _cb_left
+                        else:
+                            _cb_signals.pop("contact_channel", None)
+                    if _cb_wants_call:
+                        # The panel reads this as "Asks: a call back".
+                        _cb_signals["callback_requested"] = True
                 _cb_note = callback_note(_callback["number"], channel=_cb_channel)
-                _cb_notes = (_cb_lead.get("notes") or "").strip()
-                _cb_payload: dict = {"intent_signals": _cb_signals}
-                if _cb_note not in _cb_notes:
-                    # The consultant must see it FIRST, above everything else.
-                    _cb_payload["notes"] = f"{_cb_note}\n{_cb_notes}".strip()
-                await db.update_lead(_cb_lead["id"], _cb_payload)
+                # The consultant must see it FIRST, above everything else —
+                # and only the newest call-back wish.
+                await db.update_lead(_cb_lead["id"], {
+                    "intent_signals": _cb_signals,
+                    "notes": notes_with_callback(_cb_lead.get("notes"), _cb_note),
+                })
         except Exception as e:
             logger.warning(f"[{cid}] callback note failed: {e}")
         # A human owns this now — same queue the explicit agent request uses.
@@ -1004,7 +1027,11 @@ async def _pipeline(
             from app.services.routing import queue_for_person
 
             await queue_for_person(
-                cid, reason="text request" if _cb_channel == "text" else "call-back request",
+                cid,
+                reason=(
+                    "text request" if _cb_channel == "text"
+                    else "call-back request" if _cb_wants_call else "number given"
+                ),
             )
         except Exception as e:
             logger.warning(f"[{cid}] callback dispatch failed: {e}")
@@ -1012,8 +1039,8 @@ async def _pipeline(
         # The AI is about to tell the client a consultant will call: that
         # promise becomes someone's task (Tasks). It never delays the reply
         # and never fails the turn (task_from_callback logs and counts).
-        # A client who chose texts gets no "Call X back" task.
-        if user_msg and _cb_channel != "text":
+        # A client who chose texts, or said no calls, gets no "Call X back" task.
+        if user_msg and _cb_wants_call:
             from app.services.tasks_service import task_from_callback
 
             _fire_and_forget(task_from_callback(conv, user_msg, message))
@@ -1345,11 +1372,12 @@ async def _pipeline(
         # "your name?" is never asked for again in the same reply.
         if _answer_name:
             visitor = visitor.model_copy(update={"name": _answer_name})
-        visitor = with_stored_contact(
+        visitor = with_turn_contact(
             visitor,
+            _widget_visitor,
             {
-                "visitor_email": entities.get("email"),
-                "visitor_phone": format_phone_international(entities["phone"]) if entities.get("phone") else None,
+                "email": entities.get("email"),
+                "phone": format_phone_international(entities["phone"]) if entities.get("phone") else None,
             },
         )
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")

@@ -104,13 +104,30 @@ def _is_phone_shaped(text: str) -> bool:
     return bool(_PHONE_SHAPE_RE.search(text))
 
 
+_NOTE_CALL = "CLIENT ASKED TO BE CALLED"
+_NOTE_TEXT = "CLIENT ASKED FOR TEXTS, NOT CALLS"
+_NOTE_ANY = "CLIENT GAVE A NUMBER (no preference stated)"
+
+
 def callback_note(number: Optional[str], channel: str = "call") -> str:
     """The line the consultant sees at the top of the lead: how the client
     wants to be reached on the number ('call', 'text', or 'any' when they
-    gave the number and said nothing more — contact_capture.callback_channel)."""
+    gave the number and said nothing more — contact_capture.callback_channel).
+    The panel reads a CLIENT ASKED TO BE CALLED line as "Asks: a call back"."""
     shown = number or "number not captured"
     if channel == "text":
-        return f"CLIENT ASKED FOR TEXTS, NOT CALLS — {shown}"
+        return f"{_NOTE_TEXT} — {shown}"
     if channel == "any":
-        return f"CLIENT GAVE A NUMBER (no preference stated) — {shown}"
-    return f"CLIENT ASKED TO BE CALLED — {shown}"
+        return f"{_NOTE_ANY} — {shown}"
+    return f"{_NOTE_CALL} — {shown}"
+
+
+def notes_with_callback(notes: Optional[str], note: str) -> str:
+    """The lead's notes with `note` on top and no earlier call-back line: the
+    client's newest wish is the one the consultant reads. A client who asked
+    for a call and then chose texts must not still show "a call back"."""
+    kept = [
+        line for line in (notes or "").splitlines()
+        if not line.strip().startswith((_NOTE_CALL, _NOTE_TEXT, _NOTE_ANY))
+    ]
+    return "\n".join([note, *kept]).strip()

@@ -210,17 +210,50 @@ def channel_from_answer(message: str) -> Optional[str]:
     return found[0] if len(found) == 1 else None
 
 
+def _wishes(stored_channel: Optional[str]) -> list[str]:
+    return [p.strip() for p in (stored_channel or "").split(",") if p.strip()]
+
+
+def calls_refused(stored_channel: Optional[str]) -> bool:
+    return "no calls" in _wishes(stored_channel)
+
+
 def callback_channel(message: str, cue: str, stored_channel: Optional[str]) -> str:
     """How the client wants to be reached on the number just given:
     'call' when they asked to be called ("call me", the JOSEF case), 'text'
     when they chose texts (in this message, or earlier: "Text", "text only",
-    "no calls"), 'any' when they gave a number and said nothing more."""
+    "no calls" — never over an earlier "no texts"), 'any' when they gave a
+    number and said nothing that decides it."""
     now = channel_from_answer(message)
     if now in ("text", "call"):
         return now
     if cue == "words":
         return "call"
-    parts = {p.strip() for p in (stored_channel or "").split(",") if p.strip()}
-    if "text" in parts or "no calls" in parts:
+    wishes = _wishes(stored_channel)
+    if "no texts" not in wishes and ("text" in wishes or "no calls" in wishes):
         return "text"
     return "any"
+
+
+def channel_after_call_request(stored_channel: Optional[str]) -> Optional[str]:
+    """The wishes left once the client asks, now, to be called: "no calls"
+    and a wish for texts are withdrawn by it; the rest ("email", "no
+    texts", …) stays. None when nothing is left."""
+    kept = [w for w in _wishes(stored_channel) if w not in ("no calls", "text")]
+    return ", ".join(kept) or None
+
+
+def with_turn_contact(visitor: VisitorInfo, sent: Optional[VisitorInfo], turn: dict) -> VisitorInfo:
+    """`visitor` once this turn's contact is in. A field the widget did not
+    send takes the value this turn gave, so a corrected email replaces the
+    one the conversation row held; a field the widget sent keeps it."""
+    fill = {}
+    for field in ("name", "email", "phone"):
+        value = turn.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if (getattr(sent, field, None) or "").strip():
+            continue
+        if value.strip() != (getattr(visitor, field, None) or ""):
+            fill[field] = value.strip()
+    return visitor.model_copy(update=fill) if fill else visitor
