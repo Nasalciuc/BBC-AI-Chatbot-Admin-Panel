@@ -23,7 +23,10 @@ Switches (``app_settings.flags``, read every 30 s, no deploy):
   over an A/B half) — the share of visitors in the proactive arm, bucketed by
   visitor id, so a visitor stays in one arm across visits; a lower value
   brings the control arm back for a comparison;
-- ``PROACTIVE_TRIGGERS`` ("kayak,quote,reader,exit") — which moments may open it.
+- ``PROACTIVE_TRIGGERS`` ("kayak,quote,reader") — which moments may open it. ``exit`` is off by
+  default (owner, 17 Nov: of the 35 panels it opened on 16-17 Nov none got an answer and 21 visitors
+  were gone within 10 s — it opened as the tab closed); naming it here brings it back for a widget
+  that still asks (the widget no longer picks it).
 
 One more door is not a moment and the switches above do not hold it:
 ``note``, the visitor TAPPED the 10 s note beside the button ("Tell me where
@@ -31,7 +34,9 @@ and when, and an agent will check fares"). The owner's decision of 16 Nov: that 
 opens the chat with the same words and no form, for every visitor — from
 13 Nov, 0 of the 35 visitors who opened the chat got past the form the note
 led to. Its own switch, ``PROACTIVE_NOTE_ENABLED`` (on at merge), sends the
-note back to the form in 30 s, without a deploy, if it ever must.
+note back to the form in 30 s, without a deploy, if it ever must. When the page named no
+destination, the note asks its first question one of two ways, chosen per chat by a bandit that
+learns from every chat (app/services/note_bandit.py).
 """
 
 from __future__ import annotations
@@ -42,11 +47,14 @@ from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
 from app.models.trip_context import TripContext
+from app.services import note_bandit
 
 logger = logging.getLogger(__name__)
 
 Trigger = Literal["kayak", "quote", "reader", "exit"]
+# Every moment a widget may name; the ones that open the card unless PROACTIVE_TRIGGERS says otherwise.
 TRIGGERS: tuple[str, ...] = ("kayak", "quote", "reader", "exit")
+DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
 EXPERIMENT = "proactive_chat"
@@ -110,7 +118,7 @@ def note_enabled() -> bool:
 
 def active_triggers() -> set[str]:
     from app.flags import flag
-    raw = str(flag("PROACTIVE_TRIGGERS", ",".join(TRIGGERS)) or "")
+    raw = str(flag("PROACTIVE_TRIGGERS", ",".join(DEFAULT_TRIGGERS)) or "")
     return {t.strip().lower() for t in raw.split(",") if t.strip().lower() in TRIGGERS}
 
 
@@ -207,15 +215,37 @@ def brand_for(site: Optional[str]) -> str:
     return _BRANDS.get(site or "bbc", _BRANDS["bbc"])
 
 
-def compose(trigger: str, trip: Optional[TripContext], site: Optional[str] = None) -> tuple[str, list[str]]:
-    """The card's message and its quick replies. Pure: the same trigger, trip
-    and site always give the same words, so /offer and /init agree.
+def _names_a_destination(trip: Optional[TripContext]) -> bool:
+    return bool(trip and _place(trip.destination_name, trip.destination_code))
+
+
+def note_variant(trip: Optional[TripContext]) -> Optional[str]:
+    """How the tapped note asks its first question (note_bandit): only when the page named no
+    destination — otherwise the opening says the page's trip back and asks nothing about where."""
+    return None if _names_a_destination(trip) else note_bandit.choose()
+
+
+def applied_variant(trigger: str, trip: Optional[TripContext], variant: Optional[str]) -> Optional[str]:
+    """The variant the words were composed with: a known one, on the note, with no destination named;
+    otherwise None (the words are the usual ones, and the chat counts for no variant)."""
+    if trigger != NOTE or _names_a_destination(trip):
+        return None
+    return note_bandit.known(variant)
+
+
+def compose(
+    trigger: str, trip: Optional[TripContext], site: Optional[str] = None, variant: Optional[str] = None,
+) -> tuple[str, list[str]]:
+    """The card's message and its quick replies. Pure: the same trigger, trip,
+    site and variant always give the same words, so /offer and /init agree.
 
     The 16 Nov debate (ADR 11-15): Alex introduces himself as the brand's
     assistant, says what the page already told us and never asks for it again
     (a third of the /flight chats stopped at "Where are you flying from?"),
     names a difficulty only where there was one (the quote form that did not
-    send), and promises no time and no price."""
+    send), and promises no time and no price. `variant`: how the tapped note
+    asks where to when the page named no destination (note_bandit); ignored
+    anywhere else."""
     hello = f"Hi, I'm {PERSONA} from {brand_for(site)}."
     line = _trip_line(trip)
     dest = _place(trip.destination_name, trip.destination_code) if trip else None
@@ -243,6 +273,11 @@ def compose(trigger: str, trip: Optional[TripContext], site: Optional[str] = Non
         text = f"{hello} I see you're looking at {line}. Want an agent to check business class fares for these dates?"
     elif dest:
         text = f"{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check business class fares for you."
+    elif applied_variant(trigger, trip, variant) == "places":
+        # Where to as buttons (note_bandit): a tap instead of typing; anything else is typed.
+        text = (f"{hello} Where are you thinking of flying? "
+                "Tap one or type a city, and an agent will check business class fares for you.")
+        replies = list(note_bandit.PLACES_REPLIES)
     else:
         text = (f"{hello} Planning a business class trip? "
                 "Tell me where and roughly when, and an agent will check fares for you.")
@@ -264,9 +299,15 @@ def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], 
         # switches say; its own switch off → "no", and the widget shows the form.
         if not note_enabled():
             return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
-        text, replies = compose(trigger, trip, site)
+        # With no destination named, the bandit picks how the first question is asked; the widget
+        # sends the variant back with the answer, so /chat/init writes the same words and counts them.
+        variant = note_variant(trip)
+        text, replies = compose(trigger, trip, site, variant)
         PROACTIVE_HEALTH["shown"] += 1
-        return {"show": True, "arm": NOTE, "trigger": trigger, "message": text, "quick_replies": replies}
+        out = {"show": True, "arm": NOTE, "trigger": trigger, "message": text, "quick_replies": replies}
+        if variant:
+            out["variant"] = variant
+        return out
     if not enabled() or trigger not in active_triggers():
         return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
     arm = arm_for(visitor_id)
@@ -277,12 +318,15 @@ def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], 
     return {"show": True, "arm": arm, "trigger": trigger, "message": text, "quick_replies": replies}
 
 
-def init_metadata(trigger: str, trip: Optional[TripContext]) -> dict:
+def init_metadata(trigger: str, trip: Optional[TripContext], variant: Optional[str] = None) -> dict:
     """Conversation metadata written at creation: which moment opened the chat,
-    and the search as the page gave it (for the panel). Server keys only."""
+    the search as the page gave it (for the panel), and the way the note asked
+    its first question (note_bandit counts the chats by it). Server keys only."""
     meta: dict = {"proactive_trigger": trigger, "proactive_at": datetime.now(timezone.utc).isoformat()}
     if trip and not trip.is_empty():
         meta["proactive_trip"] = trip.model_dump(mode="json", exclude_none=True)
+    if note_bandit.known(variant):
+        meta["proactive_variant"] = variant
     return meta
 
 
@@ -361,6 +405,7 @@ async def _stored_opening(conversation_id: str, tries: int = 3) -> Optional[dict
 
 async def open_conversation(
     conversation_id: str, trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
+    variant: Optional[str] = None,
 ) -> Optional[dict]:
     """The visitor answered the card: write the card's words as the bot's
     first message and start the lead with the trip from the page.
@@ -383,7 +428,9 @@ async def open_conversation(
         # the label and the seed. Its words and time go back to this widget too.
         logger.info(f"[{conversation_id}] proactive opening written by a concurrent /chat/init")
         return await _stored_opening(conversation_id)
-    text, _ = compose(trigger, trip, site)
+    # The variant the widget sent back, kept only where it shaped the words (the note, no destination).
+    variant = applied_variant(trigger, trip, variant)
+    text, _ = compose(trigger, trip, site, variant)
     row = await conversation_service.add_message(conversation_id, "ai", text, model_used=MODEL_USED, cost=0.0)
     if not isinstance(row, dict):
         # Not saved (db.add_message logged why): the conversation does not
@@ -396,7 +443,7 @@ async def open_conversation(
     # The label for the panel and the prompt (email first). Written here and
     # not at creation: /chat/init may hand back the visitor's open chat, and
     # the first-touch merge would label a chat the card never opened.
-    await db._merge_conv_metadata(conversation_id, init_metadata(trigger, trip))
+    await db._merge_conv_metadata(conversation_id, init_metadata(trigger, trip, variant))
     if trip and not trip.is_empty():
         await seed_lead(conversation_id, trip)
     content = row.get("content")

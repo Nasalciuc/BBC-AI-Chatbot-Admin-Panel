@@ -89,6 +89,16 @@ _PROACTIVE_TRIGGERS = ("kayak", "quote", "reader", "exit", "note")
 class ProactiveInit(BaseModel):
     # "note": the visitor tapped the note beside the button (app/services/proactive).
     trigger: Literal["kayak", "quote", "reader", "exit", "note"]
+    # How /offer asked the note's first question (app/services/note_bandit): the
+    # opening is written with the same words and the chat is counted for it. A
+    # value that is not one of ours is dropped, never a 422.
+    variant: Optional[str] = None
+
+    @field_validator("variant", mode="before")
+    @classmethod
+    def _known_variant_or_none(cls, v):
+        from app.services.note_bandit import known
+        return known(v)
 
 
 ChatInitRequest.model_rebuild()
@@ -210,6 +220,7 @@ async def chat_init(
             # same brand the card named at /offer.
             _opening = await _proactive.open_conversation(
                 conv_id, _proactive_trigger, payload.trip, _meta.get("site"),
+                payload.proactive.variant if payload.proactive else None,
             ) or {}
         except Exception as e:
             _proactive.PROACTIVE_HEALTH["open_failures"] += 1
@@ -253,7 +264,11 @@ async def proactive_offer(
     Writes nothing: a visitor who sees the card and never answers leaves no
     conversation, no lead and no row. The control arm is told show=False, so
     the widget counts the moment without showing anything."""
-    from app.services import proactive
+    from app.services import note_bandit, proactive
+    if payload.trigger == proactive.NOTE:
+        # The note's bandit reads its counts in the background, at most every few
+        # minutes: this answer never waits for the database.
+        note_bandit.refresh_soon()
     return proactive.offer(payload.visitor_id, payload.trigger, payload.trip, payload.site)
 
 
