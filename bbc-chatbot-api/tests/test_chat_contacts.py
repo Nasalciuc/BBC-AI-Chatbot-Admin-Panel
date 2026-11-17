@@ -21,6 +21,7 @@ and number is invented.
 import os
 import sys
 from contextlib import ExitStack
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -652,6 +653,48 @@ class _Result:
         self.data = data
 
 
+class _TasksTable:
+    """Enough of the Supabase client for one UPDATE on tasks: the filters the
+    query chains are applied to the stored rows, as PostgREST would, and only
+    the rows that match are written and returned."""
+
+    def __init__(self, rows):
+        self.rows = [dict(r) for r in rows]
+        self.filters: list[tuple] = []
+        self.payload: dict = {}
+
+    def table(self, name):
+        assert name == "tasks"
+        self.filters = []
+        return self
+
+    def update(self, payload):
+        self.payload = payload
+        return self
+
+    def eq(self, col, val):
+        self.filters.append(("eq", col, val))
+        return self
+
+    def is_(self, col, val):
+        self.filters.append(("is", col, val))
+        return self
+
+    def execute(self):
+        def matches(row):
+            for op, col, val in self.filters:
+                if op == "eq" and row.get(col) != val:
+                    return False
+                if op == "is" and val == "null" and row.get(col) is not None:
+                    return False
+            return True
+
+        hit = [r for r in self.rows if matches(r)]
+        for r in hit:
+            r.update(self.payload)
+        return _Result([dict(r) for r in hit])
+
+
 class _LeadsTable:
     """Enough of the Supabase client for update_lead_from_entities: one lead
     row to read, and every update written down."""
@@ -846,11 +889,11 @@ class TestWithdrawingTheCallTask:
         event = AsyncMock()
         before = tasks_service.db.TASKS_HEALTH["withdrawn"]
         with patch.object(tasks_service.db, "tasks_of_conversations", new=AsyncMock(return_value=self._rows())), \
-                patch.object(tasks_service.db, "update_follow_up", new=update), \
+                patch.object(tasks_service.db, "withdraw_open_call_task", new=update), \
                 patch.object(tasks_service.db, "add_task_event", new=event):
             assert await tasks_service.withdraw_call_tasks(_CID) == 1
         assert [c.args[0] for c in update.await_args_list] == ["t-open"]
-        assert set(update.await_args.args[1]) == {"dismissed_at"}
+        assert datetime.fromisoformat(update.await_args.args[1]).tzinfo is not None
         assert event.await_args.args[:2] == ("t-open", "withdrawn")
         assert tasks_service.db.TASKS_HEALTH["withdrawn"] == before + 1
 
@@ -860,10 +903,65 @@ class TestWithdrawingTheCallTask:
 
         event = AsyncMock()
         with patch.object(tasks_service.db, "tasks_of_conversations", new=AsyncMock(return_value=self._rows())), \
-                patch.object(tasks_service.db, "update_follow_up", new=AsyncMock(return_value=None)), \
+                patch.object(tasks_service.db, "withdraw_open_call_task", new=AsyncMock(return_value=None)), \
                 patch.object(tasks_service.db, "add_task_event", new=event):
             assert await tasks_service.withdraw_call_tasks(_CID) == 0
         event.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_write_itself_checks_the_task_is_still_an_open_call(self):
+        """The UPDATE carries the conditions, not only the read before it: a
+        finished, dismissed or other task is left as it is (CodeRabbit #262)."""
+        from app.db import supabase as db
+
+        stored = [
+            {"id": "t-open", "source": "client_asked", "kind": "call", "done_at": None, "dismissed_at": None},
+            {"id": "t-done", "source": "client_asked", "kind": "call",
+             "done_at": "2026-11-17T05:00:00+00:00", "dismissed_at": None},
+            {"id": "t-gone", "source": "client_asked", "kind": "call",
+             "done_at": None, "dismissed_at": "2026-11-17T05:00:00+00:00"},
+            {"id": "t-email", "source": "client_asked", "kind": "email", "done_at": None, "dismissed_at": None},
+            {"id": "t-caught", "source": "caught", "kind": "call", "done_at": None, "dismissed_at": None},
+        ]
+        client = _TasksTable(stored)
+
+        async def _run(fn, *_a, **_k):
+            return fn()
+
+        at = "2026-11-17T06:20:00+00:00"
+        with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", _run):
+            assert (await db.withdraw_open_call_task("t-open", at))["dismissed_at"] == at
+            for task_id in ("t-done", "t-gone", "t-email", "t-caught"):
+                assert await db.withdraw_open_call_task(task_id, at) is None
+        rows = {r["id"]: r for r in client.rows}
+        assert rows["t-done"]["dismissed_at"] is None
+        assert rows["t-gone"]["dismissed_at"] == "2026-11-17T05:00:00+00:00"
+        assert rows["t-email"]["dismissed_at"] is None
+        assert rows["t-caught"]["dismissed_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_task_finished_after_the_read_stays_done(self):
+        """The read still shows the call open; an agent marks it done before
+        the write: it is not withdrawn, counted or given a history line."""
+        from app.db import supabase as db
+        from app.services import tasks_service
+
+        stale = [{"id": "t-open", "source": "client_asked", "kind": "call"}]
+        client = _TasksTable([{"id": "t-open", "source": "client_asked", "kind": "call",
+                               "done_at": "2026-11-17T06:19:59+00:00", "dismissed_at": None}])
+
+        async def _run(fn, *_a, **_k):
+            return fn()
+
+        event = AsyncMock()
+        before = db.TASKS_HEALTH["withdrawn"]
+        with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", _run), \
+                patch.object(tasks_service.db, "tasks_of_conversations", new=AsyncMock(return_value=stale)), \
+                patch.object(tasks_service.db, "add_task_event", new=event):
+            assert await tasks_service.withdraw_call_tasks(_CID) == 0
+        assert client.rows[0]["dismissed_at"] is None
+        event.assert_not_called()
+        assert db.TASKS_HEALTH["withdrawn"] == before
 
     @pytest.mark.asyncio
     async def test_before_the_tasks_migration_nothing_happens(self):

@@ -3809,6 +3809,21 @@ async def update_follow_up(task_id: str, payload: dict) -> Optional[dict]:
     return rows[0] if rows else None
 
 
+async def withdraw_open_call_task(task_id: str, at: str) -> Optional[dict]:
+    """Dismiss the task only while it is still the open call a client asked
+    for — client_asked, a call, not done, not dismissed — checked by the same
+    UPDATE. A task someone finished, dismissed or turned into another kind
+    after it was read stays as it is (CodeRabbit #262). None when it no longer
+    matched."""
+    db_client = get_client()
+    body = {"dismissed_at": at, "updated_at": datetime.now(timezone.utc).isoformat()}
+    res = await _tasks_call(lambda: db_client.table("tasks").update(body)
+                            .eq("id", task_id).eq("source", "client_asked").eq("kind", "call")
+                            .is_("done_at", "null").is_("dismissed_at", "null").execute())
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 async def delete_follow_up(task_id: str) -> bool:
     db_client = get_client()
     res = await _tasks_call(lambda: db_client.table("tasks").delete().eq("id", task_id).execute())

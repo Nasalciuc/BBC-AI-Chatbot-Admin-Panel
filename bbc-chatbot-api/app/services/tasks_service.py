@@ -179,7 +179,8 @@ async def withdraw_call_tasks(conversation_id: str) -> int:
     open call task their ask made (task_from_callback) is withdrawn, so nobody
     rings a client who said not to (CodeRabbit #262). It leaves the open lists
     the way a "not a promise" does, with its own line in the history. A task
-    someone already finished, or turned into another kind, stays as it is.
+    someone already finished, or turned into another kind, stays as it is —
+    also when that happened after the read: the write checks it again.
     Returns how many were withdrawn; never fails the turn."""
     try:
         rows = await db.tasks_of_conversations([conversation_id])
@@ -190,7 +191,7 @@ async def withdraw_call_tasks(conversation_id: str) -> int:
         ]
         withdrawn = 0
         for task_id in open_calls:
-            if await db.update_follow_up(task_id, {"dismissed_at": datetime.now(timezone.utc).isoformat()}):
+            if await db.withdraw_open_call_task(task_id, datetime.now(timezone.utc).isoformat()):
                 withdrawn += 1
                 db.TASKS_HEALTH["withdrawn"] += 1
                 await note(task_id, "withdrawn", None)
