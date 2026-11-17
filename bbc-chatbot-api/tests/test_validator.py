@@ -55,36 +55,40 @@ class TestPriceDetection:
 
 
 class TestCompetitorNames:
-    """Competitor names replace the containing sentence."""
+    """A sentence that names a competitor is dropped — it used to become the
+    words "other services", glued into the reply. Kayak is not a competitor:
+    it is where the clients come from (owner, 17 Nov 2026)."""
 
-    def test_kayak_replaced(self):
-        result = validate_response("You can find it on Kayak too.")
-        assert "kayak" not in result.lower()
-        assert "other services" in result
+    def test_kayak_is_kept(self):
+        msg = "You came to us from the Kayak link."
+        assert validate_response(msg) == msg
 
-    def test_expedia_replaced(self):
-        result = validate_response("Expedia shows similar prices.")
+    def test_expedia_dropped(self):
+        result = validate_response("Expedia shows similar prices. Where from?")
         assert "expedia" not in result.lower()
-        assert "other services" in result
+        assert "other services" not in result
+        assert result == "Where from?"
 
-    def test_skyscanner_replaced(self):
-        result = validate_response("Try Skyscanner for comparison.")
+    def test_skyscanner_dropped(self):
+        result = validate_response("Try Skyscanner for comparison. Where from?")
         assert "skyscanner" not in result.lower()
 
     def test_multiple_competitors_same_sentence(self):
-        result = validate_response("Check Kayak or Expedia for prices.")
-        assert "kayak" not in result.lower()
+        result = validate_response("Check Skyscanner or Expedia for prices. When do you fly?")
+        assert "skyscanner" not in result.lower()
         assert "expedia" not in result.lower()
-        # One sentence → one replacement (not a mid-sentence double splice)
-        assert result.count("other services") == 1
+        assert "other services" not in result
+        assert result == "When do you fly?"
+
+    def test_a_reply_that_was_only_a_competitor_sentence_falls_back(self):
+        assert validate_response("Expedia shows similar prices.") == EMPTY_FALLBACK
 
     def test_competitor_sentence_leaves_neighbors(self):
         result = validate_response(
-            "Happy to help. You can find it on Kayak too. Where from?"
+            "Happy to help. You can find it on Expedia too. Where from?"
         )
-        assert "kayak" not in result.lower()
-        assert "Happy to help." in result
-        assert "Where from?" in result
+        assert "expedia" not in result.lower()
+        assert result == "Happy to help. Where from?"
 
 
 class TestLengthTruncation:

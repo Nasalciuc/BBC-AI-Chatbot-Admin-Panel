@@ -158,9 +158,18 @@ class TestExtractionSchema:
     def test_date_window_enforced(self):
         _, err = validate_tool_entities({"departure_date": _future(800)})
         assert err and "outside" in err
-        past = (date.today() - timedelta(days=30)).isoformat()
-        _, err2 = validate_tool_entities({"departure_date": past})
+        # More than a year back is no slip of the year: refused.
+        long_past = (date.today() - timedelta(days=400)).isoformat()
+        _, err2 = validate_tool_entities({"departure_date": long_past})
         assert err2
+        # A date of the past twelve months is the model writing this year for
+        # a month already gone (17 Nov 2026): its next occurrence is kept.
+        past = date.today() - timedelta(days=30)
+        if (past.month, past.day) == (2, 29):
+            past -= timedelta(days=1)
+        clean, err3 = validate_tool_entities({"departure_date": past.isoformat()})
+        assert err3 is None
+        assert clean["departure_date"] == past.replace(year=past.year + 1).isoformat()
 
     def test_yesterday_allowed(self):
         # [today-1d, …] — timezone skew must not reject a real booking.
