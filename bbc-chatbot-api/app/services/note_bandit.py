@@ -40,11 +40,14 @@ PLACES_REPLIES: tuple[str, ...] = ("Europe", "Asia", "Somewhere else", "I have a
 MIN_CHATS = 20
 STATS_TTL_S = 600
 WINDOW_DAYS = 30
-_MAX_CHATS = 1000
+# Conversation ids per message read: keeps the in.(...) filter well under URL limits (as db does).
 _IDS_PER_READ = 100
 
 # {variant: (chats, continued)} as last read, when it was read (monotonic s), and the read in flight.
 _STATS: dict = {"counts": None, "at": None, "task": None}
+
+# Shown in /health: how the counts were last read, and what they were (numbers only).
+NOTE_BANDIT_HEALTH: dict = {"reads": 0, "read_failures": 0, "last_read_at": None, "counts": None}
 
 
 def known(variant: object) -> Optional[str]:
@@ -100,32 +103,40 @@ async def _refresh() -> None:
     except Exception as e:
         # A database that fails is not asked again before the TTL; meanwhile the last counts stand.
         _STATS["at"] = time.monotonic()
-        logger.warning(f"[note-bandit] counts not read ({type(e).__name__}): the last ones stand")
+        NOTE_BANDIT_HEALTH["read_failures"] += 1
+        logger.warning(f"[note-bandit] counts not read ({type(e).__name__}: {e}): the last ones stand")
         return
     _STATS["counts"] = fresh
     _STATS["at"] = time.monotonic()
+    NOTE_BANDIT_HEALTH.update({
+        "reads": NOTE_BANDIT_HEALTH["reads"] + 1,
+        "last_read_at": datetime.now(timezone.utc).isoformat(),
+        "counts": {v: list(pair) for v, pair in fresh.items()},
+    })
     logger.info(f"[note-bandit] chats and second messages per way: {fresh}")
 
 
 async def _read_counts() -> dict:
     """{variant: (chats, continued)} over the note chats of the last WINDOW_DAYS that carry a variant.
-    Two reads: the chats, then their visitors' messages (only how many each sent, never what)."""
+    Two reads: the chats, then their visitors' messages (only how many each sent, never what). Both
+    are read page by page (db._select_pages): PostgREST cuts any one answer at its max-rows, and a
+    visitor whose second message fell past the cut would count as one who stopped. A read too big
+    to finish raises, and the last counts stand (_refresh)."""
     from app.db import supabase as db
 
     client = db.get_client()
     since = (datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)).isoformat()
-    res = await db._run_sync(
+    chats = await db._select_pages(
         lambda: client.table("conversations")
         .select("id, proactive_variant:metadata->>proactive_variant")
         .eq("metadata->>proactive_trigger", "note")
         .not_.is_("metadata->>proactive_variant", "null")
         .gte("created_at", since)
-        .order("created_at", desc=True)
-        .limit(_MAX_CHATS)
-        .execute()
+        .order("created_at")
+        .order("id")
     )
     way_of: dict[str, str] = {}
-    for row in res.data or []:
+    for row in chats:
         way = known(row.get("proactive_variant")) if isinstance(row, dict) else None
         if way and isinstance(row.get("id"), str):
             way_of[row["id"]] = way
@@ -133,15 +144,15 @@ async def _read_counts() -> dict:
     ids = list(way_of)
     for i in range(0, len(ids), _IDS_PER_READ):
         chunk = ids[i:i + _IDS_PER_READ]
-        res = await db._run_sync(
+        rows = await db._select_pages(
             lambda chunk=chunk: client.table("messages")
             .select("conversation_id")
             .in_("conversation_id", chunk)
             .eq("role", "user")
-            .limit(_IDS_PER_READ * 50)
-            .execute()
+            .order("created_at")
+            .order("id")
         )
-        for row in res.data or []:
+        for row in rows:
             cid = row.get("conversation_id") if isinstance(row, dict) else None
             if cid in sent:
                 sent[cid] += 1
@@ -155,3 +166,4 @@ async def _read_counts() -> dict:
 
 def _reset_for_tests() -> None:
     _STATS.update({"counts": None, "at": None, "task": None})
+    NOTE_BANDIT_HEALTH.update({"reads": 0, "read_failures": 0, "last_read_at": None, "counts": None})

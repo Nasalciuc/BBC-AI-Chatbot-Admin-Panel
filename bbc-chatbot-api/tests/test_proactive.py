@@ -530,16 +530,19 @@ class TestNote:
 
 
 class _FakeBanditDb:
-    """conversations and messages as the bandit reads them: rows by the filters it sends."""
+    """conversations and messages as the bandit reads them: rows by the filters it sends, one
+    .range() page at a time, the way PostgREST cuts an answer at its max-rows."""
 
     def __init__(self, convs, msgs, fail=False):
         self.convs, self.msgs, self.fail = convs, msgs, fail
         self.reads: list[tuple] = []
+        self.pages = 0
         self._table = None
         self._ids = None
+        self._range = None
 
     def table(self, name):
-        self._table, self._ids = name, None
+        self._table, self._ids, self._range = name, None, None
         return self
 
     def select(self, cols):
@@ -550,8 +553,12 @@ class _FakeBanditDb:
         self._ids = list(ids)
         return self
 
+    def range(self, lo, hi):
+        self._range = (lo, hi)
+        return self
+
     def __getattr__(self, _name):
-        # eq, not_, is_, gte, order, limit: the filters are pinned by the test, not applied here.
+        # eq, not_, is_, gte, order: the filters are pinned by the test, not applied here.
         return lambda *a, **k: self
 
     @property
@@ -561,9 +568,14 @@ class _FakeBanditDb:
     def execute(self):
         if self.fail:
             raise RuntimeError("database down")
-        if self._table == "conversations":
-            return MagicMock(data=list(self.convs))
-        return MagicMock(data=[m for m in self.msgs if m.get("conversation_id") in (self._ids or [])])
+        self.pages += 1
+        rows = list(self.convs) if self._table == "conversations" else [
+            m for m in self.msgs if m.get("conversation_id") in (self._ids or [])
+        ]
+        if self._range is not None:
+            lo, hi = self._range
+            rows = rows[lo:hi + 1]
+        return MagicMock(data=rows)
 
 
 class TestNoteBandit:
@@ -717,6 +729,25 @@ class TestNoteBandit:
         assert all("content" not in cols for _t, cols in fake.reads)
 
     @pytest.mark.asyncio
+    async def test_a_second_message_past_the_servers_page_still_counts(self, monkeypatch):
+        """CodeRabbit #267: one answer is cut at PostgREST's max-rows; a visitor whose
+        second message fell past the cut counted as one who stopped. Read page by page."""
+        import app.db.supabase as db_mod
+
+        monkeypatch.setattr(db_mod, "_PAGE", 2)
+        convs = [{"id": "c1", "proactive_variant": "places"}, {"id": "c2", "proactive_variant": "open"},
+                 {"id": "c3", "proactive_variant": "open"}]
+        # The first page holds only c2's and c3's single messages: c1's two come after the cut.
+        msgs = [{"conversation_id": "c2"}, {"conversation_id": "c3"},
+                {"conversation_id": "c1"}, {"conversation_id": "c1"}, {"conversation_id": "c3"}]
+        fake = _FakeBanditDb(convs, msgs)
+        with patch("app.db.supabase.get_client", return_value=fake), \
+                patch("app.db.supabase._run_sync", new=_plain_run_sync):
+            counts = await note_bandit._read_counts()
+        assert counts == {"open": (2, 1), "places": (1, 1)}
+        assert fake.pages > 2
+
+    @pytest.mark.asyncio
     async def test_a_failed_read_keeps_the_last_counts_and_waits_the_ttl(self, caplog):
         note_bandit._STATS["counts"] = {"open": (30, 3), "places": (30, 9)}
         with patch("app.db.supabase.get_client", return_value=_FakeBanditDb([], [], fail=True)), \
@@ -725,7 +756,27 @@ class TestNoteBandit:
             await note_bandit._refresh()
         assert note_bandit.counts() == {"open": (30, 3), "places": (30, 9)}
         assert note_bandit._STATS["at"] is not None
-        assert "counts not read (RuntimeError)" in caplog.text
+        assert "counts not read (RuntimeError: database down)" in caplog.text
+        assert note_bandit.NOTE_BANDIT_HEALTH["read_failures"] == 1
+
+    @pytest.mark.asyncio
+    async def test_health_shows_how_the_bandit_reads_and_what_it_counts(self, monkeypatch):
+        from app.api.health import health_detail
+
+        async def _read():
+            return {"open": (25, 5), "places": (24, 11)}
+
+        monkeypatch.setattr(note_bandit, "_read_counts", _read)
+        await note_bandit._refresh()
+        with patch("app.api.health.get_scheduler_health", return_value={}), \
+             patch("app.api.health.supervisor_columns_status", return_value=True), \
+             patch("app.api.health.settings") as s:
+            s.debug = False
+            payload = await health_detail()
+        shown = payload["note_bandit"]
+        assert set(shown) == {"reads", "read_failures", "last_read_at", "counts"}
+        assert shown["reads"] == 1 and shown["read_failures"] == 0 and shown["last_read_at"]
+        assert shown["counts"] == {"open": [25, 5], "places": [24, 11]}
 
 
 class TestNoteBanditRefresh:
