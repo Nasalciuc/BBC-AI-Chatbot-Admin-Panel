@@ -43,15 +43,21 @@ MAX_LENGTH = 350
 EMPTY_FALLBACK = "How can I help you with business class travel today?"
 PRICE_REPLACEMENT = "contact our specialists for current pricing"
 
-# Where the next sentence starts: end punctuation, any closing quotes or
-# brackets, then whitespace — the same closers _SENTENCE_END_RE accepts, so
-# "(local time.) Expedia…" drops only the Expedia sentence (CodeRabbit #263).
-_SENTENCE_START_RE = re.compile(r"[.!?]+[\"'”’)\]]*\s+")
+# Where the next sentence starts: end punctuation, any closing quotes,
+# brackets or Markdown marks, then whitespace — the same closers
+# _SENTENCE_END_RE accepts, so "(local time.) Expedia…" drops only the
+# Expedia sentence (CodeRabbit #263).
+_SENTENCE_START_RE = re.compile(r"[.!?]+[\"'”’)\]*_]*\s+")
 # Where a sentence really ends: the punctuation is followed by whitespace or
 # the end of the text. The dot inside "ann@mail.com", "1.5" or "+1.210" is no
 # end — the old cut took the last dot it found and could stop in the middle
-# of an email or a number.
-_SENTENCE_END_RE = re.compile(r"[.!?]+[\"'”’)\]]*(?=\s|$)")
+# of an email or a number. A bold or italic close counts as a closer: the
+# competitor check runs before the Markdown is stripped, and "**Expedia is an
+# option.** Where from?" must lose the first sentence, not both (CodeRabbit #263).
+_SENTENCE_END_RE = re.compile(r"[.!?]+[\"'”’)\]*_]*(?=\s|$)")
+# A sentence that asks: its last "?" is followed only by closers, emoji or
+# spaces — "When do you fly? 😊" still asks.
+_QUESTION_END_RE = re.compile(r"\?[^\w?.!]*$")
 
 
 def _sentence_span(text: str, index: int) -> tuple[int, int]:
@@ -111,7 +117,13 @@ def _sentences(text: str) -> list[tuple[str, str]]:
     tail = text[start:]
     if tail.strip():
         body = tail.lstrip()
-        parts.append((tail[: len(tail) - len(body)], body.rstrip()))
+        if parts and not re.search(r"\w", body):
+            # An emoji or a mark after the last sentence ("When do you fly? 😊")
+            # belongs to that sentence, not a sentence of its own (CodeRabbit #263).
+            gap, last = parts[-1]
+            parts[-1] = (gap, last + tail.rstrip())
+        else:
+            parts.append((tail[: len(tail) - len(body)], body.rstrip()))
     return parts
 
 
@@ -141,7 +153,7 @@ def _shorten(text: str, limit: int = MAX_LENGTH) -> str:
         return text
     parts = _sentences(text)
     last = len(parts) - 1
-    if last > 0 and parts[last][1].rstrip("\"'”’)]").endswith("?") and len(parts[last][1]) <= limit:
+    if last > 0 and _QUESTION_END_RE.search(parts[last][1]) and len(parts[last][1]) <= limit:
         head = [0] if len(_render(parts, [0, last])) <= limit else []
         tail: list[int] = []
         for k in range(last - 1, len(head) - 1, -1):

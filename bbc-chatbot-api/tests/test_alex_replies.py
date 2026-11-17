@@ -283,6 +283,28 @@ class TestCompetitors:
         out = validate_response(f"{before} Expedia lists other fares. When do you return?")
         assert out == f"{before} When do you return?"
 
+    def test_a_bold_competitor_sentence_keeps_the_question_after_it(self):
+        """CodeRabbit #263, round 3: the competitor check runs before the
+        Markdown is stripped; "option.**" ends the sentence, so the question
+        after it stays and the reply is not the empty-reply fallback."""
+        assert validate_response("**Expedia is an option.** Where from?") == "Where from?"
+
+    def test_a_bold_sentence_before_the_competitor_is_kept(self):
+        out = validate_response("**Great choice.** Expedia lists it too. Where from?")
+        assert out == "Great choice. Where from?"
+
+
+class TestAClosingQuestionWithAnEmoji:
+    def test_the_question_and_its_emoji_are_kept(self):
+        """CodeRabbit #263, round 3: an emoji after the closing question is
+        part of it, not a sentence of its own that hides the question."""
+        out = validate_response("We have options. " * 22 + "When do you fly? 😊")
+        assert out.endswith("When do you fly? 😊")
+        assert len(out) <= MAX_LENGTH
+
+    def test_a_reply_that_fits_is_left_as_it_is(self):
+        assert validate_response("We have options. When do you fly? 😊") == "We have options. When do you fly? 😊"
+
 
 # ── KB ───────────────────────────────────────────────────────
 
