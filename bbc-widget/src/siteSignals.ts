@@ -119,6 +119,26 @@ export function fieldKind(v: unknown): FieldKind | null {
   return 'other'
 }
 
+/** The kind of a field from what the page calls it, in the order given (its autocomplete, its name, its id):
+ *  the first that names a kind of the list. autocomplete="off" or "on" names nothing, so the name speaks
+ *  instead; 'other' only when none does. Never what was typed in it. */
+export function kindOfField(...said: unknown[]): FieldKind | null {
+  let other: FieldKind | null = null
+  for (const s of said) {
+    const k = fieldKind(s)
+    if (k && k !== 'other') return k
+    other = other ?? k
+  }
+  return other
+}
+
+/** `kinds`, then the ones of `more` not in it yet: each kind once, 6 at most (one refused send's list). */
+export function withKinds(kinds: readonly FieldKind[], more: readonly (FieldKind | null)[]): FieldKind[] {
+  const out = [...kinds]
+  for (const k of more) if (k && !out.includes(k) && out.length < 6) out.push(k)
+  return out
+}
+
 /** The kinds of the fields a refused send flagged: up to 6, each once, in the site's order. */
 export function fieldKinds(v: unknown): FieldKind[] {
   if (!Array.isArray(v)) return []

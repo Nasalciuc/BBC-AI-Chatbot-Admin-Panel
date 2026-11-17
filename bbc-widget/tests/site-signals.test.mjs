@@ -14,8 +14,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   FIELD_KINDS, QUOTE_FORM_WORK, SITE_EVENTS, activityLine, activityToken, applySiteEvent, fieldKind, fieldKinds,
-  isQuoteFormWork, lastSearch, noMomentPage, onSiteEvent, readSiteEvent, readSitePage, siteEvents, siteMetadata,
-  sitePage, startSiteSignals, stopSiteSignals,
+  isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, readSiteEvent, readSitePage, siteEvents,
+  siteMetadata, sitePage, startSiteSignals, stopSiteSignals, withKinds,
 } from '../src/siteSignals.ts'
 import { pickTrip, tripFromFields, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
 import { choosePostHog, sitePostHogOf, watchSitePostHog } from '../src/posthogChoice.ts'
@@ -107,6 +107,35 @@ test('a refused send keeps what kind of field it was, in a fixed list of words: 
     const k = fieldKind(v)
     assert.ok(k === null || FIELD_KINDS.includes(k), v)
   }
+})
+
+test('a field the browser refused is named by the first of its autocomplete, name and id that says a kind', () => {
+  // autocomplete="off" (or "on") is the commonest value on a form and names nothing: the name speaks.
+  assert.equal(kindOfField('off', 'full_name', 'f-name'), 'name')
+  assert.equal(kindOfField('on', 'mobile', ''), 'phone')
+  assert.equal(kindOfField('off', '', 'contact-email'), 'email')
+  // A real autocomplete token wins over a vaguer name.
+  assert.equal(kindOfField('given-name', 'field_3', ''), 'name')
+  assert.equal(kindOfField('tel-national', 'f2', ''), 'phone')
+  // Nothing names a kind: 'other' if anything was there, null if nothing was.
+  assert.equal(kindOfField('off', 'field_3', 'q7'), 'other')
+  assert.equal(kindOfField(null, '', ''), null)
+  assert.equal(kindOfField(), null)
+})
+
+test('one refused send gathers its kinds from the browser and the site: each once, six at most', () => {
+  assert.deepEqual(withKinds([], ['name']), ['name'])
+  assert.deepEqual(withKinds(['name'], ['name', 'email', null]), ['name', 'email'])
+  // The site's word without fields takes nothing away from what the browser flagged.
+  assert.deepEqual(withKinds(['name', 'email', 'phone'], fieldKinds(undefined)), ['name', 'email', 'phone'])
+  assert.deepEqual(withKinds(['name', 'email', 'phone'], fieldKinds([])), ['name', 'email', 'phone'])
+  assert.deepEqual(
+    withKinds(['name', 'email', 'phone', 'origin', 'destination'], ['dates', 'passengers', 'cabin']),
+    ['name', 'email', 'phone', 'origin', 'destination', 'dates'],
+  )
+  const kept = ['name']
+  withKinds(kept, ['email'])
+  assert.deepEqual(kept, ['name'], 'a new list, the old one untouched')
 })
 
 test('the site\'s thank-you and legal pages get no moment, whatever their address', () => {

@@ -22,8 +22,8 @@ import { ensureVisitorId, fetchProactiveOffer } from './api'
 import brand from './config'
 import { posthog } from './posthog'
 import {
-  applySiteEvent, fieldKind, fieldKinds, isQuoteFormWork, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
-  type FieldKind, type SiteEvent,
+  applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
+  withKinds, type FieldKind, type SiteEvent,
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
@@ -143,13 +143,13 @@ export function watchQuoteForm(onWork: (at: number) => void): () => void {
   }
 }
 
-/** The kind of a field the browser refused (siteSignals.fieldKind): from its type, its autocomplete, its
- *  name or its id — never from what was typed in it. */
+/** The kind of a field the browser refused (siteSignals.kindOfField): from its type, then the first of its
+ *  autocomplete, name and id that names a kind (autocomplete="off" names none) — never what was typed in it. */
 function refusedKind(t: EventTarget | null): FieldKind | null {
   if (t instanceof HTMLInputElement && t.type === 'email') return 'email'
   if (t instanceof HTMLInputElement && t.type === 'tel') return 'phone'
   if (!(t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement)) return null
-  return fieldKind(t.getAttribute('autocomplete') || t.name || t.id)
+  return kindOfField(t.getAttribute('autocomplete'), t.name, t.id)
 }
 
 function isSubmitControl(el: Element): boolean {
@@ -340,8 +340,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       press.invalid = true
       press.activityAt = Date.now()
       // One `invalid` per refused field, all in the same send: together they are that send's refusal.
-      const kind = refusedKind(e.target)
-      if (kind && !refused.includes(kind) && refused.length < 6) refused.push(kind)
+      refused = withKinds(refused, [refusedKind(e.target)])
     }
     const onLeave = (e: MouseEvent) => {
       if (e.relatedTarget || e.clientY > 8) return
@@ -356,8 +355,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // The site says the visitor is in its quote form (opened it, moved a step, a field refused): no card
       // over it, pressed or not. A refused or failed send is a press too (applySiteEvent, below).
       if (isQuoteFormWork(e)) quoteFormAt = Math.max(quoteFormAt ?? 0, Math.min(e.at, Date.now()))
-      // The site names the fields of a refused send itself: that refusal, as the site sees it.
-      if (e.name === 'quote_form_invalid') refused = fieldKinds(e.detail.fields)
+      // The site names the fields of a refused send itself: they join the browser's for the same send
+      // (a site word without fields takes nothing away).
+      if (e.name === 'quote_form_invalid') refused = withKinds(refused, fieldKinds(e.detail.fields))
       const fx = applySiteEvent(
         press ? { at: press.at, activityAt: press.activityAt, invalid: press.invalid, busy: siteBusy } : null, e,
       )

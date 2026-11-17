@@ -264,13 +264,13 @@ test('the quote card hears which fields the form refused, by kind only (owner, 1
   assert.match(hook, /function refusedKind\(t: EventTarget \| null\): FieldKind \| null \{/)
   assert.match(hook, /if \(t instanceof HTMLInputElement && t\.type === 'email'\) return 'email'/)
   assert.match(hook, /if \(t instanceof HTMLInputElement && t\.type === 'tel'\) return 'phone'/)
-  assert.match(hook, /return fieldKind\(t\.getAttribute\('autocomplete'\) \|\| t\.name \|\| t\.id\)/)
+  assert.match(hook, /return kindOfField\(t\.getAttribute\('autocomplete'\), t\.name, t\.id\)/)
   assert.doesNotMatch(hook.slice(hook.indexOf('function refusedKind'), hook.indexOf('function isSubmitControl')), /\.value/)
   // Each press starts a new attempt; each refused field of it is added once, six at most.
   assert.equal([...hook.matchAll(/press = \{ at: Date\.now\(\), form(?:: null)?, activityAt: Date\.now\(\), invalid: false \}\s+refused = \[\]/g)].length, 2)
-  assert.match(hook, /const kind = refusedKind\(e\.target\)\s+if \(kind && !refused\.includes\(kind\) && refused\.length < 6\) refused\.push\(kind\)/)
-  // The site's own word replaces it: the kinds it named for that refusal.
-  assert.match(hook, /if \(e\.name === 'quote_form_invalid'\) refused = fieldKinds\(e\.detail\.fields\)/)
+  assert.match(hook, /refused = withKinds\(refused, \[refusedKind\(e\.target\)\]\)/)
+  // The site's own word joins it (site-signals.test.mjs withKinds): a word without fields takes nothing away.
+  assert.match(hook, /if \(e\.name === 'quote_form_invalid'\) refused = withKinds\(refused, fieldKinds\(e\.detail\.fields\)\)/)
   // Only the quote moment sends them, and only when there are some.
   assert.match(hook, /\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\)/)
   assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\] \}/)

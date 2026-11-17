@@ -40,11 +40,12 @@ export interface ProactiveOffer {
   arm: string
   message: string | null
   quick_replies: string[]
-  /** Which way the first question was asked (the note's bandit), when the server chose one. */
+  /** Which words the server chose, when it chose a variant: how the note asked its first question (the
+   *  note's bandit), or the quote card's chat instead of the form ("contact"). */
   variant?: string
 }
 
-/** A variant name as the server writes them ("open", "places"): anything else is dropped. */
+/** A variant name as the server writes them ("open", "places", "contact"): anything else is dropped. */
 export function offerVariant(v: unknown): string | undefined {
   return typeof v === 'string' && /^[a-z][a-z_]{0,23}$/.test(v) ? v : undefined
 }
