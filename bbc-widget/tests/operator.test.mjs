@@ -38,6 +38,19 @@ test('the header is Alex again when the chat comes back to him', () => {
   assert.equal(currentOperator([op('1'), client('2'), ai('3')]), null)
 })
 
+test('the latest reply by time, not by place: a late poll appends older rows at the end (CodeRabbit #264)', () => {
+  const at = (row, iso) => ({ ...row, created_at: iso })
+  // Dana wrote at 10:05; Alex's 10:01 reply came back from a late poll after it.
+  assert.deepEqual(
+    currentOperator([at(op('2'), '2026-11-17T10:05:00+00:00'), at(ai('1'), '2026-11-17T10:01:00Z')]),
+    { name: 'Dana Reyes', avatarUrl: PHOTO },
+  )
+  // And the other way round: Alex is the latest even when Dana's older row lands last.
+  assert.equal(currentOperator([at(ai('3'), '2026-11-17T10:09:00Z'), at(op('2'), '2026-11-17T10:05:00Z')]), null)
+  // A row without a time keeps its place.
+  assert.equal(currentOperator([at(op('2'), '2026-11-17T10:05:00Z'), ai('x')]), null)
+})
+
 test('a person with no name or photo: "Consultant" and the initial', () => {
   assert.deepEqual(currentOperator([op('1', '  ', '')]), { name: CONSULTANT_LABEL, avatarUrl: null })
   assert.deepEqual(currentOperator([{ id: '1', role: 'agent', content: 'hi' }]), { name: 'Consultant', avatarUrl: null })

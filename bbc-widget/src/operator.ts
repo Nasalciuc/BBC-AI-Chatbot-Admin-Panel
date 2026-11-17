@@ -10,6 +10,7 @@ export const CONSULTANT_LABEL = 'Consultant'
 export interface OperatorRow {
   id: string
   role: string
+  created_at?: string
   agent_name?: string | null
   agent_avatar_url?: string | null
 }
@@ -34,19 +35,29 @@ export function agentInitials(name: string): string {
  * Who answers the client now: the person who wrote the latest reply, or null while the latest reply
  * is Alex's (no one took the chat, or it came back to him). The header shows this one (owner,
  * 17 Nov 2026: the client sees that the agent they work with has changed).
+ *
+ * Latest by the time the reply was written, not by its place in the list: a poll that comes back
+ * late appends older rows after newer ones (reconcile.ts), and an old reply of Alex's at the end
+ * must not take the header from the person writing now (CodeRabbit #264). Equal times, or a row
+ * without one, go by place.
  */
 export function currentOperator(rows: readonly OperatorRow[]): Operator | null {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const m = rows[i]
-    if (m.role === 'ai') return null
-    if (m.role === 'agent') {
-      return {
-        name: (m.agent_name || '').trim() || CONSULTANT_LABEL,
-        avatarUrl: m.agent_avatar_url || null,
-      }
+  let latest: OperatorRow | null = null
+  let latestAt = -Infinity
+  for (const m of rows) {
+    if (m.role !== 'ai' && m.role !== 'agent') continue
+    const at = Date.parse(m.created_at || '')
+    const when = Number.isNaN(at) ? latestAt : at
+    if (when >= latestAt) {
+      latest = m
+      latestAt = when
     }
   }
-  return null
+  if (!latest || latest.role !== 'agent') return null
+  return {
+    name: (latest.agent_name || '').trim() || CONSULTANT_LABEL,
+    avatarUrl: latest.agent_avatar_url || null,
+  }
 }
 
 /**

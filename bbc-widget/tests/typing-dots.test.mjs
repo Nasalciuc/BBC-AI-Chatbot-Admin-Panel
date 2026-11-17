@@ -3,7 +3,9 @@
 // POST with {streaming: true}. When the SSE frame won the race, the answer
 // marked the reply as streaming again after it was already in, and nothing
 // cleared it: the 15 s safety net watched `sending` alone, already off.
-// Static source-contract tests — zero dependencies (node --test).
+// Which send a reply belongs to is replyTurns.ts (tests/reply-turns.test.mjs);
+// these check ChatWindow uses it at every step. Static source-contract tests —
+// zero dependencies (node --test).
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -22,37 +24,46 @@ const between = (from, to) => {
 }
 
 const send = between('const sendMessage = async', 'const handleSend = () =>')
+// The send's own catch (inline `try { … } catch {}` lines come before it).
+const failed = send.indexOf("} catch {\n      posthog?.capture('chat_message_send_failed'")
+const caught = send.slice(failed, send.indexOf('} finally {'))
+
+test('one record of sends and replies for the life of the chat', () => {
+  assert.match(chatWindow, /const \[turns\] = useState\(createReplyTurns\)/)
+  assert.doesNotMatch(chatWindow, /sendSeqRef|streamEndSeqRef/)
+})
 
 test('every send takes its own number before anything is shown or posted', () => {
-  const seq = send.indexOf('const seq = ++sendSeqRef.current')
+  const seq = send.indexOf('const seq = turns.start()')
   assert.ok(seq > -1, 'the send numbers itself')
   assert.ok(seq < send.indexOf('setSending(true)'), 'before the dots go on')
   assert.ok(seq < send.indexOf('apiFetch('), 'before the first request')
 })
 
-test('a stream_end marks the latest send as answered', () => {
-  const end = between("if (parsed.event === 'stream_end')", 'return\n')
-  assert.match(end, /streamEndSeqRef\.current = sendSeqRef\.current/)
+test('a stream_end and a reply polled while SSE is down both count as a reply that came in', () => {
+  assert.match(between("if (parsed.event === 'stream_end')", 'return\n'), /turns\.replyCameIn\(\)/)
+  assert.match(between('if (sawAi) {', 'return next'), /turns\.replyCameIn\(\)/)
 })
 
-test('a reply polled while SSE is down counts as answered too', () => {
-  const polled = between('if (sawAi) {', 'return next')
-  assert.match(polled, /streamEndSeqRef\.current = sendSeqRef\.current/)
-})
-
-test('the POST answer marks the reply streaming only while its stream_end has not come in', () => {
+test('the POST answer marks the reply streaming only while its send still waits for it', () => {
   const branch = between('} else if (data.streaming) {', "} else if (data.message && data.type !== 'queued')")
-  const gate = branch.indexOf('streamEndSeqRef.current < seq')
-  assert.ok(gate > -1, 'the answer checks the stream did not end first')
+  const gate = branch.indexOf('streams = Boolean(activeConvId || convId) && turns.isOpen(seq)')
+  assert.ok(gate > -1, 'the answer checks the reply did not come in first')
   assert.ok(gate < branch.indexOf('setIsStreaming(true)'), 'before it marks the reply streaming')
 })
 
+test('an answer that streams nothing, or a failed send, ends that send\'s turn', () => {
+  assert.ok(failed > -1, 'the send has its own catch')
+  const success = send.slice(send.indexOf('let streams = false'), failed)
+  assert.match(success, /if \(!streams\) turns\.over\(seq\)/)
+  assert.match(caught, /turns\.over\(seq\)/)
+})
+
 test('a late answer to an earlier send never touches the next one', () => {
-  const caught = send.slice(send.indexOf('} catch {'), send.indexOf('} finally {'))
-  const latest = caught.indexOf('if (seq === sendSeqRef.current) {')
+  const latest = caught.indexOf('if (turns.isLatest(seq)) {')
   assert.ok(latest > -1 && latest < caught.indexOf('setIsStreaming(false)'), 'a failed earlier send leaves the stream alone')
   const fin = send.slice(send.indexOf('} finally {'))
-  assert.match(fin, /if \(!isStreamingRef\.current && seq === sendSeqRef\.current\) \{\s*setSending\(false\)/, 'only the latest send unlocks')
+  assert.match(fin, /if \(!isStreamingRef\.current && turns\.isLatest\(seq\)\) \{\s*setSending\(false\)/, 'only the latest send unlocks')
 })
 
 test('the 15 s safety net also clears a stream left on with sending already off', () => {

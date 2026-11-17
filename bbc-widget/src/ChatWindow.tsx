@@ -18,6 +18,7 @@ import { markProactiveConversation, type ProactiveOpening } from './proactive'
 import { siteMetadata } from './siteSignals'
 import { isNotNow } from './triggers'
 import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
+import { createReplyTurns } from './replyTurns'
 
 interface Message {
   id: string
@@ -136,13 +137,11 @@ export function ChatWindow({
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const isStreamingRef = useRef(false)
-  /** The number of the latest send, and the latest send whose reply's
-   *  stream_end has come in. The server pushes stream_end over SSE and only
-   *  then answers the POST with {streaming: true}; either can arrive first,
-   *  so a send's answer may mark its reply streaming only while
-   *  streamEndSeqRef is still below its number (17 Nov 2026). */
-  const sendSeqRef = useRef(0)
-  const streamEndSeqRef = useRef(0)
+  /** Which send a reply belongs to (replyTurns.ts): a send's answer may mark
+   *  its reply streaming only while that reply has not come in, and only the
+   *  latest send unlocks sending (17 Nov 2026). One object for the life of
+   *  the chat, shared with the stream's handlers. */
+  const [turns] = useState(createReplyTurns)
   const [quickReplies, setQuickReplies] = useState<string[] | null>(() => {
     const o = openingRef.current
     return o && !o.firstReply && o.quickReplies.length ? o.quickReplies : null
@@ -559,9 +558,9 @@ export function ChatWindow({
             // cursor past its timestamp.
             const { next, sawAi } = reconcileBatch(prev, incoming, Date.now())
             if (sawAi) {
-              // Polled instead of streamed (SSE down): the same "reply is in"
-              // as a stream_end, so a late POST answer cannot undo it.
-              streamEndSeqRef.current = sendSeqRef.current
+              // Polled instead of streamed (SSE down): a reply came in, as
+              // with a stream_end. It answers the oldest send still open.
+              turns.replyCameIn()
               setIsStreaming(false)
               isStreamingRef.current = false
               setSending(false)
@@ -633,10 +632,10 @@ export function ChatWindow({
           }
 
           if (parsed.event === 'stream_end') {
-            // The reply of the latest send is in. That send's POST answer can
-            // still arrive after this frame and must not mark it streaming
-            // again: "Alex is typing" then stayed on screen for good.
-            streamEndSeqRef.current = sendSeqRef.current
+            // A reply is in: the oldest send still open is answered. Its POST
+            // answer can still arrive after this frame and must not mark the
+            // reply streaming again: "Alex is typing" then stayed for good.
+            turns.replyCameIn()
             setStreamingText('')
             setIsStreaming(false)
             isStreamingRef.current = false
@@ -835,7 +834,7 @@ export function ChatWindow({
     if (!text.trim()) return
     // This send's number: a late answer to an earlier send (the queue sends
     // the next message as soon as a reply is in) never changes this one.
-    const seq = ++sendSeqRef.current
+    const seq = turns.start()
     const isExistingConversation = Boolean(convId)
     lastActivityRef.current = Date.now()
     // Clear typing indicator immediately when sending
@@ -973,6 +972,9 @@ export function ChatWindow({
         try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
       }
 
+      // Whether this send's reply is still streaming in; any other answer
+      // ends its turn (no reply will stream for it).
+      let streams = false
       // Handle system_messages from routing response (zero polling duplicates)
       if (data.system_messages && data.system_messages.length > 0) {
         setMessages(prev => [
@@ -997,7 +999,8 @@ export function ChatWindow({
         // Only while this send's reply is still on its way. When its
         // stream_end came in first, marking it streaming here left the typing
         // dots under the finished reply until the next send (17 Nov 2026).
-        if ((activeConvId || convId) && streamEndSeqRef.current < seq) {
+        streams = Boolean(activeConvId || convId) && turns.isOpen(seq)
+        if (streams) {
           setIsStreaming(true)
           isStreamingRef.current = true
         }
@@ -1011,13 +1014,15 @@ export function ChatWindow({
         setMessages(prev => [...prev, aiMsg])
         lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
       }
+      if (!streams) turns.over(seq)
       // Extend 30-minute rolling session on every successful message
       try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
     } catch {
       posthog?.capture('chat_message_send_failed', { tunnel })
       posthog?.logger.warn('chat_message_delivery_failed', { tunnel })
+      turns.over(seq)
       // A later send may already be streaming its own reply: leave it be.
-      if (seq === sendSeqRef.current) {
+      if (turns.isLatest(seq)) {
         setStreamingText('')
         setIsStreaming(false)
         isStreamingRef.current = false
@@ -1034,7 +1039,7 @@ export function ChatWindow({
     } finally {
       // Only the latest send unlocks: an earlier one answering late would
       // drop the dots while the next reply is still coming.
-      if (!isStreamingRef.current && seq === sendSeqRef.current) {
+      if (!isStreamingRef.current && turns.isLatest(seq)) {
         setSending(false)
       }
     }
