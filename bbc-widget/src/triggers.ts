@@ -119,6 +119,16 @@ export function pickTrigger(s: PageState): Trigger | null {
   return null
 }
 
+/** How long the 10 s note beside the button still waits, in ms (0: it may show). Like the moments, it does
+ *  not come up over the quote form while the visitor works on it, pressed or not, nor for QUOTE_WATCH_S
+ *  after their last touch (owner, 17 Nov): on phones, from 16 Nov 18:00 to 17 Nov 20:00, 141 visitors had
+ *  opened the form in their first 12 s and were still in it, unsent, at 12 s, when the note comes there. */
+export function noteWaitMs(sinceQuoteFormS: number | null): number {
+  if (sinceQuoteFormS === null || sinceQuoteFormS > QUOTE_WATCH_S) return 0
+  // Until just past QUOTE_WATCH_S since the last touch: then the form is part of the page again.
+  return Math.floor((QUOTE_WATCH_S - Math.max(0, sinceQuoteFormS)) * 1000) + 1
+}
+
 /** The 24 h pause after "Not now" or ✕ is still running. A value that is not a time is no pause. */
 export function pauseRunning(pauseUntil: string | null, nowMs: number): boolean {
   const until = Number(pauseUntil)

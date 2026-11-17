@@ -22,7 +22,7 @@ import { ensureVisitorId, fetchProactiveOffer } from './api'
 import brand from './config'
 import { posthog } from './posthog'
 import {
-  applySiteEvent, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage, type SiteEvent,
+  applySiteEvent, isQuoteFormWork, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage, type SiteEvent,
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
@@ -112,11 +112,34 @@ function currentTrip(): TripPayload | null {
 }
 
 /** A form the site asks for a quote with: form.qf on buybusinessclass.com, or one labelled as a quote. */
-function quoteForm(el: Element | null): HTMLFormElement | null {
+export function quoteForm(el: Element | null): HTMLFormElement | null {
   const form = el?.closest('form') as HTMLFormElement | null
   if (!form) return null
   if (form.classList.contains('qf')) return form
   return /quote|offer/i.test(form.getAttribute('aria-label') || '') ? form : null
+}
+
+/** Calls `onWork(at)` each time the visitor works on the site's quote form on this page, pressed or not:
+ *  a keystroke, focus, change or click inside it (not in the widget), or the site saying so (bbc-signals,
+ *  also what it queued before the widget loaded). Returns the way to stop. For the 10 s note (Widget.tsx);
+ *  the moments read the same touches in useProactive below. */
+export function watchQuoteForm(onWork: (at: number) => void): () => void {
+  const onPage = (e: Event) => {
+    const t = e.target
+    if (t instanceof Element && !t.closest('#bbc-widget-root') && quoteForm(t)) onWork(Date.now())
+  }
+  const onSite = (e: SiteEvent) => {
+    if (isQuoteFormWork(e)) onWork(Math.min(e.at, Date.now()))
+  }
+  const types = ['keydown', 'input', 'change', 'focusin', 'click'] as const
+  const cap: AddEventListenerOptions = { capture: true, passive: true }
+  for (const type of types) document.addEventListener(type, onPage, cap)
+  for (const e of siteEvents()) onSite(e)
+  const offSite = onSiteEvent(onSite)
+  return () => {
+    for (const type of types) document.removeEventListener(type, onPage, cap)
+    offSite()
+  }
 }
 
 function isSubmitControl(el: Element): boolean {
@@ -314,10 +337,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       lastActivity = Math.max(lastActivity, Math.min(e.at, Date.now()))
       // The site says the visitor is in its quote form (opened it, moved a step, a field refused): no card
       // over it, pressed or not. A refused or failed send is a press too (applySiteEvent, below).
-      if (e.name === 'quote_form_opened' || e.name === 'quote_form_step' || e.name === 'quote_form_invalid'
-        || e.name === 'quote_form_submitting' || e.name === 'quote_form_failed') {
-        quoteFormAt = Math.max(quoteFormAt ?? 0, Math.min(e.at, Date.now()))
-      }
+      if (isQuoteFormWork(e)) quoteFormAt = Math.max(quoteFormAt ?? 0, Math.min(e.at, Date.now()))
       const fx = applySiteEvent(
         press ? { at: press.at, activityAt: press.activityAt, invalid: press.invalid, busy: siteBusy } : null, e,
       )

@@ -23,7 +23,7 @@ const readTrip = (href, h1) => {
 }
 import {
   KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
-  blockedPath, isNotNow, pauseRunning, pickTrigger, replyKind,
+  blockedPath, isNotNow, noteWaitMs, pauseRunning, pickTrigger, replyKind,
 } from '../src/triggers.ts'
 import { offerVariant } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -213,15 +213,50 @@ test('the hook marks the quote form worked on from the page and from the site, p
   assert.match(hook, /const onType = [\s\S]*?touchQuoteForm\(e\.target\)/)
   assert.match(hook, /const onFormTouch = \(e: Event\) => \{\s+touchQuoteForm\(e\.target\)/)
   assert.match(hook, /if \(!el \|\| inWidget\(el\)\) return\s+touchQuoteForm\(el\)/)
-  // The site's word: opened, a step, a refused or failed send, a send in flight.
-  for (const name of ['quote_form_opened', 'quote_form_step', 'quote_form_invalid', 'quote_form_submitting', 'quote_form_failed']) {
-    assert.match(hook, new RegExp(`e\\.name === '${name}'`), name)
-  }
+  // The site's word: opened, a step, a refused or failed send, a send in flight (siteSignals QUOTE_FORM_WORK,
+  // the list itself in site-signals.test.mjs).
+  assert.match(hook, /if \(isQuoteFormWork\(e\)\) quoteFormAt = Math\.max\(quoteFormAt \?\? 0, Math\.min\(e\.at, Date\.now\(\)\)\)/)
   assert.match(hook, /sinceQuoteFormS: quoteFormAt === null \? null : \(now - quoteFormAt\) \/ 1000/)
   // CodeRabbit #267: work on the form while the server's answer is on its way drops a kayak or reader
   // card; the quote moment keeps its press check.
   assert.match(hook, /const seen = \(\) => \(\{[^}]*quoteForm: quoteFormAt,/)
   assert.match(hook, /if \(trigger !== 'quote' && quoteFormAt !== before\.quoteForm\) return 'quote_form'/)
+})
+
+test('the 10 s note waits while the quote form is worked on, as the moments do (owner, 17 Nov)', () => {
+  // Never touched, or untouched for longer than the watch: no wait.
+  assert.equal(noteWaitMs(null), 0)
+  assert.equal(noteWaitMs(QUOTE_WATCH_S + 0.001), 0)
+  assert.equal(noteWaitMs(QUOTE_WATCH_S + 60), 0)
+  // Touched: it waits until just past QUOTE_WATCH_S since that touch, never 0 while held (no busy loop).
+  assert.equal(noteWaitMs(0), QUOTE_WATCH_S * 1000 + 1)
+  assert.equal(noteWaitMs(12), (QUOTE_WATCH_S - 12) * 1000 + 1)
+  assert.equal(noteWaitMs(QUOTE_WATCH_S), 1)
+  for (const s of [0.0004, 179.9999, QUOTE_WATCH_S - 1e-9]) assert.ok(noteWaitMs(s) >= 1, String(s))
+  // A touch stamped ahead of this clock counts as now, not as a longer wait.
+  assert.equal(noteWaitMs(-5), QUOTE_WATCH_S * 1000 + 1)
+})
+
+test('the note asks again when the form is part of the page again, and one on screen goes when the form starts', () => {
+  const note = widget.slice(widget.indexOf('// ─── The greeting beside the button'), widget.indexOf('// Keep an open chat open'))
+  assert.match(note, /const wait = noteWaitMs\(formAt === null \? null : \(Date\.now\(\) - formAt\) \/ 1000\)\s+if \(wait > 0\) \{/)
+  assert.match(note, /clearTimeout\(attentionTimer\)\s+attentionTimer = setTimeout\(show, wait\)\s+return\s+\}\s+autoOpenedRef\.current = true/)
+  assert.match(note, /const stopFormWatch = watchQuoteForm\(\(at\) => \{\s+formAt = Math\.max\(formAt \?\? 0, at\)\s+setShowAttention\(false\)\s+\}\)/)
+  assert.match(note, /attentionTimer = setTimeout\(show, 10_000\)/)
+  // The early note on a computer (pointer leaving through the top) goes through the same wait.
+  assert.match(note, /Date\.now\(\) - loadedAt < 3000\) return\s+show\(\)/)
+  assert.match(note, /return \(\) => \{\s+clearTimeout\(attentionTimer\)\s+stopFormWatch\(\)/)
+  // The watch: what the hook counts as work on the form, from the page (never the widget) and from the site.
+  assert.match(hook, /export function watchQuoteForm\(onWork: \(at: number\) => void\): \(\) => void \{/)
+  assert.match(hook, /if \(t instanceof Element && !t\.closest\('#bbc-widget-root'\) && quoteForm\(t\)\) onWork\(Date\.now\(\)\)/)
+  assert.match(hook, /if \(isQuoteFormWork\(e\)\) onWork\(Math\.min\(e\.at, Date\.now\(\)\)\)/)
+  assert.match(hook, /const types = \['keydown', 'input', 'change', 'focusin', 'click'\] as const/)
+  assert.match(hook, /for \(const e of siteEvents\(\)\) onSite\(e\)\s+const offSite = onSiteEvent\(onSite\)/)
+  assert.match(hook, /for \(const type of types\) document\.removeEventListener\(type, onPage, cap\)\s+offSite\(\)/)
+  // The same five page events the hook reads the form's touches from.
+  for (const type of ['keydown', 'input', 'change', 'focusin', 'click']) {
+    assert.match(hook, new RegExp(`document\\.addEventListener\\('${type}', on(Type|FormTouch|Click), cap\\)`), type)
+  }
 })
 
 // The payload of each capture call of `event`, up to the line that closes it: an assertion on one event can
