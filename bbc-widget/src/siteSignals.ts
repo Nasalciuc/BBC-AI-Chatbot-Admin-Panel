@@ -279,6 +279,17 @@ export function applySiteEvent(press: QuotePress | null, e: SiteEvent): SiteEffe
   }
 }
 
+/** The site's word that the visitor is working in its quote form, pressed or not: they opened it, moved a
+ *  step, a field was refused, a send went out or failed. No card comes up over it (triggers.ts), nor the
+ *  10 s note beside the button (Widget.tsx). A sent form is `quote_form_submitted`: a stop, not work. */
+export const QUOTE_FORM_WORK: readonly SiteEventName[] = [
+  'quote_form_opened', 'quote_form_step', 'quote_form_invalid', 'quote_form_submitting', 'quote_form_failed',
+]
+
+export function isQuoteFormWork(e: SiteEvent): boolean {
+  return QUOTE_FORM_WORK.includes(e.name)
+}
+
 // ── The page's store ────────────────────────────────────────────────────────────────────────────────────
 
 type Listener = (e: SiteEvent) => void

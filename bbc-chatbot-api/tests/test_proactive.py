@@ -39,7 +39,7 @@ from app.api.chat import (
 )
 from app.models.chat import VisitorInfo
 from app.models.trip_context import TripContext
-from app.services import proactive
+from app.services import note_bandit, proactive
 
 _CONV_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 _VISITOR = "visitor-0123456789"
@@ -94,6 +94,16 @@ def _switches(monkeypatch):
 # The real claim and lookup, for the tests that drive them against a fake table.
 _REAL_CLAIM_OPENING = proactive._claim_opening
 _REAL_STORED_OPENING = proactive._stored_opening
+
+
+@pytest.fixture(autouse=True)
+def _bandit_quiet(monkeypatch):
+    """The note's bandit starts with no counts (half and half) and never reads
+    the database in the background; TestNoteBandit drives the read itself."""
+    note_bandit._reset_for_tests()
+    monkeypatch.setattr(note_bandit, "refresh_soon", MagicMock())
+    yield
+    note_bandit._reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -340,7 +350,16 @@ class TestMergeDefaults:
         for visitor in (_VISITOR, "v-2", "v-3", "visitor-with-another-bucket"):
             out = proactive.offer(visitor, "kayak", _kayak_trip())
             assert out["show"] is True and out["arm"] == "proactive"
-        assert proactive.active_triggers() == {"kayak", "quote", "reader", "exit"}
+        # Exit is off unless named (owner, 17 Nov: 35 panels, no answer, opened as the tab closed).
+        assert proactive.active_triggers() == {"kayak", "quote", "reader"}
+        assert proactive.offer(_VISITOR, "exit", None) == {
+            "show": False, "arm": "off", "trigger": "exit", "message": None, "quick_replies": [],
+        }
+
+    def test_naming_exit_brings_it_back_for_a_widget_that_still_asks(self, monkeypatch):
+        monkeypatch.delenv("PROACTIVE_ENABLED", raising=False)
+        monkeypatch.setenv("PROACTIVE_TRIGGERS", "kayak,quote,reader,exit")
+        assert proactive.offer(_VISITOR, "exit", None)["show"] is True
 
     @pytest.mark.parametrize("off", ["false", "False", "0", "off", "no"])
     def test_the_switch_turns_it_off(self, monkeypatch, off):
@@ -403,7 +422,7 @@ class TestOffer:
     @pytest.mark.asyncio
     async def test_the_card_names_the_brand_of_the_site(self, monkeypatch):
         _switch_on(monkeypatch, percent=100)
-        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="exit", site="bct")
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="reader", site="bct")
         assert req.site == "bct"
         out = await proactive_offer(req, None)
         assert out["message"].startswith("Hi, I'm Alex from Business Class Tickets.")
@@ -419,7 +438,8 @@ class TestNote:
     opens with Alex's words and no form, for every visitor, whatever the
     experiment's switches say — the visitor asked for it."""
 
-    def test_the_note_gets_the_words_with_the_feature_off(self):
+    def test_the_note_gets_the_words_with_the_feature_off(self, monkeypatch):
+        monkeypatch.setattr(note_bandit, "choose", lambda *a, **k: "open")
         out = proactive.offer(_VISITOR, "note", None, "bbc")
         assert out["show"] is True and out["arm"] == "note"
         assert out["message"] == (
@@ -427,6 +447,7 @@ class TestNote:
             "Tell me where and roughly when, and an agent will check fares for you."
         )
         assert out["quick_replies"] == ["Get a fare quote", "I have a question"]
+        assert out["variant"] == "open"
         assert proactive.PROACTIVE_HEALTH["shown"] == 1
 
     @pytest.mark.parametrize("percent", [0, 100])
@@ -506,6 +527,290 @@ class TestNote:
             entities={"_metadata": {"proactive_trigger": "note"}},
         )
         assert "Still needed: route (origin and destination), email," in dynamic
+
+
+class _FakeBanditDb:
+    """conversations and messages as the bandit reads them: rows by the filters it sends, one
+    .range() page at a time, the way PostgREST cuts an answer at its max-rows."""
+
+    def __init__(self, convs, msgs, fail=False):
+        self.convs, self.msgs, self.fail = convs, msgs, fail
+        self.reads: list[tuple] = []
+        self.pages = 0
+        self._table = None
+        self._ids = None
+        self._range = None
+
+    def table(self, name):
+        self._table, self._ids, self._range = name, None, None
+        return self
+
+    def select(self, cols):
+        self.reads.append((self._table, cols))
+        return self
+
+    def in_(self, _col, ids):
+        self._ids = list(ids)
+        return self
+
+    def range(self, lo, hi):
+        self._range = (lo, hi)
+        return self
+
+    def __getattr__(self, _name):
+        # eq, not_, is_, gte, order: the filters are pinned by the test, not applied here.
+        return lambda *a, **k: self
+
+    @property
+    def not_(self):
+        return self
+
+    def execute(self):
+        if self.fail:
+            raise RuntimeError("database down")
+        self.pages += 1
+        rows = list(self.convs) if self._table == "conversations" else [
+            m for m in self.msgs if m.get("conversation_id") in (self._ids or [])
+        ]
+        if self._range is not None:
+            lo, hi = self._range
+            rows = rows[lo:hi + 1]
+        return MagicMock(data=rows)
+
+
+class TestNoteBandit:
+    """Owner, 17 Nov: the tapped note's first question asked another way, tried
+    as a bandit. None of the 12 note chats by 17 Nov left a contact; with no
+    destination on the page, 7 of the 7 the bot carried alone stopped at
+    "where and when"."""
+
+    def test_places_asks_where_with_buttons(self):
+        text, replies = proactive.compose("note", None, "bbc", "places")
+        assert text == (
+            "Hi, I'm Alex from BuyBusinessClass. Where are you thinking of flying? "
+            "Tap one or type a city, and an agent will check business class fares for you."
+        )
+        assert replies == ["Europe", "Asia", "Somewhere else", "I have a question"]
+        # "open" is the note as before.
+        assert proactive.compose("note", None, "bbc", "open") == proactive.compose("note", None, "bbc")
+
+    @pytest.mark.parametrize("trip", [
+        _kayak_trip(), TripContext(destination_code="LHR"),
+        TripContext(destination_name="Seoul", depart_date=_in(30).isoformat()),
+    ])
+    def test_a_named_destination_ignores_the_variant(self, trip):
+        """The page said where: the opening says it back and asks nothing about where."""
+        for variant in ("places", "open", "evil"):
+            assert proactive.compose("note", trip, "bbc", variant) == proactive.compose("note", trip, "bbc")
+        assert proactive.note_variant(trip) is None
+        assert proactive.applied_variant("note", trip, "places") is None
+
+    @pytest.mark.parametrize("trigger", ["kayak", "quote", "reader", "exit"])
+    def test_only_the_note_has_variants(self, trigger):
+        assert proactive.compose(trigger, None, "bbc", "places") == proactive.compose(trigger, None, "bbc")
+        assert proactive.applied_variant(trigger, None, "places") is None
+
+    def test_places_keeps_the_openings_rules(self):
+        """Only an agent checks fares; no time, no price; never "where are you
+        flying from" (ADR 11); the brand of the site."""
+        for site, brand in (("bbc", "BuyBusinessClass"), ("bct", "Business Class Tickets")):
+            text, replies = proactive.compose("note", None, site, "places")
+            assert text.startswith(f"Hi, I'm Alex from {brand}.")
+            lowered = text.lower()
+            assert not re.search(r"\bI(?:'ll| will)? (?:check|pull|find|get)\b", text), text
+            assert "where are you flying" not in lowered and "$" not in text and "within" not in lowered
+            assert "check fares" not in " ".join(replies).lower() and "Not now" not in replies
+
+    def test_the_offer_carries_the_variant_only_when_it_shaped_the_words(self, monkeypatch):
+        monkeypatch.setattr(note_bandit, "choose", lambda *a, **k: "places")
+        out = proactive.offer(_VISITOR, "note", None, "bct")
+        assert out["variant"] == "places"
+        assert (out["message"], out["quick_replies"]) == proactive.compose("note", None, "bct", "places")
+        assert "variant" not in proactive.offer(_VISITOR, "note", _kayak_trip(), "bbc")
+        # The moments have none.
+        _switch_on(monkeypatch, percent=100)
+        assert "variant" not in proactive.offer(_VISITOR, "reader", None)
+
+    def test_half_and_half_until_each_way_has_its_chats(self):
+        import random as _random
+
+        rng = _random.Random(7)
+        few = {"open": (note_bandit.MIN_CHATS - 1, 0), "places": (500, 450)}
+        picks = [note_bandit.choose(few, rng) for _ in range(400)]
+        assert 150 < picks.count("places") < 250
+        # Nothing read yet, or counts that are not counts: half and half too.
+        for counts in (None, {}, {"open": "x", "places": (1, 2, 3)}):
+            picks = [note_bandit.choose(counts if counts is not None else {}, rng) for _ in range(400)]
+            assert 150 < picks.count("open") < 250
+
+    def test_the_better_way_gets_most_chats_and_the_other_is_still_tried(self):
+        import random as _random
+
+        rng = _random.Random(11)
+        counts = {"open": (40, 4), "places": (40, 20)}
+        picks = [note_bandit.choose(counts, rng) for _ in range(1000)]
+        assert picks.count("places") > 950
+        # Even evidence: both keep coming.
+        even = {"open": (40, 10), "places": (40, 10)}
+        picks = [note_bandit.choose(even, rng) for _ in range(1000)]
+        assert 350 < picks.count("places") < 650
+
+    def test_only_known_variants_pass(self):
+        assert [note_bandit.known(v) for v in ("open", "places")] == ["open", "places"]
+        for bad in (None, "", "Places", "evil", 3, ["open"]):
+            assert note_bandit.known(bad) is None
+        assert ChatInitRequest(proactive={"trigger": "note", "variant": "evil"}).proactive.variant is None
+        assert ChatInitRequest(proactive={"trigger": "note", "variant": "places"}).proactive.variant == "places"
+        # An unknown variant never costs the visitor the chat (no 422) and never the opening.
+        assert ChatInitRequest(proactive={"trigger": "note", "variant": {"x": 1}}).proactive.trigger == "note"
+
+    def test_the_variant_is_written_with_the_chat(self):
+        meta = proactive.init_metadata("note", None, "places")
+        assert meta["proactive_variant"] == "places"
+        assert "proactive_variant" not in proactive.init_metadata("note", None, "evil")
+        assert "proactive_variant" not in proactive.init_metadata("kayak", _kayak_trip())
+
+    @pytest.mark.asyncio
+    async def test_the_opening_is_the_offers_words_and_the_chat_counts_for_its_way(self):
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, p_add as add, p_meta as meta, p_seed:
+            await proactive.open_conversation(_CONV_ID, "note", None, "bbc", "places")
+        assert add.await_args.args[2] == proactive.compose("note", None, "bbc", "places")[0]
+        assert meta.await_args.args[1]["proactive_variant"] == "places"
+
+    @pytest.mark.asyncio
+    async def test_a_variant_that_did_not_shape_the_words_is_not_counted(self):
+        trip = _kayak_trip()
+        p_count, p_add, p_meta, p_seed = _open_patches()
+        with p_count, p_add as add, p_meta as meta, p_seed:
+            await proactive.open_conversation(_CONV_ID, "note", trip, "bbc", "places")
+        assert add.await_args.args[2] == proactive.compose("note", trip, "bbc")[0]
+        assert "proactive_variant" not in meta.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_init_hands_the_variant_to_the_opening(self):
+        for sent, got in (("places", "places"), ("evil", None)):
+            payload = ChatInitRequest(visitor_id=_VISITOR, proactive={"trigger": "note", "variant": sent})
+            p_block, p_conv, p_open = _init_patches()
+            with p_block, p_conv, p_open as opener:
+                await chat_init(payload, _request_mock(), None)
+            assert opener.await_args.args[4] == got
+
+    @pytest.mark.asyncio
+    async def test_the_offer_reads_the_counts_only_for_the_note_and_never_waits(self):
+        await proactive_offer(ProactiveOfferRequest(visitor_id=_VISITOR, trigger="note"), None)
+        note_bandit.refresh_soon.assert_called_once_with()
+        note_bandit.refresh_soon.reset_mock()
+        await proactive_offer(ProactiveOfferRequest(visitor_id=_VISITOR, trigger="kayak"), None)
+        note_bandit.refresh_soon.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_counts_are_chats_and_second_messages_per_way(self):
+        convs = [
+            {"id": "c1", "proactive_variant": "places"},
+            {"id": "c2", "proactive_variant": "places"},
+            {"id": "c3", "proactive_variant": "open"},
+            {"id": "c4", "proactive_variant": "evil"},   # not ours: not counted
+            {"id": 5, "proactive_variant": "open"},       # not an id: not counted
+            "junk",
+        ]
+        msgs = [
+            {"conversation_id": "c1"}, {"conversation_id": "c1"},  # answered Alex again
+            {"conversation_id": "c2"},                             # stopped after the first
+            {"conversation_id": "c3"}, {"conversation_id": "c3"}, {"conversation_id": "c3"},
+            {"conversation_id": "c9"},                             # another chat
+        ]
+        fake = _FakeBanditDb(convs, msgs)
+        with patch("app.db.supabase.get_client", return_value=fake), \
+                patch("app.db.supabase._run_sync", new=_plain_run_sync):
+            counts = await note_bandit._read_counts()
+        assert counts == {"open": (1, 1), "places": (2, 1)}
+        # Only how many messages each visitor sent, never what: no content column is read.
+        assert all("content" not in cols for _t, cols in fake.reads)
+
+    @pytest.mark.asyncio
+    async def test_a_second_message_past_the_servers_page_still_counts(self, monkeypatch):
+        """CodeRabbit #267: one answer is cut at PostgREST's max-rows; a visitor whose
+        second message fell past the cut counted as one who stopped. Read page by page."""
+        import app.db.supabase as db_mod
+
+        monkeypatch.setattr(db_mod, "_PAGE", 2)
+        convs = [{"id": "c1", "proactive_variant": "places"}, {"id": "c2", "proactive_variant": "open"},
+                 {"id": "c3", "proactive_variant": "open"}]
+        # The first page holds only c2's and c3's single messages: c1's two come after the cut.
+        msgs = [{"conversation_id": "c2"}, {"conversation_id": "c3"},
+                {"conversation_id": "c1"}, {"conversation_id": "c1"}, {"conversation_id": "c3"}]
+        fake = _FakeBanditDb(convs, msgs)
+        with patch("app.db.supabase.get_client", return_value=fake), \
+                patch("app.db.supabase._run_sync", new=_plain_run_sync):
+            counts = await note_bandit._read_counts()
+        assert counts == {"open": (2, 1), "places": (1, 1)}
+        assert fake.pages > 2
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_keeps_the_last_counts_and_waits_the_ttl(self, caplog):
+        note_bandit._STATS["counts"] = {"open": (30, 3), "places": (30, 9)}
+        with patch("app.db.supabase.get_client", return_value=_FakeBanditDb([], [], fail=True)), \
+                patch("app.db.supabase._run_sync", new=_plain_run_sync), \
+                caplog.at_level(logging.WARNING, logger="app.services.note_bandit"):
+            await note_bandit._refresh()
+        assert note_bandit.counts() == {"open": (30, 3), "places": (30, 9)}
+        assert note_bandit._STATS["at"] is not None
+        assert "counts not read (RuntimeError: database down)" in caplog.text
+        assert note_bandit.NOTE_BANDIT_HEALTH["read_failures"] == 1
+
+    @pytest.mark.asyncio
+    async def test_health_shows_how_the_bandit_reads_and_what_it_counts(self, monkeypatch):
+        from app.api.health import health_detail
+
+        async def _read():
+            return {"open": (25, 5), "places": (24, 11)}
+
+        monkeypatch.setattr(note_bandit, "_read_counts", _read)
+        await note_bandit._refresh()
+        with patch("app.api.health.get_scheduler_health", return_value={}), \
+             patch("app.api.health.supervisor_columns_status", return_value=True), \
+             patch("app.api.health.settings") as s:
+            s.debug = False
+            payload = await health_detail()
+        shown = payload["note_bandit"]
+        assert set(shown) == {"reads", "read_failures", "last_read_at", "counts"}
+        assert shown["reads"] == 1 and shown["read_failures"] == 0 and shown["last_read_at"]
+        assert shown["counts"] == {"open": [25, 5], "places": [24, 11]}
+
+
+class TestNoteBanditRefresh:
+    """refresh_soon itself (the other classes replace it with a mock)."""
+
+    @pytest.fixture(autouse=True)
+    def _real_refresh(self, monkeypatch):
+        monkeypatch.setattr(note_bandit, "refresh_soon", _REAL_REFRESH_SOON)
+
+    @pytest.mark.asyncio
+    async def test_one_read_at_a_time_and_none_while_fresh(self, monkeypatch):
+        import asyncio
+
+        reads = []
+
+        async def _read():
+            reads.append(1)
+            await asyncio.sleep(0)
+            return {"open": (1, 0), "places": (1, 1)}
+
+        monkeypatch.setattr(note_bandit, "_read_counts", _read)
+        note_bandit.refresh_soon()
+        note_bandit.refresh_soon()          # the first read is still running
+        await note_bandit._STATS["task"]
+        assert reads == [1] and note_bandit.counts() == {"open": (1, 0), "places": (1, 1)}
+        note_bandit.refresh_soon()          # fresh: no read
+        assert reads == [1]
+
+    def test_without_a_running_loop_it_does_nothing(self):
+        note_bandit.refresh_soon()
+        assert note_bandit._STATS["task"] is None
+
+
+_REAL_REFRESH_SOON = note_bandit.refresh_soon
 
 
 # ══════════════════════════════════════════════════════════════

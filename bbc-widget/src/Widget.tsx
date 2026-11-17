@@ -11,8 +11,9 @@ import { usePhoneSheet } from './phoneSheet'
 import { posthog } from './posthog'
 import {
   forgetProactiveConversation, isProactiveConversation, proactiveChatStarted, proactiveMetadata, useProactive,
-  type ProactiveOpening,
+  watchQuoteForm, type ProactiveOpening,
 } from './proactive'
+import { noteWaitMs } from './triggers'
 import { keepOpening, readKeptOpening } from './keptOpening'
 
 type Step = 'buttons' | 'form' | 'chat'
@@ -227,18 +228,34 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // A visitor already in a conversation gets news of it on the button instead (unread), never this.
   // On computers the greeting also comes early when the pointer leaves the page through the top
   // (towards the tabs or the address bar): the moment a visitor is about to go.
+  // Never over the site's quote form (owner, 17 Nov), as the moments: while the visitor works on it, pressed
+  // or not, and QUOTE_WATCH_S after, the note waits (noteWaitMs); one already on screen goes away when they
+  // start on the form.
   useEffect(() => {
     if (embedded || step !== 'buttons' || sessionActive) return
     if (autoOpenedRef.current || formFlowStartedRef.current) return
     if (safeGet('bbc_attention_shown') === '1') return
 
+    let formAt: number | null = null
+    let attentionTimer: ReturnType<typeof setTimeout> | undefined
     const show = () => {
       if (formFlowStartedRef.current || autoOpenedRef.current) return
+      const wait = noteWaitMs(formAt === null ? null : (Date.now() - formAt) / 1000)
+      if (wait > 0) {
+        // Asked again when the form is part of the page again (a later touch pushes it further).
+        clearTimeout(attentionTimer)
+        attentionTimer = setTimeout(show, wait)
+        return
+      }
       autoOpenedRef.current = true
       safeSet('bbc_attention_shown', '1')
       setShowAttention(true)
     }
-    const attentionTimer = setTimeout(show, 10_000)
+    const stopFormWatch = watchQuoteForm((at) => {
+      formAt = Math.max(formAt ?? 0, at)
+      setShowAttention(false)
+    })
+    attentionTimer = setTimeout(show, 10_000)
     const loadedAt = Date.now()
     const onLeave = (e: MouseEvent) => {
       if (e.relatedTarget || e.clientY > 8 || Date.now() - loadedAt < 3000) return
@@ -250,6 +267,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
     return () => {
       clearTimeout(attentionTimer)
+      stopFormWatch()
       document.documentElement.removeEventListener('mouseleave', onLeave)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

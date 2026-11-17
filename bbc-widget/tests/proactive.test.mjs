@@ -22,9 +22,10 @@ const readTrip = (href, h1) => {
   return pickTrip(tripFromUrl(search), tripFromTitle(h1))
 }
 import {
-  EXIT_AFTER_S, KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, READER_VISIBLE_S,
-  blockedPath, isNotNow, pauseRunning, pickTrigger, replyKind,
+  KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
+  blockedPath, isNotNow, noteWaitMs, pauseRunning, pickTrigger, replyKind,
 } from '../src/triggers.ts'
+import { offerVariant } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
 import bbc from '../src/config/bbc.ts'
 import bct from '../src/config/bct.ts'
@@ -134,9 +135,9 @@ const base = {
   sinceActivityS: 0,
   scrolledScreens: 0,
   phone: false,
-  finePointer: true,
   sinceSiteTypingS: null,
   quote: null,
+  sinceQuoteFormS: null,
   exitIntent: false,
 }
 const at = (over) => pickTrigger({ ...base, ...over })
@@ -154,11 +155,14 @@ test('reader: 25 s in view and half a screen scrolled', () => {
   assert.equal(at({ visibleS: READER_VISIBLE_S, scrolledScreens: 0.5 }), 'reader')
 })
 
-test('exit: computers only, after 15 s', () => {
-  assert.equal(at({ exitIntent: true, visibleS: EXIT_AFTER_S }), 'exit')
-  assert.equal(at({ exitIntent: true, visibleS: EXIT_AFTER_S - 1 }), null)
-  assert.equal(at({ exitIntent: true, visibleS: 60, phone: true }), null)
-  assert.equal(at({ exitIntent: true, visibleS: 60, finePointer: false }), null)
+test('leaving the page is no moment any more (owner, 17 Nov: 35 panels, no answer, opened as the tab closed)', () => {
+  for (const visibleS of [15, 60, 300]) {
+    assert.equal(at({ exitIntent: true, visibleS }), null, `${visibleS} s`)
+    assert.equal(at({ exitIntent: true, visibleS, phone: true }), null, `${visibleS} s, phone`)
+  }
+  // It still ends a pressed quote form's wait (below), and the visitor's other moments still come.
+  assert.equal(at({ exitIntent: true, visibleS: 40, scrolledScreens: 2 }), 'reader')
+  assert.doesNotMatch(read('triggers.ts'), /return 'exit'/)
 })
 
 test('quote: the form went quiet after the press — 8 s, or 5 s after a flagged field', () => {
@@ -184,9 +188,98 @@ test('quote comes first, and a form being worked on holds every other moment', (
   assert.equal(at({ exitIntent: true, visibleS: 300, quote: pressed({ sincePressS: 900, busy: true }) }), null)
 })
 
-test('kayak before reader before exit', () => {
+test('kayak before reader', () => {
   assert.equal(at({ kayak: true, visibleS: 40, scrolledScreens: 2, exitIntent: true }), 'kayak')
   assert.equal(at({ visibleS: 40, scrolledScreens: 2, exitIntent: true }), 'reader')
+})
+
+test('a quote form being worked on holds kayak and reader, pressed or not (67 of 229 Kayak cards came over one)', () => {
+  // Opened and touched 5 s ago, never pressed: no card over it, however long the visit.
+  assert.equal(at({ kayak: true, visibleS: 30, sinceQuoteFormS: 5 }), null)
+  assert.equal(at({ visibleS: 60, scrolledScreens: 3, sinceQuoteFormS: 40 }), null)
+  // The typing pause alone used to let the card through: 6 s after the last key, still nothing.
+  assert.equal(at({ kayak: true, visibleS: 30, sinceSiteTypingS: 6, sinceQuoteFormS: 6 }), null)
+  // Untouched for longer than the watch: the form is part of the page again.
+  assert.equal(at({ kayak: true, visibleS: 300, sinceQuoteFormS: QUOTE_WATCH_S + 1 }), 'kayak')
+  // A press still brings the quote moment once the form goes quiet, as before.
+  assert.equal(at({ kayak: true, visibleS: 30, sinceQuoteFormS: QUOTE_IDLE_S, quote: pressed({ sinceFormActivityS: QUOTE_IDLE_S }) }), 'quote')
+  // Back in the form long after an old press: held again.
+  assert.equal(at({ kayak: true, visibleS: 300, sinceQuoteFormS: 1, quote: pressed({ sincePressS: 200, sinceFormActivityS: 1 }) }), null)
+})
+
+test('the hook marks the quote form worked on from the page and from the site, pressed or not', () => {
+  assert.match(hook, /const touchQuoteForm = \(t: EventTarget \| null\) => \{\s+if \(t instanceof Element && !inWidget\(t\) && quoteForm\(t\)\) quoteFormAt = Date\.now\(\)/)
+  // Typing, focus/change and clicks inside the form all count.
+  assert.match(hook, /const onType = [\s\S]*?touchQuoteForm\(e\.target\)/)
+  assert.match(hook, /const onFormTouch = \(e: Event\) => \{\s+touchQuoteForm\(e\.target\)/)
+  assert.match(hook, /if \(!el \|\| inWidget\(el\)\) return\s+touchQuoteForm\(el\)/)
+  // The site's word: opened, a step, a refused or failed send, a send in flight (siteSignals QUOTE_FORM_WORK,
+  // the list itself in site-signals.test.mjs).
+  assert.match(hook, /if \(isQuoteFormWork\(e\)\) quoteFormAt = Math\.max\(quoteFormAt \?\? 0, Math\.min\(e\.at, Date\.now\(\)\)\)/)
+  assert.match(hook, /sinceQuoteFormS: quoteFormAt === null \? null : \(now - quoteFormAt\) \/ 1000/)
+  // CodeRabbit #267: work on the form while the server's answer is on its way drops a kayak or reader
+  // card; the quote moment keeps its press check.
+  assert.match(hook, /const seen = \(\) => \(\{[^}]*quoteForm: quoteFormAt,/)
+  assert.match(hook, /if \(trigger !== 'quote' && quoteFormAt !== before\.quoteForm\) return 'quote_form'/)
+})
+
+test('the 10 s note waits while the quote form is worked on, as the moments do (owner, 17 Nov)', () => {
+  // Never touched, or untouched for longer than the watch: no wait.
+  assert.equal(noteWaitMs(null), 0)
+  assert.equal(noteWaitMs(QUOTE_WATCH_S + 0.001), 0)
+  assert.equal(noteWaitMs(QUOTE_WATCH_S + 60), 0)
+  // Touched: it waits until just past QUOTE_WATCH_S since that touch, never 0 while held (no busy loop).
+  assert.equal(noteWaitMs(0), QUOTE_WATCH_S * 1000 + 1)
+  assert.equal(noteWaitMs(12), (QUOTE_WATCH_S - 12) * 1000 + 1)
+  assert.equal(noteWaitMs(QUOTE_WATCH_S), 1)
+  for (const s of [0.0004, 179.9999, QUOTE_WATCH_S - 1e-9]) assert.ok(noteWaitMs(s) >= 1, String(s))
+  // A touch stamped ahead of this clock counts as now, not as a longer wait.
+  assert.equal(noteWaitMs(-5), QUOTE_WATCH_S * 1000 + 1)
+})
+
+test('the note asks again when the form is part of the page again, and one on screen goes when the form starts', () => {
+  const note = widget.slice(widget.indexOf('// ─── The greeting beside the button'), widget.indexOf('// Keep an open chat open'))
+  assert.match(note, /const wait = noteWaitMs\(formAt === null \? null : \(Date\.now\(\) - formAt\) \/ 1000\)\s+if \(wait > 0\) \{/)
+  assert.match(note, /clearTimeout\(attentionTimer\)\s+attentionTimer = setTimeout\(show, wait\)\s+return\s+\}\s+autoOpenedRef\.current = true/)
+  assert.match(note, /const stopFormWatch = watchQuoteForm\(\(at\) => \{\s+formAt = Math\.max\(formAt \?\? 0, at\)\s+setShowAttention\(false\)\s+\}\)/)
+  assert.match(note, /attentionTimer = setTimeout\(show, 10_000\)/)
+  // The early note on a computer (pointer leaving through the top) goes through the same wait.
+  assert.match(note, /Date\.now\(\) - loadedAt < 3000\) return\s+show\(\)/)
+  assert.match(note, /return \(\) => \{\s+clearTimeout\(attentionTimer\)\s+stopFormWatch\(\)/)
+  // The watch: what the hook counts as work on the form, from the page (never the widget) and from the site.
+  assert.match(hook, /export function watchQuoteForm\(onWork: \(at: number\) => void\): \(\) => void \{/)
+  assert.match(hook, /if \(t instanceof Element && !t\.closest\('#bbc-widget-root'\) && quoteForm\(t\)\) onWork\(Date\.now\(\)\)/)
+  assert.match(hook, /if \(isQuoteFormWork\(e\)\) onWork\(Math\.min\(e\.at, Date\.now\(\)\)\)/)
+  assert.match(hook, /const types = \['keydown', 'input', 'change', 'focusin', 'click'\] as const/)
+  assert.match(hook, /for \(const e of siteEvents\(\)\) onSite\(e\)\s+const offSite = onSiteEvent\(onSite\)/)
+  assert.match(hook, /for \(const type of types\) document\.removeEventListener\(type, onPage, cap\)\s+offSite\(\)/)
+  // The same five page events the hook reads the form's touches from.
+  for (const type of ['keydown', 'input', 'change', 'focusin', 'click']) {
+    assert.match(hook, new RegExp(`document\\.addEventListener\\('${type}', on(Type|FormTouch|Click), cap\\)`), type)
+  }
+})
+
+// The payload of each capture call of `event`, up to the line that closes it: an assertion on one event can
+// never be satisfied by the next event's payload (CodeRabbit #267).
+const payloads = (event) => [...hook.matchAll(new RegExp(`capture\\('${event}', \\{([\\s\\S]*?)\\n\\s*\\}\\)`, 'g'))].map((m) => m[1])
+
+test('the note\'s variant goes out with the answer and with its measurements, and nothing else passes for one', () => {
+  assert.equal(offerVariant('places'), 'places')
+  assert.equal(offerVariant('open'), 'open')
+  for (const bad of [undefined, null, 3, '', 'Places', 'pl aces', '<b>', 'x'.repeat(30), ['open']]) {
+    assert.equal(offerVariant(bad), undefined, String(bad))
+  }
+  assert.match(api, /const variant = offerVariant\(data\.variant\)/)
+  assert.match(hook, /trigger: 'note', message: res\.message[^}]*shownAt: Date\.now\(\),\s*\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\),\s*\}/)
+  assert.match(chat, /proactive: \{ trigger: opening\.trigger, \.\.\.\(opening\.variant \? \{ variant: opening\.variant \} : \{\}\) \}/)
+  for (const ev of ['proactive_dismissed', 'proactive_engaged']) {
+    const all = payloads(ev)
+    assert.equal(all.length, 1, ev)
+    assert.ok(all[0].includes('...(o.variant ? { variant: o.variant } : {})'), ev)
+  }
+  const noteShown = payloads('proactive_shown').filter((p) => p.includes("trigger: 'note'"))
+  assert.equal(noteShown.length, 1)
+  assert.ok(noteShown[0].includes('...(res.variant ? { variant: res.variant } : {})'))
 })
 
 test('never on the thank-you or legal pages, never for an idle visitor, never mid-typing', () => {
@@ -219,7 +312,7 @@ test('the 24 h pause, "Not now" and what a reply was', () => {
 test('the card-opened chat makes no /chat/start: the first message creates the conversation', () => {
   const mount = chat.slice(chat.indexOf('// AI opens on fresh sessions'))
   assert.ok(mount.indexOf('if (openingRef.current) {') < mount.indexOf('startConversation()'))
-  assert.match(chat, /\.\.\.\(opening \? \{ trip: opening\.trip, proactive: \{ trigger: opening\.trigger \} \} : \{\}\)/)
+  assert.match(chat, /\.\.\.\(opening \? \{\s+trip: opening\.trip,\s+proactive: \{ trigger: opening\.trigger,/)
 })
 
 test('the stored opening moves the poll cursor before the stream connects', () => {
@@ -348,6 +441,10 @@ test('a kept opening reads back whole, without the reply already sent; anything 
   assert.deepEqual(odd.quickReplies, ['ok'])
   assert.equal(odd.trip, null)
   assert.equal(typeof odd.shownAt, 'number')
+  // The note's variant travels with it to the next page; a value that is not one never does.
+  const note = keepOpening({ ...o, trigger: 'note', variant: 'places' })
+  assert.equal(readKeptOpening(JSON.parse(JSON.stringify(note))).variant, 'places')
+  assert.equal('variant' in readKeptOpening({ ...note, variant: '<script>' }), false)
 })
 
 test('the quote form\'s send is read off its submit button by the press\'s own rule (a <button> without a type)', () => {

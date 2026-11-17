@@ -13,9 +13,9 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  FIELD_KINDS, SITE_EVENTS, activityLine, activityToken, applySiteEvent, fieldKind, fieldKinds, lastSearch,
-  noMomentPage, onSiteEvent, readSiteEvent, readSitePage, siteEvents, siteMetadata, sitePage, startSiteSignals,
-  stopSiteSignals,
+  FIELD_KINDS, QUOTE_FORM_WORK, SITE_EVENTS, activityLine, activityToken, applySiteEvent, fieldKind, fieldKinds,
+  isQuoteFormWork, lastSearch, noMomentPage, onSiteEvent, readSiteEvent, readSitePage, siteEvents, siteMetadata,
+  sitePage, startSiteSignals, stopSiteSignals,
 } from '../src/siteSignals.ts'
 import { pickTrip, tripFromFields, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
 import { choosePostHog, sitePostHogOf, watchSitePostHog } from '../src/posthogChoice.ts'
@@ -160,6 +160,13 @@ test('a refused or failed send is a press with a flagged field; a send in flight
   assert.deepEqual(applySiteEvent(fx.press, ev('quote_form_submitted')), { press: null, stop: 'sent' })
   assert.equal(applySiteEvent(null, ev('contact_clicked', { channel: 'phone' })).stop, 'contact')
   assert.deepEqual(applySiteEvent(fx.press, ev('search_submitted')), { press: fx.press, stop: null })
+})
+
+test('work in the quote form, pressed or not, is everything the site says about it short of sending it', () => {
+  assert.deepEqual([...QUOTE_FORM_WORK], ['quote_form_opened', 'quote_form_step', 'quote_form_invalid', 'quote_form_submitting', 'quote_form_failed'])
+  for (const name of SITE_EVENTS) assert.equal(isQuoteFormWork(ev(name)), QUOTE_FORM_WORK.includes(name), name)
+  // A sent form and a contact are stops (applySiteEvent), a search is the trip: none of them is work in the form.
+  for (const name of ['quote_form_submitted', 'contact_clicked', 'search_submitted']) assert.equal(isQuoteFormWork(ev(name)), false, name)
 })
 
 // ── The trip ──────────────────────────────────────────────────────────────────────────────────────────
@@ -375,7 +382,7 @@ test('the card and the note start from the newest trip; a visitor who sent the f
   assert.match(hook, /if \(ssGet\(NOTE_CLOSED_KEY\)\) return\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return/)
   assert.match(hook, /if \(blockedPath\(location\.pathname\)\) return 'left_page'\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return 'left_page'/)
   // A search on the site while the answer was on its way: the trip it was asked with is an old one.
-  assert.match(hook, /formAt: press\?\.activityAt \?\? null, search: lastSearch\(\),/)
+  assert.match(hook, /formAt: press\?\.activityAt \?\? null,\s+quoteForm: quoteFormAt, search: lastSearch\(\),/)
   assert.match(hook, /if \(lastSearch\(\) !== before\.search\) return 'searched'/)
   assert.match(stop, /for \(const e of siteEvents\(\)\) stopFor\(e\)\s+return onSiteEvent\(stopFor\)/)
   // The watch hears the queue first, then the page; and lets go of it on cleanup.

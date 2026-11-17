@@ -16,8 +16,14 @@ const OPENING_TRIGGERS: readonly OpeningTrigger[] = ['kayak', 'quote', 'reader',
 
 /** The opening as it is kept. The reply tapped on the card is not kept: it went out already. */
 export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstReply'> {
-  return { trigger: o.trigger, message: o.message, quickReplies: o.quickReplies, trip: o.trip, surface: o.surface, shownAt: o.shownAt }
+  return {
+    trigger: o.trigger, message: o.message, quickReplies: o.quickReplies, trip: o.trip, surface: o.surface, shownAt: o.shownAt,
+    ...(o.variant ? { variant: o.variant } : {}),
+  }
 }
+
+/** The variant as the server names them (api.ts offerVariant, repeated: no runtime imports here). */
+const VARIANT = /^[a-z][a-z_]{0,23}$/
 
 /** A kept opening read back, or null when it is not one (anything else written there). */
 export function readKeptOpening(v: unknown): ProactiveOpening | null {
@@ -36,5 +42,6 @@ export function readKeptOpening(v: unknown): ProactiveOpening | null {
     trip: o.trip && typeof o.trip === 'object' ? (o.trip as TripPayload) : null,
     surface: o.surface,
     shownAt: typeof o.shownAt === 'number' && Number.isFinite(o.shownAt) ? o.shownAt : Date.now(),
+    ...(typeof o.variant === 'string' && VARIANT.test(o.variant) ? { variant: o.variant } : {}),
   }
 }

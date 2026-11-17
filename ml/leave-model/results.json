@@ -1,0 +1,79 @@
+{
+  "sessions": {
+    "train": 3137,
+    "test": 796
+  },
+  "M0": {
+    "log_loss": 0.4535,
+    "auc": 0.585
+  },
+  "M1": {
+    "log_loss": 0.4499,
+    "auc": 0.616
+  },
+  "M2": {
+    "log_loss": 0.4463,
+    "auc": 0.628
+  },
+  "calibration_M2_test": [
+    {
+      "predicted": 0.064,
+      "observed": 0.076,
+      "person_periods": 541
+    },
+    {
+      "predicted": 0.113,
+      "observed": 0.108,
+      "person_periods": 711
+    },
+    {
+      "predicted": 0.15,
+      "observed": 0.163,
+      "person_periods": 760
+    },
+    {
+      "predicted": 0.192,
+      "observed": 0.203,
+      "person_periods": 1062
+    },
+    {
+      "predicted": 0.283,
+      "observed": 0.245,
+      "person_periods": 982
+    }
+  ],
+  "coefficients_M2": {
+    "k0": -1.984,
+    "k1": -1.857,
+    "k2": -1.717,
+    "k3": -2.108,
+    "k4": -2.203,
+    "k5": -2.049,
+    "k6": -1.71,
+    "k7": -1.919,
+    "k8": -1.299,
+    "k9": -1.612,
+    "kayak": 0.323,
+    "search_ad": -0.138,
+    "phone": 0.207,
+    "in_app": -0.486,
+    "kayak_phone": 0.343,
+    "touched": 0.437,
+    "touched_phone": -0.173,
+    "touched_early": -1.03
+  },
+  "p_leave_in_next_10s_at_10s": {
+    "kayak/phone/browser/no touch": 0.387,
+    "kayak/phone/browser/touched": 0.215,
+    "kayak/phone/in-app/no touch": 0.27,
+    "kayak/phone/in-app/touched": 0.142,
+    "kayak/computer/browser/no touch": 0.257,
+    "kayak/computer/browser/touched": 0.156,
+    "search_ad/phone/browser/no touch": 0.209,
+    "search_ad/phone/browser/touched": 0.106,
+    "search_ad/phone/in-app/no touch": 0.137,
+    "search_ad/phone/in-app/touched": 0.067,
+    "search_ad/computer/browser/no touch": 0.175,
+    "search_ad/computer/browser/touched": 0.103
+  }
+}
