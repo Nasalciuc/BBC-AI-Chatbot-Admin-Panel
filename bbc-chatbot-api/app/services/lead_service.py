@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+import weakref
 from datetime import date
 from typing import Optional
 
@@ -244,6 +245,21 @@ def _append_note(existing: Optional[str], line: str) -> Optional[str]:
 
 _CONTACT_FIELDS = ("visitor_name", "visitor_email", "visitor_phone")
 
+# One lead write at a time per conversation (CodeRabbit #268, round 2). A client's
+# message to an operator starts the contact recorder and the operator card side by
+# side, and the pipeline writes the lead too: each reads the stored contacts, writes
+# its own and scores from what it read, so the last score written could miss the
+# other's contact. The API runs in one process (Dockerfile: --workers 1), so a lock
+# per conversation orders every writer; a lock nobody holds or waits on goes away.
+_LEAD_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _lead_lock(conversation_id: str) -> asyncio.Lock:
+    lock = _LEAD_LOCKS.get(conversation_id)
+    if lock is None:
+        lock = _LEAD_LOCKS[conversation_id] = asyncio.Lock()
+    return lock
+
 
 async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
     """The contacts the conversation already holds, for the score.
@@ -273,7 +289,12 @@ async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
 
 
 async def update_lead_from_entities(conversation_id: str, entities: dict) -> None:
-    """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7."""
+    """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7.
+
+    Writes for one conversation run one after another (_lead_lock): the read,
+    the contact and lead writes and the score write never interleave."""
+    lock = _lead_lock(conversation_id)
+    await lock.acquire()
     try:
         from app.db.supabase import get_client, _run_sync
         db_client = get_client()
@@ -479,3 +500,5 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             logger.error(f"[{conversation_id}] Lead payload was: {lead_payload}")
         except NameError:
             pass
+    finally:
+        lock.release()

@@ -273,3 +273,100 @@ async def test_unread_contacts_still_let_the_score_rise():
     )
     assert _score_written(tables) == {"score": 25, "tier": "bronze"}  # route 15 + email 10, a floor
     assert {"visitor_email": "ana@example.com"} in tables["conversations"].updates
+
+
+# ── One lead write at a time per conversation (CodeRabbit #268, round 2) ──
+# An email and a phone written side by side (the contact recorder beside the
+# operator card, or two messages close together): each read the stored contacts
+# before the other wrote, and the last score written missed one of them.
+
+
+class _Shared:
+    """Tables whose writes later reads see, for writers that interleave."""
+
+    def __init__(self, lead, conv):
+        self.rows = {"leads": dict(lead), "conversations": dict(conv)}
+        self.scores: list[int] = []
+
+    def table(self, name):
+        return _SharedQuery(self, name)
+
+
+class _SharedQuery:
+    def __init__(self, store, name):
+        self.store, self.name, self.op, self.payload = store, name, None, None
+
+    def select(self, *_a, **_k):
+        self.op = "select"
+        return self
+
+    def update(self, payload):
+        self.op, self.payload = "update", payload
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        row = self.store.rows[self.name]
+        if self.op == "select":
+            return _Res([dict(row)])
+        row.update(self.payload)
+        if "score" in self.payload:
+            self.store.scores.append(self.payload["score"])
+        return _Res([])
+
+
+async def _two_writers(store, first, second):
+    from app.db import supabase as db
+    from app.services import lead_service
+
+    async def _sync(fn, *_a, **_k):
+        await asyncio.sleep(0)  # every round trip lets the other writer in
+        return fn()
+
+    with patch.object(db, "get_client", return_value=store), patch.object(db, "_run_sync", _sync):
+        await asyncio.gather(
+            lead_service.update_lead_from_entities("c1", first),
+            lead_service.update_lead_from_entities("c1", second),
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_email_and_a_phone_written_side_by_side_both_count():
+    lead = {"id": "L1", "score": 35, "tier": "bronze", "origin_code": "JFK", "destination_code": "LHR",
+            "departure_date": "2027-04-10", "passengers": 2}
+    store = _Shared(lead, {"visitor_name": None, "visitor_email": None, "visitor_phone": None})
+    await _two_writers(store, {"email": "ana@example.com"}, {"phone": "2105550100"})
+    conv, lead_row = store.rows["conversations"], store.rows["leads"]
+    assert conv["visitor_email"] == "ana@example.com" and conv["visitor_phone"] == "+12105550100"
+    # Route 15 + dates 10 + passengers 10 + email 10 + phone 15: what the stored row says.
+    assert (lead_row["score"], lead_row["tier"]) == (60, "silver")
+    assert store.scores == [45, 60]  # the second writer read the first one's email
+
+
+@pytest.mark.asyncio
+async def test_other_conversations_never_wait_for_each_other():
+    from app.services import lead_service
+
+    held = lead_service._lead_lock("c-busy")
+    await held.acquire()
+    try:
+        lead = {"id": "L2", "score": 0, "tier": "bronze"}
+        store = _Shared(lead, {})
+
+        async def _sync(fn, *_a, **_k):
+            return fn()
+
+        from app.db import supabase as db
+        with patch.object(db, "get_client", return_value=store), patch.object(db, "_run_sync", _sync):
+            await asyncio.wait_for(lead_service.update_lead_from_entities("c2", {"email": "ana@example.com"}), 1)
+        assert store.rows["leads"]["score"] == 10
+    finally:
+        held.release()
+    # A lock nobody holds or waits on does not stay behind.
+    del held
+    assert "c-busy" not in lead_service._LEAD_LOCKS
