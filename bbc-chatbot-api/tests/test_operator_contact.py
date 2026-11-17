@@ -6,11 +6,16 @@ reached the conversation; in chats with Alex alone, 7 of 7 did.
 
 import asyncio
 import logging
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.pipeline import operator_contact
+os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+
+from app.pipeline import operator_contact  # noqa: E402
 
 NAME_Q = [
     {"role": "user", "content": "I need 2 seats JFK to LHR"},
