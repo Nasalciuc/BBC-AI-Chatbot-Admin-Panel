@@ -69,7 +69,7 @@ export function FloatingButtons({
     if (card) setPulseKey(k => k + 1)
   }, [card])
 
-  // The card: its first button is the server's first reply ("Yes, check fares"); "Not now" closes it.
+  // The card: its first button is the server's first reply ("Yes, send me fares"); "Not now" closes it.
   const cardYes = card?.quickReplies.find(r => !isNotNow(r))
   const cardNo = card?.quickReplies.find(isNotNow) || 'Not now'
 
@@ -135,7 +135,7 @@ export function FloatingButtons({
           <button type="button" class="bw-nudge__open" onClick={() => (onNoteOpen ? onNoteOpen() : onSelect('sales'))}>
             <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
             <span class="bw-nudge__title">{context?.title || 'Planning a business class trip?'}</span>
-            <span class="bw-nudge__text">{context?.line || "Tell me where and when, and I'll check fares for you."}</span>
+            <span class="bw-nudge__text">{context?.line || 'Tell me where and when, and an agent will check fares for you.'}</span>
             <span class="bw-nudge__cta">Get a fare quote <IconArrowRight /></span>
           </button>
           <button

@@ -366,7 +366,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proactive.offer])
 
-  // The 10 s note promises a conversation ("Tell me where and when, and I'll check fares"): a tap on it
+  // The 10 s note promises a conversation ("Tell me where and when, and an agent will check fares"): a tap on it
   // opens the chat with Alex's words for this page and no form, like the card's chat (owner's decision,
   // 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the chat got past the form the note led to).
   // The corner button does the same (owner's decision, 16 Nov, later: "straight into the conversation,
