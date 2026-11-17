@@ -106,14 +106,55 @@ class ExtractedEntities(BaseModel):
         return self
 
 
+def _next_occurrence(d: date, today: date) -> Optional[date]:
+    for year in (today.year, today.year + 1):
+        try:
+            candidate = d.replace(year=year)
+        except ValueError:  # noqa: silent — 29 February in a year without one: try the next year
+            continue
+        if candidate >= today:
+            return candidate
+    return None
+
+
+def roll_past_dates_forward(raw: Optional[dict], today: Optional[date] = None) -> dict:
+    """A date the model wrote with the year already gone is the next one.
+
+    17 Nov 2026: the tool's own example ("'june 15'=2026-06-15") taught the
+    model this year's date for every month already past. "June 14" became
+    2026-06-14, the check refused it, the tool answered "Not saved, not
+    valid: departure_date", and Alex asked a client who had given the date
+    for it again ("I notice the system needs your departure date"). The
+    prompt says a date that already passed is its next occurrence; this
+    applies it to what the model sent. Only a date of the past twelve
+    months moves — anything older stays for the check to refuse.
+    """
+    out = dict(raw or {})
+    today = today or date.today()
+    for key in ("departure_date", "return_date"):
+        value = out.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            d = date.fromisoformat(value.strip())
+        except ValueError:  # noqa: silent — not a date: left as sent, the check right after refuses it
+            continue
+        if today - timedelta(days=365) <= d < today - timedelta(days=1):
+            moved = _next_occurrence(d, today)
+            if moved:
+                out[key] = moved.isoformat()
+    return out
+
+
 def validate_tool_entities(raw: dict) -> tuple[Optional[dict], Optional[str]]:
     """(clean_entities, None) on success — (None, error_text) on failure.
 
     The error text is meant to be fed back to the model for ONE correction
-    re-prompt.
+    re-prompt. A date from the past twelve months is first moved to its next
+    occurrence (roll_past_dates_forward).
     """
     try:
-        model = ExtractedEntities.model_validate(raw or {})
+        model = ExtractedEntities.model_validate(roll_past_dates_forward(raw))
     except ValidationError as e:
         return None, str(e)
     return {k: v for k, v in model.model_dump().items() if v is not None}, None
@@ -124,7 +165,7 @@ def salvage_tool_entities(raw: dict) -> dict:
     known fields, drop everything else. The reply must never crash over a bad
     tool argument."""
     out: dict = {}
-    for key, val in (raw or {}).items():
+    for key, val in roll_past_dates_forward(raw).items():
         if key not in ExtractedEntities.model_fields:
             continue
         try:

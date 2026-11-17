@@ -395,7 +395,9 @@ TRAVEL_TOOL = {
         "'last time I flew to London' — ignore past trips, extract only CURRENT request.\n"
         "5. TRIP TYPE: oneway/ow/single=one_way. roundtrip/rt/return=round_trip. "
         "If return date exists, use round_trip even if they said one way.\n"
-        "6. DATES: Convert to YYYY-MM-DD. 'june 15'=2026-06-15. If too vague like 'next month', omit. "
+        "6. DATES: Convert to YYYY-MM-DD, counted from today's date (VISITOR CONTEXT): a date with no "
+        "year is its NEXT occurrence — asked in November, 'june 15' is June 15 of next year. "
+        "If too vague like 'next month', omit. "
         "Dates must be today or in the future — never return a past date; resolve a past-looking date "
         "to its next future occurrence. For numeric dates like 09/05 assume MM/DD unless the first "
         "number is > 12 (then DD/MM)."
@@ -609,9 +611,17 @@ def _validate_with_reprompt(
 # streamed turns that saved details, about half had no words and most of the
 # rest one short line. The tool's answer now goes back and the model finishes
 # its reply; it cannot call the tool a second time (tool_choice none).
+# How the rest of the reply is written, whatever was saved: short, one
+# question at most, and nothing about saving, a system or a tool. 17 Nov:
+# "I notice the system needs your departure date" (to a client who had
+# given it), and replies past the widget's 350 characters lost their
+# closing question to the cut (validator.MAX_LENGTH).
+_FINISH_RULES = (
+    "Now finish your reply to the client in one or two short sentences, with "
+    "at most one question, never mentioning saving, a system or a tool"
+)
 _TOOL_SAVED = (
-    "Saved. Now write the rest of your reply to the client, without saying "
-    "that you saved anything — or, if your words before the tool call already "
+    f"Saved. {_FINISH_RULES} — or, if your words before the tool call already "
     "answer the client, end your turn without writing more."
 )
 _NO_TOOL = {"type": "none"}
@@ -637,8 +647,7 @@ def _tool_answer(sent: dict, kept: dict) -> str:
     return (
         f"Saved as: {held}."
         + (f" Not saved, not valid: {', '.join(lost)}." if lost else "")
-        + " Now write the rest of your reply to the client, without saying that you "
-        "saved anything. Confirm only the details as saved above"
+        + f" {_FINISH_RULES}. Confirm only the details as saved above"
         + ("; ask the client again for what was not saved." if lost else ".")
     )
 

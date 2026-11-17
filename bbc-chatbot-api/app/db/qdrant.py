@@ -6,6 +6,7 @@ Qdrant embeds text server-side — zero client-side embedding.
 """
 import asyncio
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -363,7 +364,34 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
         return []
 
 
+# A tapped button or a reply of a word or two asks the knowledge base
+# nothing. 16-17 Nov: every such search ("Yes, check fares" — the card's
+# button — "ok", "Text") came back empty, a round trip to Qdrant each, and a
+# loose match would only put an unrelated entry in front of Alex.
+_BUTTON_TAPS = frozenset({
+    "yes, check fares", "check fares", "change details", "i have a question", "not now",
+})
+_NO_QUESTION_WORDS = frozenset("""
+ok okay k yes yeah yep yup no nope sure fine great perfect cool good nice alright right
+thanks thank you thx ty please pls hi hello hey got it lol hmm sounds
+text txt sms email mail call phone
+""".split())
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def worth_searching(query_text: str) -> bool:
+    """False for a button tap or a message made only of acknowledgements
+    and channel words ("Yes please", "ok thanks", "Text")."""
+    text = " ".join((query_text or "").lower().split()).strip(" .!?")
+    if not text or text in _BUTTON_TAPS:
+        return False
+    words = _WORD_RE.findall(text)
+    return bool(words) and not all(w in _NO_QUESTION_WORDS for w in words)
+
+
 async def search_kb(query_text: str, tunnel: str = "sales", limit: int = 3) -> list[dict]:
+    if not worth_searching(query_text):
+        return []
     return await asyncio.to_thread(_search_sync, query_text, tunnel, limit)
 
 
