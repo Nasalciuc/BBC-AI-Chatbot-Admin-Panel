@@ -1,14 +1,17 @@
 import type { ComponentChildren } from 'preact'
+import { useState } from 'preact/hooks'
 import brand from './config'
 import { IconClose, IconExpand, IconPhone, IconShrink } from './icons'
 import { useLarge } from './largeView'
+import { CONSULTANT_LABEL, agentInitials, type Operator } from './operator'
 import { PersonaAvatar } from './PersonaAvatar'
 import { posthog } from './posthog'
 
 interface Props {
-  /** The line under the name when a person took the chat ("Chatting with Maria"); without it, Alex's
-   *  own line (PersonaLine). */
-  subtitle?: string
+  /** The person who wrote the latest reply (operator.ts, currentOperator): their photo, name and line
+   *  take Alex's place, so the client sees who they work with now (owner, 17 Nov 2026). Without it,
+   *  Alex. */
+  operator?: Operator | null
   /** Hidden in the CRM iframe, where the panel is always open. */
   onClose?: () => void
   closeLabel?: string
@@ -31,24 +34,52 @@ export function PersonaLine() {
   return <><span class="bw-sr">AI </span>{personaLine}</>
 }
 
+/** "Consultant · BuyBusinessClass": the line under the name of a person from the team, the word the
+ *  chat already signs their messages with ("Maria, consultant"). */
+export const operatorLine = `${CONSULTANT_LABEL} · ${brand.name}`
+
+/**
+ * A person's round avatar in the header: their photo, or their initials when there is none or it
+ * fails to load. No "AI" badge — a person; the green dot stays. Decorative, as Alex's is: the name
+ * beside it says who it is.
+ */
+function OperatorAvatar({ operator }: { operator: Operator }) {
+  const [broken, setBroken] = useState(false)
+  const photo = Boolean(operator.avatarUrl) && !broken
+  return (
+    <span class={photo ? 'bw-head__ava bw-photo' : 'bw-head__ava'} aria-hidden="true">
+      {photo
+        ? <img src={operator.avatarUrl as string} alt="" draggable={false} onError={() => setBroken(true)} />
+        : agentInitials(operator.name)}
+      <i class="bw-head__live" />
+    </span>
+  )
+}
+
 /**
  * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (his photo with the "AI" badge,
  * PersonaAvatar.tsx), the name, his line (PersonaLine), a call button, the whole-screen button
- * (largeView.ts) and close.
+ * (largeView.ts) and close. Once a person from the team writes in the chat, their photo, name and
+ * line (operatorLine) stand there instead, until the chat comes back to Alex.
  */
-export function PanelTop({ subtitle, onClose, closeLabel = 'Close', canEnlarge = true, children, titleId }: Props) {
+export function PanelTop({ operator, onClose, closeLabel = 'Close', canEnlarge = true, children, titleId }: Props) {
   const tel = `tel:+${brand.contactPhone.replace(/\D/g, '')}`
   const [large, setLarge] = useLarge()
   const sizeLabel = large ? 'Make the chat smaller' : 'Make the chat bigger'
   return (
     <div class="bw-top">
       <div class="bw-head">
-        <PersonaAvatar cls="bw-head__ava" badge>
-          <i class="bw-head__live" />
-        </PersonaAvatar>
+        {operator
+          // Keyed: another person's photo gets its own load (a failed one doesn't stick).
+          ? <OperatorAvatar key={`${operator.name}|${operator.avatarUrl || ''}`} operator={operator} />
+          : (
+            <PersonaAvatar cls="bw-head__ava" badge>
+              <i class="bw-head__live" />
+            </PersonaAvatar>
+          )}
         <div class="bw-head__text">
-          <div class="bw-head__name" id={titleId}>{brand.persona.name}</div>
-          <div class="bw-head__sub">{subtitle || <PersonaLine />}</div>
+          <div class="bw-head__name" id={titleId}>{operator ? operator.name : brand.persona.name}</div>
+          <div class="bw-head__sub">{operator ? operatorLine : <PersonaLine />}</div>
         </div>
         <div class="bw-head__actions">
           <a

@@ -17,6 +17,7 @@ import { posthog, posthogSessionId } from './posthog'
 import { markProactiveConversation, type ProactiveOpening } from './proactive'
 import { siteMetadata } from './siteSignals'
 import { isNotNow } from './triggers'
+import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
 
 interface Message {
   id: string
@@ -28,16 +29,6 @@ interface Message {
   agent_avatar_url?: string | null
 }
 
-const CONSULTANT_LABEL = 'Consultant'
-
-function agentInitials(name: string): string {
-  return name
-    .split(' ')
-    .map(w => w[0] || '')
-    .join('')
-    .toUpperCase()
-    .slice(0, 2)
-}
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -674,8 +665,12 @@ export function ChatWindow({
           // visitor still gets it through the incremental poll.
           if (msg.role === 'user') return
           setMessages(prev => {
-            if (prev.some(m => m.id === msg.id)) return prev
-            return [...prev, msg]
+            const at = prev.findIndex(m => m.id === msg.id)
+            if (at === -1) return [...prev, msg]
+            // The same row again: the one on screen stays, signed with the
+            // operator's name and photo if only this copy carries them.
+            const merged = withOperatorFrom(prev[at], msg)
+            return merged === prev[at] ? prev : prev.map((m, k) => (k === at ? merged : m))
           })
           if (msg.created_at) lastMsgTime.current = msg.created_at
         } catch { /* malformed event — ignore */ }
@@ -1121,10 +1116,9 @@ export function ChatWindow({
     return new Date(cur.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60_000
   }
   const endsGroup = (i: number) => i === shown.length - 1 || startsGroup(i + 1)
-  const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
-  const lastAgentName = (lastAgent?.agent_name || '').trim()
-  // Alex's own line (PersonaLine) until a person writes in the chat.
-  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : undefined
+  // Who answers now (owner, 17 Nov 2026): once a person writes in the chat, the header shows their
+  // photo and name instead of Alex's, and Alex again if the chat comes back to him.
+  const operator = currentOperator(shown)
   // Alex's avatar: his photo (PersonaAvatar.tsx). The "AI" badge is the header's alone.
   const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
@@ -1151,7 +1145,7 @@ export function ChatWindow({
     >
       <PanelTop
         titleId="bw-chat-title"
-        subtitle={subtitle}
+        operator={operator}
         closeLabel="Close chat"
         canEnlarge={!embedded}
         onClose={embedded ? undefined : () => {
