@@ -27,7 +27,7 @@ Switches (``app_settings.flags``, read every 30 s, no deploy):
 
 One more door is not a moment and the switches above do not hold it:
 ``note``, the visitor TAPPED the 10 s note beside the button ("Tell me where
-and when, and I'll check fares"). The owner's decision of 16 Nov: that tap
+and when, and an agent will check fares"). The owner's decision of 16 Nov: that tap
 opens the chat with the same words and no form, for every visitor — from
 13 Nov, 0 of the 35 visitors who opened the chat got past the form the note
 led to. Its own switch, ``PROACTIVE_NOTE_ENABLED`` (on at merge), sends the
@@ -56,13 +56,18 @@ MODEL_USED = "proactive_template"
 # server: the widget closes the card and stays quiet for 24 hours. The first
 # button is a yes that asks for nothing personal (ADR 14, 16 Nov debate): the
 # bot asks for the email in the chat, after it, with the reason.
+# It names what a person will do — send the fares, make a quote — never that
+# Alex checks them: only an agent can (owner, 17 Nov). "Check fares" promised
+# fares on the spot; of the 13 who tapped it with no trip known on 16-17 Nov,
+# 10 left at the first question. "Get a fare quote" is the note's own button.
 _REPLIES: dict[str, list[str]] = {
-    "kayak": ["Yes, check fares", "Change details", "Not now"],
-    "quote": ["Yes, check fares", "I have a question", "Not now"],
-    "reader": ["Check fares", "I have a question", "Not now"],
-    "exit": ["Check fares", "I have a question", "Not now"],
+    "kayak": ["Yes, send me fares", "Change details", "Not now"],
+    "quote": ["Yes, send me fares", "I have a question", "Not now"],
+    "reader": ["Get a fare quote", "I have a question", "Not now"],
+    # "Before you go: want an agent to check fares…?" — a yes answers it.
+    "exit": ["Yes, send me fares", "I have a question", "Not now"],
     # The visitor asked for the chat: no "Not now" to offer them.
-    "note": ["Check fares", "I have a question"],
+    "note": ["Get a fare quote", "I have a question"],
 }
 
 # Who speaks (ADR 12; owner, 16 Nov): Alex, the brand's AI Travel Agent. The

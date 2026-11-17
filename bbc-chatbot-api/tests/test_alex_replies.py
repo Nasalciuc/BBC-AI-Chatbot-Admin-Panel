@@ -310,6 +310,7 @@ class TestAClosingQuestionWithAnEmoji:
 
 class TestTheKnowledgeBaseSearch:
     @pytest.mark.parametrize("message", [
+        "Yes, send me fares", "Get a fare quote",
         "Yes, check fares", "Check fares", "Change details", "I have a question", "Not now",
         "ok", "Okay!", "Text", "Yes please", "Thank you!", "no", "Email", "sounds good", "",
     ])
@@ -326,6 +327,7 @@ class TestTheKnowledgeBaseSearch:
 
     def test_no_round_trip_for_a_tap(self):
         with patch.object(qdrant, "_search_sync", side_effect=AssertionError("searched")) as search:
+            assert asyncio.run(qdrant.search_kb("Yes, send me fares")) == []
             assert asyncio.run(qdrant.search_kb("Yes, check fares")) == []
         search.assert_not_called()
 

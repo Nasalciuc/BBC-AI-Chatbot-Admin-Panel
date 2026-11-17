@@ -210,7 +210,7 @@ class TestCompose:
             f"{_day(_in(30))} – {_day(_in(60))}, 4 adults in First. "
             "Want an agent to check private fares for exactly this trip?"
         )
-        assert replies == ["Yes, check fares", "Change details", "Not now"]
+        assert replies == ["Yes, send me fares", "Change details", "Not now"]
 
     def test_quote_names_the_form_trouble_with_and_without_a_route(self):
         text, replies = proactive.compose("quote", _kayak_trip(return_date=None, adults="1", cabin="business"))
@@ -219,7 +219,7 @@ class TestCompose:
             f"An agent can check fares for Atlanta → Seoul, {_day(_in(30))}, 1 adult in Business."
         )
         # The first button asks for nothing personal (ADR 14): the email comes in the chat.
-        assert replies == ["Yes, check fares", "I have a question", "Not now"]
+        assert replies == ["Yes, send me fares", "I have a question", "Not now"]
         assert proactive.compose("quote", None)[0] == (
             "Hi, I'm Alex from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
             "Tell me where and roughly when, and an agent will check fares for you."
@@ -231,6 +231,8 @@ class TestCompose:
         assert proactive.compose("exit", TripContext())[0] == (
             "Hi, I'm Alex from BuyBusinessClass. Before you go: want an agent to check business class fares for you?"
         )
+        # "Want an agent to check fares…?" — the first button is the yes to it.
+        assert proactive.compose("exit", None)[1] == ["Yes, send me fares", "I have a question", "Not now"]
 
     def test_a_route_page_names_the_city_and_asks_roughly_when(self):
         text, replies = proactive.compose("reader", TripContext(source="route_page", destination_name="Paris"))
@@ -238,7 +240,7 @@ class TestCompose:
             "Hi, I'm Alex from BuyBusinessClass. Planning a trip to Paris? "
             "Tell me roughly when, and an agent will check business class fares for you."
         )
-        assert replies == ["Check fares", "I have a question", "Not now"]
+        assert replies == ["Get a fare quote", "I have a question", "Not now"]
 
     @pytest.mark.parametrize("trigger", ["reader", "kayak", "note"])
     def test_where_to_and_when_without_where_from_is_said_back(self, trigger):
@@ -257,6 +259,22 @@ class TestCompose:
             "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
             "Tell me where and roughly when, and an agent will check fares for you."
         )
+
+    @pytest.mark.parametrize("trigger", ["kayak", "quote", "reader", "exit", "note"])
+    @pytest.mark.parametrize("trip", [
+        None, TripContext(), TripContext(source="route_page", destination_name="Paris"),
+        TripContext(destination_name="Seoul", depart_date=_in(30).isoformat(), adults="2"),
+        _kayak_trip(),
+    ])
+    def test_only_an_agent_checks_fares(self, trigger, trip):
+        """Owner, 17 Nov: the bot cannot give fares, only a person can. No
+        card says Alex checks them, and no button promises fares on the spot
+        ("Check fares": 10 of the 13 who tapped it with no trip known left
+        at the first question)."""
+        text, replies = proactive.compose(trigger, trip)
+        assert not re.search(r"\bI(?:'ll| will)? (?:check|pull|find|get)\b", text), text
+        assert "check fares" not in " ".join(replies).lower(), replies
+        assert replies[0] in ("Yes, send me fares", "Get a fare quote")
 
     def test_the_brand_follows_the_site(self):
         assert proactive.compose("reader", None, "bct")[0].startswith("Hi, I'm Alex from Business Class Tickets.")
@@ -351,7 +369,7 @@ class TestOffer:
         out = proactive.offer(_VISITOR, "kayak", _kayak_trip())
         assert out["show"] is True and out["arm"] == "proactive"
         assert out["message"] == proactive.compose("kayak", _kayak_trip())[0]
-        assert out["quick_replies"] == ["Yes, check fares", "Change details", "Not now"]
+        assert out["quick_replies"] == ["Yes, send me fares", "Change details", "Not now"]
         assert proactive.PROACTIVE_HEALTH["shown"] == 1
 
     def test_control_arm_is_told_no(self, monkeypatch):
@@ -408,7 +426,7 @@ class TestNote:
             "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
             "Tell me where and roughly when, and an agent will check fares for you."
         )
-        assert out["quick_replies"] == ["Check fares", "I have a question"]
+        assert out["quick_replies"] == ["Get a fare quote", "I have a question"]
         assert proactive.PROACTIVE_HEALTH["shown"] == 1
 
     @pytest.mark.parametrize("percent", [0, 100])
@@ -1128,6 +1146,23 @@ class TestPrompt:
         assert "You ARE an AI Travel Agent, never a person." in prompt
         assert 'be HONEST: "I\'m an AI Travel Agent.' in prompt
         assert "NEVER imply you are a human" in prompt
+
+    @pytest.mark.parametrize("site", ["bbc", "bct"])
+    def test_only_a_consultant_checks_fares(self, site):
+        """Owner, 17 Nov: the bot cannot give fares, only a person can. Alex
+        never says he checks or pulls them ("Happy to get those private fares
+        pulled for you" after a tap, 16-17 Nov), and the permission frame
+        names the consultant, not him."""
+        from app.ai.prompts import build_conversational_prompt
+
+        static, dynamic = build_conversational_prompt(
+            tunnel="sales", visitor=VisitorInfo(), lead=None, entities={"site": site},
+        )
+        prompt = static + dynamic
+        assert "3b. NEVER say you check, pull, find or quote fares yourself: you cannot." in prompt
+        assert "Only a consultant, a real\nperson, checks fares and sends them." in prompt
+        assert "so your consultant can pull the\nright private fares" in prompt
+        assert "so I can pull" not in prompt
 
     def test_proactive_chat_shows_the_page_and_asks_email_first(self):
         from app.ai.prompts import build_conversational_prompt

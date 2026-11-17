@@ -367,8 +367,10 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
 # A tapped button or a reply of a word or two asks the knowledge base
 # nothing. 16-17 Nov: every such search ("Yes, check fares" — the card's
 # button — "ok", "Text") came back empty, a round trip to Qdrant each, and a
-# loose match would only put an unrelated entry in front of Alex.
+# loose match would only put an unrelated entry in front of Alex. The labels
+# of 16 Nov stay: a card shown before a deploy still sends them.
 _BUTTON_TAPS = frozenset({
+    "yes, send me fares", "get a fare quote",
     "yes, check fares", "check fares", "change details", "i have a question", "not now",
 })
 _NO_QUESTION_WORDS = frozenset("""
