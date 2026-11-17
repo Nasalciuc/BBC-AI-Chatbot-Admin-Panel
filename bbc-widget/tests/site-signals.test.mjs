@@ -375,7 +375,7 @@ test('the card and the note start from the newest trip; a visitor who sent the f
   assert.match(hook, /if \(ssGet\(NOTE_CLOSED_KEY\)\) return\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return/)
   assert.match(hook, /if \(blockedPath\(location\.pathname\)\) return 'left_page'\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return 'left_page'/)
   // A search on the site while the answer was on its way: the trip it was asked with is an old one.
-  assert.match(hook, /formAt: press\?\.activityAt \?\? null, search: lastSearch\(\),/)
+  assert.match(hook, /formAt: press\?\.activityAt \?\? null,\s+quoteForm: quoteFormAt, search: lastSearch\(\),/)
   assert.match(hook, /if \(lastSearch\(\) !== before\.search\) return 'searched'/)
   assert.match(stop, /for \(const e of siteEvents\(\)\) stopFor\(e\)\s+return onSiteEvent\(stopFor\)/)
   // The watch hears the queue first, then the page; and lets go of it on cleanup.

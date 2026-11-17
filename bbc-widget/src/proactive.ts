@@ -337,7 +337,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     // `search`: the site's last search (each one a new object, siteSignals.cleanDetail): a new search on the
     // way makes the trip the answer was asked with an old one.
     const seen = () => ({
-      typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null, search: lastSearch(),
+      typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null,
+      quoteForm: quoteFormAt, search: lastSearch(),
     })
     const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>): string | null => {
       if (stopped) return stopped
@@ -349,6 +350,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (noMomentPage(sitePage())) return 'left_page'
       if (lastSiteTyping !== before.typing) return 'typing'
       if ((press?.at ?? null) !== before.pressAt || (press?.activityAt ?? null) !== before.formAt) return 'quote_form'
+      // Work on the quote form while the answer was on its way, pressed or not, holds kayak and reader
+      // (triggers.ts); the quote moment keeps the press check above (CodeRabbit #267).
+      if (trigger !== 'quote' && quoteFormAt !== before.quoteForm) return 'quote_form'
       if (lastSearch() !== before.search) return 'searched'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
       return null

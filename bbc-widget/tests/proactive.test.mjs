@@ -218,7 +218,15 @@ test('the hook marks the quote form worked on from the page and from the site, p
     assert.match(hook, new RegExp(`e\\.name === '${name}'`), name)
   }
   assert.match(hook, /sinceQuoteFormS: quoteFormAt === null \? null : \(now - quoteFormAt\) \/ 1000/)
+  // CodeRabbit #267: work on the form while the server's answer is on its way drops a kayak or reader
+  // card; the quote moment keeps its press check.
+  assert.match(hook, /const seen = \(\) => \(\{[^}]*quoteForm: quoteFormAt,/)
+  assert.match(hook, /if \(trigger !== 'quote' && quoteFormAt !== before\.quoteForm\) return 'quote_form'/)
 })
+
+// The payload of each capture call of `event`, up to the line that closes it: an assertion on one event can
+// never be satisfied by the next event's payload (CodeRabbit #267).
+const payloads = (event) => [...hook.matchAll(new RegExp(`capture\\('${event}', \\{([\\s\\S]*?)\\n\\s*\\}\\)`, 'g'))].map((m) => m[1])
 
 test('the note\'s variant goes out with the answer and with its measurements, and nothing else passes for one', () => {
   assert.equal(offerVariant('places'), 'places')
@@ -227,11 +235,16 @@ test('the note\'s variant goes out with the answer and with its measurements, an
     assert.equal(offerVariant(bad), undefined, String(bad))
   }
   assert.match(api, /const variant = offerVariant\(data\.variant\)/)
-  assert.match(hook, /trigger: 'note', message: res\.message[\s\S]*?\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\)/)
+  assert.match(hook, /trigger: 'note', message: res\.message[^}]*shownAt: Date\.now\(\),\s*\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\),\s*\}/)
   assert.match(chat, /proactive: \{ trigger: opening\.trigger, \.\.\.\(opening\.variant \? \{ variant: opening\.variant \} : \{\}\) \}/)
   for (const ev of ['proactive_dismissed', 'proactive_engaged']) {
-    assert.match(hook, new RegExp(`capture\\('${ev}'[\\s\\S]*?\\.\\.\\.\\(o\\.variant \\? \\{ variant: o\\.variant \\} : \\{\\}\\)`), ev)
+    const all = payloads(ev)
+    assert.equal(all.length, 1, ev)
+    assert.ok(all[0].includes('...(o.variant ? { variant: o.variant } : {})'), ev)
   }
+  const noteShown = payloads('proactive_shown').filter((p) => p.includes("trigger: 'note'"))
+  assert.equal(noteShown.length, 1)
+  assert.ok(noteShown[0].includes('...(res.variant ? { variant: res.variant } : {})'))
 })
 
 test('never on the thank-you or legal pages, never for an idle visitor, never mid-typing', () => {
