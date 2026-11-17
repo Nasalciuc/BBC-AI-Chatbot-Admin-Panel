@@ -239,6 +239,7 @@ class TestTheKnowledgeBaseSearch:
     @pytest.mark.parametrize("message", [
         "What about baggage?", "wifi", "Is wifi included on Emirates?",
         "Can I change my dates later?", "yes, but what about lounge access?",
+        "¿Cuánto cuesta en business?", "Сколько стоит бизнес-класс?",
     ])
     def test_a_question_is_searched(self, message):
         assert qdrant.worth_searching(message) is True

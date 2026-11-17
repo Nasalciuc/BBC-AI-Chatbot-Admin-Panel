@@ -376,7 +376,8 @@ ok okay k yes yeah yep yup no nope sure fine great perfect cool good nice alrigh
 thanks thank you thx ty please pls hi hello hey got it lol hmm sounds
 text txt sms email mail call phone
 """.split())
-_WORD_RE = re.compile(r"[a-z0-9']+")
+# Words in any script: a question in Spanish or Russian is still a question.
+_WORD_RE = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 
 
 def worth_searching(query_text: str) -> bool:
