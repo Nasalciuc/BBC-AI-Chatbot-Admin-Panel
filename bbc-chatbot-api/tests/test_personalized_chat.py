@@ -67,17 +67,22 @@ def _widget_client() -> TestClient:
 
 
 def _send_as(operator: dict):
+    """The real save path: only the database is mocked, so the push that
+    add_message makes — the first copy the widget gets — is captured too
+    (17 Nov 2026: it went out bare, and the widget kept it)."""
     from app.api import conversations as mod
 
     pushed: list[dict] = []
 
     async def _capture(_conv_id, payload):
-        pushed.append(payload)
+        # What goes out is what the dict holds when the stream writes it —
+        # possibly before the route touches it again — so keep it as pushed.
+        pushed.append(dict(payload))
 
     with (
         patch.object(mod.db, "get_user_by_id", new_callable=AsyncMock, return_value=operator),
         patch.object(mod.db, "get_conversation", new_callable=AsyncMock, return_value=_conv()),
-        patch.object(mod, "add_message", new_callable=AsyncMock,
+        patch.object(mod.db, "add_message", new_callable=AsyncMock,
                      return_value={"id": "m-1", "role": "agent", "content": "hello",
                                    "created_at": "2026-07-27T10:00:00+00:00"}),
         patch.object(mod.db, "count_agent_messages_since", new_callable=AsyncMock, return_value=2),
@@ -99,7 +104,10 @@ def test_agent_message_carries_name_and_avatar():
     )
 
     assert resp.status_code == 200, resp.text
-    assert pushed and pushed[0]["agent_name"] == "Roman"
+    # One live copy, and it is signed: the widget keeps the first copy of a message.
+    assert len(pushed) == 1, pushed
+    assert pushed[0]["id"] == "m-1"
+    assert pushed[0]["agent_name"] == "Roman"
     assert pushed[0]["agent_avatar_url"] == AVATAR
     # Returned to the admin caller too
     assert resp.json()["data"]["agent_name"] == "Roman"

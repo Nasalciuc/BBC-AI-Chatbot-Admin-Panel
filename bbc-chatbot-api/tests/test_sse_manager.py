@@ -211,6 +211,29 @@ async def test_add_message_system_and_agent_are_published(role):
 
 
 @pytest.mark.asyncio
+async def test_add_message_live_extra_rides_the_published_copy_only():
+    """The operator's name and photo go on the one live copy (the widget keeps
+    the first copy of a message); the stored and returned row stay as saved."""
+    from app.services import conversation_service as cs
+
+    m = ConnectionManager()
+    q = _queue(m)
+    row = {"id": "agent-id", "role": "agent", "content": "hello"}
+    extra = {"agent_name": "Dana Reyes", "agent_avatar_url": None}
+    with (
+        patch("app.services.conversation_service.db.add_message",
+              new=AsyncMock(return_value=row)) as save,
+        patch("app.realtime.manager.manager", m),
+    ):
+        out = await cs.add_message(_CONV, "agent", "hello", live_extra=extra)
+    got = q.get_nowait()
+    assert got == {**row, **extra}
+    assert q.empty()
+    assert out == {"id": "agent-id", "role": "agent", "content": "hello"}
+    save.assert_awaited_once_with(_CONV, "agent", "hello", None, 0.0)
+
+
+@pytest.mark.asyncio
 async def test_add_message_returns_the_row_when_push_raises(caplog):
     from app.services import conversation_service as cs
 
