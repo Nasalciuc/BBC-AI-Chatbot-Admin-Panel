@@ -17,6 +17,8 @@ import { posthog, posthogSessionId } from './posthog'
 import { markProactiveConversation, type ProactiveOpening } from './proactive'
 import { siteMetadata } from './siteSignals'
 import { isNotNow } from './triggers'
+import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
+import { createReplyTurns } from './replyTurns'
 
 interface Message {
   id: string
@@ -28,16 +30,6 @@ interface Message {
   agent_avatar_url?: string | null
 }
 
-const CONSULTANT_LABEL = 'Consultant'
-
-function agentInitials(name: string): string {
-  return name
-    .split(' ')
-    .map(w => w[0] || '')
-    .join('')
-    .toUpperCase()
-    .slice(0, 2)
-}
 
 interface Props {
   tunnel: 'sales' | 'support'
@@ -145,6 +137,11 @@ export function ChatWindow({
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const isStreamingRef = useRef(false)
+  /** Which send a reply belongs to (replyTurns.ts): a send's answer may mark
+   *  its reply streaming only while that reply has not come in, and only the
+   *  latest send unlocks sending (17 Nov 2026). One object for the life of
+   *  the chat, shared with the stream's handlers. */
+  const [turns] = useState(createReplyTurns)
   const [quickReplies, setQuickReplies] = useState<string[] | null>(() => {
     const o = openingRef.current
     return o && !o.firstReply && o.quickReplies.length ? o.quickReplies : null
@@ -186,16 +183,19 @@ export function ChatWindow({
   /** Operator photos that failed to load → show initials instead of a broken image. */
   const [brokenAvatars, setBrokenAvatars] = useState<Record<string, boolean>>({})
 
-  // Safety net: force-unlock sending after 15s (protects against any stuck state)
+  // Safety net: after 15s, unlock sending and drop the typing dots (protects
+  // against any stuck state). It watches isStreaming too: on 17 Nov 2026 the
+  // dots stayed under Alex's finished reply with sending already off, so a
+  // net that watched sending alone never ran.
   useEffect(() => {
-    if (!sending) return
+    if (!sending && !isStreaming) return
     const timeout = setTimeout(() => {
       setSending(false)
       setIsStreaming(false)
       isStreamingRef.current = false
     }, 15000)
     return () => clearTimeout(timeout)
-  }, [sending])
+  }, [sending, isStreaming])
 
   const notifySessionClose = (reason: 'minimized' | 'left', keepalive = false): Promise<void> => {
     if (!convId || closeSentRef.current) return Promise.resolve()
@@ -558,6 +558,9 @@ export function ChatWindow({
             // cursor past its timestamp.
             const { next, sawAi } = reconcileBatch(prev, incoming, Date.now())
             if (sawAi) {
+              // Polled instead of streamed (SSE down): a reply came in, as
+              // with a stream_end. It answers the oldest send still open.
+              turns.replyCameIn()
               setIsStreaming(false)
               isStreamingRef.current = false
               setSending(false)
@@ -629,6 +632,10 @@ export function ChatWindow({
           }
 
           if (parsed.event === 'stream_end') {
+            // A reply is in: the oldest send still open is answered. Its POST
+            // answer can still arrive after this frame and must not mark the
+            // reply streaming again: "Alex is typing" then stayed for good.
+            turns.replyCameIn()
             setStreamingText('')
             setIsStreaming(false)
             isStreamingRef.current = false
@@ -657,8 +664,12 @@ export function ChatWindow({
           // visitor still gets it through the incremental poll.
           if (msg.role === 'user') return
           setMessages(prev => {
-            if (prev.some(m => m.id === msg.id)) return prev
-            return [...prev, msg]
+            const at = prev.findIndex(m => m.id === msg.id)
+            if (at === -1) return [...prev, msg]
+            // The same row again: the one on screen stays, signed with the
+            // operator's name and photo if only this copy carries them.
+            const merged = withOperatorFrom(prev[at], msg)
+            return merged === prev[at] ? prev : prev.map((m, k) => (k === at ? merged : m))
           })
           if (msg.created_at) lastMsgTime.current = msg.created_at
         } catch { /* malformed event — ignore */ }
@@ -821,6 +832,9 @@ export function ChatWindow({
 
   const sendMessage = async (text: string) => {
     if (!text.trim()) return
+    // This send's number: a late answer to an earlier send (the queue sends
+    // the next message as soon as a reply is in) never changes this one.
+    const seq = turns.start()
     const isExistingConversation = Boolean(convId)
     lastActivityRef.current = Date.now()
     // Clear typing indicator immediately when sending
@@ -958,6 +972,9 @@ export function ChatWindow({
         try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
       }
 
+      // Whether this send's reply is still streaming in; any other answer
+      // ends its turn (no reply will stream for it).
+      let streams = false
       // Handle system_messages from routing response (zero polling duplicates)
       if (data.system_messages && data.system_messages.length > 0) {
         setMessages(prev => [
@@ -979,7 +996,11 @@ export function ChatWindow({
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.streaming) {
-        if (activeConvId || convId) {
+        // Only while this send's reply is still on its way. When its
+        // stream_end came in first, marking it streaming here left the typing
+        // dots under the finished reply until the next send (17 Nov 2026).
+        streams = Boolean(activeConvId || convId) && turns.isOpen(seq)
+        if (streams) {
           setIsStreaming(true)
           isStreamingRef.current = true
         }
@@ -993,14 +1014,19 @@ export function ChatWindow({
         setMessages(prev => [...prev, aiMsg])
         lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
       }
+      if (!streams) turns.over(seq)
       // Extend 30-minute rolling session on every successful message
       try { localStorage.setItem('bbc_conv_ts', Date.now().toString()) } catch {}
     } catch {
       posthog?.capture('chat_message_send_failed', { tunnel })
       posthog?.logger.warn('chat_message_delivery_failed', { tunnel })
-      setStreamingText('')
-      setIsStreaming(false)
-      isStreamingRef.current = false
+      turns.over(seq)
+      // A later send may already be streaming its own reply: leave it be.
+      if (turns.isLatest(seq)) {
+        setStreamingText('')
+        setIsStreaming(false)
+        isStreamingRef.current = false
+      }
       // Clean up optimistic message if the request failed
       setMessages(prev => prev.filter(m => m.id !== '__connecting_temp__'))
       const errMsg: Message = {
@@ -1011,7 +1037,9 @@ export function ChatWindow({
       }
       setMessages(prev => [...prev, errMsg])
     } finally {
-      if (!isStreamingRef.current) {
+      // Only the latest send unlocks: an earlier one answering late would
+      // drop the dots while the next reply is still coming.
+      if (!isStreamingRef.current && turns.isLatest(seq)) {
         setSending(false)
       }
     }
@@ -1093,10 +1121,9 @@ export function ChatWindow({
     return new Date(cur.created_at).getTime() - new Date(prev.created_at).getTime() > 5 * 60_000
   }
   const endsGroup = (i: number) => i === shown.length - 1 || startsGroup(i + 1)
-  const lastAgent = [...shown].reverse().find(m => m.role === 'agent')
-  const lastAgentName = (lastAgent?.agent_name || '').trim()
-  // Alex's own line (PersonaLine) until a person writes in the chat.
-  const subtitle = lastAgentName ? `Chatting with ${lastAgentName}` : undefined
+  // Who answers now (owner, 17 Nov 2026): once a person writes in the chat, the header shows their
+  // photo and name instead of Alex's, and Alex again if the chat comes back to him.
+  const operator = currentOperator(shown)
   // Alex's avatar: his photo (PersonaAvatar.tsx). The "AI" badge is the header's alone.
   const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
@@ -1123,7 +1150,7 @@ export function ChatWindow({
     >
       <PanelTop
         titleId="bw-chat-title"
-        subtitle={subtitle}
+        operator={operator}
         closeLabel="Close chat"
         canEnlarge={!embedded}
         onClose={embedded ? undefined : () => {

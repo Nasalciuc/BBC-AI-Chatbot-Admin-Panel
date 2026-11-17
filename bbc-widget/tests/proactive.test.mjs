@@ -390,10 +390,11 @@ test('Alex is a "Travel Agent" on both sites and the word AI is never gone; the 
   // The header: the name over "Travel Agent · <brand>", read as "AI Travel Agent · <brand>".
   assert.match(top, /export const personaLine = `\$\{brand\.persona\.role\} · \$\{brand\.name\}`/)
   assert.match(top, /export function PersonaLine\(\) \{\s*return <><span class="bw-sr">AI <\/span>\{personaLine\}<\/>/)
-  assert.match(top, /<div class="bw-head__name" id=\{titleId\}>\{brand\.persona\.name\}<\/div>/)
-  assert.match(top, /<div class="bw-head__sub">\{subtitle \|\| <PersonaLine \/>\}<\/div>/)
-  // A person who writes in the chat replaces the line ("Chatting with Maria"); until then it is Alex's.
-  assert.match(chat, /const subtitle = lastAgentName \? `Chatting with \$\{lastAgentName\}` : undefined/)
+  // A person who writes in the chat takes Alex's place in the header (owner, 17 Nov: name, photo and
+  // their own line, tests/operator.test.mjs); until then, and once it is his again, it is Alex's.
+  assert.match(top, /<div class="bw-head__name" id=\{titleId\}>\{operator \? operator\.name : brand\.persona\.name\}<\/div>/)
+  assert.match(top, /<div class="bw-head__sub">\{operator \? operatorLine : <PersonaLine \/>\}<\/div>/)
+  assert.match(chat, /const operator = currentOperator\(shown\)/)
   assert.doesNotMatch(chat, /personaLine/)
   // The typing note read to screen readers says it too: "Alex, the AI Travel Agent, is typing".
   assert.match(chat, /`\$\{brand\.persona\.name\}, the AI \$\{brand\.persona\.role\}, is typing`/)

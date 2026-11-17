@@ -725,7 +725,19 @@ async def send_agent_message(
             await manager.push(conversation_id, _announce_row)
 
     clean_content = sanitize_message(body.content)
-    msg = await add_message(conversation_id=conversation_id, role="agent", content=clean_content)
+    # Personalization: the visitor should see a real person, not an anonymous
+    # bot. Identity goes on operator messages only — never on AI or system
+    # rows — and on the one live copy add_message publishes: the widget keeps
+    # the first copy of a message, so a second, signed push came too late and
+    # the bubble said "Consultant" (17 Nov 2026).
+    identity = {
+        "agent_name": (_sender_db or {}).get("name") or "Consultant",
+        "agent_avatar_url": (_sender_db or {}).get("avatar_url"),
+    }
+    msg = await add_message(
+        conversation_id=conversation_id, role="agent", content=clean_content,
+        live_extra=identity,
+    )
 
     # PRESENCE: a sent reply is the strongest proof the operator is here —
     # stronger than the 5s heartbeat, which can lapse (token refresh, network
@@ -774,12 +786,8 @@ async def send_agent_message(
         await db.update_conversation(conversation_id, _engage_update)
 
     if msg:
-        # Personalization: the visitor should see a real person, not an
-        # anonymous bot. Identity is attached to operator messages only —
-        # never to AI or system rows.
-        msg["agent_name"] = (_sender_db or {}).get("name") or "Consultant"
-        msg["agent_avatar_url"] = (_sender_db or {}).get("avatar_url")
-        await manager.push(conversation_id, msg)
+        # The panel's answer carries the same identity as the live copy.
+        msg.update(identity)
 
     # The reply is out — the operator is no longer typing.
     from app.realtime.typing_indicator import typing_manager
