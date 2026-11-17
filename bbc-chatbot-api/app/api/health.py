@@ -156,6 +156,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.security.token_version import TOKEN_VERSION_HEALTH
     from app.services.proactive import PROACTIVE_HEALTH
     from app.services.note_bandit import NOTE_BANDIT_HEALTH
+    from app.pipeline.operator_contact import OPERATOR_CONTACT_HEALTH
 
     if not full:
         return {
@@ -181,6 +182,7 @@ async def health_detail(full: bool = False) -> dict:
             "lead_writes": dict(LEAD_WRITE_HEALTH),
             "proactive": dict(PROACTIVE_HEALTH),
             "note_bandit": dict(NOTE_BANDIT_HEALTH),
+            "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
@@ -274,6 +276,7 @@ async def health_detail(full: bool = False) -> dict:
         "lead_writes": dict(LEAD_WRITE_HEALTH),
         "proactive": dict(PROACTIVE_HEALTH),
         "note_bandit": dict(NOTE_BANDIT_HEALTH),
+        "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),

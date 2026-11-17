@@ -754,6 +754,10 @@ async def chat(
                 # answer never waits on the lead writes and the push.
                 from app.pipeline.operator_card import extract_and_push
                 _fire_and_forget(extract_and_push(req.conversation_id, clean_message))
+                # An email, a phone or a name the client gives the operator lands on the
+                # conversation as it does in a chat with Alex (operator_contact), flag or not.
+                from app.pipeline.operator_contact import record_contact
+                _fire_and_forget(record_contact(req.conversation_id, clean_message))
                 from app.services.handoff import _handoff_phrase_recently_sent
 
                 already = await _handoff_phrase_recently_sent(req.conversation_id)
