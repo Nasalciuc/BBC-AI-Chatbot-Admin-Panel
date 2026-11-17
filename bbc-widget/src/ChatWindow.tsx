@@ -881,8 +881,12 @@ export function ChatWindow({
               turnstile_token,
               form_check: formCheck,
               // The card's moment and the page's trip: the server writes the opening as the assistant's
-              // first message and starts the lead with the trip (unconfirmed).
-              ...(opening ? { trip: opening.trip, proactive: { trigger: opening.trigger } } : {}),
+              // first message and starts the lead with the trip (unconfirmed). `variant`: the way the
+              // server asked the first question (the note's bandit) — the same words, counted for it.
+              ...(opening ? {
+                trip: opening.trip,
+                proactive: { trigger: opening.trigger, ...(opening.variant ? { variant: opening.variant } : {}) },
+              } : {}),
             }),
           })
           if (initRes.ok) {

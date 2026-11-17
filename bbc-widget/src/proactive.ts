@@ -1,7 +1,7 @@
 /**
  * The chat that opens by itself, with the visitor's own search and no form (Dan's approval, 15 Nov 2026).
  *
- * This hook watches the page for the four moments of triggers.ts and, at the first one, asks the server
+ * This hook watches the page for the moments of triggers.ts and, at the first one, asks the server
  * (POST /chat/proactive/offer, which writes nothing) whether this visitor sees anything and with what
  * words. On a phone the answer is a card above the corner button; on a computer the chat panel opens
  * in the corner with the words as the assistant's first message. Nothing exists on the server until the
@@ -44,6 +44,9 @@ export interface ProactiveOpening {
   shownAt: number
   /** The button the visitor tapped on the phone card: it goes out as their first message. */
   firstReply?: string
+  /** Which way the server asked the first question (the note's bandit, app/services/note_bandit.py):
+   *  sent back with the answer so the conversation starts with the same words and is counted for it. */
+  variant?: string
 }
 
 // sessionStorage: this visit's moment was used ('asked', 'shown', or 'chat' when the visitor opened the
@@ -219,6 +222,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let maxScroll = 0
     let lastSiteTyping: number | null = null
     let press: Press | null = null
+    // The last time the visitor worked on the quote form, pressed or not (triggers.ts: no card over it).
+    let quoteFormAt: number | null = null
     let exitAt = 0
     // What the site itself says about its quote form (siteSignals.applySiteEvent): a send in flight, and
     // whether the visitor already sent the request or reached out (then nothing on this page).
@@ -230,6 +235,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const inPressedForm = (t: EventTarget | null) => !!press?.form && t instanceof Node && press.form.contains(t)
     const isField = (t: EventTarget | null) =>
       t instanceof HTMLElement && (t.matches('input, textarea, select') || t.isContentEditable)
+    // A touch inside the site's quote form (quoteForm: form.qf, or one labelled as a quote), pressed or not.
+    const touchQuoteForm = (t: EventTarget | null) => {
+      if (t instanceof Element && !inWidget(t) && quoteForm(t)) quoteFormAt = Date.now()
+    }
 
     const onActivity = () => { lastActivity = Date.now() }
     const onScroll = () => {
@@ -250,15 +259,18 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       lastActivity = Date.now()
       if (inWidget(e.target)) return
       if (isField(e.target)) lastSiteTyping = Date.now()
+      touchQuoteForm(e.target)
       if (press && inPressedForm(e.target)) press.activityAt = Date.now()
     }
     const onFormTouch = (e: Event) => {
+      touchQuoteForm(e.target)
       if (press && inPressedForm(e.target)) press.activityAt = Date.now()
     }
     const onClick = (e: Event) => {
       lastActivity = Date.now()
       const el = e.target instanceof Element ? e.target : null
       if (!el || inWidget(el)) return
+      touchQuoteForm(el)
       const form = quoteForm(el)
       if (form && isSubmitControl(el)) {
         press = { at: Date.now(), form, activityAt: Date.now(), invalid: false }
@@ -300,6 +312,12 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     // it from going quiet. It joins what the page's HTML shows; a site without bbc-signals keeps that alone.
     const onSite = (e: SiteEvent) => {
       lastActivity = Math.max(lastActivity, Math.min(e.at, Date.now()))
+      // The site says the visitor is in its quote form (opened it, moved a step, a field refused): no card
+      // over it, pressed or not. A refused or failed send is a press too (applySiteEvent, below).
+      if (e.name === 'quote_form_opened' || e.name === 'quote_form_step' || e.name === 'quote_form_invalid'
+        || e.name === 'quote_form_submitting' || e.name === 'quote_form_failed') {
+        quoteFormAt = Math.max(quoteFormAt ?? 0, Math.min(e.at, Date.now()))
+      }
       const fx = applySiteEvent(
         press ? { at: press.at, activityAt: press.activityAt, invalid: press.invalid, busy: siteBusy } : null, e,
       )
@@ -355,6 +373,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const surface: Surface = phone ? 'card' : 'panel'
       const opening: ProactiveOpening = {
         trigger, message: res.message, quickReplies: res.quick_replies, trip, surface, shownAt: Date.now(),
+        ...(res.variant ? { variant: res.variant } : {}),
       }
       ssSet(DONE_KEY, 'shown')
       ssSet(ATTENTION_KEY, '1')
@@ -390,9 +409,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         sinceActivityS: (now - lastActivity) / 1000,
         scrolledScreens: maxScroll / Math.max(1, window.innerHeight || 1),
         phone: matches(PHONE),
-        finePointer: matches('(pointer: fine)'),
         sinceSiteTypingS: lastSiteTyping === null ? null : (now - lastSiteTyping) / 1000,
         quote,
+        sinceQuoteFormS: quoteFormAt === null ? null : (now - quoteFormAt) / 1000,
         exitIntent: now - exitAt < 1500,
       }
       const trigger = pickTrigger(state)
@@ -449,7 +468,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (o) {
         posthog?.capture('proactive_dismissed', {
           trigger: o.trigger, how, surface: o.surface, seconds_visible: Math.round((Date.now() - o.shownAt) / 1000),
-          site: brand.id,
+          site: brand.id, ...(o.variant ? { variant: o.variant } : {}),
         })
       }
       setOffer(null)
@@ -464,6 +483,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         reply: replyKind(reply, o.quickReplies),
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
         site: brand.id,
+        ...(o.variant ? { variant: o.variant } : {}),
       })
     },
     noteOpening: async (stillWanted, door = 'note') => {
@@ -478,13 +498,17 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const opening: ProactiveOpening = {
         trigger: 'note', message: res.message, quickReplies: res.quick_replies, trip, surface: 'panel',
         shownAt: Date.now(),
+        ...(res.variant ? { variant: res.variant } : {}),
       }
       // The visitor opened the chat: no card follows in this visit (the moments' guard reads this).
       ssSet(DONE_KEY, 'chat')
       shownRef.current = opening
       engagedRef.current = false
+      // `variant`: the note's bandit compares its two first questions from the tap on, not only from the
+      // chats that started (the server counts those).
       posthog?.capture('proactive_shown', {
         trigger: 'note', surface: 'panel', door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
+        ...(res.variant ? { variant: res.variant } : {}),
       })
       return opening
     },

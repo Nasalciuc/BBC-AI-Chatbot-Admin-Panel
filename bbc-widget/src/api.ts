@@ -40,6 +40,13 @@ export interface ProactiveOffer {
   arm: string
   message: string | null
   quick_replies: string[]
+  /** Which way the first question was asked (the note's bandit), when the server chose one. */
+  variant?: string
+}
+
+/** A variant name as the server writes them ("open", "places"): anything else is dropped. */
+export function offerVariant(v: unknown): string | undefined {
+  return typeof v === 'string' && /^[a-z][a-z_]{0,23}$/.test(v) ? v : undefined
 }
 
 /**
@@ -68,11 +75,13 @@ export async function fetchProactiveOffer(
     const replies = Array.isArray(data.quick_replies)
       ? data.quick_replies.filter((r: unknown): r is string => typeof r === 'string' && r.trim() !== '')
       : []
+    const variant = offerVariant(data.variant)
     return {
       show: data.show,
       arm: data.arm,
       message: typeof data.message === 'string' && data.message.trim() ? data.message : null,
       quick_replies: replies,
+      ...(variant ? { variant } : {}),
     }
   } catch {
     return null  // a timeout or a network error is a "no": the visitor sees nothing
