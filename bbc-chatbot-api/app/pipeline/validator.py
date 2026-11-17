@@ -43,8 +43,10 @@ MAX_LENGTH = 350
 EMPTY_FALLBACK = "How can I help you with business class travel today?"
 PRICE_REPLACEMENT = "contact our specialists for current pricing"
 
-# Sentence boundary: end punctuation, optional closing quote, then whitespace or EOS.
-_SENTENCE_START_RE = re.compile(r'[.!?]+["\']?\s+')
+# Where the next sentence starts: end punctuation, any closing quotes or
+# brackets, then whitespace — the same closers _SENTENCE_END_RE accepts, so
+# "(local time.) Expedia…" drops only the Expedia sentence (CodeRabbit #263).
+_SENTENCE_START_RE = re.compile(r"[.!?]+[\"'”’)\]]*\s+")
 # Where a sentence really ends: the punctuation is followed by whitespace or
 # the end of the text. The dot inside "ann@mail.com", "1.5" or "+1.210" is no
 # end — the old cut took the last dot it found and could stop in the middle

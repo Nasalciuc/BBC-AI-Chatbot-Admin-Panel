@@ -71,6 +71,20 @@ class TestTheYearOfADate:
         out = roll_past_dates_forward({"departure_date": "2026-06-14", "return_date": "2027-06-25"}, today=june_20)
         assert out == {"departure_date": "2027-06-14", "return_date": "2027-06-25"}
 
+    def test_a_back_to_front_pair_is_not_moved_twice(self):
+        """CodeRabbit #263: both dates past and the return before the
+        departure — each moves once, and the pair stays back to front."""
+        out = roll_past_dates_forward({"departure_date": "2026-06-14", "return_date": "2026-06-10"}, today=NOV_17)
+        assert out == {"departure_date": "2027-06-14", "return_date": "2027-06-10"}
+
+    @freeze_time("2026-11-17")
+    def test_the_check_still_refuses_a_back_to_front_pair(self):
+        kept, err = validate_tool_entities({**ROUTE, "departure_date": "2026-06-14", "return_date": "2026-06-10"})
+        assert kept is None and "return_date is before departure_date" in err
+        assert salvage_tool_entities({"departure_date": "2026-06-14", "return_date": "2026-06-10"}) == {
+            "departure_date": "2027-06-14",
+        }
+
     @freeze_time("2026-06-20")
     def test_the_check_keeps_the_whole_trip(self):
         kept, err = validate_tool_entities({**ROUTE, "departure_date": "2026-06-14", "return_date": "2026-06-25"})
@@ -258,6 +272,16 @@ class TestCompetitors:
     def test_a_competitor_web_address_takes_its_sentence_whole(self):
         out = validate_response("Happy to help. You could check expedia.com, but our fares are private. Where from?")
         assert out == "Happy to help. Where from?"
+
+    @pytest.mark.parametrize("before", [
+        "Your flight leaves June 14 (local time.)",
+        "You said “the 14th works.”",
+    ])
+    def test_a_sentence_ending_in_a_bracket_or_quote_is_kept(self, before):
+        """CodeRabbit #263: the sentence before the competitor's ends in a
+        bracket or a curly quote; only the competitor's sentence goes."""
+        out = validate_response(f"{before} Expedia lists other fares. When do you return?")
+        assert out == f"{before} When do you return?"
 
 
 # ── KB ───────────────────────────────────────────────────────

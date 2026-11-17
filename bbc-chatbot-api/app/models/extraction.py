@@ -131,11 +131,14 @@ def roll_past_dates_forward(raw: Optional[dict], today: Optional[date] = None) -
 
     A trip moves as one: "June 14 to June 25" said on June 20 is June 14 to
     June 25 of next year — the return goes forward with the departure
-    whenever the moved departure would pass it (CodeRabbit #263).
+    whenever the moved departure would pass it (CodeRabbit #263). A return
+    that moved on its own is not moved twice: a pair that was back to front
+    before it moved stays back to front, for the check to refuse.
     """
     out = dict(raw or {})
     today = today or date.today()
     moved_years = 0
+    return_moved = False
     for key in ("departure_date", "return_date"):
         d = _iso_date(out.get(key))
         if d is None:
@@ -146,8 +149,10 @@ def roll_past_dates_forward(raw: Optional[dict], today: Optional[date] = None) -
                 out[key] = moved.isoformat()
                 if key == "departure_date":
                     moved_years = moved.year - d.year
+                else:
+                    return_moved = True
     departure, back = _iso_date(out.get("departure_date")), _iso_date(out.get("return_date"))
-    if moved_years and departure and back and back < departure:
+    if moved_years and not return_moved and departure and back and back < departure:
         try:
             out["return_date"] = back.replace(year=back.year + moved_years).isoformat()
         except ValueError:  # noqa: silent — 29 February with no twin: the check refuses the pair, as before
