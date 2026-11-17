@@ -131,3 +131,22 @@ def notes_with_callback(notes: Optional[str], note: str) -> str:
         if not line.strip().startswith((_NOTE_CALL, _NOTE_TEXT, _NOTE_ANY))
     ]
     return "\n".join([note, *kept]).strip()
+
+
+def notes_without_call(notes: Optional[str], *, texts: bool) -> Optional[str]:
+    """The lead's notes once the client turned the call down in a later
+    message: the CLIENT ASKED TO BE CALLED line becomes the texts line for the
+    same number when they chose texts, and goes when they only said no calls,
+    so the panel stops saying "Asks: a call back" (CodeRabbit #262). None when
+    there was no such line."""
+    out: list[str] = []
+    changed = False
+    for line in (notes or "").splitlines():
+        if not line.strip().startswith(_NOTE_CALL):
+            out.append(line)
+            continue
+        changed = True
+        if texts:
+            _, dash, number = line.strip().partition("—")
+            out.append(callback_note(number.strip() if dash and number.strip() else None, channel="text"))
+    return "\n".join(out).strip() if changed else None

@@ -174,6 +174,35 @@ async def task_from_callback(conv: dict, message: dict, text: str) -> Optional[d
         return None
 
 
+async def withdraw_call_tasks(conversation_id: str) -> int:
+    """The client asked to be called, then chose texts or said no calls: the
+    open call task their ask made (task_from_callback) is withdrawn, so nobody
+    rings a client who said not to (CodeRabbit #262). It leaves the open lists
+    the way a "not a promise" does, with its own line in the history. A task
+    someone already finished, or turned into another kind, stays as it is.
+    Returns how many were withdrawn; never fails the turn."""
+    try:
+        rows = await db.tasks_of_conversations([conversation_id])
+        open_calls = [
+            r["id"] for r in rows
+            if r.get("id") and r.get("source") == "client_asked" and r.get("kind") == "call"
+            and not r.get("done_at") and not r.get("dismissed_at")
+        ]
+        withdrawn = 0
+        for task_id in open_calls:
+            if await db.update_follow_up(task_id, {"dismissed_at": datetime.now(timezone.utc).isoformat()}):
+                withdrawn += 1
+                db.TASKS_HEALTH["withdrawn"] += 1
+                await note(task_id, "withdrawn", None)
+        return withdrawn
+    except db.TasksNotSetUp:  # noqa: silent — migration 051 not applied yet: _tasks_call logged it and counted it in /health (tasks.schema_missing); there is no task to withdraw
+        return 0
+    except Exception as e:
+        db.TASKS_HEALTH["withdraw_failures"] += 1
+        logger.error(f"[tasks] withdrawing the call task of {conversation_id} failed: {what_failed(e)}")
+        return 0
+
+
 async def leave_shift(user_id: str) -> int:
     """Someone went Not ready: their open tasks go to Unowned (the supervisor
     gives them out), or to the Ready agent with the fewest open tasks when the

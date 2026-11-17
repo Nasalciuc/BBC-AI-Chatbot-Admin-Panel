@@ -30,6 +30,7 @@ from app.pipeline.contact_capture import (
     with_stored_contact,
     with_turn_contact,
 )
+from app.pipeline.entity_extractor import turns_down_calls
 from app.realtime.manager import manager
 from app.flags import flag
 
@@ -980,8 +981,12 @@ async def _pipeline(
         _cb_stored = _cb_signals.get("contact_channel")
         _cb_channel = callback_channel(message, _callback["cue"], _cb_stored)
         # A call is owed when the client asked for one, or gave a number with
-        # nothing against calls; never over an earlier "no calls".
-        _cb_wants_call = _cb_channel == "call" or (_cb_channel == "any" and not calls_refused(_cb_stored))
+        # nothing against calls; never over an earlier "no calls" — and never
+        # guessed when the lead holding that earlier wish could not be read
+        # (CodeRabbit #262): "Text", then the number, would be a call again.
+        _cb_wants_call = _cb_channel == "call" or (
+            _cb_channel == "any" and _cb_lead is not None and not calls_refused(_cb_stored)
+        )
         # The number lands on the CONVERSATION, the row the CRM gate, the
         # abandoned-chat push and the panel read. It used to go to
         # leads.visitor_phone, a column that does not exist: the whole lead
@@ -1039,11 +1044,17 @@ async def _pipeline(
         # The AI is about to tell the client a consultant will call: that
         # promise becomes someone's task (Tasks). It never delays the reply
         # and never fails the turn (task_from_callback logs and counts).
-        # A client who chose texts, or said no calls, gets no "Call X back" task.
-        if user_msg and _cb_wants_call:
-            from app.services.tasks_service import task_from_callback
+        # A client who chose texts, or said no calls, gets no "Call X back" task
+        # — and loses the one an earlier "call me" made (CodeRabbit #262).
+        if _cb_wants_call:
+            if user_msg:
+                from app.services.tasks_service import task_from_callback
 
-            _fire_and_forget(task_from_callback(conv, user_msg, message))
+                _fire_and_forget(task_from_callback(conv, user_msg, message))
+        elif _cb_channel == "text" or calls_refused(_cb_stored):
+            from app.services.tasks_service import withdraw_call_tasks
+
+            _fire_and_forget(withdraw_call_tasks(cid))
 
         # Confirm warmly and keep collecting — deterministic, because the
         # one thing this turn must never do is ask him what he meant.
@@ -1381,6 +1392,12 @@ async def _pipeline(
             },
         )
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
+        # "Call me", then "text only" or "no calls": the lead dropped the call
+        # (lead_service); the task the earlier ask made goes too (CodeRabbit #262).
+        if turns_down_calls(entities.get("contact_channel")):
+            from app.services.tasks_service import withdraw_call_tasks
+
+            _fire_and_forget(withdraw_call_tasks(cid))
         # Reward loop (PR-8): a detail just landed — resolve any open "did this
         # question get answered?" rows. Best-effort, never blocks the turn.
         try:

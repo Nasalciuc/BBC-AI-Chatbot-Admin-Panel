@@ -31,7 +31,12 @@ os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from app.models.chat import VisitorInfo
-from app.pipeline.callback_intent import callback_note, detect_callback_request, notes_with_callback
+from app.pipeline.callback_intent import (
+    callback_note,
+    detect_callback_request,
+    notes_with_callback,
+    notes_without_call,
+)
 from app.pipeline.contact_capture import (
     asks_for_channel,
     asks_for_last_name,
@@ -47,9 +52,9 @@ from app.pipeline.contact_capture import (
     with_stored_contact,
     with_turn_contact,
 )
-from app.pipeline.entity_extractor import contact_channel_of
+from app.pipeline.entity_extractor import contact_channel_of, turns_down_calls
 
-_CID = "11111111-2222-3333-4444-555555555555"
+_CID ="11111111-2222-3333-4444-555555555555"
 
 # The questions Alex asked on 17 Nov (client names replaced).
 Q_NAME = "Noted. And your name, so the consultant knows who to address?"
@@ -313,8 +318,9 @@ _TRIP = {
 }
 
 
-def _callback_turn(message, *, lead_signals=None, conv_extra=None, visitor=None, lead_extra=None):
-    """Run one callback turn; returns (response, mocks)."""
+def _callback_turn(message, *, lead_signals=None, conv_extra=None, visitor=None, lead_extra=None, lead_fails=False):
+    """Run one callback turn; returns (response, mocks). `lead_fails`: the
+    lead read raises, as on a database hiccup."""
     from app.pipeline.orchestrator import _pipeline
 
     conv = {"id": _CID, "mode": "ai", "status": "active", "tunnel": "sales", "metadata": {},
@@ -327,7 +333,10 @@ def _callback_turn(message, *, lead_signals=None, conv_extra=None, visitor=None,
         "update_lead": AsyncMock(),
         "queue_for_person": AsyncMock(),
         "task_from_callback": AsyncMock(),
+        "withdraw_call_tasks": AsyncMock(return_value=0),
     }
+    read_lead = (AsyncMock(side_effect=RuntimeError("database hiccup")) if lead_fails
+                 else AsyncMock(return_value=dict(lead)))
 
     async def run():
         with ExitStack() as stack:
@@ -341,11 +350,12 @@ def _callback_turn(message, *, lead_signals=None, conv_extra=None, visitor=None,
             stack.enter_context(patch("app.pipeline.orchestrator.db.update_conversation",
                                       new=mocks["update_conversation"]))
             stack.enter_context(patch("app.pipeline.orchestrator.db.update_lead", new=mocks["update_lead"]))
-            stack.enter_context(patch("app.pipeline.orchestrator.lead_service.get_or_create_lead",
-                                      new=AsyncMock(return_value=dict(lead))))
+            stack.enter_context(patch("app.pipeline.orchestrator.lead_service.get_or_create_lead", new=read_lead))
             stack.enter_context(patch("app.services.routing.queue_for_person", new=mocks["queue_for_person"]))
             stack.enter_context(patch("app.services.tasks_service.task_from_callback",
                                       new=mocks["task_from_callback"]))
+            stack.enter_context(patch("app.services.tasks_service.withdraw_call_tasks",
+                                      new=mocks["withdraw_call_tasks"]))
             return await _pipeline(
                 _CID, message, "sales", visitor or VisitorInfo(), None,
                 _persist_state={"ai_persisted": False},
@@ -490,7 +500,7 @@ def _ordinary_turn(message, history, *, conv_extra=None, visitor=None):
 
     conv = {"id": _CID, "mode": "ai", "status": "active", "tunnel": "sales", "metadata": {},
             **(conv_extra or {})}
-    captured: dict = {"entities": [], "visitor": None}
+    captured: dict = {"entities": [], "visitor": None, "withdraw": AsyncMock(return_value=0)}
     update_entities = AsyncMock()
 
     def _gen(*args, **kwargs):
@@ -512,6 +522,7 @@ def _ordinary_turn(message, history, *, conv_extra=None, visitor=None):
                                       new=AsyncMock(return_value={"id": "L-1", "conversation_id": _CID})))
             stack.enter_context(patch("app.pipeline.orchestrator.lead_service.update_lead_from_entities",
                                       new=update_entities))
+            stack.enter_context(patch("app.services.tasks_service.withdraw_call_tasks", new=captured["withdraw"]))
             stack.enter_context(patch("app.pipeline.orchestrator.generate_response", new=MagicMock(side_effect=_gen)))
             with pytest.raises(_Stop):
                 await _pipeline(
@@ -629,3 +640,254 @@ class TestACorrectedContact:
         )
         await run()
         assert got["visitor"].email == "paul.form@example.com"
+
+
+# ── A call turned down later (CodeRabbit #262, round 2) ─────
+
+_CALL_NOTES = "CLIENT ASKED TO BE CALLED — +12105550100\nItinerary: BOS-LHR"
+
+
+class _Result:
+    def __init__(self, data):
+        self.data = data
+
+
+class _LeadsTable:
+    """Enough of the Supabase client for update_lead_from_entities: one lead
+    row to read, and every update written down."""
+
+    def __init__(self, row):
+        self.row = row
+        self.updates: list[dict] = []
+        self._op = None
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_a, **_k):
+        self._op = "select"
+        return self
+
+    def update(self, payload):
+        self._op = "update"
+        self.updates.append(payload)
+        return self
+
+    def insert(self, _payload):
+        self._op = "insert"
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        return _Result([dict(self.row)] if self._op == "select" else [])
+
+
+async def _lead_written(entities: dict, row: dict) -> dict:
+    """The lead update that carries the signals, from one Step-4 write."""
+    from app.db import supabase as db
+    from app.services import lead_service
+
+    client = _LeadsTable(row)
+
+    async def _run(fn, **_kwargs):
+        return fn()
+
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", _run):
+        await lead_service.update_lead_from_entities(_CID, entities)
+    return next(u for u in client.updates if "intent_signals" in u)
+
+
+class TestACallTurnedDownLater:
+    """"Call me", then "text only" or "no calls": the call is no longer owed —
+    not in the lead, not on the panel, not as a task someone would act on."""
+
+    @pytest.mark.parametrize("channel", ["text", "no calls", "email, no calls", "email, text"])
+    def test_texts_or_no_calls_turn_a_call_down(self, channel):
+        assert turns_down_calls(channel) is True
+
+    @pytest.mark.parametrize("channel", [None, "", "email", "no texts", "no email, no texts"])
+    def test_other_wishes_do_not(self, channel):
+        assert turns_down_calls(channel) is False
+
+    def test_the_call_line_becomes_the_texts_line(self):
+        assert notes_without_call(_CALL_NOTES, texts=True) == (
+            "CLIENT ASKED FOR TEXTS, NOT CALLS — +12105550100\nItinerary: BOS-LHR"
+        )
+
+    def test_no_calls_alone_only_drops_the_call_line(self):
+        assert notes_without_call(_CALL_NOTES, texts=False) == "Itinerary: BOS-LHR"
+
+    def test_notes_without_a_call_line_are_left_alone(self):
+        assert notes_without_call("CLIENT ASKED FOR TEXTS, NOT CALLS — +12105550100", texts=True) is None
+        assert notes_without_call(None, texts=True) is None
+
+    @pytest.mark.asyncio
+    async def test_the_lead_drops_the_call_when_texts_are_chosen_later(self):
+        payload = await _lead_written(
+            {"contact_channel": "text"},
+            {"id": "L-1", "intent_signals": {"callback_requested": True}, "notes": _CALL_NOTES},
+        )
+        assert payload["intent_signals"]["callback_requested"] is False
+        assert payload["intent_signals"]["contact_channel"] == "text"
+        assert payload["notes"].startswith("CLIENT ASKED FOR TEXTS, NOT CALLS — +12105550100")
+        assert "CLIENT ASKED TO BE CALLED" not in payload["notes"]
+        assert "Itinerary: BOS-LHR" in payload["notes"]
+        assert "Reach by: text" in payload["notes"]
+
+    @pytest.mark.asyncio
+    async def test_no_calls_said_later_drops_it_too(self):
+        payload = await _lead_written(
+            {"contact_channel": "no calls"},
+            {"id": "L-1", "intent_signals": {"callback_requested": True}, "notes": _CALL_NOTES},
+        )
+        assert payload["intent_signals"]["callback_requested"] is False
+        assert "CLIENT ASKED" not in payload["notes"]
+        assert "Reach by: no calls" in payload["notes"]
+
+    @pytest.mark.asyncio
+    async def test_an_email_wish_leaves_the_call_standing(self):
+        payload = await _lead_written(
+            {"contact_channel": "email"},
+            {"id": "L-1", "intent_signals": {"callback_requested": True}, "notes": _CALL_NOTES},
+        )
+        assert payload["intent_signals"]["callback_requested"] is True
+        assert payload["notes"].startswith("CLIENT ASKED TO BE CALLED — +12105550100")
+
+    @pytest.mark.asyncio
+    async def test_choosing_texts_withdraws_the_call_task_an_earlier_ask_made(self):
+        run, mocks = _callback_turn("2105550100  text please", lead_signals={"callback_requested": True})
+        await run()
+        mocks["withdraw_call_tasks"].assert_called_once_with(_CID)
+        mocks["task_from_callback"].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_number_after_no_calls_withdraws_it_too(self):
+        run, mocks = _callback_turn("2105550100", lead_signals={"contact_channel": "no calls"})
+        await run()
+        mocks["withdraw_call_tasks"].assert_called_once_with(_CID)
+        mocks["task_from_callback"].assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message, signals", [
+        ("please call me on 210-555-0100", {"contact_channel": "no calls"}),
+        ("2105550100", None),
+    ])
+    async def test_a_call_ask_or_a_bare_number_withdraws_nothing(self, message, signals):
+        run, mocks = _callback_turn(message, lead_signals=signals)
+        await run()
+        mocks["withdraw_call_tasks"].assert_not_called()
+        mocks["task_from_callback"].assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_texts_chosen_in_an_ordinary_message_withdraw_the_task(self):
+        run, got = _ordinary_turn("Text", _history(Q_CHANNEL, "Text"), conv_extra={"visitor_name": "Anna Rossi"})
+        await run()
+        got["withdraw"].assert_called_once_with(_CID)
+
+    @pytest.mark.asyncio
+    async def test_no_calls_in_an_ordinary_message_withdraws_it_too(self):
+        run, got = _ordinary_turn("no calls please", _history(Q_DATES, "no calls please"),
+                                  conv_extra={"visitor_name": "Anna Rossi"})
+        await run()
+        got["withdraw"].assert_called_once_with(_CID)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer, question", [("Email", Q_CHANNEL), ("Paul Moreau", Q_NAME)])
+    async def test_other_answers_withdraw_nothing(self, answer, question):
+        run, got = _ordinary_turn(answer, _history(question, answer))
+        await run()
+        got["withdraw"].assert_not_called()
+
+
+class TestAnUnreadableLead:
+    """CodeRabbit #262: when the lead cannot be read, the client's earlier
+    "Text" or "no calls" is unknown — a bare number is then no call request."""
+
+    @pytest.mark.asyncio
+    async def test_a_bare_number_is_no_call_when_the_wish_cannot_be_read(self):
+        run, mocks = _callback_turn("2105550100", lead_fails=True)
+        resp = await run()
+        assert "reach you on +12105550100" in resp.message
+        assert "call you" not in resp.message
+        mocks["task_from_callback"].assert_not_called()
+        mocks["withdraw_call_tasks"].assert_not_called()
+        assert mocks["queue_for_person"].await_args.kwargs["reason"] == "number given"
+
+    @pytest.mark.asyncio
+    async def test_call_me_still_counts(self):
+        run, mocks = _callback_turn("please call me on 210-555-0100", lead_fails=True)
+        resp = await run()
+        assert "call you on +12105550100" in resp.message
+        mocks["task_from_callback"].assert_called_once()
+        assert mocks["queue_for_person"].await_args.kwargs["reason"] == "call-back request"
+
+
+class TestWithdrawingTheCallTask:
+    @staticmethod
+    def _rows():
+        return [
+            {"id": "t-open", "source": "client_asked", "kind": "call"},
+            {"id": "t-done", "source": "client_asked", "kind": "call", "done_at": "2026-11-17T05:00:00+00:00"},
+            {"id": "t-gone", "source": "client_asked", "kind": "call", "dismissed_at": "2026-11-17T05:00:00+00:00"},
+            {"id": "t-email", "source": "client_asked", "kind": "email"},
+            {"id": "t-caught", "source": "caught", "kind": "call"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_only_the_open_call_the_client_asked_for_is_withdrawn(self):
+        from app.services import tasks_service
+
+        update = AsyncMock(return_value={"id": "t-open"})
+        event = AsyncMock()
+        before = tasks_service.db.TASKS_HEALTH["withdrawn"]
+        with patch.object(tasks_service.db, "tasks_of_conversations", new=AsyncMock(return_value=self._rows())), \
+                patch.object(tasks_service.db, "update_follow_up", new=update), \
+                patch.object(tasks_service.db, "add_task_event", new=event):
+            assert await tasks_service.withdraw_call_tasks(_CID) == 1
+        assert [c.args[0] for c in update.await_args_list] == ["t-open"]
+        assert set(update.await_args.args[1]) == {"dismissed_at"}
+        assert event.await_args.args[:2] == ("t-open", "withdrawn")
+        assert tasks_service.db.TASKS_HEALTH["withdrawn"] == before + 1
+
+    @pytest.mark.asyncio
+    async def test_a_task_already_gone_counts_nothing(self):
+        from app.services import tasks_service
+
+        event = AsyncMock()
+        with patch.object(tasks_service.db, "tasks_of_conversations", new=AsyncMock(return_value=self._rows())), \
+                patch.object(tasks_service.db, "update_follow_up", new=AsyncMock(return_value=None)), \
+                patch.object(tasks_service.db, "add_task_event", new=event):
+            assert await tasks_service.withdraw_call_tasks(_CID) == 0
+        event.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_before_the_tasks_migration_nothing_happens(self):
+        from app.services import tasks_service
+
+        with patch.object(tasks_service.db, "tasks_of_conversations",
+                          new=AsyncMock(side_effect=tasks_service.db.TasksNotSetUp("no tasks table"))):
+            assert await tasks_service.withdraw_call_tasks(_CID) == 0
+
+    @pytest.mark.asyncio
+    async def test_a_failure_never_reaches_the_turn(self):
+        from app.services import tasks_service
+
+        before = tasks_service.db.TASKS_HEALTH["withdraw_failures"]
+        with patch.object(tasks_service.db, "tasks_of_conversations",
+                          new=AsyncMock(side_effect=RuntimeError("database hiccup"))):
+            assert await tasks_service.withdraw_call_tasks(_CID) == 0
+        assert tasks_service.db.TASKS_HEALTH["withdraw_failures"] == before + 1
+
+    def test_the_history_says_why_it_went(self):
+        from app.services.tasks_view import history_of
+
+        lines = history_of(
+            [{"kind": "withdrawn", "at": "2026-11-17T06:20:00+00:00", "actor_id": None, "details": {}}],
+            {}, client="Anna",
+        )
+        assert lines[0]["text"] == "Withdrawn: Anna then chose texts or said no calls."
