@@ -27,8 +27,8 @@ export const personaLine = `${brand.persona.role} · ${brand.name}`
 
 /**
  * Alex's line as the page shows it: "Travel Agent · BuyBusinessClass", with "AI" before it for screen
- * readers ("AI Travel Agent · BuyBusinessClass"). Seen, the word is the badge on his photo in the header
- * (PersonaAvatar.tsx, `badge`), a picture that screen readers skip, so they get it here, in the line.
+ * readers ("AI Travel Agent · BuyBusinessClass"). The badge that showed the word on his photo is gone
+ * (owner, 17 Nov); screen readers still hear it here, in the line.
  */
 export function PersonaLine() {
   return <><span class="bw-sr">AI </span>{personaLine}</>
@@ -40,7 +40,7 @@ export const operatorLine = `${CONSULTANT_LABEL} · ${brand.name}`
 
 /**
  * A person's round avatar in the header: their photo, or their initials when there is none or it
- * fails to load. No "AI" badge — a person; the green dot stays. Decorative, as Alex's is: the name
+ * fails to load; the green dot stays. Decorative, as Alex's is: the name
  * beside it says who it is.
  */
 function OperatorAvatar({ operator }: { operator: Operator }) {
@@ -57,8 +57,7 @@ function OperatorAvatar({ operator }: { operator: Operator }) {
 }
 
 /**
- * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (his photo with the "AI" badge,
- * PersonaAvatar.tsx), the name, his line (PersonaLine), a call button, the whole-screen button
+ * The panel's top, as in the BBC Chatbot canvas: Alex's round avatar (his photo, PersonaAvatar.tsx), the name, his line (PersonaLine), a call button, the whole-screen button
  * (largeView.ts) and close. Once a person from the team writes in the chat, their photo, name and
  * line (operatorLine) stand there instead, until the chat comes back to Alex.
  */
@@ -73,7 +72,7 @@ export function PanelTop({ operator, onClose, closeLabel = 'Close', canEnlarge =
           // Keyed: another person's photo gets its own load (a failed one doesn't stick).
           ? <OperatorAvatar key={`${operator.name}|${operator.avatarUrl || ''}`} operator={operator} />
           : (
-            <PersonaAvatar cls="bw-head__ava" badge>
+            <PersonaAvatar cls="bw-head__ava">
               <i class="bw-head__live" />
             </PersonaAvatar>
           )}

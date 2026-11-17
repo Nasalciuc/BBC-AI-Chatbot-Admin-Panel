@@ -97,6 +97,6 @@ test('the header takes the person: photo or initials, no "AI" badge, their name 
   assert.match(avatar, /<i class="bw-head__live" \/>/)
   assert.doesNotMatch(avatar, /bw-ai|badge/)
   assert.match(top, /export const operatorLine = `\$\{CONSULTANT_LABEL\} · \$\{brand\.name\}`/)
-  // Alex keeps his badge when the header is his.
-  assert.match(top, /<PersonaAvatar cls="bw-head__ava" badge>/)
+  // Alex's header avatar carries no badge either (owner, 17 Nov).
+  assert.match(top, /<PersonaAvatar cls="bw-head__ava">/)
 })

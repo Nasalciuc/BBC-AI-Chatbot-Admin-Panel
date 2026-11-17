@@ -1124,7 +1124,7 @@ export function ChatWindow({
   // Who answers now (owner, 17 Nov 2026): once a person writes in the chat, the header shows their
   // photo and name instead of Alex's, and Alex again if the chat comes back to him.
   const operator = currentOperator(shown)
-  // Alex's avatar: his photo (PersonaAvatar.tsx). The "AI" badge is the header's alone.
+  // Alex's avatar: his photo (PersonaAvatar.tsx).
   const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
   const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).

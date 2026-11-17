@@ -169,7 +169,7 @@ export const WIDGET_CSS = `
   height: 100%; max-height: none; border-radius: 0; box-shadow: none; animation: none;
 }
 
-/* The top: Alex with the "AI" badge on his photo, his line, a call button and close. */
+/* The top: Alex's photo, his line, a call button and close. */
 #bbc-widget-root .bw-top { position: relative; flex-shrink: 0; color: var(--bw-text); }
 #bbc-widget-root .bw-head {
   display: flex; align-items: center; gap: 12px;
@@ -184,15 +184,6 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-head__live {
   position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%;
   background: var(--bw-live); box-shadow: 0 0 0 2px #FFFFFF;
-}
-/* "AI" on Alex's photo in the header, the one place it shows (owner, 16 Nov): his line says "Travel Agent",
-   the badge says what kind. Bottom left, so the green dot keeps the bottom right; a white ring parts it from the photo. */
-#bbc-widget-root .bw-ai {
-  position: absolute; left: -4px; bottom: -2px;
-  padding: 2px 4px; border-radius: 999px;
-  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF;
-  font-size: 10px; font-style: normal; font-weight: 800; line-height: 1; letter-spacing: 0.04em;
-  box-shadow: 0 0 0 1.5px #FFFFFF;
 }
 #bbc-widget-root .bw-head__text { flex: 1; min-width: 0; }
 #bbc-widget-root .bw-head__name { font-size: 17px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; color: var(--bw-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -463,7 +454,6 @@ export const WIDGET_CSS = `
   #bbc-widget-root .bw-panel--large .bw-chips { width: 100%; max-width: 880px; margin-left: auto; margin-right: auto; }
   #bbc-widget-root .bw-panel--large .bw-head { min-height: 88px; gap: 16px; padding: 20px 12px 12px 20px; }
   #bbc-widget-root .bw-panel--large .bw-head__ava { width: 52px; height: 52px; font-size: 21px; }
-  #bbc-widget-root .bw-panel--large .bw-ai { left: -5px; bottom: -3px; padding: 3px 5px; font-size: 12px; }
   #bbc-widget-root .bw-panel--large .bw-head__name { font-size: 21px; }
   #bbc-widget-root .bw-panel--large .bw-head__sub { font-size: 16px; }
   #bbc-widget-root .bw-panel--large .bw-iconbtn { width: 52px; height: 52px; }

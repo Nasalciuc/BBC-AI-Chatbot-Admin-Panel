@@ -379,12 +379,12 @@ function hue(hex) {
   return (h * 60 + 360) % 360
 }
 
-test('Alex is a "Travel Agent" on both sites and the word AI is never gone; the server uses the same name', () => {
+test('Alex is a "Travel Agent" on both sites, "AI" read to screen readers; the server uses the same name', () => {
   for (const site of [bbc, bct]) {
     assert.equal(site.persona.name, 'Alex')
     assert.equal(site.persona.initial, 'A')
-    // Capital T and A, and no "AI" in the line itself (owner, 16 Nov): the badge on his photo in the
-    // header and the word read to screen readers say it.
+    // Capital T and A, and no "AI" in the line itself (owner, 16 Nov); the badge that showed it on his photo
+    // is gone (owner, 17 Nov), the word read to screen readers stays.
     assert.equal(site.persona.role, 'Travel Agent')
   }
   // The header: the name over "Travel Agent · <brand>", read as "AI Travel Agent · <brand>".
@@ -404,13 +404,13 @@ test('Alex is a "Travel Agent" on both sites and the word AI is never gone; the 
   assert.match(read('config/types.ts'), /PERSONA\): keep them equal/)
 })
 
-test('Alex has his photo in the header, beside his messages and beside the button; the "AI" badge only in the header', () => {
+test('Alex has his photo in the header, beside his messages and beside the button; no "AI" badge on it', () => {
   // A colleague's photo, with his permission (owner, 16 Nov). Part of the bundle, not a link: small,
   // and no request can fail on its way to it.
   assert.match(ALEX_PHOTO, /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/)
   assert.ok(ALEX_PHOTO.length < 16000, `${ALEX_PHOTO.length} characters`)
   // One component in all three spots.
-  assert.match(top, /<PersonaAvatar cls="bw-head__ava" badge>\s*<i class="bw-head__live" \/>\s*<\/PersonaAvatar>/)
+  assert.match(top, /<PersonaAvatar cls="bw-head__ava">\s*<i class="bw-head__live" \/>\s*<\/PersonaAvatar>/)
   assert.match(chat, /const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" \/>/)
   assert.match(buttons, /const personaAvatar = <PersonaAvatar cls="bw-nudge__ava bw-nudge__ava--persona" \/>/)
   assert.match(buttons, /<span class="bw-nudge__who">\{personaAvatar\}\{personaWho\}<\/span>/)
@@ -420,17 +420,13 @@ test('Alex has his photo in the header, beside his messages and beside the butto
   assert.match(avatar, /\? brand\.persona\.initial/)
   assert.match(avatar, /aria-hidden="true"/)
   assert.match(WIDGET_CSS, /\.bw-photo > img \{ display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; \}/)
-  // The "AI" badge: the header only (owner, 16 Nov: one place is enough), after the photo-or-letter, so
-  // the letter fallback keeps it too.
-  assert.match(avatar, /badge = false/)
-  assert.match(avatar, /onError=\{\(\) => setRefused\(true\)\} \/>\}\s*\{badge && <i class="bw-ai">AI<\/i>\}\s*\{children\}/)
-  assert.equal((top + chat + buttons).match(/<PersonaAvatar [^>]*\bbadge\b/g)?.length, 1)
-  // On the header avatar's edge, bottom left: the green dot keeps the bottom right.
-  assert.match(WIDGET_CSS, /\.bw-ai \{\s*position: absolute; left: -4px; bottom: -2px;/)
+  // No "AI" badge on his photo, in any spot (owner, 17 Nov: removed from the header, the last place it showed).
+  assert.doesNotMatch(avatar, /badge\s*[=?:]|badge &&|bw-ai/)
+  assert.doesNotMatch(top + chat + buttons, /<PersonaAvatar [^>]*\bbadge\b/)
+  assert.doesNotMatch(WIDGET_CSS, /\.bw-ai\b/)
+  // The green dot keeps the header avatar's bottom right.
   assert.match(WIDGET_CSS, /\.bw-head__ava \{\s*position: relative;/)
   assert.match(WIDGET_CSS, /\.bw-head__live \{\s*position: absolute; right: -1px; bottom: -1px;/)
-  // White on the brand colour, the pair the colour test below holds to 4.5:1.
-  assert.match(WIDGET_CSS, /\.bw-ai \{[^}]*background: var\(--bw-primary, var\(--bw-ink\)\); color: #FFFFFF;/)
   // Beside the face, the button's card has the header's line: "Travel Agent · <brand>", "AI" read first.
   assert.match(buttons, /const personaWho = \(\s*<span class="bw-nudge__id"><b>\{brand\.persona\.name\}<\/b><small><PersonaLine \/><\/small><\/span>/)
   // The logo stays only on the corner button, which the site draws a stand-in of before this script loads.
