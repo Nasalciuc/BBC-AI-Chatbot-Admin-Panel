@@ -107,19 +107,38 @@ def test_one_client_one_row_newest_trip_oldest_wait():
         # Came back with a phone and the same e-mail, for another trip.
         lead(C2, 2, visitor_email="dana@example.com", visitor_phone="+61412345678", route_display="NYC → PAR",
              destination_code="PAR"),
-        # And once more with only the number, typed the local way.
-        lead(C3, 1, visitor_email=None, visitor_phone=None, phone_to_check="0412 345 678",
-             route_display="NYC → ROM", destination_code="ROM"),
+        # And once more with that phone only.
+        lead(C3, 1, visitor_email=None, visitor_phone="+61 412 345 678", route_display="NYC → ROM",
+             destination_code="ROM"),
     ]
     out = build_offers(rows, now=NOW)
     assert len(out["waiting"]) == 1
     row = out["waiting"][0]
     assert row["conversation_id"] == C3, "the newest chat leads the row"
     assert row["route"] == "NYC → ROM", "the newest trip"
-    assert row["email"] == "dana@example.com" and row["phone"] == "+61412345678"
-    assert row["phone_to_check"] is None, "a placed number wins over one to check"
+    assert row["email"] == "dana@example.com" and row["phone"] in ("+61412345678", "+61 412 345 678")
     assert {c["conversation_id"] for c in row["chats"]} == {C1, C2, C3}
     assert row["waiting_since"] == (NOW - timedelta(hours=20)).isoformat()
+
+
+def test_numbers_that_only_end_alike_are_two_clients():
+    """+1 210 555 0100 and +1 310 555 0100 end in the same nine digits and are two people (CodeRabbit #270)."""
+    rows = [lead(C1, 2, visitor_email="one@example.com", visitor_phone="+12105550100"),
+            lead(C2, 1, visitor_email="two@example.com", visitor_phone="+13105550100")]
+    assert len(build_offers(rows, now=NOW)["waiting"]) == 2
+
+
+def test_a_number_to_check_matches_only_the_same_number_to_check():
+    """A local number has no country: nothing says it is the placed +61 one, so it is not merged with it.
+    The same local number in two chats is one client."""
+    rows = [
+        lead(C1, 3, visitor_email=None, visitor_phone="+61412345678"),
+        lead(C2, 2, visitor_email=None, visitor_phone=None, phone_to_check="0412 345 678"),
+        lead(C3, 1, visitor_email=None, visitor_phone=None, phone_to_check="0412-345-678"),
+    ]
+    groups = group_by_client(rows)
+    assert sorted(len(g) for g in groups) == [1, 2]
+    assert {r["conversation_id"] for g in groups if len(g) == 2 for r in g} == {C2, C3}
 
 
 def test_two_clients_stay_two_rows():
@@ -211,12 +230,23 @@ def client(role: str, uid: str = AGENT, **extra) -> TestClient:
     return TestClient(app)
 
 
-def universe(rows):
+def _state(row):
+    """A universe row's chat as get_blind_inputs_many reads it now."""
+    return {"id": row["conversation_id"], "status": row.get("conversation_status"), "mode": row.get("conversation_mode"),
+            "assigned_agent_id": row.get("assigned_agent_id"), "queued_at": row.get("queued_at"),
+            "engaged_agent_id": row.get("engaged_agent_id")}
+
+
+def universe(rows, now=None):
+    """The cached universe, and the chats' state now (`now`: {id: fields that changed since}).
+    get_blind_inputs_many is a MagicMock-backed AsyncMock: its calls are kept for the asserts."""
+    states = {r["conversation_id"]: {**_state(r), **((now or {}).get(r["conversation_id"]) or {})} for r in rows}
     return patch.multiple(
         db,
         get_leads_universe=AsyncMock(return_value=rows),
         get_user_names=AsyncMock(return_value=NAMES),
         get_team_ids_for_supervisor=AsyncMock(return_value=["team-1"]),
+        get_blind_inputs_many=AsyncMock(side_effect=lambda ids: {i: states[i] for i in ids if i in states}),
     )
 
 
@@ -243,10 +273,13 @@ def test_a_failed_read_is_a_502_never_an_empty_queue():
 
 def test_owner_sees_all_and_may_mark_qa_reads_only():
     with universe([recent(C1)]):
-        body = client("owner").get("/api/offers").json()["data"]
+        resp = client("owner").get("/api/offers").json()
+        body = resp["data"]
+        assert resp["success"] is True and resp["count"] == 1, "the admin envelope: success, data, count"
         assert body["counts"]["waiting"] == 1 and body["can"] == {"mark": True} and body["days"] == 3
         qa = client("qa").get("/api/offers").json()["data"]
         assert qa["counts"]["waiting"] == 1 and qa["can"] == {"mark": False}
+        assert not db.get_blind_inputs_many.called, "a manager is never blind: nothing to read"
 
 
 def test_supervisor_sees_their_team_masked():
@@ -277,6 +310,24 @@ def test_an_agent_sees_their_tunnel_and_a_waiting_chat_blind():
     assert body["can"] == {"mark": True}
 
 
+def test_a_chat_that_entered_the_line_since_the_cache_is_blind_already():
+    """The universe is cached for 20 s; the blind rule reads the chats' state now (CodeRabbit #270)."""
+    rows = [recent(C1, visitor_email="closed@example.com")]
+    with universe(rows, now={C1: {"status": "needs_agent", "queued_at": "2026-11-18T14:59:00+00:00"}}):
+        body = client("sales", tunnel_scope="sales").get("/api/offers").json()["data"]
+        asked = db.get_blind_inputs_many.call_args.args[0]
+    row = body["waiting"][0]
+    assert row["blind"] is True and row["email"] is None and row["route"] is None
+    assert asked == [C1], "only the queue's chats are read"
+
+
+def test_a_failed_blind_read_hides_every_row():
+    with universe([recent(C1)]), patch.object(db, "get_blind_inputs_many", AsyncMock(side_effect=RuntimeError("down"))):
+        body = client("sales", tunnel_scope="sales").get("/api/offers").json()["data"]
+    assert body["waiting"][0]["blind"] is True and body["waiting"][0]["email"] is None
+    assert offers.OFFERS_HEALTH["blind_read_failed"] >= 1
+
+
 def _conv(cid, **over):
     return {"id": cid, "tunnel": "sales", "team_id": "team-1", "status": "closed", "mode": "ai", **over}
 
@@ -292,6 +343,7 @@ def test_mark_saves_each_chat_of_the_client_and_refreshes_the_queue():
     ):
         resp = client("sales").post(f"/api/offers/{C1}", json={"state": "sent", "chats": [C2, C1]})
         assert resp.status_code == 200, resp.text
+        assert resp.json()["count"] == 2
         assert db.invalidate_leads_universe.called
     assert [c.args[0] for c in patched.call_args_list] == [C1, C2]
     payload = patched.call_args_list[0].args[1]
@@ -324,6 +376,39 @@ def test_who_may_not_mark(role, conv, blind, status):
         resp = client(role, tunnel_scope="sales").post(f"/api/offers/{C1}", json={"state": "sent"})
     assert resp.status_code == status, resp.text
     assert not patched.called
+
+
+def test_a_client_with_many_chats_is_marked_whole():
+    """22 chats of one client: every one is marked, none left out (CodeRabbit #270)."""
+    ids = [f"aaaaaaaa-0000-4000-8000-{i:012d}" for i in range(1, 23)]
+    patched = AsyncMock(return_value=True)
+    with patch.multiple(db, get_conversation_simple=AsyncMock(side_effect=lambda cid: _conv(cid)),
+                        get_blind_inputs=AsyncMock(side_effect=lambda cid: _conv(cid)),
+                        patch_conversation_presence=patched, invalidate_leads_universe=MagicMock()):
+        resp = client("owner").post(f"/api/offers/{ids[0]}", json={"state": "sent", "chats": ids[1:]})
+    assert resp.status_code == 200, resp.text
+    assert [c.args[0] for c in patched.call_args_list] == ids
+
+
+def test_a_mark_that_fails_halfway_puts_the_others_back():
+    """One client, one mark: the second chat's save fails, so the first goes back to what it was, and the
+    queue is read again (CodeRabbit #270)."""
+    before = {"offer_sent_at": None, "offer_sent_by": None, "offer_skipped_at": "2026-11-17T09:00:00+00:00",
+              "offer_skipped_by": AGENT}
+    calls = []
+
+    async def save(cid, patch_):
+        calls.append((cid, patch_))
+        return not (cid == C2 and patch_.get("offer_sent_at"))
+
+    with patch.multiple(db, get_conversation_simple=AsyncMock(side_effect=lambda cid: _conv(cid, metadata=dict(before))),
+                        get_blind_inputs=AsyncMock(side_effect=lambda cid: _conv(cid)),
+                        patch_conversation_presence=AsyncMock(side_effect=save), invalidate_leads_universe=MagicMock()):
+        resp = client("owner").post(f"/api/offers/{C1}", json={"state": "sent", "chats": [C2]})
+        assert db.invalidate_leads_universe.called
+    assert resp.status_code == 503
+    assert [c[0] for c in calls] == [C1, C2, C1]
+    assert calls[-1][1] == before, "the first chat is back as it was"
 
 
 def test_mark_rejects_a_bad_chat_id_and_a_failed_save_is_a_503():
@@ -404,3 +489,54 @@ def test_the_detail_says_it_before_masking_or_blinding():
 def test_mask_visitor_row_masks_the_number_to_check():
     row = mask_visitor_row({"phone_to_check": "0412 345 678", "metadata": {"phone_to_check": "0412 345 678"}})
     assert row["phone_to_check"] == "•••5678" and row["metadata"]["phone_to_check"] == "•••5678"
+
+
+# ── The universe without conversations.queued_at ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_universe_reads_without_queued_at_when_the_column_is_missing(monkeypatch):
+    """034 not applied: the universe is read without queued_at, as the chat list does, not a 502
+    (CodeRabbit #270). Any other failure is not retried."""
+    from postgrest.exceptions import APIError
+
+    seen = []
+
+    async def pages(build, **_k):
+        query = build()
+        cols = query.cols
+        seen.append(cols)
+        if "queued_at" in cols:
+            raise APIError({"code": "42703", "message": "column conversations.queued_at does not exist"})
+        return [{"id": C1, "status": "closed"}]
+
+    class _Q:
+        def __init__(self):
+            self.cols = ""
+
+        def select(self, cols):
+            self.cols = cols
+            return self
+
+        def order(self, *_a):
+            return self
+
+    class _Client:
+        def table(self, _name):
+            return _Q()
+
+    monkeypatch.setattr(db, "_select_pages", pages)
+    monkeypatch.setattr(db, "_queued_at_ok", None)
+    monkeypatch.setattr(db, "_queued_at_downgraded_at", None)
+    rows = await db._universe_convs(_Client())
+    assert rows == [{"id": C1, "status": "closed"}]
+    assert "queued_at" in seen[0] and "queued_at" not in seen[1]
+    assert "engaged_agent_id" in seen[1], "the other blind inputs stay"
+
+    async def broken(build, **_k):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(db, "_select_pages", broken)
+    monkeypatch.setattr(db, "_queued_at_ok", None)
+    with pytest.raises(RuntimeError):
+        await db._universe_convs(_Client())

@@ -1162,6 +1162,41 @@ async def get_blind_inputs(conv_id: str) -> Optional[dict]:
         raise
 
 
+async def get_blind_inputs_many(conv_ids: list[str]) -> dict[str, dict]:
+    """get_blind_inputs for many chats: {id: the five fields}, one read per 100. The offers queue reads
+    the blind state here, fresh, rather than from the leads universe it may have cached for 20 s: a chat
+    that entered the shared line a moment ago is blind already (CodeRabbit #270). A chat that no longer
+    exists is simply absent. A failed read RAISES: the caller fails closed."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+    ids = list(dict.fromkeys(i for i in conv_ids if i))
+    out: dict[str, dict] = {}
+    use_queued_at = _queued_at_column_available()
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+
+        def _q(with_queued_at: bool, chunk=chunk):
+            return (
+                get_client().table("conversations")
+                .select(cols + (", queued_at" if with_queued_at else ""))
+                .in_("id", chunk)
+                .execute()
+            )
+
+        try:
+            res = await _run_sync(lambda: _q(use_queued_at), label="blind")
+        except Exception as e:
+            if not use_queued_at or not _is_missing_column_error(e):
+                logger.error(f"get_blind_inputs_many({len(ids)} chats) failed: {type(e).__name__}")
+                raise
+            _downgrade_queued_at(e)
+            use_queued_at = False
+            res = await _run_sync(lambda: _q(False), label="blind")
+        for row in res.data or []:
+            if row.get("id"):
+                out[row["id"]] = row
+    return out
+
+
 async def get_last_agent_for_visitor(
     email: Optional[str],
     phone: Optional[str],
@@ -5224,6 +5259,28 @@ _UNIVERSE_CONV_COLUMNS = (
 )
 
 
+def _universe_conv_columns(with_queued_at: bool) -> str:
+    return _UNIVERSE_CONV_COLUMNS if with_queued_at else _UNIVERSE_CONV_COLUMNS.replace("closed_at, queued_at, ", "closed_at, ")
+
+
+async def _universe_convs(db_client) -> list[dict]:
+    """The conversations half of the universe. Without conversations.queued_at (034 not applied) it is
+    read without that column, as the chat list and get_blind_inputs do; any other failure raises."""
+    use_queued_at = _queued_at_column_available()
+
+    def read(with_queued_at: bool):
+        return _select_pages(lambda: db_client.table("conversations").select(_universe_conv_columns(with_queued_at))
+                             .order("created_at"), label="leads_universe", max_pages=50)
+
+    try:
+        return await read(use_queued_at)
+    except Exception as e:
+        if not use_queued_at or not _is_missing_column_error(e):
+            raise
+        _downgrade_queued_at(e)
+        return await read(False)
+
+
 def invalidate_leads_universe() -> None:
     _LEADS_UNIVERSE["at"] = 0.0
 
@@ -5242,8 +5299,7 @@ async def get_leads_universe() -> list[dict]:
         leads_rows, conv_rows = await asyncio.gather(
             _select_pages(lambda: db_client.table("leads").select(_UNIVERSE_LEAD_COLUMNS)
                           .order("created_at"), label="leads_universe", max_pages=50),
-            _select_pages(lambda: db_client.table("conversations").select(_UNIVERSE_CONV_COLUMNS)
-                          .order("created_at"), label="leads_universe", max_pages=50),
+            _universe_convs(db_client),
         )
         convs = {c["id"]: c for c in conv_rows if c.get("id")}
         rows = []

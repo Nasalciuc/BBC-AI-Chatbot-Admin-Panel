@@ -90,15 +90,20 @@ def mark_of(row: dict) -> Optional[tuple[str, datetime, Optional[str]]]:
 
 
 def _keys(row: dict) -> list[str]:
+    """What makes two chats one client: the same e-mail, or the same number. A placed number (E.164) by
+    all its digits: +1 210 555 0100 and +1 310 555 0100 are two clients, though they end alike
+    (CodeRabbit #270). A number to check has no country, so nothing says which placed number it is: it
+    matches only the same number to check."""
     keys = [f"c:{row.get('conversation_id')}"]
     email = _s(row.get("visitor_email")).lower()
     if email:
         keys.append(f"e:{email}")
-    for phone in (row.get("visitor_phone"), row.get("phone_to_check")):
-        digits = _digits(phone)
-        if len(digits) >= 7:
-            # The last nine digits: "+61 412 345 678" and the "0412 345 678" to check are one number.
-            keys.append(f"p:{digits[-9:]}")
+    placed = _digits(row.get("visitor_phone"))
+    if len(placed) >= 7:
+        keys.append(f"p:{placed}")
+    local = _digits(row.get("phone_to_check"))
+    if len(local) >= 7:
+        keys.append(f"t:{local}")
     return keys
 
 
@@ -181,6 +186,24 @@ def _client_row(group: list[dict], *, masked: bool, blind: bool) -> dict:
     return out
 
 
+def candidates(rows: list[dict], *, now: datetime, days: int = DEFAULT_DAYS) -> list[dict]:
+    """The rows the queue is made of, waiting or marked: not support's, with a contact and a route, made in
+    the last `days` days, and not taken for a test by the CRM's check. The ones whose blind state the
+    endpoint reads fresh for an agent (app/api/offers.py)."""
+    since = now - timedelta(days=days if days in WINDOWS else DEFAULT_DAYS)
+    out = []
+    for row in rows:
+        if (row.get("tunnel") or "sales") == "support" or not has_contact(row) or not has_trip(row):
+            continue
+        if _s(row.get("crm_push_gate_reason")) in _NOT_A_CLIENT:
+            continue
+        made = _at(row.get("created_at"))
+        if not made or made < since:
+            continue
+        out.append(row)
+    return out
+
+
 def build_offers(
     rows: list[dict],
     *,
@@ -195,18 +218,10 @@ def build_offers(
     A lead waits when its chat is not support's, it has a contact and a route, it was made in the last
     `days` days, the CRM's check did not take it for a test, and nobody marked it."""
     names = names or {}
-    since = now - timedelta(days=days if days in WINDOWS else DEFAULT_DAYS)
     blind = blind or (lambda _row: False)
     waiting_rows: list[dict] = []
     done_rows: list[dict] = []
-    for row in rows:
-        if (row.get("tunnel") or "sales") == "support" or not has_contact(row) or not has_trip(row):
-            continue
-        if _s(row.get("crm_push_gate_reason")) in _NOT_A_CLIENT:
-            continue
-        made = _at(row.get("created_at"))
-        if not made or made < since:
-            continue
+    for row in candidates(rows, now=now, days=days):
         (done_rows if mark_of(row) else waiting_rows).append(row)
 
     waiting = []
@@ -257,10 +272,14 @@ def build_offers(
     }
 
 
+# The metadata keys a mark writes (and the ones a failed mark puts back as they were: app/api/offers.py).
+MARK_KEYS: tuple[str, ...] = ("offer_sent_at", "offer_sent_by", "offer_skipped_at", "offer_skipped_by")
+
+
 def mark_patch(state: str, user_id: str, now: datetime) -> dict:
     """The metadata keys a mark writes: the one it sets, the other cleared; "open" clears both."""
     at = now.isoformat()
-    cleared = {"offer_sent_at": None, "offer_sent_by": None, "offer_skipped_at": None, "offer_skipped_by": None}
+    cleared = dict.fromkeys(MARK_KEYS)
     if state == "sent":
         return {**cleared, "offer_sent_at": at, "offer_sent_by": user_id}
     if state == "not_needed":
