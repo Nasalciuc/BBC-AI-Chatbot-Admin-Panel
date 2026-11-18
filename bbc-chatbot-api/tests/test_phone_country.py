@@ -40,6 +40,20 @@ def test_where_the_client_probably_is(meta, iso):
     ("210-555-0100", None, "+12105550100"),          # the US default stays
     ("+61 412 345 678", "US", "+61412345678"),       # its own code wins
     ("0061 412 345 678", None, "+61412345678"),
+    # The country's own length, not only 10 digits (CodeRabbit #270: Portugal's 9 became an Indian +91).
+    ("912345678", "PT", "+351912345678"),
+    ("612345678", "ES", "+34612345678"),
+    ("91234567", "NO", "+4791234567"),
+    ("11987654321", "BR", "+5511987654321"),
+    # Its own code, typed without the +.
+    ("351912345678", "PT", "+351912345678"),
+    ("61412345678", "AU", "+61412345678"),
+    ("919876543210", "IN", "+919876543210"),
+    # A national number that starts like the code is still national: too short to carry it.
+    ("9123456789", "IN", "+919123456789"),
+    ("3912345678", "IT", "+393912345678"),
+    # Italy dials its leading 0 from abroad too.
+    ("02 1234 5678", "IT", "+390212345678"),
 ])
 def test_a_number_is_placed_by_its_own_code_then_by_the_visits_country(raw, country, e164):
     assert format_phone_international(raw, country) == e164
@@ -67,6 +81,20 @@ def test_a_local_number_is_one_with_a_trunk_zero():
 
 def test_a_callback_number_typed_the_local_way_is_placed_by_the_country():
     assert detect_callback_request("0412 345 678", "AU") == {"number": "+61412345678", "cue": "number"}
+
+
+@pytest.mark.parametrize("text, phone, e164", [
+    ("0412 345 678 2 passengers", "0412 345 678", "+61412345678"),
+    ("+61 412 345 678 2 adults", "+61 412 345 678", "+61412345678"),
+    ("+44 7700 900123 3", "+44 7700 900123", "+447700900123"),
+])
+def test_a_count_after_the_number_is_not_its_last_digit(text, phone, e164):
+    """"0412 345 678 2 passengers": the 2 is the passengers (CodeRabbit #270), in the extractor and in
+    the number a call-back or the WhatsApp button takes."""
+    from app.pipeline.callback_intent import find_phone
+
+    assert extract_entities(text).phone == phone
+    assert find_phone(text, "AU") == e164
 
 
 def test_the_widget_may_send_its_language_and_time_zone_and_nothing_else_like_them():

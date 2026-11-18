@@ -75,3 +75,26 @@ def country_hint(metadata: Optional[dict]) -> Optional[str]:
 
 def calling_code(country: Optional[str]) -> Optional[str]:
     return CALLING_CODES.get((country or "").strip().upper()) if country else None
+
+
+# How many digits a number has after its country code, per calling code, when it does not start with a
+# trunk 0 (CodeRabbit #270: '912345678' typed in Portugal became '+912345678', an Indian code). That many
+# digits, typed without + or 00, is a national number; the code followed by that many is the number with
+# its own code, typed without the +. Mobile lengths first: a client types the number they are reached on.
+NATIONAL_LENGTHS: dict[str, tuple[int, int]] = {
+    "44": (9, 10), "353": (7, 9), "61": (9, 9), "64": (8, 10), "33": (9, 9), "49": (6, 11), "34": (9, 9),
+    "39": (9, 10), "351": (9, 9), "31": (9, 9), "32": (8, 9), "41": (9, 9), "43": (7, 13), "46": (7, 9),
+    "47": (8, 8), "45": (8, 8), "358": (6, 10), "48": (9, 9), "420": (9, 9), "30": (10, 10), "40": (9, 9),
+    "373": (8, 8), "380": (9, 9), "36": (8, 9), "90": (10, 10), "972": (8, 9), "971": (8, 9),
+    "966": (8, 9), "974": (8, 8), "965": (8, 8), "20": (8, 10), "27": (9, 9), "234": (8, 10),
+    "254": (9, 9), "212": (9, 9), "91": (10, 10), "92": (9, 10), "880": (8, 10), "94": (9, 9),
+    "63": (8, 10), "65": (8, 8), "60": (8, 10), "66": (8, 9), "84": (9, 10), "62": (8, 12),
+    "81": (9, 10), "82": (8, 10), "86": (8, 11), "852": (8, 8), "886": (8, 9), "52": (10, 10),
+    "55": (10, 11), "54": (10, 11), "56": (9, 9), "57": (10, 10), "51": (8, 9), "503": (8, 8),
+    "502": (8, 8), "504": (8, 8), "506": (8, 8), "507": (7, 8), "593": (8, 9), "58": (10, 10),
+    "598": (8, 8),
+}
+
+# Where the leading 0 is part of the number, dialled from abroad too: Italy's landlines
+# ("02 1234 5678" is +39 02 1234 5678, not +39 2 1234 5678).
+KEEPS_LEADING_ZERO: frozenset[str] = frozenset({"39"})

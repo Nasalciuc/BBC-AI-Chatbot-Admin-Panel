@@ -61,11 +61,13 @@ EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 
 PHONE_RE = re.compile(
     r'(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
-    r'|(?:\+\d{1,3}[-.\s]?)(?:\d[-.\s]?){7,14}\d'
+    # A number never ends on a lone digit after a space or a dash: that digit is the next field
+    # ("+61 412 345 678 2 adults", "0412 345 678 2 passengers" — CodeRabbit #270).
+    r'|(?:\+\d{1,3}[-.\s]?)(?:\d[-.\s]?){7,14}\d(?<![-.\s]\d)'
     # A number typed the local way, with its trunk 0 and no country code
     # ("0412 345 678", "07911 123456"): #3296 was never taken. The country
     # comes from the visit (app.services.phone_country) when it is formatted.
-    r'|(?<![\d+])0[1-9](?:[-.\s]?\d){7,11}(?!\d)'
+    r'|(?<![\d+])0[1-9](?:[-.\s]?\d){7,11}(?!\d)(?<![-.\s]\d)'
 )
 # "01.12.2026", "05-10-2026 to 05-20-2026": a date has the shape of a local number.
 _DATE_LIKE = re.compile(r"^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$")
@@ -635,6 +637,10 @@ CALL_TIME_RE = re.compile(
 # How the client wants to be reached. In 3,255 chats the clients who said no
 # were refusing calls, not contact: "text only", "email me the quotes",
 # "I'll chat, don't want to talk". A consultant who calls anyway loses them.
+# "I don't want" / "don't send me" in Spanish and Portuguese, before a channel: a withdrawal, never the wish.
+_NO_WANT = (r"(?:no\s+(?:quiero|me\s+(?:manden|env[ií]en|mandes|escriban))|"
+            r"n[aã]o\s+(?:quero|me\s+(?:mande|mandem|envie|enviem)))")
+
 CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
     ("text", re.compile(
         r"\b(?:text(?:ing)?\s+only|only\s+(?:by\s+)?text|text\s+me|txt\s+me|sms\s+only"
@@ -670,10 +676,17 @@ CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
         r"\b(?:(?:don'?t|do\s+not|never)\s+(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?(?:text|txt|sms)"
         r"(?:\s+me\b|(?=\s*(?:[.,!?;]|$))|(?=\s+(?:or|and|nor)\s+(?:call|phone|ring)))"
         r"|stop\s+(?:texting|txting|sending\s+(?:me\s+)?(?:texts?|sms))|no\s+more\s+(?:texts?|sms)"
-        r"|no\s+(?:texts?|txts?|sms|text\s+messages?)(?!\s+(?:from|yet)\b))\b", re.I)),
+        r"|no\s+(?:texts?|txts?|sms|text\s+messages?)(?!\s+(?:from|yet)\b)"
+        # Spanish, French, Portuguese: "No quiero mensajes de texto", "sin SMS", "pas de SMS",
+        # "ne m'envoyez pas de message", "não quero mensagens", "sem SMS" (CodeRabbit #270).
+        rf"|{_NO_WANT}\s+(?:mensajes?(?:\s+de\s+texto)?|sms|mensage(?:m|ns)(?:\s+de\s+texto)?)"
+        r"|(?:sin|sem)\s+(?:mensajes?|sms|mensage(?:m|ns))|pas\s+de\s+(?:sms|messages?|textos?)"
+        r"|ne\s+m'envoyez\s+pas\s+de\s+(?:sms|messages?))\b", re.I)),
     ("no email", re.compile(
         r"\b(?:(?:don'?t|do\s+not|never)\s+e-?mail(?:\s+me\b|(?=\s*(?:[.,!?;]|$)))"
-        r"|stop\s+e-?mailing|no\s+more\s+e-?mails?|no\s+e-?mails?(?!\s+(?:from|yet)\b))\b", re.I)),
+        r"|stop\s+e-?mailing|no\s+more\s+e-?mails?|no\s+e-?mails?(?!\s+(?:from|yet)\b)"
+        rf"|{_NO_WANT}\s+(?:correos?|e-?mails?)|(?:sin|sem)\s+(?:correos?|e-?mails?)"
+        r"|pas\s+(?:d'e-?mails?|de\s+(?:courriels?|mails?|e-?mails?)))\b", re.I)),
 )
 
 # A wish and its withdrawal: the later one wins (merge_contact_channel).
@@ -682,7 +695,9 @@ _CHANNEL_OPPOSITES = {"text": "no texts", "no texts": "text", "email": "no email
 # "don't text me", "never email me", "don't call or text me", "not only text":
 # what follows is no wish for that channel.
 _NEGATED_BEFORE = re.compile(
-    r"\b(?:don'?t|do\s+not|never|not|no)\s*(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?$", re.I
+    r"\b(?:don'?t|do\s+not|never|not|no"
+    # "No quiero mensajes de texto", "sin correo", "não quero mensagens", "sem e-mail" (CodeRabbit #270)
+    rf"|{_NO_WANT}|sin|sem)\s*(?:(?:call|phone|ring)\s+(?:or|and|nor)\s+)?$", re.I
 )
 
 

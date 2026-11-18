@@ -140,6 +140,12 @@ def _straight(text: str) -> str:
     return (text or "").replace("’", "'").replace("‘", "'")
 
 
+# A yes on its own, in the languages the summary asks in: "Sim" alone answers, "Sim Lee" is a name
+# (CodeRabbit #270: a bare Portuguese "sim" was stored as the client's name).
+_A_BARE_YES = frozenset({"sim", "si", "claro", "vale", "certo", "perfeito", "perfecto", "exacto", "isso", "bueno",
+                         "dale", "parfait", "daccord", "d'accord"})
+
+
 def name_from_answer(message: str) -> Optional[str]:
     """The name in a reply to "your name?" — one to four words of letters
     ("Paul Moreau", "maribel", "Mary-Ann O'Neil"), None for anything else
@@ -150,6 +156,8 @@ def name_from_answer(message: str) -> Optional[str]:
         return None
     words = text.split()
     if not 1 <= len(words) <= 4:
+        return None
+    if len(words) == 1 and words[0].lower() in _A_BARE_YES:
         return None
     if any(not _NAME_WORD_RE.match(w) for w in words):
         return None
@@ -188,7 +196,7 @@ def name_to_store(known: Optional[str], answer: Optional[str], last_name_asked: 
 
 # Spanish, French and Portuguese too (#3325: "mensaje de texto" read as nothing, so a call task).
 _TEXT_ANSWER_RE = re.compile(
-    r"\b(?:text(?:ing|s)?|txt|sms|message|whats\s*app|mensajes?|textos?|texte|mensagens?"
+    r"\b(?:text(?:ing|s)?|txt|sms|message|whats\s*app|mensajes?|textos?|texte|mensage(?:m|ns)"
     r"|escr[ií]b(?:eme|ame|anme)|[ée]crivez[- ]moi|escreva)\b", re.I)
 _CALL_ANSWER_RE = re.compile(
     r"\b(?:call|calls|phone\s+call|ring|llamada|ll[aá]m(?:ame|enme|eme)|llamar|appel(?:ez)?|appeler"

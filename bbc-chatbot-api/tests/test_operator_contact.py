@@ -70,6 +70,20 @@ async def test_a_phone_typed_to_the_operator_reaches_the_conversation(caplog):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_country_read_still_saves_the_phone_and_the_email():
+    """The country is only a hint for a local number: its read failing must not lose the contacts the
+    message carries (CodeRabbit #270)."""
+    write = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", new=write), \
+         patch("app.db.supabase.get_recent_messages", new=AsyncMock(return_value=[])), \
+         patch("app.db.supabase.get_conversation_simple", new=AsyncMock(side_effect=RuntimeError("timeout"))):
+        await operator_contact.record_contact("c1", "paul.moreau@example.com or +44 7700 900123")
+    write.assert_awaited_once_with(
+        "c1", {"email": "paul.moreau@example.com", "phone": "+44 7700 900123", "_phone_country": None})
+    assert operator_contact.OPERATOR_CONTACT_HEALTH == {"found": 1, "failures": 0}
+
+
+@pytest.mark.asyncio
 async def test_the_answer_to_the_operators_name_question_names_the_client():
     write, recent, _ = await _run("Paul Moreau", history=NAME_Q, conv={"visitor_name": None})
     write.assert_awaited_once_with("c1", {"name": "Paul Moreau"})

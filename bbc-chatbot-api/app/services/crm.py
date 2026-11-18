@@ -147,7 +147,10 @@ def format_phone_international(phone: str, country: Optional[str] = None) -> str
     `country` (ISO alpha-2, app.services.phone_country.country_hint) places a
     number typed the local way, without its code (#3296, 17 Nov 2026):
       '0412 345 678', 'AU' → '+61412345678' (the trunk 0 goes)
+      '02 1234 5678', 'IT' → '+390212345678' (Italy keeps its 0)
       '9876543210', 'IN'   → '+919876543210'
+      '912345678', 'PT'    → '+351912345678' (the country's own length, not only 10 digits)
+      '351912345678', 'PT' → '+351912345678' (its own code, typed without the +)
     A number with + or 00 keeps its own code. A local number that starts with
     0 and has no country to go with it is NOT guessed: it formats to "", as a
     number too short to dial does — "+1" before it was an impossible number.
@@ -159,13 +162,21 @@ def format_phone_international(phone: str, country: Optional[str] = None) -> str
         return ""
     if phone.strip().startswith("+") or digits.startswith("00"):
         return f"+{digits[2:] if digits.startswith('00') else digits}"
-    from app.services.phone_country import calling_code
+    from app.services.phone_country import KEEPS_LEADING_ZERO, NATIONAL_LENGTHS, calling_code
 
     code = calling_code(country)
     if digits.startswith("0"):
         if code and code != "1" and len(digits) >= 8:
-            return f"+{code}{digits.lstrip('0')}"
+            return f"+{code}{digits if code in KEEPS_LEADING_ZERO else digits.lstrip('0')}"
         return ""
+    lengths = NATIONAL_LENGTHS.get(code or "")
+    if code and code != "1" and lengths:
+        lo, hi = lengths
+        if digits.startswith(code) and lo <= len(digits) - len(code) <= hi:
+            return f"+{digits}"
+        if lo <= len(digits) <= hi:
+            return f"+{code}{digits}"
+        return f"+{digits}"
     if len(digits) == 10:
         if code and code != "1":
             return f"+{code}{digits}"

@@ -56,11 +56,17 @@ async def record_contact(conversation_id: str, message: str) -> None:
             return
         if found.get("phone"):
             # A number typed the local way is placed by the visit's country
-            # (#3296: "04…" from Australia, typed to an operator).
+            # (#3296: "04…" from Australia, typed to an operator). A failed
+            # read only loses that hint: the email, and a number with its own
+            # code, are saved all the same (CodeRabbit #270).
             from app.services.phone_country import country_hint
 
-            conv_meta = ((await db.get_conversation_simple(conversation_id)) or {}).get("metadata")
-            found["_phone_country"] = country_hint(conv_meta if isinstance(conv_meta, dict) else None)
+            try:
+                conv_meta = ((await db.get_conversation_simple(conversation_id)) or {}).get("metadata")
+                found["_phone_country"] = country_hint(conv_meta if isinstance(conv_meta, dict) else None)
+            except Exception as e:  # noqa: silent — logged; a local number then waits to be checked
+                logger.warning(f"[operator-contact] {conversation_id}: no country for the number ({type(e).__name__})")
+                found["_phone_country"] = None
         OPERATOR_CONTACT_HEALTH["found"] += 1
         await lead_service.update_lead_from_entities(conversation_id, found)
         logger.info(f"[operator-contact] {conversation_id}: {', '.join(sorted(k for k in found if not k.startswith('_')))} from the client's message")

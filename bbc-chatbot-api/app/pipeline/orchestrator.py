@@ -143,6 +143,9 @@ def _lev_leq1(a: str, b: str) -> bool:
 _CORRECTION_MARKERS = {
     "but", "however", "actually", "except", "instead", "though", "although",
     "pero", "aber", "mais", "dar", "insa",
+    # Portuguese, Spanish, French: "Perfeito, mas…" is a correction, never a YES (CodeRabbit #270).
+    # Compared after _normalize_reply, so without accents: "porém" arrives as "porem".
+    "mas", "porem", "contudo", "excepto", "salvo", "cependant", "pourtant", "sauf",
 }
 
 # A confirmation with a tail stays a confirmation only while the tail is
@@ -1290,7 +1293,6 @@ async def _pipeline(
         "must_haves": _open_door_reply,
         "_metadata": _site_metadata,
     }
-
     # An explicit one-way wipes a stale return date on the lead (KAZUO:
     # the summary kept showing a return he had just cancelled).
     if _clear_return_date:

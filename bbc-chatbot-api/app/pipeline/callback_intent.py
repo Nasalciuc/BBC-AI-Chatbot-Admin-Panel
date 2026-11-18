@@ -49,8 +49,10 @@ _CALL_ME_NAME_RE = re.compile(
     r"[A-Z][a-z]{1,}",
 )
 # A phone number in free text: 7+ digits allowing spaces, dots, dashes,
-# parens and a leading +.
-_PHONE_IN_TEXT_RE = re.compile(r"(\+?\d[\d\-.\s()]{6,}\d)")
+# parens and a leading +. It never ends on a lone digit after a gap: in
+# "0412 345 678 2 passengers" the 2 is the passengers, not the number's last
+# digit (CodeRabbit #270, as entity_extractor.PHONE_RE).
+_PHONE_IN_TEXT_RE = re.compile(r"(\+?\d[\d\-.\s()]{6,}\d(?<![-.\s]\d))")
 
 
 def find_phone(message: str, country: Optional[str] = None) -> Optional[str]:

@@ -80,6 +80,23 @@ def test_names_with_accents_still_count(answer, name):
     assert name_from_answer(answer) == name
 
 
+@pytest.mark.parametrize("answer", ["sim", "Sim.", "si", "Claro!", "vale", "Perfeito"])
+def test_a_bare_yes_is_never_a_name(answer):
+    """"Sim" to "your name?" agreed to something; it is not the client's name (CodeRabbit #270)."""
+    assert name_from_answer(answer) is None
+
+
+@pytest.mark.parametrize("answer, name", [("Sim Lee", "Sim Lee"), ("Simão", "Simão"), ("Simone", "Simone")])
+def test_names_that_begin_like_a_yes_still_count(answer, name):
+    assert name_from_answer(answer) == name
+
+
+@pytest.mark.parametrize("message", ["+55 11 99999-0000 por mensagem", "+55 11 99999-0000 por mensagens"])
+def test_a_number_with_mensagem_is_a_text_not_a_call(message):
+    """The singular too: "mensagens?" matched "mensagen", never "mensagem" (CodeRabbit #270)."""
+    assert callback_channel(message, "number", None) == "text"
+
+
 @pytest.mark.parametrize("answer, channel", [
     ("mensaje de texto", "text"), ("por mensaje, por favor", "text"), ("no me llamen, mensaje por favor", "text"),
     ("llámame", "call"), ("par message svp", "text"), ("pas d'appel, un message", "text"), ("appelez-moi", "call"),
@@ -122,6 +139,20 @@ def test_yes_in_spanish_french_portuguese_confirms(reply):
     assert is_confirmation(_normalize_reply(reply))
 
 
+@pytest.mark.parametrize("reply", [
+    "Perfeito, mas…", "Sim, porém um adulto", "Certo, contudo", "Sí, salvo la fecha", "Oui, sauf le retour",
+    "D'accord, pourtant",
+])
+def test_a_yes_followed_by_a_correction_is_not_a_yes(reply):
+    """"Perfeito, mas…" corrects the summary: confirming it would send a wrong lead (CodeRabbit #270)."""
+    assert not is_confirmation(_normalize_reply(reply))
+
+
+def test_a_plain_perfeito_still_confirms():
+    assert is_confirmation(_normalize_reply("Perfeito"))
+    assert is_confirmation(_normalize_reply("Perfeito!"))
+
+
 @pytest.mark.parametrize("reply", ["não", "errado", "faux", "pas correct"])
 def test_no_in_spanish_french_portuguese_rejects(reply):
     assert is_rejection(_normalize_reply(reply))
@@ -133,6 +164,20 @@ def test_no_in_spanish_french_portuguese_rejects(reply):
     ("par courriel", "email"), ("pas d'appel", "no calls"),
 ])
 def test_the_extractor_hears_a_channel_wish_in_spanish_french_portuguese(text, wish):
+    from app.pipeline.entity_extractor import contact_channel_of
+
+    assert contact_channel_of(text) == wish
+
+
+@pytest.mark.parametrize("text, wish", [
+    ("No quiero mensajes de texto", "no texts"), ("sin SMS, por favor", "no texts"),
+    ("no me manden correos", "no email"), ("pas de SMS", "no texts"), ("pas d'e-mails", "no email"),
+    ("ne m'envoyez pas de messages", "no texts"), ("não quero mensagens", "no texts"),
+    ("sem e-mail", "no email"),
+])
+def test_a_channel_turned_down_in_spanish_french_portuguese_is_a_refusal_not_a_wish(text, wish):
+    """"No quiero mensajes de texto" turns texts down: read as a wish for texts, the consultant would
+    text the one client who said not to (CodeRabbit #270)."""
     from app.pipeline.entity_extractor import contact_channel_of
 
     assert contact_channel_of(text) == wish
