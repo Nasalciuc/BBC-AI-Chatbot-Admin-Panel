@@ -101,6 +101,21 @@ async def test_a_name_shaped_message_names_nobody_when_no_one_asked():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lang, message, stored", [
+    ("es", "Dale", None), ("es", "dale", None), ("es", "Dale Cooper", "Dale Cooper"),
+    (None, "Dale", "Dale"), ("en", "Dale", "Dale"),
+])
+async def test_a_bare_dale_to_the_operator_is_a_yes_in_spanish_and_a_name_in_english(lang, message, stored):
+    """The operator path reads the answer in the conversation's language, as the chat does (CodeRabbit #270)."""
+    conv = {"metadata": {"client_lang": lang}} if lang else {}
+    write, _, _ = await _run(message, history=NAME_Q, conv=conv)
+    if stored:
+        write.assert_awaited_once_with("c1", {"name": stored})
+    else:
+        write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_known_name_is_never_replaced_by_another():
     write, _, _ = await _run("Mary Smith", history=NAME_Q, conv={"visitor_name": "Paul Moreau"})
     write.assert_not_awaited()

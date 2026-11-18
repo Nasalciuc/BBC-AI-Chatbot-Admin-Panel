@@ -69,7 +69,18 @@ async def record_contact(conversation_id: str, message: str) -> None:
             asked = last_question(await db.get_recent_messages(conversation_id, limit=10))
             if asks_for_name(asked):
                 conv = await db.get_conversation_simple(conversation_id) or {}
-                found["name"] = name_to_store(conv.get("visitor_name"), answer, asks_for_last_name(asked))
+                # Read again in the conversation's language, as the chat does: a bare "dale" answers yes to
+                # a Spanish client's operator, and is no name (CodeRabbit #270).
+                from app.pipeline.language import current_lang, turn_lang
+
+                meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+                token = current_lang.set(turn_lang(message, meta.get("client_lang")))
+                try:
+                    answer = name_from_answer(message)
+                finally:
+                    current_lang.reset(token)
+                if answer:
+                    found["name"] = name_to_store(conv.get("visitor_name"), answer, asks_for_last_name(asked))
         found = {k: v for k, v in found.items() if v}
         if not found:
             return
