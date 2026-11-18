@@ -15,6 +15,7 @@ from app.db import supabase as db
 from app.services.crm import (
     CRM_PUSH_HEALTH,
     format_phone_international,
+    single_contact_ok,
     submit_abandoned_to_crm,
 )
 from app.services.lead_service import get_or_create_lead
@@ -120,6 +121,17 @@ def pick_richest_by_contact(convs: list[dict]) -> list[dict]:
             best["_twin_count"] = len(members) - 1
         chosen.append(best)
     return chosen + passthrough
+
+
+def _crm_fingerprint(conv: dict, lead: dict) -> str:
+    """What a CRM push is built from — the contact and the trip — in one short hash. When the CRM
+    refused a push (422), the same fingerprint later means the same refusal."""
+    import hashlib
+
+    parts = [str(conv.get(k) or "") for k in ("visitor_name", "visitor_email", "visitor_phone")]
+    parts += [str((lead or {}).get(k) or "") for k in (
+        "origin_code", "destination_code", "departure_date", "return_date", "passengers", "trip_type", "cabin_class")]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
 async def _persist_refusal(lead_id: str, error: str) -> bool:
@@ -301,7 +313,8 @@ async def run_abandoned_crm() -> dict:
             phone = format_phone_international(conv.get("visitor_phone", ""))
             email = (conv.get("visitor_email") or "").strip()
 
-            if not phone or len(phone) < 8:
+            if (not phone or len(phone) < 8) and not (single_contact_ok() and email):
+                # An email alone reaches the CRM only once it takes one contact.
                 results.append({"id": cid, "status": "skipped", "reason": "phone_invalid"})
                 continue
             # BUSINESS RULE: every captured contact is dialable. Email is
@@ -411,6 +424,15 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "contact_already_in_crm"})
                 continue
 
+            # The CRM refused this data with a 422 and nothing it was built from
+            # has changed since: asking again every five minutes only repeats
+            # the refusal (#3324, 18 Nov 2026). It stays visible in the panel.
+            _fp = _crm_fingerprint(conv, lead)
+            _refused_before = (conv.get("metadata") or {}).get("crm_refused")
+            if isinstance(_refused_before, dict) and _refused_before.get("fp") == _fp:
+                results.append({"id": cid, "status": "skipped", "reason": "crm_refused_unchanged"})
+                continue
+
             crm_result = await submit_abandoned_to_crm(conv, lead)
 
             if crm_result.success:
@@ -450,13 +472,21 @@ async def run_abandoned_crm() -> dict:
             else:
                 # A gate refusal (bad email domain, no contact...) is the
                 # design working, recorded on the lead by _persist_refusal —
-                # a WARNING. A CRM that did not answer is an ERROR.
+                # a WARNING, once: the same refusal again on the next tick is
+                # DEBUG (#2911's typo-domain gate filled the log every 5 min).
+                # A CRM that did not answer is an ERROR.
                 _refused = (crm_result.error or "").startswith("gate:")
+                _again = _refused and lead.get("crm_push_gate_reason") == (crm_result.error or "")[len("gate:"):]
                 logger.log(
-                    logging.WARNING if _refused else logging.ERROR,
+                    logging.DEBUG if _again else logging.WARNING if _refused else logging.ERROR,
                     f"[cron][{cid}] CRM fail: {crm_result.error}",
                     extra={"event": "crm.gate_refused" if _refused else "crm.push_failed"},
                 )
+                if (crm_result.error or "").startswith("gate:crm_422:"):
+                    await db.patch_conversation_presence(cid, {"crm_refused": {
+                        "fields": (crm_result.error or "")[len("gate:crm_422:"):], "fp": _fp,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }})
                 # A gate refusal becomes work-list state; a transient HTTP
                 # failure stays retryable (see _persist_refusal).
                 await _persist_refusal(lead["id"], crm_result.error or "")

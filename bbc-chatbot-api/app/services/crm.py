@@ -115,13 +115,17 @@ def crm_hygiene_gate(
     return None
 
 
-def crm_push_gate(lead: dict, email: str) -> Optional[str]:
+def crm_push_gate(lead: dict, email: str, phone: str = "") -> Optional[str]:
     """Refusal reason for the STRICT (confirm-flow/button) push path:
     hygiene + the score floor. The abandoned/no-engagement path uses
     crm_hygiene_gate alone — BUSINESS RULE (owner, explicit): every
     captured contact is dialable, silent leads included; score never
-    blocks a dialable human there."""
-    reason = crm_hygiene_gate(lead, email, require_email=True)
+    blocks a dialable human there. With CRM_SINGLE_CONTACT on, a phone
+    alone is enough here too; no contact at all never is."""
+    single = single_contact_ok()
+    if single and not (email or "").strip() and not format_phone_international(phone or ""):
+        return "no_contact"
+    reason = crm_hygiene_gate(lead, email, require_email=not single)
     if reason:
         return reason
     if (lead.get("score") or 0) < 40:
@@ -177,14 +181,32 @@ _IATA_RE = re.compile(r"^[A-Za-z]{3}$")
 CRM_CABIN_ENUM = frozenset({"business", "first", "premium_economy"})
 
 
+def single_contact_ok() -> bool:
+    """CRM_SINGLE_CONTACT (app.flags; off): the CRM takes a lead with ONE contact, an
+    email or a phone. Off, it needs both — the contract the CRM keeps today (18 Nov
+    2026: 422 "The client.email field is required." for a phone-only lead, and all
+    351 leads it took in 30 days had both). Turned on only once the CRM's team says
+    their side takes one."""
+    from app.flags import flag
+
+    return bool(flag("CRM_SINGLE_CONTACT", False))
+
+
 def validate_crm_payload(payload: dict) -> Optional[str]:
     """Refusal reason, or None when the payload satisfies the contract."""
     client = payload.get("client") or {}
     phone = re.sub(r"[^\d+]", "", str(client.get("phone") or ""))
-    if not _CONTRACT_PHONE_RE.match(phone):
-        return "phone_format"
+    email = str(client.get("email") or "").strip()
+    single = single_contact_ok()
+    if phone or not (single and email):
+        if not _CONTRACT_PHONE_RE.match(phone):
+            return "phone_format"
     if len((client.get("name") or "").strip()) < 2:
         return "name_too_short"
+    if not email and not single:
+        # Refused here, visibly (a gate state in the panel), instead of a 422
+        # from the CRM every five minutes (#3324, 18 Nov 2026).
+        return "email_missing"
     flights = payload.get("flights") or []
     if not flights:
         return "no_flights"
@@ -518,7 +540,9 @@ async def push_lead_to_crm(
     false."""
     from app.db import supabase as db
 
-    reason = crm_push_gate(lead, getattr(visitor, "email", "") or "")
+    reason = crm_push_gate(
+        lead, getattr(visitor, "email", "") or "", getattr(visitor, "phone", "") or ""
+    )
     if reason:
         logger.info(
             f"CRM push refused conv={conversation_id} lead={lead.get('id')} "
@@ -562,6 +586,16 @@ async def push_lead_to_crm(
     return result
 
 
+def _refused_fields(resp) -> str:
+    """The contract fields a CRM 422 names ("client.email"), comma-joined; "unknown" when it names none."""
+    try:
+        errors = (resp.json() or {}).get("errors") or {}
+        fields = sorted(str(k) for k in errors)[:4] if isinstance(errors, dict) else []
+    except Exception:  # noqa: silent — a body that is not JSON names no field; the 422 is still a refusal
+        fields = []
+    return ",".join(fields) or "unknown"
+
+
 async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
     """Submit abandoned conv to CRM. Bypasses check_crm_ready, uses defaults for missing route."""
     if not settings.crm_api_url:
@@ -570,7 +604,8 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
     try:
         lead = lead or {}
         phone = format_phone_international(conv.get("visitor_phone", ""))
-        if not phone:
+        # One contact is enough once the CRM takes it (CRM_SINGLE_CONTACT).
+        if not phone and not (single_contact_ok() and (conv.get("visitor_email") or "").strip()):
             return CRMResult(success=False, error="Phone invalid")
 
         # Hygiene holds on THIS path too (score deliberately does not —
@@ -707,7 +742,10 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             logger.error(
                 f"[CRM-ABANDONED] 422 conv={cid} body(verbatim)={resp.text}"
             )
-            return CRMResult(success=False, error=f"HTTP 422: {resp.text[:300]}")
+            # A refusal of THIS data, not an outage: a gate state with the
+            # fields it named, so the sweep stops asking again until the data
+            # changes (app.api.cron, metadata.crm_refused) and the panel shows why.
+            return CRMResult(success=False, error=f"gate:crm_422:{_refused_fields(resp)}")
 
         body = resp.text[:300]
         logger.error(f"[CRM-ABANDONED] FAIL conv={cid} status={resp.status_code} body={body}")
