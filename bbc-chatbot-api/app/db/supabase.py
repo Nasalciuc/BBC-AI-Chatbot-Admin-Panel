@@ -659,7 +659,10 @@ _LIST_COLUMNS_BASE = (
     "agent_assigned_at:metadata->>agent_assigned_at,"
     # A local number kept for the agent to check (ADR-6f): read only to say whether the client left any
     # contact ("Left 3 min ago · no contact", ADR-6c) — the number itself never leaves the db layer here.
-    "phone_to_check:metadata->>phone_to_check"
+    "phone_to_check:metadata->>phone_to_check,"
+    # The e-mail and the phone, under their own names, for the same answer when the list falls back to
+    # this projection (no visitor_email / visitor_phone in it): dropped once read (CodeRabbit #270).
+    "contact_email:visitor_email,contact_phone:visitor_phone"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -1003,9 +1006,10 @@ async def get_conversations(
         # and the panel keep the row shape they already expect.
         for row in rows:
             _to_check = row.pop("phone_to_check", None)
+            _email, _phone = row.pop("contact_email", None), row.pop("contact_phone", None)
             row["has_contact"] = any(
                 isinstance(v, str) and v.strip()
-                for v in (row.get("visitor_email"), row.get("visitor_phone"), _to_check)
+                for v in (row.get("visitor_email"), row.get("visitor_phone"), _email, _phone, _to_check)
             )
             row["metadata"] = {
                 "engaged_agent_id": row.pop("engaged_agent_id", None),

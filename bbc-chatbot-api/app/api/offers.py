@@ -29,7 +29,9 @@ router = APIRouter()
 
 READERS = {"owner", "admin", "dev", "qa", "sales", "supervisor"}
 MARKERS = {"owner", "admin", "dev", "sales", "supervisor"}
-OFFERS_HEALTH: dict = {"marks": 0, "mark_failed": 0, "blind_read_failed": 0, "rollback_failed": 0}
+OFFERS_HEALTH: dict = {
+    "marks": 0, "mark_failed": 0, "blind_read_failed": 0, "rollback_failed": 0, "rollback_skipped": 0,
+}
 # One mark covers every chat of the client the queue shows (CodeRabbit #270: a client with 22 chats could
 # not be marked under a limit of 49 sent by a panel that cut the list). The bound is only against abuse.
 MAX_CHATS = 500
@@ -96,6 +98,24 @@ async def list_offers(
     }
 
 
+async def _put_back(cid: str, ours: dict, before: dict, of: int) -> None:
+    """Undo this request's mark on one chat — only while the mark there is still this request's own
+    (its time and its author). A mark another request saved since stays: an undo never writes an older
+    state over it (CodeRabbit #270). A chat that can't be read keeps this mark; the 503 asks for a retry."""
+    try:
+        conv = await db.get_conversation_simple(cid)
+    except Exception as e:  # noqa: silent — counted and logged; the mark stays, the agent retries
+        conv = None
+        logger.warning(f"[offers] mark undo: chat not read ({type(e).__name__})")
+    meta = (conv or {}).get("metadata") if isinstance((conv or {}).get("metadata"), dict) else None
+    if meta is None or any(meta.get(k) != ours.get(k) for k in MARK_KEYS):
+        OFFERS_HEALTH["rollback_skipped"] += 1
+        return
+    if not await db.patch_conversation_presence(cid, before):
+        OFFERS_HEALTH["rollback_failed"] += 1
+        logger.error(f"[offers] mark undo failed on one chat of {of}")
+
+
 class OfferMark(BaseModel):
     state: Literal["sent", "not_needed", "open"]
     # The other chats of the same client (the row's `chats`): one mark for one client.
@@ -138,9 +158,7 @@ async def mark_offer(conversation_id: str, body: OfferMark, user: dict = Depends
                 # One client, one mark: the chats already marked go back to what they were, so the client
                 # never stands half in the queue and half out of it (CodeRabbit #270).
                 for back in done:
-                    if not await db.patch_conversation_presence(back, before[back]):
-                        OFFERS_HEALTH["rollback_failed"] += 1
-                        logger.error(f"[offers] mark undo failed on one chat of {len(ids)}")
+                    await _put_back(back, patch, before[back], len(ids))
                 raise HTTPException(503, "Couldn't save the mark. Try again.")
             done.append(cid)
     finally:

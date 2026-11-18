@@ -396,12 +396,16 @@ def test_a_mark_that_fails_halfway_puts_the_others_back():
     before = {"offer_sent_at": None, "offer_sent_by": None, "offer_skipped_at": "2026-11-17T09:00:00+00:00",
               "offer_skipped_by": AGENT}
     calls = []
+    stored = {C1: dict(before), C2: dict(before)}
 
     async def save(cid, patch_):
         calls.append((cid, patch_))
-        return not (cid == C2 and patch_.get("offer_sent_at"))
+        if cid == C2 and patch_.get("offer_sent_at"):
+            return False
+        stored[cid].update(patch_)
+        return True
 
-    with patch.multiple(db, get_conversation_simple=AsyncMock(side_effect=lambda cid: _conv(cid, metadata=dict(before))),
+    with patch.multiple(db, get_conversation_simple=AsyncMock(side_effect=lambda cid: _conv(cid, metadata=dict(stored[cid]))),
                         get_blind_inputs=AsyncMock(side_effect=lambda cid: _conv(cid)),
                         patch_conversation_presence=AsyncMock(side_effect=save), invalidate_leads_universe=MagicMock()):
         resp = client("owner").post(f"/api/offers/{C1}", json={"state": "sent", "chats": [C2]})
@@ -409,6 +413,34 @@ def test_a_mark_that_fails_halfway_puts_the_others_back():
     assert resp.status_code == 503
     assert [c[0] for c in calls] == [C1, C2, C1]
     assert calls[-1][1] == before, "the first chat is back as it was"
+    assert stored[C1] == before
+
+
+def test_an_undo_never_writes_over_a_mark_another_request_saved_since():
+    """Request A marks the first chat, fails on the second; meanwhile B marked the first chat too. A's undo
+    finds B's mark there, not its own, and leaves it (CodeRabbit #270, round 2)."""
+    other = {"offer_sent_at": "2026-11-18T15:00:01+00:00", "offer_sent_by": "someone-else",
+             "offer_skipped_at": None, "offer_skipped_by": None}
+    calls = []
+
+    async def save(cid, patch_):
+        calls.append((cid, patch_))
+        return cid != C2
+
+    reads = {"n": 0}
+
+    async def simple(cid):
+        reads["n"] += 1
+        # The checks before the mark read nothing marked; the undo's read finds B's mark.
+        return _conv(cid, metadata=dict(other) if reads["n"] > 2 else {})
+
+    with patch.multiple(db, get_conversation_simple=AsyncMock(side_effect=simple),
+                        get_blind_inputs=AsyncMock(side_effect=lambda cid: _conv(cid)),
+                        patch_conversation_presence=AsyncMock(side_effect=save), invalidate_leads_universe=MagicMock()):
+        resp = client("owner").post(f"/api/offers/{C1}", json={"state": "sent", "chats": [C2]})
+    assert resp.status_code == 503
+    assert [c[0] for c in calls] == [C1, C2], "no undo written over B's mark"
+    assert offers.OFFERS_HEALTH["rollback_skipped"] >= 1
 
 
 def test_mark_rejects_a_bad_chat_id_and_a_failed_save_is_a_503():
@@ -443,6 +475,9 @@ class _FakeQuery:
     ({"visitor_email": "dana@example.com"}, True),
     ({"visitor_phone": "+12105550100"}, True),
     ({"phone_to_check": "0412 345 678"}, True),
+    # The fallback projection: the contact under its own names, never in the row (CodeRabbit #270).
+    ({"contact_email": "dana@example.com"}, True),
+    ({"contact_phone": "+12105550100"}, True),
     ({"visitor_email": "  "}, False),
     ({}, False),
 ])
@@ -456,10 +491,12 @@ async def test_each_list_row_says_whether_a_contact_was_left(fields, expected):
         out, _ = await db.get_conversations()
     assert out[0]["has_contact"] is expected
     assert "phone_to_check" not in out[0] and "phone_to_check" not in out[0]["metadata"]
+    assert "contact_email" not in out[0] and "contact_phone" not in out[0]
 
 
 def test_the_list_reads_the_number_to_check_only_for_that():
     assert "phone_to_check:metadata->>phone_to_check" in db._LIST_COLUMNS_BASE
+    assert "contact_email:visitor_email,contact_phone:visitor_phone" in db._LIST_COLUMNS_BASE
 
 
 def _detail(role: str, conv: dict):
