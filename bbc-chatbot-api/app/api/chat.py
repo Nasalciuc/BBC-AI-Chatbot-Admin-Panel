@@ -555,6 +555,10 @@ async def _mark_client_active(conversation_id: str) -> None:
         logger.warning(f"[presence] message-implies-online failed conv={conversation_id}: {e}")
 
 
+# /chat requests that named a conversation of another visitor (shown in /health).
+CHAT_OWNER_HEALTH: dict = {"refused": 0}
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     req: ChatRequest,
@@ -614,6 +618,17 @@ async def chat(
     # 2.5. Reopen closed conversation if client writes again within session window
     if req.conversation_id:
         conv_info = await db.get_conversation_simple(req.conversation_id)
+        # The conversation's owner only (require_visitor_ownership's rule): a chat that has a visitor id is
+        # written to by that visitor alone, before anything here can change it — a reopen, a button's
+        # contact, the model's turn. A legacy chat without one stays open as before (CodeRabbit #270).
+        _owner = (conv_info or {}).get("visitor_id")
+        if _owner and (req.visitor_id or "").strip() != _owner:
+            CHAT_OWNER_HEALTH["refused"] += 1
+            logger.warning(
+                f"[chat] Ownership denied for {req.conversation_id[:8]}: expected={_owner[:8]} "
+                f"got={(req.visitor_id or 'NONE')[:8]}"
+            )
+            raise HTTPException(status_code=403, detail="Access denied")
         # Blocklist — contact already stored on the conversation (the visitor
         # submitted it earlier and may now send messages with an empty visitor
         # payload). Reuses the row already fetched above: no extra roundtrip.

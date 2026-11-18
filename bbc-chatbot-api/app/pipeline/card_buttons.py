@@ -24,6 +24,7 @@ such, and the output guard still reads them on the way in (db.add_message).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -38,7 +39,7 @@ MODEL_USED = "template"
 
 CARD_BUTTONS_HEALTH: dict = {
     "yes": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
-    "before_you_go": 0, "before_you_go_skipped": 0,
+    "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0,
 }
 
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
@@ -171,9 +172,14 @@ async def _channel(
             return None
         contact = m.group(0).strip().lower()
         entities = {"email": contact}
+    # The contact lands on the conversation row (the CRM gate, the abandoned push and the panel read it),
+    # before anything is said: "Done — an agent will email you" only once it is kept. A failed write goes
+    # to the model's turn instead, which saves the message and tries the contact again (CodeRabbit #270).
+    if not await lead_service.update_lead_from_entities(cid, entities):
+        CARD_BUTTONS_HEALTH["contact_not_saved"] += 1
+        logger.error(f"[{cid}] card button: the {kind} contact was not saved, the model answers")
+        return None
     await _save(cid, "user", message)
-    # The contact lands on the conversation row (the CRM gate, the abandoned push and the panel read it).
-    await lead_service.update_lead_from_entities(cid, entities)
     await _note_channel(cid, kind, contact, price_from(price_seen))
     from app.services.routing import queue_for_person
 
@@ -199,22 +205,27 @@ async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str])
     from app.services import lead_service
 
     try:
-        lead = await lead_service.get_or_create_lead(cid)
-        if not isinstance(lead, dict) or not lead.get("id"):
-            logger.warning(f"[{cid}] card button: no lead to note the {kind} channel on")
-            return
-        raw = lead.get("intent_signals")
-        signals = dict(raw) if isinstance(raw, dict) else ({} if not raw else {"legacy": raw})
-        signals["contact_channel"] = merge_contact_channel(signals.get("contact_channel"), kind)
-        if kind == "whatsapp":
-            # A WhatsApp is not a call: the panel stops saying "Asks: a call back".
-            signals["callback_requested"] = False
-        if price:
-            signals["price_seen"] = price
-        update: dict = {"intent_signals": signals}
-        if kind == "whatsapp":
-            update["notes"] = notes_with_callback(lead.get("notes"), callback_note(contact, channel="whatsapp"))
-        await db.update_lead(lead["id"], update)
+        # Under the lead writer's lock (lead_service._lead_lock): the read, the merge and the write never
+        # interleave with a model turn's, so neither writes an older intent_signals or notes over the
+        # other's (CodeRabbit #270).
+        async with lead_service._lead_lock(cid):
+            lead = await lead_service.get_or_create_lead(cid)
+            if not isinstance(lead, dict) or not lead.get("id"):
+                logger.warning(f"[{cid}] card button: no lead to note the {kind} channel on")
+                return
+            raw = lead.get("intent_signals")
+            signals = dict(raw) if isinstance(raw, dict) else ({} if not raw else {"legacy": raw})
+            signals["contact_channel"] = merge_contact_channel(signals.get("contact_channel"), kind)
+            if kind == "whatsapp":
+                # A WhatsApp is not a call: the panel stops saying "Asks: a call back".
+                signals["callback_requested"] = False
+            if price:
+                signals["price_seen"] = price
+            update: dict = {"intent_signals": signals}
+            if kind == "whatsapp":
+                update["notes"] = notes_with_callback(lead.get("notes"), callback_note(contact, channel="whatsapp"))
+            if not await db.update_lead(lead["id"], update):
+                logger.warning(f"[{cid}] card button: channel not noted on the lead (no row written)")
     except Exception as e:  # noqa: silent — logged; the contact itself is already on the conversation
         logger.warning(f"[{cid}] card button: channel not noted on the lead ({type(e).__name__})")
 
@@ -243,26 +254,52 @@ async def _wait(cid: str, message: str, meta: dict, tunnel: str) -> ChatResponse
 BEFORE_YOU_GO_KEY = "before_you_go_at"
 
 
+_CLAIM_TRIES = 3
+# The metadata read goes back in the URL as the UPDATE's condition, twice. Up to this long (compact JSON;
+# 1.9k at most over 30 days, Nov 2026) both directions go; longer, only "nothing added or changed since"
+# (<@), which is what a presence ping does, so the request stays well under a proxy's 8 KB URL.
+_CLAIM_EQUAL_MAX = 2500
+
+
 async def _claim(cid: str, key: str) -> bool:
-    """Set metadata[key] once: True for the one caller that set it (a WHERE on the key's absence, as
-    proactive._claim_opening)."""
+    """Set metadata[key] once: True for the one caller that set it.
+
+    The UPDATE's WHERE asks for the key's absence (one winner, as proactive._claim_opening) and for the
+    metadata exactly as it was just read (@> and <@ together: the same object). A presence ping, or a flag
+    another request set in between, makes it miss: the claim reads again instead of writing an older
+    snapshot over them (CodeRabbit #270). The client is leaving while this runs, which is when the widget
+    also says so (presence)."""
     from app.db import supabase as db
 
     try:
         client = db.get_client()
-        res = await db._run_sync(
-            lambda: client.table("conversations").select("metadata").eq("id", cid).single().execute()
-        )
-        existing = (res.data or {}).get("metadata") or {}
-        if not isinstance(existing, dict) or existing.get(key):
-            return False
-        payload = {**existing, key: datetime.now(timezone.utc).isoformat()}
-        res = await db._run_sync(
-            lambda: client.table("conversations").update({"metadata": payload}).eq("id", cid)
-            .is_(f"metadata->>{key}", "null").execute(),
-            idempotent=False,
-        )
-        return bool(res.data)
+        for _ in range(_CLAIM_TRIES):
+            res = await db._run_sync(
+                lambda: client.table("conversations").select("metadata").eq("id", cid).single().execute()
+            )
+            raw = (res.data or {}).get("metadata")
+            if raw is not None and not isinstance(raw, dict):
+                return False
+            existing = raw or {}
+            if existing.get(key):
+                return False
+            payload = {**existing, key: datetime.now(timezone.utc).isoformat()}
+            query = (
+                client.table("conversations").update({"metadata": payload}).eq("id", cid)
+                .is_(f"metadata->>{key}", "null")
+            )
+            if raw is None:
+                query = query.is_("metadata", "null")
+            else:
+                seen = json.dumps(existing, separators=(",", ":"), ensure_ascii=False)
+                query = query.contained_by("metadata", seen)
+                if len(seen) <= _CLAIM_EQUAL_MAX:
+                    query = query.contains("metadata", seen)
+            res = await db._run_sync(lambda: query.execute(), idempotent=False)
+            if res.data:
+                return True
+        logger.warning(f"[{cid}] before-you-go claim: the metadata kept changing, not sent")
+        return False
     except Exception as e:  # noqa: silent — logged; unclaimed means not sent (never twice)
         logger.warning(f"[{cid}] before-you-go claim failed ({type(e).__name__}): not sent")
         return False
@@ -309,12 +346,14 @@ async def before_you_go(cid: str) -> dict:
     if meta.get(BEFORE_YOU_GO_KEY) or not await _claim(cid, BEFORE_YOU_GO_KEY):
         return skip("already_said")
     lang = _lang(meta)
-    trip = _trip(meta)
+    # The trip as it is now: the lead's, where a client who changed it said so ("London, not Paris");
+    # the page's search only while the lead has none (CodeRabbit #270).
+    try:
+        trip = _lead_trip(await lead_service.get_or_create_lead(cid))
+    except Exception:  # noqa: silent — no lead read means the page's trip, or the message without a line
+        trip = None
     if trip is None or not proactive.trip_line(trip, lang):
-        try:
-            trip = _lead_trip(await lead_service.get_or_create_lead(cid))
-        except Exception:  # noqa: silent — no lead read means the message without a line
-            trip = None
+        trip = _trip(meta)
     text, buttons = card_words.before_you_go(proactive.trip_line(trip, lang), lang)
     row = await _save(cid, "ai", text, MODEL_USED)
     if row is None:

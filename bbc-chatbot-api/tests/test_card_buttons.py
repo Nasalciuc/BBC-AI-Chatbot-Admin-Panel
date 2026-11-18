@@ -186,6 +186,7 @@ class TestOffer:
         assert out["message"].startswith("Más rápido que el formulario") and "New York → Paris" in out["message"]
         assert [b["kind"] for b in out["buttons"]] == ["whatsapp", "email"]
         assert "Hola" not in out["message"]  # the row is no greeting
+        assert out["lang"] == "es", "the opening the widget writes keeps the row's language (CodeRabbit #270)"
 
     def test_the_rows_words_open_the_chat(self):
         assert proactive.applied_variant("quote", _trip(), proactive.ROW) == proactive.ROW
@@ -311,7 +312,7 @@ class _Saved:
         return row
 
 
-def _buttons_patches(conv, users=0, agents=0, lead=None, online=()):
+def _buttons_patches(conv, users=0, agents=0, lead=None, online=(), saves=True):
     saved = _Saved()
     counts = {"user": users, "agent": agents}
     lead = lead if lead is not None else {"id": "L1", "intent_signals": {}, "notes": None}
@@ -319,7 +320,7 @@ def _buttons_patches(conv, users=0, agents=0, lead=None, online=()):
         patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)),
         patch("app.db.supabase.count_messages", new=AsyncMock(side_effect=lambda cid, role=None: counts.get(role, 0))),
         patch("app.services.conversation_service.add_message", new=saved),
-        patch("app.services.lead_service.update_lead_from_entities", new=AsyncMock()),
+        patch("app.services.lead_service.update_lead_from_entities", new=AsyncMock(return_value=saves)),
         patch("app.services.lead_service.get_or_create_lead", new=AsyncMock(return_value=lead)),
         patch("app.db.supabase.update_lead", new=AsyncMock(return_value=True)),
         patch("app.services.routing.queue_for_person", new=AsyncMock(return_value=True)),
@@ -430,6 +431,44 @@ class TestChannels:
         assert out is None and saved.rows == []
         m["entities"].assert_not_awaited()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("button, message", [("whatsapp", "WhatsApp: +61 412 345 678"),
+                                                 ("email", "Email: client@example.com")])
+    async def test_a_contact_not_saved_is_never_said_done(self, button, message):
+        """The write failed: no "Done — an agent will…", no queue, no message saved here. The model's turn
+        takes the message, saves it and tries the contact again (CodeRabbit #270)."""
+        out, saved, m = await _tap(_req(button, message), _conv(), saves=False)
+        assert out is None and saved.rows == []
+        m["entities"].assert_awaited_once()
+        m["queue"].assert_not_awaited()
+        m["update_lead"].assert_not_awaited()
+        assert card_buttons.CARD_BUTTONS_HEALTH["contact_not_saved"] == 1
+        assert card_buttons.CARD_BUTTONS_HEALTH["fell_through"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_channel_is_noted_under_the_lead_writers_lock(self):
+        """The read, the merge and the write of intent_signals happen while lead_service's lock for this
+        chat is held: a model turn's write waits instead of crossing it (CodeRabbit #270)."""
+        from app.services import lead_service
+
+        held = []
+
+        async def update_lead(lead_id, payload):
+            held.append(lead_service._lead_lock(_CID).locked())
+            return {"id": lead_id}
+
+        saved, ps = _buttons_patches(_conv())
+        ps[5] = patch("app.db.supabase.update_lead", new=AsyncMock(side_effect=update_lead))
+        for p in ps:
+            p.start()
+        try:
+            out = await card_buttons.answer(_req("email", "Email: client@example.com"), "Email: client@example.com", {})
+        finally:
+            for p in ps:
+                p.stop()
+        assert out is not None and held == [True]
+        assert not lead_service._lead_lock(_CID).locked()
+
 
 class TestWait:
     @pytest.mark.asyncio
@@ -483,6 +522,23 @@ class TestBeforeYouGo:
         assert out == {"show": False, "why": why} and saved.rows == []
 
     @pytest.mark.asyncio
+    async def test_the_trip_the_client_changed_to_is_the_one_said(self):
+        """The page searched Paris; the client then said London: the lead's trip is the one said back
+        (CodeRabbit #270). The page's trip stays for a lead that has none (the test above)."""
+        lead = {"id": "L1", "origin_code": "JFK", "destination_code": "LHR", "departure_date": _in(40),
+                "return_date": _in(47), "passengers": 2}
+        saved, ps = _buttons_patches(_conv(), users=1, lead=lead)
+        ps.append(patch.object(card_buttons, "_claim", new=AsyncMock(return_value=True)))
+        for p in ps:
+            p.start()
+        try:
+            out = await card_buttons.before_you_go(_CID)
+        finally:
+            for p in ps:
+                p.stop()
+        assert "London" in out["message"] and "Paris" not in out["message"]
+
+    @pytest.mark.asyncio
     async def test_without_a_trip_it_still_asks_where_to_write(self):
         conv = _conv({"proactive_trip": None})
         saved, ps = _buttons_patches(conv, users=1, lead={"id": "L1"})
@@ -528,3 +584,188 @@ def test_no_button_word_names_an_amount():
     every += [card_words.wait_answer(lang, online)[0] for lang in (None, "es", "fr") for online in (True, False)]
     every += [card_words.before_you_go(line, lang)[0] for lang in (None, "es", "fr") for line in (None, "Paris")]
     assert not [w for w in every if has_price(w)]
+
+
+# ══════════════════════════════════════════════════════════════
+# The once-only claim keeps what others wrote (CodeRabbit #270)
+# ══════════════════════════════════════════════════════════════
+
+class _Row:
+    """One conversations row and the PostgREST filters _claim uses, evaluated like Postgres would."""
+
+    def __init__(self, metadata, change_after_read=None):
+        self.metadata = metadata
+        self.change_after_read = change_after_read  # what another request writes between a read and the update
+        self.reads = 0
+        self.updates = []
+
+    def table(self, _name):
+        return _Query(self)
+
+
+class _Query:
+    def __init__(self, row):
+        self.row, self.op, self.payload, self.ok = row, None, None, True
+
+    def select(self, *_a):
+        self.op = "select"
+        return self
+
+    def update(self, payload):
+        self.op, self.payload = "update", payload
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def single(self):
+        return self
+
+    def is_(self, column, _null):
+        if column == "metadata":
+            self.ok = self.ok and self.row.metadata is None
+        else:
+            key = column.split("->>")[1]
+            self.ok = self.ok and not (self.row.metadata or {}).get(key)
+        return self
+
+    def contains(self, _column, seen):
+        import json as _json
+
+        self.ok = self.ok and self.row.metadata is not None and all(
+            self.row.metadata.get(k) == v for k, v in _json.loads(seen).items())
+        return self
+
+    def contained_by(self, _column, seen):
+        import json as _json
+
+        theirs = _json.loads(seen)
+        self.ok = self.ok and self.row.metadata is not None and all(
+            theirs.get(k) == v for k, v in self.row.metadata.items())
+        return self
+
+    def execute(self):
+        if self.op == "select":
+            self.row.reads += 1
+            data = {"metadata": None if self.row.metadata is None else dict(self.row.metadata)}
+            if self.row.change_after_read and self.row.reads == 1:
+                self.row.metadata = {**(self.row.metadata or {}), **self.row.change_after_read}
+            return MagicMock(data=data)
+        self.row.updates.append(self.payload)
+        if not self.ok:
+            return MagicMock(data=[])
+        self.row.metadata = self.payload["metadata"]
+        return MagicMock(data=[{"id": _CID}])
+
+
+async def _claim_on(row):
+    with patch("app.db.supabase.get_client", return_value=row), \
+         patch("app.db.supabase._run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+        return await card_buttons._claim(_CID, card_buttons.BEFORE_YOU_GO_KEY)
+
+
+class TestClaim:
+    @pytest.mark.asyncio
+    async def test_a_presence_ping_in_between_is_kept(self):
+        """The widget says the client is leaving while the claim runs: that write lands between the read
+        and the update. The update misses, the claim reads again, and both are kept."""
+        row = _Row({"client_lang": "en"}, change_after_read={"presence": "left"})
+        assert await _claim_on(row) is True
+        assert row.metadata["presence"] == "left" and row.metadata["client_lang"] == "en"
+        assert row.metadata[card_buttons.BEFORE_YOU_GO_KEY]
+        assert row.reads == 2 and len(row.updates) == 2
+
+    @pytest.mark.asyncio
+    async def test_once(self):
+        row = _Row({"client_lang": "en"})
+        assert await _claim_on(row) is True
+        assert await _claim_on(row) is False
+
+    @pytest.mark.asyncio
+    async def test_another_request_claimed_it_in_between(self):
+        row = _Row({}, change_after_read={card_buttons.BEFORE_YOU_GO_KEY: "2026-11-18T10:00:00+00:00"})
+        assert await _claim_on(row) is False
+        assert row.metadata[card_buttons.BEFORE_YOU_GO_KEY] == "2026-11-18T10:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_a_chat_without_metadata_can_be_claimed(self):
+        row = _Row(None)
+        assert await _claim_on(row) is True
+        assert list(row.metadata) == [card_buttons.BEFORE_YOU_GO_KEY]
+
+    @pytest.mark.asyncio
+    async def test_a_long_metadata_keeps_the_url_short_and_still_sees_a_ping(self, monkeypatch):
+        """Past _CLAIM_EQUAL_MAX the snapshot goes once (<@): a ping in between still makes it miss."""
+        monkeypatch.setattr(card_buttons, "_CLAIM_EQUAL_MAX", 10)
+        calls = []
+        orig = _Query.contains
+
+        def counted(self, column, seen):
+            calls.append(seen)
+            return orig(self, column, seen)
+
+        monkeypatch.setattr(_Query, "contains", counted)
+        row = _Row({"client_lang": "en", "site": "bbc"}, change_after_read={"presence": "left"})
+        assert await _claim_on(row) is True
+        assert calls == [], "only <@ went"
+        assert row.metadata["presence"] == "left" and row.reads == 2
+
+    @pytest.mark.asyncio
+    async def test_metadata_that_never_settles_is_not_claimed(self):
+        class _Busy(_Row):
+            def table(self, _name):
+                self.metadata = {**(self.metadata or {}), "ping": self.reads}
+                return _Query(self)
+
+        row = _Busy({"client_lang": "en"})
+        assert await _claim_on(row) is False
+        assert card_buttons.BEFORE_YOU_GO_KEY not in row.metadata
+
+
+# ══════════════════════════════════════════════════════════════
+# Only the conversation's visitor writes to it (CodeRabbit #270)
+# ══════════════════════════════════════════════════════════════
+
+class _PastTheCheck(Exception):
+    """Raised by the next step after the owner check: the request got through it."""
+
+
+class TestOwner:
+    async def _send(self, conv, visitor_id):
+        from fastapi import HTTPException
+
+        from app.api import chat as chat_api
+
+        http = MagicMock()
+        http.headers = {}
+        http.client = MagicMock(host="127.0.0.1")
+        req = ChatRequest(message="Email: client@example.com", conversation_id=_CID, visitor_id=visitor_id,
+                          button="email")
+        entities = AsyncMock(return_value=True)
+        with patch("app.api.chat.db.count_messages", new=AsyncMock(return_value=1)), \
+             patch("app.api.chat.db.get_conversation_simple", new=AsyncMock(return_value=conv)), \
+             patch("app.api.chat.is_blocked", new=AsyncMock(side_effect=[False, _PastTheCheck()])), \
+             patch("app.services.lead_service.update_lead_from_entities", new=entities):
+            try:
+                await chat_api.chat(req, http, None)
+            except HTTPException as e:
+                return e.status_code, entities
+            except _PastTheCheck:
+                return "through", entities
+        return "answered", entities
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("visitor_id", ["visitor-someone-else", None])
+    async def test_another_visitor_or_none_is_refused_before_anything_is_written(self, visitor_id):
+        from app.api.chat import CHAT_OWNER_HEALTH
+
+        before = CHAT_OWNER_HEALTH["refused"]
+        status, entities = await self._send(_conv(visitor_id=_VISITOR), visitor_id)
+        assert status == 403
+        entities.assert_not_awaited()
+        assert CHAT_OWNER_HEALTH["refused"] == before + 1
+
+    @pytest.mark.asyncio
+    async def test_the_owner_and_a_chat_without_a_visitor_go_through(self):
+        assert (await self._send(_conv(visitor_id=_VISITOR), _VISITOR))[0] == "through"
+        assert (await self._send(_conv(visitor_id=None), "visitor-anyone"))[0] == "through"

@@ -295,11 +295,14 @@ def _is_local_number(raw: str) -> bool:
             and not digits.startswith("00") and len(digits) >= 8)
 
 
-async def update_lead_from_entities(conversation_id: str, entities: dict) -> None:
+async def update_lead_from_entities(conversation_id: str, entities: dict) -> bool:
     """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7.
 
     Writes for one conversation run one after another (_lead_lock): the read,
-    the contact and lead writes and the score write never interleave."""
+    the contact and lead writes and the score write never interleave.
+
+    True when what there was to save is saved (or there was nothing); False when a write failed
+    (logged and counted here): a caller that promises the client something can say so only on True."""
     lock = _lead_lock(conversation_id)
     await lock.acquire()
     try:
@@ -330,7 +333,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 ]
             )
             if not has_useful:
-                return
+                return True
             # RT 2: Insert lead
             lead_res = await _run_sync(
                 lambda: db_client.table("leads")
@@ -339,7 +342,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 idempotent=False,
             )
             if not lead_res.data:
-                return
+                return False
             lead_id = lead_res.data[0]["id"]  # type: ignore[index]
             lead_data = lead_res.data[0]  # type: ignore[index]
             logger.info(f"[{conversation_id}] Lead INSERT success: {lead_id}")
@@ -510,6 +513,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 .eq("id", lead_id)
                 .execute()
             )
+        return True
 
     except Exception as e:
         # The chat reply stays alive, but the money path must SCREAM: full
@@ -521,5 +525,6 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             logger.error(f"[{conversation_id}] Lead payload was: {lead_payload}")
         except NameError:
             pass
+        return False
     finally:
         lock.release()

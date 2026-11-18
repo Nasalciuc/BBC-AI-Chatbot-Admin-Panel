@@ -538,6 +538,9 @@ def offer(
         out["variant"] = variant
     if variant == ROW:
         out["buttons"] = card_words.row_buttons(lang)
+        # Its language too, as every other card says it: the widget writes the opening in it (CodeRabbit #270).
+        if lang:
+            out["lang"] = lang
         return out
     return _with_after_words(out, trigger, trip, lang, device, variant, team_online)
 
