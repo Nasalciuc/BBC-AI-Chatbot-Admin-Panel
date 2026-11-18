@@ -497,7 +497,7 @@ test('the quote card hears which fields the form refused, by kind only (owner, 1
   assert.equal(SAME_SEND_MS, 5000)
   // Only the quote moment sends them, and only when there are some.
   assert.match(hook, /\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\)/)
-  assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\] \}/)
+  assert.match(api, /body: \{\s+visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\]\s/)
   // The card's words come back with their variant, and the card's shown event carries it (as engaged/dismissed do).
   const cardShown = payloads('proactive_shown').filter((p) => !p.includes("trigger: 'note'"))
   assert.equal(cardShown.length, 1)
@@ -515,8 +515,8 @@ test('the note\'s variant goes out with the answer and with its measurements, an
     assert.equal(offerVariant(bad), undefined, String(bad))
   }
   assert.match(api, /const variant = offerVariant\(data\.variant\)/)
-  assert.match(hook, /trigger: 'note', message: res\.message[^}]*shownAt: Date\.now\(\),\s*\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\),\s*\}/)
-  assert.match(chat, /proactive: \{ trigger: opening\.trigger, \.\.\.\(opening\.variant \? \{ variant: opening\.variant \} : \{\}\) \}/)
+  assert.match(hook, /trigger: 'note', message: res\.message[^}]*shownAt: Date\.now\(\),\s*\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\),\s*\.\.\.\(res\.confirm \? \{ confirm: res\.confirm \} : \{\}\),\s*\.\.\.\(res\.lang \? \{ lang: res\.lang \} : \{\}\),\s*\}/)
+  assert.match(chat, /proactive: \{\s+trigger: opening\.trigger, \.\.\.\(opening\.variant \? \{ variant: opening\.variant \} : \{\}\),\s+\.\.\.\(opening\.lang \? \{ lang: opening\.lang \} : \{\}\),\s+\}/)
   for (const ev of ['proactive_dismissed', 'proactive_engaged']) {
     const all = payloads(ev)
     assert.equal(all.length, 1, ev)
@@ -557,7 +557,7 @@ test('the 24 h pause, "Not now" and what a reply was', () => {
 test('the card-opened chat makes no /chat/start: the first message creates the conversation', () => {
   const mount = chat.slice(chat.indexOf('// AI opens on fresh sessions'))
   assert.ok(mount.indexOf('if (openingRef.current) {') < mount.indexOf('startConversation()'))
-  assert.match(chat, /\.\.\.\(opening \? \{\s+trip: opening\.trip,\s+proactive: \{ trigger: opening\.trigger,/)
+  assert.match(chat, /\.\.\.\(opening \? \{\s+trip: opening\.trip,\s+proactive: \{\s+trigger: opening\.trigger,/)
 })
 
 test('the stored opening moves the poll cursor before the stream connects', () => {
@@ -584,7 +584,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),\s+\.\.\.\(side \? \{ c4: side \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })
@@ -697,7 +697,7 @@ test('the first send owns the opening: a racing second send goes out plain', () 
 })
 
 test('a phone gets the card, a computer the panel', () => {
-  assert.match(hook, /const surface: Surface = phone \? 'card' : 'panel'/)
+  assert.match(hook, /const surface: Surface = row \? 'row' : phone \? 'card' : 'panel'/)
   assert.match(widget, /if \(proactive\.offer\?\.surface === 'panel'\) openProactive\(proactive\.offer\)/)
   assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' \? proactive\.offer : null\}/)
 })
@@ -901,10 +901,11 @@ test('few messages sit by the buttons and the composer, never under an empty ban
 
 test('the site goes with the offer and with every proactive event, so BBC and BCT are never mixed', () => {
   const captures = hook.match(/posthog\?\.capture\('proactive_[a-z_]+', \{[\s\S]*?\}\)/g) || []
-  // The five of the moments, and the note's proactive_shown and proactive_note_unanswered.
-  assert.equal(captures.length, 7)
+  // The five of the moments, the note's proactive_shown and proactive_note_unanswered, the popup the card waited
+  // for (E1), and the pill after "Not now" (C2): shown, closed, opened.
+  assert.equal(captures.length, 11)
   for (const call of captures) assert.match(call, /site: brand\.id/, call.slice(0, 60))
-  assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\] \}/)
+  assert.match(api, /body: \{\s+visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\]\s/)
 })
 
 test('a message waiting to go reads at full strength, not faded white on the brand colour', () => {
@@ -935,7 +936,7 @@ test('a tap on the 10 s note opens the chat with no form; without an answer in t
 
 test('the note asks the server for its words with trigger "note", the brand and the page, and gives up in time', () => {
   const body = hook.slice(hook.indexOf("noteOpening: async (stillWanted, door = 'note') =>"))
-  assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id \}, OFFER_TIMEOUT_MS,\s+\(t\) => took\.push\(t\),\s+\)/)
+  assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id, \.\.\.\(lang \? \{ lang \} : \{\}\),\s+device: matches\(PHONE\) \? 'phone' : 'computer',\s+\}, OFFER_TIMEOUT_MS,\s+\(t\) => took\.push\(t\),\s+\)/)
   // No answer in time: counted with how long it waited and why (the visitor gets the form); switched off: no word.
   assert.match(body, /if \(!res\) \{[\s\S]*?posthog\?\.capture\('proactive_note_unanswered', \{\s+door, device: [^\n]+, site: brand\.id, \.\.\.offerMeasures\(took\[0\]\),\s+\}\)\s+return null\s+\}\s+if \(!res\.show \|\| !res\.message\) return null/)
   // A turn the visitor took back meanwhile records nothing, not even the missing answer (CodeRabbit #269): Widget
@@ -956,7 +957,7 @@ test('the corner button goes straight into a conversation too; a visitor with on
   assert.match(body, /if \(t !== 'sales' \|\| sessionActive\) \{\s+handleTunnelSelect\(t\)\s+return\s+\}\s+void openNote\('button'\)/)
   // The note's door: the server's words (trigger "note"), the form only when they do not come in time.
   assert.match(widget, /const openNote = async \(via: 'note' \| 'button' = 'note'\) =>/)
-  assert.match(hook, /trigger: 'note', trip, site: brand\.id \}, OFFER_TIMEOUT_MS/)
+  assert.match(hook, /trigger: 'note', trip, site: brand\.id, \.\.\.\(lang \? \{ lang \} : \{\}\),/)
   // Measured apart from the note: chat_tunnel_selected says `via`, proactive_shown says `door`.
   assert.match(hook, /capture\('proactive_shown', \{\s+trigger: 'note', surface: 'panel', door,/)
   assert.match(hook, /noteOpening: \(stillWanted\?: \(\) => boolean, door\?: 'note' \| 'button'\) => Promise<ProactiveOpening \| null>/)

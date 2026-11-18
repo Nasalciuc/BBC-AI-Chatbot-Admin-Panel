@@ -77,11 +77,21 @@ export function offAfter(kept: string | null, trigger: Trigger): string {
 export type OpeningTrigger = Trigger | 'note'
 
 export const KAYAK_VISIBLE_S = 5
+/** C4 (ADR-1b, 18 Nov 2026): the Kayak card at 4 s in view for half the visitors, against the 5 s of today,
+ *  from C4_START_MS — after #269's 72 hours of measuring — until the server says the early side has had its
+ *  300 cards (C4_HOLD_ARM). Never before 3 s: the card would cover a page nobody has read yet. */
+export const KAYAK_EARLY_S = 4
+export const C4_START_MS = Date.UTC(2026, 10, 21, 13, 49)
+/** The server's answer to an early card once the test is over: ask again at the usual moment. */
+export const C4_HOLD_ARM = 'c4_hold'
 export const ADS_VISIBLE_S = 5
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5
 export const QUOTE_IDLE_S = 8
 export const QUOTE_INVALID_IDLE_S = 5
+/** D1 (ADR-4a): a refused send whose form the widget can put a row beside — the row covers nothing, so it
+ *  comes sooner than a card would. 54 of the 64 refused on 17-18 Nov never sent anything after. */
+export const QUOTE_ROW_IDLE_S = 2
 /** After this long since the last press — or, unpressed, since the last touch — the form is just part of
  *  the page again. */
 export const QUOTE_WATCH_S = 180
@@ -112,6 +122,8 @@ export interface QuoteState {
   invalid: boolean
   /** A send is in flight (the submit button disabled or busy). */
   busy: boolean
+  /** The widget knows the form pressed and can put the row beside it (D1). */
+  row?: boolean
 }
 
 export interface PageState {
@@ -143,6 +155,8 @@ export interface PageState {
   exitIntent: boolean
   /** The moments the server switched off in this visit (TRIGGER_OFF_ARM): never picked again in it. */
   off: readonly Trigger[]
+  /** Seconds in view before the Kayak card: KAYAK_VISIBLE_S, or KAYAK_EARLY_S on the early side of C4. */
+  kayakS?: number
 }
 
 /** No card on the thank-you page, the legal pages or the like (the paths the site uses, Nov 2026). */
@@ -166,7 +180,7 @@ export function pickTrigger(s: PageState): Trigger | null {
 
   // A press of "Get free quote" puts the form first: until it goes quiet nothing else interrupts.
   if (s.quote && s.quote.sincePressS <= QUOTE_WATCH_S) {
-    const idle = s.quote.invalid ? QUOTE_INVALID_IDLE_S : QUOTE_IDLE_S
+    const idle = s.quote.invalid ? (s.quote.row ? QUOTE_ROW_IDLE_S : QUOTE_INVALID_IDLE_S) : QUOTE_IDLE_S
     if (on('quote') && (s.exitIntent || s.quote.sinceFormActivityS >= idle)) return 'quote'
     return null
   }
@@ -175,7 +189,7 @@ export function pickTrigger(s: PageState): Trigger | null {
   if (typing) return null
   // The quote form being worked on, pressed or not: no card over it (only the quote moment above).
   if (s.sinceQuoteFormS !== null && s.sinceQuoteFormS <= QUOTE_WATCH_S) return null
-  if (on('kayak') && s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
+  if (on('kayak') && s.kayak && s.visibleS >= (s.kayakS ?? KAYAK_VISIBLE_S)) return 'kayak'
   if (on('ads') && s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
   if (on('reader') && s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
   return null
@@ -221,9 +235,22 @@ export function pauseRunning(pauseUntil: string | null, nowMs: number): boolean 
 }
 
 /** "Not now" closes the card or the panel and never reaches the server (the server's reply lists end
- *  with it: app/services/proactive.py, _REPLIES). */
+ *  with it: app/services/proactive.py, _REPLIES; in Spanish and French, proactive_i18n.py). */
 export function isNotNow(text: string): boolean {
-  return /^not now$/i.test((text || '').trim())
+  return /^(?:not now|ahora no|pas maintenant)$/i.test((text || '').trim())
+}
+
+/** C4's side for this visitor: 'early' or 'now', stable per visitor id, from C4_START_MS; null before it,
+ *  without an id, or once this browser heard the test is over (`over`). */
+export function c4Arm(visitorId: string | null, nowMs: number, over = false): 'early' | 'now' | null {
+  if (!visitorId || over || !(nowMs >= C4_START_MS)) return null
+  // FNV-1a: the same id always lands on the same side.
+  let h = 0x811c9dc5
+  for (const ch of `c4:${visitorId}`) {
+    h ^= ch.charCodeAt(0)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h % 2 === 0 ? 'early' : 'now'
 }
 
 /** What a reply was, for the measurements (never its text): the card's first button, another button, or typed. */

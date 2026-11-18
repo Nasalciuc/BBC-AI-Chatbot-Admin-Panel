@@ -141,6 +141,30 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-card__yes:hover { background: var(--bw-primary-hover, #203359); }
 #bbc-widget-root .bw-card__no { min-height: 44px; padding: 10px 14px; border-radius: 999px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
 #bbc-widget-root .bw-card__no:hover { color: var(--bw-text); background: rgba(var(--bw-primary-rgb, 30,79,216), 0.06); }
+/* C1: the card's own channel (WhatsApp on a phone, email on a computer) under the yes, "Not now" beside it. */
+#bbc-widget-root .bw-card__actions--channel { flex-wrap: wrap; }
+#bbc-widget-root .bw-card__actions--channel .bw-card__yes { flex: 1 1 100%; }
+#bbc-widget-root .bw-card__channel {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 10px 16px; border-radius: 999px;
+  border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.3); background: #FFFFFF;
+  color: var(--bw-primary, var(--bw-ink)); font-size: 14px; font-weight: 600; line-height: 1.3;
+}
+#bbc-widget-root .bw-card__channel:hover { background: rgba(var(--bw-primary-rgb, 30,79,216), 0.06); }
+#bbc-widget-root .bw-card__channel svg { flex-shrink: 0; }
+/* C2: the pill after "Not now" — small, to the left of the button (on a phone too: the site keeps its own
+   floating buttons above ours), until ✕ or a tap. */
+#bbc-widget-root .bw-pill {
+  position: absolute; right: calc(100% + 12px); bottom: 8px;
+  display: flex; align-items: center; border-radius: 999px; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.97); color: var(--bw-primary, var(--bw-ink));
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.16), 0 0 0 1px rgba(16, 24, 40, 0.06);
+  animation: bw-rise 0.4s var(--bw-ease) both;
+}
+#bbc-widget-root .bw-pill__open { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 6px 0 16px; font-size: 14px; font-weight: 600; }
+#bbc-widget-root .bw-pill__x { display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; color: var(--bw-muted); }
+#bbc-widget-root .bw-pill__x:hover { color: var(--bw-text); }
+#bbc-widget-root .bw-pill__x svg { width: 15px; height: 15px; }
 @media (max-width: 767px) {
   #bbc-widget-root .bw-nudge--card { right: 0; bottom: calc(100% + 12px); width: min(340px, calc(100vw - 48px)); }
 }
@@ -357,6 +381,46 @@ export const WIDGET_CSS = `
   transition: background-color 0.15s var(--bw-ease), color 0.15s var(--bw-ease), border-color 0.15s var(--bw-ease);
 }
 #bbc-widget-root .bw-chip:hover { background: var(--bw-primary, var(--bw-ink)); border-color: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; }
+#bbc-widget-root .bw-chip--channel { display: inline-flex; align-items: center; gap: 8px; }
+#bbc-widget-root .bw-chip--channel svg { width: 17px; height: 17px; flex-shrink: 0; }
+
+/* Where the agent writes (channel.ts): one field, the country beside a number, then send. */
+#bbc-widget-root .bw-channel {
+  flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;
+  margin: 0 12px 12px; padding: 14px; border-radius: 20px;
+  background: rgba(255, 255, 255, 0.96); border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.16);
+  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.06);
+  animation: bw-msg-in 0.28s var(--bw-ease) both;
+}
+#bbc-widget-root .bw-channel__label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--bw-text); }
+#bbc-widget-root .bw-channel__label svg { width: 18px; height: 18px; color: var(--bw-primary, var(--bw-ink)); }
+#bbc-widget-root .bw-channel__row {
+  display: flex; align-items: stretch; border-radius: 14px; overflow: hidden;
+  border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.28); background: #FFFFFF;
+}
+#bbc-widget-root .bw-channel__row:focus-within { border-color: rgba(var(--bw-primary-rgb, 30,79,216), 0.6); box-shadow: 0 0 0 3px rgba(var(--bw-primary-rgb, 30,79,216), 0.12); }
+#bbc-widget-root .bw-channel__row--error { border-color: var(--bw-danger); }
+#bbc-widget-root .bw-channel__cc {
+  flex-shrink: 0; max-width: 112px; padding: 0 8px; border: 0; border-right: 1px solid var(--bw-line);
+  background: rgba(var(--bw-primary-rgb, 30,79,216), 0.05); color: var(--bw-text); font-size: 15px;
+}
+#bbc-widget-root .bw-channel__input, #bbc-widget-root .bw-channel__price {
+  flex: 1; min-width: 0; height: 46px; padding: 0 12px; border: 0; background: transparent;
+  color: var(--bw-text); font-size: 16px;
+}
+#bbc-widget-root .bw-channel__input:focus, #bbc-widget-root .bw-channel__price:focus { outline: none; box-shadow: none; }
+#bbc-widget-root .bw-channel__price { border: 1px solid var(--bw-line); border-radius: 14px; background: #FFFFFF; }
+#bbc-widget-root .bw-channel__hint { font-size: 12.5px; line-height: 1.4; color: var(--bw-muted); }
+#bbc-widget-root .bw-channel__error { font-size: 13px; line-height: 1.4; color: var(--bw-danger); }
+#bbc-widget-root .bw-channel__actions { display: flex; justify-content: flex-end; gap: 8px; }
+#bbc-widget-root .bw-channel__back { min-height: 44px; padding: 0 14px; border-radius: 999px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
+#bbc-widget-root .bw-channel__back:hover { color: var(--bw-text); }
+#bbc-widget-root .bw-channel__send {
+  min-height: 44px; padding: 0 22px; border-radius: 999px;
+  background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 15px; font-weight: 600;
+}
+#bbc-widget-root .bw-channel__send:hover { background: var(--bw-primary-hover, #203359); }
+#bbc-widget-root .bw-compose.bw-compose--hidden { display: none; }
 
 /* The composer: a rounded field with a round send button inside it. */
 #bbc-widget-root .bw-compose {
@@ -429,6 +493,13 @@ export const WIDGET_CSS = `
    theirs, and many older clients zoom to 125% or more. The fields scroll inside the card when they must;
    the button and the number to call stay under them, in sight. */
 @media (min-width: 768px) {
+  /* E2 (keyboard.ts): while the on-screen keyboard is open over a floating panel (a tablet, a phone held
+     sideways), the panel rises above it and stays no taller than what is still visible. The phone sheet
+     follows the visible area itself; without a keyboard nothing here applies. */
+  #bbc-widget-root.bw-kb-open .bw-panel:not(.bw-panel--embedded) {
+    bottom: calc(var(--bw-bottom) + var(--bw-kb, 0px));
+    max-height: calc(var(--bw-avail, 100dvh) - 32px);
+  }
   #bbc-widget-root .bw-panel--form .bw-form { overflow: hidden; }
   #bbc-widget-root .bw-panel--form .bw-form__fields {
     flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
@@ -559,4 +630,34 @@ export const WIDGET_CSS = `
 @media (prefers-reduced-motion: reduce) {
   #bbc-widget-root *, #bbc-widget-root *::before, #bbc-widget-root *::after { animation: none !important; transition: none !important; }
 }
+
+/* D1 (FormRow.tsx): the row beside the site's refused quote form, outside the widget's root — its own
+   reset, so the site's button styles do not reach it, and the brand's colour from its host. */
+#bbc-form-row { display: block; margin-top: 12px; margin-bottom: 4px; font-family: inherit; }
+#bbc-form-row .bw-row-offer {
+  position: relative; display: flex; flex-direction: column; gap: 10px; box-sizing: border-box;
+  padding: 14px 44px 14px 16px; border-radius: 14px; text-align: left;
+  background: #FFFFFF; border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.35);
+  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.08);
+  color: #1F2937; font-size: 15px; line-height: 1.45;
+}
+#bbc-form-row .bw-row-offer__text { margin: 0; font: inherit; color: inherit; }
+#bbc-form-row .bw-row-offer__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#bbc-form-row button { all: unset; box-sizing: border-box; cursor: pointer; font-family: inherit; }
+#bbc-form-row .bw-row-offer__btn {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 999px;
+  background: var(--bw-primary, #1E4FD8); color: #FFFFFF; font-size: 15px; font-weight: 600; line-height: 1.2;
+}
+#bbc-form-row .bw-row-offer__btn:hover { background: var(--bw-primary-hover, #203359); }
+#bbc-form-row .bw-row-offer__btn:focus-visible, #bbc-form-row .bw-row-offer__x:focus-visible {
+  outline: 2px solid var(--bw-primary, #1E4FD8); outline-offset: 2px;
+}
+#bbc-form-row .bw-row-offer__btn svg, #bbc-form-row .bw-row-offer__x svg {
+  width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+#bbc-form-row .bw-row-offer__x {
+  position: absolute; top: 6px; right: 6px; display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%; color: #6B7280;
+}
+#bbc-form-row .bw-row-offer__x:hover { color: #111827; background: rgba(0, 0, 0, 0.05); }
 `

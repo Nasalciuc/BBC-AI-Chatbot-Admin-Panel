@@ -27,6 +27,9 @@ export interface WireMessage {
 /** How long an unconfirmed temp may live — past this, the send failed. */
 export const TEMP_TTL_MS = 10_000
 
+/** An answer shown before the server stored it (ChatWindow: the card's yes, A2). */
+export const LOCAL_AI_PREFIX = 'local-ai-'
+
 export function tempTimestamp(id: string): number {
   const n = Number(id.slice(id.indexOf('-') + 1))
   return Number.isFinite(n) ? n : 0
@@ -64,17 +67,23 @@ export function reconcileBatch<M extends WireMessage>(
   const fresh = incoming.filter((m) => !ids.has(m.id))
 
   // 2. A server user-row replaces its local twin (content match) — the
-  //    only merge key available; ids differ by construction.
+  //    only merge key available; ids differ by construction. So does a
+  //    server answer the widget showed before it was stored (the card's
+  //    yes, A2: a `local-ai-` bubble with the same words).
   const freshUserBodies = new Set(
     fresh.filter((m) => m.role === 'user').map((m) => m.content)
   )
-  const deduped = freshUserBodies.size
+  const freshAiBodies = new Set(
+    fresh.filter((m) => m.role === 'ai').map((m) => m.content)
+  )
+  const deduped = freshUserBodies.size || freshAiBodies.size
     ? kept.filter(
         (m) =>
           !(
-            m.role === 'user' &&
-            (m.id.startsWith('sent-') || m.id.startsWith('temp-')) &&
-            freshUserBodies.has(m.content)
+            (m.role === 'user' &&
+              (m.id.startsWith('sent-') || m.id.startsWith('temp-')) &&
+              freshUserBodies.has(m.content)) ||
+            (m.role === 'ai' && m.id.startsWith(LOCAL_AI_PREFIX) && freshAiBodies.has(m.content))
           )
       )
     : kept

@@ -46,3 +46,12 @@ export const IconExpand = (p: IconProps) => (
 export const IconShrink = (p: IconProps) => (
   <Svg {...p}><path d="m14 10 7-7" /><path d="M20 10h-6V4" /><path d="m3 21 7-7" /><path d="M4 14h6v6" /></Svg>
 )
+
+// lucide message-circle and mail: where the agent writes (channel.ts) — WhatsApp and email.
+export const IconMessage = (p: IconProps) => (
+  <Svg {...p}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" /></Svg>
+)
+
+export const IconMail = (p: IconProps) => (
+  <Svg {...p}><rect width="20" height="16" x="2" y="4" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" /></Svg>
+)

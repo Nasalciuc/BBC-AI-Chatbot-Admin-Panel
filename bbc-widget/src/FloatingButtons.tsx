@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import type { ChannelKind } from './channel'
 import brand from './config'
-import { IconArrowRight, IconClose } from './icons'
+import { words, widgetLang } from './i18n'
+import { IconArrowRight, IconClose, IconMail, IconMessage } from './icons'
 import { PersonaLine } from './PanelTop'
 import { PersonaAvatar } from './PersonaAvatar'
 import type { PageContext } from './pageContext'
@@ -27,6 +29,18 @@ interface Props {
   onCardDismiss?: () => void
   /** A tap on the 10 s note: the chat with Alex and no form (Widget.tsx). Without it, the form. */
   onNoteOpen?: () => void
+  /** C1: the card's own channel button (WhatsApp on a phone, email on a computer): the chat opens on its
+   *  field, no message sent before the client leaves the contact. */
+  onCardChannel?: (kind: ChannelKind) => void
+  /** C2: the pill after "Not now" — the card's channel, small, until ✕ or a tap. */
+  pill?: ProactiveOpening | null
+  onPillOpen?: () => void
+  onPillClose?: () => void
+}
+
+/** The icon of a channel: a message bubble for WhatsApp, an envelope for email (never a brand's logo). */
+export function ChannelIcon({ kind }: { kind: ChannelKind }) {
+  return kind === 'whatsapp' ? <IconMessage size={18} /> : <IconMail size={18} />
 }
 
 /** How long the greeting stays before it steps aside by itself. */
@@ -39,7 +53,7 @@ const NUDGE_VISIBLE_MS = 30_000
  */
 export function FloatingButtons({
   onSelect, showAttention = false, onDismissAttention, autoFocus = false, context, unread,
-  card, onCardOpen, onCardDismiss, onNoteOpen,
+  card, onCardOpen, onCardDismiss, onNoteOpen, onCardChannel, pill, onPillOpen, onPillClose,
 }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null)
   const count = unread?.count || 0
@@ -72,6 +86,8 @@ export function FloatingButtons({
   // The card: its first button is the server's first reply ("Yes, send me fares"); "Not now" closes it.
   const cardYes = card?.quickReplies.find(r => !isNotNow(r))
   const cardNo = card?.quickReplies.find(isNotNow) || 'Not now'
+  // C1: the card's own channel, between the yes and "Not now".
+  const cardChannel = card?.channel && onCardChannel ? card.channel : null
 
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
@@ -121,14 +137,28 @@ export function FloatingButtons({
             <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
             <span class="bw-nudge__text">{card.message}</span>
           </button>
-          <div class="bw-card__actions">
+          <div class={`bw-card__actions${cardChannel ? ' bw-card__actions--channel' : ''}`}>
             {cardYes && (
               <button type="button" class="bw-card__yes" onClick={() => onCardOpen?.(cardYes)}>
                 {cardYes}
               </button>
             )}
+            {cardChannel && (
+              <button type="button" class="bw-card__channel" onClick={() => onCardChannel?.(cardChannel.kind)}>
+                <ChannelIcon kind={cardChannel.kind} />{cardChannel.label}
+              </button>
+            )}
             <button type="button" class="bw-card__no" onClick={onCardDismiss}>{cardNo}</button>
           </div>
+        </div>
+      ) : pill?.channel && count === 0 ? (
+        <div class="bw-pill" role="status">
+          <button type="button" class="bw-pill__open" onClick={onPillOpen}>
+            <ChannelIcon kind={pill.channel.kind} />{pill.channel.label}
+          </button>
+          <button type="button" class="bw-pill__x" onClick={onPillClose} aria-label={words(widgetLang()).hide}>
+            <IconClose />
+          </button>
         </div>
       ) : showAttention && count === 0 ? (
         <div class="bw-nudge bw-nudge--message" role="status">

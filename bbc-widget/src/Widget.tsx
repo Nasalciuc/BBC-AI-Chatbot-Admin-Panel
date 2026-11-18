@@ -5,7 +5,6 @@ import { ChatWindow, type Unread } from './ChatWindow'
 import { armChime, playChime } from './chime'
 import { readPageContext } from './pageContext'
 import { apiFetch, clearVisitorToken, ensureVisitorId, ensureVisitorToken, getVisitorId, makeVisitorId } from './api'
-import { getUtm } from './utm'
 import brand from './config'
 import { usePhoneSheet } from './phoneSheet'
 import { posthog } from './posthog'
@@ -15,6 +14,7 @@ import {
 } from './proactive'
 import { noteWaitMs } from './triggers'
 import { keepOpening, readKeptOpening } from './keptOpening'
+import { placeFormRow } from './FormRow'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -106,8 +106,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     try {
       const bookingId = localStorage.getItem('bbc_conv_booking_id')
       return {
-        ...getUtm(),
-        site: brand.id,
+        ...proactiveMetadata(),
         ...(bookingId ? { booking_id: bookingId } : {}),
       }
     } catch { return null }
@@ -321,9 +320,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     let visitorId = ensureVisitorId()
 
     const vis = { name: data.name, email: data.email, phone: data.phone, country_code: data.country_code }
+    // proactiveMetadata: where they came from, and the browser's language and time zone (a local number is
+    // placed in its country by them on the server).
     const meta = {
-      ...getUtm(),
-      site: brand.id,
+      ...proactiveMetadata(),
       ...(data.booking_id ? { booking_id: data.booking_id } : {}),
     }
 
@@ -383,6 +383,28 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (proactive.offer?.surface === 'panel') openProactive(proactive.offer)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proactive.offer])
+
+  // D1: the row beside the site's refused quote form (FormRow.tsx). A channel tapped there opens the chat on
+  // its field; ✕ is the card's ✕ (24 h of quiet).
+  useEffect(() => {
+    const o = proactive.offer
+    const form = proactive.rowForm
+    if (!o || o.surface !== 'row' || !form || !form.isConnected) return
+    return placeFormRow(
+      form, o,
+      (kind) => openProactive({ ...o, surface: 'panel', firstChannel: kind }),
+      () => proactive.dismiss('close'),
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proactive.offer, proactive.rowForm])
+
+  // C2: the pill after "Not now" opens the chat on the card's channel field.
+  const openPill = () => {
+    const p = proactive.pill
+    if (!p?.channel) return
+    proactive.pillUsed()
+    openProactive({ ...p, shownAt: Date.now(), firstChannel: p.channel.kind })
+  }
 
   // The 10 s note promises a conversation ("Tell me where and when, and an agent will check fares"): a tap on it
   // opens the chat with Alex's words for this page and no form, like the card's chat (owner's decision,
@@ -519,6 +541,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           card={proactive.offer?.surface === 'card' ? proactive.offer : null}
           onCardOpen={(reply) => { if (proactive.offer) openProactive({ ...proactive.offer, firstReply: reply }) }}
           onCardDismiss={() => proactive.dismiss('not_now')}
+          onCardChannel={(kind) => { if (proactive.offer) openProactive({ ...proactive.offer, firstChannel: kind }) }}
+          pill={sessionActive ? null : proactive.pill}
+          onPillOpen={openPill}
+          onPillClose={proactive.closePill}
           onNoteOpen={() => { if (proactive.offer) openProactive(proactive.offer); else void openNote() }}
         />
       )}

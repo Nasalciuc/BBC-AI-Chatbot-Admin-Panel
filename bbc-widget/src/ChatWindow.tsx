@@ -2,11 +2,19 @@ import { useState, useEffect, useRef } from 'preact/hooks'
 import { shouldSendTyping, sseRetryDelay, AGENT_TYPING_EXPIRE_MS } from './realtime-policy'
 import { ACTIVITY_EVENTS, BEAT_MS, idleSeconds, isMobileDevice, shouldBeat, signalQuery } from './presence-policy'
 import type { PresenceSignal } from './presence-policy'
-import { apiFetch, ensureVisitorToken, getVisitorId, getVisitorToken, saveVisitorToken } from './api'
+import {
+  apiFetch, askBeforeYouGo, ensureVisitorToken, getVisitorId, getVisitorToken, readButtons, saveVisitorToken,
+  type OfferConfirm,
+} from './api'
+import { guessCountry, readablePhone, validEmail, validWhatsapp, type ButtonKind, type ChannelKind } from './channel'
+import { COUNTRIES, type Country } from './countries'
+import { ChannelIcon } from './FloatingButtons'
+import { browserLanguage, channelMessage, timeZone, widgetLang, words } from './i18n'
+import { useKeyboardInset } from './keyboard'
 import { getTurnstileToken } from './turnstile'
 import type { FormCheck } from './TunnelForm'
 import brand from './config'
-import { promoteTemp, reconcileBatch } from './reconcile'
+import { LOCAL_AI_PREFIX, promoteTemp, reconcileBatch } from './reconcile'
 import { PanelTop } from './PanelTop'
 import { PersonaAvatar } from './PersonaAvatar'
 import { useLarge } from './largeView'
@@ -28,7 +36,36 @@ interface Message {
   /** Operator identity — present on role='agent' messages only. */
   agent_name?: string | null
   agent_avatar_url?: string | null
+  /** A send of the client's that was a button (kept for Retry; never from the server). */
+  sendOpts?: SendOptions
 }
+
+/** A reply offered under the last message: a label, and what it does when the server said (channel.ts) —
+ *  a channel opens its field, "wait" and the yes go out as buttons the server answers without the model. */
+interface Chip {
+  label: string
+  kind?: ButtonKind
+}
+
+const asChips = (labels: string[]): Chip[] => labels.map(label => ({ label }))
+
+/** A button the server answers without the model (app/pipeline/card_buttons.py). */
+type ServerButton = 'yes' | 'whatsapp' | 'email' | 'wait'
+
+interface SendOptions {
+  button?: ServerButton
+  /** The answer already known (the card's yes, A2): shown at once, then swapped for the stored row. */
+  local?: OfferConfirm
+  /** The price the client saw, typed beside the channel (C5): for the agent, never repeated. */
+  priceSeen?: string
+}
+
+// The id of an answer shown before the server stored it (the card's yes, A2) is LOCAL_AI_PREFIX + a time:
+// reconcile.ts swaps it for the stored row, by its words, whichever comes first — the send's answer or the poll.
+// sessionStorage: B1 was asked for this conversation in this tab (the server says it once per conversation).
+const BEFORE_YOU_GO_KEY = 'bbc_before_you_go'
+// B1: this long without anything done on the page, with the chat open, counts as leaving (ADR-6d).
+const IDLE_LEAVING_MS = 30_000
 
 
 interface Props {
@@ -142,10 +179,33 @@ export function ChatWindow({
    *  latest send unlocks sending (17 Nov 2026). One object for the life of
    *  the chat, shared with the stream's handlers. */
   const [turns] = useState(createReplyTurns)
-  const [quickReplies, setQuickReplies] = useState<string[] | null>(() => {
+  const [quickReplies, setQuickReplies] = useState<Chip[] | null>(() => {
     const o = openingRef.current
-    return o && !o.firstReply && o.quickReplies.length ? o.quickReplies : null
+    if (!o || o.firstReply || o.firstChannel || !o.quickReplies.length) return null
+    const chips = asChips(o.quickReplies)
+    // C1 in the panel (computers): the card's own channel, before "Not now".
+    if (o.channel) {
+      const no = chips.findIndex(c => isNotNow(c.label))
+      chips.splice(no < 0 ? chips.length : no, 0, { label: o.channel.label, kind: o.channel.kind })
+    }
+    return chips
   })
+  // The widget's own words, in the browser's language (i18n.ts); the server's are already in it.
+  const w = words(widgetLang())
+  // The opening's tested sentence (C5, "beat"): the channel field offers the price they saw, optional.
+  const beatRef = useRef(openingRef.current?.variant === 'beat')
+  // The field where the client leaves the contact the agent writes to (channel.ts): WhatsApp or email.
+  const [channelForm, setChannelForm] = useState<ChannelKind | null>(() => openingRef.current?.firstChannel ?? null)
+  const [channelValue, setChannelValue] = useState('')
+  const [channelPrice, setChannelPrice] = useState('')
+  const [channelError, setChannelError] = useState('')
+  const [country, setCountry] = useState<Country>(() => guessCountry(COUNTRIES, browserLanguage(), timeZone()))
+  const channelInputRef = useRef<HTMLInputElement>(null)
+  // The answer already on screen while its send is on its way (A2): no "is typing" under it.
+  const [localPending, setLocalPending] = useState(false)
+  // B1: the client left a contact in this chat (the form's, or a channel's) — then no "before you go".
+  const contactGivenRef = useRef(Boolean(visitor.email || visitor.phone))
+  useKeyboardInset(visible && !embedded)
   const [pendingGreeting, setPendingGreeting] = useState(false)
   const [convId, setConvId] = useState<string | null>(savedConvId)
   const logRef = useRef<HTMLDivElement>(null)
@@ -171,8 +231,9 @@ export function ChatWindow({
     is_typing: false,
     name: '',
   })
-  /** Messages written while the assistant was still answering: they go out, in order, as soon as it finishes. */
-  const [queued, setQueued] = useState<{ id: string; text: string }[]>(() => {
+  /** Messages written while the assistant was still answering: they go out, in order, as soon as it finishes
+   *  (a button's with it: a channel left while the yes was on its way is still a channel). */
+  const [queued, setQueued] = useState<{ id: string; text: string; opts?: SendOptions }[]>(() => {
     try { return JSON.parse(ssGet(QUEUE_KEY) || '[]') } catch { return [] }
   })
   /** The greeting is on its way (fresh sessions): the log shows the assistant typing instead of nothing. */
@@ -210,17 +271,23 @@ export function ChatWindow({
   // also scroll the site behind the panel on some phones).
   // A visitor reading back up the conversation is never yanked down: the log follows new messages only
   // while it is at the bottom, and otherwise shows a "New message" button.
+  // While the log scrolls itself down (smoothly), the scroll events on the way are not the visitor reading
+  // back up: an answer that lands mid-way (the card's yes, a channel's: a few hundred ms apart) still pulls
+  // the log down instead of hiding behind "New message".
+  const autoScrollUntilRef = useRef(0)
   const scrollToEnd = (smooth = true) => {
     const el = logRef.current
     if (!el) return
     atBottomRef.current = true
     setHasUnseen(false)
+    autoScrollUntilRef.current = smooth ? Date.now() + 700 : 0
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
   }
   const onLogScroll = () => {
     const el = logRef.current
     if (!el) return
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 72
+    if (!near && Date.now() < autoScrollUntilRef.current) return
     atBottomRef.current = near
     if (near) setHasUnseen(false)
   }
@@ -263,6 +330,8 @@ export function ChatWindow({
       // Still on the site with the chat closed: a beat says so once the close is written.
       notifySessionClose('minimized', true).finally(() => beatNowRef.current())
       if (convId) apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
+      // B1: closing the chat without a contact is leaving it; the corner button shows the message.
+      beforeYouGoRef.current(true)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
@@ -406,10 +475,15 @@ export function ChatWindow({
     // The card opened this chat: its words are on screen and nothing exists on the server until the
     // visitor answers. A button tapped on the phone card is that answer.
     if (openingRef.current) {
-      const first = openingRef.current.firstReply
+      const o = openingRef.current
+      const first = o.firstReply
       if (first) {
         onProactiveEngaged?.(first)
-        sendMessage(first)
+        // The card's yes on a card that knew the whole trip: its answer is on screen at once (A2).
+        sendMessage(first, yesOptions(o, first))
+      } else if (o.firstChannel) {
+        // The card's channel, the pill or the row: the chat opens on the field (nothing sent before it).
+        requestAnimationFrame(() => channelInputRef.current?.focus({ preventScroll: true }))
       }
       return
     }
@@ -727,6 +801,57 @@ export function ChatWindow({
     }
   }, [convId, apiUrl])
 
+  // ── B1 (ADR-6d): one message as a client with no contact leaves ──────────────────────────────────
+  // The tab goes out of view, the chat is closed, or the page goes quiet for IDLE_LEAVING_MS with the chat
+  // open — and nobody has the client's contact yet, no agent has written: the server adds one message with
+  // the channels (app/pipeline/card_buttons.py, before_you_go), once per conversation. Asked once per tab.
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+  const busyRef = useRef(false)
+  busyRef.current = sending || isStreaming || !!channelForm || !!input.trim() || agentTyping.is_typing
+  const beforeYouGoRef = useRef<(keepalive?: boolean) => void>(() => {})
+  beforeYouGoRef.current = (keepalive = false) => {
+    const cid = convId
+    if (!cid || embedded || contactGivenRef.current || busyRef.current) return
+    const key = `${BEFORE_YOU_GO_KEY}:${cid}`
+    if (ssGet(key) === '1') return
+    const rows = messagesRef.current
+    if (!rows.some(m => m.role === 'user') || rows.some(m => m.role === 'agent')) return
+    ssSet(key, '1')
+    void askBeforeYouGo(apiUrl, cid, keepalive).then(out => {
+      if (!out?.show || !out.message || !out.id) return
+      const msg: Message = {
+        id: out.id, role: 'ai', content: out.message, created_at: out.created_at || new Date().toISOString(),
+      }
+      setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]))
+      if (out.buttons?.length) setQuickReplies(out.buttons.map(b => ({ label: b.label, kind: b.kind })))
+      if (out.created_at && (!lastMsgTime.current || out.created_at > lastMsgTime.current)) {
+        lastMsgTime.current = out.created_at
+      }
+      posthog?.capture('chat_before_you_go', { tunnel })
+    })
+  }
+  useEffect(() => {
+    if (!convId || embedded) return
+    const onHidden = () => { if (document.visibilityState === 'hidden') beforeYouGoRef.current(true) }
+    document.addEventListener('visibilitychange', onHidden)
+    const idle = setInterval(() => {
+      if (!visibleRef.current || document.visibilityState !== 'visible') return
+      if (Date.now() - lastActivityRef.current >= IDLE_LEAVING_MS) beforeYouGoRef.current()
+    }, 5_000)
+    return () => {
+      document.removeEventListener('visibilitychange', onHidden)
+      clearInterval(idle)
+    }
+  }, [convId, embedded])
+
+  /** On a touch screen the keyboard takes a moment to open: then the newest message and the box are in
+   *  view (E2, ADR-12b; the sheet itself follows the visible area: phoneSheet.ts, keyboard.ts). */
+  const keepComposerInView = () => {
+    try { if (window.matchMedia('(pointer: fine)').matches) return } catch { return }
+    setTimeout(() => { if (atBottomRef.current) scrollToEnd(false) }, 320)
+  }
+
   // Operator → visitor typing indicator. Primary path: the `typing` frame on
   // the SSE stream (PR-10). This 1 s poll only asks while the stream is down.
   // The backend key has a short TTL, so a stopped operator stops the
@@ -830,7 +955,14 @@ export function ChatWindow({
     // client pauses" bug. See the comment block at top of this function.
   }
 
-  const sendMessage = async (text: string) => {
+  /** What the card's yes goes out with: the answer the server will store, shown at once (A2), when the card
+   *  knew the whole trip and this is its first button. */
+  const yesOptions = (o: ProactiveOpening | null, text: string): SendOptions | undefined =>
+    o?.confirm && o.quickReplies[0] && text.trim() === o.quickReplies[0].trim()
+      ? { button: 'yes', local: o.confirm }
+      : undefined
+
+  const sendMessage = async (text: string, opts?: SendOptions) => {
     if (!text.trim()) return
     // This send's number: a late answer to an earlier send (the queue sends
     // the next message as soon as a reply is in) never changes this one.
@@ -852,8 +984,21 @@ export function ChatWindow({
       role: 'user',
       content: text,
       created_at: new Date().toISOString(),
+      ...(opts?.button ? { sendOpts: { button: opts.button, ...(opts.priceSeen ? { priceSeen: opts.priceSeen } : {}) } } : {}),
     }
-    setMessages(prev => [...prev, optimisticMsg])
+    // A2: the answer already known goes on screen with the client's tap, with its buttons; the server stores
+    // the same words and the stored row takes its place (reconcile.ts).
+    const localId = opts?.local ? `${LOCAL_AI_PREFIX}${Date.now()}` : null
+    if (opts?.local && localId) {
+      const local: Message = {
+        id: localId, role: 'ai', content: opts.local.message, created_at: new Date(Date.now() + 1).toISOString(),
+      }
+      setMessages(prev => [...prev, optimisticMsg, local])
+      setQuickReplies(opts.local.buttons.map(b => ({ label: b.label, kind: b.kind })))
+      setLocalPending(true)
+    } else {
+      setMessages(prev => [...prev, optimisticMsg])
+    }
 
     try {
       // Sprint 2: Pre-create conv for SSE streaming on first message
@@ -885,7 +1030,10 @@ export function ChatWindow({
               // server asked the first question (the note's bandit) — the same words, counted for it.
               ...(opening ? {
                 trip: opening.trip,
-                proactive: { trigger: opening.trigger, ...(opening.variant ? { variant: opening.variant } : {}) },
+                proactive: {
+                  trigger: opening.trigger, ...(opening.variant ? { variant: opening.variant } : {}),
+                  ...(opening.lang ? { lang: opening.lang } : {}),
+                },
               } : {}),
             }),
           })
@@ -948,6 +1096,9 @@ export function ChatWindow({
           },
           metadata: metadata || {},
           visitor_id: getVisitorId(),
+          // A button the server answers without the model (the card's yes, a channel, "I'll wait here").
+          ...(opts?.button ? { button: opts.button } : {}),
+          ...(opts?.priceSeen ? { price_seen: opts.priceSeen } : {}),
         }),
       })
 
@@ -1000,6 +1151,11 @@ export function ChatWindow({
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.streaming) {
+        // The answer shown at once was not the server's after all (the model answers this one): it goes.
+        if (localId) {
+          setMessages(prev => prev.filter(m => m.id !== localId))
+          setQuickReplies(null)
+        }
         // Only while this send's reply is still on its way. When its
         // stream_end came in first, marking it streaming here left the typing
         // dots under the finished reply until the next send (17 Nov 2026).
@@ -1009,14 +1165,32 @@ export function ChatWindow({
           isStreamingRef.current = true
         }
       } else if (data.message && data.type !== 'queued') {
+        // A stored answer names its row: the poll then never draws it twice. The one shown at once (A2)
+        // takes the stored words and id; a row the poll already brought stays alone.
+        const storedId = typeof data.message_id === 'string' ? data.message_id : null
+        const storedAt = typeof data.created_at === 'string' ? data.created_at : null
         const aiMsg: Message = {
-          id: `ai-${Date.now()}`,
+          id: storedId || `ai-${Date.now()}`,
           role: 'ai',
           content: data.message,
-          created_at: new Date().toISOString(),
+          created_at: storedAt || new Date().toISOString(),
         }
-        setMessages(prev => [...prev, aiMsg])
-        lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
+        setMessages(prev => {
+          const already = storedId ? prev.some(m => m.id === storedId) : false
+          if (localId) {
+            return already ? prev.filter(m => m.id !== localId) : prev.map(m => (m.id === localId ? aiMsg : m))
+          }
+          return already ? prev : [...prev, aiMsg]
+        })
+        const buttons = readButtons(data.buttons)
+        if (buttons.length) setQuickReplies(buttons.map(b => ({ label: b.label, kind: b.kind })))
+        else if (!localId && opts?.button) setQuickReplies(null)
+        if (opts?.button === 'whatsapp' || opts?.button === 'email') contactGivenRef.current = true
+        if (storedAt) {
+          if (!lastMsgTime.current || storedAt > lastMsgTime.current) lastMsgTime.current = storedAt
+        } else {
+          lastMsgTime.current = new Date(Date.now() + 2000).toISOString()
+        }
       }
       if (!streams) turns.over(seq)
       // Extend 30-minute rolling session on every successful message
@@ -1025,6 +1199,11 @@ export function ChatWindow({
       posthog?.capture('chat_message_send_failed', { tunnel })
       posthog?.logger.warn('chat_message_delivery_failed', { tunnel })
       turns.over(seq)
+      // The answer shown at once was never stored: it goes with the failed send (Retry brings both back).
+      if (localId) {
+        setMessages(prev => prev.filter(m => m.id !== localId))
+        setQuickReplies(null)
+      }
       // A later send may already be streaming its own reply: leave it be.
       if (turns.isLatest(seq)) {
         setStreamingText('')
@@ -1041,6 +1220,7 @@ export function ChatWindow({
       }
       setMessages(prev => [...prev, errMsg])
     } finally {
+      if (localId) setLocalPending(false)
       // Only the latest send unlocks: an earlier one answering late would
       // drop the dots while the next reply is still coming.
       if (!isStreamingRef.current && turns.isLatest(seq)) {
@@ -1066,6 +1246,7 @@ export function ChatWindow({
     } else {
       sendMessage(text)
     }
+    setQuickReplies(null)
     setInput('')
     requestAnimationFrame(() => {
       const el = composerRef.current
@@ -1078,21 +1259,34 @@ export function ChatWindow({
     if (sending || queued.length === 0) return
     const [next, ...rest] = queued
     setQueued(rest)
-    sendMessage(next.text)
+    sendMessage(next.text, next.opts)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sending, queued])
 
-  /** A send that failed: take it and its error note away, and send the text again. */
+  /** A send that failed: take it and its error note away, and send the text again (as the button it was). */
   const retry = (msg: Message) => {
     setMessages(prev => prev.filter(m => m.id !== msg.id && !m.id.startsWith('err-')))
     atBottomRef.current = true
-    if (sending) setQueued(q => [...q, { id: `queued-${Date.now()}`, text: msg.content }])
-    else sendMessage(msg.content)
+    if (sending) setQueued(q => [...q, { id: `queued-${Date.now()}`, text: msg.content, opts: msg.sendOpts }])
+    else sendMessage(msg.content, msg.sendOpts)
   }
 
-  const handleQuickReply = (text: string) => {
-    posthog?.capture('chat_quick_reply_selected', { tunnel })
+  /** A send now, or its turn in the line while an answer is on its way. */
+  const sendOrQueue = (text: string, opts?: SendOptions) => {
+    atBottomRef.current = true
+    if (sending) setQueued(q => [...q, { id: `queued-${Date.now()}`, text, opts }])
+    else sendMessage(text, opts)
+  }
+
+  const handleQuickReply = (chip: Chip) => {
+    const text = chip.label
+    posthog?.capture('chat_quick_reply_selected', { tunnel, ...(chip.kind ? { kind: chip.kind } : {}) })
     setQuickReplies(null)
+    if (chip.kind === 'whatsapp' || chip.kind === 'email') {
+      // Where the agent writes: the field opens, nothing is sent before the contact is in it.
+      openChannel(chip.kind)
+      return
+    }
     if (openingRef.current && isNotNow(text)) {
       // "Not now" never reaches the server: the panel closes and the card stays away for 24 h.
       onProactiveDismiss?.('not_now')
@@ -1100,7 +1294,56 @@ export function ChatWindow({
       return
     }
     if (openingRef.current) onProactiveEngaged?.(text)
+    if (chip.kind === 'wait') return sendOrQueue(text, { button: 'wait' })
+    const yes = yesOptions(openingRef.current, text)
+    if (yes) return sendMessage(text, yes)
     sendMessage(text)
+  }
+
+  // ── Where the agent writes (channel.ts): the client's WhatsApp number or email ─────────────────────
+  const openChannel = (kind: ChannelKind) => {
+    setChannelForm(kind)
+    setChannelValue('')
+    setChannelError('')
+    posthog?.capture('chat_channel_opened', { channel: kind, tunnel })
+    // The field takes the chips' place and more: the question it answers stays in view above it.
+    requestAnimationFrame(() => {
+      scrollToEnd(false)
+      channelInputRef.current?.focus({ preventScroll: true })
+    })
+  }
+  const closeChannel = () => {
+    setChannelForm(null)
+    setChannelError('')
+    // Back to the choice: the channels again (the answer they were offered under).
+    setQuickReplies([
+      { label: 'WhatsApp', kind: 'whatsapp' },
+      { label: w.sentEmail, kind: 'email' },
+    ])
+  }
+  const submitChannel = (e: Event) => {
+    e.preventDefault()
+    const kind = channelForm
+    if (!kind) return
+    const price = channelPrice.trim().slice(0, 40)
+    let contact: string | null
+    if (kind === 'whatsapp') {
+      const e164 = validWhatsapp(COUNTRIES, channelValue, country)
+      contact = e164 ? readablePhone(COUNTRIES, e164) : null
+      if (!contact) return setChannelError(w.badPhone)
+    } else {
+      contact = validEmail(channelValue)
+      if (!contact) return setChannelError(w.badEmail)
+    }
+    const text = channelMessage(widgetLang(), kind, contact, beatRef.current ? price : '')
+    setChannelForm(null)
+    setChannelValue('')
+    setChannelPrice('')
+    setChannelError('')
+    if (openingRef.current) onProactiveEngaged?.(text)
+    // Only the kind goes to PostHog, never the contact.
+    posthog?.capture('chat_channel_given', { channel: kind, tunnel, price: Boolean(beatRef.current && price) })
+    sendOrQueue(text, { button: kind, ...(beatRef.current && price ? { priceSeen: price } : {}) })
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -1130,7 +1373,8 @@ export function ChatWindow({
   const operator = currentOperator(shown)
   // Alex's avatar: his photo (PersonaAvatar.tsx).
   const brandAvatar = <PersonaAvatar cls="bw-ava bw-ava--persona" />
-  const aiWaiting = ((sending || isStreaming) && !streamingText) || (starting && shown.length === 0)
+  // The answer already on screen (A2) has no "is typing" under it while its send finishes.
+  const aiWaiting = ((sending || isStreaming) && !streamingText && !localPending) || (starting && shown.length === 0)
   // Day dividers, only for a conversation that is not all from today (a restored one).
   const dayKey = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toDateString() }
   const today = new Date().toDateString()
@@ -1265,17 +1509,84 @@ export function ChatWindow({
       </div>
 
       {/* Quick replies — shown after the welcome message, hidden after a tap */}
-      {quickReplies && quickReplies.length > 0 && (
+      {quickReplies && quickReplies.length > 0 && !channelForm && (
         <div class="bw-chips">
-          {quickReplies.map((text, i) => (
-            <button key={i} type="button" class="bw-chip" onClick={() => handleQuickReply(text)}>
-              {text}
+          {quickReplies.map((chip, i) => (
+            <button
+              key={i}
+              type="button"
+              class={`bw-chip${chip.kind === 'whatsapp' || chip.kind === 'email' ? ' bw-chip--channel' : ''}`}
+              onClick={() => handleQuickReply(chip)}
+            >
+              {(chip.kind === 'whatsapp' || chip.kind === 'email') && <ChannelIcon kind={chip.kind} />}
+              {chip.label}
             </button>
           ))}
         </div>
       )}
 
-      <div class="bw-compose">
+      {/* Where the agent writes: the client's WhatsApp number or email (channel.ts). */}
+      {channelForm && (
+        <form class="bw-channel" onSubmit={submitChannel} noValidate>
+          <label class="bw-channel__label" for="bw-channel-input">
+            <ChannelIcon kind={channelForm} />
+            {channelForm === 'whatsapp' ? w.whatsappLabel : w.emailLabel}
+          </label>
+          <div class={`bw-channel__row${channelError ? ' bw-channel__row--error' : ''}`}>
+            {channelForm === 'whatsapp' && (
+              <select
+                class="bw-channel__cc"
+                aria-label={w.country}
+                value={country.code}
+                onChange={e => {
+                  const picked = COUNTRIES.find(c => c.code === (e.target as HTMLSelectElement).value)
+                  if (picked) setCountry(picked)
+                }}
+              >
+                {COUNTRIES.map(c => <option key={c.code} value={c.code}>{`${c.flag} ${c.dial}`}</option>)}
+              </select>
+            )}
+            <input
+              ref={channelInputRef}
+              id="bw-channel-input"
+              class="bw-channel__input"
+              type={channelForm === 'whatsapp' ? 'tel' : 'email'}
+              inputMode={channelForm === 'whatsapp' ? 'tel' : 'email'}
+              autoComplete={channelForm === 'whatsapp' ? 'tel' : 'email'}
+              enterkeyhint="send"
+              value={channelValue}
+              aria-invalid={channelError ? 'true' : undefined}
+              aria-describedby="bw-channel-hint"
+              onInput={e => {
+                setChannelValue((e.target as HTMLInputElement).value)
+                lastActivityRef.current = Date.now()
+                if (channelError) setChannelError('')
+              }}
+            />
+          </div>
+          {beatRef.current && (
+            <input
+              class="bw-channel__price"
+              type="text"
+              inputMode="decimal"
+              maxLength={40}
+              placeholder={w.priceLabel}
+              aria-label={w.priceLabel}
+              value={channelPrice}
+              onInput={e => setChannelPrice((e.target as HTMLInputElement).value)}
+            />
+          )}
+          {channelError
+            ? <div class="bw-channel__error" id="bw-channel-hint" role="alert">{channelError}</div>
+            : <div class="bw-channel__hint" id="bw-channel-hint">{channelForm === 'whatsapp' ? w.whatsappHint : w.emailHint}</div>}
+          <div class="bw-channel__actions">
+            <button type="button" class="bw-channel__back" onClick={closeChannel}>{w.back}</button>
+            <button type="submit" class="bw-channel__send">{w.send}</button>
+          </div>
+        </form>
+      )}
+
+      <div class={`bw-compose${channelForm ? ' bw-compose--hidden' : ''}`}>
         <textarea
           ref={composerRef}
           id="bw-composer"
@@ -1293,6 +1604,7 @@ export function ChatWindow({
             fitComposer()
           }}
           onKeyDown={handleKeyDown}
+          onFocus={keepComposerInView}
         />
         <button
           type="button"

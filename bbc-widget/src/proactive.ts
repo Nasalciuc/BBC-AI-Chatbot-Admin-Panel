@@ -20,8 +20,12 @@
  * form we recognise (the site's HTML changed: the quote moment would otherwise die silently).
  */
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { ensureVisitorId, fetchProactiveOffer, offerMeasures, type OfferTiming } from './api'
+import { ensureVisitorId, fetchProactiveOffer, offerMeasures, type OfferConfirm, type OfferTiming } from './api'
+import type { ChannelKind, ChatButton } from './channel'
 import brand from './config'
+import { browserLanguage, timeZone } from './i18n'
+import { keepOpening, readKeptOpening } from './keptOpening'
+import { watchPopups } from './overlay'
 import { posthog } from './posthog'
 import {
   applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
@@ -29,13 +33,15 @@ import {
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
-  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM, adVisit, blockedPath, inViewBeforeStartMs,
-  offAfter, pauseRunning, pickTrigger, readOff, replyKind, type OpeningTrigger, type PageState, type QuoteState,
-  type Trigger,
+  C4_HOLD_ARM, KAYAK_EARLY_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
+  adVisit, blockedPath, c4Arm, inViewBeforeStartMs, offAfter, pauseRunning, pickTrigger, readOff, replyKind,
+  type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
-export type Surface = 'card' | 'panel'
+/** Where the opening shows: a card above the button (phones), the panel (computers), or the row beside the
+ *  site's refused quote form (D1, ADR-4a). */
+export type Surface = 'card' | 'panel' | 'row'
 
 /** What the chat opened by the card (or by the tapped note) starts with. */
 export interface ProactiveOpening {
@@ -51,6 +57,19 @@ export interface ProactiveOpening {
   /** Which way the server asked the first question (the note's bandit, app/services/note_bandit.py):
    *  sent back with the answer so the conversation starts with the same words and is counted for it. */
   variant?: string
+  /** A2: the instant answer to the card's yes, when the card knew the whole trip (the server's words). */
+  confirm?: OfferConfirm
+  /** C1/C2: the card's own channel button (WhatsApp on a phone, email on a computer). */
+  channel?: ChatButton & { kind: ChannelKind }
+  /** D1: the row's two buttons beside the refused form. */
+  buttons?: ChatButton[]
+  /** The language the server wrote the words in ("es", "fr"); sent back so the chat starts in it. */
+  lang?: string
+  /** The C4 side this card was shown on (measured with the card). */
+  c4?: 'early' | 'now'
+  /** The channel the client picked before the chat opened (the card's channel button, the pill, the row):
+   *  the chat opens on its field, and the conversation starts with what they leave there. */
+  firstChannel?: ChannelKind
 }
 
 // sessionStorage: this visit's moment was used ('asked', 'shown', or 'chat' when the visitor opened the
@@ -74,6 +93,11 @@ const NOTE_CLOSED_KEY = 'bbc_note_closed'
 const CONV_KEY = 'bbc_conv_proactive'
 // sessionStorage: Widget.tsx's once-per-visit note; set when a card shows so the note never follows it.
 const ATTENTION_KEY = 'bbc_attention_shown'
+// localStorage: this browser heard that C4's early side is over (C4_HOLD_ARM): the usual moment from now on.
+const C4_OVER_KEY = 'bbc_c4_over'
+// sessionStorage: the pill after "Not now" (C2), kept for this visit's pages; localStorage: closed with ✕ for good.
+const PILL_KEY = 'bbc_pill'
+const PILL_CLOSED_KEY = 'bbc_pill_closed'
 
 const PHONE = '(max-width: 767px)'
 const QUOTE_TEXT = /get (?:a )?free quote/i
@@ -97,9 +121,30 @@ export function forgetProactiveConversation(): void { lsRemove(CONV_KEY) }
 /** The 10 s note was closed with ✕: no card for the rest of the visit. */
 export function markNoteClosed(): void { ssSet(NOTE_CLOSED_KEY, '1') }
 
-/** Where the visitor came from, for the conversation the card opens (what the form sends today). */
+/** Where the visitor came from, for the conversation the card opens (what the form sends today), with the
+ *  browser's language and time zone: a phone typed the local way is placed in its country by them
+ *  (app/services/phone_country.py; #3296). */
 export function proactiveMetadata(): Record<string, string> {
-  return { ...(getUtm() as Record<string, string>), site: brand.id }
+  const lang = browserLanguage()
+  const tz = timeZone()
+  return { ...(getUtm() as Record<string, string>), site: brand.id, ...(lang ? { browser_lang: lang } : {}), ...(tz ? { tz } : {}) }
+}
+
+/** The pill kept for this visit's pages (C2), or null. */
+function readPill(): ProactiveOpening | null {
+  if (lsGet(PILL_CLOSED_KEY) === '1') return null
+  const raw = ssGet(PILL_KEY)
+  if (!raw) return null
+  try {
+    return readKeptOpening(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
+/** What the pill keeps of the card: its words and its channel, to open the chat with. */
+function keepPill(o: ProactiveOpening): ProactiveOpening {
+  return { ...(keepOpening(o) as ProactiveOpening), surface: o.surface === 'row' ? 'panel' : o.surface }
 }
 
 function kayakVisit(): boolean {
@@ -256,6 +301,14 @@ export interface Proactive {
    *  nothing recorded, when `stillWanted` says the visitor did something else while the words were on
    *  their way. */
   noteOpening: (stillWanted?: () => boolean, door?: 'note' | 'button') => Promise<ProactiveOpening | null>
+  /** D1: the form the row stands beside, while the row's offer is on screen. */
+  rowForm: HTMLFormElement | null
+  /** C2: the pill after "Not now" — the card's channel, once per visit, until ✕ or a tap. */
+  pill: ProactiveOpening | null
+  /** ✕ on the pill: never again in this browser. */
+  closePill: () => void
+  /** The pill was tapped (its chat opens): it goes. */
+  pillUsed: () => void
 }
 
 export function useProactive({ apiUrl, step, allowed, restored = null }: {
@@ -267,6 +320,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
 }): Proactive {
   const [offer, setOffer] = useState<ProactiveOpening | null>(null)
   const [quiet, setQuiet] = useState(() => ssGet(DONE_KEY) === 'shown')
+  const [rowForm, setRowForm] = useState<HTMLFormElement | null>(null)
+  const [pill, setPill] = useState<ProactiveOpening | null>(() => readPill())
   const shownRef = useRef<ProactiveOpening | null>(restored)
   const engagedRef = useRef(false)
   const stepRef = useRef(step)
@@ -311,7 +366,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let fired = false
     let warnedShape = false
     let sentInline = false
+    let popupHeldOnce = false
     const start = Date.now()
+    // C4 (triggers.ts): this visitor's side of the Kayak card's moment, from its start date, until the server
+    // says the early side is over.
+    let c4 = c4Arm(ensureVisitorId(), Date.now(), lsGet(C4_OVER_KEY) === '1')
+    // E1 (overlay.ts): the site's popups over the page; a card waits while one is open.
+    const popups = watchPopups()
     // The moments count the visitor's seconds, not the widget's (triggers.ts, "in view"): the time the page
     // was in view before this script started counts too. `widgetStartS`: how long after the page showed this
     // script started, for the measurements (null when the browser does not say when the page showed).
@@ -496,11 +557,24 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const device = phone ? 'phone' : 'computer'
       // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
       const took: OfferTiming[] = []
+      // D1: the row stands beside the form that was pressed, when the widget can still see it.
+      const rowAt = trigger === 'quote' && press?.form?.isConnected ? press.form : null
+      const side = trigger === 'kayak' ? c4 : null
+      const lang = browserLanguage()
       const res = await fetchProactiveOffer(apiUrl, {
         visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
         ...(trigger === 'quote' && refused.length ? { refused: [...refused] } : {}),
+        ...(lang ? { lang } : {}),
+        device,
+        ...(rowAt ? { place: 'form' as const } : {}),
+        ...(side ? { c4: side } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
-      const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, adsTrip) : null
+      let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, adsTrip) : null
+      // E1: a popup of the site opened while the answer was on its way — the card waits for it to close.
+      if (!passed && !disposed && res?.show && res.message && trigger !== 'quote' && popups.open()) {
+        await untilPopupCloses()
+        passed = disposed ? 'popup' : momentPassed(trigger, before, adsTrip) ?? (popups.open() ? 'popup' : null)
+      }
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
         trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip), site: brand.id,
@@ -511,7 +585,18 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...offerMeasures(took[0]),
         ...(widgetStartS !== null ? { widget_start_s: widgetStartS } : {}),
         ...(passed ? { moment_passed: passed } : {}),
+        ...(side ? { c4: side } : {}),
+        ...(res?.lang ? { lang: res.lang } : {}),
       })
+      if (res && !res.show && res.arm === C4_HOLD_ARM) {
+        // C4's early side is over: this browser takes the usual moment from now on, and this visit's moment
+        // is asked again then (the reservation this answer owned is given back).
+        lsSet(C4_OVER_KEY, '1')
+        c4 = null
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
       if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
         // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
         // in this visit, and the visit keeps its one moment for the others (the reader may still come).
@@ -525,11 +610,25 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         return
       }
       if (disposed || !res || !res.show || !res.message || passed) return
-      const surface: Surface = phone ? 'card' : 'panel'
+      // D1: the server gave the row's words, and the form is still there to stand beside.
+      const row = res.variant === 'row' && !!res.buttons?.length && !!rowAt?.isConnected
+      if (res.variant === 'row' && !row) {
+        // The form went away meanwhile: nothing to stand beside, and this visit's moment is given back.
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
+      const surface: Surface = row ? 'row' : phone ? 'card' : 'panel'
       const opening: ProactiveOpening = {
         trigger, message: res.message, quickReplies: res.quick_replies, trip, surface, shownAt: Date.now(),
         ...(res.variant ? { variant: res.variant } : {}),
+        ...(res.confirm ? { confirm: res.confirm } : {}),
+        ...(res.channel ? { channel: res.channel } : {}),
+        ...(res.buttons ? { buttons: res.buttons } : {}),
+        ...(res.lang ? { lang: res.lang } : {}),
+        ...(side ? { c4: side } : {}),
       }
+      if (row) setRowForm(rowAt)
       ssSet(DONE_KEY, 'shown')
       ssSet(ATTENTION_KEY, '1')
       shownRef.current = opening
@@ -537,8 +636,19 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       setOffer(opening)
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
+        ...(side ? { c4: side } : {}), ...(res.lang ? { lang: res.lang } : {}),
       })
     }
+
+    // E1: wait while a popup of the site covers the page — at most a minute, then the moment is gone.
+    const untilPopupCloses = () => new Promise<void>((resolve) => {
+      const until = Date.now() + 60_000
+      const check = () => {
+        if (disposed || !popups.open() || Date.now() > until) return resolve()
+        setTimeout(check, 500)
+      }
+      setTimeout(check, 500)
+    })
 
     const evaluate = () => {
       if (fired || disposed || stopped || document.visibilityState !== 'visible') return
@@ -558,6 +668,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         sinceFormActivityS: (now - Math.max(press.at, press.activityAt)) / 1000,
         invalid: press.invalid,
         busy: sending(press.form) || siteBusy,
+        row: !!press.form?.isConnected,
       } : null
       const ad = adVisitNow()
       const state: PageState = {
@@ -576,9 +687,20 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         sinceQuoteFormS: quoteFormAt === null ? null : (now - quoteFormAt) / 1000,
         exitIntent: now - exitAt < 1500,
         off: offMoments(),
+        kayakS: c4 === 'early' ? KAYAK_EARLY_S : KAYAK_VISIBLE_S,
       }
       const trigger = pickTrigger(state)
       if (!trigger) return
+      // E1: no card over a popup of the site; it comes once the popup closes (the quote moment looks past the
+      // quote form's own modal).
+      const pressedForm = press?.form ?? null
+      if (popups.open(trigger === 'quote' ? (el) => !!pressedForm && el.contains(pressedForm) : undefined)) {
+        if (!popupHeldOnce) {
+          popupHeldOnce = true
+          posthog?.capture('proactive_popup_held', { trigger, device: state.phone ? 'phone' : 'computer', site: brand.id })
+        }
+        return
+      }
       fired = true
       ssSet(DONE_KEY, 'asked')
       void ask(trigger, state.phone)
@@ -624,17 +746,38 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   return {
     offer,
     quiet,
-    opened: () => setOffer(null),
+    opened: () => { setOffer(null); setRowForm(null) },
     dismiss: (how) => {
       lsSet(PAUSE_KEY, String(Date.now() + PAUSE_AFTER_DISMISS_MS))
       const o = shownRef.current
       if (o) {
         posthog?.capture('proactive_dismissed', {
           trigger: o.trigger, how, surface: o.surface, seconds_visible: Math.round((Date.now() - o.shownAt) / 1000),
-          site: brand.id, ...(o.variant ? { variant: o.variant } : {}),
+          site: brand.id, ...(o.variant ? { variant: o.variant } : {}), ...(o.c4 ? { c4: o.c4 } : {}),
         })
+        // C2: after "Not now" the card's channel stays as a small pill, once per visit, until ✕ or a tap.
+        if (how === 'not_now' && o.channel && lsGet(PILL_CLOSED_KEY) !== '1') {
+          const kept = keepPill(o)
+          ssSet(PILL_KEY, JSON.stringify(kept))
+          setPill(kept)
+          posthog?.capture('proactive_pill_shown', { trigger: o.trigger, channel: o.channel.kind, site: brand.id })
+        }
       }
       setOffer(null)
+      setRowForm(null)
+    },
+    rowForm,
+    pill,
+    closePill: () => {
+      lsSet(PILL_CLOSED_KEY, '1')
+      ssSet(PILL_KEY, '')
+      if (pill) posthog?.capture('proactive_pill_closed', { trigger: pill.trigger, site: brand.id })
+      setPill(null)
+    },
+    pillUsed: () => {
+      ssSet(PILL_KEY, '')
+      if (pill) posthog?.capture('proactive_pill_opened', { trigger: pill.trigger, site: brand.id })
+      setPill(null)
     },
     engaged: (reply) => {
       const o = shownRef.current
@@ -647,13 +790,18 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
         site: brand.id,
         ...(o.variant ? { variant: o.variant } : {}),
+        ...(o.c4 ? { c4: o.c4 } : {}),
       })
     },
     noteOpening: async (stillWanted, door = 'note') => {
       const trip = currentTrip()
       const took: OfferTiming[] = []
+      const lang = browserLanguage()
       const res = await fetchProactiveOffer(
-        apiUrl, { visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id }, OFFER_TIMEOUT_MS,
+        apiUrl, {
+          visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id, ...(lang ? { lang } : {}),
+          device: matches(PHONE) ? 'phone' : 'computer',
+        }, OFFER_TIMEOUT_MS,
         (t) => took.push(t),
       )
       // The visitor did something else while the answer was on its way (Widget's note turn): nothing of it
@@ -673,6 +821,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         trigger: 'note', message: res.message, quickReplies: res.quick_replies, trip, surface: 'panel',
         shownAt: Date.now(),
         ...(res.variant ? { variant: res.variant } : {}),
+        ...(res.confirm ? { confirm: res.confirm } : {}),
+        ...(res.lang ? { lang: res.lang } : {}),
       }
       // The visitor opened the chat: no card follows in this visit (the moments' guard reads this).
       ssSet(DONE_KEY, 'chat')
