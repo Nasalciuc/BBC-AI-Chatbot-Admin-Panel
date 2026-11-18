@@ -656,7 +656,10 @@ _LIST_COLUMNS_BASE = (
     "suspect:metadata->>suspect,"
     # When the chat became this operator's — the first-reply deadline counts
     # from here, and the list row shows the countdown the server will act on.
-    "agent_assigned_at:metadata->>agent_assigned_at"
+    "agent_assigned_at:metadata->>agent_assigned_at,"
+    # A local number kept for the agent to check (ADR-6f): read only to say whether the client left any
+    # contact ("Left 3 min ago · no contact", ADR-6c) — the number itself never leaves the db layer here.
+    "phone_to_check:metadata->>phone_to_check"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -999,6 +1002,11 @@ async def get_conversations(
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
         for row in rows:
+            _to_check = row.pop("phone_to_check", None)
+            row["has_contact"] = any(
+                isinstance(v, str) and v.strip()
+                for v in (row.get("visitor_email"), row.get("visitor_phone"), _to_check)
+            )
             row["metadata"] = {
                 "engaged_agent_id": row.pop("engaged_agent_id", None),
                 "widget_presence": row.pop("widget_presence", None),
@@ -5200,12 +5208,19 @@ _UNIVERSE_LEAD_COLUMNS = (
     "id, conversation_id, created_at, updated_at, origin_code, destination_code, route_display, "
     "departure_date, return_date, passengers, children_count, infant_count, trip_type, cabin_class, "
     "score, tier, status, team_id, created_in_crm, created_in_crm_at, crm_lead_id, "
-    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by, qa_notes"
+    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by, qa_notes, "
+    # How the client asked to be reached and the price they saw (the offers queue, offers_view).
+    "contact_channel:intent_signals->>contact_channel, "
+    "callback_requested:intent_signals->>callback_requested, price_seen:intent_signals->>price_seen"
 )
 _UNIVERSE_CONV_COLUMNS = (
     "id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, tunnel, "
-    "assigned_agent_id, last_agent_message_at, closed_at, "
-    "confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id"
+    "assigned_agent_id, last_agent_message_at, closed_at, queued_at, "
+    "confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id, "
+    # The offers queue: the blind rule's last input, a number to check, and the marks.
+    "engaged_agent_id:metadata->>engaged_agent_id, phone_to_check:metadata->>phone_to_check, "
+    "offer_sent_at:metadata->>offer_sent_at, offer_sent_by:metadata->>offer_sent_by, "
+    "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by"
 )
 
 
@@ -5250,6 +5265,13 @@ async def get_leads_universe() -> list[dict]:
                 "conversation_closed_at": c.get("closed_at"),
                 "confirmed_at": c.get("confirmed_at"),
                 "closed_by_agent_id": c.get("closed_by_agent_id"),
+                "queued_at": c.get("queued_at"),
+                "engaged_agent_id": c.get("engaged_agent_id"),
+                "phone_to_check": c.get("phone_to_check"),
+                "offer_sent_at": c.get("offer_sent_at"),
+                "offer_sent_by": c.get("offer_sent_by"),
+                "offer_skipped_at": c.get("offer_skipped_at"),
+                "offer_skipped_by": c.get("offer_skipped_by"),
             })
             rows.append(row)
         _LEADS_UNIVERSE.update({"at": time.monotonic(), "rows": rows})
