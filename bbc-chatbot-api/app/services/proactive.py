@@ -3,7 +3,8 @@
 Two doors use this module:
 
 - ``POST /chat/proactive/offer`` — the widget saw a visitor hesitate (Kayak
-  landing after a few seconds, the quote form refused, a long read, a move to
+  landing after a few seconds, a Google or Bing ad landing on a destination's
+  page after a few seconds, the quote form refused, a long read, a move to
   leave) and asks whether to show the card and what it says. Nothing is
   written: no conversation, no lead, no row. A visitor who never answers
   leaves no trace in the database (Dan's rule: no anonymous chats).
@@ -23,10 +24,11 @@ Switches (``app_settings.flags``, read every 30 s, no deploy):
   over an A/B half) — the share of visitors in the proactive arm, bucketed by
   visitor id, so a visitor stays in one arm across visits; a lower value
   brings the control arm back for a comparison;
-- ``PROACTIVE_TRIGGERS`` ("kayak,quote,reader") — which moments may open it. ``exit`` is off by
+- ``PROACTIVE_TRIGGERS`` ("kayak,ads,quote,reader") — which moments may open it. ``exit`` is off by
   default (owner, 17 Nov: of the 35 panels it opened on 16-17 Nov none got an answer and 21 visitors
   were gone within 10 s — it opened as the tab closed); naming it here brings it back for a widget
-  that still asks (the widget no longer picks it).
+  that still asks (the widget no longer picks it). ``ads`` (owner, 18 Nov) is on with the default:
+  ``kayak,quote,reader`` here turns it off in 30 s.
 
 One more door is not a moment and the switches above do not hold it:
 ``note``, the visitor TAPPED the 10 s note beside the button ("Tell me where
@@ -51,12 +53,18 @@ from app.services import note_bandit
 
 logger = logging.getLogger(__name__)
 
-Trigger = Literal["kayak", "quote", "reader", "exit"]
+Trigger = Literal["kayak", "ads", "quote", "reader", "exit"]
 # Every moment a widget may name; the ones that open the card unless PROACTIVE_TRIGGERS says otherwise.
-TRIGGERS: tuple[str, ...] = ("kayak", "quote", "reader", "exit")
-DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "quote", "reader")
+# "ads": the visit came from a Google or Bing ad and the page names a destination (bbc-widget triggers.ts):
+# on 17-18 Nov about 350 such visitors a day stayed at least 8 s and got no moment at all.
+TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader", "exit")
+DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
+# The answer for a moment switched off on its own (PROACTIVE_TRIGGERS) while the feature is on: the widget keeps
+# the visit's one moment for the others and does not ask with this one again (bbc-widget triggers.ts,
+# TRIGGER_OFF_ARM). "off" stays the answer for the feature switched off: that one ends the visit's moments.
+TRIGGER_OFF = "trigger_off"
 EXPERIMENT = "proactive_chat"
 MODEL_USED = "proactive_template"
 
@@ -74,6 +82,9 @@ _REPLIES: dict[str, list[str]] = {
     # The quote form refused a send for its contact fields (CONTACT below): the yes says how the fares come.
     "quote_contact": ["Email me the fares", "I have a question", "Not now"],
     "reader": ["Get a fare quote", "I have a question", "Not now"],
+    # The ad's page named a destination: "Planning a trip to Paris? Tell me roughly when…" — the reader's
+    # words for the same page, and its buttons.
+    "ads": ["Get a fare quote", "I have a question", "Not now"],
     # "Before you go: want an agent to check fares…?" — a yes answers it.
     "exit": ["Yes, send me fares", "I have a question", "Not now"],
     # The visitor asked for the chat: no "Not now" to offer them.
@@ -353,8 +364,11 @@ def offer(
         if variant:
             out["variant"] = variant
         return out
-    if not enabled() or trigger not in active_triggers():
+    if not enabled():
         return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
+    if trigger not in active_triggers():
+        # This moment alone is off: switching the ads card off must not take the reader from its visitors too.
+        return {"show": False, "arm": TRIGGER_OFF, "trigger": trigger, "message": None, "quick_replies": []}
     arm = arm_for(visitor_id)
     if arm != "proactive":
         return {"show": False, "arm": arm, "trigger": trigger, "message": None, "quick_replies": []}

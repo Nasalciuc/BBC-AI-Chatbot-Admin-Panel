@@ -44,11 +44,29 @@ const day = (v: string | null) => (v && DATE.test(v.trim()) ? v.trim() : undefin
 const count = (v: string | null) => (v && COUNT.test(v.trim()) ? Number(v.trim()) : undefined)
 const word = (v: string | null) => (v && WORD.test(v.trim()) ? v.trim().toLowerCase() : undefined)
 
-/** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, else nothing. */
+/** The server's rule for a place name (app/models/trip_context.py, `_name`): a letter of any script first, then
+ *  letters, spaces and . ' - ( ) , only. A name it would drop is dropped here too, so the card never counts on a
+ *  destination the server's words will not say ("Paris / France": CodeRabbit #269). */
+const NAME = /^\p{L}[\p{L} .'(),-]*$/u
+/** The server's whitespace (`_name`: " ".join(v.split()), Python's str.isspace). JS's \s leaves out U+0085 and
+ *  U+001C–U+001F and takes in U+FEFF: folding by it, "São\u0085Paulo" was dropped here and kept there, and a U+FEFF
+ *  went the other way. Folded by the server's set, a U+FEFF stays and fails the name rule on both (CodeRabbit #269). */
+const SERVER_SPACE = /[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g
+
+/** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, by the server's rule, else nothing.
+ *  The server's spaces fold first, so the airport code still comes off when a NEL follows it ("Paris (CDG)" then
+ *  U+0085), and the characters count as Python's len() counts them, in code points: a letter outside the Basic
+ *  Multilingual Plane is one character there and two UTF-16 units here (CodeRabbit #269). A name too short without
+ *  its code keeps the code, as the server would: "津 (NGO)" passes its rule where "津" does not. */
 function city(v: string | null | undefined): string | undefined {
   if (!v) return undefined
-  const s = v.replace(/\s*\([A-Za-z]{3}\)\s*$/, '').replace(/\s+/g, ' ').trim()
-  return s.length >= 2 && s.length <= 40 ? s : undefined
+  const whole = v.replace(SERVER_SPACE, ' ').replace(/^ | $/g, '')
+  return [whole.replace(/ ?\([A-Za-z]{3}\)$/, ''), whole].find(serverName)
+}
+
+function serverName(s: string): boolean {
+  const n = Array.from(s).length
+  return n >= 2 && n <= 40 && NAME.test(s)
 }
 
 /** The first of `keys` whose value reads (a page uses one spelling of each field; an unrelated
@@ -140,7 +158,11 @@ export function pickTrip(...trips: (TripPayload | null | undefined)[]): TripPayl
   return trips.find((t): t is TripPayload => !!t) ?? null
 }
 
-/** The card can name a place: the server opens with the trip, not with the general question. */
+/** The card can name a place: the server opens with the trip, not with the general question. A destination
+ *  code equal to the origin's is none: the server drops it (app/models/trip_context.py, `_consistent`), and the
+ *  card would ask where to after all (CodeRabbit #269). */
 export function hasContext(trip: TripPayload | null): boolean {
-  return !!(trip && (trip.destination_code || trip.destination_name))
+  if (!trip) return false
+  if (trip.destination_name) return true
+  return !!trip.destination_code && trip.destination_code !== trip.origin_code
 }

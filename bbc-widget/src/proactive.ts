@@ -13,12 +13,14 @@
  *
  * Measurements (PostHog, no personal data): proactive_eligible (any group, also with the feature off —
  * the shadow mode; `moment_passed` says why an answer that came after the visitor moved on was not
- * shown), proactive_shown, proactive_engaged, proactive_dismissed, and
- * proactive_quote_unrecognized when a "Get free quote" button sits outside a form we recognise (the
- * site's HTML changed: the quote moment would otherwise die silently).
+ * shown; `offer_ms` and `offer_fail` how the answer came; `widget_start_s` how long after the page showed
+ * this script started), proactive_shown, proactive_engaged, proactive_dismissed,
+ * proactive_note_unanswered when a tap on the note or the corner button got no answer in time (the
+ * visitor got the form), and proactive_quote_unrecognized when a "Get free quote" button sits outside a
+ * form we recognise (the site's HTML changed: the quote moment would otherwise die silently).
  */
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { ensureVisitorId, fetchProactiveOffer } from './api'
+import { ensureVisitorId, fetchProactiveOffer, offerMeasures, type OfferTiming } from './api'
 import brand from './config'
 import { posthog } from './posthog'
 import {
@@ -27,8 +29,9 @@ import {
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
-  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, blockedPath, pauseRunning, pickTrigger, replyKind,
-  type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM, adVisit, blockedPath, inViewBeforeStartMs,
+  offAfter, pauseRunning, pickTrigger, readOff, replyKind, type OpeningTrigger, type PageState, type QuoteState,
+  type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
@@ -53,6 +56,16 @@ export interface ProactiveOpening {
 // sessionStorage: this visit's moment was used ('asked', 'shown', or 'chat' when the visitor opened the
 // chat themselves first).
 const DONE_KEY = 'bbc_proactive_done'
+// sessionStorage: the moments the server switched off in this visit (triggers.ts, TRIGGER_OFF_ARM), "ads,kayak".
+const OFF_KEY = 'bbc_proactive_off'
+// The same, in this page's memory: with the tab's storage refused the list still holds here, or the switched-off
+// moment would be asked again every second (CodeRabbit #269). The storage carries it to the next pages.
+let offInPage = ''
+
+/** The moments switched off in this visit: what this page heard, and what the tab kept from earlier pages. */
+function offMoments(): Trigger[] {
+  return readOff(`${ssGet(OFF_KEY) || ''},${offInPage}`)
+}
 // localStorage: no card until this time (24 h after "Not now" or ✕).
 const PAUSE_KEY = 'bbc_proactive_pause_until'
 // sessionStorage: the 10 s note beside the button was closed with ✕ in this tab.
@@ -93,23 +106,66 @@ function kayakVisit(): boolean {
   return (getUtm().utm_source || '').toLowerCase() === 'kayak'
 }
 
+/** The visit came from a Google or Bing ad (triggers.ts adVisit, on the tab's first touch). */
+function adVisitNow(): boolean {
+  return adVisit(getUtm())
+}
+
+/** When the page first showed something, in ms on the page's clock (first-contentful-paint; for a page the
+ *  browser prepared ahead and showed later, not before it was shown), or null when the browser does not say. */
+function firstPaintMs(): number | null {
+  try {
+    const paint = performance.getEntriesByName('first-contentful-paint')[0]
+    if (!paint) return null
+    const nav = performance.getEntriesByType('navigation')[0] as { activationStart?: number } | undefined
+    return Math.max(paint.startTime, nav?.activationStart ?? 0)
+  } catch {
+    return null
+  }
+}
+
+/** The browser saw the page hidden at some point since `fromMs` (Chrome keeps the page's visibility changes).
+ *  A browser that keeps none — Safari, the most common browser of the Kayak phones — is taken at its word that
+ *  the page is in view now: counting nothing there would leave the iPhones' cards at ~9 s. What that misses is a
+ *  visitor who left the tab and came back in the seconds before this script started; their card comes at most
+ *  those seconds early, after the 2 s the widget watches first (triggers.ts, WATCHED_FIRST_S). */
+function hiddenSince(fromMs: number): boolean {
+  try {
+    return performance.getEntriesByType('visibility-state').some((e) => e.name === 'hidden' && e.startTime >= fromMs)
+  } catch {
+    return false
+  }
+}
+
 function pageTitle(): string {
   try { return document.querySelector('h1')?.textContent || '' } catch { return '' }
 }
 
-/** The trip the card and the note start from (tripContext.pickTrip), the newest word first: the search
- *  the visitor ran on the site, the address, what the page says it is about (bbc-signals), its title. */
-function currentTrip(): TripPayload | null {
+/** The trips the page gives, the newest word first: the search the visitor ran on the site, the address,
+ *  what the page says it is about (bbc-signals), its title. */
+function pageTrips(): (TripPayload | null)[] {
   const page = sitePage()
   const pageSource = page?.pageType === 'search' || page?.pageType === 'flight' ? 'search' : 'route_page'
   let search = ''
   try { search = location.search } catch { /* no address: the rest */ }
-  return pickTrip(
+  return [
     tripFromFields(lastSearch(), 'search'),
     tripFromUrl(search, kayakVisit()),
     tripFromFields(page?.trip, pageSource),
     tripFromTitle(pageTitle()),
-  )
+  ]
+}
+
+/** The trip the card and the note start from (tripContext.pickTrip): the newest of the page's trips. */
+function currentTrip(): TripPayload | null {
+  return pickTrip(...pageTrips())
+}
+
+/** The ads card's trip: the newest of the page's trips that names a destination. An address with only an
+ *  origin (`?gclid=…&from=JFK`) must not hide the destination the page's title names (CodeRabbit #269); the
+ *  moment and the words both take this one. */
+function destinationTrip(): TripPayload | null {
+  return pickTrip(...pageTrips().filter(hasContext))
 }
 
 /** A form the site asks for a quote with: form.qf on buybusinessclass.com, or one labelled as a quote. */
@@ -216,9 +272,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   const stepRef = useRef(step)
   stepRef.current = step
 
-  // The visitor opened the chat themselves (the corner button) before any moment: not this visit.
+  // The visitor opened the chat themselves (the corner button) before any moment: not this visit. A moment only
+  // asked for ('asked': its answer still on its way) gives way to it, as to the site's stop below, so an answer
+  // that gives the visit its moment back (trigger_off) cannot undo the chat they opened (CodeRabbit #269).
   useEffect(() => {
-    if (step !== 'buttons' && !ssGet(DONE_KEY)) ssSet(DONE_KEY, 'chat')
+    if (step === 'buttons') return
+    const done = ssGet(DONE_KEY)
+    if (!done || done === 'asked') ssSet(DONE_KEY, 'chat')
   }, [step])
 
   // The site says the visitor sent the quote request, or reached out by phone, WhatsApp or email
@@ -228,8 +288,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const stopFor = (e: SiteEvent) => {
       const { stop } = applySiteEvent(null, e)
       if (!stop) return
-      // A moment this visit already used keeps its word ('shown' keeps the next pages quiet too).
-      if (!ssGet(DONE_KEY)) ssSet(DONE_KEY, stop)
+      // A moment this visit already used keeps its word ('shown' keeps the next pages quiet too). One only
+      // asked for ('asked': its answer still on its way) gives way to the site's word, so an answer that then
+      // gives the visit its moment back (trigger_off) cannot undo a sent form (CodeRabbit #269).
+      const done = ssGet(DONE_KEY)
+      if (!done || done === 'asked') ssSet(DONE_KEY, stop)
       ssSet(ATTENTION_KEY, '1')
       // A note already waiting (or on screen) goes away too: Widget shows it only while not quiet.
       setQuiet(true)
@@ -249,10 +312,20 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let warnedShape = false
     let sentInline = false
     const start = Date.now()
-    let visibleAcc = 0
-    let visibleSince: number | null = document.visibilityState === 'visible' ? start : null
+    // The moments count the visitor's seconds, not the widget's (triggers.ts, "in view"): the time the page
+    // was in view before this script started counts too. `widgetStartS`: how long after the page showed this
+    // script started, for the measurements (null when the browser does not say when the page showed).
+    const pageNowMs = typeof performance !== 'undefined' ? performance.now() : NaN
+    const paintMs = firstPaintMs()
+    const inView = document.visibilityState === 'visible'
+    let visibleAcc = inViewBeforeStartMs(pageNowMs, paintMs, inView, paintMs !== null && hiddenSince(paintMs))
+    const widgetStartS = paintMs !== null && Number.isFinite(pageNowMs)
+      ? Math.round(Math.max(0, pageNowMs - paintMs) / 100) / 10
+      : null
+    let visibleSince: number | null = inView ? start : null
     let lastActivity = start
-    let maxScroll = 0
+    // Scrolled before the script started: that counts for the reader too.
+    let maxScroll = window.scrollY || document.documentElement.scrollTop || 0
     let lastSiteTyping: number | null = null
     let press: Press | null = null
     // The last time the visitor worked on the quote form, pressed or not (triggers.ts: no card over it).
@@ -394,7 +467,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null,
       quoteForm: quoteFormAt, search: lastSearch(),
     })
-    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>): string | null => {
+    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, adsTrip: string | null): string | null => {
       if (stopped) return stopped
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
@@ -408,27 +481,49 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // (triggers.ts); the quote moment keeps the press check above (CodeRabbit #267).
       if (trigger !== 'quote' && quoteFormAt !== before.quoteForm) return 'quote_form'
       if (lastSearch() !== before.search) return 'searched'
+      // The ads card names the destination it was asked with: another one on the page by now (its address, its
+      // title or the site's word changed) makes those words stale (CodeRabbit #269).
+      if (trigger === 'ads' && JSON.stringify(destinationTrip()) !== adsTrip) return 'trip_changed'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
       return null
     }
 
     const ask = async (trigger: Trigger, phone: boolean) => {
       const before = seen()
-      const trip = currentTrip()
+      // The ads card asks with the trip that made it due (destinationTrip): the words name that destination.
+      const trip = trigger === 'ads' ? destinationTrip() : currentTrip()
+      const adsTrip = trigger === 'ads' ? JSON.stringify(trip) : null
       const device = phone ? 'phone' : 'computer'
       // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
+      const took: OfferTiming[] = []
       const res = await fetchProactiveOffer(apiUrl, {
         visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
         ...(trigger === 'quote' && refused.length ? { refused: [...refused] } : {}),
-      }, OFFER_TIMEOUT_MS)
-      const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before) : null
+      }, OFFER_TIMEOUT_MS, (t) => took.push(t))
+      const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, adsTrip) : null
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
         trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip), site: brand.id,
         // The page carries bbc-signals: the moments with the site's word against those without it.
         site_signals: !!sitePage(),
+        // How long the answer took and why none came (offer_ms, offer_fail), and how long after the page
+        // showed this script started: what OFFER_TIMEOUT_MS and the "in view" count rest on (triggers.ts).
+        ...offerMeasures(took[0]),
+        ...(widgetStartS !== null ? { widget_start_s: widgetStartS } : {}),
         ...(passed ? { moment_passed: passed } : {}),
       })
+      if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
+        // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
+        // in this visit, and the visit keeps its one moment for the others (the reader may still come).
+        offInPage = offAfter(offInPage, trigger)
+        // The whole list this visit knows, not the tab's alone: a moment whose own write was refused rides on the
+        // next write that goes through (CodeRabbit #269).
+        ssSet(OFF_KEY, offMoments().join(','))
+        // Only the reservation this answer owned: a stop the site said meanwhile ('sent') stays.
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
       if (disposed || !res || !res.show || !res.message || passed) return
       const surface: Surface = phone ? 'card' : 'panel'
       const opening: ProactiveOpening = {
@@ -464,10 +559,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         invalid: press.invalid,
         busy: sending(press.form) || siteBusy,
       } : null
+      const ad = adVisitNow()
       const state: PageState = {
         path: location.pathname,
         kayak: kayakVisit(),
+        ad,
+        // The page's trip is read only for a visit from an ad: the ads card says its destination back.
+        destination: ad && destinationTrip() !== null,
         visibleS: visibleS(),
+        watchedS: (now - start) / 1000,
         sinceActivityS: (now - lastActivity) / 1000,
         scrolledScreens: maxScroll / Math.max(1, window.innerHeight || 1),
         phone: matches(PHONE),
@@ -475,6 +575,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         quote,
         sinceQuoteFormS: quoteFormAt === null ? null : (now - quoteFormAt) / 1000,
         exitIntent: now - exitAt < 1500,
+        off: offMoments(),
       }
       const trigger = pickTrigger(state)
       if (!trigger) return
@@ -550,13 +651,24 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     },
     noteOpening: async (stillWanted, door = 'note') => {
       const trip = currentTrip()
+      const took: OfferTiming[] = []
       const res = await fetchProactiveOffer(
         apiUrl, { visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id }, OFFER_TIMEOUT_MS,
+        (t) => took.push(t),
       )
-      if (!res || !res.show || !res.message) return null
-      // The visitor did something else while the words were on their way (Widget's note turn): they are
-      // not shown, so nothing says they were — no proactive_shown, and the cards of this visit stay possible.
+      // The visitor did something else while the answer was on its way (Widget's note turn): nothing of it
+      // happens, so nothing says it did — no proactive_shown, no proactive_note_unanswered (Widget opens no
+      // form either), and the cards of this visit stay possible (CodeRabbit #269).
       if (stillWanted && !stillWanted()) return null
+      if (!res) {
+        // No answer in time: the visitor who asked for the chat gets the form (Widget.openNote). Counted, with
+        // how long it waited and why, so the wait can be set from the data (triggers.ts, OFFER_TIMEOUT_MS).
+        posthog?.capture('proactive_note_unanswered', {
+          door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id, ...offerMeasures(took[0]),
+        })
+        return null
+      }
+      if (!res.show || !res.message) return null
       const opening: ProactiveOpening = {
         trigger: 'note', message: res.message, quickReplies: res.quick_replies, trip, surface: 'panel',
         shownAt: Date.now(),
@@ -570,7 +682,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // chats that started (the server counts those).
       posthog?.capture('proactive_shown', {
         trigger: 'note', surface: 'panel', door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
-        ...(res.variant ? { variant: res.variant } : {}),
+        ...(res.variant ? { variant: res.variant } : {}), ...offerMeasures(took[0]),
       })
       return opening
     },
