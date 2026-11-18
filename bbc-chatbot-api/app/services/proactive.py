@@ -61,6 +61,10 @@ TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader", "exit")
 DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
+# The answer for a moment switched off on its own (PROACTIVE_TRIGGERS) while the feature is on: the widget keeps
+# the visit's one moment for the others and does not ask with this one again (bbc-widget triggers.ts,
+# TRIGGER_OFF_ARM). "off" stays the answer for the feature switched off: that one ends the visit's moments.
+TRIGGER_OFF = "trigger_off"
 EXPERIMENT = "proactive_chat"
 MODEL_USED = "proactive_template"
 
@@ -360,8 +364,11 @@ def offer(
         if variant:
             out["variant"] = variant
         return out
-    if not enabled() or trigger not in active_triggers():
+    if not enabled():
         return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
+    if trigger not in active_triggers():
+        # This moment alone is off: switching the ads card off must not take the reader from its visitors too.
+        return {"show": False, "arm": TRIGGER_OFF, "trigger": trigger, "message": None, "quick_replies": []}
     arm = arm_for(visitor_id)
     if arm != "proactive":
         return {"show": False, "arm": arm, "trigger": trigger, "message": None, "quick_replies": []}

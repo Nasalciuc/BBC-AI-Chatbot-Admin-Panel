@@ -353,8 +353,9 @@ class TestMergeDefaults:
         # Exit is off unless named (owner, 17 Nov: 35 panels, no answer, opened as the tab closed); the ads
         # card is on with the rest (owner, 18 Nov).
         assert proactive.active_triggers() == {"kayak", "ads", "quote", "reader"}
+        # That moment alone is off ("trigger_off"): the widget keeps the visit's moment for the others.
         assert proactive.offer(_VISITOR, "exit", None) == {
-            "show": False, "arm": "off", "trigger": "exit", "message": None, "quick_replies": [],
+            "show": False, "arm": "trigger_off", "trigger": "exit", "message": None, "quick_replies": [],
         }
 
     def test_naming_exit_brings_it_back_for_a_widget_that_still_asks(self, monkeypatch):
@@ -404,8 +405,16 @@ class TestOffer:
 
     def test_a_trigger_switched_off_is_off(self, monkeypatch):
         _switch_on(monkeypatch, percent=100, triggers="kayak,quote")
-        assert proactive.offer(_VISITOR, "exit", None)["arm"] == "off"
+        # Off on its own, the feature on: "trigger_off", so the widget may still ask with another moment
+        # (CodeRabbit #269: switching the ads card off must not take the reader from its visitors).
+        assert proactive.offer(_VISITOR, "exit", None) == {
+            "show": False, "arm": "trigger_off", "trigger": "exit", "message": None, "quick_replies": [],
+        }
         assert proactive.offer(_VISITOR, "quote", None)["show"] is True
+        # The whole feature off is still "off", whatever the moment: the visit's moments end there.
+        monkeypatch.setenv("PROACTIVE_ENABLED", "false")
+        for trigger in ("exit", "quote"):
+            assert proactive.offer(_VISITOR, trigger, None)["arm"] == "off"
 
     def test_offer_never_touches_the_database(self, monkeypatch):
         _switch_on(monkeypatch, percent=100)
@@ -1834,10 +1843,12 @@ class TestAds:
         assert out["show"] is True and out["arm"] == "proactive" and out["trigger"] == "ads"
         assert (out["message"], out["quick_replies"]) == proactive.compose("ads", trip, "bbc")
         assert "variant" not in out
-        # The moments of before, named in the switch: the ads card is off in 30 s, the others go on.
+        # The moments of before, named in the switch: the ads card is off in 30 s ("trigger_off": the widget
+        # then lets the reader come later in the visit), the others go on.
         monkeypatch.setenv("PROACTIVE_TRIGGERS", "kayak,quote,reader")
-        assert proactive.offer(_VISITOR, "ads", trip)["arm"] == "off"
+        assert proactive.offer(_VISITOR, "ads", trip)["arm"] == "trigger_off"
         assert proactive.offer(_VISITOR, "kayak", _kayak_trip())["show"] is True
+        assert proactive.offer(_VISITOR, "reader", trip)["show"] is True
         # The control arm hears no words, as on every moment.
         monkeypatch.delenv("PROACTIVE_TRIGGERS", raising=False)
         monkeypatch.setenv("PROACTIVE_PERCENT", "0")
@@ -1846,13 +1857,12 @@ class TestAds:
     @pytest.mark.asyncio
     async def test_the_endpoint_takes_it(self, monkeypatch):
         _switch_on(monkeypatch, percent=100)
-        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="ads", trip={"destination_name": "Rome"}, site="bbc")
-        out = await proactive_offer(req, None)
+        rome = {"visitor_id": _VISITOR, "trigger": "ads", "trip": {"destination_name": "Rome"}, "site": "bbc"}
+        out = await proactive_offer(ProactiveOfferRequest(**rome), None)
         assert out["show"] is True and out["trigger"] == "ads"
         assert "Planning a trip to Rome?" in out["message"]
-        # A refused list is the quote card's alone: the ads card ignores one.
-        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="ads", refused=["email"])
-        assert "variant" not in await proactive_offer(req, None)
+        # A refused list is the quote card's alone: the same ads request with one gets the same answer, whole.
+        assert await proactive_offer(ProactiveOfferRequest(**rome, refused=["email"]), None) == out
 
     @pytest.mark.asyncio
     async def test_its_answer_opens_the_chat_labelled_ads(self, monkeypatch):
