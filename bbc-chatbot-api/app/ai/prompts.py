@@ -1112,7 +1112,8 @@ def build_conversational_prompt(
     if kb_results:
         for result in kb_results[:3]:
             # No amount reaches the model (owner, 18 Nov 2026: only a consultant says a fare).
-            kb_lines.append(f"• {result.title}: {strip_amounts(_sanitize_kb_content(result.content))}")
+            # The title too ("London from $3,200"): what the model never reads it never repeats.
+            kb_lines.append(f"• {strip_amounts(result.title)}: {strip_amounts(_sanitize_kb_content(result.content))}")
     else:
         kb_lines.append("No KB results.")
     sections.append("\n".join(kb_lines))

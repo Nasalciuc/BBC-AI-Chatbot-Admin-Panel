@@ -39,6 +39,13 @@ def _clean():
     "Around €2.5k per person.",
     "About £900 each way.",
     "Fares start at US$ 1,999.",
+    # The sign or the word after the amount, and the client's languages (CodeRabbit #270).
+    "Le tarif est de 3.200 €.",
+    "That's 900 US dollars.",
+    "Around 900 U.S. dollars each.",
+    "Unos 2.000 dólares por persona.",
+    "Cerca de R$ 3.200 por pessoa.",
+    "Thirty is 30 pounds sterling.",
 ])
 def test_an_amount_in_any_currency_is_a_price(text):
     assert has_price(text)
@@ -49,6 +56,9 @@ def test_an_amount_in_any_currency_is_a_price(text):
     "New York → London, Dec 10 – Dec 17, 2 adults in Business.",
     "We are IATA #14531683 accredited. Call +1 (888) 322-7999.",
     "Flight time is 7-8 hours; 2 bags included.",
+    # A weight is no price: baggage answers must stay.
+    "Two checked bags of 23 kg (50 pounds) each.",
+    "Cada 2 horas sale un vuelo a Europa.",
 ])
 def test_percentages_dates_counts_and_phones_are_not_prices(text):
     assert not has_price(text)
@@ -59,6 +69,13 @@ def test_a_sentence_with_an_amount_is_dropped_and_the_reply_ends_with_the_consul
     assert dropped == 1
     assert "$" not in out and "2,800" not in out
     assert out == f"When are you looking to travel? {PRICE_LINE}"
+
+
+def test_an_amount_split_by_a_line_break_still_takes_both_lines():
+    out, dropped = scrub_prices("The fare is 3,200\nUSD per person. When do you fly?")
+    assert dropped == 2
+    assert "3,200" not in out and "USD" not in out
+    assert out == f"When do you fly? {PRICE_LINE}"
 
 
 def test_a_reply_that_is_only_a_price_becomes_the_consultant_line():
@@ -106,6 +123,29 @@ def test_log_mode_stream_still_sends_text_without_digits_chunk_by_chunk(monkeypa
     assert [g.feed(c) for c in ["Happy to ", "help."]] == ["Happy to ", "help."]
 
 
+def test_log_mode_stream_keeps_a_split_currency_word_until_it_is_whole(monkeypatch):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
+    g = StreamGuard()
+    out = _stream(g, ["The fare is US", "D 4,500. ", "When do you fly?"])
+    assert "4,500" not in out and "USD" not in out
+    assert out.endswith("When do you fly?")
+
+
+def test_log_mode_stream_does_not_end_an_amount_at_a_line_break(monkeypatch):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
+    g = StreamGuard()
+    out = _stream(g, ["The fare is 3,200\n", "USD per person. ", "Your dates?"])
+    assert "3,200" not in out and "USD" not in out
+    assert out.endswith("Your dates?")
+
+
+def test_enforce_stream_drops_an_amount_split_by_a_line_break(monkeypatch):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
+    g = StreamGuard()
+    out = _stream(g, ["The fare is 3,200\n", "USD per person. ", "Your dates? "])
+    assert "3,200" not in out and "USD" not in out and "Your dates?" in out
+
+
 def test_enforce_stream_drops_a_piece_with_an_amount(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
     g = StreamGuard()
@@ -121,6 +161,16 @@ def test_knowledge_base_amounts_and_ranges_never_reach_the_model():
     assert "2,800" not in whole and "4,500" not in whole and "3,200 USD" not in whole
     assert "Peak: Jun-Aug" in whole
     assert strip_amounts("Typically $2,800–$4,500.") == "Typically (fares: quoted only by a consultant)."
+    # One currency for both ends of a range takes both ends; a range of hours is no amount.
+    assert strip_amounts("Typically 2,800–4,500 USD.") == "Typically (fares: quoted only by a consultant)."
+    assert strip_amounts("Le vol dure 7-8 heures, dès 3.200 €.") == "Le vol dure 7-8 heures, dès (fares: quoted only by a consultant)."
+
+
+def test_a_knowledge_base_title_never_carries_an_amount_to_the_model():
+    kb = KBResult(entry_id="k2", title="London from $7,345", content="Daily flights from New York.")
+    _static, dynamic = build_conversational_prompt("sales", VisitorInfo(), kb_results=[kb])
+    assert "7,345" not in _static + dynamic
+    assert "• London from (fares: quoted only by a consultant): Daily flights from New York." in dynamic
 
 
 def test_the_prompt_forbids_any_price_range_or_amount():

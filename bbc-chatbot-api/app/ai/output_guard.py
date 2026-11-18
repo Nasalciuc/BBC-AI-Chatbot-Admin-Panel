@@ -243,15 +243,25 @@ def _kind(snippet: str) -> str:
 
 
 # ── Prices: only a consultant ever says a fare ────────────────────────────────
-# An amount of money in any currency: "$3,200", "€2.5k", "US$ 900", "3,200 dollars", "USD 4,500".
-# A percentage ("30-60%"), a date, a count of people or an accreditation number is no amount.
-_CUR_WORD = r"(?:usd|us\$|eur|gbp|cad|aud|dollars?|euros?|pounds?|bucks)"
+# An amount of money in any currency, the sign or the word on either side: "$3,200", "€2.5k", "US$ 900",
+# "3.200 €", "3,200 dollars", "900 US dollars", "USD 4,500", "R$ 3.200", "2.000 dólares".
+# A percentage ("30-60%"), a date, a count of people or an accreditation number is no amount; neither is
+# a weight ("23 kg", "70 pounds" of baggage: "pounds" alone is a weight, "pounds sterling" a currency).
+_CUR_WORD = (r"(?:usd|us\$|r\$|eur|gbp|cad|aud|(?:u\.?s\.?\s?)?dollars?|d[óo]lares?|euros?"
+             r"|pounds?\s+sterling|bucks)")
 _AMOUNT = r"\d(?:[\d,.]*\d)?(?:\s?[km]\b)?"  # ends on a digit: a full stop after it is the sentence's
 _MONEY_RE = re.compile(
-    rf"(?:[$€£]\s?{_AMOUNT})|(?:\b{_AMOUNT}\s?{_CUR_WORD}(?![a-z]))|(?:(?<![a-z]){_CUR_WORD}\s?{_AMOUNT})", re.I
+    rf"(?:[$€£]\s?{_AMOUNT})|(?:\b{_AMOUNT}\s?[$€£](?!\w))"
+    rf"|(?:\b{_AMOUNT}\s?{_CUR_WORD}(?![a-z]))|(?:(?<![a-z]){_CUR_WORD}\s?{_AMOUNT})", re.I
 )
 # What starts holding a streamed sentence: a digit or a currency sign/word could begin an amount.
 _MONEY_HINT = re.compile(rf"[$€£\d]|(?<![a-z]){_CUR_WORD}(?![a-z])", re.I)
+# A chunk that ends on the first letters of a currency word ("US" of "USD") could still become one:
+# the stream keeps them until the next chunk says (StreamGuard._watch_prices).
+_CUR_WORDS = ("usd", "us$", "r$", "eur", "euro", "euros", "gbp", "cad", "aud", "u.s.", "dollar", "dollars",
+              "dólar", "dólares", "dolar", "dolares", "bucks", "pounds")
+_CUR_PREFIXES = frozenset(w[:i] for w in _CUR_WORDS for i in range(1, len(w) + 1))
+_TRAILING_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_][\w.$]{0,7}\Z")
 PRICE_LINE = "Exact fares come from your consultant — they check live availability for your dates."
 
 
@@ -270,24 +280,42 @@ def has_price(text: Optional[str]) -> bool:
     return bool(text) and bool(_MONEY_RE.search(text))
 
 
+def _drop_priced(text: str) -> tuple[str, int]:
+    """The pieces (sentences, lines) of `text` that touch no amount, joined, and how many went. An amount
+    is found in the whole text first: one that crosses a line break ("3,200\nUSD") takes both pieces."""
+    spans = [m.span() for m in _MONEY_RE.finditer(text)]
+    if not spans:
+        return text, 0
+    kept, dropped, pos = [], 0, 0
+    for piece in _pieces(text):
+        start, end = pos, pos + len(piece)
+        pos = end
+        if any(s < end and e > start for s, e in spans):
+            dropped += 1
+        else:
+            kept.append(piece)
+    return "".join(kept), dropped
+
+
 def scrub_prices(text: Optional[str]) -> tuple[Optional[str], int]:
     """The reply without its sentences that name an amount, ending with PRICE_LINE when one went;
     and how many went. Text without an amount comes back unchanged."""
     if not text or not _MONEY_RE.search(text):
         return text, 0
-    kept, dropped = [], 0
-    for piece in _pieces(text):
-        if _MONEY_RE.search(piece):
-            dropped += 1
-        else:
-            kept.append(piece)
-    out = "".join(kept).strip()
+    out, dropped = _drop_priced(text)
+    out = out.strip()
     if PRICE_LINE not in out:
         out = f"{out} {PRICE_LINE}".strip() if out else PRICE_LINE
     return out, dropped
 
 
-_MONEY_RANGE_RE = re.compile(rf"(?:{_MONEY_RE.pattern})(?:\s*(?:-|–|—|to)\s*(?:{_MONEY_RE.pattern}|{_AMOUNT}))?", re.I)
+# A range is one amount even when only one end names the currency: "$2,800–$4,500", "$2,800-4,500",
+# "2,800–4,500 USD". "7-8 hours" names none: no amount.
+_RANGE_SEP = r"\s*(?:-|–|—|to)\s*"
+_MONEY_RANGE_RE = re.compile(
+    rf"(?:{_AMOUNT}{_RANGE_SEP}(?=(?:{_MONEY_RE.pattern})))?(?:{_MONEY_RE.pattern})"
+    rf"(?:{_RANGE_SEP}(?:{_MONEY_RE.pattern}|{_AMOUNT}))?", re.I
+)
 KB_AMOUNT_NOTE = "(fares: quoted only by a consultant)"
 
 
@@ -418,14 +446,15 @@ class StreamGuard:
             return ""
         piece, self._held = self._held[:cut], self._held[cut:]
         try:
-            return "".join(p for p in _pieces(_without_foreign(piece, self.own)) if not has_price(p))
+            return _drop_priced(_without_foreign(piece, self.own))[0]
         except Exception as e:  # noqa: silent — logged; the piece is withheld, stream_end brings the stored reply
             logger.error(f"[output-guard] stream piece not scrubbed, withheld: {type(e).__name__}")
             return ""
 
     def _watch_prices(self, delta: str) -> str:
         """'log' mode: stream as it comes, but hold a sentence from its first digit or currency
-        sign to its end, and drop that held part if it names an amount."""
+        sign to its end, and drop that held part if it names an amount. A chunk that ends on the first
+        letters of a currency word ("US" of "USD") keeps them until the next chunk says."""
         self._held += delta
         out = []
         while self._held:
@@ -433,8 +462,13 @@ class StreamGuard:
             if not self._holding:
                 hint = _MONEY_HINT.search(self._held)
                 if not hint or (end and hint.start() >= end.end()):
-                    # no sign of an amount in the current sentence: send up to its end (or all of it)
-                    cut = end.end() if end else len(self._held)
+                    # no sign of an amount in the current sentence: send up to its end (or all of it,
+                    # but the first letters of a currency word the next chunk may finish)
+                    if end:
+                        cut = end.end()
+                    else:
+                        tail = _TRAILING_WORD.search(self._held)
+                        cut = tail.start() if tail and tail.group(0).lower() in _CUR_PREFIXES else len(self._held)
                     out.append(self._held[:cut])
                     self._held = self._held[cut:]
                     if not end:
@@ -444,9 +478,11 @@ class StreamGuard:
                 self._held = self._held[hint.start():]
                 self._holding = True
                 continue
-            end = _PIECE_END.search(self._held)
+            end = next((m for m in _PIECE_END.finditer(self._held)
+                        if not (m.group(0).startswith("\n") and _ENDS_IN_A_NUMBER.search(self._held, 0, m.start()))),
+                       None)
             if not end:
-                break  # keep holding until the sentence ends
+                break  # keep holding until the sentence ends (a line break right after a number is not its end)
             piece, self._held = self._held[:end.end()], self._held[end.end():]
             self._holding = False
             if has_price(piece):
@@ -464,7 +500,7 @@ class StreamGuard:
         if not self.enforce:
             return "" if has_price(piece) else piece
         try:
-            return "".join(p for p in _pieces(_without_foreign(piece, self.own)) if not has_price(p))
+            return _drop_priced(_without_foreign(piece, self.own))[0]
         except Exception as e:  # noqa: silent — logged; nothing unscrubbed goes out
             logger.error(f"[output-guard] stream tail not scrubbed, withheld: {type(e).__name__}")
             return ""
