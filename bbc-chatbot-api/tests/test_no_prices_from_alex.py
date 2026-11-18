@@ -241,3 +241,43 @@ def test_the_route_card_never_carries_an_amount_from_a_title_or_the_airlines():
     assert (plain.origin, plain.destination, plain.airlines) == ("New York", "London", "BA, AA")
     assert without_amounts("Paris desde 2.000 €") == "Paris"
     assert without_amounts("Tokyo") == "Tokyo"
+
+
+@pytest.mark.parametrize("mode", ["log", "enforce"])
+@pytest.mark.parametrize("chunks", [
+    ["Rs. ", "45,000. ", "Your dates? "],
+    ["That's 900 U.S. ", "dollars each. ", "Your dates? "],
+])
+def test_a_currency_abbreviation_ends_no_sentence_in_the_stream(monkeypatch, mode, chunks):
+    """"Rs. " then "45,000. ": cut at the abbreviation's full stop, each piece looked harmless and the
+    amount went out (CodeRabbit #270, round 3)."""
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", mode)
+    out = _stream(StreamGuard(), chunks)
+    assert "45,000" not in out and "900" not in out
+    assert out.strip().endswith("Your dates?")
+
+
+def test_the_stored_reply_drops_an_amount_after_an_abbreviation():
+    out, dropped = scrub_prices("Rs. 45,000. Your dates?")
+    assert "45,000" not in out and out == f"Your dates? {PRICE_LINE}"
+
+
+def test_a_short_range_end_goes_with_its_amount():
+    """"$50–75" left "–75" behind (CodeRabbit #270, round 3); a count after an amount is no range end, and
+    a day before one stays."""
+    note = "(fares: quoted only by a consultant)"
+    assert strip_amounts("Fares $50–75.") == f"Fares {note}."
+    assert strip_amounts("Snacks €9.99-14.99 on board.") == f"Snacks {note} on board."
+    assert strip_amounts("$50 - 2 adults") == f"{note} - 2 adults"
+    assert strip_amounts("Departure: Dec 10 — $500 per person.") == f"Departure: Dec 10 — {note} per person."
+    assert strip_amounts("Typically $2,800–$4,500.") == f"Typically {note}."
+
+
+def test_the_route_card_never_carries_a_short_range():
+    from app.ai.output_guard import without_amounts
+    from app.pipeline.generator import _build_route_card_from_kb
+
+    assert without_amounts("London from $50–75") == "London"
+    card = _build_route_card_from_kb(KBResult(entry_id="k5", title="New York to London from $50–75",
+                                              content="Nonstop flights. Airlines: BA, AA."))
+    assert card is not None and card.destination == "London"

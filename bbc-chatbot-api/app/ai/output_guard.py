@@ -346,12 +346,41 @@ _LEFT_BY_AN_AMOUNT = re.compile(
     r"|à\s+partir\s+de|por|pour|ab)\b[\s,;:–—-]*)*$", re.I)
 
 
+# The short end of a range after a small amount: "$50–75", "€9.99-14.99" (CodeRabbit #270). It is the
+# range's end only when it is not below the start: "$50 - 2 adults" keeps its count.
+_SHORT_RANGE_END = re.compile(rf"{_RANGE_SEP}(\d{{1,2}}(?:[.,]\d{{1,2}})?)(?![\d,.]*\d)", re.I)
+
+
+def _small_value(amount: str) -> Optional[float]:
+    """The amount's value when it is under 100 ("$50", "€9.99"); None when it is larger."""
+    numbers = re.findall(r"\d+(?:[.,]\d+)*", amount)
+    if not numbers or not re.fullmatch(r"\d{1,2}(?:[.,]\d{1,2})?", numbers[-1]):
+        return None
+    return float(numbers[-1].replace(",", "."))
+
+
+def _sub_amounts(text: str, repl: str) -> str:
+    """`text` with every amount, and every range of amounts, replaced by `repl`."""
+    out, pos = [], 0
+    for m in _MONEY_RANGE_RE.finditer(text):
+        end = m.end()
+        tail = _SHORT_RANGE_END.match(text, end)
+        start_value = _small_value(m.group(0)) if tail else None
+        if tail and start_value is not None and float(tail.group(1).replace(",", ".")) >= start_value:
+            end = tail.end()
+        out.append(text[pos:m.start()])
+        out.append(repl)
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def without_amounts(text: Optional[str]) -> str:
     """A short label (a route card's place or airlines) with its amounts taken out, and the "from" one
     leaves behind: the card shows the place, never a fare (CodeRabbit #270)."""
     if not text:
         return ""
-    out = _MONEY_RANGE_RE.sub(" ", text)
+    out = _sub_amounts(text, " ")
     if out == text:
         return text.strip()
     return _LEFT_BY_AN_AMOUNT.sub("", re.sub(r"\s{2,}", " ", out)).strip(" ,;:–—-")
@@ -362,7 +391,7 @@ def strip_amounts(text: Optional[str]) -> Optional[str]:
     before it reaches the model: what the model never reads it never repeats."""
     if not text:
         return text
-    return _MONEY_RANGE_RE.sub(KB_AMOUNT_NOTE, text)
+    return _sub_amounts(text, KB_AMOUNT_NOTE)
 
 
 def _price_checked(text: str, conversation_id: Optional[str]) -> str:
@@ -445,7 +474,9 @@ def guard_failed(text: str, err: BaseException) -> str:
 # can ("555. 123. 4567" is one to _PHONE_RE, and so is "555\r\n123\r\n4567"),
 # so an end that comes right after a digit, with only what _PHONE_RE takes
 # between digits in between, is not a place to cut.
-_PIECE_END = re.compile(r"[.!?](?=\s)\s*|\n\s*")
+# A full stop after a currency abbreviation ends no sentence: "Rs. 45,000" and "900 U.S. dollars" cut
+# there went out as two pieces that each look harmless (CodeRabbit #270).
+_PIECE_END = re.compile(r"(?:(?<!\brs)(?<!\bu\.s)\.|[!?])(?=\s)\s*|\n\s*", re.I)
 _ENDS_IN_A_NUMBER = re.compile(rf"\d[{_PHONE_SEP}]*\Z")
 
 
