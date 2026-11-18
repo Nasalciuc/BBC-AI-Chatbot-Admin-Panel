@@ -34,16 +34,26 @@ function orList(items: string[]): string {
   return `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`
 }
 
-/** How to send it: the channel the client asked for, else what their contact allows. `kind` picks the icon. */
+/** How to send it: the channel the client asked for, else what their contact allows and their refusals
+ *  leave. `kind` picks the icon. */
 export function channelLine(
-  r: Pick<OfferRow, 'channels' | 'email' | 'phone' | 'phone_to_check' | 'blind'>,
+  r: Pick<OfferRow, 'channels' | 'email' | 'phone' | 'phone_to_check' | 'blind' | 'refused'>,
 ): { text: string; kind: OfferChannel | 'any' } {
   if (r.channels.length) return { text: `Asked for ${orList(r.channels.map((c) => ASKED[c]))}`, kind: r.channels[0] }
   if (r.blind) return { text: 'No channel asked yet', kind: 'any' }
-  const phone = !!(r.phone || r.phone_to_check)
-  if (phone && r.email) return { text: 'No channel asked: phone or e-mail', kind: 'any' }
-  if (r.email) return { text: 'Only an e-mail: send it there', kind: 'email' }
-  return { text: 'Only a phone: call or text', kind: 'any' }
+  // A phone the client said not to call or text is no way to send it (CodeRabbit #270).
+  const refused = new Set<OfferRefusal>(r.refused ?? [])
+  const hasPhone = !!(r.phone || r.phone_to_check)
+  const call = hasPhone && !refused.has('no calls')
+  const text = hasPhone && !refused.has('no texts')
+  const email = !!r.email && !refused.has('no email')
+  const byPhone = call && text ? 'phone' : call ? 'a call' : text ? 'a text' : null
+  if (byPhone && email) return { text: `No channel asked: ${byPhone} or e-mail`, kind: 'any' }
+  if (email) return { text: hasPhone ? 'E-mail only: no calls or texts' : 'Only an e-mail: send it there', kind: 'email' }
+  if (call && text) return { text: 'Only a phone: call or text', kind: 'any' }
+  if (text) return { text: 'Only a phone: text it, no calls', kind: 'text' }
+  if (call) return { text: 'Only a phone: call, no texts', kind: 'call' }
+  return { text: 'Every channel turned down: ask the client how to send it', kind: 'any' }
 }
 
 /** "No calls · No texts": the channels the client turned down. */
@@ -93,10 +103,14 @@ export function chatsNote(r: Pick<OfferRow, 'chats'>): string {
   return r.chats.length > 1 ? `${r.chats.length} chats` : ''
 }
 
-/** The other chats a mark covers (the row's own goes first, in the URL). */
+/** The other chats a mark covers (the row's own goes first, in the URL): every one of them, or part of
+ *  the client stays unmarked (CodeRabbit #270). */
 export function otherChats(r: Pick<OfferRow, 'conversation_id' | 'chats'>): string[] {
   return r.chats.map((c) => c.conversation_id).filter((id) => id && id !== r.conversation_id)
 }
+
+/** Why a reader who may not mark sees the marks locked (QA reads the queue, the sales team marks it). */
+export const MARK_RESTRICTED = 'Only the sales team marks offers'
 
 /** "Sent · Agent One · 10:42" (today) or "Not needed · Agent One · Tue 17 Nov, 09:05". */
 export function doneLine(d: Pick<OfferDone, 'state' | 'by_name' | 'at'>, nowMs: number, tz: string): string {

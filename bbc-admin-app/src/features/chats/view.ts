@@ -194,14 +194,22 @@ export function presenceRank(p: Pick<PresenceView, 'state'>): number {
 }
 
 /** The detail's line under the chat when the client left (for whoever can write): whether a message here
- *  can still reach them, and when the chat closes by itself. */
-export function leftNote(first: string, leftMin: number, hasContact: boolean | null | undefined): string {
+ *  can still reach them, and when the chat closes by itself. A support chat is no lead: its follow-up is
+ *  the contact itself, not the offers queue, which holds sales leads only (CodeRabbit #270). */
+export function leftNote(
+  first: string,
+  leftMin: number,
+  hasContact: boolean | null | undefined,
+  tunnel?: string | null,
+): string {
   const head = `${first} left the site ${minutesLabel(leftMin)} ago`
   const contact =
     hasContact === false
       ? ', without a contact: a message here won’t reach them.'
       : hasContact === true
-        ? '. Their contact is saved: the written offer goes out from Tasks → Offers to send.'
+        ? tunnel === 'support'
+          ? '. Their contact is saved: follow up there.'
+          : '. Their contact is saved: the written offer goes out from Tasks → Offers to send.'
         : '.'
   const close = leftMin >= STALE_CLOSE_MIN ? ' If they don’t come back, the chat closes by itself any moment.' : ` If they don’t come back, the chat closes by itself in about ${Math.max(1, STALE_CLOSE_MIN - leftMin)} min.`
   return `${head}${contact}${close}`

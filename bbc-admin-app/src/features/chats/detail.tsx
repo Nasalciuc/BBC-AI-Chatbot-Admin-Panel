@@ -385,6 +385,13 @@ export default function ConversationDetail({
     return { ...presenceView(p.effective, ageSeconds), ageSeconds }
   }, [presenceData, presenceAt, nowMs, conv?.client_presence, conv?.client_presence_age_seconds])
 
+  // The client left: the chat is read once more, so the line that says so knows whether a contact was saved
+  // while it was open. has_contact comes with the chat, and no push says it changed (CodeRabbit #270).
+  const clientLeft = presence.state === 'left'
+  useEffect(() => {
+    if (clientLeft) void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+  }, [clientLeft, conversationId, queryClient])
+
   // New lines, and the client starting to type, both belong in view.
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [allMessages.length, typingData?.is_typing])
 
@@ -1100,7 +1107,7 @@ export default function ConversationDetail({
             {canWrite && leftMin !== null && (
               <div className='flex items-center gap-2 px-1 text-[13px] text-k-555555'>
                 <span aria-hidden='true' className='size-[7px] rounded-full bg-k-c9c9c9' />
-                {leftNote(first, leftMin, conv.has_contact)}
+                {leftNote(first, leftMin, conv.has_contact, conv.tunnel)}
               </div>
             )}
             {left !== null && (
@@ -1182,7 +1189,7 @@ export default function ConversationDetail({
                 <span className='min-w-[220px] flex-1 text-sm leading-[1.45] text-k-444444'>
                   {leftMin !== null ? (
                     // B3 (ADR-6c): nobody is asked to answer a client who left.
-                    leftNote(first, leftMin, conv.has_contact)
+                    leftNote(first, leftMin, conv.has_contact, conv.tunnel)
                   ) : (
                     <>
                       <strong className='text-k-202020'>

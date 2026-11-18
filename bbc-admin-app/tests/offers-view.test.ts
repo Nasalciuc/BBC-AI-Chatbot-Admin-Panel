@@ -16,6 +16,7 @@ import {
   crmNote,
   doneLine,
   emptyText,
+  MARK_RESTRICTED,
   markedText,
   otherChats,
   refusedLine,
@@ -71,6 +72,21 @@ test('how to send it: the channel the client asked for, else what the contact al
   assert.equal(channelLine(row({ blind: true, email: null })).text, 'No channel asked yet')
 })
 
+test('how to send it never names a channel the client turned down', () => {
+  // A phone only, calls and texts both refused: no "call or text" beside "No calls · No texts" (CodeRabbit #270).
+  const both = channelLine(row({ email: null, phone: '+12105550100', refused: ['no calls', 'no texts'] }))
+  assert.equal(both.text, 'Every channel turned down: ask the client how to send it')
+  assert.doesNotMatch(both.text, /\bcall\b|\btext\b/)
+  assert.deepEqual(channelLine(row({ email: null, phone: '+12105550100', refused: ['no calls'] })),
+    { text: 'Only a phone: text it, no calls', kind: 'text' })
+  assert.deepEqual(channelLine(row({ email: null, phone: '+12105550100', refused: ['no texts'] })),
+    { text: 'Only a phone: call, no texts', kind: 'call' })
+  assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no calls', 'no texts'] })).text, 'E-mail only: no calls or texts')
+  assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no calls'] })).text, 'No channel asked: a text or e-mail')
+  assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no email'] })).text, 'Only a phone: call or text')
+  assert.equal(channelLine(row({ refused: ['no email'] })).text, 'Every channel turned down: ask the client how to send it')
+})
+
 test('the channels turned down', () => {
   assert.equal(refusedLine(['no calls', 'no texts']), 'No calls · No texts')
   assert.equal(refusedLine([]), '')
@@ -112,6 +128,22 @@ test('one client, several chats: one mark for all of them', () => {
   assert.equal(chatsNote(row()), '')
   assert.deepEqual(otherChats(two), ['c-2'])
   assert.deepEqual(otherChats(row()), [])
+  // 22 chats of one client: every other one goes with the mark, none cut (CodeRabbit #270)…
+  const many = row({ chats: Array.from({ length: 22 }, (_, i) => ({ conversation_id: `c-${i + 1}`, chat_number: i })) })
+  assert.equal(otherChats(many).length, 21)
+  assert.doesNotMatch(read('src/features/tasks/offers.ts'), /MAX_OTHER_CHATS/)
+  // …and the server takes them all in one mark.
+  const serverMax = Number(/MAX_CHATS = (\d+)/.exec(read('../bbc-chatbot-api/app/api/offers.py'))?.[1])
+  assert.ok(serverMax >= 100, `the server's limit (${serverMax}) is far above any client's chats`)
+})
+
+test('a reader who may not mark sees the marks locked, never missing', () => {
+  const list = read('src/features/tasks/components/offers-list.tsx')
+  assert.match(list, /\{!canMark && !row\.blind && \(/)
+  assert.match(list, /<LockedMark label='Offer sent'/)
+  assert.match(list, /<LockedMark label='Undo'/)
+  assert.match(list, /disabled\s+title=\{MARK_RESTRICTED\}/)
+  assert.equal(MARK_RESTRICTED, 'Only the sales team marks offers')
 })
 
 test('the marked list, the counts, the empty queue and the toast', () => {
@@ -151,6 +183,21 @@ test('B3: a client who left says whether a message can still reach them', () => 
   assert.match(leftNote('Dana', 3, false), /^Dana left the site 3 min ago, without a contact: a message here won’t reach them\. If they don’t come back, the chat closes by itself in about 2 min\.$/)
   assert.match(leftNote('Dana', 7, true), /Their contact is saved: the written offer goes out from Tasks → Offers to send\. .*any moment\.$/)
   assert.equal(leftNote('Dana', 3, undefined), 'Dana left the site 3 min ago. If they don’t come back, the chat closes by itself in about 2 min.')
+  // Support's chats are not in the offers queue: their follow-up is the contact (CodeRabbit #270).
+  assert.match(leftNote('Dana', 7, true, 'support'), /Their contact is saved: follow up there\./)
+  assert.doesNotMatch(leftNote('Dana', 7, true, 'support'), /Offers to send/)
+  assert.match(leftNote('Dana', 7, true, 'sales'), /Offers to send/)
+  const detail = read('src/features/chats/detail.tsx')
+  assert.equal(detail.split('leftNote(first, leftMin, conv.has_contact, conv.tunnel)').length - 1, 2)
+  // A contact saved while the chat was open: the chat is read again once the client is gone.
+  assert.match(detail, /if \(clientLeft\) void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/)
+})
+
+test('signing out leaves nothing this account read in the cache', () => {
+  const dialog = read('src/components/sign-out-dialog.tsx')
+  assert.match(dialog, /const queryClient = useQueryClient\(\)/)
+  assert.ok(dialog.indexOf('useQueryClient()') < dialog.indexOf('if (isEmbedded()) return null'), 'hooks before the early return')
+  assert.match(dialog, /\.finally\(\(\) => queryClient\.clear\(\)\)/)
 })
 
 test('B3: clients still here come first, the ones who left last', () => {

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Copy, Mail, MessageCircle, MessageSquareText, Phone, Send } from 'lucide-react'
+import { Copy, Lock, Mail, MessageCircle, MessageSquareText, Phone, Send } from 'lucide-react'
 import { toast } from 'sonner'
 import { type ApiError, getOffers, markOffer } from '@/lib/api'
 import type { OfferChannel, OfferDone, OfferMark, OfferRow } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { TONE_TEXT } from '@/features/leads/view'
 import {
+  MARK_RESTRICTED,
   QUEUE_NOTE,
   WINDOWS,
   WINDOW_LABEL,
@@ -97,6 +98,23 @@ function Contacts({ row }: { row: OfferRow }) {
   )
 }
 
+/** A mark this reader may not make: shown, disabled, with a lock and the reason (the panel's rule for
+ *  restricted actions), never hidden — a reader who can't mark sees why (CodeRabbit #270). */
+function LockedMark({ label, className }: { label: string; className: string }) {
+  return (
+    <button
+      type='button'
+      disabled
+      title={MARK_RESTRICTED}
+      aria-label={`${label} (${MARK_RESTRICTED.toLowerCase()})`}
+      className={cn('inline-flex cursor-not-allowed items-center gap-1 opacity-60', className)}
+    >
+      <Lock aria-hidden='true' className='size-3' />
+      {label}
+    </button>
+  )
+}
+
 function OfferItem({
   row,
   nowMs,
@@ -174,6 +192,12 @@ function OfferItem({
               </button>
             </>
           )}
+          {!canMark && !row.blind && (
+            <>
+              <LockedMark label='Offer sent' className='h-9 rounded-full bg-k-f2f2f2 px-3.5 text-[13px] font-bold text-k-555555' />
+              <LockedMark label='Not needed' className='h-9 rounded-full bg-k-f2f2f2 px-3.5 text-[13px] font-bold text-k-555555' />
+            </>
+          )}
           <button
             type='button'
             onClick={onOpenChat}
@@ -204,6 +228,7 @@ function DoneItem({ row, nowMs, tz, canMark, busy, onUndo }: { row: OfferDone; n
           Undo
         </button>
       )}
+      {!canMark && !row.blind && <LockedMark label='Undo' className='flex-none text-sm font-bold text-k-555555' />}
     </li>
   )
 }
