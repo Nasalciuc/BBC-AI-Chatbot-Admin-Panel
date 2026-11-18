@@ -58,6 +58,14 @@ export interface ProactiveOpening {
 const DONE_KEY = 'bbc_proactive_done'
 // sessionStorage: the moments the server switched off in this visit (triggers.ts, TRIGGER_OFF_ARM), "ads,kayak".
 const OFF_KEY = 'bbc_proactive_off'
+// The same, in this page's memory: with the tab's storage refused the list still holds here, or the switched-off
+// moment would be asked again every second (CodeRabbit #269). The storage carries it to the next pages.
+let offInPage = ''
+
+/** The moments switched off in this visit: what this page heard, and what the tab kept from earlier pages. */
+function offMoments(): Trigger[] {
+  return readOff(`${ssGet(OFF_KEY) || ''},${offInPage}`)
+}
 // localStorage: no card until this time (24 h after "Not now" or ✕).
 const PAUSE_KEY = 'bbc_proactive_pause_until'
 // sessionStorage: the 10 s note beside the button was closed with ✕ in this tab.
@@ -276,8 +284,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const stopFor = (e: SiteEvent) => {
       const { stop } = applySiteEvent(null, e)
       if (!stop) return
-      // A moment this visit already used keeps its word ('shown' keeps the next pages quiet too).
-      if (!ssGet(DONE_KEY)) ssSet(DONE_KEY, stop)
+      // A moment this visit already used keeps its word ('shown' keeps the next pages quiet too). One only
+      // asked for ('asked': its answer still on its way) gives way to the site's word, so an answer that then
+      // gives the visit its moment back (trigger_off) cannot undo a sent form (CodeRabbit #269).
+      const done = ssGet(DONE_KEY)
+      if (!done || done === 'asked') ssSet(DONE_KEY, stop)
       ssSet(ATTENTION_KEY, '1')
       // A note already waiting (or on screen) goes away too: Widget shows it only while not quiet.
       setQuiet(true)
@@ -452,7 +463,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null,
       quoteForm: quoteFormAt, search: lastSearch(),
     })
-    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>): string | null => {
+    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, adsTrip: string | null): string | null => {
       if (stopped) return stopped
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
@@ -466,6 +477,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // (triggers.ts); the quote moment keeps the press check above (CodeRabbit #267).
       if (trigger !== 'quote' && quoteFormAt !== before.quoteForm) return 'quote_form'
       if (lastSearch() !== before.search) return 'searched'
+      // The ads card names the destination it was asked with: another one on the page by now (its address, its
+      // title or the site's word changed) makes those words stale (CodeRabbit #269).
+      if (trigger === 'ads' && JSON.stringify(destinationTrip()) !== adsTrip) return 'trip_changed'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
       return null
     }
@@ -474,6 +488,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const before = seen()
       // The ads card asks with the trip that made it due (destinationTrip): the words name that destination.
       const trip = trigger === 'ads' ? destinationTrip() : currentTrip()
+      const adsTrip = trigger === 'ads' ? JSON.stringify(trip) : null
       const device = phone ? 'phone' : 'computer'
       // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
       const took: OfferTiming[] = []
@@ -481,7 +496,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
         ...(trigger === 'quote' && refused.length ? { refused: [...refused] } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
-      const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before) : null
+      const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, adsTrip) : null
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
         trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip), site: brand.id,
@@ -496,7 +511,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
         // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
         // in this visit, and the visit keeps its one moment for the others (the reader may still come).
+        offInPage = offAfter(offInPage, trigger)
         ssSet(OFF_KEY, offAfter(ssGet(OFF_KEY), trigger))
+        // Only the reservation this answer owned: a stop the site said meanwhile ('sent') stays.
         if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
         fired = false
         return
@@ -552,7 +569,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         quote,
         sinceQuoteFormS: quoteFormAt === null ? null : (now - quoteFormAt) / 1000,
         exitIntent: now - exitAt < 1500,
-        off: readOff(ssGet(OFF_KEY)),
+        off: offMoments(),
       }
       const trigger = pickTrigger(state)
       if (!trigger) return

@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { hasContext, pickTrip, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
+import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
 
 // The address, then the title: what a page without bbc-signals gives (proactive.ts currentTrip puts the
 // site's search before the address and the page's own trip before the title; site-signals.test.mjs).
@@ -258,6 +258,33 @@ test('the ads card takes the newest of the page\'s trips that names a destinatio
   assert.match(hook, /const trip = trigger === 'ads' \? destinationTrip\(\) : currentTrip\(\)/)
 })
 
+test('a place name the server would drop names no place here either, and the title\'s takes over', () => {
+  // CodeRabbit #269, round 2: the site's word "Paris / France" came first; the server drops a name with "/", and
+  // the card would have asked where to after all.
+  const fromSite = tripFromFields({ destination_name: 'Paris / France' }, 'route_page')
+  const fromTitle = tripFromTitle('Business class flights to Paris')
+  assert.equal(fromSite, null)
+  assert.deepEqual(pickTrip(...[fromSite, fromTitle].filter(hasContext)), fromTitle)
+  // The server's rule (app/models/trip_context.py, _name): letters of any script, spaces and . ' - ( ) ,
+  for (const ok of ['São Paulo', 'Zürich', "St. John's", 'Washington, D.C.', 'Ho Chi Minh City', 'Tel Aviv-Yafo', '東京']) {
+    assert.equal(tripFromFields({ destination_name: ok }, 'route_page')?.destination_name, ok, ok)
+  }
+  for (const bad of ['Paris / France', 'Terminal 5', '<b>Rome</b>', '-Rome', 'Rome!', 'R']) {
+    assert.equal(tripFromFields({ destination_name: bad }, 'route_page'), null, bad)
+  }
+  // "Chicago (CHI)" still reads as Chicago.
+  assert.equal(tripFromUrl('?from-0=Chicago+%28CHI%29&to-0=London+%28LON%29').origin_name, 'Chicago')
+})
+
+test('an ads answer whose destination left the page meanwhile is dropped and measured', () => {
+  // CodeRabbit #269, round 2: the address, the title or the site's word changed while the answer was on its way.
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.match(ask, /const adsTrip = trigger === 'ads' \? JSON\.stringify\(trip\) : null/)
+  assert.match(ask, /momentPassed\(trigger, before, adsTrip\)/)
+  const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
+  assert.match(why, /if \(trigger === 'ads' && JSON\.stringify\(destinationTrip\(\)\) !== adsTrip\) return 'trip_changed'/)
+})
+
 test('a destination code equal to the origin\'s names no place (the server drops it)', () => {
   assert.equal(hasContext({ source: 'search', origin_code: 'CDG', destination_code: 'CDG' }), false)
   assert.equal(hasContext({ source: 'search', origin_code: 'JFK', destination_code: 'CDG' }), true)
@@ -288,9 +315,15 @@ test('a moment the server switched off on its own leaves the visit\'s moment to 
   // The hook: the answer "trigger_off" marks the moment off and gives the visit its moment back; any other
   // "no" (the feature off, the control arm, no answer) still ends the visit's moments, as before.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\), trigger\)\)\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\), trigger\)\)\s+\/\/[^\n]*\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
   assert.ok(ask.indexOf('TRIGGER_OFF_ARM') > ask.indexOf("posthog?.capture('proactive_eligible'"), 'measured first')
-  assert.match(hook, /off: readOff\(ssGet\(OFF_KEY\)\),/)
+  // The list holds in the page's memory too: with the tab's storage refused, the switched-off moment is not asked
+  // again every second (CodeRabbit #269, round 2); the storage carries it to the next pages.
+  assert.match(hook, /off: offMoments\(\),/)
+  assert.match(hook, /function offMoments\(\): Trigger\[\] \{\s+return readOff\(`\$\{ssGet\(OFF_KEY\) \|\| ''\},\$\{offInPage\}`\)\s+\}/)
+  // A stop the site says while an answer is on its way replaces the reservation, so trigger_off cannot free a
+  // visit whose form was sent.
+  assert.match(hook, /const done = ssGet\(DONE_KEY\)\s+if \(!done \|\| done === 'asked'\) ssSet\(DONE_KEY, stop\)/)
 })
 
 // ── "In view": the visitor's seconds, from when the page showed (18 Nov: the Kayak card came at ~9 s) ──
@@ -649,7 +682,7 @@ test('an answer that comes after the visitor moved on is dropped and measured, n
   assert.match(ask, /\.\.\.\(passed \? \{ moment_passed: passed \} : \{\}\)/)
   assert.match(ask, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
   const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
-  for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'sent']) {
+  for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'sent', 'trip_changed']) {
     assert.match(why, new RegExp(`return '${reason}'`), reason)
   }
 })

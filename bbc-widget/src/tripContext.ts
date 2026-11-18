@@ -44,11 +44,16 @@ const day = (v: string | null) => (v && DATE.test(v.trim()) ? v.trim() : undefin
 const count = (v: string | null) => (v && COUNT.test(v.trim()) ? Number(v.trim()) : undefined)
 const word = (v: string | null) => (v && WORD.test(v.trim()) ? v.trim().toLowerCase() : undefined)
 
-/** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, else nothing. */
+/** The server's rule for a place name (app/models/trip_context.py, `_name`): a letter of any script first, then
+ *  letters, spaces and . ' - ( ) , only. A name it would drop is dropped here too, so the card never counts on a
+ *  destination the server's words will not say ("Paris / France": CodeRabbit #269). */
+const NAME = /^\p{L}[\p{L} .'(),-]*$/u
+
+/** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, by the server's rule, else nothing. */
 function city(v: string | null | undefined): string | undefined {
   if (!v) return undefined
   const s = v.replace(/\s*\([A-Za-z]{3}\)\s*$/, '').replace(/\s+/g, ' ').trim()
-  return s.length >= 2 && s.length <= 40 ? s : undefined
+  return s.length >= 2 && s.length <= 40 && NAME.test(s) ? s : undefined
 }
 
 /** The first of `keys` whose value reads (a page uses one spelling of each field; an unrelated
