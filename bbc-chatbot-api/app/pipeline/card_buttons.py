@@ -39,7 +39,7 @@ MODEL_USED = "template"
 
 CARD_BUTTONS_HEALTH: dict = {
     "yes": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
-    "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0,
+    "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0, "before_you_go_too_long": 0,
 }
 
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
@@ -255,9 +255,10 @@ BEFORE_YOU_GO_KEY = "before_you_go_at"
 
 
 _CLAIM_TRIES = 3
-# The metadata read goes back in the URL as the UPDATE's condition, twice. Up to this long (compact JSON;
-# 1.9k at most over 30 days, Nov 2026) both directions go; longer, only "nothing added or changed since"
-# (<@), which is what a presence ping does, so the request stays well under a proxy's 8 KB URL.
+# The metadata read goes back in the URL as the UPDATE's condition, twice (@> and <@: the same object).
+# 1.9k at most over 30 days (Nov 2026). Longer than this, the claim is not made — the message is not
+# sent — rather than written under a weaker condition that could bring back a key another request removed
+# (CodeRabbit #270, round 2); the URL stays well under a proxy's 8 KB.
 _CLAIM_EQUAL_MAX = 2500
 
 
@@ -292,9 +293,11 @@ async def _claim(cid: str, key: str) -> bool:
                 query = query.is_("metadata", "null")
             else:
                 seen = json.dumps(existing, separators=(",", ":"), ensure_ascii=False)
-                query = query.contained_by("metadata", seen)
-                if len(seen) <= _CLAIM_EQUAL_MAX:
-                    query = query.contains("metadata", seen)
+                if len(seen) > _CLAIM_EQUAL_MAX:
+                    CARD_BUTTONS_HEALTH["before_you_go_too_long"] += 1
+                    logger.warning(f"[{cid}] before-you-go claim: metadata too long to compare, not sent")
+                    return False
+                query = query.contains("metadata", seen).contained_by("metadata", seen)
             res = await db._run_sync(lambda: query.execute(), idempotent=False)
             if res.data:
                 return True
@@ -306,10 +309,11 @@ async def _claim(cid: str, key: str) -> bool:
 
 
 def _lead_trip(lead: Optional[dict]):
-    """The trip the lead holds, for the line the message says back; None without a route."""
+    """The trip the lead holds, for the line the message says back; None without a destination. A
+    destination alone is enough: "London, not Paris" said before any origin names London (CodeRabbit #270)."""
     from app.models.trip_context import TripContext
 
-    if not isinstance(lead, dict) or not (lead.get("origin_code") and lead.get("destination_code")):
+    if not isinstance(lead, dict) or not lead.get("destination_code"):
         return None
     try:
         return TripContext(

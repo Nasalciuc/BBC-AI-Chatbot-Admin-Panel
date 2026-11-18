@@ -539,6 +539,21 @@ class TestBeforeYouGo:
         assert "London" in out["message"] and "Paris" not in out["message"]
 
     @pytest.mark.asyncio
+    async def test_a_destination_alone_on_the_lead_is_the_one_said(self):
+        """The client changed the destination before giving any origin: the lead holds London only, and
+        London is named, never the page's Paris (CodeRabbit #270, round 2)."""
+        saved, ps = _buttons_patches(_conv(), users=1, lead={"id": "L1", "destination_code": "LHR"})
+        ps.append(patch.object(card_buttons, "_claim", new=AsyncMock(return_value=True)))
+        for p in ps:
+            p.start()
+        try:
+            out = await card_buttons.before_you_go(_CID)
+        finally:
+            for p in ps:
+                p.stop()
+        assert "London" in out["message"] and "Paris" not in out["message"]
+
+    @pytest.mark.asyncio
     async def test_without_a_trip_it_still_asks_where_to_write(self):
         conv = _conv({"proactive_trip": None})
         saved, ps = _buttons_patches(conv, users=1, lead={"id": "L1"})
@@ -694,21 +709,30 @@ class TestClaim:
         assert list(row.metadata) == [card_buttons.BEFORE_YOU_GO_KEY]
 
     @pytest.mark.asyncio
-    async def test_a_long_metadata_keeps_the_url_short_and_still_sees_a_ping(self, monkeypatch):
-        """Past _CLAIM_EQUAL_MAX the snapshot goes once (<@): a ping in between still makes it miss."""
-        monkeypatch.setattr(card_buttons, "_CLAIM_EQUAL_MAX", 10)
-        calls = []
-        orig = _Query.contains
+    async def test_a_key_another_request_removed_is_not_brought_back(self):
+        """The snapshot held a key another request then removed: the update misses (@> fails) and the
+        claim reads again, so the removed key stays removed (CodeRabbit #270, round 2)."""
 
-        def counted(self, column, seen):
-            calls.append(seen)
-            return orig(self, column, seen)
+        class _Removing(_Row):
+            def table(self, _name):
+                q = _Query(self)
+                if self.reads == 1 and "widget_open" in (self.metadata or {}):
+                    self.metadata = {k: v for k, v in self.metadata.items() if k != "widget_open"}
+                return q
 
-        monkeypatch.setattr(_Query, "contains", counted)
-        row = _Row({"client_lang": "en", "site": "bbc"}, change_after_read={"presence": "left"})
+        row = _Removing({"client_lang": "en", "widget_open": True})
         assert await _claim_on(row) is True
-        assert calls == [], "only <@ went"
-        assert row.metadata["presence"] == "left" and row.reads == 2
+        assert "widget_open" not in row.metadata and row.metadata["client_lang"] == "en"
+        assert row.metadata[card_buttons.BEFORE_YOU_GO_KEY]
+
+    @pytest.mark.asyncio
+    async def test_metadata_too_long_to_compare_is_not_claimed(self, monkeypatch):
+        """Past _CLAIM_EQUAL_MAX the claim is not made at all — never written under a weaker condition."""
+        monkeypatch.setattr(card_buttons, "_CLAIM_EQUAL_MAX", 10)
+        row = _Row({"client_lang": "en", "site": "bbc"})
+        assert await _claim_on(row) is False
+        assert row.updates == [] and card_buttons.BEFORE_YOU_GO_KEY not in row.metadata
+        assert card_buttons.CARD_BUTTONS_HEALTH["before_you_go_too_long"] == 1
 
     @pytest.mark.asyncio
     async def test_metadata_that_never_settles_is_not_claimed(self):
