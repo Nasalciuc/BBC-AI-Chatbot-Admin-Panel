@@ -129,6 +129,14 @@ def _build_route_card_from_kb(kb_result: KBResult) -> RouteCard | None:
     origin = codes[0] if codes else parts[0].strip()
     destination = codes[1] if len(codes) > 1 else parts[1].strip()
 
+    # A title like "London from $7,345" names a fare: the card keeps the place, never the amount, and
+    # the airlines line neither (CodeRabbit #270). A side left empty by it makes no card.
+    from app.ai.output_guard import without_amounts
+
+    origin, destination, airlines = without_amounts(origin), without_amounts(destination), without_amounts(airlines)
+    if not origin or not destination:
+        return None
+
     return RouteCard(
         origin=origin,
         destination=destination,

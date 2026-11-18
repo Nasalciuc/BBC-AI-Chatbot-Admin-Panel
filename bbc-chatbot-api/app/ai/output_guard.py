@@ -247,19 +247,32 @@ def _kind(snippet: str) -> str:
 # "3.200 €", "3,200 dollars", "900 US dollars", "USD 4,500", "R$ 3.200", "2.000 dólares".
 # A percentage ("30-60%"), a date, a count of people or an accreditation number is no amount; neither is
 # a weight ("23 kg", "70 pounds" of baggage: "pounds" alone is a weight, "pounds sterling" a currency).
+# The currencies of the countries clients write from (app.services.phone_country), by code and by name
+# (CodeRabbit #270: "CHF 3,200", "¥320,000", "3,200 pesos"). Codes and names that are also everyday words
+# stay out ("try", "mad", "pen", "won", "real", "rand"): a sentence is never dropped for one.
+_CUR_SIGNS = "$€£¥₹₩₺₽₪₱฿"
 _CUR_WORD = (r"(?:usd|us\$|r\$|eur|gbp|cad|aud|(?:u\.?s\.?\s?)?dollars?|d[óo]lares?|euros?"
-             r"|pounds?\s+sterling|bucks)")
+             r"|pounds?\s+sterling|bucks"
+             r"|chf|(?:swiss\s+)?francs?|jpy|yen|cny|rmb|yuan|inr|rupees?|mxn|pesos?|aed|dirhams?|sgd|hkd|nzd"
+             r"|zar|brl|reais|sek|nok|dkk|kronor|kroner|pln|z[łl]oty|czk|huf|forints?|sar|riyals?|qar|kwd|dinars?"
+             r"|egp|thb|baht|krw|twd|ars|clp|cop|uyu|liras?|rubles?|roubles?|shekels?|kr|zł|rs\.?)")
 _AMOUNT = r"\d(?:[\d,.]*\d)?(?:\s?[km]\b)?"  # ends on a digit: a full stop after it is the sentence's
 _MONEY_RE = re.compile(
-    rf"(?:[$€£]\s?{_AMOUNT})|(?:\b{_AMOUNT}\s?[$€£](?!\w))"
+    rf"(?:[{_CUR_SIGNS}]\s?{_AMOUNT})|(?:\b{_AMOUNT}\s?[{_CUR_SIGNS}](?!\w))"
     rf"|(?:\b{_AMOUNT}\s?{_CUR_WORD}(?![a-z]))|(?:(?<![a-z]){_CUR_WORD}\s?{_AMOUNT})", re.I
 )
 # What starts holding a streamed sentence: a digit or a currency sign/word could begin an amount.
-_MONEY_HINT = re.compile(rf"[$€£\d]|(?<![a-z]){_CUR_WORD}(?![a-z])", re.I)
+_MONEY_HINT = re.compile(rf"[{_CUR_SIGNS}\d]|(?<![a-z]){_CUR_WORD}(?![a-z])", re.I)
 # A chunk that ends on the first letters of a currency word ("US" of "USD") could still become one:
 # the stream keeps them until the next chunk says (StreamGuard._watch_prices).
 _CUR_WORDS = ("usd", "us$", "r$", "eur", "euro", "euros", "gbp", "cad", "aud", "u.s.", "dollar", "dollars",
-              "dólar", "dólares", "dolar", "dolares", "bucks", "pounds")
+              "dólar", "dólares", "dolar", "dolares", "bucks", "pounds",
+              "chf", "swiss", "franc", "francs", "jpy", "yen", "cny", "rmb", "yuan", "inr", "rupee", "rupees",
+              "mxn", "peso", "pesos", "aed", "dirham", "dirhams", "sgd", "hkd", "nzd", "zar", "brl", "reais",
+              "sek", "nok", "dkk", "kronor", "kroner", "pln", "zloty", "złoty", "czk", "huf", "forint", "forints",
+              "sar", "riyal", "riyals", "qar", "kwd", "dinar", "dinars", "egp", "thb", "baht", "krw", "twd",
+              "ars", "clp", "cop", "uyu", "lira", "liras", "ruble", "rubles", "rouble", "roubles", "shekel",
+              "shekels", "kr", "zł", "rs", "rs.")
 _CUR_PREFIXES = frozenset(w[:i] for w in _CUR_WORDS for i in range(1, len(w) + 1))
 _TRAILING_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_][\w.$]{0,7}\Z")
 PRICE_LINE = "Exact fares come from your consultant — they check live availability for your dates."
@@ -310,13 +323,33 @@ def scrub_prices(text: Optional[str]) -> tuple[Optional[str], int]:
 
 
 # A range is one amount even when only one end names the currency: "$2,800–$4,500", "$2,800-4,500",
-# "2,800–4,500 USD". "7-8 hours" names none: no amount.
+# "2,800–4,500 USD". "7-8 hours" names none: no amount. The bare end looks like money (three digits or
+# more, groups of thousands, or "2.5k"): a day beside a fare stays ("Departure: Dec 10 — $500";
+# CodeRabbit #270).
 _RANGE_SEP = r"\s*(?:-|–|—|to)\s*"
+_RANGE_END = r"(?:\d{1,3}(?:[,.]\d{3})+(?:[.,]\d{1,2})?|\d{3,}(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?\s?[km]\b)(?![\d,.]*\d)"
 _MONEY_RANGE_RE = re.compile(
-    rf"(?:{_AMOUNT}{_RANGE_SEP}(?=(?:{_MONEY_RE.pattern})))?(?:{_MONEY_RE.pattern})"
-    rf"(?:{_RANGE_SEP}(?:{_MONEY_RE.pattern}|{_AMOUNT}))?", re.I
+    rf"(?:(?<![\d,.]){_RANGE_END}{_RANGE_SEP}(?=(?:{_MONEY_RE.pattern})))?(?:{_MONEY_RE.pattern})"
+    rf"(?:{_RANGE_SEP}(?:{_MONEY_RE.pattern}|{_RANGE_END}))?", re.I
 )
 KB_AMOUNT_NOTE = "(fares: quoted only by a consultant)"
+
+
+# The words an amount leaves behind when it is taken out of a short label: "London from $7,345" → "London".
+_LEFT_BY_AN_AMOUNT = re.compile(
+    r"[\s,;:–—-]*(?:\b(?:from|starting\s+(?:at|from)|starts\s+at|only|just|for|at|desde|dès|a\s+partir\s+de"
+    r"|à\s+partir\s+de|por|pour|ab)\b[\s,;:–—-]*)*$", re.I)
+
+
+def without_amounts(text: Optional[str]) -> str:
+    """A short label (a route card's place or airlines) with its amounts taken out, and the "from" one
+    leaves behind: the card shows the place, never a fare (CodeRabbit #270)."""
+    if not text:
+        return ""
+    out = _MONEY_RANGE_RE.sub(" ", text)
+    if out == text:
+        return text.strip()
+    return _LEFT_BY_AN_AMOUNT.sub("", re.sub(r"\s{2,}", " ", out)).strip(" ,;:–—-")
 
 
 def strip_amounts(text: Optional[str]) -> Optional[str]:

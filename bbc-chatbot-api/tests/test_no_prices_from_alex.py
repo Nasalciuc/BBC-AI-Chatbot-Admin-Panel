@@ -46,6 +46,13 @@ def _clean():
     "Unos 2.000 dólares por persona.",
     "Cerca de R$ 3.200 por pessoa.",
     "Thirty is 30 pounds sterling.",
+    # Every currency clients write in (CodeRabbit #270, round 2).
+    "The fare is CHF 3,200.",
+    "Unos ¥320,000 ida y vuelta.",
+    "Son 3,200 pesos por persona.",
+    "About 45,000 rupees, or Rs. 45,000.",
+    "AED 9,000 per person.",
+    "Cirka 3000 kr per person.",
 ])
 def test_an_amount_in_any_currency_is_a_price(text):
     assert has_price(text)
@@ -59,6 +66,10 @@ def test_an_amount_in_any_currency_is_a_price(text):
     # A weight is no price: baggage answers must stay.
     "Two checked bags of 23 kg (50 pounds) each.",
     "Cada 2 horas sale un vuelo a Europa.",
+    # Currency codes that are everyday words are no currency here.
+    "We won 3 awards for service.",
+    "Let's try 2 dates in March.",
+    "There are 3 real options this week.",
 ])
 def test_percentages_dates_counts_and_phones_are_not_prices(text):
     assert not has_price(text)
@@ -146,6 +157,23 @@ def test_enforce_stream_drops_an_amount_split_by_a_line_break(monkeypatch):
     assert "3,200" not in out and "USD" not in out and "Your dates?" in out
 
 
+@pytest.mark.parametrize("chunks", [
+    ["The fare is CH", "F 3,200. ", "Your dates?"],
+    ["Son unos ", "¥320,000. ", "Your dates?"],
+    ["Son 3,200 pe", "sos. ", "Your dates?"],
+])
+def test_log_mode_stream_drops_every_currency_even_split(monkeypatch, chunks):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
+    out = _stream(StreamGuard(), chunks)
+    assert "3,200" not in out and "320,000" not in out and out.endswith("Your dates?")
+
+
+def test_the_stored_reply_drops_every_currency():
+    for text in ("The fare is CHF 3,200. Your dates?", "Son 3,200 pesos. Your dates?"):
+        out, dropped = scrub_prices(text)
+        assert dropped == 1 and out == f"Your dates? {PRICE_LINE}"
+
+
 def test_enforce_stream_drops_a_piece_with_an_amount(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "enforce")
     g = StreamGuard()
@@ -164,6 +192,12 @@ def test_knowledge_base_amounts_and_ranges_never_reach_the_model():
     # One currency for both ends of a range takes both ends; a range of hours is no amount.
     assert strip_amounts("Typically 2,800–4,500 USD.") == "Typically (fares: quoted only by a consultant)."
     assert strip_amounts("Le vol dure 7-8 heures, dès 3.200 €.") == "Le vol dure 7-8 heures, dès (fares: quoted only by a consultant)."
+    assert strip_amounts("Desde ¥320,000 o 3,200 pesos.") == \
+        "Desde (fares: quoted only by a consultant) o (fares: quoted only by a consultant)."
+    # A day beside a fare is no end of a range: the date stays (CodeRabbit #270, round 2).
+    assert strip_amounts("Departure: Dec 10 — $500 per person.") == \
+        "Departure: Dec 10 — (fares: quoted only by a consultant) per person."
+    assert strip_amounts("Fares 500-700 USD.") == "Fares (fares: quoted only by a consultant)."
 
 
 def test_a_knowledge_base_title_never_carries_an_amount_to_the_model():
@@ -189,3 +223,21 @@ def test_the_route_card_never_carries_a_price_range():
                   content="Airlines: BA, AA. Duration: 7-8 hours nonstop. Business class typically $2,800-$4,500 (JFK) (LHR).")
     card = _build_route_card_from_kb(kb)
     assert card is not None and card.price_range == ""
+
+
+def test_the_route_card_never_carries_an_amount_from_a_title_or_the_airlines():
+    """A KB title "New York to London from $7,345" gave the card a destination with the fare in it
+    (CodeRabbit #270, round 2)."""
+    from app.ai.output_guard import without_amounts
+    from app.pipeline.generator import _build_route_card_from_kb
+
+    card = _build_route_card_from_kb(KBResult(
+        entry_id="k3", title="New York to London from $7,345",
+        content="Nonstop flights from New York. Airlines: BA, AA from $3,000."))
+    assert card is not None
+    assert (card.origin, card.destination, card.airlines) == ("New York", "London", "BA, AA")
+    plain = _build_route_card_from_kb(KBResult(entry_id="k4", title="New York to London",
+                                               content="Nonstop flights. Airlines: BA, AA."))
+    assert (plain.origin, plain.destination, plain.airlines) == ("New York", "London", "BA, AA")
+    assert without_amounts("Paris desde 2.000 €") == "Paris"
+    assert without_amounts("Tokyo") == "Tokyo"
