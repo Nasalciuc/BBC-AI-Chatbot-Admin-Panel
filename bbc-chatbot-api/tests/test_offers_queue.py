@@ -443,6 +443,35 @@ def test_an_undo_never_writes_over_a_mark_another_request_saved_since():
     assert offers.OFFERS_HEALTH["rollback_skipped"] >= 1
 
 
+def test_a_failed_save_that_landed_anyway_is_put_back_too():
+    """The second chat's save timed out after the write landed: it goes back with the first, so the client
+    never stands half marked (CodeRabbit #270, round 3)."""
+    before = {"offer_sent_at": None, "offer_sent_by": None, "offer_skipped_at": "2026-11-17T09:00:00+00:00",
+              "offer_skipped_by": AGENT}
+    stored = {C1: dict(before), C2: dict(before)}
+
+    async def save(cid, patch_):
+        stored[cid].update(patch_)  # the write lands…
+        return not (cid == C2 and patch_.get("offer_sent_at"))  # …and the answer is lost
+
+    with patch.multiple(db, get_conversation_simple=AsyncMock(side_effect=lambda cid: _conv(cid, metadata=dict(stored[cid]))),
+                        get_blind_inputs=AsyncMock(side_effect=lambda cid: _conv(cid)),
+                        patch_conversation_presence=AsyncMock(side_effect=save), invalidate_leads_universe=MagicMock()):
+        resp = client("owner").post(f"/api/offers/{C1}", json={"state": "sent", "chats": [C2]})
+    assert resp.status_code == 503
+    assert stored[C1] == before and stored[C2] == before
+
+
+def test_the_queue_is_read_again_even_when_the_first_save_fails():
+    """The first save can land before its answer is lost: the queue is read again either way."""
+    with patch.multiple(db, get_conversation_simple=AsyncMock(return_value=_conv(C1)),
+                        get_blind_inputs=AsyncMock(return_value=_conv(C1)),
+                        patch_conversation_presence=AsyncMock(return_value=False),
+                        invalidate_leads_universe=MagicMock()):
+        assert client("owner").post(f"/api/offers/{C1}", json={"state": "sent"}).status_code == 503
+        assert db.invalidate_leads_universe.called
+
+
 def test_mark_rejects_a_bad_chat_id_and_a_failed_save_is_a_503():
     with patch.multiple(db, get_conversation_simple=AsyncMock(return_value=_conv(C1)),
                         get_blind_inputs=AsyncMock(return_value=_conv(C1)),

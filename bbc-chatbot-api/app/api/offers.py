@@ -108,6 +108,8 @@ async def _put_back(cid: str, ours: dict, before: dict, of: int) -> None:
         conv = None
         logger.warning(f"[offers] mark undo: chat not read ({type(e).__name__})")
     meta = (conv or {}).get("metadata") if isinstance((conv or {}).get("metadata"), dict) else None
+    if meta is not None and all(meta.get(k) == before.get(k) for k in MARK_KEYS):
+        return  # nothing of this request's landed there: nothing to undo
     if meta is None or any(meta.get(k) != ours.get(k) for k in MARK_KEYS):
         OFFERS_HEALTH["rollback_skipped"] += 1
         return
@@ -151,18 +153,23 @@ async def mark_offer(conversation_id: str, body: OfferMark, user: dict = Depends
     now = datetime.now(timezone.utc)
     patch = mark_patch(body.state, user.get("id") or "", now)
     done: list[str] = []
+    tried = False
     try:
         for cid in ids:
+            tried = True
             if not await db.patch_conversation_presence(cid, patch):
                 OFFERS_HEALTH["mark_failed"] += 1
                 # One client, one mark: the chats already marked go back to what they were, so the client
-                # never stands half in the queue and half out of it (CodeRabbit #270).
-                for back in done:
+                # never stands half in the queue and half out of it (CodeRabbit #270). The chat whose save
+                # failed goes back too: a timeout can come after the write landed. _put_back leaves a chat
+                # alone when the mark there is not this request's.
+                for back in [*done, cid]:
                     await _put_back(back, patch, before[back], len(ids))
                 raise HTTPException(503, "Couldn't save the mark. Try again.")
             done.append(cid)
     finally:
-        if done:
+        # Any write tried may have landed: the queue is read again either way.
+        if tried:
             db.invalidate_leads_universe()
     OFFERS_HEALTH["marks"] += 1
     logger.info(f"[offers] {body.state} role={role} chats={len(ids)}")
