@@ -50,10 +50,27 @@ export function offerVariant(v: unknown): string | undefined {
   return typeof v === 'string' && /^[a-z][a-z_]{0,23}$/.test(v) ? v : undefined
 }
 
+/** Why an offer brought no answer: our time ran out, the request failed on the way, the server said no
+ *  with a status, or its reply was not an offer. */
+export type OfferFail = 'timeout' | 'network' | 'http' | 'shape'
+
+/** How an offer request went, for the measurements: how long it took, and why no answer came (null: one did). */
+export interface OfferTiming {
+  ms: number
+  fail: OfferFail | null
+}
+
+/** The measurement properties of an offer request (PostHog): `offer_ms` to the nearest 10 ms, and
+ *  `offer_fail` when no answer came. Nothing when the request never reported. */
+export function offerMeasures(t: OfferTiming | undefined): { offer_ms?: number; offer_fail?: OfferFail } {
+  if (!t || !Number.isFinite(t.ms)) return {}
+  return { offer_ms: Math.max(0, Math.round(t.ms / 10) * 10), ...(t.fail ? { offer_fail: t.fail } : {}) }
+}
+
 /**
  * Ask whether to open the chat by itself now, and with what words (POST /chat/proactive/offer — it
  * writes nothing). No answer within `timeoutMs`, an error or a reply of the wrong shape: null, and
- * nothing is shown.
+ * nothing is shown. `onTiming` hears how it went, once, whatever the outcome.
  */
 export async function fetchProactiveOffer(
   apiUrl: string,
@@ -61,9 +78,16 @@ export async function fetchProactiveOffer(
    *  moment, the kinds of the fields the form refused (siteSignals FIELD_KINDS, never a value). */
   body: { visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[] },
   timeoutMs: number,
+  onTiming?: (t: OfferTiming) => void,
 ): Promise<ProactiveOffer | null> {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
-  const timer = setTimeout(() => ctrl?.abort(), timeoutMs)
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ctrl?.abort() }, timeoutMs)
+  const startedAt = Date.now()
+  const done = <T>(fail: OfferFail | null, value: T): T => {
+    try { onTiming?.({ ms: Date.now() - startedAt, fail }) } catch { /* a measurement never costs the answer */ }
+    return value
+  }
   try {
     const res = await apiFetch(`${apiUrl}/api/chat/proactive/offer`, {
       method: 'POST',
@@ -71,25 +95,51 @@ export async function fetchProactiveOffer(
       body: JSON.stringify(body),
       signal: ctrl?.signal,
     })
-    if (!res.ok) return null
+    if (!res.ok) return done('http', null)
     const data = await res.json()
-    if (!data || typeof data.show !== 'boolean' || typeof data.arm !== 'string') return null
+    if (!data || typeof data.show !== 'boolean' || typeof data.arm !== 'string') return done('shape', null)
     const replies = Array.isArray(data.quick_replies)
       ? data.quick_replies.filter((r: unknown): r is string => typeof r === 'string' && r.trim() !== '')
       : []
     const variant = offerVariant(data.variant)
-    return {
+    return done(null, {
       show: data.show,
       arm: data.arm,
       message: typeof data.message === 'string' && data.message.trim() ? data.message : null,
       quick_replies: replies,
       ...(variant ? { variant } : {}),
-    }
+    })
   } catch {
-    return null  // a timeout or a network error is a "no": the visitor sees nothing
+    // A timeout or a network error is a "no": the visitor sees nothing. A reply that was not JSON too.
+    return done(timedOut ? 'timeout' : 'network', null)
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * Opens the connection to the API before the first request needs it (name lookup, TCP and TLS done ahead),
+ * so the card's answer and a tap on the corner button do not wait for them (triggers.ts, OFFER_TIMEOUT_MS:
+ * on 16-18 Nov the answers that came too late spent their time there, not on the server). Once per page; an
+ * address that is not one, or a page without a head, does nothing.
+ */
+export function preconnect(apiUrl: string): void {
+  try {
+    const origin = new URL(apiUrl).origin
+    if (!/^https?:\/\//.test(origin)) return
+    const already = Array.from(document.querySelectorAll('link[rel="preconnect"]')).some((l) => {
+      const link = l as HTMLLinkElement
+      return link.href.replace(/\/$/, '') === origin && link.crossOrigin === 'anonymous'
+    })
+    if (already) return
+    const link = document.createElement('link')
+    link.rel = 'preconnect'
+    link.href = origin
+    // fetch() sends the API no cookies (credentials: same-origin, another site): the connection it takes is
+    // the anonymous one, so that is the one opened ahead.
+    link.crossOrigin = 'anonymous'
+    document.head.appendChild(link)
+  } catch { /* not an address, or no document: the first request opens its own */ }
 }
 
 export function getVisitorToken(): string | null {

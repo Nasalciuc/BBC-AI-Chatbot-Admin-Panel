@@ -1,13 +1,30 @@
 /**
- * When the chat may open by itself — three moments, not one timer for everyone (ADR 02 of
- * "Chat proactiv — analiza și dezbaterea", 15 Nov 2026):
+ * When the chat may open by itself — four moments, not one timer for everyone (ADR 02 of
+ * "Chat proactiv — analiza și dezbaterea", 15 Nov 2026; `ads` 18 Nov):
  *
  *   quote   pressed "Get free quote", is not on /thank-you, and stopped working on the form
  *   kayak   came from Kayak (paid, ≈$30 a visit) and is still here after 5 s in view
+ *   ads     came from a Google or Bing ad (a paid click too), is on a page that names a destination,
+ *           and is still here after 5 s in view, as kayak
  *   reader  25 s in view and scrolled at least half a screen
  *
  * When two qualify at once the first in that order wins; one moment per visit, a 24 h pause after
  * "Not now" or ✕ (proactive.ts keeps those). The server says whether this visitor's group sees anything.
+ *
+ * "In view" counts from when the page first showed something (first-contentful-paint), not from when this
+ * script started: on 16-18 Nov the page showed ~1 s after it opened (median, phones), yet the Kayak card came
+ * ~9 s after the page view instead of 5 s (median; a quarter of them after 11 s) — the count began only when
+ * this script (0.5 MB) did, seconds later. Whoever left between the 5th and the 9th second never saw it.
+ * inViewBeforeStartMs says how much of the time before the start counts (proactive.ts measures the start:
+ * `widget_start_s`). No moment comes before the widget has watched the page for WATCHED_FIRST_S, though: a
+ * visitor already typing, or in a quote form opened before the script started on a page without the site's
+ * signals (bbc-signals replays what came before; the page alone does not), shows it in that time. Counted
+ * from the widget's start, that wait used to be the 5 s themselves.
+ *
+ * ads (owner, 18 Nov): on 17-18 Nov about 350 visitors a day from Google and Bing ads stayed at least 8 s
+ * and got no moment at all (182 from Bing, 168 from Google). 84% of the ad clicks land on a page about one
+ * destination (/business-class-flights/…, /flight/city/…), and few of them read it for 25 s with half a
+ * screen scrolled. The card says that destination back, as the Kayak card says the search.
  *
  * quote, against the ADR's "no /thank-you within 5 s": in PostHog (12–15 Nov 2026) 128 of the 171
  * sessions that sent the form reached /thank-you more than 6 s after their first press (median 18 s):
@@ -32,7 +49,7 @@
  */
 
 /** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. */
-export type Trigger = 'kayak' | 'quote' | 'reader' | 'exit'
+export type Trigger = 'kayak' | 'ads' | 'quote' | 'reader' | 'exit'
 
 /** What can open the chat without the form: one of the moments, or `note` — the visitor tapped the 10 s
  *  note beside the button (owner's decision, 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the
@@ -40,6 +57,7 @@ export type Trigger = 'kayak' | 'quote' | 'reader' | 'exit'
 export type OpeningTrigger = Trigger | 'note'
 
 export const KAYAK_VISIBLE_S = 5
+export const ADS_VISIBLE_S = 5
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5
 export const QUOTE_IDLE_S = 8
@@ -49,11 +67,18 @@ export const QUOTE_INVALID_IDLE_S = 5
 export const QUOTE_WATCH_S = 180
 /** Only a visitor who did something on the page in the last minute (the plan's guard). */
 export const ACTIVE_WITHIN_S = 60
+/** The widget watches the page this long before any moment, whatever the time before it counted (above). */
+export const WATCHED_FIRST_S = 2
 /** Someone typing in a field of the site (a search, a form) is left alone this long after a keystroke. */
 export const TYPING_QUIET_S = 5
 export const PAUSE_AFTER_DISMISS_MS = 24 * 60 * 60 * 1000
-/** No answer from the server in this time: nothing is shown. */
-export const OFFER_TIMEOUT_MS = 1500
+/** No answer from the server in this time: nothing is shown (and a tapped note or corner button opens the form).
+ *  3.5 s, not 1.5 s (18 Nov): on 16-18 Nov 84 of 990 moments had no answer within 1.5 s while the server
+ *  answered in under 0.2 s (p95), and its 17 "errors" were this widget hanging up mid-answer (499). The time
+ *  goes on the visitor's connection — a new one, and the browser's CORS check before the POST — not on the
+ *  server; api.ts preconnect opens the connection early. An answer that comes after the visitor moved on is
+ *  still dropped (proactive.ts, momentPassed). */
+export const OFFER_TIMEOUT_MS = 3500
 /** The site's word about a refused send this soon after our press is about that press; later, it is a send
  *  of its own (proactive.ts, the refused kinds). */
 export const SAME_SEND_MS = 5000
@@ -73,8 +98,15 @@ export interface PageState {
   path: string
   /** The visit came from Kayak (utm_source=kayak, first touch of the tab). */
   kayak: boolean
-  /** Seconds the page has been in view since it loaded. */
+  /** The visit came from a Google or Bing ad (adVisit: the click id or the ads' tags, first touch of the tab). */
+  ad: boolean
+  /** The page names a destination the card can say back (tripContext.hasContext). Read only on an ad visit:
+   *  false on any other. */
+  destination: boolean
+  /** Seconds the page has been in view since it first showed something (inViewBeforeStartMs, then counted). */
   visibleS: number
+  /** Seconds this widget has watched the page (since it started on it). */
+  watchedS: number
   /** Seconds since the visitor last moved, scrolled, typed or touched the page. */
   sinceActivityS: number
   /** The deepest scroll so far, in screens (scrollY / innerHeight). */
@@ -101,6 +133,7 @@ export function blockedPath(path: string): boolean {
 export function pickTrigger(s: PageState): Trigger | null {
   if (blockedPath(s.path)) return null
   if (s.sinceActivityS > ACTIVE_WITHIN_S) return null
+  if (s.watchedS < WATCHED_FIRST_S) return null
 
   // A send in flight holds every moment off for as long as the form (or the site) says it is in flight,
   // also past the quote watch below: the visitor is waiting for the answer, not for us.
@@ -118,8 +151,32 @@ export function pickTrigger(s: PageState): Trigger | null {
   // The quote form being worked on, pressed or not: no card over it (only the quote moment above).
   if (s.sinceQuoteFormS !== null && s.sinceQuoteFormS <= QUOTE_WATCH_S) return null
   if (s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
+  if (s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
   if (s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
   return null
+}
+
+/** The ads' own tags, for a click that came without its id: 7 of the 596 Google ad visits of 16-18 Nov
+ *  (every Bing one had its msclkid). */
+const AD_SOURCES = new Set(['google', 'bing', 'microsoft'])
+const AD_MEDIUMS = new Set(['cpc', 'ppc', 'paid', 'paidsearch', 'paid_search', 'sem'])
+
+/** The visit came from a Google or Bing ad: the click id they add to the address (gclid, msclkid), or their
+ *  source with a paid medium. A Kayak visit is Kayak's (its own moment), whatever else its address carries. */
+export function adVisit(kept: { gclid?: string; msclkid?: string; utm_source?: string; utm_medium?: string }): boolean {
+  const source = (kept.utm_source || '').trim().toLowerCase()
+  if (source === 'kayak') return false
+  if (kept.gclid || kept.msclkid) return true
+  return AD_SOURCES.has(source) && AD_MEDIUMS.has((kept.utm_medium || '').trim().toLowerCase())
+}
+
+/** How much of the time before this script started counts as in view, in ms: from the page's first paint
+ *  (`paintMs`, ms since the page opened) to `nowMs` (the same clock), when the page is in view now and the
+ *  browser saw it hidden at no point since that paint. 0 when the paint is unknown (an older browser) — the
+ *  count then starts with the widget, as it did before. */
+export function inViewBeforeStartMs(nowMs: number, paintMs: number | null, inView: boolean, hiddenSincePaint: boolean): number {
+  if (!inView || hiddenSincePaint || paintMs === null || !Number.isFinite(paintMs) || !Number.isFinite(nowMs)) return 0
+  return Math.max(0, nowMs - Math.max(0, paintMs))
 }
 
 /** How long the 10 s note beside the button still waits, in ms (0: it may show). Like the moments, it does

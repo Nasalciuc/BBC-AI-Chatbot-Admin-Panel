@@ -4,7 +4,7 @@ import { captureUtm } from './utm'
 import brand from './config'
 import { WIDGET_CSS } from './styles'
 import { setTurnstileSiteKey } from './turnstile'
-import { TRANSCRIPT_EXPORT_V0 } from './api'
+import { TRANSCRIPT_EXPORT_V0, preconnect } from './api'
 import { exposeRoutes } from './page-globals'
 import { startPostHog } from './posthog'
 import { startSiteSignals, stopSiteSignals } from './siteSignals'
@@ -36,6 +36,9 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
   startSiteSignals(window)
   const apiUrl = script?.getAttribute('data-api')
     || 'https://admin-panel-error-production.up.railway.app'
+  // The connection to the API, opened now: the card's answer and a tap on the button find it ready
+  // (api.ts preconnect; triggers.ts OFFER_TIMEOUT_MS says why).
+  preconnect(apiUrl)
   // PR-12: invisible Turnstile only when the site opts in with its key.
   setTurnstileSiteKey(script?.getAttribute('data-turnstile-sitekey'))
 
