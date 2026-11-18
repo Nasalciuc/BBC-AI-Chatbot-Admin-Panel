@@ -54,9 +54,13 @@ export function ownerOf(countries: readonly Country[], e164: string): Country | 
   return fits.sort((a, b) => dialDigits(b).length - dialDigits(a).length)[0] ?? null
 }
 
+/** Where the leading 0 is part of the number, dialled from abroad too: Italy's landlines ("02 1234 5678" is
+ *  +39 02 1234 5678). The server keeps the same list (app/services/phone_country.py KEEPS_LEADING_ZERO). */
+const KEEPS_LEADING_ZERO = new Set(['39'])
+
 /** The number in E.164 for `country`, or '' when it cannot be one: "+61 412…" and "0061 412…" keep their
- *  own code; "0412 345 678" with Australia picked is +61412345678 (the trunk 0 dropped); ten digits with the
- *  US picked are +1… */
+ *  own code; "0412 345 678" with Australia picked is +61412345678 (the trunk 0 dropped, but Italy's 0 kept);
+ *  ten digits with the US picked are +1… */
 export function phoneFor(value: string, country: Country): string {
   const raw = (value || '').trim()
   let digits = raw.replace(/\D/g, '')
@@ -65,7 +69,7 @@ export function phoneFor(value: string, country: Country): string {
   if (digits.startsWith('00')) return `+${digits.slice(2)}`
   const dial = dialDigits(country)
   if (dial === '1' && digits.length === 11 && digits.startsWith('1')) return `+${digits}`
-  if (dial !== '1') digits = digits.replace(/^0+/, '')
+  if (dial !== '1' && !KEEPS_LEADING_ZERO.has(dial)) digits = digits.replace(/^0+/, '')
   return `+${dial}${digits}`
 }
 

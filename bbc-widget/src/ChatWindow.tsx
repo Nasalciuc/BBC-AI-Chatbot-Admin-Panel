@@ -295,6 +295,25 @@ export function ChatWindow({
     if (atBottomRef.current) scrollToEnd(messages.length > 1)
     else setHasUnseen(true)
   }, [messages.length, streamingText, sending, agentTyping.is_typing, queued.length])
+  // The visitor's own hand on the log — a wheel or a finger moving it, a key that scrolls up — ends that
+  // window at once: the scroll that follows says where they are, and the next streamed chunk leaves them
+  // there (CodeRabbit #270: each chunk renewed the 700 ms, so reading up mid-answer was pulled back down).
+  // The log's own smooth scroll sends none of these. Passive: scrolling never waits for them.
+  useEffect(() => {
+    const el = logRef.current
+    if (!el) return
+    const stop = () => { autoScrollUntilRef.current = 0 }
+    const onWheel = (e: WheelEvent) => { if (e.deltaY < 0) stop() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'Home') stop() }
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchmove', stop, { passive: true })
+    el.addEventListener('keydown', onKey)
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchmove', stop)
+      el.removeEventListener('keydown', onKey)
+    }
+  }, [])
 
   // ── The visitor doing something on the page (presence-policy.ts) ───────────
   // Anywhere on it, not only in the chat. Capture and passive: nothing on the page is

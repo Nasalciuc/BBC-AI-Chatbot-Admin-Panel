@@ -52,6 +52,12 @@ test('a number is placed in its country: its own code first, then the country be
   assert.equal(validWhatsapp(COUNTRIES, '210 555 0100', US), '+12105550100')
   assert.equal(readablePhone(COUNTRIES, '+61412345678'), '+61 412 345 678')
   assert.equal(ownerOf(COUNTRIES, '+971501234567').code, 'AE')
+  // Italy dials its leading 0 from abroad too (CodeRabbit #270): never +39 2 1234 5678.
+  const IT = COUNTRIES.find(c => c.code === 'IT')
+  assert.equal(phoneFor('02 1234 5678', IT), '+390212345678')
+  assert.equal(validWhatsapp(COUNTRIES, '02 1234 5678', IT), '+390212345678')
+  assert.equal(phoneFor('312 345 6789', IT), '+393123456789')         // a mobile has no 0
+  assert.equal(phoneFor('0039 02 1234 5678', AU), '+390212345678')
 })
 
 test('the country beside the field is guessed from the browser, never from the number', () => {
@@ -201,6 +207,11 @@ test('E1: something fixed of the site over a third of the screen is a popup — 
   assert.equal(popups.open(() => true, [modal]), false)                // the quote form's own modal
   assert.match(hook, /if \(popups\.open\(trigger === 'quote' \?/)
   assert.match(hook, /posthog\?\.capture\('proactive_popup_held', \{ trigger,/)
+  // The answer that arrives under a popup waits for it — the quote card too, past its own form's modal
+  // (CodeRabbit #270: a site popup opened while the quote request was pending, and the card showed over it).
+  assert.match(hook, /const ignore = trigger === 'quote' \? \(el: Element\) => !!pressed && el\.contains\(pressed\) : undefined/)
+  assert.match(hook, /res\.message && popups\.open\(ignore\)\) \{\s+await untilPopupCloses\(ignore\)/)
+  assert.doesNotMatch(hook, /trigger !== 'quote' && popups\.open\(\)/)
 })
 
 test('E2: the keyboard\'s height lifts a floating panel; the browser\'s bar does not', () => {
@@ -291,4 +302,15 @@ test('an unanswered opening keeps what follows it across pages; anything else wr
   assert.equal(odd.channel, undefined)
   assert.equal(odd.lang, undefined)
   assert.equal(odd.c4, undefined)
+})
+
+test('reading back up while an answer streams is never pulled down again', () => {
+  // Each chunk renewed the log's 700 ms "it scrolls itself" window, and a visitor's own scroll inside it was
+  // read as the log's (CodeRabbit #270). A wheel or a finger on the log, or a key that scrolls up, ends it.
+  assert.match(chat, /const stop = \(\) => \{ autoScrollUntilRef\.current = 0 \}/)
+  assert.match(chat, /el\.addEventListener\('wheel', onWheel, \{ passive: true \}\)/)
+  assert.match(chat, /el\.addEventListener\('touchmove', stop, \{ passive: true \}\)/)
+  assert.match(chat, /e\.key === 'ArrowUp' \|\| e\.key === 'PageUp' \|\| e\.key === 'Home'/)
+  // The log's own smooth scroll keeps the window: an answer that lands mid-way still pulls it down.
+  assert.match(chat, /autoScrollUntilRef\.current = smooth \? Date\.now\(\) \+ 700 : 0/)
 })

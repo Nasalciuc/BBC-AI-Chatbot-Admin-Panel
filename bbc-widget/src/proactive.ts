@@ -570,10 +570,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(side ? { c4: side } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
       let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, adsTrip) : null
-      // E1: a popup of the site opened while the answer was on its way — the card waits for it to close.
-      if (!passed && !disposed && res?.show && res.message && trigger !== 'quote' && popups.open()) {
-        await untilPopupCloses()
-        passed = disposed ? 'popup' : momentPassed(trigger, before, adsTrip) ?? (popups.open() ? 'popup' : null)
+      // E1: a popup of the site opened while the answer was on its way — the card waits for it to close. The
+      // quote card too, looking past the quote form's own modal as its moment did (CodeRabbit #270).
+      const pressed = press?.form ?? null
+      const ignore = trigger === 'quote' ? (el: Element) => !!pressed && el.contains(pressed) : undefined
+      if (!passed && !disposed && res?.show && res.message && popups.open(ignore)) {
+        await untilPopupCloses(ignore)
+        passed = disposed ? 'popup' : momentPassed(trigger, before, adsTrip) ?? (popups.open(ignore) ? 'popup' : null)
       }
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
@@ -641,10 +644,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     }
 
     // E1: wait while a popup of the site covers the page — at most a minute, then the moment is gone.
-    const untilPopupCloses = () => new Promise<void>((resolve) => {
+    const untilPopupCloses = (ignore?: (el: Element) => boolean) => new Promise<void>((resolve) => {
       const until = Date.now() + 60_000
       const check = () => {
-        if (disposed || !popups.open() || Date.now() > until) return resolve()
+        if (disposed || !popups.open(ignore) || Date.now() > until) return resolve()
         setTimeout(check, 500)
       }
       setTimeout(check, 500)
