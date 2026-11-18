@@ -56,12 +56,17 @@ const SERVER_SPACE = /[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u20
 /** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, by the server's rule, else nothing.
  *  The server's spaces fold first, so the airport code still comes off when a NEL follows it ("Paris (CDG)" then
  *  U+0085), and the characters count as Python's len() counts them, in code points: a letter outside the Basic
- *  Multilingual Plane is one character there and two UTF-16 units here (CodeRabbit #269). */
+ *  Multilingual Plane is one character there and two UTF-16 units here (CodeRabbit #269). A name too short without
+ *  its code keeps the code, as the server would: "津 (NGO)" passes its rule where "津" does not. */
 function city(v: string | null | undefined): string | undefined {
   if (!v) return undefined
-  const s = v.replace(SERVER_SPACE, ' ').replace(/^ | $/g, '').replace(/ ?\([A-Za-z]{3}\)$/, '')
+  const whole = v.replace(SERVER_SPACE, ' ').replace(/^ | $/g, '')
+  return [whole.replace(/ ?\([A-Za-z]{3}\)$/, ''), whole].find(serverName)
+}
+
+function serverName(s: string): boolean {
   const n = Array.from(s).length
-  return n >= 2 && n <= 40 && NAME.test(s) ? s : undefined
+  return n >= 2 && n <= 40 && NAME.test(s)
 }
 
 /** The first of `keys` whose value reads (a page uses one spelling of each field; an unrelated

@@ -253,6 +253,7 @@ test('the ads card takes the newest of the page\'s trips that names a destinatio
   const fromAddress = tripFromUrl('?gclid=x&from=JFK')
   const fromTitle = tripFromTitle('Business class flights to Paris')
   assert.equal(hasContext(pickTrip(fromAddress, fromTitle)), false)
+  assert.equal(fromTitle?.destination_name, 'Paris')
   assert.deepEqual(pickTrip(...[fromAddress, fromTitle].filter(hasContext)), fromTitle)
   assert.match(hook, /function destinationTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\.filter\(hasContext\)\)\s+\}/)
   assert.match(hook, /const trip = trigger === 'ads' \? destinationTrip\(\) : currentTrip\(\)/)
@@ -264,6 +265,7 @@ test('a place name the server would drop names no place here either, and the tit
   const fromSite = tripFromFields({ destination_name: 'Paris / France' }, 'route_page')
   const fromTitle = tripFromTitle('Business class flights to Paris')
   assert.equal(fromSite, null)
+  assert.equal(fromTitle?.destination_name, 'Paris')
   assert.deepEqual(pickTrip(...[fromSite, fromTitle].filter(hasContext)), fromTitle)
   // The server's rule (app/models/trip_context.py, _name): letters of any script, spaces and . ' - ( ) ,
   for (const ok of ['São Paulo', 'Zürich', "St. John's", 'Washington, D.C.', 'Ho Chi Minh City', 'Tel Aviv-Yafo', '東京']) {
@@ -291,10 +293,16 @@ test('a place name the server would drop names no place here either, and the tit
   assert.equal(tripFromFields({ destination_name: '\u{20BB7}\u{20BB7}' }, 'route_page')?.destination_name, '\u{20BB7}\u{20BB7}')
   assert.equal(tripFromFields({ destination_name: '\u{20BB7}'.repeat(40) }, 'route_page')?.destination_name, '\u{20BB7}'.repeat(40))
   assert.equal(tripFromFields({ destination_name: '\u{20BB7}'.repeat(41) }, 'route_page'), null)
+  // CodeRabbit #269, round 5: a name too short without its airport code keeps the code, as the server would.
+  assert.equal(tripFromFields({ destination_name: '津 (NGO)\u0085' }, 'route_page')?.destination_name, '津 (NGO)')
+  assert.equal(tripFromFields({ destination_name: '津 (NGO)' }, 'route_page')?.destination_name, '津 (NGO)')
+  assert.equal(tripFromUrl('?to-0=%E6%B4%A5+%28NGO%29').destination_name, '津 (NGO)')
+  assert.equal(tripFromFields({ destination_name: 'Paris (CDG)' }, 'route_page')?.destination_name, 'Paris')
   // The reviewer's case: a one-letter name in the address gives way to the title's destination.
   const oneLetter = tripFromUrl('?gclid=x&to-0=%F0%A0%AE%B7')
   const title = tripFromTitle('Business class flights to Paris')
   assert.equal(oneLetter, null)
+  assert.equal(title?.destination_name, 'Paris')
   assert.deepEqual(pickTrip(...[oneLetter, title].filter(hasContext)), title)
 })
 
