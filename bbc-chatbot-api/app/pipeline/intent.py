@@ -66,12 +66,20 @@ _CLOSING_RE = re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)
 # A goodbye is a message that says only goodbye. "thank you price matters" (19 Nov, Sydney → Amman) answered
 # "what's your email?" with a price worry, was heard as a goodbye, and the client was told "We'll be in
 # touch soon" with no contact on file; "thanks, how much?" or "no thanks" are not goodbyes either.
+# Goodbyes said with no "thank" or "bye" in them: a goodbye on their own ("Have a nice day", "I appreciate
+# your help", "Take care") as much as beside a thank-you (CodeRabbit #270). "nothing else" and "for now" are
+# not here: alone, they answer a question ("anything else?") as often as they close.
+_GOODBYE_ALONE = (
+    r"i?\s*appreciate\s+(?:it|that|your\s+help)|take\s+care"
+    r"|have\s+a\s+(?:good|nice|great|lovely)\s+(?:day|night|evening|weekend|one)|that\s+is\s+all"
+)
+_GOODBYE_ALONE_RE = re.compile(r"\b(?:" + _GOODBYE_ALONE + r")\b", re.I)
 _GOODBYE_PHRASES_RE = re.compile(
-    r"\b(?:thank\s*(?:you|u|ya)|thanks?|thx|tysm|ty|i?\s*appreciate\s+(?:it|that|your\s+help)"
+    r"\b(?:thank\s*(?:you|u|ya)|thanks?|thx|tysm|ty"
     r"|for\s+(?:all\s+)?(?:your|the)\s+(?:help|time|info(?:rmation)?|assistance)|for\s+everything"
-    r"|good\s*bye|bye(?:\s+bye)?|see\s+(?:you|ya)(?:\s+(?:soon|later))?|take\s+care|for\s+now"
-    r"|have\s+a\s+(?:good|nice|great|lovely)\s+(?:day|night|evening|weekend|one)"
-    r"|that.?s\s+(?:all|it|everything)(?:\s+i\s+(?:need(?:ed)?|want(?:ed)?))?|that\s+is\s+all|nothing\s+else)\b",
+    r"|good\s*bye|bye(?:\s+bye)?|see\s+(?:you|ya)(?:\s+(?:soon|later))?|for\s+now"
+    r"|that.?s\s+(?:all|it|everything)(?:\s+i\s+(?:need(?:ed)?|want(?:ed)?))?|nothing\s+else|"
+    + _GOODBYE_ALONE + r")\b",
     re.I,
 )
 _GOODBYE_FILLER = frozenset({
@@ -82,9 +90,10 @@ _GOODBYE_FILLER = frozenset({
 
 def is_only_goodbye(message: str) -> bool:
     """True when the message thanks or says goodbye and says nothing else ("Thank you so much!", "Bye for
-    now", "That's all I needed"). Anything more — a question, a worry, a "no" — is answered, not closed."""
+    now", "That's all I needed", "Have a nice day"). Anything more — a question, a worry, a "no" — is
+    answered, not closed."""
     lower = (message or "").lower().replace("’", "'")
-    if not _CLOSING_RE.search(lower):
+    if not (_CLOSING_RE.search(lower) or _GOODBYE_ALONE_RE.search(lower)):
         return False
     rest = _GOODBYE_PHRASES_RE.sub(" ", lower)
     return all(word in _GOODBYE_FILLER for word in re.findall(r"[^\W_]+|[@?]", rest))

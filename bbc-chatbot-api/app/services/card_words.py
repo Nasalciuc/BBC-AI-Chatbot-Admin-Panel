@@ -163,29 +163,19 @@ def before_you_go(line: Optional[str], lang: Optional[str] = None) -> tuple[str,
     return text, [button("whatsapp", lang), button("email", lang)]
 
 
-# A goodbye from a client who left no way to reach them, after the before-you-go ask was already said:
-# nothing is promised ("We'll be in touch soon" was, to a client nobody could reach: 19 Nov, Sydney →
-# Amman). With a channel they turned down, no ask at all.
-_GOODBYE_NO_CONTACT: dict[str, tuple[str, str]] = {
-    "en": ("Thanks for stopping by. Whenever you'd like the fares, leave your WhatsApp or email here and an "
-           "agent will send them.",
-           "Thanks for stopping by — whenever you'd like the fares, just write here."),
-    "es": ("Gracias por su visita. Cuando quiera las tarifas, deje aquí su WhatsApp o su correo y un agente se "
-           "las enviará.",
-           "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí."),
-    "fr": ("Merci de votre visite. Quand vous voudrez les tarifs, laissez ici votre WhatsApp ou votre e-mail et "
-           "un agent vous les enverra.",
-           "Merci de votre visite : quand vous voudrez les tarifs, écrivez-nous ici."),
+# A goodbye from a client who left no way to reach them, once the before-you-go ask was said (it is said once
+# per chat) or when they turned a channel down: nothing is promised ("We'll be in touch soon" was, to a client
+# nobody could reach: 19 Nov, Sydney → Amman) and nothing is asked again (CodeRabbit #270).
+_GOODBYE_NO_CONTACT: dict[str, str] = {
+    "en": "Thanks for stopping by — whenever you'd like the fares, just write here.",
+    "es": "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí.",
+    "fr": "Merci de votre visite : quand vous voudrez les tarifs, écrivez-nous ici.",
 }
 
 
-def goodbye_without_contact(lang: Optional[str] = None, *, ask: bool = True) -> tuple[str, list[dict]]:
-    """The goodbye that promises nothing, for a client with no contact on file: the channels offered once
-    more (with their buttons), or — when the client turned a channel down — none."""
-    with_ask, without = _GOODBYE_NO_CONTACT[_lang(lang)]
-    if not ask:
-        return without, []
-    return with_ask, [button("whatsapp", lang), button("email", lang)]
+def goodbye_without_contact(lang: Optional[str] = None) -> str:
+    """The goodbye that promises nothing and asks nothing, for a client with no contact on file."""
+    return _GOODBYE_NO_CONTACT[_lang(lang)]
 
 
 def row_buttons(lang: Optional[str] = None) -> list[dict]:

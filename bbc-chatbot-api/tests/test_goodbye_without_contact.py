@@ -7,7 +7,7 @@ number: nobody could be in touch. Three things changed:
 
 - a goodbye is a message that says only goodbye ("thank you price matters" is a price worry);
 - a goodbye with no contact on file asks where the agent should write (WhatsApp or email, with the
-  buttons), once; a later one promises nothing;
+  buttons), once; a later one promises nothing and asks nothing again;
 - in a chat with no form, once the route is known, the email is the next question.
 
 Every message, trip and contact here is invented."""
@@ -46,10 +46,19 @@ def _health():
 @pytest.mark.parametrize("text", [
     "Thank you so much!", "Bye for now", "Goodbye", "That's all I needed", "ok thanks", "thank you",
     "thank you, have a nice day", "Thanks Alex", "thanks a lot", "Thanks for your help!", "thank you, bye",
+    # no "thank" and no "bye" in them (CodeRabbit #270)
+    "Have a nice day", "I appreciate your help", "Take care!", "That is all", "Really appreciate it",
 ])
 def test_a_plain_thanks_or_goodbye_is_a_goodbye(text):
     assert is_only_goodbye(text)
     assert detect_intent(text, use_llm=False) == Intent.CLOSING
+
+
+def test_nothing_else_alone_answers_a_question_and_is_no_goodbye():
+    """"Anything else?" — "nothing else": alone, it closes the question, not the chat."""
+    assert not is_only_goodbye("nothing else")
+    assert detect_intent("nothing else", use_llm=False) == Intent.GENERAL_QUESTION
+    assert is_only_goodbye("thanks, nothing else")
 
 
 @pytest.mark.parametrize("text, intent", [
@@ -58,6 +67,8 @@ def test_a_plain_thanks_or_goodbye_is_a_goodbye(text):
     ("no thanks", Intent.GENERAL_QUESTION),
     ("thanks, I'll wait for the email", Intent.GENERAL_QUESTION),
     ("thanks, my email is client@example.com", Intent.GENERAL_QUESTION),
+    ("take care of the booking please", Intent.NEW_BOOKING),
+    ("I appreciate your help, how long is the flight?", Intent.NEW_BOOKING),
 ])
 def test_a_thanks_that_says_more_is_answered_not_closed(text, intent):
     assert not is_only_goodbye(text)
@@ -85,10 +96,12 @@ def _saved(text_box):
 async def test_the_first_goodbye_asks_where_to_write_with_both_buttons():
     said: list = []
     claim = AsyncMock(return_value=True)
+    guard = AsyncMock(return_value=None)
     with patch.object(card_buttons, "_claim", new=claim), \
          patch("app.services.conversation_service.add_message", new=_saved(said)):
-        out = await card_buttons.goodbye_without_contact(_CID, {}, VisitorInfo(), _LEAD)
+        out = await card_buttons.goodbye_without_contact(_CID, {}, VisitorInfo(), _LEAD, before_save=guard)
     claim.assert_awaited_once_with(_CID, card_buttons.BEFORE_YOU_GO_KEY)
+    guard.assert_awaited_once()
     assert out is not None and out.message.startswith("Before you go — an agent can send you the fares for ")
     assert "WhatsApp or email?" in out.message
     assert [b["kind"] for b in out.buttons] == ["whatsapp", "email"]
@@ -100,16 +113,35 @@ async def test_the_first_goodbye_asks_where_to_write_with_both_buttons():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("meta, claimed", [({card_buttons.BEFORE_YOU_GO_KEY: "2026-11-19T00:27:26Z"}, True),
                                            ({}, False)])
-async def test_a_later_goodbye_promises_nothing(meta, claimed):
-    """Asked already (here, or by the before-you-go as the client left): no second ask, no promise."""
+async def test_a_later_goodbye_promises_nothing_and_asks_nothing_again(meta, claimed):
+    """Asked already (here, or by the before-you-go as the client left; a claim that fails counts as said):
+    no second ask, no buttons, no promise (CodeRabbit #270)."""
     said: list = []
     with patch.object(card_buttons, "_claim", new=AsyncMock(return_value=claimed)), \
          patch("app.services.conversation_service.add_message", new=_saved(said)):
         out = await card_buttons.goodbye_without_contact(_CID, meta, VisitorInfo(), _LEAD)
-    assert out.message == ("Thanks for stopping by. Whenever you'd like the fares, leave your WhatsApp or email "
-                           "here and an agent will send them.")
-    assert [b["kind"] for b in out.buttons] == ["whatsapp", "email"]
+    assert out.message == "Thanks for stopping by — whenever you'd like the fares, just write here."
+    assert not out.buttons
+    assert said == [("ai", out.message)]
     assert card_buttons.CARD_BUTTONS_HEALTH["goodbye_no_contact"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_agent_who_took_the_chat_answers_it_and_the_goodbye_is_not_said():
+    """The turn's agent guard runs where the goodbye is saved (CodeRabbit #270)."""
+    from app.models.chat import ChatResponse
+
+    said: list = []
+    queued = ChatResponse(conversation_id=_CID, message="One moment please, connecting you with a specialist...",
+                          type="queued", model_used="none")
+    guard = AsyncMock(return_value=queued)
+    before = dict(card_buttons.CARD_BUTTONS_HEALTH)
+    with patch.object(card_buttons, "_claim", new=AsyncMock(return_value=True)), \
+         patch("app.services.conversation_service.add_message", new=_saved(said)):
+        out = await card_buttons.goodbye_without_contact(_CID, {}, VisitorInfo(), _LEAD, before_save=guard)
+    guard.assert_awaited_once()
+    assert out is queued and said == []
+    assert card_buttons.CARD_BUTTONS_HEALTH == before
 
 
 @pytest.mark.asyncio
@@ -138,10 +170,13 @@ async def test_with_a_way_to_reach_them_the_usual_goodbye_stands(visitor, meta):
 
 @pytest.mark.asyncio
 async def test_the_goodbye_speaks_the_clients_language():
-    with patch.object(card_buttons, "_claim", new=AsyncMock(return_value=False)), \
+    asked = {"client_lang": "es", card_buttons.BEFORE_YOU_GO_KEY: "2026-11-19T00:27:26Z"}
+    with patch.object(card_buttons, "_claim", new=AsyncMock(return_value=True)), \
          patch("app.services.conversation_service.add_message", new=_saved([])):
-        out = await card_buttons.goodbye_without_contact(_CID, {"client_lang": "es"}, VisitorInfo(), _LEAD)
-    assert out.message.startswith("Gracias por su visita.") and [b["label"] for b in out.buttons] == ["WhatsApp", "Correo"]
+        first = await card_buttons.goodbye_without_contact(_CID, {"client_lang": "es"}, VisitorInfo(), _LEAD)
+        later = await card_buttons.goodbye_without_contact(_CID, asked, VisitorInfo(), _LEAD)
+    assert first.message.startswith("Antes de irse:") and [b["label"] for b in first.buttons] == ["WhatsApp", "Correo"]
+    assert later.message == "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí." and not later.buttons
 
 
 # ── The turn: "thank you" with no contact never reaches the goodbye template ──
@@ -150,15 +185,20 @@ class _Generated(Exception):
     """The turn reached the model (or the usual goodbye template): the step under test is behind it."""
 
 
-def _turn(message, *, conv_extra=None, visitor=None, claimed=True):
+def _turn(message, *, conv_extra=None, visitor=None, claimed=True, mode_at_save="ai", reserved=False):
+    """`mode_at_save`/`reserved`: the conversation as the agent guard reads it when the goodbye is saved
+    (an agent may have taken it while the turn ran; `reserved` is the silent reservation)."""
     from app.pipeline.orchestrator import _pipeline
 
     conv = {"id": _CID, "mode": "ai", "status": "active", "tunnel": "sales",
             "metadata": {"proactive_trigger": "quote"}, **(conv_extra or {})}
+    fresh = {**conv, "mode": mode_at_save,
+             "metadata": {**conv["metadata"], **({"announce_pending": True} if reserved else {})}}
     history = [{"role": "ai", "content": "A personal trip to Amman. Where should they send the private fare "
                                           "options — what's your email?"},
                {"role": "user", "content": message}]
     gen = MagicMock(side_effect=_Generated("the model's turn: stop here"))
+    claim = AsyncMock(return_value=claimed)
     said: list = []
 
     async def run():
@@ -176,7 +216,11 @@ def _turn(message, *, conv_extra=None, visitor=None, claimed=True):
                                       new=AsyncMock(return_value=dict(_LEAD))))
             stack.enter_context(patch("app.pipeline.orchestrator.lead_service.update_lead_from_entities",
                                       new=AsyncMock(return_value=True)))
-            stack.enter_context(patch.object(card_buttons, "_claim", new=AsyncMock(return_value=claimed)))
+            stack.enter_context(patch.object(card_buttons, "_claim", new=claim))
+            stack.enter_context(patch("app.pipeline.orchestrator.db.get_conversation_mode",
+                                      new=AsyncMock(return_value=mode_at_save)))
+            stack.enter_context(patch("app.pipeline.orchestrator.db.get_conversation_simple",
+                                      new=AsyncMock(return_value=fresh)))
             stack.enter_context(patch("app.pipeline.orchestrator.generate_response", new=gen))
             try:
                 return await _pipeline(_CID, message, "sales", visitor or VisitorInfo(), None,
@@ -184,6 +228,7 @@ def _turn(message, *, conv_extra=None, visitor=None, claimed=True):
             except _Generated:
                 return None
 
+    run.claim = claim
     return run, gen, said
 
 
@@ -196,6 +241,27 @@ async def test_thank_you_with_no_contact_asks_where_to_write_instead_of_saying_g
     assert [b["kind"] for b in resp.buttons] == ["whatsapp", "email"]
     assert ("ai", resp.message) in said
     assert all("in touch" not in text for _role, text in said)
+
+
+@pytest.mark.asyncio
+async def test_an_agent_who_took_the_chat_during_the_turn_gets_it_without_the_goodbye():
+    """The agent took the chat while the turn ran: the goodbye was on its way (the once-per-chat claim
+    was made) and is neither saved nor returned (CodeRabbit #270)."""
+    run, gen, said = _turn("thank you", mode_at_save="human")
+    resp = await run()
+    run.claim.assert_awaited_once()
+    gen.assert_not_called()
+    assert resp.type == "queued" and resp.message_id is None
+    assert not [text for role, text in said if role == "ai"]
+
+
+@pytest.mark.asyncio
+async def test_a_silent_reservation_still_gets_the_goodbye():
+    run, gen, said = _turn("thank you", mode_at_save="human", reserved=True)
+    resp = await run()
+    gen.assert_not_called()
+    assert resp.message.startswith("Before you go — an agent can send you the fares for ")
+    assert ("ai", resp.message) in said
 
 
 @pytest.mark.asyncio
@@ -242,6 +308,10 @@ def test_a_card_chat_asks_the_email_as_soon_as_the_route_is_known():
     (_ROUTE_ONLY, _SO_FAR + [{"role": "ai", "content": "Where should they send the options — your email?"},
                              {"role": "user", "content": "thank you price matters"}],
      {"proactive_trigger": "quote"}, None),
+    # asked in Spanish, in the middle of a longer reply
+    (_ROUTE_ONLY, _SO_FAR + [{"role": "ai", "content": "Ammán, perfecto. ¿Cuál es su correo? Así el agente le "
+                                                       "envía las opciones."}],
+     {"proactive_trigger": "quote"}, None),
     # the route is not known yet
     ({"origin_code": "SYD", "score": 5}, _SO_FAR[:2], {"proactive_trigger": "quote"}, None),
     # a chat with a form behind it keeps its order
@@ -251,3 +321,11 @@ def test_a_card_chat_asks_the_email_as_soon_as_the_route_is_known():
 ])
 def test_the_email_is_not_pushed_otherwise(lead, history, meta, visitor):
     assert "Ask next: the email" not in _prompt(lead, history, meta, visitor)
+
+
+def test_an_email_named_beside_another_question_is_no_ask():
+    """"Your consultant can email the options. Where are you flying to?" asked the destination, not the
+    email: once the route is known, the email is still the next question (CodeRabbit #270)."""
+    history = [{"role": "ai", "content": "Your consultant can email the options. Where are you flying to?"},
+               {"role": "user", "content": "sydney to amman"}]
+    assert "Ask next: the email — in THIS reply" in _prompt(_ROUTE_ONLY, history, {"proactive_trigger": "quote"})

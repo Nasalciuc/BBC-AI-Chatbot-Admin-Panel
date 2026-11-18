@@ -954,14 +954,17 @@ def team_line(now=None) -> str:
 
 
 _EMAIL_ASK_RE = _re.compile(r"\b(?:e-?mail|correo|courriel)\b", _re.I)
+_QUESTION_RE = _re.compile(r"[^.!?\n]*\?")
 
 
 def _email_asked(history: Optional[list[dict]]) -> bool:
-    """Alex has already asked for the email in this chat (its words name it in a question)."""
+    """Alex has already asked for the email in this chat: one of its questions names it ("What's your
+    email?"). An email named beside another question is no ask: "Your consultant can email the options.
+    Where are you flying to?" (CodeRabbit #270)."""
     for m in history or []:
         if m.get("role") in ("ai", "assistant"):
             text = str(m.get("content") or "")
-            if "?" in text and _EMAIL_ASK_RE.search(text):
+            if any(_EMAIL_ASK_RE.search(question) for question in _QUESTION_RE.findall(text)):
                 return True
     return False
 

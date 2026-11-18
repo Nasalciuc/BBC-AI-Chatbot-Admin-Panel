@@ -307,6 +307,26 @@ async def _persist_fallback_reply(cid: str, text: str, reason: str) -> None:
         )
 
 
+async def _taken_by_agent(cid: str) -> Optional[ChatResponse]:
+    """The reply for a turn an agent took while the pipeline was running, or None when the AI may answer:
+    never let AI and human work in parallel. Exception: silent reservation (announce_pending) — AI serves
+    the visitor until the operator sends their first message or the 30s timeout fires."""
+    current_mode = await db.get_conversation_mode(cid)
+    _fresh_guard = await db.get_conversation_simple(cid) or {}
+    _silent_reservation = bool(
+        (_fresh_guard.get("metadata") or {}).get("announce_pending")
+    )
+    if current_mode == "human" and not _silent_reservation:
+        logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
+        return ChatResponse(
+            conversation_id=cid,
+            message="One moment please, connecting you with a specialist...",
+            type="queued",
+            model_used="none",
+        )
+    return None
+
+
 async def process_message(
     conversation_id: Optional[str],
     message: str,
@@ -1515,6 +1535,7 @@ async def _pipeline(
     # The goodbye template promised "We'll be in touch soon" to a client with no email and no number
     # (19 Nov, Sydney → Amman): the first goodbye now asks where the agent should write, with the
     # WhatsApp and Email buttons; a later one promises nothing (card_buttons.goodbye_without_contact).
+    # An agent who took the chat meanwhile answers it: the guard runs where the goodbye is saved.
     if intent == Intent.CLOSING and tunnel == "sales":
         from app.pipeline.card_buttons import goodbye_without_contact
         from app.pipeline.entity_extractor import current_contact_channel
@@ -1522,9 +1543,11 @@ async def _pipeline(
         _bye = await goodbye_without_contact(
             cid, _conv_meta, visitor, lead if isinstance(lead, dict) else None,
             current_contact_channel(lead if isinstance(lead, dict) else None, entities),
+            before_save=functools.partial(_taken_by_agent, cid),
         )
         if _bye is not None:
-            logger.info(f"[{cid}] Goodbye with no contact on file: asked where to write, nothing promised")
+            if _bye.type != "queued":
+                logger.info(f"[{cid}] Goodbye with no contact on file: nothing promised")
             if _persist_state is not None and _bye.message_id:
                 _persist_state["ai_persisted"] = True
             return _bye
@@ -1869,22 +1892,11 @@ async def _pipeline(
         )
 
     # Guard: if an agent claimed this conversation while the pipeline was running,
-    # discard the AI response — never let AI and human work in parallel.
-    # Exception: silent reservation (announce_pending) — AI serves the visitor
-    # until the operator sends their first message or 30s timeout fires.
-    current_mode = await db.get_conversation_mode(cid)
-    _fresh_guard = await db.get_conversation_simple(cid) or {}
-    _silent_reservation = bool(
-        (_fresh_guard.get("metadata") or {}).get("announce_pending")
-    )
-    if current_mode == "human" and not _silent_reservation:
-        logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
-        return ChatResponse(
-            conversation_id=cid,
-            message="One moment please, connecting you with a specialist...",
-            type="queued",
-            model_used="none",
-        )
+    # discard the AI response — never let AI and human work in parallel (silent
+    # reservation excepted: _taken_by_agent).
+    _taken = await _taken_by_agent(cid)
+    if _taken is not None:
+        return _taken
 
     # ── STEP 7.5: Summary → Confirm → CRM → Close ────────────
     # STATE A: collection complete, summary not shown → show template

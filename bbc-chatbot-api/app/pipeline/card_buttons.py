@@ -28,7 +28,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from app.models.chat import ChatRequest, ChatResponse
 
@@ -372,15 +372,20 @@ async def before_you_go(cid: str) -> dict:
 
 async def goodbye_without_contact(
     cid: str, meta: dict, visitor, lead: Optional[dict], wishes: Optional[str] = None,
+    before_save: Optional[Callable[[], Awaitable[Optional[ChatResponse]]]] = None,
 ) -> Optional[ChatResponse]:
     """A goodbye ("thank you", "bye") from a sales client who left no way to reach them, or None when a
     contact is on file (the usual goodbye is true then).
 
     19 Nov, Sydney → Amman: the client gave the whole trip, was asked for the email once, thanked twice, and
     was told "Your search is in expert hands. We'll be in touch soon" — with no email and no number, by
-    nobody. Here the first goodbye gets the before-you-go ask with its WhatsApp and Email buttons (said once
-    per chat, whichever of the two says it first: BEFORE_YOU_GO_KEY); a later one an honest goodbye that
-    promises nothing and leaves the buttons. A client who turned a channel down is not asked again."""
+    nobody. Here the first goodbye gets the before-you-go ask with its WhatsApp and Email buttons, said once
+    per chat whichever of the two says it first (BEFORE_YOU_GO_KEY: a claim that fails counts as said, as for
+    the before-you-go); a later one, or one from a client who turned a channel down, an honest goodbye that
+    promises nothing and asks nothing again (CodeRabbit #270).
+
+    `before_save` (the turn's agent guard) is awaited just before the message is saved: a reply it returns
+    (an agent took the chat while the turn ran) is returned instead, and the goodbye is not said."""
     from app.pipeline.entity_extractor import refused_contact_fields
     from app.services import card_words, proactive
 
@@ -390,17 +395,18 @@ async def goodbye_without_contact(
         return None  # a number the agent checks is a way to reach them
     meta = meta if isinstance(meta, dict) else {}
     lang = _lang(meta)
-    if refused_contact_fields(wishes):
-        text, buttons = card_words.goodbye_without_contact(lang, ask=False)
-        CARD_BUTTONS_HEALTH["goodbye_no_contact"] += 1
-    elif meta.get(BEFORE_YOU_GO_KEY) or not await _claim(cid, BEFORE_YOU_GO_KEY):
-        text, buttons = card_words.goodbye_without_contact(lang)
-        CARD_BUTTONS_HEALTH["goodbye_no_contact"] += 1
+    if refused_contact_fields(wishes) or meta.get(BEFORE_YOU_GO_KEY) or not await _claim(cid, BEFORE_YOU_GO_KEY):
+        text, buttons, kind = card_words.goodbye_without_contact(lang), [], "goodbye_no_contact"
     else:
         trip = _lead_trip(lead)
         if trip is None or not proactive.trip_line(trip, lang):
             trip = _trip(meta)
         text, buttons = card_words.before_you_go(proactive.trip_line(trip, lang), lang)
-        CARD_BUTTONS_HEALTH["goodbye_asked"] += 1
+        kind = "goodbye_asked"
+    if before_save is not None:
+        held = await before_save()
+        if held is not None:
+            return held
+    CARD_BUTTONS_HEALTH[kind] += 1
     row = await _save(cid, "ai", text, MODEL_USED)
     return _response(cid, row, text, buttons, MODEL_USED)
