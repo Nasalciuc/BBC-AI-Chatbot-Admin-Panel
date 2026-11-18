@@ -274,6 +274,14 @@ test('a place name the server would drop names no place here either, and the tit
   }
   // "Chicago (CHI)" still reads as Chicago.
   assert.equal(tripFromUrl('?from-0=Chicago+%28CHI%29&to-0=London+%28LON%29').origin_name, 'Chicago')
+  // CodeRabbit #269, round 3: the spaces are the server's (Python's str.split()). U+0085 and U+001C–U+001F fold
+  // into a space there and here; U+FEFF is no space there, so it fails the name rule here too.
+  assert.equal(tripFromFields({ destination_name: 'São\u0085Paulo' }, 'route_page')?.destination_name, 'São Paulo')
+  assert.equal(tripFromFields({ destination_name: '\u001fTel\u001c Aviv\u0085' }, 'route_page')?.destination_name, 'Tel Aviv')
+  assert.equal(tripFromUrl('?to-0=S%C3%A3o%C2%85Paulo').destination_name, 'São Paulo')
+  assert.equal(tripFromFields({ destination_name: '\ufeffParis' }, 'route_page'), null)
+  assert.equal(tripFromFields({ destination_name: 'Paris\ufeff' }, 'route_page'), null)
+  assert.equal(tripFromFields({ destination_name: 'Paris /\u0085France' }, 'route_page'), null)
 })
 
 test('an ads answer whose destination left the page meanwhile is dropped and measured', () => {
@@ -315,7 +323,10 @@ test('a moment the server switched off on its own leaves the visit\'s moment to 
   // The hook: the answer "trigger_off" marks the moment off and gives the visit its moment back; any other
   // "no" (the feature off, the control arm, no answer) still ends the visit's moments, as before.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\), trigger\)\)\s+\/\/[^\n]*\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
+  // The tab keeps the whole list this visit knows (CodeRabbit #269, round 3): a moment whose own write was refused
+  // rides on the next write that goes through.
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
+  assert.doesNotMatch(ask, /ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\)/)
   assert.ok(ask.indexOf('TRIGGER_OFF_ARM') > ask.indexOf("posthog?.capture('proactive_eligible'"), 'measured first')
   // The list holds in the page's memory too: with the tab's storage refused, the switched-off moment is not asked
   // again every second (CodeRabbit #269, round 2); the storage carries it to the next pages.
@@ -324,6 +335,11 @@ test('a moment the server switched off on its own leaves the visit\'s moment to 
   // A stop the site says while an answer is on its way replaces the reservation, so trigger_off cannot free a
   // visit whose form was sent.
   assert.match(hook, /const done = ssGet\(DONE_KEY\)\s+if \(!done \|\| done === 'asked'\) ssSet\(DONE_KEY, stop\)/)
+  // So does the chat the visitor opens while it is on its way (CodeRabbit #269, round 3): 'chat' replaces 'asked'
+  // and stays, and an answer that gives the visit its moment back frees only its own 'asked'. A used moment
+  // ('shown') or a site stop keeps its word.
+  const chatEffect = hook.slice(hook.indexOf('// The visitor opened the chat themselves'), hook.indexOf('// The site says the visitor sent'))
+  assert.match(chatEffect, /if \(step === 'buttons'\) return\s+const done = ssGet\(DONE_KEY\)\s+if \(!done \|\| done === 'asked'\) ssSet\(DONE_KEY, 'chat'\)\s+\}, \[step\]\)/)
 })
 
 // ── "In view": the visitor's seconds, from when the page showed (18 Nov: the Kayak card came at ~9 s) ──

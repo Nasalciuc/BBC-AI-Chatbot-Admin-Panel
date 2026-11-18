@@ -272,9 +272,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   const stepRef = useRef(step)
   stepRef.current = step
 
-  // The visitor opened the chat themselves (the corner button) before any moment: not this visit.
+  // The visitor opened the chat themselves (the corner button) before any moment: not this visit. A moment only
+  // asked for ('asked': its answer still on its way) gives way to it, as to the site's stop below, so an answer
+  // that gives the visit its moment back (trigger_off) cannot undo the chat they opened (CodeRabbit #269).
   useEffect(() => {
-    if (step !== 'buttons' && !ssGet(DONE_KEY)) ssSet(DONE_KEY, 'chat')
+    if (step === 'buttons') return
+    const done = ssGet(DONE_KEY)
+    if (!done || done === 'asked') ssSet(DONE_KEY, 'chat')
   }, [step])
 
   // The site says the visitor sent the quote request, or reached out by phone, WhatsApp or email
@@ -512,7 +516,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
         // in this visit, and the visit keeps its one moment for the others (the reader may still come).
         offInPage = offAfter(offInPage, trigger)
-        ssSet(OFF_KEY, offAfter(ssGet(OFF_KEY), trigger))
+        // The whole list this visit knows, not the tab's alone: a moment whose own write was refused rides on the
+        // next write that goes through (CodeRabbit #269).
+        ssSet(OFF_KEY, offMoments().join(','))
         // Only the reservation this answer owned: a stop the site said meanwhile ('sent') stays.
         if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
         fired = false

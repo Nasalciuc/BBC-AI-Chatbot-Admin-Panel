@@ -48,11 +48,15 @@ const word = (v: string | null) => (v && WORD.test(v.trim()) ? v.trim().toLowerC
  *  letters, spaces and . ' - ( ) , only. A name it would drop is dropped here too, so the card never counts on a
  *  destination the server's words will not say ("Paris / France": CodeRabbit #269). */
 const NAME = /^\p{L}[\p{L} .'(),-]*$/u
+/** The server's whitespace (`_name`: " ".join(v.split()), Python's str.isspace). JS's \s leaves out U+0085 and
+ *  U+001C–U+001F and takes in U+FEFF: folding by it, "São\u0085Paulo" was dropped here and kept there, and a U+FEFF
+ *  went the other way. Folded by the server's set, a U+FEFF stays and fails the name rule on both (CodeRabbit #269). */
+const SERVER_SPACE = /[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g
 
 /** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, by the server's rule, else nothing. */
 function city(v: string | null | undefined): string | undefined {
   if (!v) return undefined
-  const s = v.replace(/\s*\([A-Za-z]{3}\)\s*$/, '').replace(/\s+/g, ' ').trim()
+  const s = v.replace(/\s*\([A-Za-z]{3}\)\s*$/, '').replace(SERVER_SPACE, ' ').replace(/^ | $/g, '')
   return s.length >= 2 && s.length <= 40 && NAME.test(s) ? s : undefined
 }
 
