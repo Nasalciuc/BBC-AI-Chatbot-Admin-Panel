@@ -20,6 +20,7 @@ const NOW = new Date('2026-11-16T10:00:00Z')
 
 test('why the chat opened by itself', () => {
   assert.equal(openedByText({ proactive_trigger: 'kayak' }, NOW), 'By itself: the client came from Kayak')
+  assert.equal(openedByText({ proactive_trigger: 'ads' }, NOW), 'By itself: the client came from a Google or Bing ad')
   assert.equal(openedByText({ proactive_trigger: 'quote' }, NOW), 'By itself: the client pressed “Get free quote” and stopped')
   assert.equal(openedByText({ proactive_trigger: 'reader' }, NOW), 'By itself: the client read the page for a while')
   assert.equal(openedByText({ proactive_trigger: 'exit' }, NOW), 'By itself: the client was about to leave')
