@@ -53,17 +53,18 @@ _CALL_ME_NAME_RE = re.compile(
 _PHONE_IN_TEXT_RE = re.compile(r"(\+?\d[\d\-.\s()]{6,}\d)")
 
 
-def find_phone(message: str) -> Optional[str]:
-    """The number the client typed, normalized to E.164 when possible."""
+def find_phone(message: str, country: Optional[str] = None) -> Optional[str]:
+    """The number the client typed, normalized to E.164 when possible; `country`
+    places a number typed the local way (app.services.phone_country)."""
     m = _PHONE_IN_TEXT_RE.search(message or "")
     if not m:
         return None
     from app.services.crm import format_phone_international
 
-    return format_phone_international(m.group(1)) or None
+    return format_phone_international(m.group(1), country) or None
 
 
-def detect_callback_request(message: str) -> Optional[dict]:
+def detect_callback_request(message: str, country: Optional[str] = None) -> Optional[dict]:
     """{'number': str|None, 'cue': 'words'|'number'} or None.
 
     A bare phone number counts: post-greeting, a client who types only
@@ -74,9 +75,9 @@ def detect_callback_request(message: str) -> Optional[dict]:
     text = (message or "").replace("’", "'").replace("‘", "'").strip()
     if not text or _NOT_A_REQUEST_RE.search(text):
         return None
-    if _CALL_ME_NAME_RE.search(text) and not find_phone(text):
+    if _CALL_ME_NAME_RE.search(text) and not find_phone(text, country):
         return None                      # "call me Alex" is a name, not a request
-    phone = find_phone(text)
+    phone = find_phone(text, country)
     if _CALL_CUE_RE.search(text):
         return {"number": phone, "cue": "words"}
     if phone and len(text.split()) <= 6 and _is_phone_shaped(text):
@@ -95,6 +96,7 @@ _PHONE_SHAPE_RE = re.compile(
     r"|\b\d{3}[\s.-]\d{3}[\s.-]\d{4}\b"
     r"|\(\d{3}\)\s*\d{3}[\s.-]?\d{4}"
     r"|\b\d{10,}\b"
+    r"|\b0[1-9](?:[\s.-]?\d){7,11}\b"  # local, with its trunk 0 ("0412 345 678"; #3296)
 )
 _DATE_SHAPE_RE = re.compile(
     r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.]\d{1,2}([/.]\d{2,4})?\b"

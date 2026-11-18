@@ -531,6 +531,11 @@ async def _pipeline(
     from app.pipeline.language import current_lang, turn_lang
 
     _client_lang = turn_lang(message, ((conv or {}).get("metadata") or {}).get("client_lang"))
+    # Where the client probably is, for a number typed without its country
+    # code (app.services.phone_country; #3296).
+    from app.services.phone_country import country_hint
+
+    _phone_country = country_hint({**(((conv or {}).get("metadata")) or {}), **(metadata or {})})
     current_lang.set(_client_lang)
     if _client_lang and _client_lang != ((conv or {}).get("metadata") or {}).get("client_lang"):
         # One key merged server-side (no read-modify-write that could undo a
@@ -655,7 +660,7 @@ async def _pipeline(
     # Step 3.45 owns those turns.
     from app.pipeline.callback_intent import detect_callback_request as _cb_probe
 
-    _callback_pending = _cb_probe(message)
+    _callback_pending = _cb_probe(message, _phone_country)
     if _callback_pending and _conv_meta.get("summary_shown_at"):
         logger.info(f"[{cid}] Callback request during summary wait — it wins")
 
@@ -1402,6 +1407,7 @@ async def _pipeline(
     # usually arrives on a turn that carries no new travel field.
     has_signals = any(entities.get(k) for k in lead_service.SIGNAL_KEYS)
     if has_useful or has_signals:
+        entities["_phone_country"] = _phone_country
         await lead_service.update_lead_from_entities(cid, entities)
         # What this turn just learned counts for the rest of the turn — the
         # next question, the CRM gate and its payload: a name answered to
@@ -1413,7 +1419,7 @@ async def _pipeline(
             _widget_visitor,
             {
                 "email": entities.get("email"),
-                "phone": format_phone_international(entities["phone"]) if entities.get("phone") else None,
+                "phone": format_phone_international(entities["phone"], _phone_country) if entities.get("phone") else None,
             },
         )
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
@@ -1711,6 +1717,7 @@ async def _pipeline(
             _merged = True
 
         if _merged:
+            entities["_phone_country"] = _phone_country
             await lead_service.update_lead_from_entities(cid, entities)
             logger.info(f"[{cid}] Claude extraction merged: {list(_te.keys())}")
 

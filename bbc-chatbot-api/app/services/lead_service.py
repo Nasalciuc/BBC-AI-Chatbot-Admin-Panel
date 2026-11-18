@@ -288,6 +288,13 @@ async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
     return {k: row.get(k) for k in _CONTACT_FIELDS}
 
 
+def _is_local_number(raw: str) -> bool:
+    """A number typed the local way: its trunk 0, no + or 00, 8+ digits."""
+    digits = re.sub(r"\D", "", raw or "")
+    return (not (raw or "").strip().startswith("+") and digits.startswith("0")
+            and not digits.startswith("00") and len(digits) >= 8)
+
+
 async def update_lead_from_entities(conversation_id: str, entities: dict) -> None:
     """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7.
 
@@ -348,10 +355,20 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
         if entities.get("phone"):
             from app.services.crm import format_phone_international
             # A number too short to dial formats to "": it must not wipe the
-            # phone the conversation already holds.
-            _phone = format_phone_international(entities["phone"])
+            # phone the conversation already holds. `_phone_country` (the
+            # visit's country, app.services.phone_country) places a number
+            # typed the local way (#3296: "04…" from Australia).
+            _phone = format_phone_international(entities["phone"], entities.get("_phone_country"))
             if _phone:
                 conv_payload["visitor_phone"] = _phone
+            elif _is_local_number(entities["phone"]):
+                # A local number with no country to place it is kept for the
+                # agent to check, never dialled as a guess.
+                from app.db.supabase import patch_conversation_presence
+
+                await patch_conversation_presence(
+                    conversation_id, {"phone_to_check": re.sub(r"[^\d ]", "", entities["phone"]).strip()}
+                )
 
         lead_payload: dict = {}
         if entities.get("origin"):

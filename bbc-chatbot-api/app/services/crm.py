@@ -129,7 +129,7 @@ def crm_push_gate(lead: dict, email: str) -> Optional[str]:
     return None
 
 
-def format_phone_international(phone: str) -> str:
+def format_phone_international(phone: str, country: Optional[str] = None) -> str:
     """Format phone to E.164: +{country}{number} — digits only after +.
 
     Handles all known broken formats:
@@ -139,15 +139,32 @@ def format_phone_international(phone: str) -> str:
       '2108844081'        → '+12108844081' (assume US)
       '+442079460958'      → '+442079460958'
       '0044207946'        → '+44207946' (strip intl prefix 00)
+
+    `country` (ISO alpha-2, app.services.phone_country.country_hint) places a
+    number typed the local way, without its code (#3296, 17 Nov 2026):
+      '0412 345 678', 'AU' → '+61412345678' (the trunk 0 goes)
+      '9876543210', 'IN'   → '+919876543210'
+    A number with + or 00 keeps its own code. A local number that starts with
+    0 and has no country to go with it is NOT guessed: it formats to "", as a
+    number too short to dial does — "+1" before it was an impossible number.
     """
     if not phone:
         return ""
     digits = re.sub(r"\D", "", phone)
     if not digits or len(digits) < 7:
         return ""
-    if digits.startswith("00") and len(digits) > 2:
-        digits = digits[2:]
+    if phone.strip().startswith("+") or digits.startswith("00"):
+        return f"+{digits[2:] if digits.startswith('00') else digits}"
+    from app.services.phone_country import calling_code
+
+    code = calling_code(country)
+    if digits.startswith("0"):
+        if code and code != "1" and len(digits) >= 8:
+            return f"+{code}{digits.lstrip('0')}"
+        return ""
     if len(digits) == 10:
+        if code and code != "1":
+            return f"+{code}{digits}"
         digits = f"1{digits}"
     return f"+{digits}"
 

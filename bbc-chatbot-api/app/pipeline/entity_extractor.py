@@ -62,7 +62,13 @@ EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 PHONE_RE = re.compile(
     r'(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
     r'|(?:\+\d{1,3}[-.\s]?)(?:\d[-.\s]?){7,14}\d'
+    # A number typed the local way, with its trunk 0 and no country code
+    # ("0412 345 678", "07911 123456"): #3296 was never taken. The country
+    # comes from the visit (app.services.phone_country) when it is formatted.
+    r'|(?<![\d+])0[1-9](?:[-.\s]?\d){7,11}(?!\d)'
 )
+# "01.12.2026", "05-10-2026 to 05-20-2026": a date has the shape of a local number.
+_DATE_LIKE = re.compile(r"^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$")
 
 AIRPORTS = {
     "JFK", "LHR", "CDG", "FCO", "LAX", "SFO", "ORD", "MIA", "BOS", "ATL",
@@ -1398,10 +1404,11 @@ def extract_entities(
     if m:
         entities.email = m.group(0).lower()
 
-    # 2. Phone
-    m = PHONE_RE.search(text)
-    if m:
-        entities.phone = m.group(0).strip()
+    # 2. Phone (never a date written in digits)
+    for m in PHONE_RE.finditer(text):
+        if not _DATE_LIKE.match(m.group(0).strip()):
+            entities.phone = m.group(0).strip()
+            break
 
     # 3. Name
     for pattern in NAME_PATTERNS:

@@ -63,7 +63,9 @@ async def test_an_email_typed_to_the_operator_reaches_the_conversation_and_never
 async def test_a_phone_typed_to_the_operator_reaches_the_conversation(caplog):
     with caplog.at_level(logging.INFO):
         write, _, _ = await _run("you can call me at +1 (305) 555-0101 after 6pm")
-    write.assert_awaited_once_with("c1", {"phone": "+1 (305) 555-0101"})
+    # The visit's country goes with a phone, to place a number typed the local way
+    # (test_phone_country); this conversation says none.
+    write.assert_awaited_once_with("c1", {"phone": "+1 (305) 555-0101", "_phone_country": None})
     assert "555-0101" not in caplog.text
 
 

@@ -54,9 +54,16 @@ async def record_contact(conversation_id: str, message: str) -> None:
         found = {k: v for k, v in found.items() if v}
         if not found:
             return
+        if found.get("phone"):
+            # A number typed the local way is placed by the visit's country
+            # (#3296: "04…" from Australia, typed to an operator).
+            from app.services.phone_country import country_hint
+
+            conv_meta = ((await db.get_conversation_simple(conversation_id)) or {}).get("metadata")
+            found["_phone_country"] = country_hint(conv_meta if isinstance(conv_meta, dict) else None)
         OPERATOR_CONTACT_HEALTH["found"] += 1
         await lead_service.update_lead_from_entities(conversation_id, found)
-        logger.info(f"[operator-contact] {conversation_id}: {', '.join(sorted(found))} from the client's message")
+        logger.info(f"[operator-contact] {conversation_id}: {', '.join(sorted(k for k in found if not k.startswith('_')))} from the client's message")
     except Exception as e:  # noqa: silent — logged by type only: the error text can carry the client's email or phone
         OPERATOR_CONTACT_HEALTH["failures"] += 1
         logger.warning(f"[operator-contact] {conversation_id}: not recorded ({type(e).__name__})")
