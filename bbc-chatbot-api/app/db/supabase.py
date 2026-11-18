@@ -1086,7 +1086,7 @@ async def _get_lead_completeness_inputs(conversation_ids: list[str]) -> dict[str
 
 _SIMPLE_COLUMNS_BASE = (
     "id, tunnel, status, mode, assigned_agent_id, team_id, visitor_id, "
-    "metadata, updated_at, created_at, visitor_name, visitor_phone, visitor_email"
+    "metadata, updated_at, created_at, visitor_name, visitor_phone, visitor_email, visitor_phone_country"
 )
 _SIMPLE_COLUMNS = (
     _SIMPLE_COLUMNS_BASE

@@ -51,11 +51,16 @@ async def record_contact(conversation_id: str, message: str) -> None:
             # national way with no trunk 0 is only a number in that country
             # ("912345678" from Portugal). A failed read only loses that hint: the
             # email, and a number with its own code, are saved all the same (CodeRabbit #270).
-            from app.services.phone_country import country_hint
+            from app.services.phone_country import country_hint, known_country
 
             try:
-                conv_meta = ((await db.get_conversation_simple(conversation_id)) or {}).get("metadata")
-                country = country_hint(conv_meta if isinstance(conv_meta, dict) else None)
+                conv = (await db.get_conversation_simple(conversation_id)) or {}
+                conv_meta = conv.get("metadata")
+                # The country stored with the visit's number first, then the browser's hint: the chat's order
+                # (orchestrator; CodeRabbit #270).
+                country = known_country(conv.get("visitor_phone_country")) or country_hint(
+                    conv_meta if isinstance(conv_meta, dict) else None
+                )
             except Exception as e:  # noqa: silent — logged; a local number then waits to be checked
                 logger.warning(f"[operator-contact] {conversation_id}: no country for the number ({type(e).__name__})")
             if not found["phone"] and country:

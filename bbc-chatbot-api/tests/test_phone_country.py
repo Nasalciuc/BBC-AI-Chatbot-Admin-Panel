@@ -361,3 +361,28 @@ def test_the_crm_payload_places_a_local_number_by_the_visitors_country():
     visitor = SimpleNamespace(name="Test Client", email="cliente@example.com", phone="0412 345 678", country_code="AU")
     payload = build_crm_payload(lead, visitor, conv_metadata={}, suid=None)
     assert "+61412345678" in str(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conv, phone, country", [
+    # The country stored with the visit's number wins over an en-US browser (CodeRabbit #270, round 5)…
+    ({"visitor_phone_country": "PT", "metadata": {"browser_lang": "en-US"}}, "912345678", "PT"),
+    # …the browser's hint still places it when nothing is stored, or what is stored is no country.
+    ({"metadata": {"tz": "Europe/Lisbon"}}, "912345678", "PT"),
+    ({"visitor_phone_country": "XX", "metadata": {"tz": "Europe/Lisbon"}}, "912345678", "PT"),
+])
+async def test_an_operator_number_is_placed_by_the_stored_country_first(conv, phone, country):
+    from app.pipeline import operator_contact
+
+    update = AsyncMock()
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)), \
+         patch("app.services.lead_service.update_lead_from_entities", new=update):
+        await operator_contact.record_contact("c-1", phone)
+    found = update.await_args.args[1]
+    assert found["phone"] == phone and found["_phone_country"] == country
+
+
+def test_the_simple_conversation_read_carries_the_stored_country():
+    from app.db import supabase as db
+
+    assert "visitor_phone_country" in db._SIMPLE_COLUMNS_BASE
