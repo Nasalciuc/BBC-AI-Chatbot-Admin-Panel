@@ -252,7 +252,7 @@ class TestCompose:
         )
         assert replies == ["Get a fare quote", "I have a question", "Not now"]
 
-    @pytest.mark.parametrize("trigger", ["reader", "kayak", "note"])
+    @pytest.mark.parametrize("trigger", ["reader", "kayak", "ads", "note"])
     def test_where_to_and_when_without_where_from_is_said_back(self, trigger):
         """CodeRabbit #255: the page gave the dates and the opening still said
         "Tell me roughly when". The origin is asked in the chat, after the
@@ -270,7 +270,7 @@ class TestCompose:
             "Tell me where and roughly when, and an agent will check fares for you."
         )
 
-    @pytest.mark.parametrize("trigger", ["kayak", "quote", "reader", "exit", "note"])
+    @pytest.mark.parametrize("trigger", ["kayak", "ads", "quote", "reader", "exit", "note"])
     @pytest.mark.parametrize("trip", [
         None, TripContext(), TripContext(source="route_page", destination_name="Paris"),
         TripContext(destination_name="Seoul", depart_date=_in(30).isoformat(), adults="2"),
@@ -293,7 +293,7 @@ class TestCompose:
         for site in (None, "", "evil.example", "BCT"):
             assert proactive.compose("exit", None, site)[0].startswith("Hi, I'm Alex from BuyBusinessClass.")
 
-    @pytest.mark.parametrize("trigger", ["kayak", "quote", "reader", "exit"])
+    @pytest.mark.parametrize("trigger", ["kayak", "ads", "quote", "reader", "exit"])
     @pytest.mark.parametrize("trip_kind", ["full", "dest", "dest_dated", "none"])
     @pytest.mark.parametrize("site", ["bbc", "bct"])
     def test_no_opening_promises_a_time_or_a_price_or_asks_what_the_page_knows(self, trigger, trip_kind, site):
@@ -317,7 +317,7 @@ class TestCompose:
     def test_a_difficulty_is_named_only_where_there_was_one(self):
         """ADR 13: the Kayak visitor hesitates, he has no problem; only the quote
         form that did not send is a difficulty."""
-        for trigger in ("kayak", "reader", "exit"):
+        for trigger in ("kayak", "ads", "reader", "exit"):
             for trip in (_kayak_trip(), None):
                 assert "trouble" not in proactive.compose(trigger, trip)[0]
         assert "trouble" in proactive.compose("quote", None)[0]
@@ -350,8 +350,9 @@ class TestMergeDefaults:
         for visitor in (_VISITOR, "v-2", "v-3", "visitor-with-another-bucket"):
             out = proactive.offer(visitor, "kayak", _kayak_trip())
             assert out["show"] is True and out["arm"] == "proactive"
-        # Exit is off unless named (owner, 17 Nov: 35 panels, no answer, opened as the tab closed).
-        assert proactive.active_triggers() == {"kayak", "quote", "reader"}
+        # Exit is off unless named (owner, 17 Nov: 35 panels, no answer, opened as the tab closed); the ads
+        # card is on with the rest (owner, 18 Nov).
+        assert proactive.active_triggers() == {"kayak", "ads", "quote", "reader"}
         assert proactive.offer(_VISITOR, "exit", None) == {
             "show": False, "arm": "off", "trigger": "exit", "message": None, "quick_replies": [],
         }
@@ -1799,3 +1800,81 @@ class TestQuoteContact:
 
         for label in {r for replies in proactive._REPLIES.values() for r in replies}:
             assert qdrant.worth_searching(label) is False, label
+
+
+class TestAds:
+    """17-18 Nov: about 350 visitors a day from Google and Bing ads stayed at least 8 s and got no moment;
+    84% of the ad clicks land on a page about one destination. The widget asks with `ads` there, after 5 s
+    in view (bbc-widget triggers.ts); the card says the destination back (owner, 18 Nov)."""
+
+    def test_the_card_says_the_destination_back_with_the_readers_buttons(self):
+        text, replies = proactive.compose("ads", TripContext(source="route_page", destination_name="Paris"))
+        assert text == (
+            "Hi, I'm Alex from BuyBusinessClass. Planning a trip to Paris? "
+            "Tell me roughly when, and an agent will check business class fares for you."
+        )
+        assert replies == ["Get a fare quote", "I have a question", "Not now"]
+        # The same words as the reader's for the same page, on either site.
+        for site in ("bbc", "bct"):
+            trip = TripContext(source="route_page", destination_name="Madrid")
+            assert proactive.compose("ads", trip, site) == proactive.compose("reader", trip, site)
+
+    def test_a_page_that_names_the_route_and_the_dates_is_said_back_whole(self):
+        trip = TripContext(origin_name="Chicago", destination_name="Paris", depart_date=_in(30).isoformat())
+        text, _ = proactive.compose("ads", trip)
+        assert text == (
+            f"Hi, I'm Alex from BuyBusinessClass. I see you're looking at Chicago → Paris, {_day(_in(30))}. "
+            "Want an agent to check private fares for exactly this trip?"
+        )
+
+    def test_on_with_no_switch_set_and_off_with_the_switch(self, monkeypatch):
+        monkeypatch.delenv("PROACTIVE_ENABLED", raising=False)
+        trip = TripContext(source="route_page", destination_name="Paris")
+        out = proactive.offer(_VISITOR, "ads", trip, "bbc")
+        assert out["show"] is True and out["arm"] == "proactive" and out["trigger"] == "ads"
+        assert (out["message"], out["quick_replies"]) == proactive.compose("ads", trip, "bbc")
+        assert "variant" not in out
+        # The moments of before, named in the switch: the ads card is off in 30 s, the others go on.
+        monkeypatch.setenv("PROACTIVE_TRIGGERS", "kayak,quote,reader")
+        assert proactive.offer(_VISITOR, "ads", trip)["arm"] == "off"
+        assert proactive.offer(_VISITOR, "kayak", _kayak_trip())["show"] is True
+        # The control arm hears no words, as on every moment.
+        monkeypatch.delenv("PROACTIVE_TRIGGERS", raising=False)
+        monkeypatch.setenv("PROACTIVE_PERCENT", "0")
+        assert proactive.offer(_VISITOR, "ads", trip)["show"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_endpoint_takes_it(self, monkeypatch):
+        _switch_on(monkeypatch, percent=100)
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="ads", trip={"destination_name": "Rome"}, site="bbc")
+        out = await proactive_offer(req, None)
+        assert out["show"] is True and out["trigger"] == "ads"
+        assert "Planning a trip to Rome?" in out["message"]
+        # A refused list is the quote card's alone: the ads card ignores one.
+        req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="ads", refused=["email"])
+        assert "variant" not in await proactive_offer(req, None)
+
+    @pytest.mark.asyncio
+    async def test_its_answer_opens_the_chat_labelled_ads(self, monkeypatch):
+        _switch_on(monkeypatch)
+        trip = TripContext(source="route_page", destination_name="Paris")
+        payload = ChatInitRequest(visitor_id=_VISITOR, trip=trip.model_dump(mode="json"), proactive={"trigger": "ads"})
+        assert payload.proactive is not None and payload.proactive.trigger == "ads"
+        p_block, p_conv, p_open = _init_patches()
+        with p_block, p_conv, p_open as opener:
+            res = await chat_init(payload, _request_mock(), None)
+        assert res.opening == "the opening" and opener.await_args.args[1] == "ads"
+        assert proactive.init_metadata("ads", trip)["proactive_trigger"] == "ads"
+
+    def test_the_api_knows_every_moment_the_service_does(self):
+        """The two request models list the moments by hand (Literal); they and the service never drift."""
+        from typing import get_args
+
+        from app.api import chat as chat_api
+
+        moments = set(proactive.TRIGGERS) | {proactive.NOTE}
+        assert set(chat_api._PROACTIVE_TRIGGERS) == moments
+        assert set(get_args(ProactiveOfferRequest.model_fields["trigger"].annotation)) == moments
+        from app.api.chat import ProactiveInit
+        assert set(get_args(ProactiveInit.model_fields["trigger"].annotation)) == moments
+        assert set(get_args(proactive.Trigger)) == set(proactive.TRIGGERS)
