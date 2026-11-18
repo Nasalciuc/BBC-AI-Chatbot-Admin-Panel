@@ -74,13 +74,18 @@ _NAME_QUESTION_RE = re.compile(
     r"\b(?:(?:your|full|first|last)\s+name"
     r"|what\s+name|name\s+should|who\s+to\s+address"
     r"|name\s+(?:for|on)\s+the\s+(?:booking|reservation|ticket)"
-    r"|who\s+(?:am\s+i|i'?m)\s+(?:speaking|chatting)\s+(?:with|to))\b",
+    r"|who\s+(?:am\s+i|i'?m)\s+(?:speaking|chatting)\s+(?:with|to)"
+    # Spanish, French, Portuguese (#3325, 18 Nov 2026: "¿Cuál es su nombre?" was not read as the question)
+    r"|(?:su|tu)\s+nombre|nombre\s+completo|c[oó]mo\s+(?:se|te)\s+llama"
+    r"|(?:votre|ton)\s+nom|nom\s+complet|comment\s+(?:vous\s+vous\s+appelez|tu\s+t'?appelles?)"
+    r"|(?:seu|teu)\s+nome|nome\s+completo|como\s+(?:voc[eê]\s+)?se\s+chama)\b",
     re.IGNORECASE,
 )
 _LAST_NAME_QUESTION_RE = re.compile(r"\b(?:last|family|sur)\s*name\b", re.IGNORECASE)
 # "would a text or a quick call work better?", "call or text?", "text or call?"
 _CHANNEL_QUESTION_RE = re.compile(
-    r"\b(?:text|sms)\b[^?]{0,40}\b(?:call|phone)\b|\b(?:call|phone)\b[^?]{0,40}\b(?:text|sms)\b",
+    r"\b(?:text|sms|mensaje|texto|message|mensagem)\b[^?]{0,40}\b(?:call|phone|llamada|appel|liga[cç][aã]o)\b"
+    r"|\b(?:call|phone|llamada|appel|liga[cç][aã]o)\b[^?]{0,40}\b(?:text|sms|mensaje|texto|message|mensagem)\b",
     re.IGNORECASE,
 )
 
@@ -122,6 +127,9 @@ january february march july september october november december
 just only us we our family wife husband kids adults
 flexible any anything whatever none nothing idk unsure
 the a an and or my is it its it's i i'm im me
+español espanol spanish inglés ingles english francés frances français francais french portugués portugues
+português portuguese por favor porfavor gracias merci plaît plait svp obrigado obrigada hola olá bonjour oui
+sí non não nao habla hablo parle parlez falo fala mensaje mensajes texto mensagem llamada correo courriel
 """.split())
 _NAME_INTRO_RE = re.compile(r"^(?:it'?s|its|this\s+is|i'?m|im|i\s+am|my\s+name\s+is|name\s+is|name:)\s+", re.I)
 _NAME_WORD_RE = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’.-])*$")
@@ -178,12 +186,19 @@ def name_to_store(known: Optional[str], answer: Optional[str], last_name_asked: 
     return None
 
 
-_TEXT_ANSWER_RE = re.compile(r"\b(?:text(?:ing|s)?|txt|sms|message|whats\s*app)\b", re.I)
-_CALL_ANSWER_RE = re.compile(r"\b(?:call|calls|phone\s+call|ring)\b", re.I)
-_EMAIL_ANSWER_RE = re.compile(r"\be-?mail\b", re.I)
+# Spanish, French and Portuguese too (#3325: "mensaje de texto" read as nothing, so a call task).
+_TEXT_ANSWER_RE = re.compile(
+    r"\b(?:text(?:ing|s)?|txt|sms|message|whats\s*app|mensajes?|textos?|texte|mensagens?"
+    r"|escr[ií]b(?:eme|ame|anme)|[ée]crivez[- ]moi|escreva)\b", re.I)
+_CALL_ANSWER_RE = re.compile(
+    r"\b(?:call|calls|phone\s+call|ring|llamada|ll[aá]m(?:ame|enme|eme)|llamar|appel(?:ez)?|appeler"
+    r"|liga[cç][aã]o|ligar|me\s+liga)\b", re.I)
+_EMAIL_ANSWER_RE = re.compile(r"\b(?:e-?mail|correo(?:\s+electr[oó]nico)?|courriel)\b", re.I)
 # "I can't always take a call", "no calls", "don't text me, call": a channel
 # right after a negation in the same clause is ruled out, not chosen.
-_NEGATION_RE = re.compile(r"\b(?:can't|cant|cannot|can\s+not|don't|dont|do\s+not|won't|wont|no|never|not)\b", re.I)
+_NEGATION_RE = re.compile(
+    r"\b(?:can't|cant|cannot|can\s+not|don't|dont|do\s+not|won't|wont|no|never|not"
+    r"|pas|ne|n'|não|nao|nunca|jamais|jamás|jamas)\b", re.I)
 _CLAUSE_END_RE = re.compile(r"[.?!,;]")
 
 

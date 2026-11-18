@@ -632,15 +632,25 @@ CALL_TIME_RE = re.compile(
 CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
     ("text", re.compile(
         r"\b(?:text(?:ing)?\s+only|only\s+(?:by\s+)?text|text\s+me|txt\s+me|sms\s+only"
-        r"|only\s+sms|prefer\s+(?:a\s+)?text(?:ing|s)?|text\s+message\s+chats?)\b", re.I)),
+        r"|only\s+sms|prefer\s+(?:a\s+)?text(?:ing|s)?|text\s+message\s+chats?"
+        # Spanish, French, Portuguese (#3325: "mensaje de texto")
+        r"|mensajes?\s+de\s+texto|(?:por|solo|s[oó]lo\s+por)\s+mensajes?|prefiero\s+(?:un\s+)?mensajes?"
+        r"|escr[ií]b(?:eme|ame|anme)|m[aá]nd(?:ame|eme)\s+un\s+mensaje"
+        r"|par\s+(?:message|sms|texto)|[ée]crivez[- ]moi|envoyez[- ]moi\s+un\s+(?:message|sms)"
+        r"|mensage(?:m|ns)\s+de\s+texto|(?:por|s[oó]\s+por)\s+mensage(?:m|ns)|me\s+mande\s+(?:uma\s+)?mensagem)\b",
+        re.I)),
     ("email", re.compile(
         r"\b(?:e-?mail\s+only|only\s+(?:by\s+)?e-?mail|e-?mail\s+me|just\s+e-?mail"
-        r"|prefer\s+(?:an\s+)?e-?mail|(?:quotes?|options|fares|prices?)\s+(?:on|to|via|by)\s+(?:my\s+)?e-?mail)\b",
+        r"|prefer\s+(?:an\s+)?e-?mail|(?:quotes?|options|fares|prices?)\s+(?:on|to|via|by)\s+(?:my\s+)?e-?mail"
+        r"|(?:por|al)\s+correo(?:\s+electr[oó]nico)?|par\s+(?:e-?mail|courriel)|(?:por|pelo)\s+e-?mail)\b",
         re.I)),
     ("no calls", re.compile(
         r"\b(?:no\s+(?:phone\s+)?calls?|don'?t\s+call|do\s+not\s+call|please\s+don'?t\s+call"
         r"|can'?t\s+talk|cannot\s+talk|don'?t\s+want\s+to\s+talk|no\s+talking|stop\s+calling"
-        r"|(?:don'?t|do\s+not|never)\s+(?:text|txt|sms)\s+(?:or|and|nor)\s+call)\b", re.I)),
+        r"|(?:don'?t|do\s+not|never)\s+(?:text|txt|sms)\s+(?:or|and|nor)\s+call"
+        r"|no\s+me\s+llam(?:en|e|es)|(?:sin|no)\s+llamadas|no\s+puedo\s+hablar"
+        r"|pas\s+d'appels?|ne\s+m'appelez\s+pas|n[aã]o\s+(?:me\s+)?ligue|sem\s+liga[cç](?:[aã]o|[oõ]es)"
+        r"|n[aã]o\s+posso\s+falar)\b", re.I)),
     # A channel withdrawn: "Please don't text me", "stop texting me". It is a
     # wish of its own, not silence: the consultant must not text a client who
     # said so, and an earlier "text only" gives way to it (merge_contact_channel).

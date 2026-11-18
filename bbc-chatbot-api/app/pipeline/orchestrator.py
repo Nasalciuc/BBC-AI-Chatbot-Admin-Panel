@@ -90,10 +90,15 @@ CONFIRM_WORDS = {
     "da", "si", "claro", "correcto", "oui", "ja", "jawohl", "confirmo",
     "all good", "looks good", "thats right", "thats correct",
     "that works", "sounds good",
+    # Spanish, French, Portuguese (the summary asks for SÍ / OUI / SIM in those languages)
+    "certo", "correto", "perfeito", "isso", "vale", "perfecto", "exacto", "exactamente",
+    "daccord", "parfait", "exactement", "cest correct", "cest bon", "esta bien", "todo bien",
+    "todo correcto", "tudo certo", "esta certo", "claro que si",
 }
 REJECT_WORDS = {
     "no", "nope", "not right", "not correct", "wrong", "incorrect", "change",
     "mal", "incorrecto", "cambiar", "falsch", "non", "nu", "gresit",
+    "nao", "errado", "mudar", "faux", "changer", "pas correct", "no es correcto", "nao esta certo",
 }
 
 
@@ -520,6 +525,22 @@ async def _pipeline(
     _widget_visitor = visitor
     visitor = with_stored_contact(visitor, conv)
 
+    # The client's language (app.pipeline.language): what this message says,
+    # else what an earlier one said. The fixed replies of this turn speak it;
+    # the model already does. Kept on the conversation once a message says it.
+    from app.pipeline.language import current_lang, turn_lang
+
+    _client_lang = turn_lang(message, ((conv or {}).get("metadata") or {}).get("client_lang"))
+    current_lang.set(_client_lang)
+    if _client_lang and _client_lang != ((conv or {}).get("metadata") or {}).get("client_lang"):
+        # One key merged server-side (no read-modify-write that could undo a
+        # flag another request set in between).
+        try:
+            if await db.patch_conversation_presence(cid, {"client_lang": _client_lang}):
+                conv["metadata"] = {**((conv or {}).get("metadata") or {}), "client_lang": _client_lang}
+        except Exception as e:  # noqa: silent — logged; the turn still speaks the language, only the next one may not
+            logger.warning(f"[{cid}] client language not saved: {type(e).__name__}")
+
     # Save user message immediately (never lose data).
     # FIX-C reprocess: the message is already in the DB — skip the insert.
     if skip_user_save:
@@ -542,7 +563,9 @@ async def _pipeline(
         logger.warning(f"[{cid}] Moderation task failed to schedule: {_mod_err}")
 
     # ── STEP 2.6: Check flagged content — skip templates if abusive
-    _skip_templates = False
+    # A client writing Spanish, French or Portuguese gets the model, which
+    # answers in their language, instead of the English templates (#3325).
+    _skip_templates = bool(_client_lang)
     try:
         from app.services.moderation import detect_bad_words
         if detect_bad_words(message):
@@ -1088,7 +1111,9 @@ async def _pipeline(
                     if _k:
                         _q = _cb_tpl(_k, tunnel, visitor)
                         if _q:
-                            _cb_next = f" While they get to you — {_q[0].lower()}{_q[1:]}"
+                            from app.ai.templates_i18n import WHILE_THEY_GET_TO_YOU as _cb_join
+
+                            _cb_next = f"{_cb_join.get(_client_lang or '', ' While they get to you — ')}{_q[0].lower()}{_q[1:]}"
                             break
             except Exception:
                 pass

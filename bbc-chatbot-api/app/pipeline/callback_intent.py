@@ -24,6 +24,8 @@ _CALL_CUE_RE = re.compile(
     r"|(?:can|could|please|pls)\s+(?:you\s+)?(?:c[ae]ll|ri+ng|phone)"
     r"|call\s+back"
     r"|be\s+c[ae]lled"
+    # Spanish, French, Portuguese
+    r"|ll[aá]m(?:ame|enme|eme)|ll[aá]meme|(?:re)?appelez[- ]moi|pode(?:m)?\s+me\s+ligar|me\s+liga(?:r)?"
     r")\b",
     re.IGNORECASE,
 )
@@ -35,7 +37,8 @@ _NOT_A_REQUEST_RE = re.compile(
     r"they\s+c[ae]lled|already\s+c[ae]lled|"
     r"(?:don'?t|do\s+not|dont|please\s+don'?t|no\s+need\s+to|rather\s+not|"
     r"prefer\s+not\s+to|no)\s+(?:\w+\s+){0,2}?c[ae]ll(?:ed|ing)?\b|"
-    r"c[ae]ll\s+me\s+later|maybe\s+later)\b",
+    r"c[ae]ll\s+me\s+later|maybe\s+later|"
+    r"no\s+me\s+ll[aá]m(?:en|e|es)|ne\s+m'appelez\s+pas|n[aã]o\s+me\s+lig(?:ue|uem))\b",
     re.IGNORECASE,
 )
 # "call me Alex" / "you can call me Mr Smith" — an introduction, not a
