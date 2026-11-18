@@ -128,9 +128,13 @@ def _crm_fingerprint(conv: dict, lead: dict) -> str:
     refused a push (422), the same fingerprint later means the same refusal."""
     import hashlib
 
+    lead = lead or {}
     parts = [str(conv.get(k) or "") for k in ("visitor_name", "visitor_email", "visitor_phone")]
-    parts += [str((lead or {}).get(k) or "") for k in (
+    parts += [str(lead.get(k) or "") for k in (
         "origin_code", "destination_code", "departure_date", "return_date", "passengers", "trip_type", "cabin_class")]
+    # Who travels, as build_crm_payload counts them (children and infants, with their fallbacks): a 422 on
+    # passengers.child corrected by the counts alone is a new request (CodeRabbit #270).
+    parts += [str(lead.get(k) or lead.get(f"_{k}") or 0) for k in ("children_count", "infant_count")]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 

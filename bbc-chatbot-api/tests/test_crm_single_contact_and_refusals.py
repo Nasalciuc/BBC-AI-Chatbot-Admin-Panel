@@ -219,6 +219,10 @@ def test_the_fingerprint_is_the_contact_and_the_trip_only():
     assert cron._crm_fingerprint({**_conv(), "message_count": 40}, _LEAD) == base
     assert cron._crm_fingerprint(_conv(email="other@example.com"), _LEAD) != base
     assert cron._crm_fingerprint(_conv(), {**_LEAD, "departure_date": _DEPARTS_NEXT}) != base
+    # The same two travellers, one of them now a child: the CRM is asked something else (CodeRabbit #270).
+    assert cron._crm_fingerprint(_conv(), {**_LEAD, "children_count": 1}) != base
+    assert cron._crm_fingerprint(_conv(), {**_LEAD, "_infant_count": 1}) != base
+    assert cron._crm_fingerprint(_conv(), {**_LEAD, "children_count": 0}) == base, "none said is none"
 
 
 @pytest.mark.asyncio
