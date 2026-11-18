@@ -351,12 +351,13 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
             lead_data = res.data[0]  # type: ignore[index]
 
         conv_payload: dict = {}
+        contact_kept = True
         if entities.get("name"):
             conv_payload["visitor_name"] = entities["name"]
         if entities.get("email"):
             conv_payload["visitor_email"] = entities["email"]
         if entities.get("phone"):
-            from app.services.crm import format_phone_international
+            from app.services.crm import format_phone_international, phone_is_ambiguous
             # A number too short to dial formats to "": it must not wipe the
             # phone the conversation already holds. `_phone_country` (the
             # visit's country, app.services.phone_country) places a number
@@ -364,14 +365,17 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
             _phone = format_phone_international(entities["phone"], entities.get("_phone_country"))
             if _phone:
                 conv_payload["visitor_phone"] = _phone
-            elif _is_local_number(entities["phone"]):
-                # A local number with no country to place it is kept for the
-                # agent to check, never dialled as a guess.
+            elif _is_local_number(entities["phone"]) or phone_is_ambiguous(entities["phone"], entities.get("_phone_country")):
+                # A local number with no country to place it, or one its country reads two ways, is kept
+                # for the agent to check, never dialled as a guess.
                 from app.db.supabase import patch_conversation_presence
 
-                await patch_conversation_presence(
+                if not await patch_conversation_presence(
                     conversation_id, {"phone_to_check": re.sub(r"[^\d ]", "", entities["phone"]).strip()}
-                )
+                ):
+                    # Not kept: the caller must not say it was (card_buttons). The other writes still go.
+                    _record_lead_write_error(conversation_id, "phone_to_check", RuntimeError("phone_to_check not saved"))
+                    contact_kept = False
 
         lead_payload: dict = {}
         if entities.get("origin"):
@@ -513,7 +517,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
                 .eq("id", lead_id)
                 .execute()
             )
-        return True
+        return contact_kept
 
     except Exception as e:
         # The chat reply stays alive, but the money path must SCREAM: full

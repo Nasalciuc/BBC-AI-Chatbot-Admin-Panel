@@ -172,9 +172,15 @@ def format_phone_international(phone: str, country: Optional[str] = None) -> str
     lengths = NATIONAL_LENGTHS.get(code or "")
     if code and code != "1" and lengths:
         lo, hi = lengths
-        if digits.startswith(code) and lo <= len(digits) - len(code) <= hi:
+        own_code = digits.startswith(code) and lo <= len(digits) - len(code) <= hi
+        national = lo <= len(digits) <= hi
+        if own_code and national:
+            # Both readings fit ("4912345678" in Germany: +49 12345678, or Leer's 0491…): not guessed.
+            # It formats to "" and is kept for the agent to check (phone_is_ambiguous; CodeRabbit #270).
+            return ""
+        if own_code:
             return f"+{digits}"
-        if lo <= len(digits) <= hi:
+        if national:
             return f"+{code}{digits}"
         return f"+{digits}"
     if len(digits) == 10:
@@ -182,6 +188,23 @@ def format_phone_international(phone: str, country: Optional[str] = None) -> str
             return f"+{code}{digits}"
         digits = f"1{digits}"
     return f"+{digits}"
+
+
+def phone_is_ambiguous(phone: str, country: Optional[str] = None) -> bool:
+    """A number the visit's country reads two ways (with its own code typed without the +, or as a national
+    number): it is kept for the agent to check, never dialled as a guess."""
+    raw = (phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits or raw.startswith("+") or digits.startswith("0"):
+        return False
+    from app.services.phone_country import NATIONAL_LENGTHS, calling_code
+
+    code = calling_code(country)
+    lengths = NATIONAL_LENGTHS.get(code or "")
+    if not code or code == "1" or not lengths:
+        return False
+    lo, hi = lengths
+    return digits.startswith(code) and lo <= len(digits) - len(code) <= hi and lo <= len(digits) <= hi
 
 
 # ── The CRM contract (createAiChat doc is authoritative) ──────

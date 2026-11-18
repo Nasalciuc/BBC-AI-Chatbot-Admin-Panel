@@ -55,19 +55,113 @@ _CALL_ME_NAME_RE = re.compile(
 _PHONE_IN_TEXT_RE = re.compile(r"(\+?\d[\d\-.\s()]{6,}\d(?<![-.\s]\d))")
 
 
+# A date written with dots or slashes is no number to call: "call me on 01.12.2026" (CodeRabbit #270).
+_DATE_CANDIDATE_RE = re.compile(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}")
+
+
+def _is_compact_date(digits: str) -> bool:
+    """"20261201", "01 12 2026": eight digits that read as a day (year first or last) are a date."""
+    if len(digits) != 8:
+        return False
+
+    def _day(y: str, m: str, d: str) -> bool:
+        return 1900 <= int(y) <= 2099 and 1 <= int(m) <= 12 and 1 <= int(d) <= 31
+
+    return (_day(digits[:4], digits[4:6], digits[6:]) or _day(digits[4:], digits[2:4], digits[:2])
+            or _day(digits[4:], digits[:2], digits[2:4]))
+
+
+def _candidate_matches(message: str) -> list[re.Match]:
+    """The phone-shaped runs of digits in the message, dates left out."""
+    return [m for m in _PHONE_IN_TEXT_RE.finditer(message or "")
+            if not _DATE_CANDIDATE_RE.fullmatch(m.group(1).strip())
+            and not _is_compact_date(re.sub(r"\D", "", m.group(1)))]
+
+
+def _candidates(message: str) -> list[str]:
+    return [m.group(1) for m in _candidate_matches(message)]
+
+
+def has_number(message: str) -> bool:
+    """The message holds a phone-shaped run of digits (no date): worth reading the visit's country for."""
+    return bool(_candidates(message))
+
+
 def find_phone(message: str, country: Optional[str] = None) -> Optional[str]:
     """The number the client typed, normalized to E.164 when possible; `country`
     places a number typed the local way (app.services.phone_country)."""
-    m = _PHONE_IN_TEXT_RE.search(message or "")
-    if not m:
+    found = _candidates(message)
+    if not found:
         return None
     from app.services.crm import format_phone_international
 
-    return format_phone_international(m.group(1), country) or None
+    return format_phone_international(found[0], country) or None
+
+
+def number_to_check(message: str) -> Optional[str]:
+    """The number as typed, for the agent to check, when it can't be placed: a local number with no
+    country to go with it, or one its country reads two ways. Never dialled as a guess (ADR-6f)."""
+    found = _candidates(message)
+    if not found:
+        return None
+    digits_and_spaces = re.sub(r"[^\d ]", "", found[0]).strip()
+    return digits_and_spaces if len(re.sub(r"\D", "", digits_and_spaces)) >= 7 else None
+
+
+# A booking or order reference is no phone, whatever its length: the word stands just before the digits
+# ("ref 123456789", "booking number is 912345678", "PNR: …").
+_REFERENCE_BEFORE_RE = re.compile(
+    r"\b(?:ref(?:erence)?|booking|reservation|order|confirmation|pnr|locator|ticket|invoice|account|member"
+    r"|membership|passport|card|id|reserva|referencia|r[ée]f[ée]rence|r[ée]servation|commande|pedido"
+    r"|bilhete|localizador|cuenta|conta|compte)\b(?:\W+\w+){0,2}\W*$", re.I)
+
+
+# "a ticket question, call 2105550100": a phone word between them makes the digits a number again.
+_PHONE_WORD_RE = re.compile(
+    r"\b(?:phone|call|cell|mobile|whats\s?app|tel|text|reach|contact|telefone|tel[ée]fono|m[óo]vil|portable"
+    r"|celular|ligar|ligue|llam\w*|appel\w*)\b", re.I)
+
+
+def follows_reference(message: str, start: int) -> bool:
+    """The digits at `start` come just after a reference word: a booking, an order, an id — no phone."""
+    m = _REFERENCE_BEFORE_RE.search((message or "")[:start])
+    return bool(m) and not _PHONE_WORD_RE.search(m.group(0))
+
+
+def national_phone(message: str, country: Optional[str]) -> Optional[str]:
+    """A number typed the national way without its trunk 0 ("912345678" from Portugal), placed by the
+    visit's country when its length is that country's (app.services.phone_country.NATIONAL_LENGTHS);
+    None for a date, a reference, or a length the country's numbers don't have (CodeRabbit #270).
+
+    Eight digits at least: the national forms without a trunk 0 (Portugal, Spain, Norway, Denmark…) all
+    have that many, and a shorter run is far more often a count, a code or an amount."""
+    from app.services.phone_country import NATIONAL_LENGTHS, calling_code
+
+    code = calling_code(country)
+    lengths = NATIONAL_LENGTHS.get(code or "")
+    if not lengths or code == "1":
+        return None
+    from app.ai.output_guard import amount_spans
+
+    lo, hi = max(lengths[0], 8), lengths[1]
+    money = amount_spans(message)
+    for m in _candidate_matches(message):
+        candidate = m.group(1)
+        digits = re.sub(r"\D", "", candidate)
+        if candidate.strip().startswith("+") or digits.startswith("0") or not lo <= len(digits) <= hi:
+            continue
+        # An amount ("12.500.000 kr") or a reference ("ref 912345678") is no phone.
+        if follows_reference(message, m.start(1)) or any(s < m.end(1) and m.start(1) < e for s, e in money):
+            continue
+        from app.services.crm import format_phone_international
+
+        return format_phone_international(candidate, country) or None
+    return None
 
 
 def detect_callback_request(message: str, country: Optional[str] = None) -> Optional[dict]:
-    """{'number': str|None, 'cue': 'words'|'number'} or None.
+    """{'number': str|None, 'cue': 'words'|'number'} or None; with 'raw' when the number asked to be
+    called on can't be placed (number_to_check): the turn keeps it for the agent instead of asking again.
 
     A bare phone number counts: post-greeting, a client who types only
     their number is asking to be reached on it.
@@ -81,12 +175,21 @@ def detect_callback_request(message: str, country: Optional[str] = None) -> Opti
         return None                      # "call me Alex" is a name, not a request
     phone = find_phone(text, country)
     if _CALL_CUE_RE.search(text):
-        return {"number": phone, "cue": "words"}
-    if phone and len(text.split()) <= 6 and _is_phone_shaped(text):
+        out = {"number": phone, "cue": "words"}
+        raw = None if phone else number_to_check(text)
+        if raw:
+            out["raw"] = raw
+        return out
+    if len(text.split()) <= 6:
         # "+1 210 555 0100" / "my number is 210-555-0100" — the number IS
         # the message. Inside a longer sentence it is just contact data
-        # the normal extractor already captures.
-        return {"number": phone, "cue": "number"}
+        # the normal extractor already captures. "912345678" from Portugal too: the country's own length.
+        first = _candidate_matches(text)
+        if phone and _is_phone_shaped(text) and not (first and follows_reference(text, first[0].start(1))):
+            return {"number": phone, "cue": "number"}
+        national = national_phone(text, country)
+        if national:
+            return {"number": national, "cue": "number"}
     return None
 
 

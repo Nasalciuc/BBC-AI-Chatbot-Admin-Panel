@@ -580,7 +580,45 @@ class TestWhatsAppInWords:
         assert contact_channel_of("On WhatsApp please") == "whatsapp"
         assert contact_channel_of("please don't whatsapp me") is None
         assert turns_down_calls("whatsapp")
-        assert callback_channel("+1 210 555 0100", "number", "whatsapp") == "text"
+        # WhatsApp stays WhatsApp when the number comes later: never "ASKED FOR TEXTS" (CodeRabbit #270).
+        assert callback_channel("+1 210 555 0100", "number", "whatsapp") == "whatsapp"
+        assert callback_channel("+1 210 555 0100", "number", "no texts, whatsapp") == "whatsapp"
+        assert callback_channel("whatsapp me +1 210 555 0100", "number", None) == "whatsapp"
+        assert callback_channel("whatsapp me +1 210 555 0100", "number", "text") == "whatsapp"
+        # "Call me" said now wins over the older WhatsApp; texts stay texts.
+        assert callback_channel("call me +1 210 555 0100", "words", "whatsapp") == "call"
+        assert callback_channel("+1 210 555 0100", "number", "text") == "text"
+
+    @pytest.mark.asyncio
+    async def test_a_number_after_the_whatsapp_button_is_a_whatsapp_number(self):
+        """The client chose WhatsApp, then typed the number alone: the note, the reply and the queue say
+        WhatsApp, and no call is owed (CodeRabbit #270)."""
+        from tests.test_chat_contacts import _callback_turn, _lead_payloads
+
+        run, mocks = _callback_turn("+1 210 555 0100", lead_signals={"contact_channel": "whatsapp"},
+                                    conv_extra={"visitor_email": "cliente@example.com"})
+        resp = await run()
+        assert resp.message.startswith("Got it — your consultant will write to you on WhatsApp at +12105550100.")
+        payload = _lead_payloads(mocks)[-1]
+        assert payload["intent_signals"]["contact_channel"] == "whatsapp"
+        assert payload["intent_signals"]["callback_requested"] is False
+        assert payload["notes"].startswith("CLIENT ASKED FOR WHATSAPP, NOT CALLS — +12105550100")
+        assert mocks["queue_for_person"].await_args.kwargs["reason"] == "whatsapp request"
+        mocks["task_from_callback"].assert_not_called()
+
+    def test_the_whatsapp_reply_speaks_the_clients_language(self):
+        from app.ai.templates import get_template
+        from app.models.chat import VisitorInfo
+        from app.pipeline.language import current_lang
+
+        for code, start in (("es", "Perfecto: su consultor le escribirá por WhatsApp al +1"),
+                            ("fr", "Parfait : votre conseiller vous écrira sur WhatsApp au +1"),
+                            ("pt", "Perfeito: o seu consultor vai escrever pelo WhatsApp para o +1")):
+            token = current_lang.set(code)
+            try:
+                assert get_template("number_confirmed_whatsapp", "sales", VisitorInfo(), number="+1").startswith(start)
+            finally:
+                current_lang.reset(token)
 
     def test_the_consultants_line_and_only_the_newest_wish(self):
         from app.pipeline.callback_intent import callback_note, notes_with_callback

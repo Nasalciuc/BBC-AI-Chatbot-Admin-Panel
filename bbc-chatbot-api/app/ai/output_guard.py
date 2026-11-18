@@ -293,6 +293,11 @@ def has_price(text: Optional[str]) -> bool:
     return bool(text) and bool(_MONEY_RE.search(text))
 
 
+def amount_spans(text: Optional[str]) -> list[tuple[int, int]]:
+    """Where the amounts of money are in `text` ("12.500.000 kr", "NOK 12500000"): no phone is read there."""
+    return [m.span() for m in _MONEY_RE.finditer(text or "")]
+
+
 def _drop_priced(text: str) -> tuple[str, int]:
     """The pieces (sentences, lines) of `text` that touch no amount, joined, and how many went. An amount
     is found in the whole text first: one that crosses a line break ("3,200\nUSD") takes both pieces."""

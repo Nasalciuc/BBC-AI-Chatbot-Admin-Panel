@@ -1032,14 +1032,21 @@ async def _pipeline(
             if not await db.update_conversation(cid, {"visitor_phone": _callback["number"]}):
                 logger.warning(f"[{cid}] callback: number not saved on the conversation")
             visitor = visitor.model_copy(update={"phone": _callback["number"]})
+        # A number that can't be placed ("call me on 0412 345 678" with no country to go with it) is kept for
+        # the agent to check, and never dialled as a guess: visitor_phone stays as it was. The turn ends here,
+        # before the extractor, so it is kept here, and the client isn't asked for it again (CodeRabbit #270).
+        _cb_raw = None if _callback["number"] else _callback.get("raw")
+        if _cb_raw and not await db.patch_conversation_presence(cid, {"phone_to_check": _cb_raw}):
+            logger.warning(f"[{cid}] callback: number to check not saved")
+            _cb_raw = None
         try:
             if _cb_lead:
-                if _cb_channel == "text":
+                if _cb_channel in ("text", "whatsapp"):
                     from app.pipeline.entity_extractor import merge_contact_channel as _cb_merge
 
-                    _cb_signals["contact_channel"] = _cb_merge(_cb_stored, "text")
+                    _cb_signals["contact_channel"] = _cb_merge(_cb_stored, _cb_channel)
                     # An older "call me" is over: the panel must not still say
-                    # "Asks: a call back" to a client who chose texts.
+                    # "Asks: a call back" to a client who chose texts or WhatsApp.
                     _cb_signals["callback_requested"] = False
                 else:
                     if _cb_channel == "call":
@@ -1052,7 +1059,7 @@ async def _pipeline(
                     if _cb_wants_call:
                         # The panel reads this as "Asks: a call back".
                         _cb_signals["callback_requested"] = True
-                _cb_note = callback_note(_callback["number"], channel=_cb_channel)
+                _cb_note = callback_note(_callback["number"] or _cb_raw, channel=_cb_channel)
                 # The consultant must see it FIRST, above everything else —
                 # and only the newest call-back wish.
                 await db.update_lead(_cb_lead["id"], {
@@ -1069,6 +1076,7 @@ async def _pipeline(
                 cid,
                 reason=(
                     "text request" if _cb_channel == "text"
+                    else "whatsapp request" if _cb_channel == "whatsapp"
                     else "call-back request" if _cb_wants_call else "number given"
                 ),
             )
@@ -1085,7 +1093,7 @@ async def _pipeline(
                 from app.services.tasks_service import task_from_callback
 
                 _fire_and_forget(task_from_callback(conv, user_msg, message))
-        elif _cb_channel == "text" or calls_refused(_cb_stored):
+        elif _cb_channel in ("text", "whatsapp") or calls_refused(_cb_stored):
             from app.services.tasks_service import withdraw_call_tasks
 
             _fire_and_forget(withdraw_call_tasks(cid))
@@ -1094,13 +1102,15 @@ async def _pipeline(
         # one thing this turn must never do is ask him what he meant.
         from app.ai.templates import get_template as _cb_tpl
 
-        if _callback["number"]:
+        _cb_number = _callback["number"] or _cb_raw
+        if _cb_number:
             _cb_key = {
                 "call": "callback_confirmed", "text": "number_confirmed_text",
+                "whatsapp": "number_confirmed_whatsapp",
             }.get(_cb_channel, "number_confirmed")
             _cb_text = _cb_tpl(
-                _cb_key, tunnel, visitor, number=_callback["number"]
-            ) or f"Of course — a consultant will reach you on {_callback['number']}."
+                _cb_key, tunnel, visitor, number=_cb_number
+            ) or f"Of course — a consultant will reach you on {_cb_number}."
             _cb_next = ""
             try:
                 from app.models.lead import get_missing_fields as _cb_gmf
@@ -1182,7 +1192,7 @@ async def _pipeline(
             "departure_date": _conv_meta.get("awaiting_return_departure"),
             "expect": "return",
         }
-    extracted = extract_entities(message, context=_correction_context)
+    extracted = extract_entities(message, context=_correction_context, country=_phone_country)
     if _conv_meta.get("awaiting_return_date") and extracted.return_date:
         _meta_clear_rt = dict(_conv_meta)
         _meta_clear_rt.pop("awaiting_return_date", None)

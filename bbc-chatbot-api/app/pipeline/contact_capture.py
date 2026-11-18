@@ -243,18 +243,30 @@ def calls_refused(stored_channel: Optional[str]) -> bool:
 
 def callback_channel(message: str, cue: str, stored_channel: Optional[str]) -> str:
     """How the client wants to be reached on the number just given:
-    'call' when they asked to be called ("call me", the JOSEF case), 'text'
-    when they chose texts (in this message, or earlier: "Text", "text only",
-    "no calls" — never over an earlier "no texts"), 'any' when they gave a
-    number and said nothing that decides it."""
+    'call' when they asked to be called ("call me", the JOSEF case), 'whatsapp'
+    when they chose WhatsApp (in this message, or earlier: the button after the
+    card), 'text' when they chose texts (in this message, or earlier: "Text",
+    "text only", "no calls" — never over an earlier "no texts"), 'any' when they
+    gave a number and said nothing that decides it.
+
+    WhatsApp stays WhatsApp: a client who chose it and then sent a bare number
+    was noted "ASKED FOR TEXTS" and told "will text you" (CodeRabbit #270)."""
+    from app.pipeline.entity_extractor import contact_channel_of
+
     now = channel_from_answer(message)
-    if now in ("text", "call"):
+    whatsapp_now = "whatsapp" in _wishes(contact_channel_of(message))
+    if now == "call":
+        return now
+    if whatsapp_now:
+        return "whatsapp"
+    if now == "text":
         return now
     if cue == "words":
         return "call"
     wishes = _wishes(stored_channel)
-    # WhatsApp, chosen earlier (the button after the card, or said in words), is a message too.
-    if "no texts" not in wishes and ("text" in wishes or "whatsapp" in wishes or "no calls" in wishes):
+    if "whatsapp" in wishes:
+        return "whatsapp"
+    if "no texts" not in wishes and ("text" in wishes or "no calls" in wishes):
         return "text"
     return "any"
 

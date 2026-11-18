@@ -114,3 +114,167 @@ async def test_a_number_typed_to_an_operator_is_placed_by_the_visits_country():
         await operator_contact.record_contact("c-1", "you can reach me on 0412 345 678")
     found = update.await_args.args[1]
     assert found["phone"] == "0412 345 678" and found["_phone_country"] == "AU"
+
+
+# ── A national number with no trunk 0, read with the visit's country (CodeRabbit #270, round 2) ──
+
+@pytest.mark.parametrize("text, country, e164", [
+    ("912345678", "PT", "+351912345678"),
+    ("912 345 678", "PT", "+351912345678"),
+    ("you can reach me at 612345678 thanks", "ES", "+34612345678"),
+    ("41234567", "NO", "+4741234567"),
+    ("account, phone 912345678", "PT", "+351912345678"),  # a phone word between them: a number again
+])
+def test_a_national_number_without_a_trunk_zero_is_placed_by_the_visits_country(text, country, e164):
+    assert extract_entities(text, country=country).phone == e164
+
+
+@pytest.mark.parametrize("text, country", [
+    ("912345678", None),                 # no country: never guessed
+    ("912345678", "US"),                 # nine digits are no number there
+    ("ref 912345678", "PT"), ("booking number is 912345678", "PT"), ("PNR: 912345678", "PT"),
+    ("my id 612345678", "ES"),
+    ("20261201", "NO"), ("01 12 2026", "DK"), ("12122024", "NO"), ("leaving 05.10.2026", "PT"),
+    # An amount is no phone either.
+    ("I saw 12.500.000 kr", "NO"), ("NOK 12500000", "NO"), ("€ 912 345 678", "PT"),
+])
+def test_a_date_a_reference_or_no_country_is_no_national_number(text, country):
+    assert extract_entities(text, country=country).phone is None
+    assert detect_callback_request(text, country) is None
+
+
+def test_a_bare_national_number_is_a_number_to_reach():
+    assert detect_callback_request("912345678", "PT") == {"number": "+351912345678", "cue": "number"}
+
+
+@pytest.mark.parametrize("text", ["ref 2105550100", "order #210-555-0100", "booking 2105550100"])
+def test_a_reference_is_never_a_number_to_call(text):
+    assert extract_entities(text).phone is None
+    assert detect_callback_request(text, "US") is None
+
+
+def test_a_number_after_a_reference_and_a_phone_word_is_still_taken():
+    assert extract_entities("a ticket question, call 2105550100").phone == "2105550100"
+
+
+def test_a_number_its_country_reads_two_ways_is_kept_to_check_not_guessed():
+    """"4930123456" in Germany: +49 30123456 typed without the +, or the national 0493 0123456."""
+    from app.services.crm import phone_is_ambiguous
+
+    assert format_phone_international("4930123456", "DE") == ""
+    assert phone_is_ambiguous("4930123456", "DE")
+    for typed in ("+4930123456", "004930123456", "030 123456"):
+        assert not phone_is_ambiguous(typed, "DE")
+    assert format_phone_international("+49 30 123456", "DE") == "+4930123456"
+    assert not phone_is_ambiguous("912345678", "PT") and not phone_is_ambiguous("2105550100", "US")
+
+
+def test_a_date_is_never_the_number_to_call_back():
+    from app.pipeline.callback_intent import find_phone
+
+    assert find_phone("call me on 01.12.2026 at 2105550100", "US") == "+12105550100"
+    assert find_phone("call me on 20261201", "NO") is None
+    out = detect_callback_request("call me on 01.12.2026", "AU")
+    assert out["number"] is None and "raw" not in out
+
+
+def test_a_call_back_number_that_cannot_be_placed_is_kept_as_typed():
+    out = detect_callback_request("call me 4930123456", "DE")
+    assert out == {"number": None, "cue": "words", "raw": "4930123456"}
+    out = detect_callback_request("please call me on 0412 345 678", None)
+    assert out["number"] is None and out["raw"] == "0412 345 678"
+
+
+@pytest.mark.asyncio
+async def test_a_national_number_typed_to_an_operator_is_placed_by_the_visits_country():
+    from app.pipeline import operator_contact
+
+    update = AsyncMock()
+    with patch("app.db.supabase.get_conversation_simple",
+               new=AsyncMock(return_value={"metadata": {"tz": "Europe/Lisbon"}})), \
+         patch("app.services.lead_service.update_lead_from_entities", new=update):
+        await operator_contact.record_contact("c-1", "912345678")
+    found = update.await_args.args[1]
+    assert found["phone"] == "+351912345678" and found["_phone_country"] == "PT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["20261201", "booking 912345678", "ref: 912345678", "leaving 05.10.2026"])
+async def test_a_date_or_a_reference_typed_to_an_operator_saves_no_phone(message):
+    from app.pipeline import operator_contact
+
+    update = AsyncMock()
+    with patch("app.db.supabase.get_conversation_simple",
+               new=AsyncMock(return_value={"metadata": {"tz": "Europe/Lisbon"}})), \
+         patch("app.services.lead_service.update_lead_from_entities", new=update):
+        await operator_contact.record_contact("c-1", message)
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_operator_message_without_digits_reads_no_country():
+    from app.pipeline import operator_contact
+
+    read = AsyncMock(return_value={"metadata": {"tz": "Europe/Lisbon"}})
+    update = AsyncMock()
+    with patch("app.db.supabase.get_conversation_simple", new=read), \
+         patch("app.services.lead_service.update_lead_from_entities", new=update):
+        await operator_contact.record_contact("c-1", "thanks, see you tomorrow")
+    read.assert_not_awaited()
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_call_back_number_that_cannot_be_placed_is_kept_and_not_asked_again():
+    """"call me on 0412 345 678" with no country: kept as the number to check, confirmed, and the turn
+    does not ask for a number the client just gave (CodeRabbit #270)."""
+    from tests.test_chat_contacts import _CID, _callback_turn, _lead_payloads
+
+    run, mocks = _callback_turn("please call me on 0412 345 678",
+                                conv_extra={"visitor_email": "cliente@example.com"})
+    with patch("app.pipeline.orchestrator.db.patch_conversation_presence",
+               new=AsyncMock(return_value=True)) as presence:
+        resp = await run()
+    presence.assert_any_await(_CID, {"phone_to_check": "0412 345 678"})
+    assert "0412 345 678" in resp.message
+    assert "best number" not in resp.message.lower()
+    assert all("visitor_phone" not in c.args[1] for c in mocks["update_conversation"].await_args_list)
+    assert _lead_payloads(mocks)[-1]["notes"].startswith("CLIENT ASKED TO BE CALLED — 0412 345 678")
+
+
+async def _lead_update(entities: dict, presence_ok: bool):
+    from app.db import supabase as db
+    from app.services import lead_service
+    from tests.test_chat_contacts import _CID, _LeadsTable
+
+    client = _LeadsTable({"id": "L-1", "conversation_id": _CID, "intent_signals": {}, "notes": ""})
+
+    async def _run(fn, **_kwargs):
+        return fn()
+
+    presence = AsyncMock(return_value=presence_ok)
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", _run), \
+         patch.object(db, "patch_conversation_presence", new=presence):
+        kept = await lead_service.update_lead_from_entities(_CID, entities)
+    return kept, presence
+
+
+@pytest.mark.asyncio
+async def test_a_number_to_check_that_was_not_saved_is_never_reported_as_kept():
+    """The WhatsApp button says "your consultant will write to you" only when the number was kept: a failed
+    phone_to_check write must reach the caller and the lead-write counter (CodeRabbit #270)."""
+    from app.services import lead_service
+
+    before = lead_service.LEAD_WRITE_HEALTH["errors_since_boot"]
+    kept, presence = await _lead_update({"phone": "0412 345 678", "_phone_country": None}, presence_ok=False)
+    assert kept is False
+    presence.assert_awaited_once()
+    assert presence.await_args.args[1] == {"phone_to_check": "0412 345 678"}
+    assert lead_service.LEAD_WRITE_HEALTH["errors_since_boot"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_number_to_check_that_was_saved_is_kept():
+    kept, presence = await _lead_update({"phone": "4930123456", "_phone_country": "DE"}, presence_ok=True)
+    assert kept is True
+    assert presence.await_args.args[1] == {"phone_to_check": "4930123456"}

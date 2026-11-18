@@ -98,6 +98,11 @@ TEMPLATES: dict[str, list[str]] = {
     "number_confirmed_text:sales": [
         "Got it — your consultant will text you on {number}.",
     ],
+    # A number from a client who chose WhatsApp (the button after the card, or in words): the consultant
+    # writes there, and says so — never "text you" (CodeRabbit #270).
+    "number_confirmed_whatsapp:sales": [
+        "Got it — your consultant will write to you on WhatsApp at {number}.",
+    ],
     "number_confirmed:sales": [
         "Got it — your consultant will reach you on {number}.",
     ],

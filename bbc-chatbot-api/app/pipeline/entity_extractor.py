@@ -1406,14 +1406,18 @@ def _resolve_day_only_return(entities: ExtractedEntities, text: str, departure_i
 
 
 def extract_entities(
-    message: str, *, context: dict | None = None
+    message: str, *, context: dict | None = None, country: str | None = None
 ) -> ExtractedEntities:
     """Extract structured entities from a visitor chat message.
 
     context (correction path ONLY — the post-summary probe passes it):
     {"departure_date": "YYYY-MM-DD"} lets day-only return mentions
     ("returning on the 17th") resolve their month/year from the summary's
-    departure. Default None — every other call site is unchanged."""
+    departure. Default None — every other call site is unchanged.
+
+    country (the visit's, app.services.phone_country.country_hint): a number
+    typed the national way with no trunk 0 ("912345678" from Portugal) is
+    taken when its length is that country's (CodeRabbit #270)."""
     entities = ExtractedEntities()
     text = message.strip()
 
@@ -1422,11 +1426,17 @@ def extract_entities(
     if m:
         entities.email = m.group(0).lower()
 
-    # 2. Phone (never a date written in digits)
+    # 2. Phone (never a date written in digits, nor a booking reference: "ref 2105550100")
+    from app.pipeline.callback_intent import follows_reference
+
     for m in PHONE_RE.finditer(text):
-        if not _DATE_LIKE.match(m.group(0).strip()):
+        if not _DATE_LIKE.match(m.group(0).strip()) and not follows_reference(text, m.start()):
             entities.phone = m.group(0).strip()
             break
+    if not entities.phone and country:
+        from app.pipeline.callback_intent import national_phone
+
+        entities.phone = national_phone(text, country)
 
     # 3. Name
     for pattern in NAME_PATTERNS:

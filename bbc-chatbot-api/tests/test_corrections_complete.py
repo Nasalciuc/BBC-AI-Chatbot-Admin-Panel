@@ -481,7 +481,7 @@ class TestNoRegressions:
         import inspect
 
         src = inspect.getsource(_pipeline)
-        assert "extract_entities(message, context=_correction_context)" in src
+        assert "extract_entities(message, context=_correction_context, country=_phone_country)" in src
 
 
 # ── shared patch set ─────────────────────────────────────────
