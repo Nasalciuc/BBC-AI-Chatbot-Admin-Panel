@@ -415,8 +415,11 @@ test('entry starts the signals before the widget draws, and stops them on teardo
 
 test('the card and the note start from the newest trip; a visitor who sent the form or reached out sees no moment', () => {
   const hook = read('proactive.ts')
-  assert.equal(hook.match(/const trip = currentTrip\(\)/g).length, 2, 'ask and noteOpening')
-  assert.match(hook, /return pickTrip\(\s*tripFromFields\(lastSearch\(\), 'search'\),\s*tripFromUrl\(search, kayakVisit\(\)\),\s*tripFromFields\(page\?\.trip, pageSource\),\s*tripFromTitle\(pageTitle\(\)\),\s*\)/)
+  // ask (every moment but the ads card, which takes the newest trip that names a destination) and noteOpening.
+  assert.match(hook, /const trip = trigger === 'ads' \? destinationTrip\(\) : currentTrip\(\)/)
+  assert.equal(hook.match(/const trip = currentTrip\(\)/g).length, 1, 'noteOpening')
+  assert.match(hook, /return \[\s*tripFromFields\(lastSearch\(\), 'search'\),\s*tripFromUrl\(search, kayakVisit\(\)\),\s*tripFromFields\(page\?\.trip, pageSource\),\s*tripFromTitle\(pageTitle\(\)\),\s*\]/)
+  assert.match(hook, /function currentTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\)\s+\}/)
   // The stop: no moment and no note for the rest of the visit, the queue before the widget included.
   const stop = hook.slice(hook.indexOf('const stopFor = (e: SiteEvent) => {'))
   assert.match(stop, /if \(!ssGet\(DONE_KEY\)\) ssSet\(DONE_KEY, stop\)\s+ssSet\(ATTENTION_KEY, '1'\)/)

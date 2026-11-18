@@ -23,8 +23,8 @@ const readTrip = (href, h1) => {
 }
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
-  SAME_SEND_MS, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs, pauseRunning,
-  pickTrigger, replyKind,
+  SAME_SEND_MS, TRIGGER_OFF_ARM, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs,
+  offAfter, pauseRunning, pickTrigger, readOff, replyKind,
 } from '../src/triggers.ts'
 import { fetchProactiveOffer, offerMeasures, offerVariant, preconnect } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -136,6 +136,7 @@ const base = {
   destination: false,
   visibleS: 0,
   watchedS: 60,
+  off: [],
   sinceActivityS: 0,
   scrolledScreens: 0,
   phone: false,
@@ -243,7 +244,53 @@ test('an ad visit: the click id Google or Bing adds, or their tags with a paid m
 
 test('the hook reads the ad visit on the tab\'s first touch and the page\'s trip only for one', () => {
   assert.match(hook, /function adVisitNow\(\): boolean \{\s+return adVisit\(getUtm\(\)\)\s+\}/)
-  assert.match(hook, /const ad = adVisitNow\(\)[\s\S]*?ad,\s+\/\/[^\n]*\n\s+destination: ad && hasContext\(currentTrip\(\)\),/)
+  assert.match(hook, /const ad = adVisitNow\(\)[\s\S]*?ad,\s+\/\/[^\n]*\n\s+destination: ad && destinationTrip\(\) !== null,/)
+})
+
+test('the ads card takes the newest of the page\'s trips that names a destination, for the moment and the words', () => {
+  // CodeRabbit #269: `?gclid=…&from=JFK` on the page about Paris — the address names only an origin, and it
+  // came first: the moment did not come, and the words would have asked where to.
+  const fromAddress = tripFromUrl('?gclid=x&from=JFK')
+  const fromTitle = tripFromTitle('Business class flights to Paris')
+  assert.equal(hasContext(pickTrip(fromAddress, fromTitle)), false)
+  assert.deepEqual(pickTrip(...[fromAddress, fromTitle].filter(hasContext)), fromTitle)
+  assert.match(hook, /function destinationTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\.filter\(hasContext\)\)\s+\}/)
+  assert.match(hook, /const trip = trigger === 'ads' \? destinationTrip\(\) : currentTrip\(\)/)
+})
+
+test('a destination code equal to the origin\'s names no place (the server drops it)', () => {
+  assert.equal(hasContext({ source: 'search', origin_code: 'CDG', destination_code: 'CDG' }), false)
+  assert.equal(hasContext({ source: 'search', origin_code: 'JFK', destination_code: 'CDG' }), true)
+  assert.equal(hasContext({ source: 'search', destination_code: 'CDG' }), true)
+  // A name is kept by the server whatever the codes say.
+  assert.equal(hasContext({ source: 'search', origin_code: 'CDG', destination_code: 'CDG', destination_name: 'Paris' }), true)
+  assert.equal(hasContext(tripFromUrl('?gclid=x&from=CDG&to=CDG')), false)
+})
+
+test('a moment the server switched off on its own leaves the visit\'s moment to the others', () => {
+  // CodeRabbit #269: with PROACTIVE_TRIGGERS=kayak,quote,reader the ads moment came first, used the visit, and
+  // the reader never came for an ad visitor on a destination page.
+  const adPage = { ad: true, destination: true, visibleS: 30, scrolledScreens: 1 }
+  assert.equal(at(adPage), 'ads')
+  assert.equal(at({ ...adPage, off: ['ads'] }), 'reader')
+  assert.equal(at({ ...adPage, visibleS: 10, off: ['ads'] }), null)
+  assert.equal(at({ kayak: true, ...adPage, off: ['kayak'] }), 'ads')
+  assert.equal(at({ kayak: true, ...adPage, off: ['kayak', 'ads', 'reader'] }), null)
+  // A pressed form whose moment is off: nothing, and nothing else over it.
+  assert.equal(at({ ...adPage, off: ['quote'], quote: pressed({ sinceFormActivityS: QUOTE_IDLE_S }) }), null)
+  // What the tab keeps: known moments, each once.
+  assert.deepEqual(readOff('ads, reader,bogus,,ads'), ['ads', 'reader'])
+  assert.equal(offAfter(null, 'ads'), 'ads')
+  assert.equal(offAfter('ads', 'ads'), 'ads')
+  assert.equal(offAfter('ads,bogus', 'kayak'), 'ads,kayak')
+  assert.deepEqual(readOff(null), [])
+  assert.equal(TRIGGER_OFF_ARM, 'trigger_off')
+  // The hook: the answer "trigger_off" marks the moment off and gives the visit its moment back; any other
+  // "no" (the feature off, the control arm, no answer) still ends the visit's moments, as before.
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\), trigger\)\)\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
+  assert.ok(ask.indexOf('TRIGGER_OFF_ARM') > ask.indexOf("posthog?.capture('proactive_eligible'"), 'measured first')
+  assert.match(hook, /off: readOff\(ssGet\(OFF_KEY\)\),/)
 })
 
 // ── "In view": the visitor's seconds, from when the page showed (18 Nov: the Kayak card came at ~9 s) ──
@@ -505,13 +552,18 @@ test('an offer request reports how it went, once, whatever the outcome', async (
     assert.deepEqual([r.res, r.fail], [null, 'shape'])
     r = await run(async () => { throw new TypeError('Failed to fetch') })
     assert.deepEqual([r.res, r.fail], [null, 'network'])
-    // The answer takes longer than the wait: our own time ran out.
+    // The answer takes longer than the wait: our own time ran out, and the request was called off.
+    let aborted = false
     r = await run((url, init) => new Promise((resolve, reject) => {
-      const t = setTimeout(() => resolve(new Response(JSON.stringify(offer))), 1000)
-      init.signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('aborted', 'AbortError')) })
+      const t = setTimeout(() => resolve(new Response(JSON.stringify(offer))), 5000)
+      init.signal.addEventListener('abort', () => {
+        aborted = true
+        clearTimeout(t)
+        reject(new DOMException('aborted', 'AbortError'))
+      })
     }), 50)
-    assert.deepEqual([r.res, r.fail], [null, 'timeout'])
-    assert.ok(r.ms >= 40 && r.ms < 900, `${r.ms} ms`)
+    assert.deepEqual([r.res, r.fail, aborted], [null, 'timeout', true])
+    assert.ok(r.ms >= 40, `${r.ms} ms`)
     // A measurement that throws never costs the answer.
     globalThis.fetch = reply(200, offer)
     const res = await fetchProactiveOffer('http://api.test', body, 200, () => { throw new Error('boom') })
@@ -815,6 +867,11 @@ test('the note asks the server for its words with trigger "note", the brand and 
   assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id \}, OFFER_TIMEOUT_MS,\s+\(t\) => took\.push\(t\),\s+\)/)
   // No answer in time: counted with how long it waited and why (the visitor gets the form); switched off: no word.
   assert.match(body, /if \(!res\) \{[\s\S]*?posthog\?\.capture\('proactive_note_unanswered', \{\s+door, device: [^\n]+, site: brand\.id, \.\.\.offerMeasures\(took\[0\]\),\s+\}\)\s+return null\s+\}\s+if \(!res\.show \|\| !res\.message\) return null/)
+  // A turn the visitor took back meanwhile records nothing, not even the missing answer (CodeRabbit #269): Widget
+  // opens no form for it.
+  const owned = body.indexOf('if (stillWanted && !stillWanted()) return null')
+  assert.ok(owned > body.indexOf('await fetchProactiveOffer(') && owned < body.indexOf("'proactive_note_unanswered'"))
+  assert.equal(body.split('if (stillWanted && !stillWanted()) return null').length, 2, 'checked once')
   assert.match(body, /trigger: 'note', message: res\.message, quickReplies: res\.quick_replies, trip, surface: 'panel'/)
   // The visitor opened the chat: no card follows in this visit.
   assert.match(body, /ssSet\(DONE_KEY, 'chat'\)/)

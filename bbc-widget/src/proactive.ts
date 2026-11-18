@@ -29,8 +29,9 @@ import {
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
-  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, adVisit, blockedPath, inViewBeforeStartMs, pauseRunning,
-  pickTrigger, replyKind, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM, adVisit, blockedPath, inViewBeforeStartMs,
+  offAfter, pauseRunning, pickTrigger, readOff, replyKind, type OpeningTrigger, type PageState, type QuoteState,
+  type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
@@ -55,6 +56,8 @@ export interface ProactiveOpening {
 // sessionStorage: this visit's moment was used ('asked', 'shown', or 'chat' when the visitor opened the
 // chat themselves first).
 const DONE_KEY = 'bbc_proactive_done'
+// sessionStorage: the moments the server switched off in this visit (triggers.ts, TRIGGER_OFF_ARM), "ads,kayak".
+const OFF_KEY = 'bbc_proactive_off'
 // localStorage: no card until this time (24 h after "Not now" or ✕).
 const PAUSE_KEY = 'bbc_proactive_pause_until'
 // sessionStorage: the 10 s note beside the button was closed with ✕ in this tab.
@@ -113,8 +116,11 @@ function firstPaintMs(): number | null {
   }
 }
 
-/** The browser saw the page hidden at some point since `fromMs` (Chrome keeps the page's visibility changes;
- *  a browser that keeps none says nothing, and nothing is taken off). */
+/** The browser saw the page hidden at some point since `fromMs` (Chrome keeps the page's visibility changes).
+ *  A browser that keeps none — Safari, the most common browser of the Kayak phones — is taken at its word that
+ *  the page is in view now: counting nothing there would leave the iPhones' cards at ~9 s. What that misses is a
+ *  visitor who left the tab and came back in the seconds before this script started; their card comes at most
+ *  those seconds early, after the 2 s the widget watches first (triggers.ts, WATCHED_FIRST_S). */
 function hiddenSince(fromMs: number): boolean {
   try {
     return performance.getEntriesByType('visibility-state').some((e) => e.name === 'hidden' && e.startTime >= fromMs)
@@ -127,19 +133,31 @@ function pageTitle(): string {
   try { return document.querySelector('h1')?.textContent || '' } catch { return '' }
 }
 
-/** The trip the card and the note start from (tripContext.pickTrip), the newest word first: the search
- *  the visitor ran on the site, the address, what the page says it is about (bbc-signals), its title. */
-function currentTrip(): TripPayload | null {
+/** The trips the page gives, the newest word first: the search the visitor ran on the site, the address,
+ *  what the page says it is about (bbc-signals), its title. */
+function pageTrips(): (TripPayload | null)[] {
   const page = sitePage()
   const pageSource = page?.pageType === 'search' || page?.pageType === 'flight' ? 'search' : 'route_page'
   let search = ''
   try { search = location.search } catch { /* no address: the rest */ }
-  return pickTrip(
+  return [
     tripFromFields(lastSearch(), 'search'),
     tripFromUrl(search, kayakVisit()),
     tripFromFields(page?.trip, pageSource),
     tripFromTitle(pageTitle()),
-  )
+  ]
+}
+
+/** The trip the card and the note start from (tripContext.pickTrip): the newest of the page's trips. */
+function currentTrip(): TripPayload | null {
+  return pickTrip(...pageTrips())
+}
+
+/** The ads card's trip: the newest of the page's trips that names a destination. An address with only an
+ *  origin (`?gclid=…&from=JFK`) must not hide the destination the page's title names (CodeRabbit #269); the
+ *  moment and the words both take this one. */
+function destinationTrip(): TripPayload | null {
+  return pickTrip(...pageTrips().filter(hasContext))
 }
 
 /** A form the site asks for a quote with: form.qf on buybusinessclass.com, or one labelled as a quote. */
@@ -454,7 +472,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
 
     const ask = async (trigger: Trigger, phone: boolean) => {
       const before = seen()
-      const trip = currentTrip()
+      // The ads card asks with the trip that made it due (destinationTrip): the words name that destination.
+      const trip = trigger === 'ads' ? destinationTrip() : currentTrip()
       const device = phone ? 'phone' : 'computer'
       // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
       const took: OfferTiming[] = []
@@ -474,6 +493,14 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(widgetStartS !== null ? { widget_start_s: widgetStartS } : {}),
         ...(passed ? { moment_passed: passed } : {}),
       })
+      if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
+        // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
+        // in this visit, and the visit keeps its one moment for the others (the reader may still come).
+        ssSet(OFF_KEY, offAfter(ssGet(OFF_KEY), trigger))
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
       if (disposed || !res || !res.show || !res.message || passed) return
       const surface: Surface = phone ? 'card' : 'panel'
       const opening: ProactiveOpening = {
@@ -515,7 +542,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         kayak: kayakVisit(),
         ad,
         // The page's trip is read only for a visit from an ad: the ads card says its destination back.
-        destination: ad && hasContext(currentTrip()),
+        destination: ad && destinationTrip() !== null,
         visibleS: visibleS(),
         watchedS: (now - start) / 1000,
         sinceActivityS: (now - lastActivity) / 1000,
@@ -525,6 +552,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         quote,
         sinceQuoteFormS: quoteFormAt === null ? null : (now - quoteFormAt) / 1000,
         exitIntent: now - exitAt < 1500,
+        off: readOff(ssGet(OFF_KEY)),
       }
       const trigger = pickTrigger(state)
       if (!trigger) return
@@ -605,6 +633,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         apiUrl, { visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id }, OFFER_TIMEOUT_MS,
         (t) => took.push(t),
       )
+      // The visitor did something else while the answer was on its way (Widget's note turn): nothing of it
+      // happens, so nothing says it did — no proactive_shown, no proactive_note_unanswered (Widget opens no
+      // form either), and the cards of this visit stay possible (CodeRabbit #269).
+      if (stillWanted && !stillWanted()) return null
       if (!res) {
         // No answer in time: the visitor who asked for the chat gets the form (Widget.openNote). Counted, with
         // how long it waited and why, so the wait can be set from the data (triggers.ts, OFFER_TIMEOUT_MS).
@@ -614,9 +646,6 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         return null
       }
       if (!res.show || !res.message) return null
-      // The visitor did something else while the words were on their way (Widget's note turn): they are
-      // not shown, so nothing says they were — no proactive_shown, and the cards of this visit stay possible.
-      if (stillWanted && !stillWanted()) return null
       const opening: ProactiveOpening = {
         trigger: 'note', message: res.message, quickReplies: res.quick_replies, trip, surface: 'panel',
         shownAt: Date.now(),

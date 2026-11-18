@@ -140,7 +140,11 @@ export function pickTrip(...trips: (TripPayload | null | undefined)[]): TripPayl
   return trips.find((t): t is TripPayload => !!t) ?? null
 }
 
-/** The card can name a place: the server opens with the trip, not with the general question. */
+/** The card can name a place: the server opens with the trip, not with the general question. A destination
+ *  code equal to the origin's is none: the server drops it (app/models/trip_context.py, `_consistent`), and the
+ *  card would ask where to after all (CodeRabbit #269). */
 export function hasContext(trip: TripPayload | null): boolean {
-  return !!(trip && (trip.destination_code || trip.destination_name))
+  if (!trip) return false
+  if (trip.destination_name) return true
+  return !!trip.destination_code && trip.destination_code !== trip.origin_code
 }

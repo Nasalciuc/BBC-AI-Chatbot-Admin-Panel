@@ -36,7 +36,8 @@ export function ensureVisitorId(): string {
 /** The server's answer to "open the chat now?" (bbc-chatbot-api app/services/proactive.py, offer). */
 export interface ProactiveOffer {
   show: boolean
-  /** "proactive", "control" or "off" (the feature switched off on the server). */
+  /** "proactive", "control", "off" (the feature switched off on the server) or "trigger_off" (this moment
+   *  alone switched off: triggers.ts, TRIGGER_OFF_ARM). */
   arm: string
   message: string | null
   quick_replies: string[]
@@ -82,8 +83,6 @@ export async function fetchProactiveOffer(
 ): Promise<ProactiveOffer | null> {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
   let timedOut = false
-  // The server answered with a status: a failure after this is in its reply, not on the way to it.
-  let answered = false
   const timer = setTimeout(() => { timedOut = true; ctrl?.abort() }, timeoutMs)
   const startedAt = Date.now()
   const done = <T>(fail: OfferFail | null, value: T): T => {
@@ -97,7 +96,6 @@ export async function fetchProactiveOffer(
       body: JSON.stringify(body),
       signal: ctrl?.signal,
     })
-    answered = true
     if (!res.ok) return done('http', null)
     const data = await res.json()
     if (!data || typeof data.show !== 'boolean' || typeof data.arm !== 'string') return done('shape', null)
@@ -112,9 +110,10 @@ export async function fetchProactiveOffer(
       quick_replies: replies,
       ...(variant ? { variant } : {}),
     })
-  } catch {
-    // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON.
-    return done(timedOut ? 'timeout' : answered ? 'shape' : 'network', null)
+  } catch (e) {
+    // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON (a
+    // proxy's HTML page): res.json() refuses it with a SyntaxError, and that is the reply's shape, not the line.
+    return done(timedOut ? 'timeout' : e instanceof SyntaxError ? 'shape' : 'network', null)
   } finally {
     clearTimeout(timer)
   }

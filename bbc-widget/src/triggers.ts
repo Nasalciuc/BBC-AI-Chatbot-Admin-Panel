@@ -50,6 +50,26 @@
 
 /** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. */
 export type Trigger = 'kayak' | 'ads' | 'quote' | 'reader' | 'exit'
+const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'quote', 'reader', 'exit']
+
+/** The server's answer for a moment switched off on its own (PROACTIVE_TRIGGERS), with the feature on: the
+ *  visit keeps its one moment for the others (proactive.ts), and this one is not asked again in it. Without
+ *  this, switching the ads card off would also take the reader from every ad visitor on a destination page:
+ *  the ads moment came first and used the visit (CodeRabbit #269). */
+export const TRIGGER_OFF_ARM = 'trigger_off'
+
+/** The moments switched off in this visit, as the tab keeps them ("ads,kayak"): each known one once, anything
+ *  else dropped. */
+export function readOff(kept: string | null): Trigger[] {
+  const named = (kept || '').split(',').map(s => s.trim()).filter((t): t is Trigger => TRIGGERS.includes(t as Trigger))
+  return [...new Set(named)]
+}
+
+/** What the tab keeps after the server switched `trigger` off: each moment once. */
+export function offAfter(kept: string | null, trigger: Trigger): string {
+  const off = readOff(kept)
+  return (off.includes(trigger) ? off : [...off, trigger]).join(',')
+}
 
 /** What can open the chat without the form: one of the moments, or `note` — the visitor tapped the 10 s
  *  note beside the button (owner's decision, 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the
@@ -121,6 +141,8 @@ export interface PageState {
   sinceQuoteFormS: number | null
   /** The pointer just left the page through the top. */
   exitIntent: boolean
+  /** The moments the server switched off in this visit (TRIGGER_OFF_ARM): never picked again in it. */
+  off: readonly Trigger[]
 }
 
 /** No card on the thank-you page, the legal pages or the like (the paths the site uses, Nov 2026). */
@@ -139,10 +161,13 @@ export function pickTrigger(s: PageState): Trigger | null {
   // also past the quote watch below: the visitor is waiting for the answer, not for us.
   if (s.quote?.busy) return null
 
+  // A moment the server switched off in this visit is never picked again in it: the next one may come.
+  const on = (t: Trigger) => !s.off.includes(t)
+
   // A press of "Get free quote" puts the form first: until it goes quiet nothing else interrupts.
   if (s.quote && s.quote.sincePressS <= QUOTE_WATCH_S) {
     const idle = s.quote.invalid ? QUOTE_INVALID_IDLE_S : QUOTE_IDLE_S
-    if (s.exitIntent || s.quote.sinceFormActivityS >= idle) return 'quote'
+    if (on('quote') && (s.exitIntent || s.quote.sinceFormActivityS >= idle)) return 'quote'
     return null
   }
 
@@ -150,9 +175,9 @@ export function pickTrigger(s: PageState): Trigger | null {
   if (typing) return null
   // The quote form being worked on, pressed or not: no card over it (only the quote moment above).
   if (s.sinceQuoteFormS !== null && s.sinceQuoteFormS <= QUOTE_WATCH_S) return null
-  if (s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
-  if (s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
-  if (s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
+  if (on('kayak') && s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
+  if (on('ads') && s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
+  if (on('reader') && s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
   return null
 }
 
