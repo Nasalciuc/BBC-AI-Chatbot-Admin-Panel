@@ -112,16 +112,21 @@ def _is_phone_shaped(text: str) -> bool:
 _NOTE_CALL = "CLIENT ASKED TO BE CALLED"
 _NOTE_TEXT = "CLIENT ASKED FOR TEXTS, NOT CALLS"
 _NOTE_ANY = "CLIENT GAVE A NUMBER (no preference stated)"
+# The WhatsApp button after the card (app.pipeline.card_buttons): the agent writes there, never a call.
+_NOTE_WHATSAPP = "CLIENT ASKED FOR WHATSAPP, NOT CALLS"
 
 
 def callback_note(number: Optional[str], channel: str = "call") -> str:
     """The line the consultant sees at the top of the lead: how the client
-    wants to be reached on the number ('call', 'text', or 'any' when they
-    gave the number and said nothing more — contact_capture.callback_channel).
-    The panel reads a CLIENT ASKED TO BE CALLED line as "Asks: a call back"."""
+    wants to be reached on the number ('call', 'text', 'whatsapp' — the button
+    after the card — or 'any' when they gave the number and said nothing more:
+    contact_capture.callback_channel). The panel reads a CLIENT ASKED TO BE
+    CALLED line as "Asks: a call back"."""
     shown = number or "number not captured"
     if channel == "text":
         return f"{_NOTE_TEXT} — {shown}"
+    if channel == "whatsapp":
+        return f"{_NOTE_WHATSAPP} — {shown}"
     if channel == "any":
         return f"{_NOTE_ANY} — {shown}"
     return f"{_NOTE_CALL} — {shown}"
@@ -133,7 +138,7 @@ def notes_with_callback(notes: Optional[str], note: str) -> str:
     for a call and then chose texts must not still show "a call back"."""
     kept = [
         line for line in (notes or "").splitlines()
-        if not line.strip().startswith((_NOTE_CALL, _NOTE_TEXT, _NOTE_ANY))
+        if not line.strip().startswith((_NOTE_CALL, _NOTE_TEXT, _NOTE_ANY, _NOTE_WHATSAPP))
     ]
     return "\n".join([note, *kept]).strip()
 

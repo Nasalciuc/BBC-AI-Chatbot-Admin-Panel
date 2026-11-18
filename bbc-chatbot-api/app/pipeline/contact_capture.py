@@ -245,7 +245,8 @@ def callback_channel(message: str, cue: str, stored_channel: Optional[str]) -> s
     if cue == "words":
         return "call"
     wishes = _wishes(stored_channel)
-    if "no texts" not in wishes and ("text" in wishes or "no calls" in wishes):
+    # WhatsApp, chosen earlier (the button after the card, or said in words), is a message too.
+    if "no texts" not in wishes and ("text" in wishes or "whatsapp" in wishes or "no calls" in wishes):
         return "text"
     return "any"
 

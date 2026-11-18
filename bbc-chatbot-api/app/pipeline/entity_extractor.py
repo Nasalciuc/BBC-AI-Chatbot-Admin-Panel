@@ -645,6 +645,9 @@ CONTACT_CHANNEL_RES: tuple[tuple[str, re.Pattern], ...] = (
         r"|par\s+(?:message|sms|texto)|[ée]crivez[- ]moi|envoyez[- ]moi\s+un\s+(?:message|sms)"
         r"|mensage(?:m|ns)\s+de\s+texto|(?:por|s[oó]\s+por)\s+mensage(?:m|ns)|me\s+mande\s+(?:uma\s+)?mensagem)\b",
         re.I)),
+    # WhatsApp, said in words ("on WhatsApp please", "por WhatsApp"); the button after the card says it
+    # too (app.pipeline.card_buttons). A message app, not a call: turns_down_calls reads it so.
+    ("whatsapp", re.compile(r"\bwhats\s*app\b", re.I)),
     ("email", re.compile(
         r"\b(?:e-?mail\s+only|only\s+(?:by\s+)?e-?mail|e-?mail\s+me|just\s+e-?mail"
         r"|prefer\s+(?:an\s+)?e-?mail|(?:quotes?|options|fares|prices?)\s+(?:on|to|via|by)\s+(?:my\s+)?e-?mail"
@@ -702,7 +705,7 @@ def contact_channel_of(text: str) -> Optional[str]:
     last_at: dict[str, int] = {}
     for label, rx in CONTACT_CHANNEL_RES:
         for m in rx.finditer(text):
-            if label in ("text", "email") and _NEGATED_BEFORE.search(text[max(0, m.start() - 24):m.start()]):
+            if label in ("text", "email", "whatsapp") and _NEGATED_BEFORE.search(text[max(0, m.start() - 24):m.start()]):
                 continue
             last_at[label] = max(m.start(), last_at.get(label, -1))
     for label, opposite in _CHANNEL_OPPOSITES.items():
@@ -724,11 +727,11 @@ def merge_contact_channel(stored: Optional[str], new: str) -> str:
 
 
 def turns_down_calls(channel: Optional[str]) -> bool:
-    """These channel words turn a call down: the client chose texts or said no
-    calls. A call they asked for earlier is no longer owed — the newest wish
+    """These channel words turn a call down: the client chose texts or WhatsApp,
+    or said no calls. A call they asked for earlier is no longer owed — the newest wish
     wins, as a later "call me" wins over an older "text only" (CodeRabbit #262)."""
     parts = {p.strip() for p in (channel or "").split(",")}
-    return "text" in parts or "no calls" in parts
+    return "text" in parts or "whatsapp" in parts or "no calls" in parts
 
 
 def current_contact_channel(lead: Optional[dict], entities: Optional[dict] = None) -> Optional[str]:

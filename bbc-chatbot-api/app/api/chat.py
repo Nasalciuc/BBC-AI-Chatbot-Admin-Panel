@@ -90,16 +90,26 @@ class ProactiveInit(BaseModel):
     # "note": the visitor tapped the note beside the button (app/services/proactive).
     trigger: Literal["kayak", "ads", "quote", "reader", "exit", "note"]
     # The words /offer used: how the note asked its first question (app/services/
-    # note_bandit), or the quote card that offered the chat instead of the form
-    # (proactive.CONTACT). The opening is written with the same words and the chat
-    # is counted for it. A value that is not one of ours is dropped, never a 422.
+    # note_bandit), the quote card that offered the chat instead of the form
+    # (proactive.CONTACT), the row beside the refused form (ROW) or the Kayak
+    # card's tested sentence (BEAT). The opening is written with the same words and
+    # the chat is counted for it. A value that is not one of ours is dropped, never a 422.
     variant: Optional[str] = None
+    # The language the card spoke ("es", "fr"; proactive_i18n): the opening is written in it, and the
+    # chat keeps it. Anything else is English.
+    lang: Optional[str] = None
 
     @field_validator("variant", mode="before")
     @classmethod
     def _known_variant_or_none(cls, v):
         from app.services.proactive import known_variant
         return known_variant(v)
+
+    @field_validator("lang", mode="before")
+    @classmethod
+    def _card_lang_or_none(cls, v):
+        from app.services.proactive_i18n import card_lang
+        return card_lang(v)
 
 
 ChatInitRequest.model_rebuild()
@@ -222,6 +232,7 @@ async def chat_init(
             _opening = await _proactive.open_conversation(
                 conv_id, _proactive_trigger, payload.trip, _meta.get("site"),
                 payload.proactive.variant if payload.proactive else None,
+                payload.proactive.lang if payload.proactive else None,
             ) or {}
         except Exception as e:
             _proactive.PROACTIVE_HEALTH["open_failures"] += 1
@@ -246,11 +257,40 @@ class ProactiveOfferRequest(BaseModel):
     # widget's FIELD_KINDS, never a value). Only known kinds pass, six at most,
     # each once; anything else is dropped, never a 422.
     refused: Optional[list[str]] = None
+    # The browser's language ("es", "fr": the card speaks it, ADR-9b), the screen (`device`: the card's
+    # own channel is WhatsApp on a phone and email on a computer, ADR-3a), a row the widget can put beside
+    # the refused quote form (`place="form"`, ADR-4a) and the C4 side of a Kayak visitor ("early", "now",
+    # ADR-1b). Anything else is dropped, never a 422.
+    lang: Optional[str] = None
+    device: Optional[Literal["phone", "computer"]] = None
+    place: Optional[Literal["form"]] = None
+    c4: Optional[Literal["early", "now"]] = None
 
     @field_validator("trip", mode="before")
     @classmethod
     def _trip_or_none(cls, v):
         return v if isinstance(v, (dict, TripContext)) else None
+
+    @field_validator("lang", mode="before")
+    @classmethod
+    def _lang_or_none(cls, v):
+        from app.services.proactive_i18n import card_lang
+        return card_lang(v)
+
+    @field_validator("device", mode="before")
+    @classmethod
+    def _device_or_none(cls, v):
+        return v if v in ("phone", "computer") else None
+
+    @field_validator("place", mode="before")
+    @classmethod
+    def _place_or_none(cls, v):
+        return v if v == "form" else None
+
+    @field_validator("c4", mode="before")
+    @classmethod
+    def _c4_or_none(cls, v):
+        return v if v in ("early", "now") else None
 
     @field_validator("site", mode="before")
     @classmethod
@@ -282,11 +322,24 @@ async def proactive_offer(
     conversation, no lead and no row. The control arm is told show=False, so
     the widget counts the moment without showing anything."""
     from app.services import note_bandit, proactive
+    from app.services.closing import is_within_team_hours
     if payload.trigger == proactive.NOTE:
         # The note's bandit reads its counts in the background, at most every few
         # minutes: this answer never waits for the database.
         note_bandit.refresh_soon()
-    return proactive.offer(payload.visitor_id, payload.trigger, payload.trip, payload.site, payload.refused)
+    # C4: the early side asks whether it still runs (a count, read where every process sees it).
+    _c4_open = (
+        await proactive.c4_running()
+        if payload.trigger == "kayak" and payload.c4 == "early" else True
+    )
+    out = proactive.offer(
+        payload.visitor_id, payload.trigger, payload.trip, payload.site, payload.refused,
+        lang=payload.lang, device=payload.device, place=payload.place, c4=payload.c4,
+        c4_open=_c4_open, team_online=is_within_team_hours(),
+    )
+    if out.get("show") and payload.trigger == "kayak" and payload.c4:
+        await proactive.c4_count(payload.c4)
+    return out
 
 
 # --- Start endpoint: the AI greets FIRST — no fake client message ---
@@ -897,6 +950,15 @@ async def chat(
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
 
+    # A button after the card (yes, WhatsApp, email, "I'll wait here"): answered at
+    # once, without the model (app.pipeline.card_buttons). None: answered as typed.
+    if req.button and req.conversation_id:
+        from app.pipeline.card_buttons import answer as _answer_button
+
+        _tapped = await _answer_button(req, clean_message, _meta)
+        if _tapped is not None:
+            return _tapped
+
     # Response cache check (Sprint 3)
     from app.services.response_cache import get_cached, set_cached
     from app.pipeline.intent import detect_intent
@@ -1020,6 +1082,19 @@ async def mark_chat_session_open(
         from app.services.routing import dispatch_needs_agent
         _fire_and_forget(dispatch_needs_agent(conversation_id))
     return {"success": True}
+
+
+@router.post("/chat/session/{conversation_id}/before-you-go")
+async def before_you_go(
+    conversation_id: str,
+    _owner: None = Depends(require_visitor_ownership),
+):
+    """B1 (ADR-6d): a client with no contact is leaving (the tab went out of view, the page went
+    quiet, the chat was closed) and no agent has written yet: one message asks where the agent should
+    write, with the buttons. Once per conversation; {"show": false, "why"} otherwise."""
+    from app.pipeline.card_buttons import before_you_go as _before_you_go
+
+    return await _before_you_go(conversation_id)
 
 
 @router.post("/chat/session/{conversation_id}/ping")

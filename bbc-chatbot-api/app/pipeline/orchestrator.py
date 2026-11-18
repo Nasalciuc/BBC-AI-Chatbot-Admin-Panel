@@ -528,21 +528,24 @@ async def _pipeline(
     # The client's language (app.pipeline.language): what this message says,
     # else what an earlier one said. The fixed replies of this turn speak it;
     # the model already does. Kept on the conversation once a message says it.
-    from app.pipeline.language import current_lang, turn_lang
+    from app.pipeline.language import current_lang, keep_lang, turn_lang
 
-    _client_lang = turn_lang(message, ((conv or {}).get("metadata") or {}).get("client_lang"))
+    _stored_lang = ((conv or {}).get("metadata") or {}).get("client_lang")
+    _client_lang = turn_lang(message, _stored_lang)
     # Where the client probably is, for a number typed without its country
     # code (app.services.phone_country; #3296).
     from app.services.phone_country import country_hint
 
     _phone_country = country_hint({**(((conv or {}).get("metadata")) or {}), **(metadata or {})})
     current_lang.set(_client_lang)
-    if _client_lang and _client_lang != ((conv or {}).get("metadata") or {}).get("client_lang"):
+    _lang_kept = keep_lang(message, _stored_lang)
+    if _lang_kept and _lang_kept != _stored_lang:
         # One key merged server-side (no read-modify-write that could undo a
-        # flag another request set in between).
+        # flag another request set in between). "en": an English message ends
+        # the Spanish a card shown to a Spanish browser started (proactive_i18n).
         try:
-            if await db.patch_conversation_presence(cid, {"client_lang": _client_lang}):
-                conv["metadata"] = {**((conv or {}).get("metadata") or {}), "client_lang": _client_lang}
+            if await db.patch_conversation_presence(cid, {"client_lang": _lang_kept}):
+                conv["metadata"] = {**((conv or {}).get("metadata") or {}), "client_lang": _lang_kept}
         except Exception as e:  # noqa: silent — logged; the turn still speaks the language, only the next one may not
             logger.warning(f"[{cid}] client language not saved: {type(e).__name__}")
 

@@ -96,9 +96,35 @@ def detect_lang(text: Optional[str]) -> Optional[str]:
     return None
 
 
+def is_english(text: Optional[str]) -> bool:
+    """A message that plainly says it is English: three words or more, two of them words every English
+    sentence uses, and none of the other languages' words. A card shown in Spanish to a browser set to
+    Spanish (proactive_i18n) keeps the chat in Spanish only until the client writes English."""
+    words = _fold(text or "").split()
+    if len(words) < 3:
+        return False
+    if any(w in _MARKERS[lang] for lang in LANGS for w in words):
+        return False
+    return sum(1 for w in words if w in _EN) >= 2
+
+
 def turn_lang(message: Optional[str], stored: Optional[str]) -> Optional[str]:
-    """The language this turn speaks: what this message says, else what an earlier one said."""
+    """The language this turn speaks: what this message says, else what an earlier one said. An English
+    message speaks English, whatever an earlier one said (`stored` then gives way: keep_lang)."""
     found = detect_lang(message)
     if found:
         return found
+    if is_english(message):
+        return None
     return stored if stored in LANGS else None
+
+
+def keep_lang(message: Optional[str], stored: Optional[str]) -> Optional[str]:
+    """What the conversation keeps after this message: the language it says, "en" when an English
+    message ends an earlier Spanish, French or Portuguese, or None to leave what is kept as it is."""
+    found = detect_lang(message)
+    if found:
+        return found
+    if stored in LANGS and is_english(message):
+        return "en"
+    return None
