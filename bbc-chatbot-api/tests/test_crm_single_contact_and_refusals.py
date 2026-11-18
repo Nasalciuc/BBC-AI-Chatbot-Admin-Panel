@@ -10,6 +10,7 @@ says their side takes it. Every contact and route here is invented."""
 import logging
 import os
 import sys
+from datetime import date, timedelta
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,10 +50,15 @@ def single_on(monkeypatch):
     monkeypatch.setenv("CRM_SINGLE_CONTACT", "1")
 
 
+# A departure always ahead of "today", whatever day the suite runs as (CI runs it 120 days on too):
+# a fixed date turns into the CRM check's past_date and hides what these tests are about.
+_DEPARTS = (date.today() + timedelta(days=200)).isoformat()
+_DEPARTS_NEXT = (date.today() + timedelta(days=201)).isoformat()
+
 def _payload(email=_EMAIL, phone=_PHONE):
     return {
         "client": {"name": "Ana", "email": email, "phone": phone},
-        "flights": [{"from": "JFK", "to": "MAD", "date": "2027-03-10"}],
+        "flights": [{"from": "JFK", "to": "MAD", "date": _DEPARTS}],
         "passengers": {"adult": 1, "child": 0, "infant": 0},
         "cabin_class": "business",
     }
@@ -122,7 +128,7 @@ def test_the_fields_a_422_names(body, fields):
 async def test_a_422_comes_back_as_a_gate_refusal_not_a_failure():
     conv = {"id": "c-1", "visitor_name": "Ana", "visitor_email": _EMAIL, "visitor_phone": _PHONE,
             "metadata": {}, "visitor_id": "v-1", "created_at": "2026-11-18T10:00:00+00:00"}
-    lead = {"id": "L1", "origin_code": "JFK", "destination_code": "MAD", "departure_date": "2027-03-10",
+    lead = {"id": "L1", "origin_code": "JFK", "destination_code": "MAD", "departure_date": _DEPARTS,
             "passengers": 1, "cabin_class": "business", "trip_type": "one_way"}
     client = MagicMock()
     client.post = AsyncMock(return_value=_resp(422, {"errors": {"client.phone": ["The client.phone format is invalid."]}}))
@@ -136,7 +142,7 @@ async def test_a_422_comes_back_as_a_gate_refusal_not_a_failure():
 async def test_a_phone_only_lead_is_refused_here_without_calling_the_crm():
     conv = {"id": "c-2", "visitor_name": "Ana", "visitor_email": "", "visitor_phone": _PHONE,
             "metadata": {}, "visitor_id": "v-2", "created_at": "2026-11-18T10:00:00+00:00"}
-    lead = {"id": "L2", "origin_code": "JFK", "destination_code": "MAD", "departure_date": "2027-03-10",
+    lead = {"id": "L2", "origin_code": "JFK", "destination_code": "MAD", "departure_date": _DEPARTS,
             "passengers": 1, "cabin_class": "business", "trip_type": "one_way"}
     client = MagicMock()
     client.post = AsyncMock()
@@ -159,7 +165,7 @@ def _conv(email=_EMAIL, phone=_PHONE, metadata=None, cid="c-9"):
 
 
 _LEAD = {"id": "L9", "created_in_crm": False, "origin_code": "JFK", "destination_code": "MAD",
-         "departure_date": "2027-03-10", "passengers": 1, "cabin_class": "business", "trip_type": "one_way"}
+         "departure_date": _DEPARTS, "passengers": 1, "cabin_class": "business", "trip_type": "one_way"}
 
 
 async def _sweep(conv, result, lead=None):
@@ -212,7 +218,7 @@ def test_the_fingerprint_is_the_contact_and_the_trip_only():
     assert cron._crm_fingerprint(_conv(metadata={"heartbeat_at": "now"}), _LEAD) == base
     assert cron._crm_fingerprint({**_conv(), "message_count": 40}, _LEAD) == base
     assert cron._crm_fingerprint(_conv(email="other@example.com"), _LEAD) != base
-    assert cron._crm_fingerprint(_conv(), {**_LEAD, "departure_date": "2027-03-11"}) != base
+    assert cron._crm_fingerprint(_conv(), {**_LEAD, "departure_date": _DEPARTS_NEXT}) != base
 
 
 @pytest.mark.asyncio
