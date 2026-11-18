@@ -82,6 +82,8 @@ export async function fetchProactiveOffer(
 ): Promise<ProactiveOffer | null> {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
   let timedOut = false
+  // The server answered with a status: a failure after this is in its reply, not on the way to it.
+  let answered = false
   const timer = setTimeout(() => { timedOut = true; ctrl?.abort() }, timeoutMs)
   const startedAt = Date.now()
   const done = <T>(fail: OfferFail | null, value: T): T => {
@@ -95,6 +97,7 @@ export async function fetchProactiveOffer(
       body: JSON.stringify(body),
       signal: ctrl?.signal,
     })
+    answered = true
     if (!res.ok) return done('http', null)
     const data = await res.json()
     if (!data || typeof data.show !== 'boolean' || typeof data.arm !== 'string') return done('shape', null)
@@ -110,8 +113,8 @@ export async function fetchProactiveOffer(
       ...(variant ? { variant } : {}),
     })
   } catch {
-    // A timeout or a network error is a "no": the visitor sees nothing. A reply that was not JSON too.
-    return done(timedOut ? 'timeout' : 'network', null)
+    // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON.
+    return done(timedOut ? 'timeout' : answered ? 'shape' : 'network', null)
   } finally {
     clearTimeout(timer)
   }

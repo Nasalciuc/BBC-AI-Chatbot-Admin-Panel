@@ -500,6 +500,9 @@ test('an offer request reports how it went, once, whatever the outcome', async (
     assert.deepEqual([r.res, r.fail], [null, 'http'])
     r = await run(reply(200, { nope: 1 }))
     assert.deepEqual([r.res, r.fail], [null, 'shape'])
+    // A reply that is not JSON at all (a proxy's HTML page) is the reply's fault, not the line's.
+    r = await run(async () => new Response('<html>busy</html>', { status: 200 }))
+    assert.deepEqual([r.res, r.fail], [null, 'shape'])
     r = await run(async () => { throw new TypeError('Failed to fetch') })
     assert.deepEqual([r.res, r.fail], [null, 'network'])
     // The answer takes longer than the wait: our own time ran out.
