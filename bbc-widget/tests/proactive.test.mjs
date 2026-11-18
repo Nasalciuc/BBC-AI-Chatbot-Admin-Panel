@@ -282,6 +282,20 @@ test('a place name the server would drop names no place here either, and the tit
   assert.equal(tripFromFields({ destination_name: '\ufeffParis' }, 'route_page'), null)
   assert.equal(tripFromFields({ destination_name: 'Paris\ufeff' }, 'route_page'), null)
   assert.equal(tripFromFields({ destination_name: 'Paris /\u0085France' }, 'route_page'), null)
+  // CodeRabbit #269, round 4: the spaces fold before the airport code comes off, so a NEL after "(CDG)" no longer
+  // keeps it in the name; and the length is the server's, in code points.
+  assert.equal(tripFromFields({ destination_name: 'Paris (CDG)\u0085' }, 'route_page')?.destination_name, 'Paris')
+  assert.equal(tripFromFields({ destination_name: 'Paris\u0085(CDG)' }, 'route_page')?.destination_name, 'Paris')
+  assert.equal(tripFromFields({ destination_name: '(CDG)\u0085' }, 'route_page'), null)
+  assert.equal(tripFromFields({ destination_name: '\u{20BB7}' }, 'route_page'), null)
+  assert.equal(tripFromFields({ destination_name: '\u{20BB7}\u{20BB7}' }, 'route_page')?.destination_name, '\u{20BB7}\u{20BB7}')
+  assert.equal(tripFromFields({ destination_name: '\u{20BB7}'.repeat(40) }, 'route_page')?.destination_name, '\u{20BB7}'.repeat(40))
+  assert.equal(tripFromFields({ destination_name: '\u{20BB7}'.repeat(41) }, 'route_page'), null)
+  // The reviewer's case: a one-letter name in the address gives way to the title's destination.
+  const oneLetter = tripFromUrl('?gclid=x&to-0=%F0%A0%AE%B7')
+  const title = tripFromTitle('Business class flights to Paris')
+  assert.equal(oneLetter, null)
+  assert.deepEqual(pickTrip(...[oneLetter, title].filter(hasContext)), title)
 })
 
 test('an ads answer whose destination left the page meanwhile is dropped and measured', () => {

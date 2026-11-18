@@ -53,11 +53,15 @@ const NAME = /^\p{L}[\p{L} .'(),-]*$/u
  *  went the other way. Folded by the server's set, a U+FEFF stays and fails the name rule on both (CodeRabbit #269). */
 const SERVER_SPACE = /[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g
 
-/** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, by the server's rule, else nothing. */
+/** A city as the page wrote it: "Chicago (CHI)" → "Chicago". 2–40 characters, by the server's rule, else nothing.
+ *  The server's spaces fold first, so the airport code still comes off when a NEL follows it ("Paris (CDG)" then
+ *  U+0085), and the characters count as Python's len() counts them, in code points: a letter outside the Basic
+ *  Multilingual Plane is one character there and two UTF-16 units here (CodeRabbit #269). */
 function city(v: string | null | undefined): string | undefined {
   if (!v) return undefined
-  const s = v.replace(/\s*\([A-Za-z]{3}\)\s*$/, '').replace(SERVER_SPACE, ' ').replace(/^ | $/g, '')
-  return s.length >= 2 && s.length <= 40 && NAME.test(s) ? s : undefined
+  const s = v.replace(SERVER_SPACE, ' ').replace(/^ | $/g, '').replace(/ ?\([A-Za-z]{3}\)$/, '')
+  const n = Array.from(s).length
+  return n >= 2 && n <= 40 && NAME.test(s) ? s : undefined
 }
 
 /** The first of `keys` whose value reads (a page uses one spelling of each field; an unrelated
