@@ -126,7 +126,9 @@ async def test_a_number_typed_to_an_operator_is_placed_by_the_visits_country():
     ("account, phone 912345678", "PT", "+351912345678"),  # a phone word between them: a number again
 ])
 def test_a_national_number_without_a_trunk_zero_is_placed_by_the_visits_country(text, country, e164):
-    assert extract_entities(text, country=country).phone == e164
+    # Taken as typed, like every number the extractor finds; placed where it is saved, with the same country.
+    phone = extract_entities(text, country=country).phone
+    assert phone and format_phone_international(phone, country) == e164
 
 
 @pytest.mark.parametrize("text, country", [
@@ -195,7 +197,25 @@ async def test_a_national_number_typed_to_an_operator_is_placed_by_the_visits_co
          patch("app.services.lead_service.update_lead_from_entities", new=update):
         await operator_contact.record_contact("c-1", "912345678")
     found = update.await_args.args[1]
-    assert found["phone"] == "+351912345678" and found["_phone_country"] == "PT"
+    assert found["phone"] == "912345678" and found["_phone_country"] == "PT"
+    assert format_phone_international(found["phone"], found["_phone_country"]) == "+351912345678"
+
+
+@pytest.mark.asyncio
+async def test_a_national_number_its_country_reads_two_ways_is_kept_to_check():
+    """"49301234" typed to an operator from Germany: +49 301234, or the national 0493 01234. Kept as typed
+    for the agent to check, never guessed (CodeRabbit #270, round 3)."""
+    from app.pipeline import operator_contact
+
+    update = AsyncMock()
+    with patch("app.db.supabase.get_conversation_simple",
+               new=AsyncMock(return_value={"metadata": {"tz": "Europe/Berlin"}})), \
+         patch("app.services.lead_service.update_lead_from_entities", new=update):
+        await operator_contact.record_contact("c-1", "49301234")
+    found = update.await_args.args[1]
+    assert found["phone"] == "49301234" and found["_phone_country"] == "DE"
+    kept, presence = await _lead_update(found, presence_ok=True)
+    assert kept is True and presence.await_args.args[1] == {"phone_to_check": "49301234"}
 
 
 @pytest.mark.asyncio
@@ -278,3 +298,66 @@ async def test_a_number_to_check_that_was_saved_is_kept():
     kept, presence = await _lead_update({"phone": "4930123456", "_phone_country": "DE"}, presence_ok=True)
     assert kept is True
     assert presence.await_args.args[1] == {"phone_to_check": "4930123456"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visitor_country, conv_extra", [("AU", {}), (None, {"visitor_phone_country": "AU"})])
+async def test_the_country_chosen_with_the_number_places_it(visitor_country, conv_extra):
+    """The booking form sends the country with the number: a local "0412 345 678" is placed by it, before
+    any hint from the browser (CodeRabbit #270, round 3)."""
+    from app.models.chat import VisitorInfo
+    from tests.test_chat_contacts import _CID, _callback_turn
+
+    run, mocks = _callback_turn("0412 345 678", visitor=VisitorInfo(country_code=visitor_country),
+                                conv_extra={"visitor_email": "cliente@example.com", **conv_extra})
+    resp = await run()
+    mocks["update_conversation"].assert_any_await(_CID, {"visitor_phone": "+61412345678"})
+    assert "+61412345678" in resp.message
+
+
+def test_a_country_that_is_not_one_is_ignored():
+    from app.services.phone_country import known_country
+
+    assert known_country("au") == "AU" and known_country(" GB ") == "GB"
+    assert known_country("+61") is None and known_country("XX") is None and known_country(None) is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_conversation_stores_the_local_number_placed_by_its_country():
+    from app.db import supabase as db
+    from app.models.chat import VisitorInfo
+
+    written = {}
+
+    class _Insert:
+        def __init__(self, payload):
+            written.update(payload)
+
+        def execute(self):
+            return type("R", (), {"data": [dict(written, id="c-new")]})()
+
+    class _Client:
+        def table(self, _name):
+            return type("T", (), {"insert": lambda _self, payload: _Insert(payload)})()
+
+    async def _run(fn, **_kwargs):
+        return fn()
+
+    with patch.object(db, "get_client", return_value=_Client()), patch.object(db, "_run_sync", _run):
+        row = await db.get_or_create_conversation(None, "sales", VisitorInfo(phone="0412 345 678", country_code="AU"))
+    assert row and written["visitor_phone"] == "+61412345678" and written["visitor_phone_country"] == "AU"
+    written.clear()
+    with patch.object(db, "get_client", return_value=_Client()), patch.object(db, "_run_sync", _run):
+        await db.get_or_create_conversation(None, "sales", VisitorInfo(phone="0412 345 678"))
+    assert "visitor_phone" not in written, "a number that can't be placed is not written as an empty string"
+
+
+def test_the_crm_payload_places_a_local_number_by_the_visitors_country():
+    from types import SimpleNamespace
+
+    from app.services.crm import build_crm_payload
+
+    lead = {"origin_code": "SYD", "destination_code": "LHR", "departure_date": "2027-02-10", "passengers": 1}
+    visitor = SimpleNamespace(name="Test Client", email="cliente@example.com", phone="0412 345 678", country_code="AU")
+    payload = build_crm_payload(lead, visitor, conv_metadata={}, suid=None)
+    assert "+61412345678" in str(payload)

@@ -536,10 +536,15 @@ async def _pipeline(
     _stored_lang = ((conv or {}).get("metadata") or {}).get("client_lang")
     _client_lang = turn_lang(message, _stored_lang)
     # Where the client probably is, for a number typed without its country
-    # code (app.services.phone_country; #3296).
-    from app.services.phone_country import country_hint
+    # code (app.services.phone_country; #3296). The country the client chose
+    # with the number (the booking form's) comes first (CodeRabbit #270).
+    from app.services.phone_country import country_hint, known_country
 
-    _phone_country = country_hint({**(((conv or {}).get("metadata")) or {}), **(metadata or {})})
+    _phone_country = (
+        known_country(getattr(visitor, "country_code", None))
+        or known_country((conv or {}).get("visitor_phone_country"))
+        or country_hint({**(((conv or {}).get("metadata")) or {}), **(metadata or {})})
+    )
     current_lang.set(_client_lang)
     _lang_kept = keep_lang(message, _stored_lang)
     if _lang_kept and _lang_kept != _stored_lang:

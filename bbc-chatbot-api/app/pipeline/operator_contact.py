@@ -38,7 +38,7 @@ async def record_contact(conversation_id: str, message: str) -> None:
         from app.pipeline.contact_capture import (
             asks_for_last_name, asks_for_name, last_question, name_from_answer, name_to_store,
         )
-        from app.pipeline.callback_intent import has_number, national_phone
+        from app.pipeline.callback_intent import has_number, national_candidate
         from app.pipeline.entity_extractor import extract_entities
         from app.services import lead_service
 
@@ -59,7 +59,9 @@ async def record_contact(conversation_id: str, message: str) -> None:
             except Exception as e:  # noqa: silent — logged; a local number then waits to be checked
                 logger.warning(f"[operator-contact] {conversation_id}: no country for the number ({type(e).__name__})")
             if not found["phone"] and country:
-                found["phone"] = national_phone(message, country)
+                # As typed: lead_service places it with `_phone_country`, or keeps one the country reads
+                # two ways for the agent to check.
+                found["phone"] = national_candidate(message, country)
         # A name only when the message has the shape of one AND the operator has
         # just asked for it: free text never names the client (orchestrator).
         answer = name_from_answer(message)

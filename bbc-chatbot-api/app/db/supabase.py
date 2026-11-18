@@ -450,7 +450,13 @@ async def get_or_create_conversation(
         if visitor and visitor.email: payload["visitor_email"] = visitor.email
         if visitor and visitor.phone:
             from app.services.crm import format_phone_international
-            payload["visitor_phone"] = format_phone_international(visitor.phone)
+            from app.services.phone_country import known_country
+
+            # The country chosen with the number places one typed the local way (CodeRabbit #270); one that
+            # can't be placed is not written as an empty string.
+            _phone = format_phone_international(visitor.phone, known_country(visitor.country_code))
+            if _phone:
+                payload["visitor_phone"] = _phone
         if visitor and visitor.country_code: payload["visitor_phone_country"] = visitor.country_code
         try:
             res = await _run_sync(lambda: db.table("conversations").insert(payload).execute(), idempotent=False)

@@ -143,7 +143,10 @@ def _straight(text: str) -> str:
 # A yes on its own, in the languages the summary asks in: "Sim" alone answers, "Sim Lee" is a name
 # (CodeRabbit #270: a bare Portuguese "sim" was stored as the client's name).
 _A_BARE_YES = frozenset({"sim", "si", "claro", "vale", "certo", "perfeito", "perfecto", "exacto", "isso", "bueno",
-                         "dale", "parfait", "daccord", "d'accord"})
+                         "parfait", "daccord", "d'accord"})
+# A Spanish yes that is also an English first name: a bare yes only while the client writes Spanish
+# ("Dale" is a name in an English chat; CodeRabbit #270).
+_A_SPANISH_YES_ALSO_A_NAME = frozenset({"dale"})
 
 
 def name_from_answer(message: str) -> Optional[str]:
@@ -159,6 +162,11 @@ def name_from_answer(message: str) -> Optional[str]:
         return None
     if len(words) == 1 and words[0].lower() in _A_BARE_YES:
         return None
+    if len(words) == 1 and words[0].lower() in _A_SPANISH_YES_ALSO_A_NAME:
+        from app.pipeline.language import current_lang
+
+        if current_lang.get() == "es":
+            return None
     if any(not _NAME_WORD_RE.match(w) for w in words):
         return None
     if any(w.lower().strip(".'’") in _NOT_A_NAME for w in words):

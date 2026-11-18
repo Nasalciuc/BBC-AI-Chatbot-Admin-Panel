@@ -1434,9 +1434,10 @@ def extract_entities(
             entities.phone = m.group(0).strip()
             break
     if not entities.phone and country:
-        from app.pipeline.callback_intent import national_phone
+        # As typed, like every number above: it is placed with the same country where it is saved.
+        from app.pipeline.callback_intent import national_candidate
 
-        entities.phone = national_phone(text, country)
+        entities.phone = national_candidate(text, country)
 
     # 3. Name
     for pattern in NAME_PATTERNS:

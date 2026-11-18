@@ -418,7 +418,11 @@ def build_crm_payload(
     _infants = int(lead.get("infant_count") or lead.get("_infant_count") or 0)
     _adults = max(1, pax - _children - _infants)
 
-    phone = format_phone_international(getattr(visitor, "phone", "") or "")
+    from app.services.phone_country import known_country
+
+    # The country chosen with the number places one typed the local way (CodeRabbit #270).
+    phone = format_phone_international(getattr(visitor, "phone", "") or "",
+                                       known_country(getattr(visitor, "country_code", None)))
 
     flights = [{"from": origin, "to": dest, "date": departure}]
     if trip_type == "round_trip" and return_date:

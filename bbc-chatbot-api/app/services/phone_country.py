@@ -77,6 +77,12 @@ def calling_code(country: Optional[str]) -> Optional[str]:
     return CALLING_CODES.get((country or "").strip().upper()) if country else None
 
 
+def known_country(country: Optional[str]) -> Optional[str]:
+    """The ISO alpha-2 the client chose (the booking form's country), when it is one we can dial."""
+    iso = (country or "").strip().upper() if isinstance(country, str) else ""
+    return iso if iso in CALLING_CODES else None
+
+
 # How many digits a number has after its country code, per calling code, when it does not start with a
 # trunk 0 (CodeRabbit #270: '912345678' typed in Portugal became '+912345678', an Indian code). That many
 # digits, typed without + or 00, is a national number; the code followed by that many is the number with

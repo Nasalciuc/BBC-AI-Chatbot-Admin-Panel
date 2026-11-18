@@ -128,10 +128,12 @@ def follows_reference(message: str, start: int) -> bool:
     return bool(m) and not _PHONE_WORD_RE.search(m.group(0))
 
 
-def national_phone(message: str, country: Optional[str]) -> Optional[str]:
-    """A number typed the national way without its trunk 0 ("912345678" from Portugal), placed by the
-    visit's country when its length is that country's (app.services.phone_country.NATIONAL_LENGTHS);
-    None for a date, a reference, or a length the country's numbers don't have (CodeRabbit #270).
+def national_candidate(message: str, country: Optional[str]) -> Optional[str]:
+    """A number typed the national way without its trunk 0 ("912345678" from Portugal), as typed, when its
+    length is the visit's country's (app.services.phone_country.NATIONAL_LENGTHS); None for a date, a
+    reference, an amount, or a length the country's numbers don't have (CodeRabbit #270). Kept as typed:
+    one the country reads two ways ("49301234" in Germany) is then kept for the agent to check
+    (lead_service), never guessed.
 
     Eight digits at least: the national forms without a trunk 0 (Portugal, Spain, Norway, Denmark…) all
     have that many, and a shorter run is far more often a count, a code or an amount."""
@@ -153,10 +155,18 @@ def national_phone(message: str, country: Optional[str]) -> Optional[str]:
         # An amount ("12.500.000 kr") or a reference ("ref 912345678") is no phone.
         if follows_reference(message, m.start(1)) or any(s < m.end(1) and m.start(1) < e for s, e in money):
             continue
-        from app.services.crm import format_phone_international
-
-        return format_phone_international(candidate, country) or None
+        return candidate.strip()
     return None
+
+
+def national_phone(message: str, country: Optional[str]) -> Optional[str]:
+    """national_candidate, placed: E.164, or None when there is none or the country reads it two ways."""
+    raw = national_candidate(message, country)
+    if not raw:
+        return None
+    from app.services.crm import format_phone_international
+
+    return format_phone_international(raw, country) or None
 
 
 def detect_callback_request(message: str, country: Optional[str] = None) -> Optional[dict]:

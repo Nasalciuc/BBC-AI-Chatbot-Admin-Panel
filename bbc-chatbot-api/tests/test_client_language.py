@@ -91,6 +91,15 @@ def test_names_that_begin_like_a_yes_still_count(answer, name):
     assert name_from_answer(answer) == name
 
 
+def test_dale_is_a_name_in_english_and_a_yes_in_spanish(lang):
+    """"Dale" answers "your name?" in an English chat; in a Spanish one it agrees (CodeRabbit #270, round 3)."""
+    assert name_from_answer("Dale") == "Dale"
+    assert name_from_answer("dale") == "Dale"
+    lang("es")
+    assert name_from_answer("Dale") is None and name_from_answer("dale") is None
+    assert name_from_answer("Dale Cooper") == "Dale Cooper"
+
+
 @pytest.mark.parametrize("message", ["+55 11 99999-0000 por mensagem", "+55 11 99999-0000 por mensagens"])
 def test_a_number_with_mensagem_is_a_text_not_a_call(message):
     """The singular too: "mensagens?" matched "mensagen", never "mensagem" (CodeRabbit #270)."""
