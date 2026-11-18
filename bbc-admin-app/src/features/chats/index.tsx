@@ -31,6 +31,8 @@ import {
   initials,
   ownerLine,
   ownerOf,
+  presenceLine,
+  presenceRank,
   presenceView,
   previewText,
   routeText,
@@ -241,20 +243,24 @@ export function Chats() {
   const toReadUnread = unreadCount(toRead.data, readKeys)
   const conversations: Conversation[] = useMemo(() => convResponse?.data ?? [], [convResponse])
 
-  // Most urgent first: no reply (red), then your turn / just taken (amber),
-  // then the rest — and idle desks below the live ones. Stable: the server's
-  // order holds inside each group.
+  // Clients still on the site first (ADR-6c: where someone can read the
+  // answer), then the most urgent: no reply (red), then your turn / just taken
+  // (amber), then the rest — and idle desks below the live ones. Stable: the
+  // server's order holds inside each group. Closed chats keep the server's.
   const ordered = useMemo(() => {
     const rows = idleOnly
       ? conversations.filter((c) => (idleMinutes(c) ?? 0) >= IDLE_NUDGE_MIN)
       : [...conversations]
+    const closedTab = activeTab === 'my_closed' || activeTab === 'all_closed'
     const urgency = (c: Conversation) => {
-      if (activeTab === 'my_closed' || activeTab === 'all_closed') return 3
+      if (closedTab) return 3
       const s = signalOf(c, ownerOf(c, meId), nowMs, deadlineSeconds)
       return s ? s.urgency : 2
     }
+    const here = (c: Conversation) =>
+      closedTab ? 0 : presenceRank(presenceView(c.client_presence, c.client_presence_age_seconds))
     const idle = (c: Conversation) => ((idleMinutes(c) ?? 0) >= IDLE_BADGE_MIN ? 1 : 0)
-    return rows.sort((a, b) => urgency(a) - urgency(b) || idle(a) - idle(b))
+    return rows.sort((a, b) => here(a) - here(b) || urgency(a) - urgency(b) || idle(a) - idle(b))
     // nowMs: the countdown re-sorts at most once a second.
   }, [conversations, idleOnly, activeTab, meId, nowMs, deadlineSeconds])
 
@@ -335,8 +341,11 @@ export function Chats() {
       : signalOf(conv, owner, nowMs, viewing ? viewingGraceSeconds : deadlineSeconds)
     return { conv, owner, sig }
   })
-  const showGroups = activeTab === 'all_active' && rows.some((r) => r.sig && r.sig.urgency < 2) && rows.some((r) => !r.sig || r.sig.urgency >= 2)
-  const nWait = rows.filter((r) => r.sig && r.sig.urgency < 2).length
+  // The groups are filtered, not sliced: inside each, clients still here come first.
+  const waitRows = rows.filter((r) => r.sig && r.sig.urgency < 2)
+  const restRows = rows.filter((r) => !(r.sig && r.sig.urgency < 2))
+  const showGroups = activeTab === 'all_active' && waitRows.length > 0 && restRows.length > 0
+  const nWait = waitRows.length
   const nRed = rows.filter((r) => r.sig?.urgency === 0).length
   const seesBothTunnels = isManager || role === 'project_manager'
 
@@ -353,6 +362,8 @@ export function Chats() {
           : null
     const attention = attentionIds.includes(conv.id)
     const preview = previewText(conv) || routeText(conv) || (conv.message_count ? `${conv.message_count} messages` : 'No messages yet')
+    // B3 (ADR-6c): a client who left, and whether a message here can still reach them.
+    const gone = owner !== 'closed' && p.state === 'left' ? presenceLine(p, conv.has_contact) : null
     return (
       <button
         key={conv.id}
@@ -384,7 +395,7 @@ export function Chats() {
             <span className='flex-none text-xs text-k-6b6b6b'>{rowTime(conv.updated_at, new Date(nowMs))}</span>
           </span>
           <span className='truncate text-[13px] text-k-555555'>{preview}</span>
-          {(ownerTxt || sig || (idle !== null && idle >= IDLE_BADGE_MIN) || staleIds.has(conv.id) || (seesBothTunnels && conv.tunnel === 'support') || conv.tag) && (
+          {(ownerTxt || sig || gone || (idle !== null && idle >= IDLE_BADGE_MIN) || staleIds.has(conv.id) || (seesBothTunnels && conv.tunnel === 'support') || conv.tag) && (
             <span className='flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-bold'>
               {ownerTxt && <span className={ownerTxt.cls}>{ownerTxt.text}</span>}
               {ownerTxt && sig && <span className='font-normal text-k-9a9a9a'>·</span>}
@@ -393,6 +404,12 @@ export function Chats() {
                   {sig.clock && <Clock aria-hidden='true' className='size-[13px] flex-none' strokeWidth={2.4} />}
                   {sig.text}
                 </span>
+              )}
+              {gone && (
+                <>
+                  {(ownerTxt || sig) && <span className='font-normal text-k-9a9a9a'>·</span>}
+                  <span className='font-normal text-k-6b6b6b'>{gone}</span>
+                </>
               )}
               {/* Both sides silent: only worth a chip when nothing louder is shown. */}
               {!sig && idle !== null && idle >= IDLE_BADGE_MIN && (
@@ -619,11 +636,11 @@ export function Chats() {
             <div className='flex items-baseline gap-1.5 px-2.5 pt-1 pb-1 text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>
               Waiting for a reply <span className={nRed ? 'text-k-b3261e' : 'text-k-8a4b00'}>{nWait}</span>
             </div>
-            {rows.slice(0, nWait).map(renderRow)}
+            {waitRows.map(renderRow)}
             <div className='flex items-baseline gap-1.5 px-2.5 pt-3 pb-1 text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>
-              The rest <span className='text-k-6b6b6b'>{rows.length - nWait}</span>
+              The rest <span className='text-k-6b6b6b'>{restRows.length}</span>
             </div>
-            {rows.slice(nWait).map(renderRow)}
+            {restRows.map(renderRow)}
           </>
         ) : (
           rows.map(renderRow)

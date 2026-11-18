@@ -39,6 +39,8 @@ import type {
   NotificationsResponse,
   TaskKind,
   TasksViewResponse,
+  OfferMark,
+  OffersResponse,
   TaskDetail,
   NewTaskBody,
   TaskPatchBody,
@@ -792,6 +794,19 @@ export function getTasksView(params: { view?: string; kind?: TaskKind | null; co
   if (params.conversationId) qs.set('conversation_id', params.conversationId)
   const q = qs.toString()
   return apiFetch<TasksViewResponse>(`/api/tasks${q ? `?${q}` : ''}`)
+}
+
+/** Offers to send (ADR-6b): the leads waiting for a written offer, from the last `days` days. */
+export function getOffers(days: number) {
+  return apiFetch<OffersResponse>(`/api/offers?days=${days}`)
+}
+
+/** Sent, not needed, or open again (Undo) — on the chat and the client's other chats. */
+export function markOffer(conversationId: string, state: OfferMark, chats: string[] = []) {
+  return apiFetch<{ success: boolean; data: { state: OfferMark; at: string; chats: string[] } }>(
+    `/api/offers/${encodeURIComponent(conversationId)}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state, chats }) },
+  )
 }
 
 export function getTaskDetail(id: string) {

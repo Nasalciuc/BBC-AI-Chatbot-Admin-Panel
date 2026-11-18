@@ -55,14 +55,15 @@ import {
   initials,
   confirmedOf,
   leadLine,
+  leftNote,
   levelOf,
   minutesLabel,
   minutesSince,
   noReplyMinutes,
   ownerOf,
   presenceFromMeta,
+  presenceLine,
   presenceView,
-  STALE_CLOSE_MIN,
   takenBlind,
 } from './view'
 
@@ -706,6 +707,7 @@ export default function ConversationDetail({
           <span className={cn('rounded-full px-2 py-0.5 text-xs font-bold', waitedMin > 5 ? 'bg-k-fdecea text-k-b3261e' : 'bg-k-fff3e0 text-k-8a4b00')}>
             Waiting {minutesLabel(waitedMin)}
           </span>
+          {presence.state === 'left' && <span className={cn('text-[13px]', presence.text)}>{presenceLine(presence, conv.has_contact)}</span>}
         </div>
         <p className='m-0 max-w-[340px] text-sm leading-[1.45] text-k-555555'>
           {conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
@@ -824,7 +826,7 @@ export default function ConversationDetail({
               )}
             </div>
             {/* Presence is meaningless on a closed thread. */}
-            {conv.status !== 'closed' && presence.label && <div className={cn('text-[13px]', presence.text)}>{presence.label}</div>}
+            {conv.status !== 'closed' && presence.label && <div className={cn('text-[13px]', presence.text)}>{presenceLine(presence, conv.has_contact)}</div>}
             {/* Who had the chat and how it went, at a glance (QA, supervisors, admins). */}
             {canViewHistory && <OperatorBadge conversationId={conversationId} />}
           </div>
@@ -1098,8 +1100,7 @@ export default function ConversationDetail({
             {canWrite && leftMin !== null && (
               <div className='flex items-center gap-2 px-1 text-[13px] text-k-555555'>
                 <span aria-hidden='true' className='size-[7px] rounded-full bg-k-c9c9c9' />
-                {first} left the site {minutesLabel(leftMin)} ago. If they don’t come back, the chat closes by itself
-                {leftMin >= STALE_CLOSE_MIN ? ' any moment.' : ` in about ${Math.max(1, STALE_CLOSE_MIN - leftMin)} min.`}
+                {leftNote(first, leftMin, conv.has_contact)}
               </div>
             )}
             {left !== null && (
@@ -1179,10 +1180,17 @@ export default function ConversationDetail({
             {canTake && (
               <div className='flex flex-wrap items-center gap-x-3.5 gap-y-2.5 rounded-2xl bg-k-fffaf2 py-3 ps-4 pe-3'>
                 <span className='min-w-[220px] flex-1 text-sm leading-[1.45] text-k-444444'>
-                  <strong className='text-k-202020'>
-                    {first} has been waiting {minutesLabel(waitingMin ?? 0)}.
-                  </strong>{' '}
-                  Take the chat to answer.
+                  {leftMin !== null ? (
+                    // B3 (ADR-6c): nobody is asked to answer a client who left.
+                    leftNote(first, leftMin, conv.has_contact)
+                  ) : (
+                    <>
+                      <strong className='text-k-202020'>
+                        {first} has been waiting {minutesLabel(waitingMin ?? 0)}.
+                      </strong>{' '}
+                      Take the chat to answer.
+                    </>
+                  )}
                 </span>
                 <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
                   {taking ? 'Taking…' : 'Take'}

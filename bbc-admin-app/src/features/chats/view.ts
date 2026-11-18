@@ -173,6 +173,48 @@ export function presenceView(
   }
 }
 
+/**
+ * B3 (ADR-6c, 18 Nov 2026): a client who left says whether they left a way to reach them — "Left 4 min
+ * ago · no contact": a message in the chat reaches nobody; "· contact saved": the written offer can
+ * (Tasks → Offers to send). `hasContact` comes from the server, said even where the contact itself is
+ * masked or blind; when it's unknown (an older server) the label stays as it was.
+ */
+export function presenceLine(p: Pick<PresenceView, 'state' | 'label'>, hasContact: boolean | null | undefined): string {
+  if (p.state !== 'left' || typeof hasContact !== 'boolean') return p.label
+  return `${p.label} · ${hasContact ? 'contact saved' : 'no contact'}`
+}
+
+/** Clients still on the site first, then the ones we hear nothing from, then the ones who left (ADR-6c:
+ *  the chats where someone can still read the answer come first). "Left just now" is still here: a page
+ *  change looks like that for the first 2 minutes. */
+export function presenceRank(p: Pick<PresenceView, 'state'>): number {
+  if (p.state === 'left') return 2
+  if (p.state === 'quiet' || p.state === 'unknown') return 1
+  return 0
+}
+
+/** The detail's line under the chat when the client left (for whoever can write): whether a message here
+ *  can still reach them, and when the chat closes by itself. */
+export function leftNote(first: string, leftMin: number, hasContact: boolean | null | undefined): string {
+  const head = `${first} left the site ${minutesLabel(leftMin)} ago`
+  const contact =
+    hasContact === false
+      ? ', without a contact: a message here won’t reach them.'
+      : hasContact === true
+        ? '. Their contact is saved: the written offer goes out from Tasks → Offers to send.'
+        : '.'
+  const close = leftMin >= STALE_CLOSE_MIN ? ' If they don’t come back, the chat closes by itself any moment.' : ` If they don’t come back, the chat closes by itself in about ${Math.max(1, STALE_CLOSE_MIN - leftMin)} min.`
+  return `${head}${contact}${close}`
+}
+
+/** A local number kept for the agent to check (ADR-6f): typed without a country code, from a visit whose
+ *  country isn't known — shown as it was typed, never dialled as a guess. Only while there's no phone. */
+export function phoneToCheck(c: Pick<Conversation, 'visitor_phone' | 'metadata'>): string | null {
+  if ((c.visitor_phone ?? '').trim()) return null
+  const v = (c.metadata as Record<string, unknown> | undefined)?.phone_to_check
+  return typeof v === 'string' && v.trim() ? v.trim() : null
+}
+
 /** presence from a detail payload's metadata (the list carries it on the row). */
 export function presenceFromMeta(meta: Record<string, unknown> | undefined): {
   effective: string | null
@@ -698,10 +740,30 @@ const GATE: Record<string, string> = {
   phone_format: 'the phone number doesn’t look valid',
   name_too_short: 'the name is too short',
   duplicate_contact: 'another chat with the same person was sent instead',
+  // Until the CRM takes a lead with one contact (ADR-8a, CRM_SINGLE_CONTACT).
+  email_missing: 'the CRM needs an e-mail too',
+  no_contact: 'there’s no e-mail or phone',
 }
 
+// The fields a CRM 422 named (ADR-8d), as the panel calls them.
+const CRM_FIELD: Record<string, string> = {
+  'client.email': 'the e-mail',
+  'client.phone': 'the phone',
+  'client.name': 'the name',
+  'client.first_name': 'the name',
+  'client.last_name': 'the name',
+}
+
+/** Why the CRM didn't take a lead, in words. "crm_422:<fields>": the CRM itself refused these fields
+ *  (ADR-8d) — the sweep stops asking again until the data changes. */
 export function gateReasonText(code: string | null | undefined): string {
   if (!code) return ''
+  if (code.startsWith('crm_422:')) {
+    const fields = code.slice('crm_422:'.length).split(',').map((f) => f.trim()).filter((f) => f && f !== 'unknown')
+    if (!fields.length) return 'the CRM rejected it without saying why'
+    const named = [...new Set(fields.map((f) => CRM_FIELD[f] ?? f.replace(/[._]/g, ' ')))]
+    return `the CRM rejected ${named.length > 1 ? `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}` : named[0]}`
+  }
   return GATE[code] ?? code.replace(/_/g, ' ')
 }
 
