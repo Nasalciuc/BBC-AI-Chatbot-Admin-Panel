@@ -636,6 +636,7 @@ def test_no_button_word_names_an_amount():
               for k in ("whatsapp", "email") for lang in (None, "es", "fr") for online in (True, False)]
     every += [card_words.wait_answer(lang, online)[0] for lang in (None, "es", "fr") for online in (True, False)]
     every += [card_words.before_you_go(line, lang)[0] for lang in (None, "es", "fr") for line in (None, "Paris")]
+    every += [card_words.goodbye_without_contact(lang, ask=ask)[0] for lang in (None, "es", "fr") for ask in (True, False)]
     assert not [w for w in every if has_price(w)]
 
 

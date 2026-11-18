@@ -953,6 +953,19 @@ def team_line(now=None) -> str:
     return TEAM_ONLINE_LINE if online else TEAM_OFFLINE_LINE
 
 
+_EMAIL_ASK_RE = _re.compile(r"\b(?:e-?mail|correo|courriel)\b", _re.I)
+
+
+def _email_asked(history: Optional[list[dict]]) -> bool:
+    """Alex has already asked for the email in this chat (its words name it in a question)."""
+    for m in history or []:
+        if m.get("role") in ("ai", "assistant"):
+            text = str(m.get("content") or "")
+            if "?" in text and _EMAIL_ASK_RE.search(text):
+                return True
+    return False
+
+
 def build_conversational_prompt(
     tunnel: str,
     visitor: VisitorInfo,
@@ -1053,6 +1066,20 @@ def build_conversational_prompt(
         asks = [m for m in missing if m not in _refused]
         if asks:
             visitor_lines.append(f"Still needed: {', '.join(asks)}")
+        # A chat with no form behind it, the route known, the email never asked: it is asked in this reply.
+        # 19 Nov, Sydney → Amman: "email" led "Still needed" from the route on, and the model asked the
+        # dates, the flexibility, the travelers and the occasion first; the client left at the email.
+        if (
+            conv_from_visitor.get("email_first")
+            and asks[:1] == ["email"]
+            and lead.get("origin_code") and lead.get("destination_code")
+            and not _email_asked(history)
+        ):
+            visitor_lines.append(
+                "Ask next: the email — in THIS reply, as its one question, before the dates, the "
+                "flexibility, the travelers or the occasion (those follow it). A client who leaves after "
+                "giving it can still be helped; one who leaves before is gone."
+            )
         if _channel:
             visitor_lines.append(
                 f"Contact wishes: {_channel} (the client's own words; never ask again for a channel they turned down)"

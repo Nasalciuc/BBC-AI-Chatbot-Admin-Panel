@@ -40,6 +40,7 @@ MODEL_USED = "template"
 CARD_BUTTONS_HEALTH: dict = {
     "yes": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
     "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0, "before_you_go_too_long": 0,
+    "goodbye_asked": 0, "goodbye_no_contact": 0,
 }
 
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
@@ -367,3 +368,39 @@ async def before_you_go(cid: str) -> dict:
         "show": True, "message": row.get("content") or text, "buttons": buttons,
         "id": row.get("id"), "created_at": row.get("created_at"),
     }
+
+
+async def goodbye_without_contact(
+    cid: str, meta: dict, visitor, lead: Optional[dict], wishes: Optional[str] = None,
+) -> Optional[ChatResponse]:
+    """A goodbye ("thank you", "bye") from a sales client who left no way to reach them, or None when a
+    contact is on file (the usual goodbye is true then).
+
+    19 Nov, Sydney → Amman: the client gave the whole trip, was asked for the email once, thanked twice, and
+    was told "Your search is in expert hands. We'll be in touch soon" — with no email and no number, by
+    nobody. Here the first goodbye gets the before-you-go ask with its WhatsApp and Email buttons (said once
+    per chat, whichever of the two says it first: BEFORE_YOU_GO_KEY); a later one an honest goodbye that
+    promises nothing and leaves the buttons. A client who turned a channel down is not asked again."""
+    from app.pipeline.entity_extractor import refused_contact_fields
+    from app.services import card_words, proactive
+
+    if (getattr(visitor, "email", None) or "").strip() or (getattr(visitor, "phone", None) or "").strip():
+        return None
+    if (meta or {}).get("phone_to_check"):
+        return None  # a number the agent checks is a way to reach them
+    meta = meta if isinstance(meta, dict) else {}
+    lang = _lang(meta)
+    if refused_contact_fields(wishes):
+        text, buttons = card_words.goodbye_without_contact(lang, ask=False)
+        CARD_BUTTONS_HEALTH["goodbye_no_contact"] += 1
+    elif meta.get(BEFORE_YOU_GO_KEY) or not await _claim(cid, BEFORE_YOU_GO_KEY):
+        text, buttons = card_words.goodbye_without_contact(lang)
+        CARD_BUTTONS_HEALTH["goodbye_no_contact"] += 1
+    else:
+        trip = _lead_trip(lead)
+        if trip is None or not proactive.trip_line(trip, lang):
+            trip = _trip(meta)
+        text, buttons = card_words.before_you_go(proactive.trip_line(trip, lang), lang)
+        CARD_BUTTONS_HEALTH["goodbye_asked"] += 1
+    row = await _save(cid, "ai", text, MODEL_USED)
+    return _response(cid, row, text, buttons, MODEL_USED)

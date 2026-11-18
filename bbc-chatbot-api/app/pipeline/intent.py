@@ -62,12 +62,40 @@ def _asks_for_transfer(lower: str) -> bool:
             return True
     return False
 
+_CLOSING_RE = re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)
+# A goodbye is a message that says only goodbye. "thank you price matters" (19 Nov, Sydney → Amman) answered
+# "what's your email?" with a price worry, was heard as a goodbye, and the client was told "We'll be in
+# touch soon" with no contact on file; "thanks, how much?" or "no thanks" are not goodbyes either.
+_GOODBYE_PHRASES_RE = re.compile(
+    r"\b(?:thank\s*(?:you|u|ya)|thanks?|thx|tysm|ty|i?\s*appreciate\s+(?:it|that|your\s+help)"
+    r"|for\s+(?:all\s+)?(?:your|the)\s+(?:help|time|info(?:rmation)?|assistance)|for\s+everything"
+    r"|good\s*bye|bye(?:\s+bye)?|see\s+(?:you|ya)(?:\s+(?:soon|later))?|take\s+care|for\s+now"
+    r"|have\s+a\s+(?:good|nice|great|lovely)\s+(?:day|night|evening|weekend|one)"
+    r"|that.?s\s+(?:all|it|everything)(?:\s+i\s+(?:need(?:ed)?|want(?:ed)?))?|that\s+is\s+all|nothing\s+else)\b",
+    re.I,
+)
+_GOODBYE_FILLER = frozenset({
+    "so", "very", "much", "a", "lot", "lots", "again", "ok", "okay", "great", "perfect", "cheers", "dear",
+    "sir", "madam", "guys", "all", "now", "really", "alex", "and", "you", "too", "oh", "well",
+})
+
+
+def is_only_goodbye(message: str) -> bool:
+    """True when the message thanks or says goodbye and says nothing else ("Thank you so much!", "Bye for
+    now", "That's all I needed"). Anything more — a question, a worry, a "no" — is answered, not closed."""
+    lower = (message or "").lower().replace("’", "'")
+    if not _CLOSING_RE.search(lower):
+        return False
+    rest = _GOODBYE_PHRASES_RE.sub(" ", lower)
+    return all(word in _GOODBYE_FILLER for word in re.findall(r"[^\W_]+|[@?]", rest))
+
+
 # Ordered: most specific → most generic
 INTENT_PATTERNS: list[tuple[Intent, re.Pattern]] = [
     (Intent.TALK_TO_AGENT, re.compile(r"(talk|speak|connect).*(agent|human|person|someone)", re.I)),
     (Intent.TALK_TO_AGENT, _TRANSFER_RE),
     (Intent.GREETING, re.compile(r"^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy)\b", re.I)),
-    (Intent.CLOSING, re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)),
+    (Intent.CLOSING, _CLOSING_RE),
     (Intent.BOOKING_CHANGE, re.compile(r"(change|cancel|modify|reschedule|refund)", re.I)),
     (Intent.BAGGAGE_INFO, re.compile(r"(baggage|luggage|bag|carry.on|checked|weight)", re.I)),
     (Intent.PRICE_INQUIRY, re.compile(r"(price|cost|how much|rate|fare|cheap|expensive|afford)", re.I)),
@@ -125,6 +153,11 @@ def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count:
                 logger.debug(f"Intent from regex: {intent.value}")
                 return intent
             continue
+        if pattern is _CLOSING_RE:
+            if is_only_goodbye(message):
+                logger.debug(f"Intent from regex: {intent.value}")
+                return intent
+            continue
         if pattern.search(lower):
             logger.debug(f"Intent from regex: {intent.value}")
             return intent
@@ -158,6 +191,9 @@ def detect_intent(message: str, metadata: Optional[dict] = None, user_msg_count:
     raw, _cls_cost = claude_classify(message)
     if raw:
         intent = _parse_claude_intent(raw)
+        if intent == Intent.CLOSING and not is_only_goodbye(message):
+            # The classifier's goodbye is a goodbye only when the message says nothing else.
+            intent = Intent.GENERAL_QUESTION
         logger.info(f"Intent from Claude: {intent.value} (raw={raw!r})")
         return intent
 

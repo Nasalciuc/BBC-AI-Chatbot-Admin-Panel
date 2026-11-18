@@ -1511,6 +1511,24 @@ async def _pipeline(
         )
     budget_remaining = settings.daily_budget - today_cost
 
+    # ── STEP 5.9: A GOODBYE WITH NO WAY TO REACH THE CLIENT ──
+    # The goodbye template promised "We'll be in touch soon" to a client with no email and no number
+    # (19 Nov, Sydney → Amman): the first goodbye now asks where the agent should write, with the
+    # WhatsApp and Email buttons; a later one promises nothing (card_buttons.goodbye_without_contact).
+    if intent == Intent.CLOSING and tunnel == "sales":
+        from app.pipeline.card_buttons import goodbye_without_contact
+        from app.pipeline.entity_extractor import current_contact_channel
+
+        _bye = await goodbye_without_contact(
+            cid, _conv_meta, visitor, lead if isinstance(lead, dict) else None,
+            current_contact_channel(lead if isinstance(lead, dict) else None, entities),
+        )
+        if _bye is not None:
+            logger.info(f"[{cid}] Goodbye with no contact on file: asked where to write, nothing promised")
+            if _persist_state is not None and _bye.message_id:
+                _persist_state["ai_persisted"] = True
+            return _bye
+
     # Streaming callback (sync→async bridge for thread pool)
     _event_loop = asyncio.get_running_loop()
     _is_streaming = False
