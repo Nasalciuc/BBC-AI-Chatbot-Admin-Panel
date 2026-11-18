@@ -22,7 +22,7 @@ const readTrip = (href, h1) => {
   return pickTrip(tripFromUrl(search), tripFromTitle(h1))
 }
 import {
-  KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
+  KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S, SAME_SEND_MS,
   blockedPath, isNotNow, noteWaitMs, pauseRunning, pickTrigger, replyKind,
 } from '../src/triggers.ts'
 import { offerVariant } from '../src/api.ts'
@@ -269,8 +269,17 @@ test('the quote card hears which fields the form refused, by kind only (owner, 1
   // Each press starts a new attempt; each refused field of it is added once, six at most.
   assert.equal([...hook.matchAll(/press = \{ at: Date\.now\(\), form(?:: null)?, activityAt: Date\.now\(\), invalid: false \}\s+refused = \[\]/g)].length, 2)
   assert.match(hook, /refused = withKinds\(refused, \[refusedKind\(e\.target\)\]\)/)
-  // The site's own word joins it (site-signals.test.mjs withKinds): a word without fields takes nothing away.
-  assert.match(hook, /if \(e\.name === 'quote_form_invalid'\) refused = withKinds\(refused, fieldKinds\(e\.detail\.fields\)\)/)
+  // A submit is a send of its own too (Enter in a field with no recognized click).
+  assert.match(hook, /press = \{ at: Date\.now\(\), form, activityAt: Date\.now\(\), invalid: press\?\.invalid \?\? false \}\s+refused = \[\]/)
+  // The site's word: its first one for our press, right after it, joins the browser's kinds of that send (a
+  // word without fields takes nothing away); any other is a send of its own, and its kinds start a new list
+  // (CodeRabbit #268, round 3: email refused, then dates refused, is a dates-only refusal).
+  assert.match(hook, /const sameSend = !!press && siteSaidFor !== press\.at && e\.at - press\.at <= SAME_SEND_MS/)
+  assert.match(hook, /refused = sameSend \? withKinds\(refused, kinds\) : kinds/)
+  assert.match(hook, /if \(siteRefused\) siteSaidFor = press\?\.at \?\? null/)
+  // The owner is recorded after the press is updated, so a site word that started the press owns it.
+  assert.ok(hook.indexOf('if (siteRefused) siteSaidFor') > hook.indexOf('press = fx.press'))
+  assert.equal(SAME_SEND_MS, 5000)
   // Only the quote moment sends them, and only when there are some.
   assert.match(hook, /\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\)/)
   assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\] \}/)
