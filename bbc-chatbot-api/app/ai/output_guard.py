@@ -347,8 +347,15 @@ _LEFT_BY_AN_AMOUNT = re.compile(
 
 
 # The short end of a range after a small amount: "$50–75", "€9.99-14.99" (CodeRabbit #270). It is the
-# range's end only when it is not below the start: "$50 - 2 adults" keeps its count.
+# range's end only when it is not below the start ("$50 - 2 adults" keeps its count) and no unit or count
+# follows it ("Lounge access $50 - 90 minutes" keeps its duration).
 _SHORT_RANGE_END = re.compile(rf"{_RANGE_SEP}(\d{{1,2}}(?:[.,]\d{{1,2}})?)(?![\d,.]*\d)", re.I)
+_A_UNIT_OR_COUNT = re.compile(
+    r"\s*(?:%|(?:mins?|minutes?|h|hrs?|hours?|days?|nights?|weeks?|months?|years?|kgs?|kilos?|lbs?|pounds"
+    r"|km|miles?|bags?|pieces?|adults?|kids?|child(?:ren)?|infants?|passengers?|pax|people|persons?|seats?"
+    r"|stops?|legs?|percent|minutos?|horas?|d[ií]as|noches|noites|nuits|jours|heures|adultos?|adultes?"
+    r"|ni[ñn]os|enfants|crian[çc]as|pasajeros|passagers|passageiros|personas|pessoas|personnes|maletas"
+    r"|valises|malas)\b)", re.I)
 
 
 def _small_value(amount: str) -> Optional[float]:
@@ -365,6 +372,8 @@ def _sub_amounts(text: str, repl: str) -> str:
     for m in _MONEY_RANGE_RE.finditer(text):
         end = m.end()
         tail = _SHORT_RANGE_END.match(text, end)
+        if tail and _A_UNIT_OR_COUNT.match(text, tail.end()):
+            tail = None
         start_value = _small_value(m.group(0)) if tail else None
         if tail and start_value is not None and float(tail.group(1).replace(",", ".")) >= start_value:
             end = tail.end()

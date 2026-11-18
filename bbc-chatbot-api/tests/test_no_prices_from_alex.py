@@ -271,6 +271,10 @@ def test_a_short_range_end_goes_with_its_amount():
     assert strip_amounts("$50 - 2 adults") == f"{note} - 2 adults"
     assert strip_amounts("Departure: Dec 10 — $500 per person.") == f"Departure: Dec 10 — {note} per person."
     assert strip_amounts("Typically $2,800–$4,500.") == f"Typically {note}."
+    # A unit or a count after the short number keeps it (CodeRabbit #270, round 4); a fare range still goes.
+    assert strip_amounts("Lounge access $50 - 90 minutes.") == f"Lounge access {note} - 90 minutes."
+    assert strip_amounts("$5 - 10 adults") == f"{note} - 10 adults"
+    assert strip_amounts("From $50–75 per person.") == f"From {note} per person."
 
 
 def test_the_route_card_never_carries_a_short_range():
