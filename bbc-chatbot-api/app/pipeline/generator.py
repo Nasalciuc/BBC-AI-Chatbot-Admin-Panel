@@ -111,10 +111,10 @@ def _build_route_card_from_kb(kb_result: KBResult) -> RouteCard | None:
     if len(parts) != 2:
         return None
 
-    # Try to find price range
     import re
-    price_match = re.search(r"\$[\d,]+\s*[-–]\s*\$[\d,]+", content)
-    price_range = price_match.group(0) if price_match else "varies"
+    # No price range leaves the server (owner, 18 Nov 2026: only a consultant says a fare): the
+    # card carries the route, airlines and duration, never the knowledge base's amounts.
+    price_range = ""
 
     # Try to find duration
     dur_match = re.search(r"(\d+-\d+ hours?)", content)

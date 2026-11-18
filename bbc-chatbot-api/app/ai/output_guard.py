@@ -16,6 +16,11 @@ that counts — and therefore to what the customer receives: a reply in the
 response or the greeting is the stored row's text, and a streamed reply goes
 out through StreamGuard, which in 'enforce' holds the text back a sentence at
 a time so a contact is scrubbed whole before any of it leaves.
+
+Prices (owner, 18 Nov 2026: only a consultant ever says a fare): a sentence of an AI
+reply that names an amount of money is dropped whole, always — not only in 'enforce' —
+and the reply ends with PRICE_LINE. A streamed sentence that holds a digit or a currency
+sign is held until it ends, so an amount never goes out before the check.
 """
 
 from __future__ import annotations
@@ -28,7 +33,8 @@ from app.flags import flag
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_GUARD_HEALTH = {"scanned": 0, "would_remove": 0, "removed": 0, "alerts": 0, "errors": 0}
+OUTPUT_GUARD_HEALTH = {"scanned": 0, "would_remove": 0, "removed": 0, "alerts": 0, "errors": 0,
+                       "prices_removed": 0}
 
 # Brand contacts that must survive. Built once from SITE_CONFIGS.
 _ALLOWED_PHONES: set[str] = set()
@@ -236,6 +242,72 @@ def _kind(snippet: str) -> str:
     return "phone"
 
 
+# ── Prices: only a consultant ever says a fare ────────────────────────────────
+# An amount of money in any currency: "$3,200", "€2.5k", "US$ 900", "3,200 dollars", "USD 4,500".
+# A percentage ("30-60%"), a date, a count of people or an accreditation number is no amount.
+_CUR_WORD = r"(?:usd|us\$|eur|gbp|cad|aud|dollars?|euros?|pounds?|bucks)"
+_AMOUNT = r"\d(?:[\d,.]*\d)?(?:\s?[km]\b)?"  # ends on a digit: a full stop after it is the sentence's
+_MONEY_RE = re.compile(
+    rf"(?:[$€£]\s?{_AMOUNT})|(?:\b{_AMOUNT}\s?{_CUR_WORD}(?![a-z]))|(?:(?<![a-z]){_CUR_WORD}\s?{_AMOUNT})", re.I
+)
+# What starts holding a streamed sentence: a digit or a currency sign/word could begin an amount.
+_MONEY_HINT = re.compile(rf"[$€£\d]|(?<![a-z]){_CUR_WORD}(?![a-z])", re.I)
+PRICE_LINE = "Exact fares come from your consultant — they check live availability for your dates."
+
+
+def _pieces(text: str) -> list[str]:
+    """The text cut into sentences (or lines), separators kept, so joining gives the text back."""
+    out, start = [], 0
+    for m in _PIECE_END.finditer(text):
+        out.append(text[start:m.end()])
+        start = m.end()
+    if start < len(text):
+        out.append(text[start:])
+    return out
+
+
+def has_price(text: Optional[str]) -> bool:
+    return bool(text) and bool(_MONEY_RE.search(text))
+
+
+def scrub_prices(text: Optional[str]) -> tuple[Optional[str], int]:
+    """The reply without its sentences that name an amount, ending with PRICE_LINE when one went;
+    and how many went. Text without an amount comes back unchanged."""
+    if not text or not _MONEY_RE.search(text):
+        return text, 0
+    kept, dropped = [], 0
+    for piece in _pieces(text):
+        if _MONEY_RE.search(piece):
+            dropped += 1
+        else:
+            kept.append(piece)
+    out = "".join(kept).strip()
+    if PRICE_LINE not in out:
+        out = f"{out} {PRICE_LINE}".strip() if out else PRICE_LINE
+    return out, dropped
+
+
+_MONEY_RANGE_RE = re.compile(rf"(?:{_MONEY_RE.pattern})(?:\s*(?:-|–|—|to)\s*(?:{_MONEY_RE.pattern}|{_AMOUNT}))?", re.I)
+KB_AMOUNT_NOTE = "(fares: quoted only by a consultant)"
+
+
+def strip_amounts(text: Optional[str]) -> Optional[str]:
+    """Knowledge-base text with every amount (and range of amounts) replaced by KB_AMOUNT_NOTE,
+    before it reaches the model: what the model never reads it never repeats."""
+    if not text:
+        return text
+    return _MONEY_RANGE_RE.sub(KB_AMOUNT_NOTE, text)
+
+
+def _price_checked(text: str, conversation_id: Optional[str]) -> str:
+    clean, dropped = scrub_prices(text)
+    if dropped:
+        OUTPUT_GUARD_HEALTH["prices_removed"] += dropped
+        # Counts only: the amount is never logged.
+        logger.warning(f"[price-guard] dropped {dropped} sentence(s) naming an amount conv={conversation_id}")
+    return clean or text
+
+
 async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = None) -> Optional[str]:
     """Scrub a stored AI reply. In 'log' mode the text is returned unchanged.
 
@@ -243,6 +315,7 @@ async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = No
     counts and kinds, never the values (rule 7: no PII at INFO or above)."""
     if not text:
         return text
+    text = _price_checked(text, conversation_id)
     mode = _mode()
     OUTPUT_GUARD_HEALTH["scanned"] += 1
     clean, removed = _scrub(text)
@@ -317,17 +390,24 @@ class StreamGuard:
     goes out a sentence (or a line) at a time and each piece is scrubbed whole:
     a contact split across chunks is still seen whole. What is held when the
     reply ends never needs sending — the stored reply (guarded, counted once
-    in add_message) replaces the streamed text at stream_end. In 'log' every
-    chunk goes out as it comes, as before."""
+    in add_message) replaces the streamed text at stream_end.
+
+    Prices, in every mode: a sentence goes out as it comes until it shows a
+    digit or a currency sign; from there it is held to its end and dropped if
+    it names an amount (the stored reply, ending with PRICE_LINE, replaces the
+    stream at stream_end). A sentence without a digit streams as before."""
 
     def __init__(self, own: Optional[set[str]] = None):
         self.enforce = _mode() == "enforce"
         self.own = own or set()
         self._held = ""
+        self._holding = False   # 'log' mode: the current sentence showed a digit or a currency sign
 
     def feed(self, delta: str) -> str:
-        if not self.enforce or not delta:
+        if not delta:
             return delta
+        if not self.enforce:
+            return self._watch_prices(delta)
         self._held += delta
         cut = 0
         for m in _PIECE_END.finditer(self._held):
@@ -338,18 +418,53 @@ class StreamGuard:
             return ""
         piece, self._held = self._held[:cut], self._held[cut:]
         try:
-            return _without_foreign(piece, self.own)
+            return "".join(p for p in _pieces(_without_foreign(piece, self.own)) if not has_price(p))
         except Exception as e:  # noqa: silent — logged; the piece is withheld, stream_end brings the stored reply
             logger.error(f"[output-guard] stream piece not scrubbed, withheld: {type(e).__name__}")
             return ""
 
+    def _watch_prices(self, delta: str) -> str:
+        """'log' mode: stream as it comes, but hold a sentence from its first digit or currency
+        sign to its end, and drop that held part if it names an amount."""
+        self._held += delta
+        out = []
+        while self._held:
+            end = _PIECE_END.search(self._held)
+            if not self._holding:
+                hint = _MONEY_HINT.search(self._held)
+                if not hint or (end and hint.start() >= end.end()):
+                    # no sign of an amount in the current sentence: send up to its end (or all of it)
+                    cut = end.end() if end else len(self._held)
+                    out.append(self._held[:cut])
+                    self._held = self._held[cut:]
+                    if not end:
+                        break
+                    continue
+                out.append(self._held[:hint.start()])
+                self._held = self._held[hint.start():]
+                self._holding = True
+                continue
+            end = _PIECE_END.search(self._held)
+            if not end:
+                break  # keep holding until the sentence ends
+            piece, self._held = self._held[:end.end()], self._held[end.end():]
+            self._holding = False
+            if has_price(piece):
+                OUTPUT_GUARD_HEALTH["prices_removed"] += 1
+                continue
+            out.append(piece)
+        return "".join(out)
+
     def flush(self) -> str:
         """What is still held, scrubbed — for a reply that ends without a stored row."""
         piece, self._held = self._held, ""
-        if not self.enforce or not piece:
+        self._holding = False
+        if not piece:
             return piece
+        if not self.enforce:
+            return "" if has_price(piece) else piece
         try:
-            return _without_foreign(piece, self.own)
+            return "".join(p for p in _pieces(_without_foreign(piece, self.own)) if not has_price(p))
         except Exception as e:  # noqa: silent — logged; nothing unscrubbed goes out
             logger.error(f"[output-guard] stream tail not scrubbed, withheld: {type(e).__name__}")
             return ""
