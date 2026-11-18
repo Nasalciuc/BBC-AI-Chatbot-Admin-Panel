@@ -469,7 +469,11 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 )
             )
         if tasks:
-            await asyncio.gather(*tasks)
+            # Both writes settle before an error goes on: one still in flight would land after the
+            # lock is released, under the next writer's score (CodeRabbit #268, round 3).
+            for outcome in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(outcome, BaseException):
+                    raise outcome
 
         # Score from merged local state (no re-select lead + conv): this
         # call's contacts first, then the ones the conversation already holds.

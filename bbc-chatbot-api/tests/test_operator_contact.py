@@ -370,3 +370,59 @@ async def test_other_conversations_never_wait_for_each_other():
     # A lock nobody holds or waits on does not stay behind.
     del held
     assert "c-busy" not in lead_service._LEAD_LOCKS
+
+
+class _Later:
+    """A write the database has not finished yet: it lands when apply() runs."""
+
+    def __init__(self, apply):
+        self.apply = apply
+
+
+class _SlowContactFailingLead(_Shared):
+    """The contact write takes a few turns of the loop; the lead write is refused at once."""
+
+    def __init__(self, lead, conv):
+        super().__init__(lead, conv)
+        self.landed: list[str] = []
+
+    def table(self, name):
+        query = _SharedQuery(self, name)
+        store = self
+
+        def execute():
+            if query.op == "update" and name == "conversations":
+                return _Later(lambda: (store.rows[name].update(query.payload), store.landed.append(name)))
+            if query.op == "update" and name == "leads":
+                raise RuntimeError("lead write refused")
+            return _SharedQuery.execute(query)
+
+        query.execute = execute
+        return query
+
+
+@pytest.mark.asyncio
+async def test_a_refused_lead_write_lets_the_contact_write_land_before_the_lock_goes():
+    """Both writes settle before the error goes on (CodeRabbit #268, round 3): a contact write still in
+    flight after the lock was released would land under the next writer's score."""
+    from app.db import supabase as db
+    from app.services import lead_service
+
+    store = _SlowContactFailingLead({"id": "L1", "score": 0, "tier": "bronze"}, {})
+
+    async def _sync(fn, *_a, **_k):
+        out = fn()
+        if isinstance(out, _Later):
+            for _ in range(5):
+                await asyncio.sleep(0)
+            out.apply()
+            return _Res([])
+        return out
+
+    before = lead_service.LEAD_WRITE_HEALTH["errors_since_boot"]
+    with patch.object(db, "get_client", return_value=store), patch.object(db, "_run_sync", _sync):
+        await lead_service.update_lead_from_entities("c1", {"phone": "2105550100", "passengers": 3})
+    assert store.landed == ["conversations"], "the contact write landed before the update returned"
+    assert store.rows["conversations"]["visitor_phone"] == "+12105550100"
+    assert lead_service.LEAD_WRITE_HEALTH["errors_since_boot"] == before + 1  # the refusal is still counted
+    assert not lead_service._lead_lock("c1").locked()
