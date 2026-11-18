@@ -54,6 +54,9 @@ export const TYPING_QUIET_S = 5
 export const PAUSE_AFTER_DISMISS_MS = 24 * 60 * 60 * 1000
 /** No answer from the server in this time: nothing is shown. */
 export const OFFER_TIMEOUT_MS = 1500
+/** The site's word about a refused send this soon after our press is about that press; later, it is a send
+ *  of its own (proactive.ts, the refused kinds). */
+export const SAME_SEND_MS = 5000
 
 export interface QuoteState {
   /** Seconds since the last press of the form's submit button. */

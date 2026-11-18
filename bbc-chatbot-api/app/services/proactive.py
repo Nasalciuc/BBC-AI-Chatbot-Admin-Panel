@@ -71,6 +71,8 @@ MODEL_USED = "proactive_template"
 _REPLIES: dict[str, list[str]] = {
     "kayak": ["Yes, send me fares", "Change details", "Not now"],
     "quote": ["Yes, send me fares", "I have a question", "Not now"],
+    # The quote form refused a send for its contact fields (CONTACT below): the yes says how the fares come.
+    "quote_contact": ["Email me the fares", "I have a question", "Not now"],
     "reader": ["Get a fare quote", "I have a question", "Not now"],
     # "Before you go: want an agent to check fares…?" — a yes answers it.
     "exit": ["Yes, send me fares", "I have a question", "Not now"],
@@ -219,6 +221,30 @@ def _names_a_destination(trip: Optional[TripContext]) -> bool:
     return bool(trip and _place(trip.destination_name, trip.destination_code))
 
 
+# The quote card when the form refused a send for its contact fields (owner, 18 Nov). On 16-17 Nov,
+# 138 of the 436 visitors who opened the quote form pressed its button and were refused, almost always
+# for the name, the email and the phone (the trip was filled), and 101 of them never sent it. The card
+# then offers the chat instead of the rest of the form: an agent emails the fares.
+CONTACT = "contact"
+# The kinds a widget may name for a refused field: bbc-widget/src/siteSignals.ts FIELD_KINDS, the same list
+# (tests/test_site_signals.py holds them equal).
+REFUSED_KINDS: tuple[str, ...] = (
+    "name", "email", "phone", "origin", "destination", "dates", "passengers", "cabin", "trip_type", "message",
+    "consent", "captcha", "other",
+)
+_CONTACT_KINDS = frozenset({"name", "email", "phone"})
+
+
+def quote_variant(refused: Optional[list[str]]) -> Optional[str]:
+    """CONTACT when the refused send flagged a contact field (name, email or phone), else None."""
+    return CONTACT if refused and _CONTACT_KINDS.intersection(refused) else None
+
+
+def known_variant(variant: object) -> Optional[str]:
+    """A variant either door may carry back (the note's bandit, or the quote's CONTACT); anything else None."""
+    return CONTACT if variant == CONTACT else note_bandit.known(variant)
+
+
 def note_variant(trip: Optional[TripContext]) -> Optional[str]:
     """How the tapped note asks its first question (note_bandit): only when the page named no
     destination — otherwise the opening says the page's trip back and asks nothing about where."""
@@ -226,8 +252,10 @@ def note_variant(trip: Optional[TripContext]) -> Optional[str]:
 
 
 def applied_variant(trigger: str, trip: Optional[TripContext], variant: Optional[str]) -> Optional[str]:
-    """The variant the words were composed with: a known one, on the note, with no destination named;
-    otherwise None (the words are the usual ones, and the chat counts for no variant)."""
+    """The variant the words were composed with: CONTACT on the quote card; on the note, a known one with
+    no destination named; otherwise None (the words are the usual ones, and the chat counts for no variant)."""
+    if trigger == "quote":
+        return CONTACT if variant == CONTACT else None
     if trigger != NOTE or _names_a_destination(trip):
         return None
     return note_bandit.known(variant)
@@ -244,7 +272,8 @@ def compose(
     (a third of the /flight chats stopped at "Where are you flying from?"),
     names a difficulty only where there was one (the quote form that did not
     send), and promises no time and no price. `variant`: how the tapped note
-    asks where to when the page named no destination (note_bandit); ignored
+    asks where to when the page named no destination (note_bandit), or CONTACT
+    on the quote card when the form refused its contact fields; ignored
     anywhere else."""
     hello = f"Hi, I'm {PERSONA} from {brand_for(site)}."
     line = _trip_line(trip)
@@ -252,7 +281,17 @@ def compose(
     full = bool(line and trip and (trip.origin_code or trip.origin_name) and trip.depart_date)
     replies = list(_REPLIES.get(trigger, _REPLIES["reader"]))
 
-    if trigger == "quote":
+    if trigger == "quote" and variant == CONTACT:
+        # The trip was filled and the name, email and phone were not: the chat instead of the rest of
+        # the form. The trip the page gave is said back, nothing it gave is asked again.
+        replies = list(_REPLIES["quote_contact"])
+        if line:
+            text = (f"{hello} Rather not fill in the whole form? I can pass {line} to an agent right here, "
+                    "and they'll email you the fares.")
+        else:
+            text = (f"{hello} Rather not fill in the whole form? Tell me here where and roughly when, "
+                    "and an agent will email you the fares.")
+    elif trigger == "quote":
         if line:
             text = f"{hello} Looks like the quote form is giving you trouble. Can I help? An agent can check fares for {line}."
         else:
@@ -286,12 +325,18 @@ def compose(
 
 # --- the doors ------------------------------------------------------------
 
-def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], site: Optional[str] = None) -> dict:
+def offer(
+    visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
+    refused: Optional[list[str]] = None,
+) -> dict:
     """Should this visitor see the card now, and what does it say.
 
     Always answers (never raises): {"show", "arm", "trigger", "message",
-    "quick_replies"}. The control arm gets show=False so the widget can count
-    the moment without showing anything — the comparison the test rests on.
+    "quick_replies"}, and "variant" when the words were one of the variants
+    (the widget sends it back with the answer, so /chat/init writes the same
+    words). The control arm gets show=False so the widget can count the moment
+    without showing anything — the comparison the test rests on. `refused`:
+    the kinds of the fields the quote form refused (quote_variant).
     """
     PROACTIVE_HEALTH["offers"] += 1
     if trigger == NOTE:
@@ -313,19 +358,24 @@ def offer(visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], 
     arm = arm_for(visitor_id)
     if arm != "proactive":
         return {"show": False, "arm": arm, "trigger": trigger, "message": None, "quick_replies": []}
-    text, replies = compose(trigger, trip, site)
+    variant = quote_variant(refused) if trigger == "quote" else None
+    text, replies = compose(trigger, trip, site, variant)
     PROACTIVE_HEALTH["shown"] += 1
-    return {"show": True, "arm": arm, "trigger": trigger, "message": text, "quick_replies": replies}
+    out = {"show": True, "arm": arm, "trigger": trigger, "message": text, "quick_replies": replies}
+    if variant:
+        out["variant"] = variant
+    return out
 
 
 def init_metadata(trigger: str, trip: Optional[TripContext], variant: Optional[str] = None) -> dict:
     """Conversation metadata written at creation: which moment opened the chat,
-    the search as the page gave it (for the panel), and the way the note asked
-    its first question (note_bandit counts the chats by it). Server keys only."""
+    the search as the page gave it (for the panel), and the variant of the words
+    (note_bandit counts the note's chats by it; CONTACT marks the quote card that
+    offered the chat instead of the form). Server keys only."""
     meta: dict = {"proactive_trigger": trigger, "proactive_at": datetime.now(timezone.utc).isoformat()}
     if trip and not trip.is_empty():
         meta["proactive_trip"] = trip.model_dump(mode="json", exclude_none=True)
-    if note_bandit.known(variant):
+    if known_variant(variant):
         meta["proactive_variant"] = variant
     return meta
 
@@ -428,7 +478,8 @@ async def open_conversation(
         # the label and the seed. Its words and time go back to this widget too.
         logger.info(f"[{conversation_id}] proactive opening written by a concurrent /chat/init")
         return await _stored_opening(conversation_id)
-    # The variant the widget sent back, kept only where it shaped the words (the note, no destination).
+    # The variant the widget sent back, kept only where it shaped the words (the note with no destination
+    # named, or the quote card's CONTACT).
     variant = applied_variant(trigger, trip, variant)
     text, _ = compose(trigger, trip, site, variant)
     row = await conversation_service.add_message(conversation_id, "ai", text, model_used=MODEL_USED, cost=0.0)

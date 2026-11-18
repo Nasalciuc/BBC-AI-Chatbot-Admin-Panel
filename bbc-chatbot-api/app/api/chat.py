@@ -89,16 +89,17 @@ _PROACTIVE_TRIGGERS = ("kayak", "quote", "reader", "exit", "note")
 class ProactiveInit(BaseModel):
     # "note": the visitor tapped the note beside the button (app/services/proactive).
     trigger: Literal["kayak", "quote", "reader", "exit", "note"]
-    # How /offer asked the note's first question (app/services/note_bandit): the
-    # opening is written with the same words and the chat is counted for it. A
-    # value that is not one of ours is dropped, never a 422.
+    # The words /offer used: how the note asked its first question (app/services/
+    # note_bandit), or the quote card that offered the chat instead of the form
+    # (proactive.CONTACT). The opening is written with the same words and the chat
+    # is counted for it. A value that is not one of ours is dropped, never a 422.
     variant: Optional[str] = None
 
     @field_validator("variant", mode="before")
     @classmethod
     def _known_variant_or_none(cls, v):
-        from app.services.note_bandit import known
-        return known(v)
+        from app.services.proactive import known_variant
+        return known_variant(v)
 
 
 ChatInitRequest.model_rebuild()
@@ -241,6 +242,10 @@ class ProactiveOfferRequest(BaseModel):
     # The brand the visitor is on (bbc | bct), so the card names it. Anything
     # else is dropped, never a 422: the card then speaks for BBC.
     site: Optional[str] = None
+    # The quote moment: the kinds of the fields the quote form refused (the
+    # widget's FIELD_KINDS, never a value). Only known kinds pass, six at most,
+    # each once; anything else is dropped, never a 422.
+    refused: Optional[list[str]] = None
 
     @field_validator("trip", mode="before")
     @classmethod
@@ -252,6 +257,18 @@ class ProactiveOfferRequest(BaseModel):
     def _known_site_or_none(cls, v):
         from app.ai.prompts import SITE_CONFIGS
         return v if isinstance(v, str) and v in SITE_CONFIGS else None
+
+    @field_validator("refused", mode="before")
+    @classmethod
+    def _known_kinds_or_none(cls, v):
+        from app.services.proactive import REFUSED_KINDS
+        if not isinstance(v, list):
+            return None
+        kinds: list[str] = []
+        for k in v:
+            if isinstance(k, str) and k in REFUSED_KINDS and k not in kinds:
+                kinds.append(k)
+        return kinds[:6] or None
 
 
 @router.post("/chat/proactive/offer")
@@ -269,7 +286,7 @@ async def proactive_offer(
         # The note's bandit reads its counts in the background, at most every few
         # minutes: this answer never waits for the database.
         note_bandit.refresh_soon()
-    return proactive.offer(payload.visitor_id, payload.trigger, payload.trip, payload.site)
+    return proactive.offer(payload.visitor_id, payload.trigger, payload.trip, payload.site, payload.refused)
 
 
 # --- Start endpoint: the AI greets FIRST — no fake client message ---
@@ -754,6 +771,10 @@ async def chat(
                 # answer never waits on the lead writes and the push.
                 from app.pipeline.operator_card import extract_and_push
                 _fire_and_forget(extract_and_push(req.conversation_id, clean_message))
+                # An email, a phone or a name the client gives the operator lands on the
+                # conversation as it does in a chat with Alex (operator_contact), flag or not.
+                from app.pipeline.operator_contact import record_contact
+                _fire_and_forget(record_contact(req.conversation_id, clean_message))
                 from app.services.handoff import _handoff_phrase_recently_sent
 
                 already = await _handoff_phrase_recently_sent(req.conversation_id)

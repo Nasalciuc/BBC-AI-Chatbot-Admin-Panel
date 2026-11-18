@@ -22,7 +22,7 @@ const readTrip = (href, h1) => {
   return pickTrip(tripFromUrl(search), tripFromTitle(h1))
 }
 import {
-  KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
+  KAYAK_VISIBLE_S, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S, SAME_SEND_MS,
   blockedPath, isNotNow, noteWaitMs, pauseRunning, pickTrigger, replyKind,
 } from '../src/triggers.ts'
 import { offerVariant } from '../src/api.ts'
@@ -259,6 +259,36 @@ test('the note asks again when the form is part of the page again, and one on sc
   }
 })
 
+test('the quote card hears which fields the form refused, by kind only (owner, 18 Nov)', () => {
+  // The browser's refusal: the field's type, then its autocomplete, name or id, never its value.
+  assert.match(hook, /function refusedKind\(t: EventTarget \| null\): FieldKind \| null \{/)
+  assert.match(hook, /if \(t instanceof HTMLInputElement && t\.type === 'email'\) return 'email'/)
+  assert.match(hook, /if \(t instanceof HTMLInputElement && t\.type === 'tel'\) return 'phone'/)
+  assert.match(hook, /return kindOfField\(t\.getAttribute\('autocomplete'\), t\.name, t\.id\)/)
+  assert.doesNotMatch(hook.slice(hook.indexOf('function refusedKind'), hook.indexOf('function isSubmitControl')), /\.value/)
+  // Each press starts a new attempt; each refused field of it is added once, six at most.
+  assert.equal([...hook.matchAll(/press = \{ at: Date\.now\(\), form(?:: null)?, activityAt: Date\.now\(\), invalid: false \}\s+refused = \[\]/g)].length, 2)
+  assert.match(hook, /refused = withKinds\(refused, \[refusedKind\(e\.target\)\]\)/)
+  // A submit is a send of its own too (Enter in a field with no recognized click).
+  assert.match(hook, /press = \{ at: Date\.now\(\), form, activityAt: Date\.now\(\), invalid: press\?\.invalid \?\? false \}\s+refused = \[\]/)
+  // The site's word: its first one for our press, right after it, joins the browser's kinds of that send (a
+  // word without fields takes nothing away); any other is a send of its own, and its kinds start a new list
+  // (CodeRabbit #268, round 3: email refused, then dates refused, is a dates-only refusal).
+  assert.match(hook, /const sameSend = !!press && siteSaidFor !== press\.at && e\.at - press\.at <= SAME_SEND_MS/)
+  assert.match(hook, /refused = sameSend \? withKinds\(refused, kinds\) : kinds/)
+  assert.match(hook, /if \(siteRefused\) siteSaidFor = press\?\.at \?\? null/)
+  // The owner is recorded after the press is updated, so a site word that started the press owns it.
+  assert.ok(hook.indexOf('if (siteRefused) siteSaidFor') > hook.indexOf('press = fx.press'))
+  assert.equal(SAME_SEND_MS, 5000)
+  // Only the quote moment sends them, and only when there are some.
+  assert.match(hook, /\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\)/)
+  assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\] \}/)
+  // The card's words come back with their variant, and the card's shown event carries it (as engaged/dismissed do).
+  const cardShown = payloads('proactive_shown').filter((p) => !p.includes("trigger: 'note'"))
+  assert.equal(cardShown.length, 1)
+  assert.ok(cardShown[0].includes('...(res.variant ? { variant: res.variant } : {})'))
+})
+
 // The payload of each capture call of `event`, up to the line that closes it: an assertion on one event can
 // never be satisfied by the next event's payload (CodeRabbit #267).
 const payloads = (event) => [...hook.matchAll(new RegExp(`capture\\('${event}', \\{([\\s\\S]*?)\\n\\s*\\}\\)`, 'g'))].map((m) => m[1])
@@ -337,7 +367,7 @@ test('the conversation carries the PostHog session for the replay link', () => {
 test('the offer has its 1.5 s answer or nothing', () => {
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(\s*apiUrl, \{ visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id \}, OFFER_TIMEOUT_MS,/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS\)/)
 })
 
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
@@ -570,7 +600,7 @@ test('the site goes with the offer and with every proactive event, so BBC and BC
   // The five of the moments, and the note's proactive_shown.
   assert.equal(captures.length, 6)
   for (const call of captures) assert.match(call, /site: brand\.id/, call.slice(0, 60))
-  assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string \}/)
+  assert.match(api, /body: \{ visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\] \}/)
 })
 
 test('a message waiting to go reads at full strength, not faded white on the brand colour', () => {

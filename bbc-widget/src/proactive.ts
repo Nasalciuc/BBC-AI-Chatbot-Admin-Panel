@@ -22,11 +22,12 @@ import { ensureVisitorId, fetchProactiveOffer } from './api'
 import brand from './config'
 import { posthog } from './posthog'
 import {
-  applySiteEvent, isQuoteFormWork, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage, type SiteEvent,
+  applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
+  withKinds, type FieldKind, type SiteEvent,
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
-  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, blockedPath, pauseRunning, pickTrigger, replyKind,
+  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, blockedPath, pauseRunning, pickTrigger, replyKind,
   type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
@@ -142,6 +143,15 @@ export function watchQuoteForm(onWork: (at: number) => void): () => void {
   }
 }
 
+/** The kind of a field the browser refused (siteSignals.kindOfField): from its type, then a contact token of
+ *  its autocomplete, then the first of its name and id that names a kind — never what was typed in it. */
+function refusedKind(t: EventTarget | null): FieldKind | null {
+  if (t instanceof HTMLInputElement && t.type === 'email') return 'email'
+  if (t instanceof HTMLInputElement && t.type === 'tel') return 'phone'
+  if (!(t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement)) return null
+  return kindOfField(t.getAttribute('autocomplete'), t.name, t.id)
+}
+
 function isSubmitControl(el: Element): boolean {
   const control = el.closest('button, input[type="submit"]')
   if (!control) return false
@@ -247,6 +257,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let press: Press | null = null
     // The last time the visitor worked on the quote form, pressed or not (triggers.ts: no card over it).
     let quoteFormAt: number | null = null
+    // The kinds of the fields the last refused send flagged (the site's word, or the browser's): the quote
+    // card speaks to a form refused for its contact fields (the server's words; owner, 18 Nov). One send
+    // only: a press starts it, and the site's word joins the browser's for that press (siteSaidFor).
+    let refused: FieldKind[] = []
+    // The press the site's last refusal belonged to: a second word of the site with no press of ours
+    // between is a send of its own, and starts a list of its own (CodeRabbit #268, round 3).
+    let siteSaidFor: number | null = null
     let exitAt = 0
     // What the site itself says about its quote form (siteSignals.applySiteEvent): a send in flight, and
     // whether the visitor already sent the request or reached out (then nothing on this page).
@@ -297,6 +314,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const form = quoteForm(el)
       if (form && isSubmitControl(el)) {
         press = { at: Date.now(), form, activityAt: Date.now(), invalid: false }
+        refused = []
         return
       }
       if (press && inPressedForm(el)) {
@@ -308,6 +326,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (control && QUOTE_TEXT.test(text)) {
         // The site's button without the form we know: still a press, and the HTML changed — say so.
         press = { at: Date.now(), form: null, activityAt: Date.now(), invalid: false }
+        refused = []
         if (!warnedShape) {
           warnedShape = true
           posthog?.capture('proactive_quote_unrecognized', { path: location.pathname, site: brand.id })
@@ -317,13 +336,18 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     // Enter in a field sends the form too.
     const onSubmit = (e: Event) => {
       const form = e.target instanceof HTMLFormElement ? quoteForm(e.target) : null
-      if (form) press = { at: Date.now(), form, activityAt: Date.now(), invalid: press?.invalid ?? false }
+      if (form) {
+        press = { at: Date.now(), form, activityAt: Date.now(), invalid: press?.invalid ?? false }
+        refused = []  // a send of its own: the kinds of an earlier refusal are not this one's
+      }
     }
     // The browser refused the send and flagged a field (`invalid` does not bubble: caught on the way down).
     const onInvalid = (e: Event) => {
       if (!press || !inPressedForm(e.target)) return
       press.invalid = true
       press.activityAt = Date.now()
+      // One `invalid` per refused field, all in the same send: together they are that send's refusal.
+      refused = withKinds(refused, [refusedKind(e.target)])
     }
     const onLeave = (e: MouseEvent) => {
       if (e.relatedTarget || e.clientY > 8) return
@@ -338,6 +362,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // The site says the visitor is in its quote form (opened it, moved a step, a field refused): no card
       // over it, pressed or not. A refused or failed send is a press too (applySiteEvent, below).
       if (isQuoteFormWork(e)) quoteFormAt = Math.max(quoteFormAt ?? 0, Math.min(e.at, Date.now()))
+      // The site names the fields of a refused send itself. Its first word for our press, right after it,
+      // joins the browser's kinds of that send (a word without fields takes nothing away); any other word is
+      // a send of its own.
+      const siteRefused = e.name === 'quote_form_invalid'
+      if (siteRefused) {
+        const kinds = fieldKinds(e.detail.fields)
+        const sameSend = !!press && siteSaidFor !== press.at && e.at - press.at <= SAME_SEND_MS
+        refused = sameSend ? withKinds(refused, kinds) : kinds
+      }
       const fx = applySiteEvent(
         press ? { at: press.at, activityAt: press.activityAt, invalid: press.invalid, busy: siteBusy } : null, e,
       )
@@ -350,6 +383,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       press = fx.press
         ? { form: press?.form ?? null, at: fx.press.at, activityAt: fx.press.activityAt, invalid: fx.press.invalid }
         : null
+      if (siteRefused) siteSaidFor = press?.at ?? null
     }
 
     // What the moment was decided on. The server answers within OFFER_TIMEOUT_MS; by then the visitor
@@ -382,9 +416,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const before = seen()
       const trip = currentTrip()
       const device = phone ? 'phone' : 'computer'
-      const res = await fetchProactiveOffer(
-        apiUrl, { visitor_id: ensureVisitorId(), trigger, trip, site: brand.id }, OFFER_TIMEOUT_MS,
-      )
+      // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
+      const res = await fetchProactiveOffer(apiUrl, {
+        visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
+        ...(trigger === 'quote' && refused.length ? { refused: [...refused] } : {}),
+      }, OFFER_TIMEOUT_MS)
       const passed = !disposed && res?.show && res.message ? momentPassed(trigger, before) : null
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
@@ -404,7 +440,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       shownRef.current = opening
       setQuiet(true)
       setOffer(opening)
-      posthog?.capture('proactive_shown', { trigger, surface, device, site: brand.id })
+      posthog?.capture('proactive_shown', {
+        trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
+      })
     }
 
     const evaluate = () => {

@@ -119,6 +119,47 @@ export function fieldKind(v: unknown): FieldKind | null {
   return 'other'
 }
 
+// The autocomplete tokens of a person's contact (HTML spec), read as whole tokens: the substring rules
+// above would take `country-name` for a name (CodeRabbit #268, round 3).
+const AUTOCOMPLETE_KINDS: Readonly<Record<string, FieldKind>> = {
+  name: 'name', 'given-name': 'name', 'additional-name': 'name', 'family-name': 'name', nickname: 'name',
+  'honorific-prefix': 'name', 'honorific-suffix': 'name',
+  email: 'email',
+  tel: 'phone', 'tel-country-code': 'phone', 'tel-national': 'phone', 'tel-area-code': 'phone', 'tel-local': 'phone',
+  'tel-local-prefix': 'phone', 'tel-local-suffix': 'phone', 'tel-extension': 'phone',
+}
+
+/** The contact kind an autocomplete value names: its last token (after a section-* or shipping/billing
+ *  word), when it is one of the contact tokens; null for anything else ("off", "on", `country-name`). */
+export function autocompleteKind(v: unknown): FieldKind | null {
+  if (typeof v !== 'string') return null
+  const token = v.trim().toLowerCase().split(/\s+/).pop() ?? ''
+  return AUTOCOMPLETE_KINDS[token] ?? null
+}
+
+/** The kind of a field from what the page calls it: a contact token of its autocomplete, else the first of
+ *  its other names (its name, then its id) that names a kind of the list; 'other' only when none does.
+ *  autocomplete="off", "on" or a token of no contact names nothing here, so the name speaks instead.
+ *  Never what was typed in it. */
+export function kindOfField(autocomplete?: unknown, ...names: unknown[]): FieldKind | null {
+  const token = autocompleteKind(autocomplete)
+  if (token) return token
+  let other: FieldKind | null = null
+  for (const s of names) {
+    const k = fieldKind(s)
+    if (k && k !== 'other') return k
+    other = other ?? k
+  }
+  return other
+}
+
+/** `kinds`, then the ones of `more` not in it yet: each kind once, 6 at most (one refused send's list). */
+export function withKinds(kinds: readonly FieldKind[], more: readonly (FieldKind | null)[]): FieldKind[] {
+  const out = [...kinds]
+  for (const k of more) if (k && !out.includes(k) && out.length < 6) out.push(k)
+  return out
+}
+
 /** The kinds of the fields a refused send flagged: up to 6, each once, in the site's order. */
 export function fieldKinds(v: unknown): FieldKind[] {
   if (!Array.isArray(v)) return []

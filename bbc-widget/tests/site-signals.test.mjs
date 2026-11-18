@@ -14,8 +14,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   FIELD_KINDS, QUOTE_FORM_WORK, SITE_EVENTS, activityLine, activityToken, applySiteEvent, fieldKind, fieldKinds,
-  isQuoteFormWork, lastSearch, noMomentPage, onSiteEvent, readSiteEvent, readSitePage, siteEvents, siteMetadata,
-  sitePage, startSiteSignals, stopSiteSignals,
+  autocompleteKind, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, readSiteEvent, readSitePage, siteEvents,
+  siteMetadata, sitePage, startSiteSignals, stopSiteSignals, withKinds,
 } from '../src/siteSignals.ts'
 import { pickTrip, tripFromFields, tripFromTitle, tripFromUrl } from '../src/tripContext.ts'
 import { choosePostHog, sitePostHogOf, watchSitePostHog } from '../src/posthogChoice.ts'
@@ -107,6 +107,54 @@ test('a refused send keeps what kind of field it was, in a fixed list of words: 
     const k = fieldKind(v)
     assert.ok(k === null || FIELD_KINDS.includes(k), v)
   }
+})
+
+test('a field the browser refused is named by a contact token of its autocomplete, else by its name or id', () => {
+  // autocomplete="off" (or "on") is the commonest value on a form and names nothing: the name speaks.
+  assert.equal(kindOfField('off', 'full_name', 'f-name'), 'name')
+  assert.equal(kindOfField('on', 'mobile', ''), 'phone')
+  assert.equal(kindOfField('off', '', 'contact-email'), 'email')
+  // A contact token wins over a vaguer name, after a section or shipping/billing word too.
+  assert.equal(kindOfField('given-name', 'field_3', ''), 'name')
+  assert.equal(kindOfField('tel-national', 'f2', ''), 'phone')
+  assert.equal(kindOfField('section-quote shipping email', 'f4', ''), 'email')
+  assert.equal(kindOfField('billing tel', 'f9', ''), 'phone')
+  // A token of no contact is read whole, never by the name rules (CodeRabbit #268, round 3): `country-name`
+  // is a country, so a refused destination stays a destination and brings no contact words.
+  assert.equal(kindOfField('country-name', 'destination', ''), 'destination')
+  assert.equal(kindOfField('country-name', 'f1', ''), 'other')
+  assert.equal(kindOfField('nope', 'full_name', ''), 'name')
+  // Nothing names a kind: 'other' if a name was there, null if nothing was.
+  assert.equal(kindOfField('off', 'field_3', 'q7'), 'other')
+  assert.equal(kindOfField(null, '', ''), null)
+  assert.equal(kindOfField(), null)
+})
+
+test('only the contact tokens of autocomplete name a kind, read whole', () => {
+  for (const [v, kind] of [
+    ['name', 'name'], ['family-name', 'name'], ['additional-name', 'name'], ['honorific-prefix', 'name'],
+    ['email', 'email'], ['  EMAIL ', 'email'], ['tel', 'phone'], ['tel-country-code', 'phone'],
+    ['section-a billing tel-extension', 'phone'],
+  ]) assert.equal(autocompleteKind(v), kind, v)
+  for (const v of ['off', 'on', 'country-name', 'country', 'username', 'organization', 'postal-code', 'cc-name',
+    'street-address', 'new-password', 'nope', '', '   ', null, undefined, 7, ['email']]) {
+    assert.equal(autocompleteKind(v), null, String(v))
+  }
+})
+
+test('one refused send gathers its kinds from the browser and the site: each once, six at most', () => {
+  assert.deepEqual(withKinds([], ['name']), ['name'])
+  assert.deepEqual(withKinds(['name'], ['name', 'email', null]), ['name', 'email'])
+  // The site's word without fields takes nothing away from what the browser flagged.
+  assert.deepEqual(withKinds(['name', 'email', 'phone'], fieldKinds(undefined)), ['name', 'email', 'phone'])
+  assert.deepEqual(withKinds(['name', 'email', 'phone'], fieldKinds([])), ['name', 'email', 'phone'])
+  assert.deepEqual(
+    withKinds(['name', 'email', 'phone', 'origin', 'destination'], ['dates', 'passengers', 'cabin']),
+    ['name', 'email', 'phone', 'origin', 'destination', 'dates'],
+  )
+  const kept = ['name']
+  withKinds(kept, ['email'])
+  assert.deepEqual(kept, ['name'], 'a new list, the old one untouched')
 })
 
 test('the site\'s thank-you and legal pages get no moment, whatever their address', () => {
