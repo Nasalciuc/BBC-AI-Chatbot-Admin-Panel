@@ -69,10 +69,12 @@ def last_question(history: Optional[list]) -> str:
 
 # "And your name?", "What's your last name so…?", "What name should they
 # address you by?", "your name, so the consultant knows who to address?",
-# "the name on the booking?". Not "the name of the airline you prefer?".
+# "the name on the booking?", "What's the best name for your consultant to
+# address you by?" (18-19 Nov: four chats asked it so, and the answer was not
+# kept: #3361 was asked again). Not "the name of the airline you prefer?".
 _NAME_QUESTION_RE = re.compile(
-    r"\b(?:(?:your|full|first|last)\s+name"
-    r"|what\s+name|name\s+should|who\s+to\s+address"
+    r"\b(?:(?:your|full|first|last|best)\s+name"
+    r"|what\s+name|name\s+should|who\s+to\s+address|address\s+you\b"
     r"|name\s+(?:for|on)\s+the\s+(?:booking|reservation|ticket)"
     r"|who\s+(?:am\s+i|i'?m)\s+(?:speaking|chatting)\s+(?:with|to)"
     # Spanish, French, Portuguese (#3325, 18 Nov 2026: "¿Cuál es su nombre?" was not read as the question)

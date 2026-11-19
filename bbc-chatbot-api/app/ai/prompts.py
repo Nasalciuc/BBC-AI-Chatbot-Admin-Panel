@@ -613,7 +613,8 @@ _PAID_SOCIAL_HINT = (
 )
 
 _PAID_SEARCH_HINT = (
-    "Paid search arrival — the keyword (if shown) is a hint only; refine, never assert."
+    "Paid search arrival — the keyword (if shown) is a hint only; refine, never assert. Never quote it, "
+    "and never say there was a keyword, an ad or a search behind the visit."
 )
 
 
@@ -788,7 +789,9 @@ def build_site_context(metadata: dict | None) -> Optional[str]:
         lines.append(f"Opened chat on page: {page_path}")
     lines.extend(site_activity_lines(metadata))
     if utm_term:
-        lines.append(f"Search keyword hint: {utm_term}")
+        # Private: "The keyword that brought you here pointed toward Switzerland" was said to a client
+        # (#3359, 19 Nov).
+        lines.append(f"Search keyword hint: {utm_term} (private — never quote it or say there was one)")
     if utm_campaign:
         lines.append(f"Campaign hint: {utm_campaign}")
 
@@ -961,12 +964,42 @@ def _email_asked(history: Optional[list[dict]]) -> bool:
     """Alex has already asked for the email in this chat: one of its questions names it ("What's your
     email?"). An email named beside another question is no ask: "Your consultant can email the options.
     Where are you flying to?" (CodeRabbit #270)."""
+    return _alex_asked(history, _EMAIL_ASK_RE)
+
+
+def _alex_asked(history: Optional[list[dict]], pattern) -> bool:
+    """One of Alex's questions so far matches `pattern`."""
     for m in history or []:
         if m.get("role") in ("ai", "assistant"):
             text = str(m.get("content") or "")
-            if any(_EMAIL_ASK_RE.search(question) for question in _QUESTION_RE.findall(text)):
+            if any(pattern.search(question) for question in _QUESTION_RE.findall(text)):
                 return True
     return False
+
+
+_ONE_WAY_ASK_RE = _re.compile(r"\bone[\s-]way\b|\bfly(?:ing)?\s+back\b|\breturn(?:ing)?\b", _re.I)
+
+
+def _as_day(value) -> Optional[date]:
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except ValueError:  # noqa: silent — an unreadable stored date asks nothing about the return; the prompt goes on without the check
+        return None
+
+
+def _return_next_day(lead: dict, meta: Optional[dict], history: Optional[list[dict]]) -> Optional[str]:
+    """The line asking to check a return the day after departure, or None. A Kayak search
+    (#3356): a long flight's arrival day taken for the return was said back four times and kept as a one-day
+    round trip. Asked once, until the summary is confirmed."""
+    dep, ret = _as_day(lead.get("departure_date")), _as_day(lead.get("return_date"))
+    if not (dep and ret) or (ret - dep).days != 1:
+        return None
+    if (meta or {}).get("confirmed_at") or _alex_asked(history, _ONE_WAY_ASK_RE):
+        return None
+    return (
+        "Check the dates: the return is the day after departure — on a long flight that is often the arrival "
+        "day read as a return. Ask once, in this reply, whether it's one-way or when they fly back."
+    )
 
 
 def build_conversational_prompt(
@@ -1013,6 +1046,11 @@ def build_conversational_prompt(
     ]
     if visitor.name:
         visitor_lines.append(f"Name: {visitor.name}")
+    else:
+        # #3341: "Email is all set, <a name read from the address>" — then the name was asked for.
+        visitor_lines.append(
+            "Name: not given — call the client by a name only once they type it (never one read from their email)"
+        )
     if visitor.email:
         visitor_lines.append("Email: provided ✓")
     if visitor.phone:
@@ -1070,19 +1108,31 @@ def build_conversational_prompt(
         if asks:
             visitor_lines.append(f"Still needed: {', '.join(asks)}")
         # A chat with no form behind it, the route known, the email never asked: it is asked in this reply.
-        # 19 Nov, Sydney → Amman: "email" led "Still needed" from the route on, and the model asked the
+        # A quote-card chat on 19 Nov: "email" led "Still needed" from the route on, and the model asked the
         # dates, the flexibility, the travelers and the occasion first; the client left at the email.
-        if (
-            conv_from_visitor.get("email_first")
-            and asks[:1] == ["email"]
-            and lead.get("origin_code") and lead.get("destination_code")
-            and not _email_asked(history)
-        ):
-            visitor_lines.append(
-                "Ask next: the email — in THIS reply, as its one question, before the dates, the "
-                "flexibility, the travelers or the occasion (those follow it). A client who leaves after "
-                "giving it can still be helped; one who leaves before is gone."
-            )
+        # A client who asked for the fares by email ("Email me the fares" under the quote card, or in words)
+        # is asked it next, route or not: three such chats on 18-19 Nov were asked where they fly from
+        # instead, and two of them left (#3331, #3332, #3344).
+        _chose_email = "email" in {part.strip() for part in (_channel or "").split(",")}
+        if "email" in asks and not _email_asked(history):
+            if _chose_email:
+                visitor_lines.append(
+                    "Ask next: the email — they asked for the fares by email. In THIS reply, as its one "
+                    "question, before the route, the dates or the travelers (those follow it)."
+                )
+            elif (
+                conv_from_visitor.get("email_first")
+                and asks[:1] == ["email"]
+                and lead.get("origin_code") and lead.get("destination_code")
+            ):
+                visitor_lines.append(
+                    "Ask next: the email — in THIS reply, as its one question, before the dates, the "
+                    "flexibility, the travelers or the occasion (those follow it). A client who leaves after "
+                    "giving it can still be helped; one who leaves before is gone."
+                )
+        _return_check = _return_next_day(lead, _any_meta, history)
+        if _return_check:
+            visitor_lines.append(_return_check)
         if _channel:
             visitor_lines.append(
                 f"Contact wishes: {_channel} (the client's own words; never ask again for a channel they turned down)"

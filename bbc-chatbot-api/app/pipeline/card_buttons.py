@@ -190,7 +190,9 @@ async def _channel(
         from app.services.tasks_service import withdraw_call_tasks
 
         _fire_and_forget(withdraw_call_tasks(cid))
-    text = card_words.channel_done(kind, contact, _lang(meta), _team_online())
+    text = card_words.channel_done(
+        kind, contact, _lang(meta), _team_online(), trip_known=await _trip_known(cid, meta),
+    )
     row = await _save(cid, "ai", text, MODEL_USED)
     CARD_BUTTONS_HEALTH[kind] += 1
     return _response(cid, row, text, [], MODEL_USED)
@@ -309,6 +311,25 @@ async def _claim(cid: str, key: str) -> bool:
         return False
 
 
+async def _trip_known(cid: str, meta: dict) -> bool:
+    """A destination is known — the page's search or the lead's — so the answer after a contact may ask for
+    the extras; without one it asks for the trip (#3355): the row beside the quote form took an email
+    and asked "Anything they should know, like flexible dates?" about a trip nobody had said."""
+    from app.services import lead_service
+
+    if _names_a_destination(_trip(meta)):
+        return True
+    try:
+        return _lead_trip(await lead_service.get_or_create_lead(cid)) is not None
+    except Exception as e:  # noqa: BLE001 — an unread lead asks for the extras, as before
+        logger.warning(f"[{cid}] card button: lead unread for the trip ({type(e).__name__})")
+        return True
+
+
+def _names_a_destination(trip) -> bool:
+    return bool(trip and (getattr(trip, "destination_code", None) or getattr(trip, "destination_name", None)))
+
+
 def _lead_trip(lead: Optional[dict]):
     """The trip the lead holds, for the line the message says back; None without a destination. A
     destination alone is enough: "London, not Paris" said before any origin names London (CodeRabbit #270)."""
@@ -324,6 +345,29 @@ def _lead_trip(lead: Optional[dict]):
         )
     except Exception:  # noqa: silent — a lead the trip model refuses gives the message without a line
         return None
+
+
+# Alex's question for an email, a WhatsApp or a number.
+_CONTACT_ASK_RE = re.compile(r"\b(?:e-?mail|whatsapp|phone|number|correo|courriel|n[uú]mero|t[eé]l[eé]phone)\b", re.I)
+_QUESTION_RE = re.compile(r"[^.!?\n]*\?")
+# How long Alex's own ask stands before the before-you-go may say it again.
+JUST_ASKED_S = 120
+
+
+def _just_asked_contact(recent: list) -> bool:
+    """The newest message is Alex's question for the contact, asked under two minutes ago: the client is
+    still reading it, or typing. 19 Nov (#3359): 30 s after "what's the best email for them to reach you?",
+    with the client still in the chat, the before-you-go asked the same thing again."""
+    last = (recent or [None])[-1]
+    if not isinstance(last, dict) or last.get("role") != "ai":
+        return False
+    if not any(_CONTACT_ASK_RE.search(q) for q in _QUESTION_RE.findall(last.get("content") or "")):
+        return False
+    try:
+        said = datetime.fromisoformat(str(last.get("created_at")).replace("Z", "+00:00"))
+    except ValueError:  # noqa: silent — an unreadable time lets the before-you-go go on, as it did before this check
+        return False
+    return (datetime.now(timezone.utc) - said).total_seconds() < JUST_ASKED_S
 
 
 async def before_you_go(cid: str) -> dict:
@@ -346,6 +390,8 @@ async def before_you_go(cid: str) -> dict:
         return skip("agent_wrote")
     if await db.count_messages(cid, role="user") == 0:
         return skip("never_wrote")
+    if _just_asked_contact(await db.get_recent_messages(cid, limit=1)):
+        return skip("just_asked")
     meta = conv.get("metadata") or {}
     meta = meta if isinstance(meta, dict) else {}
     if meta.get(BEFORE_YOU_GO_KEY) or not await _claim(cid, BEFORE_YOU_GO_KEY):
@@ -377,8 +423,8 @@ async def goodbye_without_contact(
     """A goodbye ("thank you", "bye") from a sales client who left no way to reach them, or None when a
     contact is on file (the usual goodbye is true then).
 
-    19 Nov, Sydney → Amman: the client gave the whole trip, was asked for the email once, thanked twice, and
-    was told "Your search is in expert hands. We'll be in touch soon" — with no email and no number, by
+    A quote-card chat on 19 Nov: the client gave the whole trip, was asked for the email once, thanked twice,
+    and was told "Your search is in expert hands. We'll be in touch soon" — with no email and no number, by
     nobody. Here the first goodbye gets the before-you-go ask with its WhatsApp and Email buttons, said once
     per chat whichever of the two says it first (BEFORE_YOU_GO_KEY: a claim that fails counts as said, as for
     the before-you-go); a later one, or one from a client who turned a channel down, an honest goodbye that

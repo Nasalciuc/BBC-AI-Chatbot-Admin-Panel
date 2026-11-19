@@ -307,6 +307,20 @@ async def _persist_fallback_reply(cid: str, text: str, reason: str) -> None:
         )
 
 
+def _no_agent_line(tunnel: str, visitor) -> Optional[str]:
+    """The line for a client who asked for a person when none is free. Outside team hours nobody is "with a
+    client" and nobody calls "shortly": near midnight US Eastern (#3359), the in-hours line was said four
+    times to a client who wanted to book that night."""
+    from app.ai.templates import get_template
+    from app.services.closing import is_within_team_hours
+
+    if not is_within_team_hours():
+        off_hours = get_template("no_agent_available_off_hours", tunnel, visitor)
+        if off_hours:
+            return off_hours
+    return get_template("no_agent_available", tunnel, visitor)
+
+
 async def _taken_by_agent(cid: str) -> Optional[ChatResponse]:
     """The reply for a turn an agent took while the pipeline was running, or None when the AI may answer:
     never let AI and human work in parallel. Exception: silent reservation (announce_pending) — AI serves
@@ -1128,9 +1142,15 @@ async def _pipeline(
         from app.ai.templates import get_template as _cb_tpl
 
         _cb_number = _callback["number"] or _cb_raw
+        from app.services.closing import is_within_team_hours as _cb_team_in
+
+        # Outside team hours an English call-back is promised for when the team is back, never "putting a
+        # consultant on this" (#3359); the other languages' wording names no time.
+        _cb_off_hours = not _client_lang and not _cb_team_in()
         if _cb_number:
             _cb_key = {
-                "call": "callback_confirmed", "text": "number_confirmed_text",
+                "call": "callback_confirmed_off_hours" if _cb_off_hours else "callback_confirmed",
+                "text": "number_confirmed_text",
                 "whatsapp": "number_confirmed_whatsapp",
             }.get(_cb_channel, "number_confirmed")
             _cb_text = _cb_tpl(
@@ -1159,7 +1179,8 @@ async def _pipeline(
                         if _q:
                             from app.ai.templates_i18n import WHILE_THEY_GET_TO_YOU as _cb_join
 
-                            _cb_next = f"{_cb_join.get(_client_lang or '', ' While they get to you — ')}{_q[0].lower()}{_q[1:]}"
+                            _cb_en_join = " Meanwhile, " if _cb_off_hours else " While they get to you — "
+                            _cb_next = f"{_cb_join.get(_client_lang or '', _cb_en_join)}{_q[0].lower()}{_q[1:]}"
                             break
             except Exception:
                 pass
@@ -1533,7 +1554,7 @@ async def _pipeline(
 
     # ── STEP 5.9: A GOODBYE WITH NO WAY TO REACH THE CLIENT ──
     # The goodbye template promised "We'll be in touch soon" to a client with no email and no number
-    # (19 Nov, Sydney → Amman): the first goodbye now asks where the agent should write, with the
+    # (a quote-card chat on 19 Nov): the first goodbye now asks where the agent should write, with the
     # WhatsApp and Email buttons; a later one promises nothing (card_buttons.goodbye_without_contact).
     # An agent who took the chat meanwhile answers it: the guard runs where the goodbye is saved.
     if intent == Intent.CLOSING and tunnel == "sales":
@@ -1654,7 +1675,7 @@ async def _pipeline(
                         f"[{cid}] Failed to queue needs_agent: {e}",
                         exc_info=True,
                     )
-                no_agent = get_template("no_agent_available", tunnel, visitor)
+                no_agent = _no_agent_line(tunnel, visitor)
                 gen = GeneratedResponse(
                     text=no_agent or (
                         "All specialists are currently busy. "
@@ -2069,7 +2090,9 @@ async def _pipeline(
                     )
                     logger.info(f"[{cid}] Step 7.5: Closing fell back to template")
             else:
-                validated_text = "You're all set! Our consultant will reach out shortly."
+                from app.services.closing import when_we_reach_out
+
+                validated_text = f"You're all set! Our consultant will reach out {when_we_reach_out()}."
                 gen.model_used = "template"
                 gen.cost = 0.0
                 logger.info(f"[{cid}] Step 7.5: Closing already sent → ack only")

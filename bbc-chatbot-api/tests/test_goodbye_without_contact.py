@@ -1,4 +1,4 @@
-"""A goodbye from a client nobody can reach (19 Nov 2026, Sydney → Amman).
+"""A goodbye from a client nobody can reach (a quote-card chat, 19 Nov 2026; the trips here are made up).
 
 The client gave the whole trip, was asked for the email once — after the dates, the flexibility, the
 travelers and the occasion — answered "thank you price matters", and was told "Your search is in expert
@@ -29,7 +29,7 @@ from app.pipeline import card_buttons
 from app.pipeline.intent import Intent, detect_intent, is_only_goodbye
 
 _CID = "11111111-2222-3333-4444-555555555555"
-_LEAD = {"id": "L-1", "conversation_id": _CID, "origin_code": "SYD", "destination_code": "AMM",
+_LEAD = {"id": "L-1", "conversation_id": _CID, "origin_code": "DEN", "destination_code": "ATH",
          "departure_date": "2027-01-09", "return_date": "2027-01-16", "passengers": 1}
 
 
@@ -194,7 +194,7 @@ def _turn(message, *, conv_extra=None, visitor=None, claimed=True, mode_at_save=
             "metadata": {"proactive_trigger": "quote"}, **(conv_extra or {})}
     fresh = {**conv, "mode": mode_at_save,
              "metadata": {**conv["metadata"], **({"announce_pending": True} if reserved else {})}}
-    history = [{"role": "ai", "content": "A personal trip to Amman. Where should they send the private fare "
+    history = [{"role": "ai", "content": "A personal trip to Athens. Where should they send the private fare "
                                           "options — what's your email?"},
                {"role": "user", "content": message}]
     gen = MagicMock(side_effect=_Generated("the model's turn: stop here"))
@@ -290,11 +290,11 @@ def _prompt(lead, history, meta, visitor=None):
     return dynamic
 
 
-_ROUTE_ONLY = {"origin_code": "SYD", "destination_code": "AMM", "score": 20}
+_ROUTE_ONLY = {"origin_code": "DEN", "destination_code": "ATH", "score": 20}
 _SO_FAR = [{"role": "ai", "content": "Tell me where and roughly when, and an agent will check fares for you."},
-           {"role": "user", "content": "from sydney"},
-           {"role": "ai", "content": "Sydney noted — and where are you heading?"},
-           {"role": "user", "content": "amman jordan"}]
+           {"role": "user", "content": "from denver"},
+           {"role": "ai", "content": "Denver noted — and where are you heading?"},
+           {"role": "user", "content": "athens greece"}]
 
 
 def test_a_card_chat_asks_the_email_as_soon_as_the_route_is_known():
@@ -309,11 +309,11 @@ def test_a_card_chat_asks_the_email_as_soon_as_the_route_is_known():
                              {"role": "user", "content": "thank you price matters"}],
      {"proactive_trigger": "quote"}, None),
     # asked in Spanish, in the middle of a longer reply
-    (_ROUTE_ONLY, _SO_FAR + [{"role": "ai", "content": "Ammán, perfecto. ¿Cuál es su correo? Así el agente le "
+    (_ROUTE_ONLY, _SO_FAR + [{"role": "ai", "content": "Atenas, perfecto. ¿Cuál es su correo? Así el agente le "
                                                        "envía las opciones."}],
      {"proactive_trigger": "quote"}, None),
     # the route is not known yet
-    ({"origin_code": "SYD", "score": 5}, _SO_FAR[:2], {"proactive_trigger": "quote"}, None),
+    ({"origin_code": "DEN", "score": 5}, _SO_FAR[:2], {"proactive_trigger": "quote"}, None),
     # a chat with a form behind it keeps its order
     (_ROUTE_ONLY, _SO_FAR, {}, None),
     # the email is on file
@@ -327,5 +327,5 @@ def test_an_email_named_beside_another_question_is_no_ask():
     """"Your consultant can email the options. Where are you flying to?" asked the destination, not the
     email: once the route is known, the email is still the next question (CodeRabbit #270)."""
     history = [{"role": "ai", "content": "Your consultant can email the options. Where are you flying to?"},
-               {"role": "user", "content": "sydney to amman"}]
+               {"role": "user", "content": "denver to athens"}]
     assert "Ask next: the email — in THIS reply" in _prompt(_ROUTE_ONLY, history, {"proactive_trigger": "quote"})
