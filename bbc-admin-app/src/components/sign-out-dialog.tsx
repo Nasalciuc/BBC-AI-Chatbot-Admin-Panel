@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation } from '@tanstack/react-router'
 import { useAuthStore } from '@/stores/auth-store'
 import { isEmbedded } from '@/lib/crm-bridge'
@@ -12,6 +13,7 @@ interface SignOutDialogProps {
 export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
   const navigate = useNavigate()
   const location = useLocation()
+  const queryClient = useQueryClient()
   const { auth } = useAuthStore()
 
   // An operator who reached the panel through the CRM's iframe has no way
@@ -31,11 +33,14 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
     auth.reset()
     // Preserve current location for redirect after sign-in
     const currentPath = location.href
-    navigate({
+    // Nothing this account read survives into the next session (the offers queue's contacts among it):
+    // the cache goes once the signed-in pages are gone, so none of them refetches without a token on
+    // the way out (CodeRabbit #270).
+    void navigate({
       to: '/sign-in',
       search: { redirect: currentPath },
       replace: true,
-    })
+    }).finally(() => queryClient.clear())
   }
 
   return (

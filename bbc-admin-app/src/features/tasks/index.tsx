@@ -11,6 +11,7 @@ import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
 import { NewTaskDialog } from './components/new-task-dialog'
+import { OffersList } from './components/offers-list'
 import { TaskPanel } from './components/task-panel'
 import { TaskRow } from './components/task-row'
 import { TaskRules } from './components/task-rules'
@@ -18,8 +19,14 @@ import { KIND_FILTERS, countStates, groupTasks, localZone, shownState, summaryLi
 
 const MANAGERS = ['owner', 'admin', 'dev']
 const TEAM_LEADS = ['supervisor', 'project_manager']
+// Who sees the offers queue (bbc-chatbot-api app/api/offers.py READERS): the Leads page's readers and the
+// agents; support and project managers have no leads.
+const OFFER_READERS = ['owner', 'admin', 'dev', 'qa', 'sales', 'supervisor']
 
-export type TasksSearch = { view?: string; kind?: TaskKind; task?: string; tab?: 'rules' }
+export type TasksTab = 'offers' | 'tasks' | 'rules'
+export type TasksSearch = { view?: string; kind?: TaskKind; task?: string; tab?: TasksTab }
+
+const TAB_LABEL: Record<TasksTab, string> = { offers: 'Offers to send', tasks: 'Tasks', rules: 'Rules' }
 
 function useWide(): boolean {
   const query = '(min-width: 1280px)'
@@ -48,7 +55,18 @@ export function Tasks() {
   const isManager = MANAGERS.includes(role)
   const isLead = TEAM_LEADS.includes(role)
   const wide = useWide()
-  const tab = search.tab === 'rules' && isManager ? 'rules' : 'tasks'
+  // The page opens on the offers queue (ADR-6b: it takes the place of the task list nobody ticked); a link
+  // to a task, or the Tasks tab, opens the list.
+  const canOffers = OFFER_READERS.includes(role)
+  const tab: TasksTab =
+    search.tab === 'rules' && isManager
+      ? 'rules'
+      : search.tab === 'offers' && canOffers
+        ? 'offers'
+        : search.tab === 'tasks' || search.task || !canOffers
+          ? 'tasks'
+          : 'offers'
+  const tabs: TasksTab[] = [...(canOffers ? (['offers'] as const) : []), 'tasks', ...(isManager ? (['rules'] as const) : [])]
   const view = search.view ?? (isManager ? 'all' : isLead ? 'team' : 'mine')
   const kind = search.kind ?? null
   const selectedId = search.task ?? null
@@ -120,11 +138,14 @@ export function Tasks() {
     onSnooze: (at: number, label: string) => update.mutate({ id: r.id, body: { due_at: new Date(at).toISOString(), due_kind: 'picked' }, ok: `Moved: ${label}.` }),
   })
 
-  const subtitle = isManager
-    ? `Everyone’s tasks · ${city} time`
-    : isLead
-      ? `Your team’s tasks · contacts hidden · ${city} time`
-      : `${me?.name || 'You'} · what you promised clients, and what they asked for · ${city} time`
+  const subtitle =
+    tab === 'offers'
+      ? `Clients waiting for a consultant’s written offer${role === 'supervisor' ? ' · contacts hidden' : ''} · ${city} time`
+      : isManager
+        ? `Everyone’s tasks · ${city} time`
+        : isLead
+          ? `Your team’s tasks · contacts hidden · ${city} time`
+          : `${me?.name || 'You'} · what you promised clients, and what they asked for · ${city} time`
   const scopes: { key: string; label: string; n?: number | null }[] = isManager
     ? [{ key: 'all', label: 'All' }, { key: 'mine', label: 'Mine' }, { key: 'unowned', label: 'Unowned', n: data?.unowned_open }]
     : isLead
@@ -181,18 +202,18 @@ export function Tasks() {
         }
       />
 
-      {isManager && (
+      {tabs.length > 1 && (
         <div role='tablist' aria-label='Tasks' className='flex gap-1 border-b border-k-ececec'>
-          {(['tasks', 'rules'] as const).map((t) => (
+          {tabs.map((t) => (
             <button
               key={t}
               type='button'
               role='tab'
               aria-selected={tab === t}
-              onClick={() => setSearch({ tab: t === 'rules' ? 'rules' : undefined, task: undefined })}
+              onClick={() => setSearch({ tab: t === 'offers' && canOffers ? undefined : t, task: undefined })}
               className={cn('-mb-px h-11 border-b-2 px-3.5 text-[15px]', tab === t ? 'border-k-202020 font-bold text-k-202020' : 'border-transparent text-k-555555 hover:text-k-202020')}
             >
-              {t === 'rules' ? 'Rules' : 'Tasks'}
+              {TAB_LABEL[t]}
             </button>
           ))}
         </div>
@@ -200,6 +221,8 @@ export function Tasks() {
 
       {tab === 'rules' ? (
         <TaskRules />
+      ) : tab === 'offers' ? (
+        <OffersList tz={tz} />
       ) : (
         <>
           <div className='flex flex-wrap items-center gap-2.5'>

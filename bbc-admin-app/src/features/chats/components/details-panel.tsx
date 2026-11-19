@@ -18,6 +18,7 @@ import {
   openedByText,
   type Owner,
   pageTripText,
+  phoneToCheck,
   replayUrl,
   routeLine,
   signalsOf,
@@ -150,6 +151,8 @@ export function DetailsPanel(p: DetailsPanelProps) {
 
   const first = firstName(conv.visitor_name)
   const named = !!conv.visitor_name?.trim()
+  // ADR-6f: a local number with no country to place it, shown as typed (masked for a supervisor).
+  const toCheck = phoneToCheck(conv)
   const signals = signalsOf(lead)
   const trip = tripRows(lead, signals)
   const about = aboutOf(signals, lead)
@@ -296,7 +299,7 @@ export function DetailsPanel(p: DetailsPanelProps) {
           (p.isSupervisor ? (
             <>
               <div className='text-sm leading-[1.45] text-k-202020'>
-                {[conv.visitor_phone, conv.visitor_email].filter(Boolean).join(' · ') || 'No phone or e-mail yet'}
+                {[conv.visitor_phone ?? (toCheck ? `number to check ${toCheck}` : null), conv.visitor_email].filter(Boolean).join(' · ') || 'No phone or e-mail yet'}
               </div>
               <div className='text-xs leading-[1.45] text-k-6b6b6b'>Masked for supervisors. The agent on the chat and the CRM have the full contact.</div>
             </>
@@ -304,11 +307,23 @@ export function DetailsPanel(p: DetailsPanelProps) {
             <div className='flex flex-col gap-1.5'>
               <div className='text-sm font-bold text-k-202020'>{conv.visitor_name || 'No name yet'}</div>
               <div className='flex min-h-8 items-center gap-2 text-sm'>
-                <span className={cn('flex-1', conv.visitor_phone ? 'text-k-202020' : 'text-k-6b6b6b')}>
-                  {conv.visitor_phone ? <a href={`tel:${conv.visitor_phone}`} className='hover:underline'>{conv.visitor_phone}</a> : 'No phone yet'}
+                <span className={cn('flex-1', conv.visitor_phone ? 'text-k-202020' : toCheck ? 'font-bold text-k-8a4b00' : 'text-k-6b6b6b')}>
+                  {conv.visitor_phone ? (
+                    <a href={`tel:${conv.visitor_phone}`} className='hover:underline'>{conv.visitor_phone}</a>
+                  ) : toCheck ? (
+                    `Number to check: ${toCheck}`
+                  ) : (
+                    'No phone yet'
+                  )}
                 </span>
                 {conv.visitor_phone && <CopyButton text={conv.visitor_phone} what='Phone' />}
+                {toCheck && <CopyButton text={toCheck} what='Number' />}
               </div>
+              {toCheck && (
+                <div className='text-xs leading-[1.45] text-k-6b6b6b'>
+                  Typed without a country code, and the visit’s country isn’t known: confirm the country with the client before calling.
+                </div>
+              )}
               <div className='flex min-h-8 items-center gap-2 text-sm'>
                 <span className={cn('min-w-0 flex-1 [overflow-wrap:anywhere]', conv.visitor_email ? 'text-k-202020' : 'text-k-6b6b6b')}>
                   {conv.visitor_email ? <a href={`mailto:${conv.visitor_email}`} className='hover:underline'>{conv.visitor_email}</a> : 'No e-mail yet'}

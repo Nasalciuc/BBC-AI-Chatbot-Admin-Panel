@@ -16,6 +16,11 @@ that counts — and therefore to what the customer receives: a reply in the
 response or the greeting is the stored row's text, and a streamed reply goes
 out through StreamGuard, which in 'enforce' holds the text back a sentence at
 a time so a contact is scrubbed whole before any of it leaves.
+
+Prices (owner, 18 Nov 2026: only a consultant ever says a fare): a sentence of an AI
+reply that names an amount of money is dropped whole, always — not only in 'enforce' —
+and the reply ends with PRICE_LINE. A streamed sentence that holds a digit or a currency
+sign is held until it ends, so an amount never goes out before the check.
 """
 
 from __future__ import annotations
@@ -28,7 +33,8 @@ from app.flags import flag
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_GUARD_HEALTH = {"scanned": 0, "would_remove": 0, "removed": 0, "alerts": 0, "errors": 0}
+OUTPUT_GUARD_HEALTH = {"scanned": 0, "would_remove": 0, "removed": 0, "alerts": 0, "errors": 0,
+                       "prices_removed": 0}
 
 # Brand contacts that must survive. Built once from SITE_CONFIGS.
 _ALLOWED_PHONES: set[str] = set()
@@ -236,6 +242,176 @@ def _kind(snippet: str) -> str:
     return "phone"
 
 
+# ── Prices: only a consultant ever says a fare ────────────────────────────────
+# An amount of money in any currency, the sign or the word on either side: "$3,200", "€2.5k", "US$ 900",
+# "3.200 €", "3,200 dollars", "900 US dollars", "USD 4,500", "R$ 3.200", "2.000 dólares".
+# A percentage ("30-60%"), a date, a count of people or an accreditation number is no amount; neither is
+# a weight ("23 kg", "70 pounds" of baggage: "pounds" alone is a weight, "pounds sterling" a currency).
+# The currencies of the countries clients write from (app.services.phone_country), by code and by name
+# (CodeRabbit #270: "CHF 3,200", "¥320,000", "3,200 pesos"). Codes and names that are also everyday words
+# stay out ("try", "mad", "pen", "won", "real", "rand"): a sentence is never dropped for one.
+_CUR_SIGNS = "$€£¥₹₩₺₽₪₱฿"
+_CUR_WORD = (r"(?:usd|us\$|r\$|eur|gbp|cad|aud|(?:u\.?s\.?\s?)?dollars?|d[óo]lares?|euros?"
+             r"|pounds?\s+sterling|bucks"
+             r"|chf|(?:swiss\s+)?francs?|jpy|yen|cny|rmb|yuan|inr|rupees?|mxn|pesos?|aed|dirhams?|sgd|hkd|nzd"
+             r"|zar|brl|reais|sek|nok|dkk|kronor|kroner|pln|z[łl]oty|czk|huf|forints?|sar|riyals?|qar|kwd|dinars?"
+             r"|egp|thb|baht|krw|twd|ars|clp|cop|uyu|liras?|rubles?|roubles?|shekels?|kr|zł|rs\.?)")
+_AMOUNT = r"\d(?:[\d,.]*\d)?(?:\s?[km]\b)?"  # ends on a digit: a full stop after it is the sentence's
+_MONEY_RE = re.compile(
+    rf"(?:[{_CUR_SIGNS}]\s?{_AMOUNT})|(?:\b{_AMOUNT}\s?[{_CUR_SIGNS}](?!\w))"
+    rf"|(?:\b{_AMOUNT}\s?{_CUR_WORD}(?![a-z]))|(?:(?<![a-z]){_CUR_WORD}\s?{_AMOUNT})", re.I
+)
+# What starts holding a streamed sentence: a digit or a currency sign/word could begin an amount.
+_MONEY_HINT = re.compile(rf"[{_CUR_SIGNS}\d]|(?<![a-z]){_CUR_WORD}(?![a-z])", re.I)
+# A chunk that ends on the first letters of a currency word ("US" of "USD") could still become one:
+# the stream keeps them until the next chunk says (StreamGuard._watch_prices).
+_CUR_WORDS = ("usd", "us$", "r$", "eur", "euro", "euros", "gbp", "cad", "aud", "u.s.", "dollar", "dollars",
+              "dólar", "dólares", "dolar", "dolares", "bucks", "pounds",
+              "chf", "swiss", "franc", "francs", "jpy", "yen", "cny", "rmb", "yuan", "inr", "rupee", "rupees",
+              "mxn", "peso", "pesos", "aed", "dirham", "dirhams", "sgd", "hkd", "nzd", "zar", "brl", "reais",
+              "sek", "nok", "dkk", "kronor", "kroner", "pln", "zloty", "złoty", "czk", "huf", "forint", "forints",
+              "sar", "riyal", "riyals", "qar", "kwd", "dinar", "dinars", "egp", "thb", "baht", "krw", "twd",
+              "ars", "clp", "cop", "uyu", "lira", "liras", "ruble", "rubles", "rouble", "roubles", "shekel",
+              "shekels", "kr", "zł", "rs", "rs.")
+_CUR_PREFIXES = frozenset(w[:i] for w in _CUR_WORDS for i in range(1, len(w) + 1))
+_TRAILING_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_][\w.$]{0,7}\Z")
+PRICE_LINE = "Exact fares come from your consultant — they check live availability for your dates."
+
+
+def _pieces(text: str) -> list[str]:
+    """The text cut into sentences (or lines), separators kept, so joining gives the text back."""
+    out, start = [], 0
+    for m in _PIECE_END.finditer(text):
+        out.append(text[start:m.end()])
+        start = m.end()
+    if start < len(text):
+        out.append(text[start:])
+    return out
+
+
+def has_price(text: Optional[str]) -> bool:
+    return bool(text) and bool(_MONEY_RE.search(text))
+
+
+def amount_spans(text: Optional[str]) -> list[tuple[int, int]]:
+    """Where the amounts of money are in `text` ("12.500.000 kr", "NOK 12500000"): no phone is read there."""
+    return [m.span() for m in _MONEY_RE.finditer(text or "")]
+
+
+def _drop_priced(text: str) -> tuple[str, int]:
+    """The pieces (sentences, lines) of `text` that touch no amount, joined, and how many went. An amount
+    is found in the whole text first: one that crosses a line break ("3,200\nUSD") takes both pieces."""
+    spans = [m.span() for m in _MONEY_RE.finditer(text)]
+    if not spans:
+        return text, 0
+    kept, dropped, pos = [], 0, 0
+    for piece in _pieces(text):
+        start, end = pos, pos + len(piece)
+        pos = end
+        if any(s < end and e > start for s, e in spans):
+            dropped += 1
+        else:
+            kept.append(piece)
+    return "".join(kept), dropped
+
+
+def scrub_prices(text: Optional[str]) -> tuple[Optional[str], int]:
+    """The reply without its sentences that name an amount, ending with PRICE_LINE when one went;
+    and how many went. Text without an amount comes back unchanged."""
+    if not text or not _MONEY_RE.search(text):
+        return text, 0
+    out, dropped = _drop_priced(text)
+    out = out.strip()
+    if PRICE_LINE not in out:
+        out = f"{out} {PRICE_LINE}".strip() if out else PRICE_LINE
+    return out, dropped
+
+
+# A range is one amount even when only one end names the currency: "$2,800–$4,500", "$2,800-4,500",
+# "2,800–4,500 USD". "7-8 hours" names none: no amount. The bare end looks like money (three digits or
+# more, groups of thousands, or "2.5k"): a day beside a fare stays ("Departure: Dec 10 — $500";
+# CodeRabbit #270).
+_RANGE_SEP = r"\s*(?:-|–|—|to)\s*"
+_RANGE_END = r"(?:\d{1,3}(?:[,.]\d{3})+(?:[.,]\d{1,2})?|\d{3,}(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?\s?[km]\b)(?![\d,.]*\d)"
+_MONEY_RANGE_RE = re.compile(
+    rf"(?:(?<![\d,.]){_RANGE_END}{_RANGE_SEP}(?=(?:{_MONEY_RE.pattern})))?(?:{_MONEY_RE.pattern})"
+    rf"(?:{_RANGE_SEP}(?:{_MONEY_RE.pattern}|{_RANGE_END}))?", re.I
+)
+KB_AMOUNT_NOTE = "(fares: quoted only by a consultant)"
+
+
+# The words an amount leaves behind when it is taken out of a short label: "London from $7,345" → "London".
+_LEFT_BY_AN_AMOUNT = re.compile(
+    r"[\s,;:–—-]*(?:\b(?:from|starting\s+(?:at|from)|starts\s+at|only|just|for|at|desde|dès|a\s+partir\s+de"
+    r"|à\s+partir\s+de|por|pour|ab)\b[\s,;:–—-]*)*$", re.I)
+
+
+# The short end of a range after a small amount: "$50–75", "€9.99-14.99" (CodeRabbit #270). It is the
+# range's end only when it is not below the start ("$50 - 2 adults" keeps its count) and no unit or count
+# follows it ("Lounge access $50 - 90 minutes" keeps its duration).
+_SHORT_RANGE_END = re.compile(rf"{_RANGE_SEP}(\d{{1,2}}(?:[.,]\d{{1,2}})?)(?![\d,.]*\d)", re.I)
+_A_UNIT_OR_COUNT = re.compile(
+    r"\s*(?:%|(?:mins?|minutes?|h|hrs?|hours?|days?|nights?|weeks?|months?|years?|kgs?|kilos?|lbs?|pounds"
+    r"|km|miles?|bags?|pieces?|adults?|kids?|child(?:ren)?|infants?|passengers?|pax|people|persons?|seats?"
+    r"|stops?|legs?|percent|minutos?|horas?|d[ií]as|noches|noites|nuits|jours|heures|adultos?|adultes?"
+    r"|ni[ñn]os|enfants|crian[çc]as|pasajeros|passagers|passageiros|personas|pessoas|personnes|maletas"
+    r"|valises|malas)\b)", re.I)
+
+
+def _small_value(amount: str) -> Optional[float]:
+    """The amount's value when it is under 100 ("$50", "€9.99"); None when it is larger."""
+    numbers = re.findall(r"\d+(?:[.,]\d+)*", amount)
+    if not numbers or not re.fullmatch(r"\d{1,2}(?:[.,]\d{1,2})?", numbers[-1]):
+        return None
+    return float(numbers[-1].replace(",", "."))
+
+
+def _sub_amounts(text: str, repl: str) -> str:
+    """`text` with every amount, and every range of amounts, replaced by `repl`."""
+    out, pos = [], 0
+    for m in _MONEY_RANGE_RE.finditer(text):
+        end = m.end()
+        tail = _SHORT_RANGE_END.match(text, end)
+        if tail and _A_UNIT_OR_COUNT.match(text, tail.end()):
+            tail = None
+        start_value = _small_value(m.group(0)) if tail else None
+        if tail and start_value is not None and float(tail.group(1).replace(",", ".")) >= start_value:
+            end = tail.end()
+        out.append(text[pos:m.start()])
+        out.append(repl)
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def without_amounts(text: Optional[str]) -> str:
+    """A short label (a route card's place or airlines) with its amounts taken out, and the "from" one
+    leaves behind: the card shows the place, never a fare (CodeRabbit #270)."""
+    if not text:
+        return ""
+    out = _sub_amounts(text, " ")
+    if out == text:
+        return text.strip()
+    return _LEFT_BY_AN_AMOUNT.sub("", re.sub(r"\s{2,}", " ", out)).strip(" ,;:–—-")
+
+
+def strip_amounts(text: Optional[str]) -> Optional[str]:
+    """Knowledge-base text with every amount (and range of amounts) replaced by KB_AMOUNT_NOTE,
+    before it reaches the model: what the model never reads it never repeats."""
+    if not text:
+        return text
+    return _sub_amounts(text, KB_AMOUNT_NOTE)
+
+
+def _price_checked(text: str, conversation_id: Optional[str]) -> str:
+    clean, dropped = scrub_prices(text)
+    if dropped:
+        OUTPUT_GUARD_HEALTH["prices_removed"] += dropped
+        # Counts only: the amount is never logged.
+        logger.warning(f"[price-guard] dropped {dropped} sentence(s) naming an amount conv={conversation_id}")
+    return clean or text
+
+
 async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = None) -> Optional[str]:
     """Scrub a stored AI reply. In 'log' mode the text is returned unchanged.
 
@@ -243,6 +419,7 @@ async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = No
     counts and kinds, never the values (rule 7: no PII at INFO or above)."""
     if not text:
         return text
+    text = _price_checked(text, conversation_id)
     mode = _mode()
     OUTPUT_GUARD_HEALTH["scanned"] += 1
     clean, removed = _scrub(text)
@@ -306,7 +483,9 @@ def guard_failed(text: str, err: BaseException) -> str:
 # can ("555. 123. 4567" is one to _PHONE_RE, and so is "555\r\n123\r\n4567"),
 # so an end that comes right after a digit, with only what _PHONE_RE takes
 # between digits in between, is not a place to cut.
-_PIECE_END = re.compile(r"[.!?](?=\s)\s*|\n\s*")
+# A full stop after a currency abbreviation ends no sentence: "Rs. 45,000" and "900 U.S. dollars" cut
+# there went out as two pieces that each look harmless (CodeRabbit #270).
+_PIECE_END = re.compile(r"(?:(?<!\brs)(?<!\bu\.s)\.|[!?])(?=\s)\s*|\n\s*", re.I)
 _ENDS_IN_A_NUMBER = re.compile(rf"\d[{_PHONE_SEP}]*\Z")
 
 
@@ -317,17 +496,24 @@ class StreamGuard:
     goes out a sentence (or a line) at a time and each piece is scrubbed whole:
     a contact split across chunks is still seen whole. What is held when the
     reply ends never needs sending — the stored reply (guarded, counted once
-    in add_message) replaces the streamed text at stream_end. In 'log' every
-    chunk goes out as it comes, as before."""
+    in add_message) replaces the streamed text at stream_end.
+
+    Prices, in every mode: a sentence goes out as it comes until it shows a
+    digit or a currency sign; from there it is held to its end and dropped if
+    it names an amount (the stored reply, ending with PRICE_LINE, replaces the
+    stream at stream_end). A sentence without a digit streams as before."""
 
     def __init__(self, own: Optional[set[str]] = None):
         self.enforce = _mode() == "enforce"
         self.own = own or set()
         self._held = ""
+        self._holding = False   # 'log' mode: the current sentence showed a digit or a currency sign
 
     def feed(self, delta: str) -> str:
-        if not self.enforce or not delta:
+        if not delta:
             return delta
+        if not self.enforce:
+            return self._watch_prices(delta)
         self._held += delta
         cut = 0
         for m in _PIECE_END.finditer(self._held):
@@ -338,18 +524,61 @@ class StreamGuard:
             return ""
         piece, self._held = self._held[:cut], self._held[cut:]
         try:
-            return _without_foreign(piece, self.own)
+            return _drop_priced(_without_foreign(piece, self.own))[0]
         except Exception as e:  # noqa: silent — logged; the piece is withheld, stream_end brings the stored reply
             logger.error(f"[output-guard] stream piece not scrubbed, withheld: {type(e).__name__}")
             return ""
 
+    def _watch_prices(self, delta: str) -> str:
+        """'log' mode: stream as it comes, but hold a sentence from its first digit or currency
+        sign to its end, and drop that held part if it names an amount. A chunk that ends on the first
+        letters of a currency word ("US" of "USD") keeps them until the next chunk says."""
+        self._held += delta
+        out = []
+        while self._held:
+            end = _PIECE_END.search(self._held)
+            if not self._holding:
+                hint = _MONEY_HINT.search(self._held)
+                if not hint or (end and hint.start() >= end.end()):
+                    # no sign of an amount in the current sentence: send up to its end (or all of it,
+                    # but the first letters of a currency word the next chunk may finish)
+                    if end:
+                        cut = end.end()
+                    else:
+                        tail = _TRAILING_WORD.search(self._held)
+                        cut = tail.start() if tail and tail.group(0).lower() in _CUR_PREFIXES else len(self._held)
+                    out.append(self._held[:cut])
+                    self._held = self._held[cut:]
+                    if not end:
+                        break
+                    continue
+                out.append(self._held[:hint.start()])
+                self._held = self._held[hint.start():]
+                self._holding = True
+                continue
+            end = next((m for m in _PIECE_END.finditer(self._held)
+                        if not (m.group(0).startswith("\n") and _ENDS_IN_A_NUMBER.search(self._held, 0, m.start()))),
+                       None)
+            if not end:
+                break  # keep holding until the sentence ends (a line break right after a number is not its end)
+            piece, self._held = self._held[:end.end()], self._held[end.end():]
+            self._holding = False
+            if has_price(piece):
+                OUTPUT_GUARD_HEALTH["prices_removed"] += 1
+                continue
+            out.append(piece)
+        return "".join(out)
+
     def flush(self) -> str:
         """What is still held, scrubbed — for a reply that ends without a stored row."""
         piece, self._held = self._held, ""
-        if not self.enforce or not piece:
+        self._holding = False
+        if not piece:
             return piece
+        if not self.enforce:
+            return "" if has_price(piece) else piece
         try:
-            return _without_foreign(piece, self.own)
+            return _drop_priced(_without_foreign(piece, self.own))[0]
         except Exception as e:  # noqa: silent — logged; nothing unscrubbed goes out
             logger.error(f"[output-guard] stream tail not scrubbed, withheld: {type(e).__name__}")
             return ""

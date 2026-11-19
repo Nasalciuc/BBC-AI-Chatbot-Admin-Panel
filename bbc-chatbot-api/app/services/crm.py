@@ -115,13 +115,17 @@ def crm_hygiene_gate(
     return None
 
 
-def crm_push_gate(lead: dict, email: str) -> Optional[str]:
+def crm_push_gate(lead: dict, email: str, phone: str = "") -> Optional[str]:
     """Refusal reason for the STRICT (confirm-flow/button) push path:
     hygiene + the score floor. The abandoned/no-engagement path uses
     crm_hygiene_gate alone — BUSINESS RULE (owner, explicit): every
     captured contact is dialable, silent leads included; score never
-    blocks a dialable human there."""
-    reason = crm_hygiene_gate(lead, email, require_email=True)
+    blocks a dialable human there. With CRM_SINGLE_CONTACT on, a phone
+    alone is enough here too; no contact at all never is."""
+    single = single_contact_ok()
+    if single and not (email or "").strip() and not format_phone_international(phone or ""):
+        return "no_contact"
+    reason = crm_hygiene_gate(lead, email, require_email=not single)
     if reason:
         return reason
     if (lead.get("score") or 0) < 40:
@@ -129,7 +133,7 @@ def crm_push_gate(lead: dict, email: str) -> Optional[str]:
     return None
 
 
-def format_phone_international(phone: str) -> str:
+def format_phone_international(phone: str, country: Optional[str] = None) -> str:
     """Format phone to E.164: +{country}{number} — digits only after +.
 
     Handles all known broken formats:
@@ -139,17 +143,68 @@ def format_phone_international(phone: str) -> str:
       '2108844081'        → '+12108844081' (assume US)
       '+442079460958'      → '+442079460958'
       '0044207946'        → '+44207946' (strip intl prefix 00)
+
+    `country` (ISO alpha-2, app.services.phone_country.country_hint) places a
+    number typed the local way, without its code (#3296, 17 Nov 2026):
+      '0412 345 678', 'AU' → '+61412345678' (the trunk 0 goes)
+      '02 1234 5678', 'IT' → '+390212345678' (Italy keeps its 0)
+      '9876543210', 'IN'   → '+919876543210'
+      '912345678', 'PT'    → '+351912345678' (the country's own length, not only 10 digits)
+      '351912345678', 'PT' → '+351912345678' (its own code, typed without the +)
+    A number with + or 00 keeps its own code. A local number that starts with
+    0 and has no country to go with it is NOT guessed: it formats to "", as a
+    number too short to dial does — "+1" before it was an impossible number.
     """
     if not phone:
         return ""
     digits = re.sub(r"\D", "", phone)
     if not digits or len(digits) < 7:
         return ""
-    if digits.startswith("00") and len(digits) > 2:
-        digits = digits[2:]
+    if phone.strip().startswith("+") or digits.startswith("00"):
+        return f"+{digits[2:] if digits.startswith('00') else digits}"
+    from app.services.phone_country import KEEPS_LEADING_ZERO, NATIONAL_LENGTHS, calling_code
+
+    code = calling_code(country)
+    if digits.startswith("0"):
+        if code and code != "1" and len(digits) >= 8:
+            return f"+{code}{digits if code in KEEPS_LEADING_ZERO else digits.lstrip('0')}"
+        return ""
+    lengths = NATIONAL_LENGTHS.get(code or "")
+    if code and code != "1" and lengths:
+        lo, hi = lengths
+        own_code = digits.startswith(code) and lo <= len(digits) - len(code) <= hi
+        national = lo <= len(digits) <= hi
+        if own_code and national:
+            # Both readings fit ("4912345678" in Germany: +49 12345678, or Leer's 0491…): not guessed.
+            # It formats to "" and is kept for the agent to check (phone_is_ambiguous; CodeRabbit #270).
+            return ""
+        if own_code:
+            return f"+{digits}"
+        if national:
+            return f"+{code}{digits}"
+        return f"+{digits}"
     if len(digits) == 10:
+        if code and code != "1":
+            return f"+{code}{digits}"
         digits = f"1{digits}"
     return f"+{digits}"
+
+
+def phone_is_ambiguous(phone: str, country: Optional[str] = None) -> bool:
+    """A number the visit's country reads two ways (with its own code typed without the +, or as a national
+    number): it is kept for the agent to check, never dialled as a guess."""
+    raw = (phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits or raw.startswith("+") or digits.startswith("0"):
+        return False
+    from app.services.phone_country import NATIONAL_LENGTHS, calling_code
+
+    code = calling_code(country)
+    lengths = NATIONAL_LENGTHS.get(code or "")
+    if not code or code == "1" or not lengths:
+        return False
+    lo, hi = lengths
+    return digits.startswith(code) and lo <= len(digits) - len(code) <= hi and lo <= len(digits) <= hi
 
 
 # ── The CRM contract (createAiChat doc is authoritative) ──────
@@ -160,14 +215,32 @@ _IATA_RE = re.compile(r"^[A-Za-z]{3}$")
 CRM_CABIN_ENUM = frozenset({"business", "first", "premium_economy"})
 
 
+def single_contact_ok() -> bool:
+    """CRM_SINGLE_CONTACT (app.flags; off): the CRM takes a lead with ONE contact, an
+    email or a phone. Off, it needs both — the contract the CRM keeps today (18 Nov
+    2026: 422 "The client.email field is required." for a phone-only lead, and all
+    351 leads it took in 30 days had both). Turned on only once the CRM's team says
+    their side takes one."""
+    from app.flags import flag
+
+    return bool(flag("CRM_SINGLE_CONTACT", False))
+
+
 def validate_crm_payload(payload: dict) -> Optional[str]:
     """Refusal reason, or None when the payload satisfies the contract."""
     client = payload.get("client") or {}
     phone = re.sub(r"[^\d+]", "", str(client.get("phone") or ""))
-    if not _CONTRACT_PHONE_RE.match(phone):
-        return "phone_format"
+    email = str(client.get("email") or "").strip()
+    single = single_contact_ok()
+    if phone or not (single and email):
+        if not _CONTRACT_PHONE_RE.match(phone):
+            return "phone_format"
     if len((client.get("name") or "").strip()) < 2:
         return "name_too_short"
+    if not email and not single:
+        # Refused here, visibly (a gate state in the panel), instead of a 422
+        # from the CRM every five minutes (#3324, 18 Nov 2026).
+        return "email_missing"
     flights = payload.get("flights") or []
     if not flights:
         return "no_flights"
@@ -345,7 +418,11 @@ def build_crm_payload(
     _infants = int(lead.get("infant_count") or lead.get("_infant_count") or 0)
     _adults = max(1, pax - _children - _infants)
 
-    phone = format_phone_international(getattr(visitor, "phone", "") or "")
+    from app.services.phone_country import known_country
+
+    # The country chosen with the number places one typed the local way (CodeRabbit #270).
+    phone = format_phone_international(getattr(visitor, "phone", "") or "",
+                                       known_country(getattr(visitor, "country_code", None)))
 
     flights = [{"from": origin, "to": dest, "date": departure}]
     if trip_type == "round_trip" and return_date:
@@ -501,7 +578,9 @@ async def push_lead_to_crm(
     false."""
     from app.db import supabase as db
 
-    reason = crm_push_gate(lead, getattr(visitor, "email", "") or "")
+    reason = crm_push_gate(
+        lead, getattr(visitor, "email", "") or "", getattr(visitor, "phone", "") or ""
+    )
     if reason:
         logger.info(
             f"CRM push refused conv={conversation_id} lead={lead.get('id')} "
@@ -545,6 +624,16 @@ async def push_lead_to_crm(
     return result
 
 
+def _refused_fields(resp) -> str:
+    """The contract fields a CRM 422 names ("client.email"), comma-joined; "unknown" when it names none."""
+    try:
+        errors = (resp.json() or {}).get("errors") or {}
+        fields = sorted(str(k) for k in errors)[:4] if isinstance(errors, dict) else []
+    except Exception:  # noqa: silent — a body that is not JSON names no field; the 422 is still a refusal
+        fields = []
+    return ",".join(fields) or "unknown"
+
+
 async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
     """Submit abandoned conv to CRM. Bypasses check_crm_ready, uses defaults for missing route."""
     if not settings.crm_api_url:
@@ -553,7 +642,8 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
     try:
         lead = lead or {}
         phone = format_phone_international(conv.get("visitor_phone", ""))
-        if not phone:
+        # One contact is enough once the CRM takes it (CRM_SINGLE_CONTACT).
+        if not phone and not (single_contact_ok() and (conv.get("visitor_email") or "").strip()):
             return CRMResult(success=False, error="Phone invalid")
 
         # Hygiene holds on THIS path too (score deliberately does not —
@@ -690,7 +780,10 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             logger.error(
                 f"[CRM-ABANDONED] 422 conv={cid} body(verbatim)={resp.text}"
             )
-            return CRMResult(success=False, error=f"HTTP 422: {resp.text[:300]}")
+            # A refusal of THIS data, not an outage: a gate state with the
+            # fields it named, so the sweep stops asking again until the data
+            # changes (app.api.cron, metadata.crm_refused) and the panel shows why.
+            return CRMResult(success=False, error=f"gate:crm_422:{_refused_fields(resp)}")
 
         body = resp.text[:300]
         logger.error(f"[CRM-ABANDONED] FAIL conv={cid} status={resp.status_code} body={body}")

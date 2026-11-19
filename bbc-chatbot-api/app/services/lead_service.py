@@ -288,11 +288,21 @@ async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
     return {k: row.get(k) for k in _CONTACT_FIELDS}
 
 
-async def update_lead_from_entities(conversation_id: str, entities: dict) -> None:
+def _is_local_number(raw: str) -> bool:
+    """A number typed the local way: its trunk 0, no + or 00, 8+ digits."""
+    digits = re.sub(r"\D", "", raw or "")
+    return (not (raw or "").strip().startswith("+") and digits.startswith("0")
+            and not digits.startswith("00") and len(digits) >= 8)
+
+
+async def update_lead_from_entities(conversation_id: str, entities: dict) -> bool:
     """Update lead with entities extracted by AI. Optimized: 3-4 RT instead of 7.
 
     Writes for one conversation run one after another (_lead_lock): the read,
-    the contact and lead writes and the score write never interleave."""
+    the contact and lead writes and the score write never interleave.
+
+    True when what there was to save is saved (or there was nothing); False when a write failed
+    (logged and counted here): a caller that promises the client something can say so only on True."""
     lock = _lead_lock(conversation_id)
     await lock.acquire()
     try:
@@ -323,7 +333,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 ]
             )
             if not has_useful:
-                return
+                return True
             # RT 2: Insert lead
             lead_res = await _run_sync(
                 lambda: db_client.table("leads")
@@ -332,7 +342,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 idempotent=False,
             )
             if not lead_res.data:
-                return
+                return False
             lead_id = lead_res.data[0]["id"]  # type: ignore[index]
             lead_data = lead_res.data[0]  # type: ignore[index]
             logger.info(f"[{conversation_id}] Lead INSERT success: {lead_id}")
@@ -341,17 +351,31 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             lead_data = res.data[0]  # type: ignore[index]
 
         conv_payload: dict = {}
+        contact_kept = True
         if entities.get("name"):
             conv_payload["visitor_name"] = entities["name"]
         if entities.get("email"):
             conv_payload["visitor_email"] = entities["email"]
         if entities.get("phone"):
-            from app.services.crm import format_phone_international
+            from app.services.crm import format_phone_international, phone_is_ambiguous
             # A number too short to dial formats to "": it must not wipe the
-            # phone the conversation already holds.
-            _phone = format_phone_international(entities["phone"])
+            # phone the conversation already holds. `_phone_country` (the
+            # visit's country, app.services.phone_country) places a number
+            # typed the local way (#3296: "04…" from Australia).
+            _phone = format_phone_international(entities["phone"], entities.get("_phone_country"))
             if _phone:
                 conv_payload["visitor_phone"] = _phone
+            elif _is_local_number(entities["phone"]) or phone_is_ambiguous(entities["phone"], entities.get("_phone_country")):
+                # A local number with no country to place it, or one its country reads two ways, is kept
+                # for the agent to check, never dialled as a guess.
+                from app.db.supabase import patch_conversation_presence
+
+                if not await patch_conversation_presence(
+                    conversation_id, {"phone_to_check": re.sub(r"[^\d ]", "", entities["phone"]).strip()}
+                ):
+                    # Not kept: the caller must not say it was (card_buttons). The other writes still go.
+                    _record_lead_write_error(conversation_id, "phone_to_check", RuntimeError("phone_to_check not saved"))
+                    contact_kept = False
 
         lead_payload: dict = {}
         if entities.get("origin"):
@@ -493,6 +517,7 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
                 .eq("id", lead_id)
                 .execute()
             )
+        return contact_kept
 
     except Exception as e:
         # The chat reply stays alive, but the money path must SCREAM: full
@@ -504,5 +529,6 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> Non
             logger.error(f"[{conversation_id}] Lead payload was: {lead_payload}")
         except NameError:
             pass
+        return False
     finally:
         lock.release()

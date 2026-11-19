@@ -63,8 +63,24 @@ async def test_an_email_typed_to_the_operator_reaches_the_conversation_and_never
 async def test_a_phone_typed_to_the_operator_reaches_the_conversation(caplog):
     with caplog.at_level(logging.INFO):
         write, _, _ = await _run("you can call me at +1 (305) 555-0101 after 6pm")
-    write.assert_awaited_once_with("c1", {"phone": "+1 (305) 555-0101"})
+    # The visit's country goes with a phone, to place a number typed the local way
+    # (test_phone_country); this conversation says none.
+    write.assert_awaited_once_with("c1", {"phone": "+1 (305) 555-0101", "_phone_country": None})
     assert "555-0101" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_country_read_still_saves_the_phone_and_the_email():
+    """The country is only a hint for a local number: its read failing must not lose the contacts the
+    message carries (CodeRabbit #270)."""
+    write = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", new=write), \
+         patch("app.db.supabase.get_recent_messages", new=AsyncMock(return_value=[])), \
+         patch("app.db.supabase.get_conversation_simple", new=AsyncMock(side_effect=RuntimeError("timeout"))):
+        await operator_contact.record_contact("c1", "paul.moreau@example.com or +44 7700 900123")
+    write.assert_awaited_once_with(
+        "c1", {"email": "paul.moreau@example.com", "phone": "+44 7700 900123", "_phone_country": None})
+    assert operator_contact.OPERATOR_CONTACT_HEALTH == {"found": 1, "failures": 0}
 
 
 @pytest.mark.asyncio
@@ -82,6 +98,21 @@ async def test_a_name_shaped_message_names_nobody_when_no_one_asked():
     simple.assert_not_awaited()
     write, _, _ = await _run("Paul Moreau", history=asked_dates)
     write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang, message, stored", [
+    ("es", "Dale", None), ("es", "dale", None), ("es", "Dale Cooper", "Dale Cooper"),
+    (None, "Dale", "Dale"), ("en", "Dale", "Dale"),
+])
+async def test_a_bare_dale_to_the_operator_is_a_yes_in_spanish_and_a_name_in_english(lang, message, stored):
+    """The operator path reads the answer in the conversation's language, as the chat does (CodeRabbit #270)."""
+    conv = {"metadata": {"client_lang": lang}} if lang else {}
+    write, _, _ = await _run(message, history=NAME_Q, conv=conv)
+    if stored:
+        write.assert_awaited_once_with("c1", {"name": stored})
+    else:
+        write.assert_not_awaited()
 
 
 @pytest.mark.asyncio

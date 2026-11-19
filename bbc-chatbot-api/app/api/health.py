@@ -155,6 +155,12 @@ async def health_detail(full: bool = False) -> dict:
     from app.learning.outcomes import OUTCOMES_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
     from app.services.proactive import PROACTIVE_HEALTH
+    # What follows the card: the yes answered at once, the channel taps, "I'll wait here", before-you-go.
+    from app.pipeline.card_buttons import CARD_BUTTONS_HEALTH
+    # Offers to send (ADR-6b): marks saved, and saves that failed (the agent saw "try again").
+    from app.api.offers import OFFERS_HEALTH
+    # /chat for a conversation of another visitor, refused (CodeRabbit #270).
+    from app.api.chat import CHAT_OWNER_HEALTH
     from app.services.note_bandit import NOTE_BANDIT_HEALTH
     from app.pipeline.operator_contact import OPERATOR_CONTACT_HEALTH
 
@@ -181,6 +187,9 @@ async def health_detail(full: bool = False) -> dict:
             "supervisor_columns": supervisor_columns,
             "lead_writes": dict(LEAD_WRITE_HEALTH),
             "proactive": dict(PROACTIVE_HEALTH),
+            "card_buttons": dict(CARD_BUTTONS_HEALTH),
+            "offers": dict(OFFERS_HEALTH),
+            "chat_owner": dict(CHAT_OWNER_HEALTH),
             "note_bandit": dict(NOTE_BANDIT_HEALTH),
             "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
@@ -275,6 +284,9 @@ async def health_detail(full: bool = False) -> dict:
         "supervisor_columns": supervisor_columns,
         "lead_writes": dict(LEAD_WRITE_HEALTH),
         "proactive": dict(PROACTIVE_HEALTH),
+        "card_buttons": dict(CARD_BUTTONS_HEALTH),
+        "offers": dict(OFFERS_HEALTH),
+        "chat_owner": dict(CHAT_OWNER_HEALTH),
         "note_bandit": dict(NOTE_BANDIT_HEALTH),
         "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),

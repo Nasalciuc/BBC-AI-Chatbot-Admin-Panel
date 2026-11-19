@@ -28,6 +28,9 @@ _ALLOWED_PREFIXES = ("utm_", "landing_")
 # Every allowed value is a string the widget took from the page. Anything else
 # (an object, a list, a megabyte) is not attribution and never reaches the
 # conversation row, the panel or the CRM.
+# "en-AU", "es-419", "pt-BR"; "Australia/Adelaide", "America/Argentina/Buenos_Aires".
+_BROWSER_LANG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,4}){0,2}")
+_TIME_ZONE = re.compile(r"[A-Za-z]+(?:/[A-Za-z0-9_+\-]+){1,2}")
 _MAX_KEY = 64
 _MAX_VALUE = 2048  # a page URL or a referrer can be long; nothing else comes close
 _MAX_KEYS = 50     # attribution keys; the validated keys below come on top
@@ -124,4 +127,12 @@ def allowed_widget_metadata(raw: dict | None) -> dict:
     activity = raw.get("page_activity")
     if page_activity_tokens(activity):
         out["page_activity"] = activity
+    # Where the client probably is, for a phone typed without its country code
+    # (app.services.phone_country): the browser's language tag and time zone.
+    lang = raw.get("browser_lang")
+    if isinstance(lang, str) and _BROWSER_LANG.fullmatch(lang.strip()):
+        out["browser_lang"] = lang.strip()
+    tz = raw.get("tz")
+    if isinstance(tz, str) and _TIME_ZONE.fullmatch(tz.strip()):
+        out["tz"] = tz.strip()
     return out

@@ -372,6 +372,12 @@ def _search_sync(query_text: str, tunnel: str = "sales", limit: int = 3) -> list
 _BUTTON_TAPS = frozenset({
     "yes, send me fares", "get a fare quote", "email me the fares",
     "yes, check fares", "check fares", "change details", "i have a question", "not now",
+    # The card in Spanish and French (app/services/proactive_i18n), and the buttons after it
+    # (app/services/card_words).
+    "sí, envíenme tarifas", "cambiar detalles", "tengo una pregunta", "quiero una cotización",
+    "envíenme las tarifas por correo", "oui, envoyez-moi les tarifs", "modifier", "j'ai une question",
+    "obtenir un devis", "envoyez-moi les tarifs par e-mail",
+    "whatsapp", "i'll wait here", "espero aquí", "j'attends ici",
 })
 _NO_QUESTION_WORDS = frozenset("""
 ok okay k yes yeah yep yup no nope sure fine great perfect cool good nice alright right

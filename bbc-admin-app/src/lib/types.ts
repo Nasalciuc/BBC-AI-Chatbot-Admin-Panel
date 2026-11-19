@@ -64,6 +64,9 @@ export interface Conversation {
    *  that go with that state (features/chats/view.ts, presenceView). */
   client_presence?: string | null
   client_presence_age_seconds?: number | null
+  /** Whether the client left an e-mail, a phone or a number to check — said even where the contact
+   *  itself is masked or blind ("Left 3 min ago · no contact", ADR-6c). List rows and the detail. */
+  has_contact?: boolean
   /** Country of the client's phone number (detail payload). */
   visitor_phone_country?: string | null
 }
@@ -616,6 +619,70 @@ export interface TasksViewResponse {
   success: boolean
   data: TasksView
   count: number
+}
+
+// ── Offers to send (ADR-6b, ADR-8b): leads waiting for a consultant's written offer ──
+/** What the client asked to be reached by; "call" is a call back they asked for. */
+export type OfferChannel = 'whatsapp' | 'text' | 'call' | 'email'
+export type OfferRefusal = 'no calls' | 'no texts' | 'no email'
+export type OfferMark = 'sent' | 'not_needed' | 'open'
+
+/** One client (their chats that share an e-mail or a phone): the newest trip. Contacts are masked for a
+ *  supervisor; a chat still waiting for a person is blind to an agent (who and since when only). */
+export interface OfferClient {
+  conversation_id: string
+  lead_id: string | null
+  chat_number: number | null
+  client: string | null
+  email: string | null
+  phone: string | null
+  /** A local number with no country to place it (ADR-6f): to check with the client, never dialled as is. */
+  phone_to_check: string | null
+  route: string | null
+  departure_date: string | null
+  return_date: string | null
+  trip_type: string | null
+  passengers: number | null
+  children_count: number | null
+  infant_count: number | null
+  cabin_class: string | null
+  /** Every chat of this client; a mark goes on all of them. */
+  chats: { conversation_id: string; chat_number: number | null }[]
+  blind: boolean
+}
+
+export interface OfferRow extends OfferClient {
+  channels: OfferChannel[]
+  refused: OfferRefusal[]
+  /** The price the client said they saw, when they said one. */
+  price_seen: string | null
+  /** null on a blind row: the CRM's verdict tells about the contact. */
+  crm_state: LeadCrmState | null
+  crm_gate: string | null
+  crm_lead_id: string | null
+  agent_name: string | null
+  chat_status: string | null
+  /** Since the client's oldest chat in the window. */
+  waiting_since: string
+}
+
+export interface OfferDone extends OfferClient {
+  state: 'sent' | 'not_needed'
+  at: string
+  by_name: string | null
+}
+
+export interface OffersView {
+  waiting: OfferRow[]
+  done: OfferDone[]
+  counts: { waiting: number; sent: number; not_needed: number }
+  days: number
+  can: { mark: boolean }
+}
+
+export interface OffersResponse {
+  success: boolean
+  data: OffersView
 }
 
 export interface TaskExcerptLine {

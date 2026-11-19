@@ -68,6 +68,12 @@ def mask_visitor_row(row: dict) -> dict:
         row["visitor_phone"] = mask_phone(row.get("visitor_phone"))
     if "visitor_email" in row:
         row["visitor_email"] = mask_email(row.get("visitor_email"))
+    # A local number kept for the agent to check (ADR-6f) is the client's phone too.
+    if "phone_to_check" in row:
+        row["phone_to_check"] = mask_phone(row.get("phone_to_check"))
     if "metadata" in row:
-        row["metadata"] = strip_marketing_metadata(row.get("metadata"))
+        meta = strip_marketing_metadata(row.get("metadata"))
+        if meta.get("phone_to_check"):
+            meta["phone_to_check"] = mask_phone(meta["phone_to_check"])
+        row["metadata"] = meta
     return row

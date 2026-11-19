@@ -196,7 +196,7 @@ class TestContract:
         formatted = format_phone_international("+1 (210) 884-4081")
         assert formatted == "+12108844081"
         assert validate_crm_payload(
-            self._payload(client={"name": "Diana", "phone": formatted})
+            self._payload(client={"name": "Diana", "email": "d@gmail.com", "phone": formatted})
         ) is None
 
     def test_422_body_logged_verbatim(self):

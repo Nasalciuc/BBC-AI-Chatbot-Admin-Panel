@@ -111,10 +111,10 @@ def _build_route_card_from_kb(kb_result: KBResult) -> RouteCard | None:
     if len(parts) != 2:
         return None
 
-    # Try to find price range
     import re
-    price_match = re.search(r"\$[\d,]+\s*[-–]\s*\$[\d,]+", content)
-    price_range = price_match.group(0) if price_match else "varies"
+    # No price range leaves the server (owner, 18 Nov 2026: only a consultant says a fare): the
+    # card carries the route, airlines and duration, never the knowledge base's amounts.
+    price_range = ""
 
     # Try to find duration
     dur_match = re.search(r"(\d+-\d+ hours?)", content)
@@ -128,6 +128,14 @@ def _build_route_card_from_kb(kb_result: KBResult) -> RouteCard | None:
     codes = re.findall(r"\(([A-Z]{3}(?:/[A-Z]{3})?)\)", content)
     origin = codes[0] if codes else parts[0].strip()
     destination = codes[1] if len(codes) > 1 else parts[1].strip()
+
+    # A title like "London from $7,345" names a fare: the card keeps the place, never the amount, and
+    # the airlines line neither (CodeRabbit #270). A side left empty by it makes no card.
+    from app.ai.output_guard import without_amounts
+
+    origin, destination, airlines = without_amounts(origin), without_amounts(destination), without_amounts(airlines)
+    if not origin or not destination:
+        return None
 
     return RouteCard(
         origin=origin,

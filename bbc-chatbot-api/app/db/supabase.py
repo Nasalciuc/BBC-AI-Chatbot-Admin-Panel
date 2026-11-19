@@ -450,7 +450,13 @@ async def get_or_create_conversation(
         if visitor and visitor.email: payload["visitor_email"] = visitor.email
         if visitor and visitor.phone:
             from app.services.crm import format_phone_international
-            payload["visitor_phone"] = format_phone_international(visitor.phone)
+            from app.services.phone_country import known_country
+
+            # The country chosen with the number places one typed the local way (CodeRabbit #270); one that
+            # can't be placed is not written as an empty string.
+            _phone = format_phone_international(visitor.phone, known_country(visitor.country_code))
+            if _phone:
+                payload["visitor_phone"] = _phone
         if visitor and visitor.country_code: payload["visitor_phone_country"] = visitor.country_code
         try:
             res = await _run_sync(lambda: db.table("conversations").insert(payload).execute(), idempotent=False)
@@ -656,7 +662,13 @@ _LIST_COLUMNS_BASE = (
     "suspect:metadata->>suspect,"
     # When the chat became this operator's — the first-reply deadline counts
     # from here, and the list row shows the countdown the server will act on.
-    "agent_assigned_at:metadata->>agent_assigned_at"
+    "agent_assigned_at:metadata->>agent_assigned_at,"
+    # A local number kept for the agent to check (ADR-6f): read only to say whether the client left any
+    # contact ("Left 3 min ago · no contact", ADR-6c) — the number itself never leaves the db layer here.
+    "phone_to_check:metadata->>phone_to_check,"
+    # The e-mail and the phone, under their own names, for the same answer when the list falls back to
+    # this projection (no visitor_email / visitor_phone in it): dropped once read (CodeRabbit #270).
+    "contact_email:visitor_email,contact_phone:visitor_phone"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -999,6 +1011,12 @@ async def get_conversations(
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
         for row in rows:
+            _to_check = row.pop("phone_to_check", None)
+            _email, _phone = row.pop("contact_email", None), row.pop("contact_phone", None)
+            row["has_contact"] = any(
+                isinstance(v, str) and v.strip()
+                for v in (row.get("visitor_email"), row.get("visitor_phone"), _email, _phone, _to_check)
+            )
             row["metadata"] = {
                 "engaged_agent_id": row.pop("engaged_agent_id", None),
                 "widget_presence": row.pop("widget_presence", None),
@@ -1068,7 +1086,7 @@ async def _get_lead_completeness_inputs(conversation_ids: list[str]) -> dict[str
 
 _SIMPLE_COLUMNS_BASE = (
     "id, tunnel, status, mode, assigned_agent_id, team_id, visitor_id, "
-    "metadata, updated_at, created_at, visitor_name, visitor_phone, visitor_email"
+    "metadata, updated_at, created_at, visitor_name, visitor_phone, visitor_email, visitor_phone_country"
 )
 _SIMPLE_COLUMNS = (
     _SIMPLE_COLUMNS_BASE
@@ -1152,6 +1170,41 @@ async def get_blind_inputs(conv_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"get_blind_inputs({conv_id}) failed: {e}")
         raise
+
+
+async def get_blind_inputs_many(conv_ids: list[str]) -> dict[str, dict]:
+    """get_blind_inputs for many chats: {id: the five fields}, one read per 100. The offers queue reads
+    the blind state here, fresh, rather than from the leads universe it may have cached for 20 s: a chat
+    that entered the shared line a moment ago is blind already (CodeRabbit #270). A chat that no longer
+    exists is simply absent. A failed read RAISES: the caller fails closed."""
+    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+    ids = list(dict.fromkeys(i for i in conv_ids if i))
+    out: dict[str, dict] = {}
+    use_queued_at = _queued_at_column_available()
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+
+        def _q(with_queued_at: bool, chunk=chunk):
+            return (
+                get_client().table("conversations")
+                .select(cols + (", queued_at" if with_queued_at else ""))
+                .in_("id", chunk)
+                .execute()
+            )
+
+        try:
+            res = await _run_sync(lambda: _q(use_queued_at), label="blind")
+        except Exception as e:
+            if not use_queued_at or not _is_missing_column_error(e):
+                logger.error(f"get_blind_inputs_many({len(ids)} chats) failed: {type(e).__name__}")
+                raise
+            _downgrade_queued_at(e)
+            use_queued_at = False
+            res = await _run_sync(lambda: _q(False), label="blind")
+        for row in res.data or []:
+            if row.get("id"):
+                out[row["id"]] = row
+    return out
 
 
 async def get_last_agent_for_visitor(
@@ -5200,13 +5253,42 @@ _UNIVERSE_LEAD_COLUMNS = (
     "id, conversation_id, created_at, updated_at, origin_code, destination_code, route_display, "
     "departure_date, return_date, passengers, children_count, infant_count, trip_type, cabin_class, "
     "score, tier, status, team_id, created_in_crm, created_in_crm_at, crm_lead_id, "
-    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by, qa_notes"
+    "crm_push_gate_reason, crm_push_attempts, reviewed_by_qa, reviewed_at, reviewed_by, qa_notes, "
+    # How the client asked to be reached and the price they saw (the offers queue, offers_view).
+    "contact_channel:intent_signals->>contact_channel, "
+    "callback_requested:intent_signals->>callback_requested, price_seen:intent_signals->>price_seen"
 )
 _UNIVERSE_CONV_COLUMNS = (
     "id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, tunnel, "
-    "assigned_agent_id, last_agent_message_at, closed_at, "
-    "confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id"
+    "assigned_agent_id, last_agent_message_at, closed_at, queued_at, "
+    "confirmed_at:metadata->>confirmed_at, closed_by_agent_id:metadata->>closed_by_agent_id, "
+    # The offers queue: the blind rule's last input, a number to check, and the marks.
+    "engaged_agent_id:metadata->>engaged_agent_id, phone_to_check:metadata->>phone_to_check, "
+    "offer_sent_at:metadata->>offer_sent_at, offer_sent_by:metadata->>offer_sent_by, "
+    "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by"
 )
+
+
+def _universe_conv_columns(with_queued_at: bool) -> str:
+    return _UNIVERSE_CONV_COLUMNS if with_queued_at else _UNIVERSE_CONV_COLUMNS.replace("closed_at, queued_at, ", "closed_at, ")
+
+
+async def _universe_convs(db_client) -> list[dict]:
+    """The conversations half of the universe. Without conversations.queued_at (034 not applied) it is
+    read without that column, as the chat list and get_blind_inputs do; any other failure raises."""
+    use_queued_at = _queued_at_column_available()
+
+    def read(with_queued_at: bool):
+        return _select_pages(lambda: db_client.table("conversations").select(_universe_conv_columns(with_queued_at))
+                             .order("created_at"), label="leads_universe", max_pages=50)
+
+    try:
+        return await read(use_queued_at)
+    except Exception as e:
+        if not use_queued_at or not _is_missing_column_error(e):
+            raise
+        _downgrade_queued_at(e)
+        return await read(False)
 
 
 def invalidate_leads_universe() -> None:
@@ -5227,8 +5309,7 @@ async def get_leads_universe() -> list[dict]:
         leads_rows, conv_rows = await asyncio.gather(
             _select_pages(lambda: db_client.table("leads").select(_UNIVERSE_LEAD_COLUMNS)
                           .order("created_at"), label="leads_universe", max_pages=50),
-            _select_pages(lambda: db_client.table("conversations").select(_UNIVERSE_CONV_COLUMNS)
-                          .order("created_at"), label="leads_universe", max_pages=50),
+            _universe_convs(db_client),
         )
         convs = {c["id"]: c for c in conv_rows if c.get("id")}
         rows = []
@@ -5250,6 +5331,13 @@ async def get_leads_universe() -> list[dict]:
                 "conversation_closed_at": c.get("closed_at"),
                 "confirmed_at": c.get("confirmed_at"),
                 "closed_by_agent_id": c.get("closed_by_agent_id"),
+                "queued_at": c.get("queued_at"),
+                "engaged_agent_id": c.get("engaged_agent_id"),
+                "phone_to_check": c.get("phone_to_check"),
+                "offer_sent_at": c.get("offer_sent_at"),
+                "offer_sent_by": c.get("offer_sent_by"),
+                "offer_skipped_at": c.get("offer_skipped_at"),
+                "offer_skipped_by": c.get("offer_skipped_by"),
             })
             rows.append(row)
         _LEADS_UNIVERSE.update({"at": time.monotonic(), "rows": rows})

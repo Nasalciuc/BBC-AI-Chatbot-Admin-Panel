@@ -3,7 +3,9 @@
 import random
 from typing import Optional
 
+from app.ai.templates_i18n import CONFIRM_MARKERS, I18N_TEMPLATES, RETURN_CLAUSES, SUMMARY_TEMPLATES
 from app.models.chat import VisitorInfo
+from app.pipeline.language import current_lang
 
 # ── Template registry ─────────────────────────────────────────
 # Keys follow the pattern: "{key}:{tunnel}" or "{key}:{tunnel}:anonymous"
@@ -95,6 +97,11 @@ TEMPLATES: dict[str, list[str]] = {
     # (one "can't always take a call") were each told "to call you".
     "number_confirmed_text:sales": [
         "Got it — your consultant will text you on {number}.",
+    ],
+    # A number from a client who chose WhatsApp (the button after the card, or in words): the consultant
+    # writes there, and says so — never "text you" (CodeRabbit #270).
+    "number_confirmed_whatsapp:sales": [
+        "Got it — your consultant will write to you on WhatsApp at {number}.",
     ],
     "number_confirmed:sales": [
         "Got it — your consultant will reach you on {number}.",
@@ -347,8 +354,13 @@ def get_template(
     visitor = visitor or VisitorInfo()
     has_name = bool(visitor.name)
 
-    # Build candidate keys
+    # Build candidate keys. While the turn speaks Spanish, French or Portuguese
+    # (app.pipeline.language), that language's wording comes first; a key it
+    # lacks falls back to the English one, as before.
     candidates: list[str] = []
+    lang = current_lang.get()
+    if lang:
+        candidates += [f"{key}:{tunnel}:{lang}", f"{key}:{lang}"]
     if not has_name:
         candidates.append(f"{key}:{tunnel}:anonymous")
     candidates.append(f"{key}:{tunnel}")
@@ -356,6 +368,9 @@ def get_template(
 
     variants: list[str] | None = None
     for candidate in candidates:
+        if candidate in I18N_TEMPLATES:
+            variants = I18N_TEMPLATES[candidate]
+            break
         if candidate in TEMPLATES:
             variants = TEMPLATES[candidate]
             break
@@ -404,10 +419,15 @@ def build_summary(lead: dict, extra_legs: list | None = None) -> str | None:
         return None
 
     departure = lead["departure_date"]
+    lang = current_lang.get()
+    clauses = RETURN_CLAUSES.get(lang or "")
     if lead.get("return_date"):
-        return_clause = f" — {lead['return_date']} (round trip)"
+        return_clause = (clauses[0].format(date=lead["return_date"]) if clauses
+                         else f" — {lead['return_date']} (round trip)")
     elif lead.get("trip_type") == "one_way":
-        return_clause = " (one-way)"
+        return_clause = clauses[1] if clauses else " (one-way)"
+    elif lead.get("trip_type") == "round_trip" and clauses:
+        return_clause = clauses[2]
     elif lead.get("trip_type") == "round_trip":
         # Alistair: round_trip with no return_date used to fall through
         # BOTH branches and render a naked date. The orchestrator now asks
@@ -418,7 +438,7 @@ def build_summary(lead: dict, extra_legs: list | None = None) -> str | None:
     else:
         return_clause = ""
 
-    summary = settings.summary_template.format(
+    summary = SUMMARY_TEMPLATES.get(lang or "", settings.summary_template).format(
         origin_code=lead["origin_code"],
         destination_code=lead["destination_code"],
         departure=departure,
@@ -434,7 +454,7 @@ def build_summary(lead: dict, extra_legs: list | None = None) -> str | None:
         )
         # Inserted before the confirmation question so the client reads
         # the full trip before answering YES.
-        _marker = "\n\nIs everything correct?"
+        _marker = CONFIRM_MARKERS.get(lang or "", "\n\nIs everything correct?")
         if _marker in summary:
             summary = summary.replace(_marker, f"\n{_legs}{_marker}", 1)
         else:

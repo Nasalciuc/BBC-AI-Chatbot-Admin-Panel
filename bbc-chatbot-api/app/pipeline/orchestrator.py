@@ -90,10 +90,15 @@ CONFIRM_WORDS = {
     "da", "si", "claro", "correcto", "oui", "ja", "jawohl", "confirmo",
     "all good", "looks good", "thats right", "thats correct",
     "that works", "sounds good",
+    # Spanish, French, Portuguese (the summary asks for SÍ / OUI / SIM in those languages)
+    "certo", "correto", "perfeito", "isso", "vale", "perfecto", "exacto", "exactamente",
+    "daccord", "parfait", "exactement", "cest correct", "cest bon", "esta bien", "todo bien",
+    "todo correcto", "tudo certo", "esta certo", "claro que si",
 }
 REJECT_WORDS = {
     "no", "nope", "not right", "not correct", "wrong", "incorrect", "change",
     "mal", "incorrecto", "cambiar", "falsch", "non", "nu", "gresit",
+    "nao", "errado", "mudar", "faux", "changer", "pas correct", "no es correcto", "nao esta certo",
 }
 
 
@@ -138,6 +143,9 @@ def _lev_leq1(a: str, b: str) -> bool:
 _CORRECTION_MARKERS = {
     "but", "however", "actually", "except", "instead", "though", "although",
     "pero", "aber", "mais", "dar", "insa",
+    # Portuguese, Spanish, French: "Perfeito, mas…" is a correction, never a YES (CodeRabbit #270).
+    # Compared after _normalize_reply, so without accents: "porém" arrives as "porem".
+    "mas", "porem", "contudo", "excepto", "salvo", "cependant", "pourtant", "sauf",
 }
 
 # A confirmation with a tail stays a confirmation only while the tail is
@@ -297,6 +305,26 @@ async def _persist_fallback_reply(cid: str, text: str, reason: str) -> None:
             f"[{cid}] Fallback persistence failed ({reason}): {e}",
             exc_info=True,
         )
+
+
+async def _taken_by_agent(cid: str) -> Optional[ChatResponse]:
+    """The reply for a turn an agent took while the pipeline was running, or None when the AI may answer:
+    never let AI and human work in parallel. Exception: silent reservation (announce_pending) — AI serves
+    the visitor until the operator sends their first message or the 30s timeout fires."""
+    current_mode = await db.get_conversation_mode(cid)
+    _fresh_guard = await db.get_conversation_simple(cid) or {}
+    _silent_reservation = bool(
+        (_fresh_guard.get("metadata") or {}).get("announce_pending")
+    )
+    if current_mode == "human" and not _silent_reservation:
+        logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
+        return ChatResponse(
+            conversation_id=cid,
+            message="One moment please, connecting you with a specialist...",
+            type="queued",
+            model_used="none",
+        )
+    return None
 
 
 async def process_message(
@@ -520,6 +548,35 @@ async def _pipeline(
     _widget_visitor = visitor
     visitor = with_stored_contact(visitor, conv)
 
+    # The client's language (app.pipeline.language): what this message says,
+    # else what an earlier one said. The fixed replies of this turn speak it;
+    # the model already does. Kept on the conversation once a message says it.
+    from app.pipeline.language import current_lang, keep_lang, turn_lang
+
+    _stored_lang = ((conv or {}).get("metadata") or {}).get("client_lang")
+    _client_lang = turn_lang(message, _stored_lang)
+    # Where the client probably is, for a number typed without its country
+    # code (app.services.phone_country; #3296). The country the client chose
+    # with the number (the booking form's) comes first (CodeRabbit #270).
+    from app.services.phone_country import country_hint, known_country
+
+    _phone_country = (
+        known_country(getattr(visitor, "country_code", None))
+        or known_country((conv or {}).get("visitor_phone_country"))
+        or country_hint({**(((conv or {}).get("metadata")) or {}), **(metadata or {})})
+    )
+    current_lang.set(_client_lang)
+    _lang_kept = keep_lang(message, _stored_lang)
+    if _lang_kept and _lang_kept != _stored_lang:
+        # One key merged server-side (no read-modify-write that could undo a
+        # flag another request set in between). "en": an English message ends
+        # the Spanish a card shown to a Spanish browser started (proactive_i18n).
+        try:
+            if await db.patch_conversation_presence(cid, {"client_lang": _lang_kept}):
+                conv["metadata"] = {**((conv or {}).get("metadata") or {}), "client_lang": _lang_kept}
+        except Exception as e:  # noqa: silent — logged; the turn still speaks the language, only the next one may not
+            logger.warning(f"[{cid}] client language not saved: {type(e).__name__}")
+
     # Save user message immediately (never lose data).
     # FIX-C reprocess: the message is already in the DB — skip the insert.
     if skip_user_save:
@@ -542,7 +599,9 @@ async def _pipeline(
         logger.warning(f"[{cid}] Moderation task failed to schedule: {_mod_err}")
 
     # ── STEP 2.6: Check flagged content — skip templates if abusive
-    _skip_templates = False
+    # A client writing Spanish, French or Portuguese gets the model, which
+    # answers in their language, instead of the English templates (#3325).
+    _skip_templates = bool(_client_lang)
     try:
         from app.services.moderation import detect_bad_words
         if detect_bad_words(message):
@@ -632,7 +691,7 @@ async def _pipeline(
     # Step 3.45 owns those turns.
     from app.pipeline.callback_intent import detect_callback_request as _cb_probe
 
-    _callback_pending = _cb_probe(message)
+    _callback_pending = _cb_probe(message, _phone_country)
     if _callback_pending and _conv_meta.get("summary_shown_at"):
         logger.info(f"[{cid}] Callback request during summary wait — it wins")
 
@@ -998,14 +1057,21 @@ async def _pipeline(
             if not await db.update_conversation(cid, {"visitor_phone": _callback["number"]}):
                 logger.warning(f"[{cid}] callback: number not saved on the conversation")
             visitor = visitor.model_copy(update={"phone": _callback["number"]})
+        # A number that can't be placed ("call me on 0412 345 678" with no country to go with it) is kept for
+        # the agent to check, and never dialled as a guess: visitor_phone stays as it was. The turn ends here,
+        # before the extractor, so it is kept here, and the client isn't asked for it again (CodeRabbit #270).
+        _cb_raw = None if _callback["number"] else _callback.get("raw")
+        if _cb_raw and not await db.patch_conversation_presence(cid, {"phone_to_check": _cb_raw}):
+            logger.warning(f"[{cid}] callback: number to check not saved")
+            _cb_raw = None
         try:
             if _cb_lead:
-                if _cb_channel == "text":
+                if _cb_channel in ("text", "whatsapp"):
                     from app.pipeline.entity_extractor import merge_contact_channel as _cb_merge
 
-                    _cb_signals["contact_channel"] = _cb_merge(_cb_stored, "text")
+                    _cb_signals["contact_channel"] = _cb_merge(_cb_stored, _cb_channel)
                     # An older "call me" is over: the panel must not still say
-                    # "Asks: a call back" to a client who chose texts.
+                    # "Asks: a call back" to a client who chose texts or WhatsApp.
                     _cb_signals["callback_requested"] = False
                 else:
                     if _cb_channel == "call":
@@ -1018,7 +1084,7 @@ async def _pipeline(
                     if _cb_wants_call:
                         # The panel reads this as "Asks: a call back".
                         _cb_signals["callback_requested"] = True
-                _cb_note = callback_note(_callback["number"], channel=_cb_channel)
+                _cb_note = callback_note(_callback["number"] or _cb_raw, channel=_cb_channel)
                 # The consultant must see it FIRST, above everything else —
                 # and only the newest call-back wish.
                 await db.update_lead(_cb_lead["id"], {
@@ -1035,6 +1101,7 @@ async def _pipeline(
                 cid,
                 reason=(
                     "text request" if _cb_channel == "text"
+                    else "whatsapp request" if _cb_channel == "whatsapp"
                     else "call-back request" if _cb_wants_call else "number given"
                 ),
             )
@@ -1051,7 +1118,7 @@ async def _pipeline(
                 from app.services.tasks_service import task_from_callback
 
                 _fire_and_forget(task_from_callback(conv, user_msg, message))
-        elif _cb_channel == "text" or calls_refused(_cb_stored):
+        elif _cb_channel in ("text", "whatsapp") or calls_refused(_cb_stored):
             from app.services.tasks_service import withdraw_call_tasks
 
             _fire_and_forget(withdraw_call_tasks(cid))
@@ -1060,13 +1127,15 @@ async def _pipeline(
         # one thing this turn must never do is ask him what he meant.
         from app.ai.templates import get_template as _cb_tpl
 
-        if _callback["number"]:
+        _cb_number = _callback["number"] or _cb_raw
+        if _cb_number:
             _cb_key = {
                 "call": "callback_confirmed", "text": "number_confirmed_text",
+                "whatsapp": "number_confirmed_whatsapp",
             }.get(_cb_channel, "number_confirmed")
             _cb_text = _cb_tpl(
-                _cb_key, tunnel, visitor, number=_callback["number"]
-            ) or f"Of course — a consultant will reach you on {_callback['number']}."
+                _cb_key, tunnel, visitor, number=_cb_number
+            ) or f"Of course — a consultant will reach you on {_cb_number}."
             _cb_next = ""
             try:
                 from app.models.lead import get_missing_fields as _cb_gmf
@@ -1088,7 +1157,9 @@ async def _pipeline(
                     if _k:
                         _q = _cb_tpl(_k, tunnel, visitor)
                         if _q:
-                            _cb_next = f" While they get to you — {_q[0].lower()}{_q[1:]}"
+                            from app.ai.templates_i18n import WHILE_THEY_GET_TO_YOU as _cb_join
+
+                            _cb_next = f"{_cb_join.get(_client_lang or '', ' While they get to you — ')}{_q[0].lower()}{_q[1:]}"
                             break
             except Exception:
                 pass
@@ -1146,7 +1217,7 @@ async def _pipeline(
             "departure_date": _conv_meta.get("awaiting_return_departure"),
             "expect": "return",
         }
-    extracted = extract_entities(message, context=_correction_context)
+    extracted = extract_entities(message, context=_correction_context, country=_phone_country)
     if _conv_meta.get("awaiting_return_date") and extracted.return_date:
         _meta_clear_rt = dict(_conv_meta)
         _meta_clear_rt.pop("awaiting_return_date", None)
@@ -1257,7 +1328,6 @@ async def _pipeline(
         "must_haves": _open_door_reply,
         "_metadata": _site_metadata,
     }
-
     # An explicit one-way wipes a stale return date on the lead (KAZUO:
     # the summary kept showing a return he had just cancelled).
     if _clear_return_date:
@@ -1377,6 +1447,7 @@ async def _pipeline(
     # usually arrives on a turn that carries no new travel field.
     has_signals = any(entities.get(k) for k in lead_service.SIGNAL_KEYS)
     if has_useful or has_signals:
+        entities["_phone_country"] = _phone_country
         await lead_service.update_lead_from_entities(cid, entities)
         # What this turn just learned counts for the rest of the turn — the
         # next question, the CRM gate and its payload: a name answered to
@@ -1388,7 +1459,7 @@ async def _pipeline(
             _widget_visitor,
             {
                 "email": entities.get("email"),
-                "phone": format_phone_international(entities["phone"]) if entities.get("phone") else None,
+                "phone": format_phone_international(entities["phone"], _phone_country) if entities.get("phone") else None,
             },
         )
         logger.info(f"[{cid}] Entities: {', '.join(k for k, v in entities.items() if v and not k.startswith('_'))}")
@@ -1459,6 +1530,27 @@ async def _pipeline(
             db.get_today_cost(),
         )
     budget_remaining = settings.daily_budget - today_cost
+
+    # ── STEP 5.9: A GOODBYE WITH NO WAY TO REACH THE CLIENT ──
+    # The goodbye template promised "We'll be in touch soon" to a client with no email and no number
+    # (19 Nov, Sydney → Amman): the first goodbye now asks where the agent should write, with the
+    # WhatsApp and Email buttons; a later one promises nothing (card_buttons.goodbye_without_contact).
+    # An agent who took the chat meanwhile answers it: the guard runs where the goodbye is saved.
+    if intent == Intent.CLOSING and tunnel == "sales":
+        from app.pipeline.card_buttons import goodbye_without_contact
+        from app.pipeline.entity_extractor import current_contact_channel
+
+        _bye = await goodbye_without_contact(
+            cid, _conv_meta, visitor, lead if isinstance(lead, dict) else None,
+            current_contact_channel(lead if isinstance(lead, dict) else None, entities),
+            before_save=functools.partial(_taken_by_agent, cid),
+        )
+        if _bye is not None:
+            if _bye.type != "queued":
+                logger.info(f"[{cid}] Goodbye with no contact on file: nothing promised")
+            if _persist_state is not None and _bye.message_id:
+                _persist_state["ai_persisted"] = True
+            return _bye
 
     # Streaming callback (sync→async bridge for thread pool)
     _event_loop = asyncio.get_running_loop()
@@ -1686,6 +1778,7 @@ async def _pipeline(
             _merged = True
 
         if _merged:
+            entities["_phone_country"] = _phone_country
             await lead_service.update_lead_from_entities(cid, entities)
             logger.info(f"[{cid}] Claude extraction merged: {list(_te.keys())}")
 
@@ -1799,22 +1892,11 @@ async def _pipeline(
         )
 
     # Guard: if an agent claimed this conversation while the pipeline was running,
-    # discard the AI response — never let AI and human work in parallel.
-    # Exception: silent reservation (announce_pending) — AI serves the visitor
-    # until the operator sends their first message or 30s timeout fires.
-    current_mode = await db.get_conversation_mode(cid)
-    _fresh_guard = await db.get_conversation_simple(cid) or {}
-    _silent_reservation = bool(
-        (_fresh_guard.get("metadata") or {}).get("announce_pending")
-    )
-    if current_mode == "human" and not _silent_reservation:
-        logger.info(f"[{cid}] Pipeline aborted: conversation taken by agent while AI was processing")
-        return ChatResponse(
-            conversation_id=cid,
-            message="One moment please, connecting you with a specialist...",
-            type="queued",
-            model_used="none",
-        )
+    # discard the AI response — never let AI and human work in parallel (silent
+    # reservation excepted: _taken_by_agent).
+    _taken = await _taken_by_agent(cid)
+    if _taken is not None:
+        return _taken
 
     # ── STEP 7.5: Summary → Confirm → CRM → Close ────────────
     # STATE A: collection complete, summary not shown → show template

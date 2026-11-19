@@ -5,6 +5,29 @@
  * missing token for 7 days, then refuses it).
  */
 
+import type { ButtonKind, ChannelKind, ChatButton } from './channel'
+
+const BUTTON_KINDS: readonly ButtonKind[] = ['whatsapp', 'email', 'wait', 'change']
+
+/** The server's buttons ({"kind", "label"}: app/services/card_words.py), each with a known kind and a label;
+ *  anything else dropped. The widget acts on the kind, whatever the language of the label. */
+export function readButtons(raw: unknown): ChatButton[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((b): ChatButton[] => {
+    if (!b || typeof b !== 'object') return []
+    const { kind, label } = b as { kind?: unknown; label?: unknown }
+    if (typeof kind !== 'string' || !BUTTON_KINDS.includes(kind as ButtonKind)) return []
+    if (typeof label !== 'string' || !label.trim()) return []
+    return [{ kind: kind as ButtonKind, label: label.trim().slice(0, 60) }]
+  })
+}
+
+/** One channel button (WhatsApp or email), or null. */
+export function readChannel(raw: unknown): (ChatButton & { kind: ChannelKind }) | null {
+  const [b] = readButtons([raw])
+  return b && (b.kind === 'whatsapp' || b.kind === 'email') ? (b as ChatButton & { kind: ChannelKind }) : null
+}
+
 const VISITOR_KEY = 'bbc_visitor_id'
 const TOKEN_KEY = 'bbc_visitor_token'
 /** Refresh when less than this is left of the token's 24 h. */
@@ -33,6 +56,13 @@ export function ensureVisitorId(): string {
   return id
 }
 
+/** What the card's yes is answered with at once, when the card knew the whole trip (A2): the server's
+ *  words and the buttons under them (app/services/card_words.py, confirm). */
+export interface OfferConfirm {
+  message: string
+  buttons: ChatButton[]
+}
+
 /** The server's answer to "open the chat now?" (bbc-chatbot-api app/services/proactive.py, offer). */
 export interface ProactiveOffer {
   show: boolean
@@ -42,8 +72,17 @@ export interface ProactiveOffer {
   message: string | null
   quick_replies: string[]
   /** Which words the server chose, when it chose a variant: how the note asked its first question (the
-   *  note's bandit), or the quote card's chat instead of the form ("contact"). */
+   *  note's bandit), the quote card's chat instead of the form ("contact"), the row beside the refused form
+   *  ("row") or the Kayak card's tested sentence ("beat"). */
   variant?: string
+  /** The instant answer to the card's yes (A2). */
+  confirm?: OfferConfirm
+  /** The card's own channel button (C1) and the pill after "Not now" (C2). */
+  channel?: ChatButton & { kind: ChannelKind }
+  /** The row's two buttons beside the refused quote form (D1). */
+  buttons?: ChatButton[]
+  /** The language the server composed the words in ("es", "fr"); absent: English. */
+  lang?: string
 }
 
 /** A variant name as the server writes them ("open", "places", "contact"): anything else is dropped. */
@@ -77,7 +116,11 @@ export async function fetchProactiveOffer(
   apiUrl: string,
   /** `site`: bbc | bct, so the server's opening names the brand the visitor is on. `refused`: on the quote
    *  moment, the kinds of the fields the form refused (siteSignals FIELD_KINDS, never a value). */
-  body: { visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[] },
+  body: {
+    visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[]
+    /** The browser's language, the screen, a row beside the refused form, and the C4 side (proactive.ts). */
+    lang?: string; device?: 'phone' | 'computer'; place?: 'form'; c4?: 'early' | 'now'
+  },
   timeoutMs: number,
   onTiming?: (t: OfferTiming) => void,
 ): Promise<ProactiveOffer | null> {
@@ -103,12 +146,21 @@ export async function fetchProactiveOffer(
       ? data.quick_replies.filter((r: unknown): r is string => typeof r === 'string' && r.trim() !== '')
       : []
     const variant = offerVariant(data.variant)
+    const confirmMessage = typeof data.confirm?.message === 'string' && data.confirm.message.trim()
+      ? data.confirm.message : null
+    const confirmButtons = readButtons(data.confirm?.buttons)
+    const channel = readChannel(data.channel)
+    const buttons = readButtons(data.buttons)
     return done(null, {
       show: data.show,
       arm: data.arm,
       message: typeof data.message === 'string' && data.message.trim() ? data.message : null,
       quick_replies: replies,
       ...(variant ? { variant } : {}),
+      ...(confirmMessage && confirmButtons.length ? { confirm: { message: confirmMessage, buttons: confirmButtons } } : {}),
+      ...(channel ? { channel } : {}),
+      ...(buttons.length ? { buttons } : {}),
+      ...(data.lang === 'es' || data.lang === 'fr' ? { lang: data.lang } : {}),
     })
   } catch (e) {
     // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON (a
@@ -116,6 +168,33 @@ export async function fetchProactiveOffer(
     return done(timedOut ? 'timeout' : e instanceof SyntaxError ? 'shape' : 'network', null)
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/** B1 (ADR-6d): the one message for a contactless client who is leaving, once, from the server — which says
+ *  whether it applies (no contact, no agent's word yet, never said). `keepalive`: the page may be going. */
+export interface BeforeYouGo {
+  show: boolean
+  message?: string
+  buttons?: ChatButton[]
+  id?: string
+  created_at?: string
+}
+
+export async function askBeforeYouGo(apiUrl: string, convId: string, keepalive = false): Promise<BeforeYouGo | null> {
+  try {
+    const res = await apiFetch(`${apiUrl}/api/chat/session/${convId}/before-you-go`, { method: 'POST', keepalive })
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data || data.show !== true || typeof data.message !== 'string' || typeof data.id !== 'string') {
+      return { show: false }
+    }
+    return {
+      show: true, message: data.message, buttons: readButtons(data.buttons), id: data.id,
+      ...(typeof data.created_at === 'string' ? { created_at: data.created_at } : {}),
+    }
+  } catch {
+    return null
   }
 }
 

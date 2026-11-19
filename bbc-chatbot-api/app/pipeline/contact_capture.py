@@ -74,13 +74,18 @@ _NAME_QUESTION_RE = re.compile(
     r"\b(?:(?:your|full|first|last)\s+name"
     r"|what\s+name|name\s+should|who\s+to\s+address"
     r"|name\s+(?:for|on)\s+the\s+(?:booking|reservation|ticket)"
-    r"|who\s+(?:am\s+i|i'?m)\s+(?:speaking|chatting)\s+(?:with|to))\b",
+    r"|who\s+(?:am\s+i|i'?m)\s+(?:speaking|chatting)\s+(?:with|to)"
+    # Spanish, French, Portuguese (#3325, 18 Nov 2026: "¿Cuál es su nombre?" was not read as the question)
+    r"|(?:su|tu)\s+nombre|nombre\s+completo|c[oó]mo\s+(?:se|te)\s+llama"
+    r"|(?:votre|ton)\s+nom|nom\s+complet|comment\s+(?:vous\s+vous\s+appelez|tu\s+t'?appelles?)"
+    r"|(?:seu|teu)\s+nome|nome\s+completo|como\s+(?:voc[eê]\s+)?se\s+chama)\b",
     re.IGNORECASE,
 )
 _LAST_NAME_QUESTION_RE = re.compile(r"\b(?:last|family|sur)\s*name\b", re.IGNORECASE)
 # "would a text or a quick call work better?", "call or text?", "text or call?"
 _CHANNEL_QUESTION_RE = re.compile(
-    r"\b(?:text|sms)\b[^?]{0,40}\b(?:call|phone)\b|\b(?:call|phone)\b[^?]{0,40}\b(?:text|sms)\b",
+    r"\b(?:text|sms|mensaje|texto|message|mensagem)\b[^?]{0,40}\b(?:call|phone|llamada|appel|liga[cç][aã]o)\b"
+    r"|\b(?:call|phone|llamada|appel|liga[cç][aã]o)\b[^?]{0,40}\b(?:text|sms|mensaje|texto|message|mensagem)\b",
     re.IGNORECASE,
 )
 
@@ -122,6 +127,9 @@ january february march july september october november december
 just only us we our family wife husband kids adults
 flexible any anything whatever none nothing idk unsure
 the a an and or my is it its it's i i'm im me
+español espanol spanish inglés ingles english francés frances français francais french portugués portugues
+português portuguese por favor porfavor gracias merci plaît plait svp obrigado obrigada hola olá bonjour oui
+sí non não nao habla hablo parle parlez falo fala mensaje mensajes texto mensagem llamada correo courriel
 """.split())
 _NAME_INTRO_RE = re.compile(r"^(?:it'?s|its|this\s+is|i'?m|im|i\s+am|my\s+name\s+is|name\s+is|name:)\s+", re.I)
 _NAME_WORD_RE = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’.-])*$")
@@ -130,6 +138,15 @@ _NAME_WORD_RE = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’.-])*$")
 def _straight(text: str) -> str:
     """A phone types ’ (U+2019) by default; the patterns here read '."""
     return (text or "").replace("’", "'").replace("‘", "'")
+
+
+# A yes on its own, in the languages the summary asks in: "Sim" alone answers, "Sim Lee" is a name
+# (CodeRabbit #270: a bare Portuguese "sim" was stored as the client's name).
+_A_BARE_YES = frozenset({"sim", "si", "claro", "vale", "certo", "perfeito", "perfecto", "exacto", "isso", "bueno",
+                         "parfait", "daccord", "d'accord"})
+# A Spanish yes that is also an English first name: a bare yes only while the client writes Spanish
+# ("Dale" is a name in an English chat; CodeRabbit #270).
+_A_SPANISH_YES_ALSO_A_NAME = frozenset({"dale"})
 
 
 def name_from_answer(message: str) -> Optional[str]:
@@ -143,6 +160,13 @@ def name_from_answer(message: str) -> Optional[str]:
     words = text.split()
     if not 1 <= len(words) <= 4:
         return None
+    if len(words) == 1 and words[0].lower() in _A_BARE_YES:
+        return None
+    if len(words) == 1 and words[0].lower() in _A_SPANISH_YES_ALSO_A_NAME:
+        from app.pipeline.language import current_lang
+
+        if current_lang.get() == "es":
+            return None
     if any(not _NAME_WORD_RE.match(w) for w in words):
         return None
     if any(w.lower().strip(".'’") in _NOT_A_NAME for w in words):
@@ -178,12 +202,19 @@ def name_to_store(known: Optional[str], answer: Optional[str], last_name_asked: 
     return None
 
 
-_TEXT_ANSWER_RE = re.compile(r"\b(?:text(?:ing|s)?|txt|sms|message|whats\s*app)\b", re.I)
-_CALL_ANSWER_RE = re.compile(r"\b(?:call|calls|phone\s+call|ring)\b", re.I)
-_EMAIL_ANSWER_RE = re.compile(r"\be-?mail\b", re.I)
+# Spanish, French and Portuguese too (#3325: "mensaje de texto" read as nothing, so a call task).
+_TEXT_ANSWER_RE = re.compile(
+    r"\b(?:text(?:ing|s)?|txt|sms|message|whats\s*app|mensajes?|textos?|texte|mensage(?:m|ns)"
+    r"|escr[ií]b(?:eme|ame|anme)|[ée]crivez[- ]moi|escreva)\b", re.I)
+_CALL_ANSWER_RE = re.compile(
+    r"\b(?:call|calls|phone\s+call|ring|llamada|ll[aá]m(?:ame|enme|eme)|llamar|appel(?:ez)?|appeler"
+    r"|liga[cç][aã]o|ligar|me\s+liga)\b", re.I)
+_EMAIL_ANSWER_RE = re.compile(r"\b(?:e-?mail|correo(?:\s+electr[oó]nico)?|courriel)\b", re.I)
 # "I can't always take a call", "no calls", "don't text me, call": a channel
 # right after a negation in the same clause is ruled out, not chosen.
-_NEGATION_RE = re.compile(r"\b(?:can't|cant|cannot|can\s+not|don't|dont|do\s+not|won't|wont|no|never|not)\b", re.I)
+_NEGATION_RE = re.compile(
+    r"\b(?:can't|cant|cannot|can\s+not|don't|dont|do\s+not|won't|wont|no|never|not"
+    r"|pas|ne|n'|não|nao|nunca|jamais|jamás|jamas)\b", re.I)
 _CLAUSE_END_RE = re.compile(r"[.?!,;]")
 
 
@@ -220,16 +251,29 @@ def calls_refused(stored_channel: Optional[str]) -> bool:
 
 def callback_channel(message: str, cue: str, stored_channel: Optional[str]) -> str:
     """How the client wants to be reached on the number just given:
-    'call' when they asked to be called ("call me", the JOSEF case), 'text'
-    when they chose texts (in this message, or earlier: "Text", "text only",
-    "no calls" — never over an earlier "no texts"), 'any' when they gave a
-    number and said nothing that decides it."""
+    'call' when they asked to be called ("call me", the JOSEF case), 'whatsapp'
+    when they chose WhatsApp (in this message, or earlier: the button after the
+    card), 'text' when they chose texts (in this message, or earlier: "Text",
+    "text only", "no calls" — never over an earlier "no texts"), 'any' when they
+    gave a number and said nothing that decides it.
+
+    WhatsApp stays WhatsApp: a client who chose it and then sent a bare number
+    was noted "ASKED FOR TEXTS" and told "will text you" (CodeRabbit #270)."""
+    from app.pipeline.entity_extractor import contact_channel_of
+
     now = channel_from_answer(message)
-    if now in ("text", "call"):
+    whatsapp_now = "whatsapp" in _wishes(contact_channel_of(message))
+    if now == "call":
+        return now
+    if whatsapp_now:
+        return "whatsapp"
+    if now == "text":
         return now
     if cue == "words":
         return "call"
     wishes = _wishes(stored_channel)
+    if "whatsapp" in wishes:
+        return "whatsapp"
     if "no texts" not in wishes and ("text" in wishes or "no calls" in wishes):
         return "text"
     return "any"

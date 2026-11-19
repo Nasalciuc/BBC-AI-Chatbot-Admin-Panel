@@ -79,6 +79,15 @@ def _taken_blind(user: dict, row: dict) -> bool:
     )
 
 
+def _has_contact(conv: dict) -> bool:
+    """An e-mail, a phone, or a local number kept for the agent to check (ADR-6f)."""
+    meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+    return any(
+        isinstance(v, str) and v.strip()
+        for v in (conv.get("visitor_email"), conv.get("visitor_phone"), meta.get("phone_to_check"))
+    )
+
+
 _BLIND_DETAIL = "Take the chat to read it."
 _BLIND_UNAVAILABLE = "Couldn't check this chat. Try again in a moment."
 
@@ -589,6 +598,10 @@ async def get_conversation(
 
     # _enforce_tunnel signals 403 via HTTPException — it must propagate untouched.
     _enforce_tunnel(user, conv.get("tunnel"))
+
+    # Whether the client left any contact, said before the row is masked or blinded: "Left 3 min ago ·
+    # no contact" (ADR-6c) is a fact about the chat, never the contact itself. Same rule as the list's.
+    conv = {**conv, "has_contact": _has_contact(conv)}
 
     # Phase 2: supervisor/PM see message content ONLY for their own team's
     # conversations; otherwise metadata-only (messages blanked). Fail closed.
