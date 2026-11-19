@@ -74,7 +74,9 @@ def last_question(history: Optional[list]) -> str:
 # kept: #3361 was asked again). Not "the name of the airline you prefer?".
 _NAME_QUESTION_RE = re.compile(
     r"\b(?:(?:your|full|first|last|best)\s+name"
-    r"|what\s+name|name\s+should|who\s+to\s+address|address\s+you\b"
+    r"|what\s+name|name\s+should|who\s+to\s+address|address\s+you\s+(?:by|as)\b"
+    # "How should I address you?" — not "the address you want the tickets sent to?" (CodeRabbit #271)
+    r"|how\s+(?:should|shall|may|can|do|would)\s+(?:i|we|they|your\s+consultant)\s+address\s+you\b"
     r"|name\s+(?:for|on)\s+the\s+(?:booking|reservation|ticket)"
     r"|who\s+(?:am\s+i|i'?m)\s+(?:speaking|chatting)\s+(?:with|to)"
     # Spanish, French, Portuguese (#3325, 18 Nov 2026: "¿Cuál es su nombre?" was not read as the question)

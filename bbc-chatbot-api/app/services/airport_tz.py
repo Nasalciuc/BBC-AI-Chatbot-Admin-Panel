@@ -97,8 +97,7 @@ AIRPORTS: dict[str, tuple[str, str]] = {
     "GRU": ("São Paulo", "America/Sao_Paulo"), "EZE": ("Buenos Aires", "America/Argentina/Buenos_Aires"),
     "BOG": ("Bogotá", "America/Bogota"), "LIM": ("Lima", "America/Lima"),
     "SCL": ("Santiago", "America/Santiago"), "SJU": ("San Juan", "America/Puerto_Rico"),
-    # The codes the cards said as codes on 18-19 Nov ("Brisbane → BER", "Melbourne → DPS", "Calgary → DNZ",
-    # "Orlando → SGN", "WSI → Chennai"…): the card and the chat name the city.
+    # Codes the cards still gave as codes on 18-19 Nov: the card and the chat name the city.
     "BER": ("Berlin", "Europe/Berlin"), "OPO": ("Porto", "Europe/Lisbon"),
     "TRN": ("Turin", "Europe/Rome"), "DNZ": ("Denizli", "Europe/Istanbul"),
     "ABV": ("Abuja", "Africa/Lagos"), "NSI": ("Yaoundé", "Africa/Douala"),

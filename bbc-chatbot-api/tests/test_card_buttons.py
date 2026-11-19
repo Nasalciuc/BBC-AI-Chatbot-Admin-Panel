@@ -548,7 +548,7 @@ class TestBeforeYouGo:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ago_s, last, shows", [
-        (30, "Boston to Istanbul, flexible — what's the best email for them to reach you?", False),
+        (30, "Denver to Athens, flexible — what's the best email for them to reach you?", False),
         (30, "Where should they write: WhatsApp or email?", False),
         (30, "And a number for your consultant — would a text or a quick call work better?", False),
         (180, "What's the best email for them to reach you?", True),     # asked long ago: the client left
@@ -575,6 +575,12 @@ class TestBeforeYouGo:
         assert out["show"] is shows
         if not shows:
             assert out == {"show": False, "why": "just_asked"} and saved.rows == []
+
+    @pytest.mark.parametrize("created_at", ["2026-11-19T10:00:00", None, "yesterday"])
+    def test_a_time_it_cannot_read_lets_it_go_on(self, created_at):
+        """A zoneless, missing or unreadable time is no recent ask: the before-you-go goes on, as before."""
+        recent = [{"role": "ai", "content": "What's the best email for them to reach you?", "created_at": created_at}]
+        assert card_buttons._just_asked_contact(recent) is False
 
     @pytest.mark.asyncio
     async def test_the_trip_the_client_changed_to_is_the_one_said(self):

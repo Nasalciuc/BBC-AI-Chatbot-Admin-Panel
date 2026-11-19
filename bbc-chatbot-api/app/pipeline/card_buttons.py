@@ -365,9 +365,10 @@ def _just_asked_contact(recent: list) -> bool:
         return False
     try:
         said = datetime.fromisoformat(str(last.get("created_at")).replace("Z", "+00:00"))
-    except ValueError:  # noqa: silent — an unreadable time lets the before-you-go go on, as it did before this check
+        age = (datetime.now(timezone.utc) - said).total_seconds()
+    except (TypeError, ValueError):  # noqa: silent — an unreadable or zoneless time lets the before-you-go go on, as it did before this check
         return False
-    return (datetime.now(timezone.utc) - said).total_seconds() < JUST_ASKED_S
+    return age < JUST_ASKED_S
 
 
 async def before_you_go(cid: str) -> dict:

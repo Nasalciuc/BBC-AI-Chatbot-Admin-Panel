@@ -789,7 +789,7 @@ def build_site_context(metadata: dict | None) -> Optional[str]:
         lines.append(f"Opened chat on page: {page_path}")
     lines.extend(site_activity_lines(metadata))
     if utm_term:
-        # Private: "The keyword that brought you here pointed toward Switzerland" was said to a client
+        # Private: "The keyword that brought you here pointed toward <a country>" was said to a client
         # (#3359, 19 Nov).
         lines.append(f"Search keyword hint: {utm_term} (private — never quote it or say there was one)")
     if utm_campaign:
@@ -977,7 +977,17 @@ def _alex_asked(history: Optional[list[dict]], pattern) -> bool:
     return False
 
 
-_ONE_WAY_ASK_RE = _re.compile(r"\bone[\s-]way\b|\bfly(?:ing)?\s+back\b|\breturn(?:ing)?\b", _re.I)
+# Alex's question about the return itself ("Is it one-way?", "When do you fly back?", "When would you like to
+# return?", "Is the 11th your return, or the day you arrive?", "¿Es solo ida?"): not the summary said back
+# for a yes ("returning Feb 11 — is that right?"), nor a question that only names the return ("a refundable
+# ticket for the return?", CodeRabbit #271).
+_ONE_WAY_ASK_RE = _re.compile(
+    r"\bone[\s-]way\b|\bs[oó]lo\s+ida\b|\baller\s+simple\b"
+    r"|\b(?:fly|flying|come|coming|head|heading)\s+back\b"
+    r"|\bwhen\s+(?:do|would|will|are|did|can)\s+(?:you|they)\b[^?]*\breturn"
+    r"|\barriv(?:al|e|es|ing)\b[^?]*\breturn|\breturn[^?]*\barriv(?:al|e|es|ing)\b",
+    _re.I,
+)
 
 
 def _as_day(value) -> Optional[date]:
@@ -1114,12 +1124,14 @@ def build_conversational_prompt(
         # is asked it next, route or not: three such chats on 18-19 Nov were asked where they fly from
         # instead, and two of them left (#3331, #3332, #3344).
         _chose_email = "email" in {part.strip() for part in (_channel or "").split(",")}
+        _email_next = False
         if "email" in asks and not _email_asked(history):
             if _chose_email:
                 visitor_lines.append(
                     "Ask next: the email — they asked for the fares by email. In THIS reply, as its one "
                     "question, before the route, the dates or the travelers (those follow it)."
                 )
+                _email_next = True
             elif (
                 conv_from_visitor.get("email_first")
                 and asks[:1] == ["email"]
@@ -1130,7 +1142,10 @@ def build_conversational_prompt(
                     "flexibility, the travelers or the occasion (those follow it). A client who leaves after "
                     "giving it can still be helped; one who leaves before is gone."
                 )
-        _return_check = _return_next_day(lead, _any_meta, history)
+                _email_next = True
+        # One question per reply: when it is the email, the dates are checked on the reply after it
+        # (CodeRabbit #271).
+        _return_check = None if _email_next else _return_next_day(lead, _any_meta, history)
         if _return_check:
             visitor_lines.append(_return_check)
         if _channel:

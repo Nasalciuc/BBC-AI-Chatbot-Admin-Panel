@@ -12,10 +12,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -42,10 +43,10 @@ def _prompt(lead, history, meta=None, visitor=None, entities=None):
 
 # ── The email, when the client asked for the fares by email ──
 
-_CARD = [{"role": "ai", "content": "Rather not fill in the whole form? I can pass Lisbon, Business to an agent "
+_CARD = [{"role": "ai", "content": "Rather not fill in the whole form? I can pass Athens, Business to an agent "
                                    "right here, and they'll email you the fares."},
          {"role": "user", "content": "Email me the fares"}]
-_DEST_ONLY = {"destination_code": "LIS", "intent_signals": {"contact_channel": "email"}, "score": 10}
+_DEST_ONLY = {"destination_code": "ATH", "intent_signals": {"contact_channel": "email"}, "score": 10}
 
 
 def test_a_client_who_asked_for_email_is_asked_it_next_route_or_not():
@@ -55,7 +56,7 @@ def test_a_client_who_asked_for_email_is_asked_it_next_route_or_not():
 
 
 def test_the_wish_said_in_this_message_counts_before_the_lead_has_it():
-    lead = {"destination_code": "LIS", "score": 10}
+    lead = {"destination_code": "ATH", "score": 10}
     dynamic = _prompt(lead, _CARD, {"proactive_trigger": "quote"}, entities={"contact_channel": "email"})
     assert "Ask next: the email — they asked for the fares by email" in dynamic
 
@@ -63,7 +64,7 @@ def test_the_wish_said_in_this_message_counts_before_the_lead_has_it():
 @pytest.mark.parametrize("lead, history, visitor", [
     (_DEST_ONLY, _CARD, VisitorInfo(email="client@example.com")),                     # on file
     (_DEST_ONLY, _CARD + [{"role": "ai", "content": "Where should they send them — your email?"},
-                          {"role": "user", "content": "from boston"}], None),          # asked already
+                          {"role": "user", "content": "from denver"}], None),          # asked already
     ({**_DEST_ONLY, "intent_signals": {"contact_channel": "no email"}}, _CARD, None),  # turned down
 ])
 def test_not_pushed_when_on_file_asked_or_turned_down(lead, history, visitor):
@@ -77,6 +78,7 @@ def test_not_pushed_when_on_file_asked_or_turned_down(lead, history, visitor):
     "What's the best name to put on the request?",
     "Nice to meet you. What's the best name to have on file for this request?",
     "Which name should I use to address you?",
+    "How should I address you?",
 ])
 def test_the_best_name_is_a_name_question(question):
     assert asks_for_name(question)
@@ -84,6 +86,7 @@ def test_the_best_name_is_a_name_question(question):
 
 @pytest.mark.parametrize("question", [
     "Which address should we send the tickets to?",
+    "What is the address you want the tickets sent to?",  # CodeRabbit #271
     "What's the name of the airline you prefer?",
     "Name noted. Where are you flying from?",
 ])
@@ -136,67 +139,120 @@ def test_when_we_reach_out(online, words):
 
 # ── A client who writes after the closing ──
 
-class _Saved:
-    def __init__(self):
-        self.rows = []
-
-    async def __call__(self, cid, role, content, model_used=None, cost=0.0, **_):
-        self.rows.append((role, content))
-        return {"id": f"m{len(self.rows)}"}
-
-
-async def _after_closing(message, recent, online=False):
-    from app.api import chat as chat_api
-
-    saved = _Saved()
-    with patch.object(chat_api.db, "get_recent_messages", new=AsyncMock(return_value=recent)), \
-         patch.object(chat_api.conversation_service, "add_message", new=saved), \
-         patch("app.services.closing.is_within_team_hours", return_value=online):
-        out = await chat_api._post_sale_reply("c-1", message)
-    return out, saved.rows
-
-
 def _ago(seconds):
     return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
 
 
-_CLOSED = [{"role": "user", "content": "Yes", "created_at": _ago(20)},
-           {"role": "ai", "content": "Thank you — your consultant will reach out first thing.", "created_at": _ago(5)}]
+_CLOSING = "Thank you — your consultant will reach out first thing."
+_ACK_OFF = "Thank you! Your consultant will reach out first thing when the team is back."
+
+
+def _closed(yes_ago=20):
+    """The "Yes" the closing answered, `yes_ago` seconds old: built when the test runs (CodeRabbit #271)."""
+    return [{"id": "u1", "role": "user", "content": "Yes", "created_at": _ago(yes_ago)},
+            {"id": "a1", "role": "ai", "content": _CLOSING, "created_at": _ago(5)}]
+
+
+class _Store:
+    """A conversation's rows: get_recent_messages reads them, add_message adds to them, and each waits once, as
+    a round trip to the database would. A save of the role `fail` fails (add_message → None)."""
+
+    def __init__(self, rows, fail=None):
+        self.rows, self.added, self.fail = list(rows), [], fail
+
+    async def recent(self, cid, limit=5):
+        await asyncio.sleep(0)
+        return [dict(r) for r in self.rows[-limit:]]
+
+    async def add(self, cid, role, content, model_used=None, cost=0.0, **_):
+        await asyncio.sleep(0)
+        if role == self.fail:
+            return None
+        row = {"id": f"m{len(self.rows)}", "role": role, "content": content, "created_at": _ago(0)}
+        self.rows.append(row)
+        self.added.append((role, content))
+        return row
+
+
+async def _after_closing(messages, store, online=False):
+    from app.api import chat as chat_api
+
+    with patch.object(chat_api.db, "get_recent_messages", new=store.recent), \
+         patch.object(chat_api.conversation_service, "add_message", new=store.add), \
+         patch("app.services.closing.is_within_team_hours", return_value=online):
+        return await asyncio.gather(*(chat_api._post_sale_reply("c-1", m) for m in messages))
 
 
 @pytest.mark.asyncio
 async def test_what_the_client_writes_after_the_closing_is_kept():
-    out, rows = await _after_closing("Can you also check March 2?", _CLOSED)
-    assert rows[0] == ("user", "Can you also check March 2?")
-    assert rows[1] == ("ai", "Thank you! Your consultant will reach out first thing when the team is back.")
-    assert out.message == rows[1][1] and out.type == "post_sale"
+    store = _Store(_closed())
+    [out] = await _after_closing(["Can you also check March 2?"], store)
+    assert store.added == [("user", "Can you also check March 2?"), ("ai", _ACK_OFF)]
+    assert out.message == _ACK_OFF and out.type == "post_sale"
+    assert out.message_id == store.rows[-1]["id"]  # the stored ack: the widget never draws it twice
 
 
 @pytest.mark.asyncio
 async def test_in_team_hours_the_ack_says_soon():
-    out, _ = await _after_closing("thanks again", _CLOSED, online=True)
+    [out] = await _after_closing(["thanks again"], _Store(_closed()), online=True)
     assert out.message == "Thank you! Your consultant will reach out soon."
 
 
 @pytest.mark.asyncio
 async def test_a_resend_of_the_answered_message_adds_nothing():
     """The widget's retry of the "Yes" the closing answered (#3361): nothing stored, the closing said again."""
-    out, rows = await _after_closing("Yes", _CLOSED)
-    assert rows == [] and out.message == _CLOSED[1]["content"]
+    store = _Store(_closed())
+    [out] = await _after_closing(["Yes"], store)
+    assert store.added == [] and out.message == _CLOSING and out.message_id == "a1"
+
+
+@pytest.mark.asyncio
+async def test_a_resend_before_its_answer_is_stored_gets_the_ack_and_adds_nothing():
+    """The send it repeats is saved and its answer not yet: not the closing before it, and no second row
+    (CodeRabbit #271)."""
+    store = _Store(_closed() + [{"id": "u2", "role": "user", "content": "And March 2?", "created_at": _ago(3)}])
+    [out] = await _after_closing(["And March 2?"], store)
+    assert store.added == [] and out.message == _ACK_OFF and out.message_id is None
 
 
 @pytest.mark.asyncio
 async def test_the_same_words_much_later_are_new_words():
-    old = [{**_CLOSED[0], "created_at": _ago(600)}, _CLOSED[1]]
-    _, rows = await _after_closing("Yes", old)
-    assert rows[0] == ("user", "Yes")
+    store = _Store(_closed(yes_ago=600))
+    await _after_closing(["Yes"], store)
+    assert store.added[0] == ("user", "Yes")
+
+
+@pytest.mark.asyncio
+async def test_two_sends_at_once_are_stored_once():
+    """The same words sent twice at once (a double tap, a retry on top of its send): one row, one ack, the same
+    answer to both (CodeRabbit #271)."""
+    store = _Store(_closed())
+    a, b = await _after_closing(["And March 2?", "And March 2?"], store)
+    assert store.added == [("user", "And March 2?"), ("ai", _ACK_OFF)]
+    assert a.message == b.message == _ACK_OFF
+
+
+@pytest.mark.asyncio
+async def test_a_message_it_could_not_store_gets_no_ack():
+    """The widget takes a 200 for the save receipt: a save that failed is a 503, and no ack is stored
+    (CodeRabbit #271)."""
+    from fastapi import HTTPException
+
+    from app.api import chat as chat_api
+
+    store = _Store(_closed(), fail="user")
+    before = chat_api.POST_SALE_HEALTH["unsaved"]
+    with pytest.raises(HTTPException) as err:
+        await _after_closing(["And March 2?"], store)
+    assert err.value.status_code == 503 and store.added == []
+    assert chat_api.POST_SALE_HEALTH["unsaved"] == before + 1
 
 
 # ── What the prompt never says ──
 
 def test_the_keyword_is_private():
-    block = build_site_context({"utm_source": "google", "utm_medium": "cpc", "utm_term": "business class zurich"})
-    assert "Search keyword hint: business class zurich (private — never quote it or say there was one)" in block
+    block = build_site_context({"utm_source": "google", "utm_medium": "cpc", "utm_term": "business class athens"})
+    assert "Search keyword hint: business class athens (private — never quote it or say there was one)" in block
     assert "never say there was a keyword, an ad or a search behind the visit" in block
 
 
@@ -217,6 +273,31 @@ def test_a_return_the_day_after_departure_is_asked_about():
 ])
 def test_otherwise_the_dates_are_left_alone(lead, history, meta):
     assert "Check the dates" not in _prompt(lead, history, meta)
+
+
+@pytest.mark.parametrize("question, asked", [
+    ("Is it one-way, or when do you fly back?", True),
+    ("When would you like to return?", True),
+    ("¿Es solo ida, o cuándo vuelve?", True),
+    ("Is Feb 11 your return, or the day you arrive?", True),
+    ("Departing Feb 10, returning Feb 11, 1 traveler — is that right?", False),  # the summary, said back
+    ("Would you prefer a refundable ticket for the return?", False),  # names it, asks something else
+])
+def test_the_return_asked_about_not_only_said_back(question, asked):
+    """#3356: the dates were said back four times and never asked about: a summary that names the return
+    is no question about it."""
+    dynamic = _prompt(_NEXT_DAY, [{"role": "ai", "content": question}])
+    assert ("Check the dates" not in dynamic) is asked
+
+
+def test_the_email_first_then_the_dates():
+    """One question per reply (CodeRabbit #271): the email when they asked for the fares by email, the dates
+    on the reply after it."""
+    lead = {**_NEXT_DAY, "intent_signals": {"contact_channel": "email"}}
+    first = _prompt(lead, _CARD)
+    assert "Ask next: the email" in first and "Check the dates" not in first
+    later = _prompt(lead, _CARD, visitor=VisitorInfo(email="client@example.com"))
+    assert "Check the dates" in later and "Ask next: the email" not in later
 
 
 # ── Cities, not codes ──
