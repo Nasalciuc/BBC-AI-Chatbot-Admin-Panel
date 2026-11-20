@@ -1,0 +1,196 @@
+"""The visitors who decide in seconds (20 Nov 2026): the ads card reads the ad's search, the card says the
+cabin that was searched, a one-way trip is said as one, and the phone card leads with the trip.
+
+ADR A3–A7 of "Vizitatorii rapizi de la Kayak și Bing". The places and keywords below are made up for the
+tests; none is a client's.
+"""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import pytest
+
+from app.models.trip_context import TripContext
+from app.services import proactive, proactive_i18n
+
+VISITOR = "visitor-0123456789"
+
+
+def _day(n: int) -> str:
+    return (date.today() + timedelta(days=n)).isoformat()
+
+
+def _kayak(**kw) -> TripContext:
+    base = dict(source="kayak", origin_code="AAA", origin_name="Springfield", destination_code="BBB",
+                destination_name="Lakeside", depart_date=_day(40), cabin="business", adults=1)
+    base.update(kw)
+    return TripContext(**base)
+
+
+# --- the keyword itself ----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw, kept", [
+    ("First Class Flights to Lakeside", "first class flights to lakeside"),
+    ("  cheap   business+class to <b>lakeside</b> ", "cheap business class to b lakeside b"),
+    ("120253513391840723", None),            # an ad id, not a search
+    ("ab", None),
+    ("x" * 81, None),
+    (42, None),
+])
+def test_the_keyword_is_kept_only_as_plain_lower_case_words(raw, kept):
+    assert TripContext(keyword=raw).keyword == kept
+
+
+def test_the_keyword_is_no_trip_and_never_reaches_a_lead():
+    trip = TripContext(source="route_page", keyword="first class flights to lakeside")
+    assert trip.is_empty()
+    assert proactive._entities_from_trip(trip) == {}
+
+
+# --- the place and the cabin it names --------------------------------------------------------------------
+
+@pytest.mark.parametrize("keyword, place, cabin", [
+    ("first class flights to lakeside", "Lakeside", "first"),
+    ("cheap business class to lakeside", "Lakeside", "business"),
+    ("business class flights to port lakeside italy", "Port Lakeside", "business"),    # the country after it goes
+    ("first class flight to lakeside scotland", "Lakeside", "first"),
+    ("flights to new lakeside in december", "New Lakeside", None),                  # the month ends the place
+    ("flight deals to lakeside", "Lakeside", None),
+    ("1st class flights to lakeside", "Lakeside", "first"),
+    ("air france business class to lakeside", "Lakeside", "business"),             # the airline is no place
+    ("air france business class", None, "business"),                              # nothing after "to"
+    ("lakeside", None, None),                                                     # one word: no "to"
+    ("business class to the usa from lakeside", None, "business"),                 # the visitors' own country
+    ("business class flights to marrakesh", "Marrakesh", "business"),              # "mar…" is no month
+    ("flights to x", None, None),
+    ("flights to west new lake shore", None, None),                              # four words: no name
+])
+def test_the_place_is_read_only_after_to_and_the_cabin_from_its_words(keyword, place, cabin):
+    assert proactive.keyword_place(keyword) == place
+    assert proactive.keyword_cabin(keyword) == cabin
+
+
+def test_the_keyword_names_the_place_only_when_the_page_names_none():
+    page = TripContext(source="route_page", destination_name="Hilltown", cabin="business",
+                       keyword="first class flights to lakeside")
+    trip = proactive.with_keyword(page)
+    assert trip.destination_name == "Hilltown"     # the page's place stays
+    assert trip.cabin == "first"                   # the cabin searched wins over the page's
+    home = proactive.with_keyword(TripContext(source="route_page", keyword="first class flights to lakeside"))
+    assert home.destination_name == "Lakeside"
+
+
+def test_a_trip_without_a_keyword_comes_back_as_it_was():
+    trip = _kayak()
+    assert proactive.with_keyword(trip) is trip
+    assert proactive.with_keyword(None) is None
+
+
+# --- the words -------------------------------------------------------------------------------------------
+
+def test_the_ads_card_says_the_cabin_that_was_searched():
+    trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business",
+                       keyword="first class flights to lakeside")
+    text, _ = proactive.compose("ads", trip, "bbc")
+    assert "first class fares" in text and "business class" not in text
+
+
+def test_without_a_keyword_the_english_words_are_word_for_word_as_before():
+    trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business")
+    text, _ = proactive.compose("ads", trip, "bbc")
+    assert text == ("Hi, I'm Alex from BuyBusinessClass. Planning a trip to Lakeside? Tell me roughly when, "
+                    "and an agent will check business class fares for you.")
+    dated = TripContext(source="route_page", destination_name="Lakeside", depart_date=_day(40))
+    text, _ = proactive.compose("reader", dated, "bbc")
+    assert text.endswith("Want an agent to check business class fares for these dates?")
+
+
+@pytest.mark.parametrize("lang, first", [("es", "en Primera clase"), ("fr", "en Première classe")])
+def test_the_cabin_is_said_in_the_cards_language(lang, first):
+    trip = TripContext(source="route_page", destination_name="Lakeside", cabin="first")
+    text, _ = proactive.compose("ads", trip, "bbc", lang=lang)
+    assert first in text
+
+
+def test_only_the_ads_card_reads_the_keyword():
+    # The reader on the same visit keeps the page's words: the keyword is the ad's, read by the ad's card.
+    trip = TripContext(source="route_page", keyword="first class flights to lakeside")
+    text, _ = proactive.compose("reader", trip, "bbc")
+    assert "Lakeside" not in text and "Planning a business class trip?" in text
+
+
+@pytest.mark.parametrize("lang, word", [(None, "one-way"), ("es", "solo ida"), ("fr", "aller simple")])
+def test_a_one_way_search_is_said_as_one(lang, word):
+    line = proactive.trip_line(_kayak(trip_type="one_way"), lang)
+    assert word in line
+    assert word not in proactive.trip_line(_kayak(trip_type="round_trip", return_date=_day(47)), lang)
+
+
+# --- the offer -------------------------------------------------------------------------------------------
+
+def test_an_ads_search_that_names_no_place_switches_off_this_visits_ads_moment():
+    trip = TripContext(source="route_page", keyword="business class tickets for sale")
+    out = proactive.offer(VISITOR, "ads", trip, "bbc", device="phone")
+    assert out["show"] is False and out["arm"] == proactive.TRIGGER_OFF and out["reason"] == "no_place"
+
+
+def test_an_ads_search_that_names_a_place_gets_the_card_its_title_and_its_channel():
+    trip = TripContext(source="route_page", keyword="first class flights to lakeside")
+    out = proactive.offer(VISITOR, "ads", trip, "bbc", device="phone")
+    assert out["show"] is True
+    assert out["headline"] == "Lakeside · First class"
+    assert out["card_text"] == "Tell me roughly when, and an agent will check first class fares for you."
+    assert out["message"].endswith(out["card_text"])
+    assert out["channel"] == {"kind": "whatsapp", "label": "Fares on WhatsApp"}
+    assert "confirm" not in out            # no dates: no instant answer to the yes
+    computer = proactive.offer(VISITOR, "ads", trip, "bbc", device="computer")
+    assert computer["channel"]["kind"] == "email"
+
+
+def test_an_ads_card_on_a_page_with_a_place_and_no_keyword_still_shows():
+    trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business")
+    out = proactive.offer(VISITOR, "ads", trip, "bbc", device="phone")
+    assert out["show"] is True and out["headline"] == "Lakeside · Business class"
+
+
+@pytest.mark.parametrize("lang", [None, "es", "fr"])
+def test_the_kayak_card_leads_with_the_trip_and_asks_only_its_question(lang):
+    trip = _kayak(return_date=_day(47), adults=2, cabin="first")
+    out = proactive.offer(VISITOR, "kayak", trip, "bbc", device="phone", lang=lang)
+    assert out["headline"].startswith("Springfield → Lakeside · ")
+    assert out["headline"].endswith(proactive_i18n.TITLE_CABINS[lang or "en"]["first"])
+    # The card's question is the opening's own last sentence: the chat still opens with the whole of it.
+    assert out["message"].endswith(out["card_text"])
+    assert out["card_text"] == proactive_i18n.sentence(proactive_i18n.card_lang(lang), "ask_full")
+
+
+def test_the_beat_card_asks_its_own_question():
+    trip = _kayak(return_date=_day(47))
+    face = proactive.card_face("kayak", trip, proactive.BEAT)
+    text, _ = proactive.compose("kayak", trip, "bbc", proactive.BEAT)
+    assert face["card_text"].startswith("Already seen a price?")
+    assert text.endswith(face["card_text"])
+
+
+def test_one_traveller_is_not_in_the_title_and_one_way_is():
+    face = proactive.card_face("kayak", _kayak(trip_type="one_way"))
+    assert face["headline"] == f"Springfield → Lakeside · {proactive._dates(_kayak())} · Business class · one-way"
+
+
+@pytest.mark.parametrize("trigger", ["quote", "reader", "note", "exit"])
+def test_the_other_cards_keep_their_whole_message(trigger):
+    assert proactive.card_face(trigger, _kayak()) is None
+
+
+def test_a_kayak_card_without_a_destination_has_no_title():
+    assert proactive.card_face("kayak", TripContext(source="kayak", origin_code="AAA", depart_date=_day(40))) is None
+
+
+@pytest.mark.parametrize("key, ask", [
+    ("full", "ask_full"), ("full_beat", "ask_full_beat"), ("dest_date", "ask_dest_date"), ("dest", "ask_dest"),
+])
+@pytest.mark.parametrize("lang", ["en", "es", "fr"])
+def test_every_question_ends_its_sentence_in_every_language(key, ask, lang):
+    whole = proactive_i18n.SENTENCES[lang][key]
+    assert whole.endswith(proactive_i18n.SENTENCES[lang][ask])

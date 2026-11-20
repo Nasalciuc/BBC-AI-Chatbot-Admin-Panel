@@ -45,10 +45,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
-from app.models.trip_context import TripContext
+from app.models.trip_context import TripContext, _name
 from app.services import note_bandit, proactive_i18n
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,9 @@ def _trip_line(trip: Optional[TripContext], lang: Optional[str] = None) -> Optio
     dates = _dates(trip, lang)
     if dates:
         line += f", {dates}"
+    if trip.trip_type == "one_way":
+        # ADR A4 (20 Nov): said, so a one-way search is never taken for a round trip.
+        line += f", {proactive_i18n.ONE_WAY[lang if lang in proactive_i18n.ONE_WAY else 'en']}"
     people = _people(trip, lang)
     cabin = (proactive_i18n.CABINS.get(lang or "") or _CABINS).get(trip.cabin or "")
     if people and cabin:
@@ -258,6 +262,100 @@ def full_trip(trip: Optional[TripContext]) -> bool:
 def trip_line(trip: Optional[TripContext], lang: Optional[str] = None) -> Optional[str]:
     """The trip as the card says it back (for the words after the card: app.services.card_words)."""
     return _trip_line(trip, lang)
+
+
+# --- the ad's search (ADR A5, 20 Nov) -------------------------------------------
+# What a Google or Bing visitor typed before the click (trip.keyword) names where they want to go and in
+# which cabin: "first class flights to rome". Bing, 13-20 Nov: 371 of the 402 visits that landed on the home
+# page (no destination on it) had the place after "to"; they got no card until the reader's 25 s. Read here,
+# deterministically: only the words after "to" (or "in") are a place, so an airline ("air france business
+# class") never becomes one; the search words around it are dropped, a country after a city goes ("naples
+# italy" → Naples), at most three words stay, and the result passes the trip's own name rule. Nothing else of
+# the keyword is ever said back, and none of it reaches a lead.
+_KW_PLACE = re.compile(r"\b(?:to|in)\s+(.+)$")
+_KW_END = re.compile(
+    r"\b(?:in|from|for|on|with|via|during|next|this|and|or|jan|january|feb|february|mar|march|apr|april|may|"
+    r"jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b|\d")
+_KW_NOISE = frozenset({
+    "business", "biz", "class", "first", "1st", "flight", "flights", "ticket", "tickets", "airfare", "airfares",
+    "fare", "fares", "deal", "deals", "cheap", "cheapest", "cheaper", "discount", "discounted", "best", "low",
+    "lowest", "cost", "book", "booking", "buy", "find", "fly", "flying", "plane", "airline", "airlines", "trip",
+    "trips", "travel", "international", "seat", "seats", "sale", "a", "the", "of", "offer", "offers", "economy",
+    "premium", "round", "one", "way", "return", "private", "luxury", "upgrade", "price", "prices",
+    # The visitors' own country is no destination of theirs (the ads run in the US).
+    "usa", "us", "america",
+})
+_KW_COUNTRIES = frozenset({
+    "italy", "france", "spain", "germany", "scotland", "england", "uk", "ireland", "portugal", "greece",
+    "netherlands", "holland", "switzerland", "austria", "hungary", "croatia", "turkey", "morocco", "japan",
+    "china", "india", "thailand", "vietnam", "philippines", "australia", "egypt", "israel", "denmark", "sweden",
+    "norway", "finland", "poland", "czech", "belgium", "canada", "mexico", "brazil", "argentina", "colombia",
+})
+_KW_FIRST = re.compile(r"\b(?:first|1st)\b")
+_KW_BUSINESS = re.compile(r"\b(?:business|biz)\b")
+
+
+def keyword_place(keyword: Optional[str]) -> Optional[str]:
+    """The place an ad's search names after "to"/"in", as a name ("Rome", "New York"), or None."""
+    if not keyword:
+        return None
+    found = _KW_PLACE.search(keyword)
+    if not found:
+        return None
+    seg = _KW_END.split(found.group(1), maxsplit=1)[0]
+    words = [w for w in seg.split() if w not in _KW_NOISE]
+    while len(words) > 1 and words[-1] in _KW_COUNTRIES:
+        words.pop()
+    if not words or len(words) > 3:
+        return None
+    return _name(" ".join(w.capitalize() for w in words))
+
+
+def keyword_cabin(keyword: Optional[str]) -> Optional[str]:
+    """"first" or "business" when the ad's search names one, else None."""
+    if not keyword:
+        return None
+    if _KW_FIRST.search(keyword):
+        return "first"
+    return "business" if _KW_BUSINESS.search(keyword) else None
+
+
+def with_keyword(trip: Optional[TripContext]) -> Optional[TripContext]:
+    """The trip as the ads card speaks of it: the destination the search named when the page named none, and
+    the cabin the search named over the page's (a business class page visited for "first class"). A trip
+    without a keyword comes back as it was."""
+    if trip is None or not trip.keyword:
+        return trip
+    update: dict = {}
+    if not _names_a_destination(trip):
+        place = keyword_place(trip.keyword)
+        if place:
+            update["destination_name"] = place
+    cabin = keyword_cabin(trip.keyword)
+    if cabin and cabin != trip.cabin:
+        update["cabin"] = cabin
+    return trip.model_copy(update=update) if update else trip
+
+
+def _title(trip: Optional[TripContext], lang: Optional[str] = None) -> Optional[str]:
+    """The phone card's title (ADR A3): "Providence → Madrid · Nov 17 – Nov 24 · Business class", with the
+    travellers when more than one and "one-way" when it is; "Rome · First class" for a destination alone.
+    None without a destination."""
+    route = _route_line(trip)
+    if not route or trip is None:
+        return None
+    parts = [route]
+    dates = _dates(trip, lang)
+    if dates:
+        parts.append(dates)
+    if trip.adults and (trip.adults > 1 or trip.children or trip.infants):
+        parts.append(_people(trip, lang) or "")
+    cabins = proactive_i18n.TITLE_CABINS.get(lang or "en", proactive_i18n.TITLE_CABINS["en"])
+    if trip.cabin in cabins:
+        parts.append(cabins[trip.cabin])
+    if trip.trip_type == "one_way":
+        parts.append(proactive_i18n.ONE_WAY[lang if lang in proactive_i18n.ONE_WAY else "en"])
+    return " · ".join(p for p in parts if p)
 
 
 def brand_for(site: Optional[str]) -> str:
@@ -364,8 +462,12 @@ def compose(
     ignored anywhere else. `lang`: "es" or "fr" (proactive_i18n.card_lang), else
     English."""
     lang = proactive_i18n.card_lang(lang)
+    if trigger == "ads":
+        # The ad's search names the place and the cabin (with_keyword): /offer and /init read it alike.
+        trip = with_keyword(trip)
     say = lambda key, **kw: proactive_i18n.sentence(lang, key).format(**kw)  # noqa: E731
     hello = say("hello", persona=PERSONA, brand=brand_for(site))
+    fares = proactive_i18n.cabin_fares(lang, trip.cabin if trip else None)
     line = _trip_line(trip, lang)
     dest = _place(trip.destination_name, trip.destination_code) if trip else None
     full = full_trip(trip)
@@ -394,9 +496,9 @@ def compose(
         # Where to and when, not where from: said back, nothing it gave asked
         # again. The origin is asked in the chat, after the visitor answers —
         # never "Where are you flying from?" in the opening (ADR 11).
-        text = say("dest_date", hello=hello, line=line)
+        text = say("dest_date", hello=hello, line=line, cabin_fares=fares)
     elif dest:
-        text = say("dest", hello=hello, dest=dest)
+        text = say("dest", hello=hello, dest=dest, cabin_fares=fares)
     elif applied_variant(trigger, trip, variant) == "places":
         # Where to as buttons (note_bandit): a tap instead of typing; anything else is typed.
         text = say("places", hello=hello)
@@ -404,6 +506,32 @@ def compose(
     else:
         text = say("open", hello=hello)
     return text, replies
+
+
+def card_face(
+    trigger: str, trip: Optional[TripContext], variant: Optional[str] = None, lang: Optional[str] = None,
+) -> Optional[dict]:
+    """The phone card's own face (ADR A3, 20 Nov): {"headline": the trip, "card_text": only the question of
+    the opening} for the Kayak and ads cards that name a destination; None otherwise (the card shows the
+    whole message, as before). A visitor who stays 3 s reads one line: the trip, not a sentence with the trip
+    inside it. The chat still opens with compose's whole sentence, whose question this is."""
+    if trigger not in ("kayak", "ads"):
+        return None
+    lang = proactive_i18n.card_lang(lang)
+    if trigger == "ads":
+        trip = with_keyword(trip)
+    headline = _title(trip, lang)
+    if not headline or trip is None:
+        return None
+    say = lambda key, **kw: proactive_i18n.sentence(lang, key).format(**kw)  # noqa: E731
+    fares = proactive_i18n.cabin_fares(lang, trip.cabin)
+    if full_trip(trip):
+        ask = say("ask_full_beat" if applied_variant(trigger, trip, variant) == BEAT else "ask_full")
+    elif trip.depart_date:
+        ask = say("ask_dest_date", cabin_fares=fares)
+    else:
+        ask = say("ask_dest", cabin_fares=fares)
+    return {"headline": headline, "card_text": ask}
 
 
 # --- the doors ------------------------------------------------------------
@@ -525,6 +653,13 @@ def offer(
     if trigger == "kayak" and c4 == "early" and not c4_open:
         # The early side of C4 is over: this visitor's card comes at the usual moment instead.
         return {"show": False, "arm": C4_HOLD, "trigger": trigger, "message": None, "quick_replies": []}
+    if trigger == "ads":
+        trip = with_keyword(trip)
+        if not _names_a_destination(trip):
+            # ADR A5: the widget asked on the ad's search alone and it names no place this card can say: this
+            # visit's ads moment is off (the reader may still come), as when the moment is switched off.
+            return {"show": False, "arm": TRIGGER_OFF, "trigger": trigger, "message": None, "quick_replies": [],
+                    "reason": "no_place"}
     if trigger == "quote":
         variant = ROW if place == "form" else quote_variant(refused)
     elif trigger == "kayak":
@@ -536,6 +671,9 @@ def offer(
     out = {"show": True, "arm": arm, "trigger": trigger, "message": text, "quick_replies": replies}
     if variant:
         out["variant"] = variant
+    face = card_face(trigger, trip, variant, lang)
+    if face:
+        out.update(face)
     if variant == ROW:
         out["buttons"] = card_words.row_buttons(lang)
         # Its language too, as every other card says it: the widget writes the opening in it (CodeRabbit #270).
@@ -555,6 +693,11 @@ def _with_after_words(
 
     if lang:
         out["lang"] = lang
+    if trigger == "ads" and not full_trip(trip) and _names_a_destination(with_keyword(trip)):
+        # ADR A7 (20 Nov): the ads card names a place but no dates, so no instant answer to its yes; its own
+        # channel button still lets the visitor leave one contact in one tap (and stays as the pill).
+        out["channel"] = card_words.card_channel(card_words.device_channel(device), lang)
+        return out
     if not full_trip(trip) or variant == CONTACT:
         return out
     line = _trip_line(trip, lang) or ""
