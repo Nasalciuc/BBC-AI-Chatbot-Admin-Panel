@@ -272,6 +272,7 @@ def trip_line(trip: Optional[TripContext], lang: Optional[str] = None) -> Option
 # class") never becomes one; the search words around it are dropped, a country after a city goes ("naples
 # italy" → Naples), at most three words stay, and the result passes the trip's own name rule. Nothing else of
 # the keyword is ever said back, and none of it reaches a lead.
+_KW_TO = re.compile(r"\bto\s+(.+)$")
 _KW_PLACE = re.compile(r"\b(?:to|in)\s+(.+)$")
 _KW_END = re.compile(
     r"\b(?:in|from|for|on|with|via|during|next|this|and|or|jan|january|feb|february|mar|march|apr|april|may|"
@@ -293,13 +294,16 @@ _KW_COUNTRIES = frozenset({
 })
 _KW_FIRST = re.compile(r"\b(?:first|1st)\b")
 _KW_BUSINESS = re.compile(r"\b(?:business|biz)\b")
+_KW_PREMIUM_ECONOMY = re.compile(r"\bpremium\s+economy\b")
+_KW_ECONOMY = re.compile(r"\beconomy\b")
 
 
 def keyword_place(keyword: Optional[str]) -> Optional[str]:
     """The place an ad's search names after "to"/"in", as a name ("Rome", "New York"), or None."""
     if not keyword:
         return None
-    found = _KW_PLACE.search(keyword)
+    # "to" first: in "flights in business class to rome" the place follows "to", not "in" (CodeRabbit #272).
+    found = _KW_TO.search(keyword) or _KW_PLACE.search(keyword)
     if not found:
         return None
     seg = _KW_END.split(found.group(1), maxsplit=1)[0]
@@ -312,12 +316,17 @@ def keyword_place(keyword: Optional[str]) -> Optional[str]:
 
 
 def keyword_cabin(keyword: Optional[str]) -> Optional[str]:
-    """"first" or "business" when the ad's search names one, else None."""
+    """The cabin the ad's search names — "first", "business", "premium_economy" or "economy" — else None. A
+    search for economy on a business class page is not answered with business fares (CodeRabbit #272)."""
     if not keyword:
         return None
     if _KW_FIRST.search(keyword):
         return "first"
-    return "business" if _KW_BUSINESS.search(keyword) else None
+    if _KW_BUSINESS.search(keyword):
+        return "business"
+    if _KW_PREMIUM_ECONOMY.search(keyword):
+        return "premium_economy"
+    return "economy" if _KW_ECONOMY.search(keyword) else None
 
 
 def with_keyword(trip: Optional[TripContext]) -> Optional[TripContext]:
@@ -337,10 +346,16 @@ def with_keyword(trip: Optional[TripContext]) -> Optional[TripContext]:
     return trip.model_copy(update=update) if update else trip
 
 
+# The longest title the widget takes (bbc-widget api.ts, TITLE_MAX): two 40-character places, the dates, nine
+# travellers, the cabin and "aller simple" come to ~175, so a title never reaches it; the cap only guards the
+# promise that a title the server sends is one the widget shows (CodeRabbit #272).
+TITLE_MAX = 240
+
+
 def _title(trip: Optional[TripContext], lang: Optional[str] = None) -> Optional[str]:
-    """The phone card's title (ADR A3): "Providence → Madrid · Nov 17 – Nov 24 · Business class", with the
-    travellers when more than one and "one-way" when it is; "Rome · First class" for a destination alone.
-    None without a destination."""
+    """The phone card's title (ADR A3): "Springfield → Lakeside · Nov 17 – Nov 24 · Business class", with the
+    travellers when more than one and "one-way" when it is; "Lakeside · First class" for a destination alone.
+    None without a destination, or when it would not fit TITLE_MAX (the card then shows the whole message)."""
     route = _route_line(trip)
     if not route or trip is None:
         return None
@@ -355,7 +370,8 @@ def _title(trip: Optional[TripContext], lang: Optional[str] = None) -> Optional[
         parts.append(cabins[trip.cabin])
     if trip.trip_type == "one_way":
         parts.append(proactive_i18n.ONE_WAY[lang if lang in proactive_i18n.ONE_WAY else "en"])
-    return " · ".join(p for p in parts if p)
+    title = " · ".join(p for p in parts if p)
+    return title if len(title) <= TITLE_MAX else None
 
 
 def brand_for(site: Optional[str]) -> str:

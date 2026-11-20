@@ -64,6 +64,12 @@ def test_the_keyword_is_no_trip_and_never_reaches_a_lead():
     ("business class to the usa from lakeside", None, "business"),                 # the visitors' own country
     ("business class flights to marrakesh", "Marrakesh", "business"),              # "mar…" is no month
     ("flights to x", None, None),
+    # CodeRabbit #272: the place follows "to" when both are there; "in" alone still names one.
+    ("flights in business class to lakeside", "Lakeside", "business"),
+    ("business class in lakeside", "Lakeside", "business"),
+    # …and an economy search is one (premium economy before economy: it says both).
+    ("premium economy flights to lakeside", "Lakeside", "premium_economy"),
+    ("economy flights to lakeside", "Lakeside", "economy"),
     ("flights to west new lake shore", None, None),                              # four words: no name
 ])
 def test_the_place_is_read_only_after_to_and_the_cabin_from_its_words(keyword, place, cabin):
@@ -104,6 +110,19 @@ def test_without_a_keyword_the_english_words_are_word_for_word_as_before():
     dated = TripContext(source="route_page", destination_name="Lakeside", depart_date=_day(40))
     text, _ = proactive.compose("reader", dated, "bbc")
     assert text.endswith("Want an agent to check business class fares for these dates?")
+
+
+@pytest.mark.parametrize("cabin, lang, words", [
+    ("premium_economy", None, "premium economy fares"), ("economy", None, "economy fares"),
+    ("premium_economy", "es", "tarifas en Premium Economy"), ("economy", "fr", "les tarifs en classe Économique"),
+])
+def test_an_economy_search_on_a_business_page_is_not_answered_with_business_fares(cabin, lang, words):
+    keyword = "premium economy flights to lakeside" if cabin == "premium_economy" else "economy flights to lakeside"
+    trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business", keyword=keyword)
+    text, _ = proactive.compose("ads", trip, "bbc", lang=lang)
+    assert words in text
+    assert proactive.card_face("ads", trip, lang=lang)["headline"].endswith(
+        proactive_i18n.TITLE_CABINS[lang or "en"][cabin])
 
 
 @pytest.mark.parametrize("lang, first", [("es", "en Primera clase"), ("fr", "en Première classe")])
@@ -176,6 +195,21 @@ def test_the_beat_card_asks_its_own_question():
 def test_one_traveller_is_not_in_the_title_and_one_way_is():
     face = proactive.card_face("kayak", _kayak(trip_type="one_way"))
     assert face["headline"] == f"Springfield → Lakeside · {proactive._dates(_kayak())} · Business class · one-way"
+
+
+@pytest.mark.parametrize("lang", [None, "es", "fr"])
+def test_the_longest_title_a_trip_allows_still_fits_what_the_widget_takes(lang):
+    # Two 40-character places, both dates, six travellers, the longest cabin and one-way (CodeRabbit #272).
+    trip = TripContext(source="kayak", origin_name="A" * 40, destination_name="B" * 40, depart_date=_day(40),
+                       return_date=_day(49), trip_type="one_way", cabin="premium_economy", adults=2, children=2,
+                       infants=2)
+    title = proactive.card_face("kayak", trip, lang=lang)["headline"]
+    assert len(title) <= proactive.TITLE_MAX == 240     # bbc-widget api.ts TITLE_MAX: the same number
+
+
+def test_a_title_over_the_cap_is_no_title(monkeypatch):
+    monkeypatch.setattr(proactive, "TITLE_MAX", 10)
+    assert proactive.card_face("kayak", _kayak()) is None
 
 
 @pytest.mark.parametrize("trigger", ["quote", "reader", "note", "exit"])

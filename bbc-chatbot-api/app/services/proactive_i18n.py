@@ -161,11 +161,15 @@ CABINS: dict[str, dict[str, str]] = {
 }
 # The cabin the fares are for, in the card's words (ADR A6, 20 Nov): what the visitor searched, business by
 # default. Bing, 13-20 Nov: 685 of the 1,971 visitors on a destination page had typed "first class", and the
-# card spoke of business class fares. Economy and Premium Economy are not sold through the card: business.
+# card spoke of business class fares. A search for economy or premium economy is said as one too (CodeRabbit
+# #272): the leads take economy, and an agent quotes what was asked for.
 CABIN_FARES: dict[str, dict[str, str]] = {
-    "en": {"business": "business class", "first": "first class"},
-    "es": {"business": "en clase Business", "first": "en Primera clase"},
-    "fr": {"business": "en classe Affaires", "first": "en Première classe"},
+    "en": {"business": "business class", "first": "first class", "premium_economy": "premium economy",
+           "economy": "economy"},
+    "es": {"business": "en clase Business", "first": "en Primera clase", "premium_economy": "en Premium Economy",
+           "economy": "en clase Económica"},
+    "fr": {"business": "en classe Affaires", "first": "en Première classe", "premium_economy": "en Premium Économique",
+           "economy": "en classe Économique"},
 }
 # "one-way" after the dates (ADR A4): the site's form showed one-way searches as round trips.
 ONE_WAY: dict[str, str] = {"en": "one-way", "es": "solo ida", "fr": "aller simple"}
@@ -181,9 +185,9 @@ TITLE_CABINS: dict[str, dict[str, str]] = {
 
 
 def cabin_fares(lang: Optional[str], cabin: Optional[str]) -> str:
-    """"first class" when the visitor searched first, else "business class" (in `lang`)."""
+    """The searched cabin's fares in `lang` ("first class", "premium economy"…), "business class" when none."""
     words = CABIN_FARES.get(lang or "en", CABIN_FARES["en"])
-    return words["first" if cabin == "first" else "business"]
+    return words.get(cabin or "", words["business"])
 
 
 # "4 adults in First": the word between the travellers and the cabin.
