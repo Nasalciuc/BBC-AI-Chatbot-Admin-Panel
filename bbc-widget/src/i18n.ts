@@ -31,8 +31,8 @@ export function timeZone(): string {
 
 const WORDS = {
   en: {
-    whatsappLabel: 'Your WhatsApp number',
-    whatsappHint: 'The agent writes to this number on WhatsApp.',
+    phoneLabel: 'Your mobile number',
+    phoneHint: 'The agent texts the fares to this number.',
     emailLabel: 'Your email',
     emailHint: 'The agent sends the fares to this email.',
     priceLabel: 'Price you saw (optional)',
@@ -41,14 +41,14 @@ const WORDS = {
     country: 'Country code',
     badPhone: 'Check the number: it looks too short or too long.',
     badEmail: 'Check the email address.',
-    sentWhatsapp: 'WhatsApp',
+    sentSms: 'Text message',
     sentEmail: 'Email',
     sentPrice: 'Price seen',
     hide: 'Hide',
   },
   es: {
-    whatsappLabel: 'Su número de WhatsApp',
-    whatsappHint: 'El agente le escribe por WhatsApp a este número.',
+    phoneLabel: 'Su número de móvil',
+    phoneHint: 'El agente le envía las tarifas por SMS a este número.',
     emailLabel: 'Su correo',
     emailHint: 'El agente le envía las tarifas a este correo.',
     priceLabel: 'Precio que vio (opcional)',
@@ -57,14 +57,14 @@ const WORDS = {
     country: 'Código de país',
     badPhone: 'Revise el número: parece muy corto o muy largo.',
     badEmail: 'Revise el correo.',
-    sentWhatsapp: 'WhatsApp',
+    sentSms: 'SMS',
     sentEmail: 'Correo',
     sentPrice: 'Precio visto',
     hide: 'Ocultar',
   },
   fr: {
-    whatsappLabel: 'Votre numéro WhatsApp',
-    whatsappHint: "L'agent vous écrit sur WhatsApp à ce numéro.",
+    phoneLabel: 'Votre numéro de mobile',
+    phoneHint: "L'agent vous envoie les tarifs par SMS à ce numéro.",
     emailLabel: 'Votre e-mail',
     emailHint: "L'agent vous envoie les tarifs à cette adresse.",
     priceLabel: 'Prix vu (facultatif)',
@@ -73,7 +73,7 @@ const WORDS = {
     country: 'Indicatif',
     badPhone: 'Vérifiez le numéro : il semble trop court ou trop long.',
     badEmail: "Vérifiez l'adresse e-mail.",
-    sentWhatsapp: 'WhatsApp',
+    sentSms: 'SMS',
     sentEmail: 'E-mail',
     sentPrice: 'Prix vu',
     hide: 'Masquer',
@@ -87,11 +87,12 @@ export function words(lang: Lang): Record<WordKey, string> {
 }
 
 /** What goes out as the client's message when they leave a contact on a channel — what the agent reads:
- *  "WhatsApp: +61 412 345 678", "Email: client@example.com · Price seen: 4,200". */
-export function channelMessage(lang: Lang, kind: 'whatsapp' | 'email', contact: string, price?: string): string {
+ *  "Text message: +61 412 345 678", "Email: client@example.com · Price seen: 4,200". The words are the
+ *  server's button labels (app/services/card_words.py), so the chip and the message say the same. */
+export function channelMessage(lang: Lang, kind: 'sms' | 'email', contact: string, price?: string): string {
   const w = words(lang)
   const sep = lang === 'fr' ? ' : ' : ': '
-  const head = `${kind === 'whatsapp' ? w.sentWhatsapp : w.sentEmail}${sep}${contact}`
+  const head = `${kind === 'sms' ? w.sentSms : w.sentEmail}${sep}${contact}`
   const seen = (price || '').trim()
   return seen ? `${head} · ${w.sentPrice}${sep}${seen}` : head
 }

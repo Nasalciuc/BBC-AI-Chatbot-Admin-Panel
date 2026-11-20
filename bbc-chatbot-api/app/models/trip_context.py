@@ -17,6 +17,7 @@ a message or the panel as free text.
 from __future__ import annotations
 
 from datetime import date, timedelta
+import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -47,12 +48,31 @@ def _name(v) -> Optional[str]:
     return s
 
 
+_KEYWORD_KEEP = re.compile(r"[^a-z0-9 '&-]+")
+
+
+def _keyword(v) -> Optional[str]:
+    """What the visitor typed in Google or Bing before the ad (utm_term), as the card may read it: lower case,
+    letters, digits, spaces and ' & - only, 3–80 characters with at least three letters. An ad id, markup or
+    anything longer → None. Never said back as text: app.services.proactive reads a place and a cabin from it."""
+    if not isinstance(v, str):
+        return None
+    s = " ".join(_KEYWORD_KEEP.sub(" ", v.lower()).split())
+    if not 3 <= len(s) <= 80 or sum(ch.isalpha() for ch in s) < 3:
+        return None
+    return s
+
+
 def _today() -> date:
     return date.today()
 
 
 class TripContext(BaseModel):
-    """What the page says the visitor searched for. Every field is optional."""
+    """What the page says the visitor searched for. Every field is optional.
+
+    `keyword` (20 Nov 2026): the search an ad visitor typed before the click. Not a field of the trip: the
+    ads card reads the destination and the cabin from it (proactive.with_keyword), and it never reaches a
+    lead (_entities_from_trip, is_empty leave it out)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -68,6 +88,12 @@ class TripContext(BaseModel):
     adults: Optional[int] = None
     children: Optional[int] = None
     infants: Optional[int] = None
+    keyword: Optional[str] = None
+
+    @field_validator("keyword", mode="before")
+    @classmethod
+    def _keyword(cls, v):
+        return _keyword(v)
 
     @field_validator("source", mode="before")
     @classmethod

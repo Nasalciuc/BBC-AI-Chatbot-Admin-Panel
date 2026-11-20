@@ -6,7 +6,7 @@ import {
   apiFetch, askBeforeYouGo, ensureVisitorToken, getVisitorId, getVisitorToken, readButtons, saveVisitorToken,
   type OfferConfirm,
 } from './api'
-import { guessCountry, readablePhone, validEmail, validWhatsapp, type ButtonKind, type ChannelKind } from './channel'
+import { guessCountry, readablePhone, validEmail, validPhone, type ButtonKind, type ChannelKind } from './channel'
 import { COUNTRIES, type Country } from './countries'
 import { ChannelIcon } from './FloatingButtons'
 import { browserLanguage, channelMessage, timeZone, widgetLang, words } from './i18n'
@@ -50,7 +50,7 @@ interface Chip {
 const asChips = (labels: string[]): Chip[] => labels.map(label => ({ label }))
 
 /** A button the server answers without the model (app/pipeline/card_buttons.py). */
-type ServerButton = 'yes' | 'whatsapp' | 'email' | 'wait'
+type ServerButton = 'yes' | 'sms' | 'email' | 'wait'
 
 interface SendOptions {
   button?: ServerButton
@@ -194,7 +194,7 @@ export function ChatWindow({
   const w = words(widgetLang())
   // The opening's tested sentence (C5, "beat"): the channel field offers the price they saw, optional.
   const beatRef = useRef(openingRef.current?.variant === 'beat')
-  // The field where the client leaves the contact the agent writes to (channel.ts): WhatsApp or email.
+  // The field where the client leaves the contact the agent writes to (channel.ts): SMS or email.
   const [channelForm, setChannelForm] = useState<ChannelKind | null>(() => openingRef.current?.firstChannel ?? null)
   const [channelValue, setChannelValue] = useState('')
   const [channelPrice, setChannelPrice] = useState('')
@@ -1204,7 +1204,7 @@ export function ChatWindow({
         const buttons = readButtons(data.buttons)
         if (buttons.length) setQuickReplies(buttons.map(b => ({ label: b.label, kind: b.kind })))
         else if (!localId && opts?.button) setQuickReplies(null)
-        if (opts?.button === 'whatsapp' || opts?.button === 'email') contactGivenRef.current = true
+        if (opts?.button === 'sms' || opts?.button === 'email') contactGivenRef.current = true
         if (storedAt) {
           if (!lastMsgTime.current || storedAt > lastMsgTime.current) lastMsgTime.current = storedAt
         } else {
@@ -1301,7 +1301,7 @@ export function ChatWindow({
     const text = chip.label
     posthog?.capture('chat_quick_reply_selected', { tunnel, ...(chip.kind ? { kind: chip.kind } : {}) })
     setQuickReplies(null)
-    if (chip.kind === 'whatsapp' || chip.kind === 'email') {
+    if (chip.kind === 'sms' || chip.kind === 'email') {
       // Where the agent writes: the field opens, nothing is sent before the contact is in it.
       openChannel(chip.kind)
       return
@@ -1319,7 +1319,7 @@ export function ChatWindow({
     sendMessage(text)
   }
 
-  // ── Where the agent writes (channel.ts): the client's WhatsApp number or email ─────────────────────
+  // ── Where the agent writes (channel.ts): the client's mobile number (SMS) or email ─────────────────
   const openChannel = (kind: ChannelKind) => {
     setChannelForm(kind)
     setChannelValue('')
@@ -1336,7 +1336,7 @@ export function ChatWindow({
     setChannelError('')
     // Back to the choice: the channels again (the answer they were offered under).
     setQuickReplies([
-      { label: 'WhatsApp', kind: 'whatsapp' },
+      { label: w.sentSms, kind: 'sms' },
       { label: w.sentEmail, kind: 'email' },
     ])
   }
@@ -1346,8 +1346,8 @@ export function ChatWindow({
     if (!kind) return
     const price = channelPrice.trim().slice(0, 40)
     let contact: string | null
-    if (kind === 'whatsapp') {
-      const e164 = validWhatsapp(COUNTRIES, channelValue, country)
+    if (kind === 'sms') {
+      const e164 = validPhone(COUNTRIES, channelValue, country)
       contact = e164 ? readablePhone(COUNTRIES, e164) : null
       if (!contact) return setChannelError(w.badPhone)
     } else {
@@ -1534,25 +1534,25 @@ export function ChatWindow({
             <button
               key={i}
               type="button"
-              class={`bw-chip${chip.kind === 'whatsapp' || chip.kind === 'email' ? ' bw-chip--channel' : ''}`}
+              class={`bw-chip${chip.kind === 'sms' || chip.kind === 'email' ? ' bw-chip--channel' : ''}`}
               onClick={() => handleQuickReply(chip)}
             >
-              {(chip.kind === 'whatsapp' || chip.kind === 'email') && <ChannelIcon kind={chip.kind} />}
+              {(chip.kind === 'sms' || chip.kind === 'email') && <ChannelIcon kind={chip.kind} />}
               {chip.label}
             </button>
           ))}
         </div>
       )}
 
-      {/* Where the agent writes: the client's WhatsApp number or email (channel.ts). */}
+      {/* Where the agent writes: the client's mobile number (SMS) or email (channel.ts). */}
       {channelForm && (
         <form class="bw-channel" onSubmit={submitChannel} noValidate>
           <label class="bw-channel__label" for="bw-channel-input">
             <ChannelIcon kind={channelForm} />
-            {channelForm === 'whatsapp' ? w.whatsappLabel : w.emailLabel}
+            {channelForm === 'sms' ? w.phoneLabel : w.emailLabel}
           </label>
           <div class={`bw-channel__row${channelError ? ' bw-channel__row--error' : ''}`}>
-            {channelForm === 'whatsapp' && (
+            {channelForm === 'sms' && (
               <select
                 class="bw-channel__cc"
                 aria-label={w.country}
@@ -1569,9 +1569,9 @@ export function ChatWindow({
               ref={channelInputRef}
               id="bw-channel-input"
               class="bw-channel__input"
-              type={channelForm === 'whatsapp' ? 'tel' : 'email'}
-              inputMode={channelForm === 'whatsapp' ? 'tel' : 'email'}
-              autoComplete={channelForm === 'whatsapp' ? 'tel' : 'email'}
+              type={channelForm === 'sms' ? 'tel' : 'email'}
+              inputMode={channelForm === 'sms' ? 'tel' : 'email'}
+              autoComplete={channelForm === 'sms' ? 'tel' : 'email'}
               enterkeyhint="send"
               value={channelValue}
               aria-invalid={channelError ? 'true' : undefined}
@@ -1597,7 +1597,7 @@ export function ChatWindow({
           )}
           {channelError
             ? <div class="bw-channel__error" id="bw-channel-hint" role="alert">{channelError}</div>
-            : <div class="bw-channel__hint" id="bw-channel-hint">{channelForm === 'whatsapp' ? w.whatsappHint : w.emailHint}</div>}
+            : <div class="bw-channel__hint" id="bw-channel-hint">{channelForm === 'sms' ? w.phoneHint : w.emailHint}</div>}
           <div class="bw-channel__actions">
             <button type="button" class="bw-channel__back" onClick={closeChannel}>{w.back}</button>
             <button type="submit" class="bw-channel__send">{w.send}</button>

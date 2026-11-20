@@ -21,6 +21,11 @@ Prices (owner, 18 Nov 2026: only a consultant ever says a fare): a sentence of a
 reply that names an amount of money is dropped whole, always — not only in 'enforce' —
 and the reply ends with PRICE_LINE. A streamed sentence that holds a digit or a currency
 sign is held until it ends, so an amount never goes out before the check.
+
+The long dash (owner, 20 Nov 2026: "se spală că e AI"): every AI reply the client reads, the
+model's and the fixed words alike, has a comma where it had "—", always (no_long_dash), and so
+does a streamed one (StreamGuard). The en dash of a date range ("Dec 30 – Jan 6") is another
+character and stays.
 """
 
 from __future__ import annotations
@@ -275,7 +280,8 @@ _CUR_WORDS = ("usd", "us$", "r$", "eur", "euro", "euros", "gbp", "cad", "aud", "
               "shekels", "kr", "zł", "rs", "rs.")
 _CUR_PREFIXES = frozenset(w[:i] for w in _CUR_WORDS for i in range(1, len(w) + 1))
 _TRAILING_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_][\w.$]{0,7}\Z")
-PRICE_LINE = "Exact fares come from your consultant — they check live availability for your dates."
+# No long dash: it is said to the client as it is (CodeRabbit #272; the prompt's own words, rule 5c).
+PRICE_LINE = "Exact fares come from your consultant. They check live availability for your dates."
 
 
 def _pieces(text: str) -> list[str]:
@@ -403,6 +409,30 @@ def strip_amounts(text: Optional[str]) -> Optional[str]:
     return _sub_amounts(text, KB_AMOUNT_NOTE)
 
 
+# The long dash and how it is said instead. A range of numbers keeps a range's dash ("2–3 days").
+_DASH_IN_RANGE = re.compile(r"(?<=\d)([ \t]*)—([ \t]*)(?=\d)")
+_DASH_AT_LINE_START = re.compile(r"(?m)^[ \t]*—[ \t]*")
+_DASH_BEFORE_A_STOP = re.compile(r"[ \t]*—[ \t]*(?=[.!?,;:)\n]|\Z)")
+_DASH = re.compile(r"[ \t]*—[ \t]*")
+_COMMA_AFTER_A_STOP = re.compile(r"([.!?,;:(]), ")
+# What a streamed piece keeps back: a dash at its end, or the spaces after a word, which the next piece may
+# turn into ", ". The space after a full stop goes out: a sentence does not start with a dash.
+_DASH_TAIL = re.compile(r"[ \t]*—[ \t]*\Z|(?<![.!?\n])[ \t]+\Z")
+
+
+def no_long_dash(text: Optional[str]) -> Optional[str]:
+    """The text with a comma where it had the long dash: "No problem at all — your consultant will stick to
+    email" → "No problem at all, your consultant will stick to email". At the start of a line, or before a
+    full stop or another mark, the dash just goes; between two numbers it is a range's dash ("2–3")."""
+    if not text or "—" not in text:
+        return text
+    out = _DASH_IN_RANGE.sub("\\1–\\2", text)
+    out = _DASH_AT_LINE_START.sub("", out)
+    out = _DASH_BEFORE_A_STOP.sub("", out)
+    out = _DASH.sub(", ", out)
+    return _COMMA_AFTER_A_STOP.sub(r"\1 ", out)
+
+
 def _price_checked(text: str, conversation_id: Optional[str]) -> str:
     clean, dropped = scrub_prices(text)
     if dropped:
@@ -416,10 +446,12 @@ async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = No
     """Scrub a stored AI reply. In 'log' mode the text is returned unchanged.
 
     The conversation's own contact is never a finding. Logs and alerts carry
-    counts and kinds, never the values (rule 7: no PII at INFO or above)."""
+    counts and kinds, never the values (rule 7: no PII at INFO or above).
+    The long dash goes in every mode (no_long_dash), like an amount."""
     if not text:
         return text
-    text = _price_checked(text, conversation_id)
+    # After the price check: whatever it put in the reply is said without the long dash too (CodeRabbit #272).
+    text = no_long_dash(_price_checked(text, conversation_id))
     mode = _mode()
     OUTPUT_GUARD_HEALTH["scanned"] += 1
     clean, removed = _scrub(text)
@@ -501,17 +533,44 @@ class StreamGuard:
     Prices, in every mode: a sentence goes out as it comes until it shows a
     digit or a currency sign; from there it is held to its end and dropped if
     it names an amount (the stored reply, ending with PRICE_LINE, replaces the
-    stream at stream_end). A sentence without a digit streams as before."""
+    stream at stream_end). A sentence without a digit streams as before.
+
+    The long dash, in every mode: what goes out has a comma in its place, as the
+    stored reply will (no_long_dash). A piece's trailing spaces and dash wait for
+    the next piece, so " —" and "— " split between two chunks still read ", "."""
 
     def __init__(self, own: Optional[set[str]] = None):
         self.enforce = _mode() == "enforce"
         self.own = own or set()
         self._held = ""
         self._holding = False   # 'log' mode: the current sentence showed a digit or a currency sign
+        self._dash_tail = ""    # the last piece's trailing spaces and dash, not sent yet
+        self._sent = ""         # the last two characters sent: what the next piece's first dash follows
+
+    def _no_dash(self, out: str, final: bool = False) -> str:
+        """What goes out of `out`, the long dash said as a comma; the tail it may still need is kept."""
+        text, self._dash_tail = self._dash_tail + (out or ""), ""
+        if not final:
+            tail = _DASH_TAIL.search(text)
+            if tail and tail.start() < len(text):
+                text, self._dash_tail = text[:tail.start()], text[tail.start():]
+        if not text:
+            return text
+        # The piece is read after what went out before it, as the whole reply would be: a dash after "Done. "
+        # just goes, after "Hi," it is no second comma, at a line's start it goes, mid-line it is a comma
+        # (CodeRabbit #272). What went out is never changed: only what follows it is sent.
+        lead = self._sent
+        said = no_long_dash(lead + text)
+        out = said[len(lead):] if said.startswith(lead) else no_long_dash(text)
+        self._sent = (lead + out)[-2:]
+        return out
 
     def feed(self, delta: str) -> str:
         if not delta:
             return delta
+        return self._no_dash(self._feed(delta))
+
+    def _feed(self, delta: str) -> str:
         if not self.enforce:
             return self._watch_prices(delta)
         self._held += delta
@@ -571,6 +630,9 @@ class StreamGuard:
 
     def flush(self) -> str:
         """What is still held, scrubbed — for a reply that ends without a stored row."""
+        return self._no_dash(self._flush(), final=True)
+
+    def _flush(self) -> str:
         piece, self._held = self._held, ""
         self._holding = False
         if not piece:

@@ -3,9 +3,9 @@
  * "Chat proactiv — analiza și dezbaterea", 15 Nov 2026; `ads` 18 Nov):
  *
  *   quote   pressed "Get free quote", is not on /thank-you, and stopped working on the form
- *   kayak   came from Kayak (paid, ≈$30 a visit) and is still here after 5 s in view
- *   ads     came from a Google or Bing ad (a paid click too), is on a page that names a destination,
- *           and is still here after 5 s in view, as kayak
+ *   kayak   came from Kayak (paid, ≈$30 a visit) and is still here after 2.5 s in view
+ *   ads     came from a Google or Bing ad (a paid click too), is on a page that names a destination or
+ *           came with a search that names one ("… to Rome"), and is still here after 4 s in view
  *   reader  25 s in view and scrolled at least half a screen
  *
  * When two qualify at once the first in that order wins; one moment per visit, a 24 h pause after
@@ -45,6 +45,14 @@
  * the 35 panels it opened on 16–17 Nov none got an answer, and 21 of the visitors were gone within
  * 10 s — the panel opened as the tab closed. The pointer leaving still ends a pressed quote form's wait.
  *
+ * The visitors who decide in seconds (ADR A1, 20 Nov): on 16-20 Nov the Kayak card came 7.3 s after the page
+ * (median, phones) although its moment was 5 s: the widget started 3.4 s after the page showed, then watched
+ * WATCHED_FIRST_S more, then waited ~0.6 s for the answer. 76% of the Kayak phone visitors were still there at
+ * 4 s, 54% at 7.5 s. Every kayak and ads moment of 18-20 Nov (1,418) had the site's signals, which replay a quote
+ * form opened before the widget started: there the first watch is WATCHED_FIRST_SIGNALS_S. The C4 test (4 s
+ * against 5 s) is retired: both sides came at ~7 s, so it measured nothing. Ads at 4 s, not 3: on a computer the
+ * ads card is the open panel, over a page not read yet.
+ *
  * Pure: proactive.ts measures the page and asks; this decides (node-testable).
  */
 
@@ -76,15 +84,8 @@ export function offAfter(kept: string | null, trigger: Trigger): string {
  *  chat got past the form the note led to). The note is no moment: no arm and no switch holds it. */
 export type OpeningTrigger = Trigger | 'note'
 
-export const KAYAK_VISIBLE_S = 5
-/** C4 (ADR-1b, 18 Nov 2026): the Kayak card at 4 s in view for half the visitors, against the 5 s of today,
- *  from C4_START_MS — after #269's 72 hours of measuring — until the server says the early side has had its
- *  300 cards (C4_HOLD_ARM). Never before 3 s: the card would cover a page nobody has read yet. */
-export const KAYAK_EARLY_S = 4
-export const C4_START_MS = Date.UTC(2026, 10, 21, 13, 49)
-/** The server's answer to an early card once the test is over: ask again at the usual moment. */
-export const C4_HOLD_ARM = 'c4_hold'
-export const ADS_VISIBLE_S = 5
+export const KAYAK_VISIBLE_S = 2.5
+export const ADS_VISIBLE_S = 4
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5
 export const QUOTE_IDLE_S = 8
@@ -99,6 +100,9 @@ export const QUOTE_WATCH_S = 180
 export const ACTIVE_WITHIN_S = 60
 /** The widget watches the page this long before any moment, whatever the time before it counted (above). */
 export const WATCHED_FIRST_S = 2
+/** The same, on a page that sends the site's signals (bbc-signals): what this watch was for — a quote form opened
+ *  before the widget started — the site's queue already told (ADR A1). */
+export const WATCHED_FIRST_SIGNALS_S = 0.5
 /** Someone typing in a field of the site (a search, a form) is left alone this long after a keystroke. */
 export const TYPING_QUIET_S = 5
 export const PAUSE_AFTER_DISMISS_MS = 24 * 60 * 60 * 1000
@@ -155,8 +159,8 @@ export interface PageState {
   exitIntent: boolean
   /** The moments the server switched off in this visit (TRIGGER_OFF_ARM): never picked again in it. */
   off: readonly Trigger[]
-  /** Seconds in view before the Kayak card: KAYAK_VISIBLE_S, or KAYAK_EARLY_S on the early side of C4. */
-  kayakS?: number
+  /** The page sends the site's signals (bbc-signals): the first watch is WATCHED_FIRST_SIGNALS_S. */
+  siteSignals?: boolean
 }
 
 /** No card on the thank-you page, the legal pages or the like (the paths the site uses, Nov 2026). */
@@ -169,7 +173,7 @@ export function blockedPath(path: string): boolean {
 export function pickTrigger(s: PageState): Trigger | null {
   if (blockedPath(s.path)) return null
   if (s.sinceActivityS > ACTIVE_WITHIN_S) return null
-  if (s.watchedS < WATCHED_FIRST_S) return null
+  if (s.watchedS < (s.siteSignals ? WATCHED_FIRST_SIGNALS_S : WATCHED_FIRST_S)) return null
 
   // A send in flight holds every moment off for as long as the form (or the site) says it is in flight,
   // also past the quote watch below: the visitor is waiting for the answer, not for us.
@@ -189,7 +193,7 @@ export function pickTrigger(s: PageState): Trigger | null {
   if (typing) return null
   // The quote form being worked on, pressed or not: no card over it (only the quote moment above).
   if (s.sinceQuoteFormS !== null && s.sinceQuoteFormS <= QUOTE_WATCH_S) return null
-  if (on('kayak') && s.kayak && s.visibleS >= (s.kayakS ?? KAYAK_VISIBLE_S)) return 'kayak'
+  if (on('kayak') && s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
   if (on('ads') && s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
   if (on('reader') && s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
   return null
@@ -207,6 +211,23 @@ export function adVisit(kept: { gclid?: string; msclkid?: string; utm_source?: s
   if (source === 'kayak') return false
   if (kept.gclid || kept.msclkid) return true
   return AD_SOURCES.has(source) && AD_MEDIUMS.has((kept.utm_medium || '').trim().toLowerCase())
+}
+
+/** What an ad visitor typed before the click (utm_term), as the server reads it (app/models/trip_context.py,
+ *  `_keyword`): lower case, letters, digits, spaces and ' & - only, 3–80 characters with at least three letters;
+ *  anything else (an ad id) is no keyword. */
+export function adKeyword(term: string | null | undefined): string | null {
+  if (typeof term !== 'string') return null
+  const s = term.toLowerCase().replace(/[^a-z0-9 '&-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (s.length < 3 || s.length > 80 || (s.match(/[a-z]/g) || []).length < 3) return null
+  return s
+}
+
+/** The search may name a place: a word after "to" or "in" ("first class flights to rome"). The server reads the
+ *  place itself (proactive.keyword_place) and switches this visit's ads moment off when it finds none; this only
+ *  keeps the moment from asking about searches that plainly name none (ADR A5). */
+export function keywordNamesPlace(keyword: string | null): boolean {
+  return !!keyword && /\b(?:to|in) [a-z]{2,}/.test(keyword)
 }
 
 /** How much of the time before this script started counts as in view, in ms: from the page's first paint
@@ -238,19 +259,6 @@ export function pauseRunning(pauseUntil: string | null, nowMs: number): boolean 
  *  with it: app/services/proactive.py, _REPLIES; in Spanish and French, proactive_i18n.py). */
 export function isNotNow(text: string): boolean {
   return /^(?:not now|ahora no|pas maintenant)$/i.test((text || '').trim())
-}
-
-/** C4's side for this visitor: 'early' or 'now', stable per visitor id, from C4_START_MS; null before it,
- *  without an id, or once this browser heard the test is over (`over`). */
-export function c4Arm(visitorId: string | null, nowMs: number, over = false): 'early' | 'now' | null {
-  if (!visitorId || over || !(nowMs >= C4_START_MS)) return null
-  // FNV-1a: the same id always lands on the same side.
-  let h = 0x811c9dc5
-  for (const ch of `c4:${visitorId}`) {
-    h ^= ch.charCodeAt(0)
-    h = Math.imul(h, 0x01000193) >>> 0
-  }
-  return h % 2 === 0 ? 'early' : 'now'
 }
 
 /** What a reply was, for the measurements (never its text): the card's first button, another button, or typed. */

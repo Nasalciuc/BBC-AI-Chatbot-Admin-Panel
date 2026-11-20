@@ -200,8 +200,8 @@ test('kayak before reader', () => {
 
 // ── ads: a Google or Bing ad, on a page about one destination (owner, 18 Nov) ─────────────────────────
 
-test('ads: from an ad, on a page that names a destination, still here after 5 s in view', () => {
-  assert.equal(ADS_VISIBLE_S, 5)
+test('ads: from an ad, on a page that names a destination, still here after 4 s in view', () => {
+  assert.equal(ADS_VISIBLE_S, 4)
   assert.equal(at({ ad: true, destination: true, visibleS: ADS_VISIBLE_S - 0.5 }), null)
   assert.equal(at({ ad: true, destination: true, visibleS: ADS_VISIBLE_S }), 'ads')
   // No destination on the page (the home page, the deals): no ads card; the reader may still come.
@@ -244,7 +244,7 @@ test('an ad visit: the click id Google or Bing adds, or their tags with a paid m
 
 test('the hook reads the ad visit on the tab\'s first touch and the page\'s trip only for one', () => {
   assert.match(hook, /function adVisitNow\(\): boolean \{\s+return adVisit\(getUtm\(\)\)\s+\}/)
-  assert.match(hook, /const ad = adVisitNow\(\)[\s\S]*?ad,\s+\/\/[^\n]*\n\s+destination: ad && destinationTrip\(\) !== null,/)
+  assert.match(hook, /const ad = adVisitNow\(\)[\s\S]*?ad,\s+(?:\/\/[^\n]*\n\s+)+destination: ad && \(destinationTrip\(\) !== null \|\| keywordNamesPlace\(adKeywordNow\(\)\)\),/)
 })
 
 test('the ads card takes the newest of the page\'s trips that names a destination, for the moment and the words', () => {
@@ -256,7 +256,9 @@ test('the ads card takes the newest of the page\'s trips that names a destinatio
   assert.equal(fromTitle?.destination_name, 'Paris')
   assert.deepEqual(pickTrip(...[fromAddress, fromTitle].filter(hasContext)), fromTitle)
   assert.match(hook, /function destinationTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\.filter\(hasContext\)\)\s+\}/)
-  assert.match(hook, /const trip = trigger === 'ads' \? destinationTrip\(\) : currentTrip\(\)/)
+  assert.match(hook, /const trip = trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)/)
+  // ADR A5: the ad's search rides beside the page's destination (or alone, on the home page).
+  assert.match(hook, /function adsTrip\(\): TripPayload \| null \{\s+const dest = destinationTrip\(\)\s+const keyword = adKeywordNow\(\)\s+if \(!keyword\) return dest\s+return \{ \.\.\.\(dest \?\? \{ source: 'route_page' as const \}\), keyword \}\s+\}/)
 })
 
 test('a place name the server would drop names no place here either, and the title\'s takes over', () => {
@@ -309,10 +311,10 @@ test('a place name the server would drop names no place here either, and the tit
 test('an ads answer whose destination left the page meanwhile is dropped and measured', () => {
   // CodeRabbit #269, round 2: the address, the title or the site's word changed while the answer was on its way.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /const adsTrip = trigger === 'ads' \? JSON\.stringify\(trip\) : null/)
-  assert.match(ask, /momentPassed\(trigger, before, adsTrip\)/)
+  assert.match(ask, /const askedAds = trigger === 'ads' \? JSON\.stringify\(trip\) : null/)
+  assert.match(ask, /momentPassed\(trigger, before, askedAds\)/)
   const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
-  assert.match(why, /if \(trigger === 'ads' && JSON\.stringify\(destinationTrip\(\)\) !== adsTrip\) return 'trip_changed'/)
+  assert.match(why, /if \(trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedAds\) return 'trip_changed'/)
 })
 
 test('a destination code equal to the origin\'s names no place (the server drops it)', () => {
@@ -584,7 +586,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),\s+\.\.\.\(side \? \{ c4: side \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })

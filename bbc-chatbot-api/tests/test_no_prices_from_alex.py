@@ -124,14 +124,17 @@ def test_log_mode_stream_holds_a_sentence_from_its_first_digit_and_drops_an_amou
 def test_log_mode_stream_sends_a_sentence_with_digits_but_no_amount(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
     g = StreamGuard()
+    # The long dash goes out as a comma (20 Nov: it reads as a machine's), the stored reply's way.
     assert _stream(g, ["Dec 10 for 2", " adults — noted. ", "An agent checks fares."]) == \
-        "Dec 10 for 2 adults — noted. An agent checks fares."
+        "Dec 10 for 2 adults, noted. An agent checks fares."
 
 
 def test_log_mode_stream_still_sends_text_without_digits_chunk_by_chunk(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
     g = StreamGuard()
-    assert [g.feed(c) for c in ["Happy to ", "help."]] == ["Happy to ", "help."]
+    # Each chunk goes out as it comes; only the space after a word waits for the next chunk, in case that
+    # one starts with a long dash (" —" goes out as ",").
+    assert [g.feed(c) for c in ["Happy to ", "help."]] == ["Happy to", " help."]
 
 
 def test_log_mode_stream_keeps_a_split_currency_word_until_it_is_whole(monkeypatch):

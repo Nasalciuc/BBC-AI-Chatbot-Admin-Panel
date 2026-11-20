@@ -32,6 +32,9 @@ export interface TripPayload {
   adults?: number
   children?: number
   infants?: number
+  /** ADR A5: an ad visitor's search before the click (triggers.ts adKeyword), for the ads card only: the server
+   *  reads the place and the cabin from it, never says it back, and never puts it in a lead. */
+  keyword?: string
 }
 
 const CODE = /^[A-Za-z]{3}$/

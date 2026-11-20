@@ -7,7 +7,7 @@
 
 import type { ButtonKind, ChannelKind, ChatButton } from './channel'
 
-const BUTTON_KINDS: readonly ButtonKind[] = ['whatsapp', 'email', 'wait', 'change']
+const BUTTON_KINDS: readonly ButtonKind[] = ['sms', 'email', 'wait', 'change']
 
 /** The server's buttons ({"kind", "label"}: app/services/card_words.py), each with a known kind and a label;
  *  anything else dropped. The widget acts on the kind, whatever the language of the label. */
@@ -22,10 +22,10 @@ export function readButtons(raw: unknown): ChatButton[] {
   })
 }
 
-/** One channel button (WhatsApp or email), or null. */
+/** One channel button (SMS or email), or null. */
 export function readChannel(raw: unknown): (ChatButton & { kind: ChannelKind }) | null {
   const [b] = readButtons([raw])
-  return b && (b.kind === 'whatsapp' || b.kind === 'email') ? (b as ChatButton & { kind: ChannelKind }) : null
+  return b && (b.kind === 'sms' || b.kind === 'email') ? (b as ChatButton & { kind: ChannelKind }) : null
 }
 
 const VISITOR_KEY = 'bbc_visitor_id'
@@ -83,6 +83,17 @@ export interface ProactiveOffer {
   buttons?: ChatButton[]
   /** The language the server composed the words in ("es", "fr"); absent: English. */
   lang?: string
+  /** ADR A3: the phone card's title (the trip) and its one question; the chat opens with `message`. */
+  headline?: string
+  card_text?: string
+}
+
+/** The longest card title the server sends (app/services/proactive.py, TITLE_MAX): the same number. */
+export const TITLE_MAX = 240
+
+/** A line of the server's for the card: a non-empty string up to `max` characters, else nothing. */
+function shortText(v: unknown, max: number): string | null {
+  return typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : null
 }
 
 /** A variant name as the server writes them ("open", "places", "contact"): anything else is dropped. */
@@ -118,8 +129,8 @@ export async function fetchProactiveOffer(
    *  moment, the kinds of the fields the form refused (siteSignals FIELD_KINDS, never a value). */
   body: {
     visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[]
-    /** The browser's language, the screen, a row beside the refused form, and the C4 side (proactive.ts). */
-    lang?: string; device?: 'phone' | 'computer'; place?: 'form'; c4?: 'early' | 'now'
+    /** The browser's language, the screen, and a row beside the refused form (proactive.ts). */
+    lang?: string; device?: 'phone' | 'computer'; place?: 'form'
   },
   timeoutMs: number,
   onTiming?: (t: OfferTiming) => void,
@@ -151,6 +162,10 @@ export async function fetchProactiveOffer(
     const confirmButtons = readButtons(data.confirm?.buttons)
     const channel = readChannel(data.channel)
     const buttons = readButtons(data.buttons)
+    // ADR A3: both or neither — a title without its question (or the reverse) would be half a card. The title's
+    // limit is the server's own cap (proactive.TITLE_MAX): a title it sends is one this shows (CodeRabbit #272).
+    const headline = shortText(data.headline, TITLE_MAX)
+    const cardText = shortText(data.card_text, 240)
     return done(null, {
       show: data.show,
       arm: data.arm,
@@ -161,6 +176,7 @@ export async function fetchProactiveOffer(
       ...(channel ? { channel } : {}),
       ...(buttons.length ? { buttons } : {}),
       ...(data.lang === 'es' || data.lang === 'fr' ? { lang: data.lang } : {}),
+      ...(headline && cardText ? { headline, card_text: cardText } : {}),
     })
   } catch (e) {
     // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON (a

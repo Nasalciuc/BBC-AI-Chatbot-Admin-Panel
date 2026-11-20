@@ -22,9 +22,11 @@ export function windowOf(value: unknown): OfferWindow {
   return (WINDOWS as readonly number[]).includes(n) ? (n as OfferWindow) : DEFAULT_WINDOW
 }
 
+// "text" is an SMS: the chat's SMS button and a client who typed "text me" (20 Nov: SMS in place of
+// WhatsApp; the agents text from the company's number). WhatsApp stays for older leads and clients who name it.
 const ASKED: Record<OfferChannel, string> = {
   whatsapp: 'WhatsApp',
-  text: 'a text',
+  text: 'an SMS',
   call: 'a call back',
   email: 'e-mail',
 }
@@ -47,7 +49,7 @@ export function channelLine(
   const call = hasPhone && !refused.has('no calls')
   const text = hasPhone && !refused.has('no texts')
   const email = !!r.email && !refused.has('no email')
-  const byPhone = call && text ? 'phone' : call ? 'a call' : text ? 'a text' : null
+  const byPhone = call && text ? 'phone' : call ? 'a call' : text ? 'an SMS' : null
   if (byPhone && email) return { text: `No channel asked: ${byPhone} or e-mail`, kind: 'any' }
   if (email) return { text: hasPhone ? 'E-mail only: no calls or texts' : 'Only an e-mail: send it there', kind: 'email' }
   if (call && text) return { text: 'Only a phone: call or text', kind: 'any' }

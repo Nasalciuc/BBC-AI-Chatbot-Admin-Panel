@@ -6,7 +6,7 @@ hands. We'll be in touch soon"; a second "thank you" got "your consultant takes 
 number: nobody could be in touch. Three things changed:
 
 - a goodbye is a message that says only goodbye ("thank you price matters" is a price worry);
-- a goodbye with no contact on file asks where the agent should write (WhatsApp or email, with the
+- a goodbye with no contact on file asks where the agent should write (SMS or email, with the
   buttons), once; a later one promises nothing and asks nothing again;
 - in a chat with no form, once the route is known, the email is the next question.
 
@@ -102,9 +102,9 @@ async def test_the_first_goodbye_asks_where_to_write_with_both_buttons():
         out = await card_buttons.goodbye_without_contact(_CID, {}, VisitorInfo(), _LEAD, before_save=guard)
     claim.assert_awaited_once_with(_CID, card_buttons.BEFORE_YOU_GO_KEY)
     guard.assert_awaited_once()
-    assert out is not None and out.message.startswith("Before you go — an agent can send you the fares for ")
-    assert "WhatsApp or email?" in out.message
-    assert [b["kind"] for b in out.buttons] == ["whatsapp", "email"]
+    assert out is not None and out.message.startswith("Before you go, an agent can send you the fares for ")
+    assert "by text or by email?" in out.message
+    assert [b["kind"] for b in out.buttons] == ["sms", "email"]
     assert "in touch" not in out.message.lower()
     assert said == [("ai", out.message)] and out.message_id == "m-ai"
     assert card_buttons.CARD_BUTTONS_HEALTH["goodbye_asked"] == 1
@@ -120,7 +120,7 @@ async def test_a_later_goodbye_promises_nothing_and_asks_nothing_again(meta, cla
     with patch.object(card_buttons, "_claim", new=AsyncMock(return_value=claimed)), \
          patch("app.services.conversation_service.add_message", new=_saved(said)):
         out = await card_buttons.goodbye_without_contact(_CID, meta, VisitorInfo(), _LEAD)
-    assert out.message == "Thanks for stopping by — whenever you'd like the fares, just write here."
+    assert out.message == "Thanks for stopping by. Whenever you'd like the fares, just write here."
     assert not out.buttons
     assert said == [("ai", out.message)]
     assert card_buttons.CARD_BUTTONS_HEALTH["goodbye_no_contact"] == 1
@@ -151,7 +151,7 @@ async def test_a_client_who_turned_a_channel_down_is_not_asked_again():
     with patch.object(card_buttons, "_claim", new=claim), \
          patch("app.services.conversation_service.add_message", new=_saved(said)):
         out = await card_buttons.goodbye_without_contact(_CID, {}, VisitorInfo(), _LEAD, "no calls, no texts")
-    assert out.message == "Thanks for stopping by — whenever you'd like the fares, just write here."
+    assert out.message == "Thanks for stopping by. Whenever you'd like the fares, just write here."
     assert not out.buttons
     claim.assert_not_awaited()
 
@@ -175,7 +175,7 @@ async def test_the_goodbye_speaks_the_clients_language():
          patch("app.services.conversation_service.add_message", new=_saved([])):
         first = await card_buttons.goodbye_without_contact(_CID, {"client_lang": "es"}, VisitorInfo(), _LEAD)
         later = await card_buttons.goodbye_without_contact(_CID, asked, VisitorInfo(), _LEAD)
-    assert first.message.startswith("Antes de irse:") and [b["label"] for b in first.buttons] == ["WhatsApp", "Correo"]
+    assert first.message.startswith("Antes de irse:") and [b["label"] for b in first.buttons] == ["SMS", "Correo"]
     assert later.message == "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí." and not later.buttons
 
 
@@ -237,8 +237,8 @@ async def test_thank_you_with_no_contact_asks_where_to_write_instead_of_saying_g
     run, gen, said = _turn("thank you")
     resp = await run()
     gen.assert_not_called()
-    assert resp.message.startswith("Before you go — an agent can send you the fares for ")
-    assert [b["kind"] for b in resp.buttons] == ["whatsapp", "email"]
+    assert resp.message.startswith("Before you go, an agent can send you the fares for ")
+    assert [b["kind"] for b in resp.buttons] == ["sms", "email"]
     assert ("ai", resp.message) in said
     assert all("in touch" not in text for _role, text in said)
 
@@ -260,7 +260,7 @@ async def test_a_silent_reservation_still_gets_the_goodbye():
     run, gen, said = _turn("thank you", mode_at_save="human", reserved=True)
     resp = await run()
     gen.assert_not_called()
-    assert resp.message.startswith("Before you go — an agent can send you the fares for ")
+    assert resp.message.startswith("Before you go, an agent can send you the fares for ")
     assert ("ai", resp.message) in said
 
 

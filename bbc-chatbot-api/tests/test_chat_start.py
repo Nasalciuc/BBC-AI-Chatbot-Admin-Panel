@@ -20,6 +20,7 @@ os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
+from app.ai.output_guard import no_long_dash
 from app.api.chat import ChatStartRequest, chat_start, _mark_client_active
 from app.ai.templates import TEMPLATES
 from app.models.chat import VisitorInfo
@@ -84,7 +85,8 @@ class TestChatStart:
         assert add_mock.await_count == 1
         args, kwargs = add_mock.await_args
         assert args[1] == "ai"
-        assert args[2] == res.message
+        # What is stored goes out: the output guard (db.add_message, mocked here) gives it its comma.
+        assert no_long_dash(args[2]) == res.message and "—" not in res.message
         roles = [c.args[1] for c in add_mock.await_args_list]
         assert "user" not in roles
         # The live path got the personalization inputs (metadata → SITE CONTEXT).
@@ -124,7 +126,7 @@ class TestChatStart:
         with p_block, p_conv, p_count, p_gen, p_add as add_mock:
             res = await chat_start(_start_request(visitor=visitor), _request_mock(), None)
 
-        assert res.message in TEMPLATES["welcome:sales:anonymous"]
+        assert res.message in [no_long_dash(t) for t in TEMPLATES["welcome:sales:anonymous"]]
         assert add_mock.await_count == 1
         assert add_mock.await_args.args[1] == "ai"
 
@@ -141,7 +143,7 @@ class TestChatStart:
                 _request_mock(),
                 None,
             )
-        assert res.message in TEMPLATES["welcome:support:anonymous"]
+        assert res.message in [no_long_dash(t) for t in TEMPLATES["welcome:support:anonymous"]]
         haiku.assert_not_called()
         sonnet.assert_not_called()
         assert add_mock.await_count == 1

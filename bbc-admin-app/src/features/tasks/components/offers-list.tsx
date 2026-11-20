@@ -41,7 +41,7 @@ function readWindow(): OfferWindow {
 
 const CHANNEL_ICON: Record<OfferChannel | 'any', { icon: React.ElementType; cls: string; label: string }> = {
   whatsapp: { icon: MessageCircle, cls: 'bg-k-e3f6ea text-k-0a6b35', label: 'WhatsApp' },
-  text: { icon: MessageSquareText, cls: 'bg-k-e6f0fb text-k-1f5fb0', label: 'Text' },
+  text: { icon: MessageSquareText, cls: 'bg-k-e6f0fb text-k-1f5fb0', label: 'SMS' },
   call: { icon: Phone, cls: 'bg-k-e6f0fb text-k-1f5fb0', label: 'Call' },
   email: { icon: Mail, cls: 'bg-k-efeaff text-k-4a36c4', label: 'E-mail' },
   any: { icon: Send, cls: 'bg-k-f2f2f2 text-k-555555', label: 'Any channel' },

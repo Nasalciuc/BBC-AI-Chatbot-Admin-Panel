@@ -363,6 +363,11 @@ class TestContactChannel:
         ("text, no calls", "email", "text, no calls, email"),
         ("email", "no email, text", "no email, text"),
         ("text", "text", "text"),
+        # CodeRabbit #272: SMS after WhatsApp is SMS, WhatsApp after SMS is WhatsApp; both at once stay both.
+        ("whatsapp", "text", "text"),
+        ("whatsapp, no calls", "text", "no calls, text"),
+        ("text", "whatsapp", "whatsapp"),
+        ("email", "text, whatsapp", "email, text, whatsapp"),
     ])
     def test_a_later_wish_replaces_its_opposite_and_keeps_the_rest(self, stored, new, merged):
         from app.pipeline.entity_extractor import merge_contact_channel

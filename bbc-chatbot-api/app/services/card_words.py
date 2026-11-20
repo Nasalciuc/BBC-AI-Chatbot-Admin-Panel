@@ -2,10 +2,14 @@
 
 From the "12 probleme Kayak și chat" debate, with the owner's word on the channel: "tu doar spune ca ii
 vom scrie, unde: pe email și WhatsApp" — no business number to message; the client says where the agent
-should write and leaves that one contact.
+should write and leaves that one contact. 20 Nov 2026, the owner: SMS in place of WhatsApp everywhere
+("peste tot în loc de WhatsApp să fie SMS"): the agents text from the company's number, and a US visitor
+— most of them — has texts, while about a third has WhatsApp. English says "text", Spanish and French
+"SMS", as people there say it. A WhatsApp tap from a widget still cached from before (a day at most) is
+still answered as WhatsApp: that client typed a number into a field that said WhatsApp.
 
 - A2 (ADR-5a, ADR-10a): the yes on a card that knows the whole trip is answered at once, without the
-  model: the trip said back, what happens next, and the buttons WhatsApp, Email and — while the team is
+  model: the trip said back, what happens next, and the buttons SMS, Email and — while the team is
   at work (the Team line) — "I'll wait here" (ADR-5b). In 24 of 25 card chats Alex's first answer asked
   for the email, 6.4 s after the tap, and 7 of the 25 left right there.
 - The answer to a channel the client picked: the contact said back with when the agent writes (the Team
@@ -16,48 +20,49 @@ should write and leaves that one contact.
 - C1/C2 (ADR-3a/3b): the card's own channel button, and the pill that stays after "Not now".
 
 English, Spanish and French, like the card (ADR-9b). No amount anywhere (owner, 18 Nov): the price the
-client says is kept for the agent, never repeated.
+client says is kept for the agent, never repeated. No long dash either (owner, 20 Nov: it reads as a machine's;
+app.ai.output_guard.no_long_dash takes it out of everything stored, and these words never had to lose it).
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-CHANNELS: tuple[str, ...] = ("whatsapp", "email")
+CHANNELS: tuple[str, ...] = ("sms", "email")
 # What a button does, beside its label: the widget acts on the kind, whatever the language.
-KINDS: tuple[str, ...] = ("whatsapp", "email", "wait", "change")
+KINDS: tuple[str, ...] = ("sms", "email", "wait", "change")
 
 _BUTTONS: dict[str, dict[str, str]] = {
-    "whatsapp": {"en": "WhatsApp", "es": "WhatsApp", "fr": "WhatsApp"},
+    "sms": {"en": "Text message", "es": "SMS", "fr": "SMS"},
     "email": {"en": "Email", "es": "Correo", "fr": "E-mail"},
     "wait": {"en": "I'll wait here", "es": "Espero aquí", "fr": "J'attends ici"},
     "change": {"en": "Change details", "es": "Cambiar detalles", "fr": "Modifier"},
 }
-# The card's own channel button (C1) and the pill after "Not now" (C2): WhatsApp on a phone, email on a
+# The card's own channel button (C1) and the pill after "Not now" (C2): SMS on a phone, email on a
 # computer (ADR-3a); the row beside the refused form (D1) offers both.
 _CARD_CHANNEL: dict[str, dict[str, str]] = {
-    "whatsapp": {"en": "Fares on WhatsApp", "es": "Tarifas por WhatsApp", "fr": "Tarifs sur WhatsApp"},
+    "sms": {"en": "Fares by text", "es": "Tarifas por SMS", "fr": "Tarifs par SMS"},
     "email": {"en": "Email me fares", "es": "Tarifas por correo", "fr": "Tarifs par e-mail"},
 }
 
 _CONFIRM: dict[str, dict[str, str]] = {
     "en": {
-        "fares": ("Got it — {line}. An agent will check live fares for exactly this trip and write to you. "
-                  "Where should they write: WhatsApp or email?"),
-        "beat": ("Got it — {line}. An agent will check if they can beat the price you saw, and write to you. "
-                 "Where should they write: WhatsApp or email?"),
+        "fares": ("Got it, {line}. An agent will check live fares for exactly this trip and write to you. "
+                  "Where should they write: by text or by email?"),
+        "beat": ("Got it, {line}. An agent will check if they can beat the price you saw, and write to you. "
+                 "Where should they write: by text or by email?"),
     },
     "es": {
         "fares": ("Perfecto: {line}. Un agente consultará tarifas reales para exactamente este viaje y le escribirá. "
-                  "¿Dónde le escribe: WhatsApp o correo?"),
+                  "¿Dónde le escribe: SMS o correo?"),
         "beat": ("Perfecto: {line}. Un agente revisará si puede mejorar el precio que vio y le escribirá. "
-                 "¿Dónde le escribe: WhatsApp o correo?"),
+                 "¿Dónde le escribe: SMS o correo?"),
     },
     "fr": {
         "fares": ("Parfait : {line}. Un agent vérifiera les tarifs réels pour exactement ce voyage et vous écrira. "
-                  "Où doit-il vous écrire : WhatsApp ou e-mail ?"),
+                  "Où doit-il vous écrire : SMS ou e-mail ?"),
         "beat": ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
-                 "et vous écrira. Où doit-il vous écrire : WhatsApp ou e-mail ?"),
+                 "et vous écrira. Où doit-il vous écrire : SMS ou e-mail ?"),
     },
 }
 
@@ -69,18 +74,22 @@ _WHEN: dict[str, tuple[str, str]] = {
 }
 _DONE: dict[str, dict[str, str]] = {
     "en": {
-        "whatsapp": "Done — an agent will send your fares on WhatsApp to {contact} {when}.",
-        "email": "Done — an agent will email your fares to {contact} {when}.",
+        "sms": "Done, an agent will text your fares to {contact} {when}.",
+        # A tap from a widget cached from before SMS (a day at most): that client chose WhatsApp.
+        "whatsapp": "Done, an agent will send your fares on WhatsApp to {contact} {when}.",
+        "email": "Done, an agent will email your fares to {contact} {when}.",
         "tail": " Anything they should know, like flexible dates or an airline you prefer? Write it here.",
         "tail_trip": " Where would you like to fly, and roughly when? Write it here.",
     },
     "es": {
+        "sms": "Listo: un agente le enviará las tarifas por SMS al {contact} {when}.",
         "whatsapp": "Listo: un agente le enviará las tarifas por WhatsApp al {contact} {when}.",
         "email": "Listo: un agente le enviará las tarifas a {contact} {when}.",
         "tail": " ¿Algo que deba saber, como fechas flexibles o una aerolínea preferida? Escríbalo aquí.",
         "tail_trip": " ¿A dónde quiere volar y, más o menos, cuándo? Escríbalo aquí.",
     },
     "fr": {
+        "sms": "C'est noté : un agent vous enverra les tarifs par SMS au {contact} {when}.",
         "whatsapp": "C'est noté : un agent vous enverra les tarifs sur WhatsApp au {contact} {when}.",
         "email": "C'est noté : un agent vous enverra les tarifs à {contact} {when}.",
         "tail": " Quelque chose à savoir, comme des dates flexibles ou une compagnie préférée ? Écrivez-le ici.",
@@ -88,24 +97,24 @@ _DONE: dict[str, dict[str, str]] = {
     },
 }
 _WAIT: dict[str, tuple[str, str]] = {
-    "en": ("Great — an agent can join you here in about a minute.",
-           "Great — an agent will write here as soon as one is free. If you need to go, tap WhatsApp or Email "
+    "en": ("Great, an agent can join you here in about a minute.",
+           "Great, an agent will write here as soon as one is free. If you need to go, tap Text message or Email "
            "and the fares will reach you there."),
     "es": ("Perfecto: un agente puede unirse aquí en un minuto, más o menos.",
-           "Perfecto: un agente le escribirá aquí en cuanto esté libre. Si tiene que irse, toque WhatsApp o "
+           "Perfecto: un agente le escribirá aquí en cuanto esté libre. Si tiene que irse, toque SMS o "
            "Correo y las tarifas le llegarán allí."),
     "fr": ("Parfait : un agent peut vous rejoindre ici dans une minute environ.",
-           "Parfait : un agent vous écrira ici dès qu'il sera libre. Si vous devez partir, touchez WhatsApp ou "
+           "Parfait : un agent vous écrira ici dès qu'il sera libre. Si vous devez partir, touchez SMS ou "
            "E-mail et les tarifs vous y parviendront."),
 }
 _BEFORE_YOU_GO: dict[str, tuple[str, str]] = {
-    "en": ("Before you go — an agent can send you the fares for {line}. Where should they write: WhatsApp or email?",
-           "Before you go — where should an agent send you the fares: WhatsApp or email?"),
-    "es": ("Antes de irse: un agente puede enviarle las tarifas para {line}. ¿Dónde le escribe: WhatsApp o correo?",
-           "Antes de irse: ¿dónde le envía un agente las tarifas: WhatsApp o correo?"),
+    "en": ("Before you go, an agent can send you the fares for {line}. Where should they write: by text or by email?",
+           "Before you go, where should an agent send you the fares: by text or by email?"),
+    "es": ("Antes de irse: un agente puede enviarle las tarifas para {line}. ¿Dónde le escribe: SMS o correo?",
+           "Antes de irse: ¿dónde le envía un agente las tarifas: SMS o correo?"),
     "fr": ("Avant de partir : un agent peut vous envoyer les tarifs pour {line}. Où doit-il vous écrire : "
-           "WhatsApp ou e-mail ?",
-           "Avant de partir : où un agent doit-il vous envoyer les tarifs : WhatsApp ou e-mail ?"),
+           "SMS ou e-mail ?",
+           "Avant de partir : où un agent doit-il vous envoyer les tarifs : SMS ou e-mail ?"),
 }
 
 
@@ -124,8 +133,8 @@ def card_channel(kind: str, lang: Optional[str] = None) -> dict:
 
 
 def device_channel(device: Optional[str]) -> str:
-    """WhatsApp on a phone, email on a computer (ADR-3a); a computer when the widget did not say."""
-    return "whatsapp" if device == "phone" else "email"
+    """SMS on a phone, email on a computer (ADR-3a); a computer when the widget did not say."""
+    return "sms" if device == "phone" else "email"
 
 
 def confirm(line: str, lang: Optional[str] = None, beat: bool = False) -> str:
@@ -134,9 +143,9 @@ def confirm(line: str, lang: Optional[str] = None, beat: bool = False) -> str:
 
 
 def confirm_buttons(lang: Optional[str], team_online: bool) -> list[dict]:
-    """WhatsApp, Email, "I'll wait here" while the team is at work (ADR-5b), and "Change details" (a wrong
+    """SMS, Email, "I'll wait here" while the team is at work (ADR-5b), and "Change details" (a wrong
     trip is mended in one tap)."""
-    kinds = ["whatsapp", "email", *(["wait"] if team_online else []), "change"]
+    kinds = ["sms", "email", *(["wait"] if team_online else []), "change"]
     return [button(k, lang) for k in kinds]
 
 
@@ -160,21 +169,21 @@ def wait_answer(lang: Optional[str], agent_online: bool) -> tuple[str, list[dict
     free, busy = _WAIT[_lang(lang)]
     if agent_online:
         return free, []
-    return busy, [button("whatsapp", lang), button("email", lang)]
+    return busy, [button("sms", lang), button("email", lang)]
 
 
 def before_you_go(line: Optional[str], lang: Optional[str] = None) -> tuple[str, list[dict]]:
     """B1: the one message for a client with no contact who is leaving."""
     with_line, without = _BEFORE_YOU_GO[_lang(lang)]
     text = with_line.format(line=line) if line else without
-    return text, [button("whatsapp", lang), button("email", lang)]
+    return text, [button("sms", lang), button("email", lang)]
 
 
 # A goodbye from a client who left no way to reach them, once the before-you-go ask was said (it is said once
 # per chat) or when they turned a channel down: nothing is promised ("We'll be in touch soon" was, to a client
 # nobody could reach: a quote-card chat on 19 Nov) and nothing is asked again (CodeRabbit #270).
 _GOODBYE_NO_CONTACT: dict[str, str] = {
-    "en": "Thanks for stopping by — whenever you'd like the fares, just write here.",
+    "en": "Thanks for stopping by. Whenever you'd like the fares, just write here.",
     "es": "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí.",
     "fr": "Merci de votre visite : quand vous voudrez les tarifs, écrivez-nous ici.",
 }
@@ -187,4 +196,4 @@ def goodbye_without_contact(lang: Optional[str] = None) -> str:
 
 def row_buttons(lang: Optional[str] = None) -> list[dict]:
     """D1: both channels beside the refused form."""
-    return [card_channel("whatsapp", lang), card_channel("email", lang)]
+    return [card_channel("sms", lang), card_channel("email", lang)]

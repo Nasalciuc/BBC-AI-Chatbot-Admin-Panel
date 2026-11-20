@@ -39,16 +39,22 @@ SENTENCES: dict[str, dict[str, str]] = {
         "full": "{hello} I see you're looking at {line}. Want an agent to check private fares for exactly this trip?",
         # C5 (ADR-2b): the client says the price, an agent checks if they can beat it — never Alex.
         "full_beat": ("{hello} I see you're looking at {line}. Already seen a price? "
-                      "An agent checks if they can beat it — real fares on WhatsApp or email."),
-        "dest_date": "{hello} I see you're looking at {line}. Want an agent to check business class fares for these dates?",
-        "dest": "{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check business class fares for you.",
+                      "An agent checks if they can beat it, with real fares by text or email."),
+        "dest_date": "{hello} I see you're looking at {line}. Want an agent to check {cabin_fares} fares for these dates?",
+        "dest": "{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check {cabin_fares} fares for you.",
         "places": ("{hello} Where are you thinking of flying? "
                    "Tap one or type a city, and an agent will check business class fares for you."),
         "open": ("{hello} Planning a business class trip? "
                  "Tell me where and roughly when, and an agent will check fares for you."),
         # D1 (ADR-4a): the row beside a refused quote form. A shortcut, never "you made a mistake".
-        "row_line": "Faster than the form: an agent can send you the fares for {line} on WhatsApp or by email.",
-        "row": "Faster than the form: an agent can send you the fares on WhatsApp or by email.",
+        # The phone card's own words (ADR A3, 20 Nov): under the trip as its title, only the question of the
+        # sentence above it — the chat still opens with the whole sentence. Each one ends that sentence.
+        "ask_full": "Want an agent to check private fares for exactly this trip?",
+        "ask_full_beat": "Already seen a price? An agent checks if they can beat it, with real fares by text or email.",
+        "ask_dest_date": "Want an agent to check {cabin_fares} fares for these dates?",
+        "ask_dest": "Tell me roughly when, and an agent will check {cabin_fares} fares for you.",
+        "row_line": "Faster than the form: an agent can send you the fares for {line} by text or by email.",
+        "row": "Faster than the form: an agent can send you the fares by text or by email.",
     },
     "es": {
         "hello": "Hola, soy {persona}, de {brand}.",
@@ -64,16 +70,20 @@ SENTENCES: dict[str, dict[str, str]] = {
         "exit": "{hello} Antes de irse: ¿quiere que un agente consulte tarifas en clase Business para usted?",
         "full": "{hello} Veo que busca {line}. ¿Quiere que un agente consulte tarifas privadas para exactamente este viaje?",
         "full_beat": ("{hello} Veo que busca {line}. ¿Ya vio un precio? "
-                      "Un agente revisa si puede mejorarlo, con tarifas reales por WhatsApp o correo."),
-        "dest_date": "{hello} Veo que busca {line}. ¿Quiere que un agente consulte tarifas en clase Business para esas fechas?",
+                      "Un agente revisa si puede mejorarlo, con tarifas reales por SMS o correo."),
+        "dest_date": "{hello} Veo que busca {line}. ¿Quiere que un agente consulte tarifas {cabin_fares} para esas fechas?",
         "dest": ("{hello} ¿Planea un viaje a {dest}? Dígame más o menos cuándo, "
-                 "y un agente consultará tarifas en clase Business para usted."),
+                 "y un agente consultará tarifas {cabin_fares} para usted."),
         "places": ("{hello} ¿Adónde piensa volar? Toque una opción o escriba una ciudad, "
                    "y un agente consultará tarifas en clase Business para usted."),
         "open": ("{hello} ¿Planea un viaje en clase Business? Dígame adónde y más o menos cuándo, "
                  "y un agente consultará las tarifas para usted."),
-        "row_line": "Más rápido que el formulario: un agente puede enviarle las tarifas para {line} por WhatsApp o por correo.",
-        "row": "Más rápido que el formulario: un agente puede enviarle las tarifas por WhatsApp o por correo.",
+        "ask_full": "¿Quiere que un agente consulte tarifas privadas para exactamente este viaje?",
+        "ask_full_beat": "¿Ya vio un precio? Un agente revisa si puede mejorarlo, con tarifas reales por SMS o correo.",
+        "ask_dest_date": "¿Quiere que un agente consulte tarifas {cabin_fares} para esas fechas?",
+        "ask_dest": "Dígame más o menos cuándo, y un agente consultará tarifas {cabin_fares} para usted.",
+        "row_line": "Más rápido que el formulario: un agente puede enviarle las tarifas para {line} por SMS o por correo.",
+        "row": "Más rápido que el formulario: un agente puede enviarle las tarifas por SMS o por correo.",
     },
     "fr": {
         "hello": "Bonjour, je suis {persona}, de {brand}.",
@@ -90,17 +100,22 @@ SENTENCES: dict[str, dict[str, str]] = {
         "full": ("{hello} Je vois que vous regardez {line}. "
                  "Voulez-vous qu'un agent vérifie des tarifs privés pour exactement ce voyage ?"),
         "full_beat": ("{hello} Je vois que vous regardez {line}. Vous avez déjà vu un prix ? "
-                      "Un agent vérifie s'il peut faire mieux, avec de vrais tarifs par WhatsApp ou e-mail."),
+                      "Un agent vérifie s'il peut faire mieux, avec de vrais tarifs par SMS ou e-mail."),
         "dest_date": ("{hello} Je vois que vous regardez {line}. "
-                      "Voulez-vous qu'un agent vérifie les tarifs en classe Affaires pour ces dates ?"),
+                      "Voulez-vous qu'un agent vérifie les tarifs {cabin_fares} pour ces dates ?"),
         "dest": ("{hello} Vous préparez un voyage à {dest} ? Dites-moi à peu près quand, "
-                 "et un agent vérifiera les tarifs en classe Affaires pour vous."),
+                 "et un agent vérifiera les tarifs {cabin_fares} pour vous."),
         "places": ("{hello} Où pensez-vous partir ? Touchez une option ou écrivez une ville, "
                    "et un agent vérifiera les tarifs en classe Affaires pour vous."),
         "open": ("{hello} Vous préparez un voyage en classe Affaires ? Dites-moi où et à peu près quand, "
                  "et un agent vérifiera les tarifs pour vous."),
-        "row_line": "Plus rapide que le formulaire : un agent peut vous envoyer les tarifs pour {line} sur WhatsApp ou par e-mail.",
-        "row": "Plus rapide que le formulaire : un agent peut vous envoyer les tarifs sur WhatsApp ou par e-mail.",
+        "ask_full": "Voulez-vous qu'un agent vérifie des tarifs privés pour exactement ce voyage ?",
+        "ask_full_beat": ("Vous avez déjà vu un prix ? Un agent vérifie s'il peut faire mieux, "
+                          "avec de vrais tarifs par SMS ou e-mail."),
+        "ask_dest_date": "Voulez-vous qu'un agent vérifie les tarifs {cabin_fares} pour ces dates ?",
+        "ask_dest": "Dites-moi à peu près quand, et un agent vérifiera les tarifs {cabin_fares} pour vous.",
+        "row_line": "Plus rapide que le formulaire : un agent peut vous envoyer les tarifs pour {line} par SMS ou par e-mail.",
+        "row": "Plus rapide que le formulaire : un agent peut vous envoyer les tarifs par SMS ou par e-mail.",
     },
 }
 
@@ -144,6 +159,37 @@ CABINS: dict[str, dict[str, str]] = {
     "fr": {"economy": "classe Économique", "premium_economy": "Premium Économique", "business": "classe Affaires",
            "first": "Première"},
 }
+# The cabin the fares are for, in the card's words (ADR A6, 20 Nov): what the visitor searched, business by
+# default. Bing, 13-20 Nov: 685 of the 1,971 visitors on a destination page had typed "first class", and the
+# card spoke of business class fares. A search for economy or premium economy is said as one too (CodeRabbit
+# #272): the leads take economy, and an agent quotes what was asked for.
+CABIN_FARES: dict[str, dict[str, str]] = {
+    "en": {"business": "business class", "first": "first class", "premium_economy": "premium economy",
+           "economy": "economy"},
+    "es": {"business": "en clase Business", "first": "en Primera clase", "premium_economy": "en Premium Economy",
+           "economy": "en clase Económica"},
+    "fr": {"business": "en classe Affaires", "first": "en Première classe", "premium_economy": "en Premium Économique",
+           "economy": "en classe Économique"},
+}
+# "one-way" after the dates (ADR A4): the site's form showed one-way searches as round trips.
+ONE_WAY: dict[str, str] = {"en": "one-way", "es": "solo ida", "fr": "aller simple"}
+# The cabin in the phone card's title (ADR A3): "Rome · First class".
+TITLE_CABINS: dict[str, dict[str, str]] = {
+    "en": {"economy": "Economy", "premium_economy": "Premium Economy", "business": "Business class",
+           "first": "First class"},
+    "es": {"economy": "Clase Económica", "premium_economy": "Premium Economy", "business": "Clase Business",
+           "first": "Primera clase"},
+    "fr": {"economy": "Classe Économique", "premium_economy": "Premium Économique", "business": "Classe Affaires",
+           "first": "Première classe"},
+}
+
+
+def cabin_fares(lang: Optional[str], cabin: Optional[str]) -> str:
+    """The searched cabin's fares in `lang` ("first class", "premium economy"…), "business class" when none."""
+    words = CABIN_FARES.get(lang or "en", CABIN_FARES["en"])
+    return words.get(cabin or "", words["business"])
+
+
 # "4 adults in First": the word between the travellers and the cabin.
 IN_CABIN: dict[str, str] = {"en": "in", "es": "en", "fr": "en"}
 

@@ -1,9 +1,11 @@
 /**
  * What follows the card (18 Nov 2026, "12 probleme Kayak și chat"): the instant answer to its yes and the
- * channel buttons (A1, A2), the client's own WhatsApp number or email (the owner: "spune că îi vom scrie,
- * unde: pe email și WhatsApp"), the card's channel button and the pill after "Not now" (C1, C2), the row
+ * channel buttons (A1, A2), the client's own mobile number for SMS or email (the owner, 18 Nov: "spune că îi
+ * vom scrie, unde: pe email și WhatsApp"; 20 Nov: SMS in place of WhatsApp everywhere), the card's channel
+ * button and the pill after "Not now" (C1, C2), the row
  * beside the refused quote form (D1), one message before a contactless client leaves (B1), popups (E1),
- * the keyboard (E2), the card in Spanish and French (ADR-9b), and the Kayak card's moment test (C4).
+ * the keyboard (E2), the card in Spanish and French (ADR-9b), and the Kayak card's sooner moment (ADR A1, which
+ * retired the C4 test).
  *
  * Pure parts tested directly; the wiring pinned on the source. The server's half is
  * bbc-chatbot-api/tests/test_card_buttons.py. Every contact here is invented.
@@ -13,13 +15,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validWhatsapp } from '../src/channel.ts'
+import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validPhone } from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
-import { askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
+import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
 import {
-  C4_HOLD_ARM, C4_START_MS, KAYAK_EARLY_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, c4Arm, isNotNow,
-  pickTrigger,
+  ADS_VISIBLE_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, WATCHED_FIRST_S, WATCHED_FIRST_SIGNALS_S,
+  adKeyword, isNotNow, keywordNamesPlace, pickTrigger,
 } from '../src/triggers.ts'
 import { LAYOUT_AFTER_MS, coveredShare, watchPopups } from '../src/overlay.ts'
 import { keyboardInset } from '../src/keyboard.ts'
@@ -38,7 +40,7 @@ const row = read('FormRow.tsx')
 const AU = COUNTRIES.find(c => c.code === 'AU')
 const US = COUNTRIES[0]
 
-// ── The client's contact: WhatsApp number or email ─────────────────────────────────────────
+// ── The client's contact: a mobile number for SMS, or email ──────────────────────────────────
 
 test('a number is placed in its country: its own code first, then the country beside the field', () => {
   assert.equal(phoneFor('0412 345 678', AU), '+61412345678')         // #3296: the trunk 0 dropped
@@ -47,15 +49,15 @@ test('a number is placed in its country: its own code first, then the country be
   assert.equal(phoneFor('(210) 555-0100', US), '+12105550100')
   assert.equal(phoneFor('1 210 555 0100', US), '+12105550100')
   assert.equal(phoneFor('12 34', AU), '')
-  assert.equal(validWhatsapp(COUNTRIES, '0412 345 678', AU), '+61412345678')
-  assert.equal(validWhatsapp(COUNTRIES, '0412 345', AU), null)       // too short for Australia
-  assert.equal(validWhatsapp(COUNTRIES, '210 555 0100', US), '+12105550100')
+  assert.equal(validPhone(COUNTRIES, '0412 345 678', AU), '+61412345678')
+  assert.equal(validPhone(COUNTRIES, '0412 345', AU), null)       // too short for Australia
+  assert.equal(validPhone(COUNTRIES, '210 555 0100', US), '+12105550100')
   assert.equal(readablePhone(COUNTRIES, '+61412345678'), '+61 412 345 678')
   assert.equal(ownerOf(COUNTRIES, '+971501234567').code, 'AE')
   // Italy dials its leading 0 from abroad too (CodeRabbit #270): never +39 2 1234 5678.
   const IT = COUNTRIES.find(c => c.code === 'IT')
   assert.equal(phoneFor('02 1234 5678', IT), '+390212345678')
-  assert.equal(validWhatsapp(COUNTRIES, '02 1234 5678', IT), '+390212345678')
+  assert.equal(validPhone(COUNTRIES, '02 1234 5678', IT), '+390212345678')
   assert.equal(phoneFor('312 345 6789', IT), '+393123456789')         // a mobile has no 0
   assert.equal(phoneFor('0039 02 1234 5678', AU), '+390212345678')
 })
@@ -76,7 +78,9 @@ test('an email is one, or nothing', () => {
 })
 
 test('what goes out as the client\'s message is what the agent reads, in the client\'s language', () => {
-  assert.equal(channelMessage('en', 'whatsapp', '+61 412 345 678'), 'WhatsApp: +61 412 345 678')
+  assert.equal(channelMessage('en', 'sms', '+61 412 345 678'), 'Text message: +61 412 345 678')
+  assert.equal(channelMessage('es', 'sms', '+34 612 345 678'), 'SMS: +34 612 345 678')
+  assert.equal(channelMessage('fr', 'sms', '+33 6 12 34 56 78'), 'SMS : +33 6 12 34 56 78')
   assert.equal(channelMessage('es', 'email', 'cliente@example.com', '4,200'), 'Correo: cliente@example.com · Precio visto: 4,200')
   assert.equal(channelMessage('fr', 'email', 'client@example.com'), 'E-mail : client@example.com')
   assert.equal(widgetLang({ language: 'es-MX' }), 'es')
@@ -92,11 +96,15 @@ test('what goes out as the client\'s message is what the agent reads, in the cli
 
 test('only buttons the widget knows how to act on pass', () => {
   assert.deepEqual(
-    readButtons([{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'call', label: 'Call' }, { kind: 'email', label: ' ' },
+    readButtons([{ kind: 'sms', label: 'Text message' }, { kind: 'call', label: 'Call' }, { kind: 'email', label: ' ' },
       { kind: 'wait', label: "I'll wait here" }, 'x', null]),
-    [{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'wait', label: "I'll wait here" }],
+    [{ kind: 'sms', label: 'Text message' }, { kind: 'wait', label: "I'll wait here" }],
   )
   assert.equal(readChannel({ kind: 'wait', label: 'x' }), null)
+  // SMS in place of WhatsApp everywhere (20 Nov): the widget offers no WhatsApp, whatever the server says.
+  assert.deepEqual(readButtons([{ kind: 'whatsapp', label: 'WhatsApp' }]), [])
+  assert.equal(readChannel({ kind: 'whatsapp', label: 'Fares on WhatsApp' }), null)
+  assert.deepEqual(readChannel({ kind: 'sms', label: 'Fares by text' }), { kind: 'sms', label: 'Fares by text' })
   assert.deepEqual(readChannel({ kind: 'email', label: 'Email me fares' }), { kind: 'email', label: 'Email me fares' })
 })
 
@@ -107,21 +115,21 @@ test('the offer brings what follows the yes, the card\'s channel, the row\'s but
     sent = JSON.parse(init.body)
     return new Response(JSON.stringify({
       show: true, arm: 'proactive', message: 'Hola', quick_replies: ['Sí, envíenme tarifas', 'Ahora no'], lang: 'es',
-      confirm: { message: 'Perfecto: …', buttons: [{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'nope', label: 'x' }] },
-      channel: { kind: 'whatsapp', label: 'Tarifas por WhatsApp' }, variant: 'beat',
+      confirm: { message: 'Perfecto: …', buttons: [{ kind: 'sms', label: 'SMS' }, { kind: 'nope', label: 'x' }] },
+      channel: { kind: 'sms', label: 'Tarifas por SMS' }, variant: 'beat',
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }
   try {
     const res = await fetchProactiveOffer('https://api.test', {
-      visitor_id: 'visitor-0123456789', trigger: 'kayak', trip: null, site: 'bbc', lang: 'es-MX', device: 'phone', c4: 'early',
+      visitor_id: 'visitor-0123456789', trigger: 'kayak', trip: null, site: 'bbc', lang: 'es-MX', device: 'phone',
     }, 3500)
     assert.equal(sent.lang, 'es-MX')
     assert.equal(sent.device, 'phone')
-    assert.equal(sent.c4, 'early')
+    assert.equal(sent.c4, undefined)
     assert.equal(res.lang, 'es')
     assert.equal(res.variant, 'beat')
-    assert.deepEqual(res.confirm, { message: 'Perfecto: …', buttons: [{ kind: 'whatsapp', label: 'WhatsApp' }] })
-    assert.deepEqual(res.channel, { kind: 'whatsapp', label: 'Tarifas por WhatsApp' })
+    assert.deepEqual(res.confirm, { message: 'Perfecto: …', buttons: [{ kind: 'sms', label: 'SMS' }] })
+    assert.deepEqual(res.channel, { kind: 'sms', label: 'Tarifas por SMS' })
   } finally {
     globalThis.fetch = realFetch
   }
@@ -131,7 +139,7 @@ test('before you go: the server\'s message with its buttons, or nothing', async 
   const realFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({
     show: true, message: 'Before you go — …', id: 'm9', created_at: '2026-11-18T10:00:00+00:00',
-    buttons: [{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'email', label: 'Email' }],
+    buttons: [{ kind: 'sms', label: 'Text message' }, { kind: 'email', label: 'Email' }],
   }), { status: 200 })
   try {
     const out = await askBeforeYouGo('https://api.test', 'conv-1')
@@ -146,7 +154,7 @@ test('before you go: the server\'s message with its buttons, or nothing', async 
   }
 })
 
-// ── The moments: "Not now" in three languages, C4, the row's sooner moment ───────────────────
+// ── The moments: "Not now" in three languages, the Kayak card sooner, the row's sooner moment ─────────
 
 const page = (over = {}) => ({
   path: '/', kayak: false, ad: false, destination: false, visibleS: 0, watchedS: 10, sinceActivityS: 1,
@@ -159,19 +167,20 @@ test('"Not now" is heard in Spanish and French too, and never reaches the server
   assert.equal(isNotNow('Ahora no, gracias'), false)
 })
 
-test('C4: from its start, half the Kayak visitors get the card at 4 s, the other half at 5 s', () => {
-  assert.equal(c4Arm('visitor-1', C4_START_MS - 1), null)
-  assert.equal(c4Arm(null, C4_START_MS + 1), null)
-  assert.equal(c4Arm('visitor-1', C4_START_MS + 1, true), null)          // this browser heard it is over
-  const sides = new Set()
-  for (let i = 0; i < 40; i++) sides.add(c4Arm(`visitor-${i}`, C4_START_MS + 1))
-  assert.deepEqual([...sides].sort(), ['early', 'now'])
-  assert.equal(c4Arm('visitor-7', C4_START_MS + 1), c4Arm('visitor-7', C4_START_MS + 9e9))  // stable
-  assert.ok(KAYAK_EARLY_S >= 3 && KAYAK_EARLY_S < KAYAK_VISIBLE_S)
-  assert.equal(pickTrigger(page({ kayak: true, visibleS: 4.2, kayakS: KAYAK_EARLY_S })), 'kayak')
-  assert.equal(pickTrigger(page({ kayak: true, visibleS: 4.2 })), null)
-  assert.equal(C4_HOLD_ARM, 'c4_hold')
-  assert.match(hook, /if \(res && !res\.show && res\.arm === C4_HOLD_ARM\) \{[\s\S]*?lsSet\(C4_OVER_KEY, '1'\)[\s\S]*?fired = false/)
+test('ADR A1: the Kayak card at 2.5 s in view, after half a second of watching on a page with the site\'s signals', () => {
+  assert.equal(KAYAK_VISIBLE_S, 2.5)
+  assert.equal(pickTrigger(page({ kayak: true, visibleS: 2.4 })), null)
+  assert.equal(pickTrigger(page({ kayak: true, visibleS: 2.5 })), 'kayak')
+  // The site's signals replay a quote form opened before the widget started: half a second of watching is enough.
+  assert.equal(WATCHED_FIRST_SIGNALS_S, 0.5)
+  assert.equal(pickTrigger(page({ kayak: true, visibleS: 4, watchedS: 0.6, siteSignals: true })), 'kayak')
+  // Without them the widget still watches WATCHED_FIRST_S first.
+  assert.equal(pickTrigger(page({ kayak: true, visibleS: 4, watchedS: 0.6 })), null)
+  assert.equal(pickTrigger(page({ kayak: true, visibleS: 4, watchedS: WATCHED_FIRST_S })), 'kayak')
+  assert.equal(pickTrigger(page({ kayak: true, visibleS: 4, watchedS: 0.4, siteSignals: true })), null)
+  // The hook says whether the page sends them, and asks no C4 side any more.
+  assert.match(hook, /siteSignals: !!sitePage\(\),/)
+  assert.doesNotMatch(hook, /c4/i)
 })
 
 test('D1: a refused send beside a form the widget sees gets its row sooner than a card', () => {
@@ -245,7 +254,7 @@ test('A1/A2: the card\'s yes shows its answer and buttons at once; the stored ro
 
 test('a channel opens its field; the contact goes out as the button it was, through the line too', () => {
   const quick = chat.slice(chat.indexOf('const handleQuickReply'), chat.indexOf('const handleKeyDown'))
-  assert.ok(quick.indexOf("chip.kind === 'whatsapp' || chip.kind === 'email'") < quick.indexOf('sendMessage(text)'))
+  assert.ok(quick.indexOf("chip.kind === 'sms' || chip.kind === 'email'") < quick.indexOf('sendMessage(text)'))
   assert.match(quick, /if \(chip\.kind === 'wait'\) return sendOrQueue\(text, \{ button: 'wait' \}\)/)
   assert.match(quick, /sendOrQueue\(text, \{ button: kind, \.\.\.\(beatRef\.current && price \? \{ priceSeen: price \} : \{\}\) \}\)/)
   assert.match(chat, /sendMessage\(next\.text, next\.opts\)/)
@@ -254,7 +263,10 @@ test('a channel opens its field; the contact goes out as the button it was, thro
   assert.match(quick, /posthog\?\.capture\('chat_channel_given', \{ channel: kind, tunnel,/)
   assert.doesNotMatch(quick.slice(quick.indexOf("'chat_channel_given'"), quick.indexOf("'chat_channel_given'") + 120), /contact|channelValue/)
   // The field: a country beside a number, or one email; the price they saw only on the card's tested sentence.
-  assert.match(chat, /type=\{channelForm === 'whatsapp' \? 'tel' : 'email'\}/)
+  assert.match(chat, /type=\{channelForm === 'sms' \? 'tel' : 'email'\}/)
+  assert.match(chat, /\{channelForm === 'sms' \? w\.phoneLabel : w\.emailLabel\}/)
+  // Back from the field, the channels again: the same words as the server's buttons.
+  assert.match(chat, /\{ label: w\.sentSms, kind: 'sms' \},\s+\{ label: w\.sentEmail, kind: 'email' \},/)
   assert.match(chat, /\{beatRef\.current && \(\s+<input\s+class="bw-channel__price"/)
 })
 
@@ -265,7 +277,7 @@ test('C1/C2: the card\'s own channel, and the pill after "Not now" until ✕ or 
   assert.match(buttons, /\) : pill\?\.channel && count === 0 \? \(/)
   assert.match(widget, /openProactive\(\{ \.\.\.p, shownAt: Date\.now\(\), firstChannel: p\.channel\.kind \}\)/)
   // A channel icon is a bubble or an envelope, never a brand's logo.
-  assert.match(buttons, /kind === 'whatsapp' \? <IconMessage size=\{18\} \/> : <IconMail size=\{18\} \/>/)
+  assert.match(buttons, /kind === 'sms' \? <IconMessage size=\{18\} \/> : <IconMail size=\{18\} \/>/)
 })
 
 test('B1: one message as a contactless client leaves, asked once per tab, never over a send or a field', () => {
@@ -285,8 +297,8 @@ test('the conversation keeps the browser\'s language and time zone: a local numb
 test('an unanswered opening keeps what follows it across pages; anything else written there is dropped', () => {
   const o = {
     trigger: 'kayak', message: 'Hi', quickReplies: ['Yes, send me fares', 'Not now'], trip: null, surface: 'row', shownAt: 5,
-    confirm: { message: 'Got it', buttons: [{ kind: 'email', label: 'Email' }] }, channel: { kind: 'whatsapp', label: 'Fares on WhatsApp' },
-    buttons: [{ kind: 'whatsapp', label: 'Fares on WhatsApp' }], lang: 'fr', c4: 'early', firstReply: 'x', firstChannel: 'email',
+    confirm: { message: 'Got it', buttons: [{ kind: 'email', label: 'Email' }] }, channel: { kind: 'sms', label: 'Fares by text' },
+    buttons: [{ kind: 'sms', label: 'Fares by text' }], lang: 'fr', firstReply: 'x', firstChannel: 'email',
   }
   const kept = keepOpening(o)
   assert.equal(kept.firstReply, undefined)
@@ -296,12 +308,14 @@ test('an unanswered opening keeps what follows it across pages; anything else wr
   assert.deepEqual(back.channel, o.channel)
   assert.equal(back.surface, 'row')
   assert.equal(back.lang, 'fr')
-  assert.equal(back.c4, 'early')
-  const odd = readKeptOpening({ ...kept, confirm: { message: 'x', buttons: [{ kind: 'call', label: 'Call' }] }, channel: { kind: 'wait', label: 'x' }, lang: 'de', c4: 'soon' })
+  // An opening an older widget kept with its C4 side reads back without it.
+  assert.equal(readKeptOpening({ ...JSON.parse(JSON.stringify(kept)), c4: 'early' }).c4, undefined)
+  const odd = readKeptOpening({ ...kept, confirm: { message: 'x', buttons: [{ kind: 'call', label: 'Call' }] }, channel: { kind: 'wait', label: 'x' }, lang: 'de' })
   assert.equal(odd.confirm, undefined)
   assert.equal(odd.channel, undefined)
   assert.equal(odd.lang, undefined)
-  assert.equal(odd.c4, undefined)
+  // An opening kept before SMS (20 Nov) loses its WhatsApp channel: nothing offers WhatsApp any more.
+  assert.equal(readKeptOpening({ ...kept, channel: { kind: 'whatsapp', label: 'Fares on WhatsApp' } }).channel, undefined)
 })
 
 test('reading back up while an answer streams is never pulled down again', () => {
@@ -313,4 +327,92 @@ test('reading back up while an answer streams is never pulled down again', () =>
   assert.match(chat, /e\.key === 'ArrowUp' \|\| e\.key === 'PageUp' \|\| e\.key === 'Home'/)
   // The log's own smooth scroll keeps the window: an answer that lands mid-way still pulls it down.
   assert.match(chat, /autoScrollUntilRef\.current = smooth \? Date\.now\(\) \+ 700 : 0/)
+})
+
+// ── The visitors who decide in seconds (ADR A1–A7, 20 Nov) ─────────────────────────────────────────
+// The places below are made up for the tests.
+
+test('ADR A1: the ads card at 4 s in view, after the Kayak card\'s 2.5 s', () => {
+  assert.equal(ADS_VISIBLE_S, 4)
+  assert.ok(KAYAK_VISIBLE_S < ADS_VISIBLE_S)
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 3.9, siteSignals: true })), null)
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 4, siteSignals: true })), 'ads')
+})
+
+test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a place only after "to" or "in"', () => {
+  assert.equal(adKeyword('First Class Flights to Lakeside'), 'first class flights to lakeside')
+  assert.equal(adKeyword('  cheap   business+class to <b>lakeside</b> '), 'cheap business class to b lakeside b')
+  assert.equal(adKeyword('120253513391840723'), null)          // an ad id, not a search
+  assert.equal(adKeyword('ab'), null)
+  assert.equal(adKeyword('x'.repeat(81)), null)
+  assert.equal(adKeyword(undefined), null)
+  assert.equal(keywordNamesPlace('first class flights to lakeside'), true)
+  assert.equal(keywordNamesPlace('business class in lakeside'), true)
+  assert.equal(keywordNamesPlace('lakeside business class'), false)
+  assert.equal(keywordNamesPlace('flights to x'), false)
+  assert.equal(keywordNamesPlace(null), false)
+  // Only an ad visit carries it, and the ads card asks with it; the measurement says one was sent, never which.
+  assert.match(hook, /function adKeywordNow\(\): string \| null \{\s+return adVisitNow\(\) \? adKeyword\(getUtm\(\)\.utm_term\) : null\s+\}/)
+  assert.match(hook, /\.\.\.\(trigger === 'ads' && trip\?\.keyword \? \{ ad_keyword: true \} : \{\}\),/)
+})
+
+test('ADR A5: a "no" about the ad\'s trip as it was is no "no" about the page now (CodeRabbit #272)', () => {
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  // The stale answer gives the reservation back and asks again; only one about the trip of now switches ads off.
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedAds\) \{[\s\S]*?if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
+})
+
+test('ADR A2: the moment says when the site asked for the script and how long it took to come', () => {
+  assert.match(hook, /\.\.\.scriptTiming\(\),/)
+  assert.match(hook, /\.find\(\(r\) => \/-widget\\\.js\(\?:\[\?#\]\|\$\)\/\.test\(r\.name\)\)/)
+})
+
+test('ADR A3: the phone card leads with the trip and asks only its question; without both it shows the message', () => {
+  assert.match(buttons, /\{card\.headline && card\.cardText \? \([\s\S]*?<span class="bw-nudge__headline">\{card\.headline\}<\/span>\s+<span class="bw-nudge__text">\{card\.cardText\}<\/span>[\s\S]*?\) : \(\s+<span class="bw-nudge__text">\{card\.message\}<\/span>\s+\)\}/)
+  assert.match(WIDGET_CSS, /\.bw-nudge--card \.bw-nudge__headline \{/)
+  assert.match(hook, /\.\.\.\(res\.headline && res\.card_text \? \{ headline: res\.headline, cardText: res\.card_text \} : \{\}\),/)
+  assert.match(hook, /\.\.\.\(surface === 'card' && opening\.headline \? \{ titled: true \} : \{\}\),/)
+})
+
+test('ADR A3: the offer keeps the title and its question together, or neither', async () => {
+  const realFetch = globalThis.fetch
+  const answer = (extra) => async () => new Response(JSON.stringify({
+    show: true, arm: 'proactive', message: 'Hi', quick_replies: ['Yes, send me fares', 'Not now'], ...extra,
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  const ask = () => fetchProactiveOffer('https://api.test', {
+    visitor_id: 'visitor-0123456789', trigger: 'kayak', trip: null, site: 'bbc', device: 'phone',
+  }, 3500)
+  try {
+    globalThis.fetch = answer({ headline: 'Springfield → Lakeside · Business class', card_text: 'Want fares?' })
+    const both = await ask()
+    assert.equal(both.headline, 'Springfield → Lakeside · Business class')
+    assert.equal(both.card_text, 'Want fares?')
+    globalThis.fetch = answer({ headline: 'Springfield → Lakeside' })
+    const half = await ask()
+    assert.equal(half.headline, undefined)
+    assert.equal(half.card_text, undefined)
+    // The server's longest title fits (CodeRabbit #272: a 171-character one was refused at 140); past its cap, none.
+    globalThis.fetch = answer({ headline: 'x'.repeat(171), card_text: 'Want fares?' })
+    assert.equal((await ask()).headline, 'x'.repeat(171))
+    assert.equal(TITLE_MAX, 240)
+    globalThis.fetch = answer({ headline: 'x'.repeat(TITLE_MAX + 1), card_text: 'Want fares?' })
+    assert.equal((await ask()).headline, undefined)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('SMS in place of WhatsApp everywhere: the field, its words and the channel kinds (20 Nov)', () => {
+  const field = words('en')
+  assert.equal(field.phoneLabel, 'Your mobile number')
+  assert.equal(field.phoneHint, 'The agent texts the fares to this number.')
+  for (const lang of ['en', 'es', 'fr']) {
+    for (const [k, v] of Object.entries(words(lang))) assert.doesNotMatch(v, /whats\s*app/i, `${lang}.${k}`)
+  }
+  // The widget's source offers no WhatsApp: only the site's own contact links (siteSignals) still name it.
+  const src = ['ChatWindow.tsx', 'FloatingButtons.tsx', 'FormRow.tsx', 'api.ts', 'keptOpening.ts', 'i18n.ts', 'channel.ts']
+  for (const f of src) {
+    const code = read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
+    assert.doesNotMatch(code, /whatsapp/i, f)
+  }
 })

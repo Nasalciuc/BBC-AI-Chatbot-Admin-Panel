@@ -6,11 +6,14 @@ The widget sends each tap as the client's message with `button` beside it (ChatR
   once with the trip said back, what happens next and where to write (card_words.confirm, A2/ADR-10a):
   the model came in at 6.4 s with "best email to start?", and 7 of the 25 card chats ended there.
   Only the conversation's first answer: a yes typed later is the model's.
-- ``whatsapp`` / ``email``: the contact the client left on the channel they picked (the owner, 18 Nov:
-  the client says where the agent writes — no business number to message). It lands where the CRM,
+- ``sms`` / ``email``: the contact the client left on the channel they picked (the owner, 18 Nov:
+  the client says where the agent writes; 20 Nov: SMS in place of WhatsApp). It lands where the CRM,
   the panel and the agent read it (the conversation row, through lead_service), with the channel on the
-  lead, and the client is told when the agent writes (the Team line's promise). No second contact is
-  asked for (ADR-5, ADR-8). A message with no number or no email in it goes to the model as before.
+  lead — an SMS is the lead's "text" wish, the one a client who types "text me" already has — and the
+  client is told when the agent writes (the Team line's promise). No second contact is asked for (ADR-5,
+  ADR-8). A message with no number or no email in it goes to the model as before.
+- ``whatsapp``: the same, from a widget cached from before SMS (a day at most): that client chose WhatsApp
+  in a field that said so, and is answered and noted as WhatsApp.
 - ``wait``: "I'll wait here" (only offered while the team is at work, ADR-5b): the conversation joins the
   line for a person, and "about a minute" is promised only while an agent is online (B2, ADR-6e).
 
@@ -34,13 +37,15 @@ from app.models.chat import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 
-BUTTONS: tuple[str, ...] = ("yes", "whatsapp", "email", "wait")
+BUTTONS: tuple[str, ...] = ("yes", "sms", "whatsapp", "email", "wait")
+# The buttons that leave a number, and the lead's wish each one is (entity_extractor's channel words).
+_PHONE_CHANNEL: dict[str, str] = {"sms": "text", "whatsapp": "whatsapp"}
 MODEL_USED = "template"
 
 CARD_BUTTONS_HEALTH: dict = {
-    "yes": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
+    "yes": 0, "sms": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
     "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0, "before_you_go_too_long": 0,
-    "goodbye_asked": 0, "goodbye_no_contact": 0,
+    "goodbye_asked": 0, "goodbye_no_contact": 0, "channel_not_noted": 0,
 }
 
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
@@ -160,7 +165,7 @@ async def _channel(
     from app.services.phone_country import country_hint
 
     country = country_hint({**meta, **request_meta})
-    if kind == "whatsapp":
+    if kind in _PHONE_CHANNEL:
         from app.pipeline.callback_intent import find_phone
 
         contact = find_phone(message, country)
@@ -181,11 +186,16 @@ async def _channel(
         logger.error(f"[{cid}] card button: the {kind} contact was not saved, the model answers")
         return None
     await _save(cid, "user", message)
-    await _note_channel(cid, kind, contact, price_from(price_seen))
+    price = price_from(price_seen)
+    # Not written after a retry: the client is answered all the same (the number is on the conversation), and
+    # the count says the lead may still read an older wish.
+    if not await _note_channel(cid, kind, contact, price):
+        CARD_BUTTONS_HEALTH["channel_not_noted"] += 1
+        logger.error(f"[{cid}] card button: the {kind} wish is not on the lead after a retry")
     from app.services.routing import queue_for_person
 
     await queue_for_person(cid, reason=f"{kind} request")
-    if kind == "whatsapp":
+    if kind in _PHONE_CHANNEL:
         from app.pipeline.orchestrator import _fire_and_forget
         from app.services.tasks_service import withdraw_call_tasks
 
@@ -198,39 +208,59 @@ async def _channel(
     return _response(cid, row, text, [], MODEL_USED)
 
 
-async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str]) -> None:
+_NOTE_TRIES = 2
+
+
+async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str]) -> bool:
     """The channel on the lead, where the panel and the CRM note read how to reach the client: the wish
-    (intent_signals.contact_channel), the price the client saw when they said one, and for WhatsApp the
-    line the consultant reads first (a WhatsApp, not a call)."""
+    (intent_signals.contact_channel: "text" for SMS), the price the client saw when they said one, and for
+    a number the line the consultant reads first ("CLIENT ASKED FOR TEXTS, NOT CALLS"). True once written.
+
+    Under the lead writer's lock (lead_service._lead_lock): the read, the merge and the write never interleave
+    with a model turn's, so neither writes an older intent_signals or notes over the other's (CodeRabbit
+    #270). A write that did not land is tried once more under the same hold, on the lead read again: no other
+    choice is written between the two tries (CodeRabbit #272)."""
+    from app.services import lead_service
+
+    async with lead_service._lead_lock(cid):
+        for _ in range(_NOTE_TRIES):
+            if await _write_channel(cid, kind, contact, price):
+                return True
+    return False
+
+
+async def _write_channel(cid: str, kind: str, contact: str, price: Optional[str]) -> bool:
+    """One try of _note_channel's write, its caller holding the lock. Writing it again writes the same
+    (merge_contact_channel, notes_with_callback)."""
     from app.db import supabase as db
     from app.pipeline.callback_intent import callback_note, notes_with_callback
     from app.pipeline.entity_extractor import merge_contact_channel
     from app.services import lead_service
 
     try:
-        # Under the lead writer's lock (lead_service._lead_lock): the read, the merge and the write never
-        # interleave with a model turn's, so neither writes an older intent_signals or notes over the
-        # other's (CodeRabbit #270).
-        async with lead_service._lead_lock(cid):
-            lead = await lead_service.get_or_create_lead(cid)
-            if not isinstance(lead, dict) or not lead.get("id"):
-                logger.warning(f"[{cid}] card button: no lead to note the {kind} channel on")
-                return
-            raw = lead.get("intent_signals")
-            signals = dict(raw) if isinstance(raw, dict) else ({} if not raw else {"legacy": raw})
-            signals["contact_channel"] = merge_contact_channel(signals.get("contact_channel"), kind)
-            if kind == "whatsapp":
-                # A WhatsApp is not a call: the panel stops saying "Asks: a call back".
-                signals["callback_requested"] = False
-            if price:
-                signals["price_seen"] = price
-            update: dict = {"intent_signals": signals}
-            if kind == "whatsapp":
-                update["notes"] = notes_with_callback(lead.get("notes"), callback_note(contact, channel="whatsapp"))
-            if not await db.update_lead(lead["id"], update):
-                logger.warning(f"[{cid}] card button: channel not noted on the lead (no row written)")
-    except Exception as e:  # noqa: silent — logged; the contact itself is already on the conversation
+        lead = await lead_service.get_or_create_lead(cid)
+        if not isinstance(lead, dict) or not lead.get("id"):
+            logger.warning(f"[{cid}] card button: no lead to note the {kind} channel on")
+            return False
+        raw = lead.get("intent_signals")
+        signals = dict(raw) if isinstance(raw, dict) else ({} if not raw else {"legacy": raw})
+        wish = _PHONE_CHANNEL.get(kind, kind)
+        signals["contact_channel"] = merge_contact_channel(signals.get("contact_channel"), wish)
+        if kind in _PHONE_CHANNEL:
+            # A text is not a call: the panel stops saying "Asks: a call back".
+            signals["callback_requested"] = False
+        if price:
+            signals["price_seen"] = price
+        update: dict = {"intent_signals": signals}
+        if kind in _PHONE_CHANNEL:
+            update["notes"] = notes_with_callback(lead.get("notes"), callback_note(contact, channel=wish))
+        if not await db.update_lead(lead["id"], update):
+            logger.warning(f"[{cid}] card button: channel not noted on the lead (no row written)")
+            return False
+        return True
+    except Exception as e:  # noqa: silent — logged and returned False; the caller tries once more
         logger.warning(f"[{cid}] card button: channel not noted on the lead ({type(e).__name__})")
+        return False
 
 
 async def _wait(cid: str, message: str, meta: dict, tunnel: str) -> ChatResponse:
@@ -347,8 +377,8 @@ def _lead_trip(lead: Optional[dict]):
         return None
 
 
-# Alex's question for an email, a WhatsApp or a number.
-_CONTACT_ASK_RE = re.compile(r"\b(?:e-?mail|whatsapp|phone|number|correo|courriel|n[uú]mero|t[eé]l[eé]phone)\b", re.I)
+# Alex's question for an email, an SMS, a WhatsApp or a number.
+_CONTACT_ASK_RE = re.compile(r"\b(?:e-?mail|sms|whatsapp|phone|number|correo|courriel|n[uú]mero|t[eé]l[eé]phone)\b", re.I)
 _QUESTION_RE = re.compile(r"[^.!?\n]*\?")
 # How long Alex's own ask stands before the before-you-go may say it again.
 JUST_ASKED_S = 120
@@ -426,7 +456,7 @@ async def goodbye_without_contact(
 
     A quote-card chat on 19 Nov: the client gave the whole trip, was asked for the email once, thanked twice,
     and was told "Your search is in expert hands. We'll be in touch soon" — with no email and no number, by
-    nobody. Here the first goodbye gets the before-you-go ask with its WhatsApp and Email buttons, said once
+    nobody. Here the first goodbye gets the before-you-go ask with its SMS and Email buttons, said once
     per chat whichever of the two says it first (BEFORE_YOU_GO_KEY: a claim that fails counts as said, as for
     the before-you-go); a later one, or one from a client who turned a channel down, an honest goodbye that
     promises nothing and asks nothing again (CodeRabbit #270).

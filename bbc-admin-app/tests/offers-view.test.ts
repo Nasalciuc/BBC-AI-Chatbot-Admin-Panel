@@ -64,7 +64,9 @@ const row = (over: Partial<OfferRow> = {}): OfferRow => ({
 test('how to send it: the channel the client asked for, else what the contact allows', () => {
   assert.deepEqual(channelLine(row({ channels: ['whatsapp'] })), { text: 'Asked for WhatsApp', kind: 'whatsapp' })
   assert.deepEqual(channelLine(row({ channels: ['whatsapp', 'email'] })), { text: 'Asked for WhatsApp or e-mail', kind: 'whatsapp' })
-  assert.equal(channelLine(row({ channels: ['text', 'call', 'email'] })).text, 'Asked for a text, a call back or e-mail')
+  assert.equal(channelLine(row({ channels: ['text', 'call', 'email'] })).text, 'Asked for an SMS, a call back or e-mail')
+  // The chat's SMS button is the "text" wish (20 Nov): the agent reads SMS, never a WhatsApp.
+  assert.deepEqual(channelLine(row({ channels: ['text'] })), { text: 'Asked for an SMS', kind: 'text' })
   assert.deepEqual(channelLine(row()), { text: 'Only an e-mail: send it there', kind: 'email' })
   assert.equal(channelLine(row({ email: null, phone: '+12105550100' })).text, 'Only a phone: call or text')
   assert.equal(channelLine(row({ phone: '+12105550100' })).text, 'No channel asked: phone or e-mail')
@@ -82,7 +84,7 @@ test('how to send it never names a channel the client turned down', () => {
   assert.deepEqual(channelLine(row({ email: null, phone: '+12105550100', refused: ['no texts'] })),
     { text: 'Only a phone: call, no texts', kind: 'call' })
   assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no calls', 'no texts'] })).text, 'E-mail only: no calls or texts')
-  assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no calls'] })).text, 'No channel asked: a text or e-mail')
+  assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no calls'] })).text, 'No channel asked: an SMS or e-mail')
   assert.equal(channelLine(row({ phone: '+12105550100', refused: ['no email'] })).text, 'Only a phone: call or text')
   assert.equal(channelLine(row({ refused: ['no email'] })).text, 'Every channel turned down: ask the client how to send it')
 })

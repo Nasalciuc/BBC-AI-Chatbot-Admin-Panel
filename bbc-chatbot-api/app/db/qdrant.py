@@ -377,7 +377,7 @@ _BUTTON_TAPS = frozenset({
     "sí, envíenme tarifas", "cambiar detalles", "tengo una pregunta", "quiero una cotización",
     "envíenme las tarifas por correo", "oui, envoyez-moi les tarifs", "modifier", "j'ai une question",
     "obtenir un devis", "envoyez-moi les tarifs par e-mail",
-    "whatsapp", "i'll wait here", "espero aquí", "j'attends ici",
+    "text message", "sms", "whatsapp", "i'll wait here", "espero aquí", "j'attends ici",
 })
 _NO_QUESTION_WORDS = frozenset("""
 ok okay k yes yeah yep yup no nope sure fine great perfect cool good nice alright right
