@@ -17,8 +17,9 @@ class ChatRequest(BaseModel):
     tunnel: str = Field(default="sales", pattern="^(sales|support)$")
     visitor: VisitorInfo = Field(default_factory=VisitorInfo)
     metadata: Optional[dict] = None
-    # A button after the card the client tapped (app.pipeline.card_buttons): "yes", "whatsapp",
-    # "email" or "wait". Anything else is dropped, never a 422: the message is answered as typed.
+    # A button after the card the client tapped (app.pipeline.card_buttons): "yes", "sms", "email" or
+    # "wait" ("whatsapp" from a widget cached from before SMS). Anything else is dropped, never a 422: the
+    # message is answered as typed.
     button: Optional[str] = None
     # The price the client saw elsewhere, typed in the optional field beside the channel (C5): kept on
     # the lead for the agent, never repeated in the chat.
@@ -27,7 +28,7 @@ class ChatRequest(BaseModel):
     @field_validator("button", mode="before")
     @classmethod
     def _known_button(cls, v):
-        return v if v in ("yes", "whatsapp", "email", "wait") else None
+        return v if v in ("yes", "sms", "whatsapp", "email", "wait") else None
 
     @field_validator("price_seen", mode="before")
     @classmethod

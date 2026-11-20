@@ -258,7 +258,7 @@ class ProactiveOfferRequest(BaseModel):
     # each once; anything else is dropped, never a 422.
     refused: Optional[list[str]] = None
     # The browser's language ("es", "fr": the card speaks it, ADR-9b), the screen (`device`: the card's
-    # own channel is WhatsApp on a phone and email on a computer, ADR-3a), a row the widget can put beside
+    # own channel is SMS on a phone and email on a computer, ADR-3a), a row the widget can put beside
     # the refused quote form (`place="form"`, ADR-4a) and the C4 side of a Kayak visitor ("early", "now",
     # ADR-1b). Anything else is dropped, never a 422.
     lang: Optional[str] = None
@@ -965,7 +965,7 @@ async def chat(
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
 
-    # A button after the card (yes, WhatsApp, email, "I'll wait here"): answered at
+    # A button after the card (yes, SMS, email, "I'll wait here"): answered at
     # once, without the model (app.pipeline.card_buttons). None: answered as typed.
     if req.button and req.conversation_id:
         from app.pipeline.card_buttons import answer as _answer_button

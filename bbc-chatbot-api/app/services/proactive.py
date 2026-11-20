@@ -402,8 +402,8 @@ def quote_variant(refused: Optional[list[str]]) -> Optional[str]:
     return CONTACT if refused and _CONTACT_KINDS.intersection(refused) else None
 
 
-# D1 (ADR-4a, 18 Nov): after the quote form refused a send, a row beside the form offers the fares on
-# WhatsApp or by email, instead of the chat card ("Looks like the quote form is giving you trouble"
+# D1 (ADR-4a, 18 Nov): after the quote form refused a send, a row beside the form offers the fares by
+# SMS or by email, instead of the chat card ("Looks like the quote form is giving you trouble"
 # caught 0 of the 23 it was shown to on 17-18 Nov). The widget asks for it when it can place the row
 # beside the form it saw (`place="form"`); the row's sentence is the chat's opening if the client answers.
 ROW = "row"

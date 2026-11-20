@@ -161,7 +161,7 @@ def test_an_ads_search_that_names_a_place_gets_the_card_its_title_and_its_channe
     assert out["headline"] == "Lakeside · First class"
     assert out["card_text"] == "Tell me roughly when, and an agent will check first class fares for you."
     assert out["message"].endswith(out["card_text"])
-    assert out["channel"] == {"kind": "whatsapp", "label": "Fares on WhatsApp"}
+    assert out["channel"] == {"kind": "sms", "label": "Fares by text"}
     assert "confirm" not in out            # no dates: no instant answer to the yes
     computer = proactive.offer(VISITOR, "ads", trip, "bbc", device="computer")
     assert computer["channel"]["kind"] == "email"

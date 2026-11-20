@@ -1534,7 +1534,7 @@ async def _pipeline(
     # ── STEP 5.9: A GOODBYE WITH NO WAY TO REACH THE CLIENT ──
     # The goodbye template promised "We'll be in touch soon" to a client with no email and no number
     # (19 Nov, Sydney → Amman): the first goodbye now asks where the agent should write, with the
-    # WhatsApp and Email buttons; a later one promises nothing (card_buttons.goodbye_without_contact).
+    # SMS and Email buttons; a later one promises nothing (card_buttons.goodbye_without_contact).
     # An agent who took the chat meanwhile answers it: the guard runs where the goodbye is saved.
     if intent == Intent.CLOSING and tunnel == "sales":
         from app.pipeline.card_buttons import goodbye_without_contact

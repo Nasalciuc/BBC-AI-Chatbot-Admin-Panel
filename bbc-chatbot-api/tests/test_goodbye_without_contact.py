@@ -6,7 +6,7 @@ hands. We'll be in touch soon"; a second "thank you" got "your consultant takes 
 number: nobody could be in touch. Three things changed:
 
 - a goodbye is a message that says only goodbye ("thank you price matters" is a price worry);
-- a goodbye with no contact on file asks where the agent should write (WhatsApp or email, with the
+- a goodbye with no contact on file asks where the agent should write (SMS or email, with the
   buttons), once; a later one promises nothing and asks nothing again;
 - in a chat with no form, once the route is known, the email is the next question.
 
@@ -103,8 +103,8 @@ async def test_the_first_goodbye_asks_where_to_write_with_both_buttons():
     claim.assert_awaited_once_with(_CID, card_buttons.BEFORE_YOU_GO_KEY)
     guard.assert_awaited_once()
     assert out is not None and out.message.startswith("Before you go — an agent can send you the fares for ")
-    assert "WhatsApp or email?" in out.message
-    assert [b["kind"] for b in out.buttons] == ["whatsapp", "email"]
+    assert "by text or by email?" in out.message
+    assert [b["kind"] for b in out.buttons] == ["sms", "email"]
     assert "in touch" not in out.message.lower()
     assert said == [("ai", out.message)] and out.message_id == "m-ai"
     assert card_buttons.CARD_BUTTONS_HEALTH["goodbye_asked"] == 1
@@ -175,7 +175,7 @@ async def test_the_goodbye_speaks_the_clients_language():
          patch("app.services.conversation_service.add_message", new=_saved([])):
         first = await card_buttons.goodbye_without_contact(_CID, {"client_lang": "es"}, VisitorInfo(), _LEAD)
         later = await card_buttons.goodbye_without_contact(_CID, asked, VisitorInfo(), _LEAD)
-    assert first.message.startswith("Antes de irse:") and [b["label"] for b in first.buttons] == ["WhatsApp", "Correo"]
+    assert first.message.startswith("Antes de irse:") and [b["label"] for b in first.buttons] == ["SMS", "Correo"]
     assert later.message == "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí." and not later.buttons
 
 
@@ -238,7 +238,7 @@ async def test_thank_you_with_no_contact_asks_where_to_write_instead_of_saying_g
     resp = await run()
     gen.assert_not_called()
     assert resp.message.startswith("Before you go — an agent can send you the fares for ")
-    assert [b["kind"] for b in resp.buttons] == ["whatsapp", "email"]
+    assert [b["kind"] for b in resp.buttons] == ["sms", "email"]
     assert ("ai", resp.message) in said
     assert all("in touch" not in text for _role, text in said)
 
