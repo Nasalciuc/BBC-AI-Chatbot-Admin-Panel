@@ -92,6 +92,13 @@ TEMPLATES: dict[str, list[str]] = {
     "callback_confirmed:sales": [
         "Of course — I'm putting a consultant on this to call you on {number}.",
     ],
+    # The same, outside team hours (app.services.closing.is_within_team_hours): nobody is "put on this"
+    # at night. Near midnight US Eastern (#3359): "I'm putting a consultant on this to call you … While
+    # they get to you", and the client waited for a call.
+    "callback_confirmed_off_hours:sales": [
+        "Of course — a consultant will call you on {number} first thing when the team is back "
+        "(from 9 AM US Eastern).",
+    ],
     # A number given in answer to "a text or a quick call?": the reply keeps
     # the channel the client chose. 17 Nov: three clients who had chosen texts
     # (one "can't always take a call") were each told "to call you".
@@ -247,6 +254,14 @@ TEMPLATES: dict[str, list[str]] = {
         "line and they'll call you shortly. To get ahead of it: when are "
         "you looking to travel? If you'd rather talk right away, we're at "
         "+1 (888) 322-7999.",
+    ],
+    # Outside team hours nobody is with a client and nobody calls "shortly": near midnight US Eastern
+    # (#3359), the line above was said four times to a client who wanted to book that night, while Alex
+    # said the team was offline — "Do you realize you contradict yourself?". No question about the dates
+    # either: the client had given them twice.
+    "no_agent_available_off_hours:sales": [
+        "Our consultants are offline right now — they're back at 9 AM US Eastern, and you're first in "
+        "line then. Anything they should know before they reach you? Write it here.",
     ],
     "rate_limited": [
         "I need a moment to process that. For immediate assistance, "
