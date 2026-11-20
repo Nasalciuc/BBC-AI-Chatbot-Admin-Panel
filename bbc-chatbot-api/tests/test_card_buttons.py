@@ -433,14 +433,30 @@ class TestChannels:
         hold the same lock (round 3): no other choice is written between them, and the lead is read again."""
         from app.services import lead_service
 
-        held = []
+        real_lock = lead_service._lead_lock
+        held, entries, exits = [], [], []
+
+        class _Counted:
+            """The conversation's real lock, each entry and exit counted (round 4: one hold, not two)."""
+
+            def __init__(self, cid):
+                self.lock = real_lock(cid)
+
+            async def __aenter__(self):
+                entries.append(1)
+                return await self.lock.__aenter__()
+
+            async def __aexit__(self, *exc):
+                exits.append(1)
+                return await self.lock.__aexit__(*exc)
 
         async def update_lead(lead_id, payload):
-            held.append(lead_service._lead_lock(_CID).locked())
+            held.append(real_lock(_CID).locked())
             return None if len(held) == 1 else {"id": lead_id}
 
         saved, ps = _buttons_patches(_conv())
         ps[5] = patch("app.db.supabase.update_lead", new=AsyncMock(side_effect=update_lead))
+        ps.append(patch.object(lead_service, "_lead_lock", new=_Counted))
         started = [p.start() for p in ps]
         try:
             out = await card_buttons.answer(_req("sms", "Text message: +61 412 345 678"),
@@ -450,7 +466,8 @@ class TestChannels:
                 p.stop()
         assert out.message.startswith("Done, an agent will text your fares to +61412345678")
         assert started[5].await_count == 2 and started[3].await_count == 1      # the number once
-        assert held == [True, True] and started[4].await_count == 2              # one hold, the lead read again
+        assert held == [True, True] and started[4].await_count == 2              # held, the lead read again
+        assert len(entries) == 1 and len(exits) == 1                             # one hold for both tries
         assert [r["role"] for r in saved.rows] == ["user", "ai"]                # the message once
         assert card_buttons.CARD_BUTTONS_HEALTH["channel_not_noted"] == 0
 

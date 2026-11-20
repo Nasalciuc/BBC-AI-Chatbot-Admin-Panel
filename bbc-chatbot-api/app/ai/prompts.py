@@ -987,7 +987,6 @@ _ONE_WAY_ASK_RE = _re.compile(
     r"|\b(?:fly|flying|come|coming|head|heading)\s+back\b"
     r"|\bwhen\s+(?:do|would|will|are|did|can)\s+(?:you|they)\b[^?]*\breturn"
     r"|\bwhen(?:\s+is|'s|\s+will\s+be)\s+(?:your|the|their)\s+return\b"
-    r"|\bwhen\b[^?]*\breturn(?:ing)?\s+(?:date|day|flight)s?\b"
     # "What" and "which" ask the time only with "date" or "day": "Which cabin for the return flight?" asks the
     # cabin (CodeRabbit #272, round 3).
     r"|\b(?:what|which)\b[^?]*\breturn(?:ing)?\s+(?:date|day)s?\b"

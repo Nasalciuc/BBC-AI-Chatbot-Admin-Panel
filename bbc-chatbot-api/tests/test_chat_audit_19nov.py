@@ -284,6 +284,8 @@ def test_otherwise_the_dates_are_left_alone(lead, history, meta):
     ("What's your return date?", True),
     ("What date works for the return?", True),
     ("Which cabin would you prefer for the return flight?", False),  # round 3: asks the cabin, not the day
+    ("When is the best time to discuss your return flight?", False),  # round 4: asks when to talk
+    ("When would you like your return flight?", True),
     ("Departing Feb 10, returning Feb 11, 1 traveler — is that right?", False),  # the summary, said back
     ("Would you prefer a refundable ticket for the return?", False),  # names it, asks something else
 ])
