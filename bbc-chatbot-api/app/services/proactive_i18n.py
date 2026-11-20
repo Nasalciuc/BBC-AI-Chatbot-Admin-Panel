@@ -39,7 +39,7 @@ SENTENCES: dict[str, dict[str, str]] = {
         "full": "{hello} I see you're looking at {line}. Want an agent to check private fares for exactly this trip?",
         # C5 (ADR-2b): the client says the price, an agent checks if they can beat it — never Alex.
         "full_beat": ("{hello} I see you're looking at {line}. Already seen a price? "
-                      "An agent checks if they can beat it — real fares by text or email."),
+                      "An agent checks if they can beat it, with real fares by text or email."),
         "dest_date": "{hello} I see you're looking at {line}. Want an agent to check {cabin_fares} fares for these dates?",
         "dest": "{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check {cabin_fares} fares for you.",
         "places": ("{hello} Where are you thinking of flying? "
@@ -50,7 +50,7 @@ SENTENCES: dict[str, dict[str, str]] = {
         # The phone card's own words (ADR A3, 20 Nov): under the trip as its title, only the question of the
         # sentence above it — the chat still opens with the whole sentence. Each one ends that sentence.
         "ask_full": "Want an agent to check private fares for exactly this trip?",
-        "ask_full_beat": "Already seen a price? An agent checks if they can beat it — real fares by text or email.",
+        "ask_full_beat": "Already seen a price? An agent checks if they can beat it, with real fares by text or email.",
         "ask_dest_date": "Want an agent to check {cabin_fares} fares for these dates?",
         "ask_dest": "Tell me roughly when, and an agent will check {cabin_fares} fares for you.",
         "row_line": "Faster than the form: an agent can send you the fares for {line} by text or by email.",

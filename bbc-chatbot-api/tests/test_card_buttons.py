@@ -153,7 +153,7 @@ class TestOffer:
     def test_a_card_with_the_whole_trip_carries_its_yes_answer_and_its_channel(self, monkeypatch):
         _on(monkeypatch)
         out = proactive.offer(_VISITOR, "kayak", _trip(), "bbc", device="phone", team_online=True)
-        assert out["show"] and out["confirm"]["message"].startswith("Got it — New York → Paris")
+        assert out["show"] and out["confirm"]["message"].startswith("Got it, New York → Paris")
         assert [b["kind"] for b in out["confirm"]["buttons"]] == ["sms", "email", "wait", "change"]
         assert out["channel"] == {"kind": "sms", "label": "Fares by text"}
         assert not has_price(out["confirm"]["message"])
@@ -349,7 +349,7 @@ class TestYes:
         out, saved, m = await _tap(_req("yes", "Yes, send me fares"), _conv())
         assert [r["role"] for r in saved.rows] == ["user", "ai"]
         assert saved.rows[1]["model_used"] == "proactive_template"
-        assert out.message == saved.rows[1]["content"] and out.message.startswith("Got it — New York → Paris")
+        assert out.message == saved.rows[1]["content"] and out.message.startswith("Got it, New York → Paris")
         assert out.message_id == "m2" and out.created_at == saved.rows[1]["created_at"]
         assert [b["kind"] for b in out.buttons] == ["sms", "email", "wait", "change"]
         assert out.quick_replies == ["Text message", "Email", "I'll wait here", "Change details"]
@@ -397,7 +397,7 @@ class TestChannels:
         assert written["notes"].startswith("CLIENT ASKED FOR TEXTS, NOT CALLS — +61412345678")
         assert m["queue"].await_args.kwargs["reason"] == "sms request"
         m["withdraw"].assert_called_once_with(_CID)
-        assert out.message.startswith("Done — an agent will text your fares to +61412345678 within about 30 minutes.")
+        assert out.message.startswith("Done, an agent will text your fares to +61412345678 within about 30 minutes.")
         assert "WhatsApp" not in out.message
         assert [r["role"] for r in saved.rows] == ["user", "ai"]
         assert card_buttons.CARD_BUTTONS_HEALTH["sms"] == 1
@@ -428,7 +428,7 @@ class TestChannels:
         assert written["notes"].startswith("CLIENT ASKED FOR WHATSAPP, NOT CALLS — +61412345678")
         assert m["queue"].await_args.kwargs["reason"] == "whatsapp request"
         m["withdraw"].assert_called_once_with(_CID)
-        assert out.message.startswith("Done — an agent will send your fares on WhatsApp to +61412345678 "
+        assert out.message.startswith("Done, an agent will send your fares on WhatsApp to +61412345678 "
                                       "within about 30 minutes.")
         assert [r["role"] for r in saved.rows] == ["user", "ai"]
 
@@ -445,7 +445,7 @@ class TestChannels:
         assert signals["contact_channel"] == "email" and signals["price_seen"] == "$4,200"
         assert "notes" not in m["update_lead"].await_args.args[1]
         assert "$" not in out.message and "4,200" not in out.message  # never repeated to the client
-        assert out.message.startswith("Done — an agent will email your fares to client@example.com")
+        assert out.message.startswith("Done, an agent will email your fares to client@example.com")
 
     @pytest.mark.asyncio
     async def test_without_a_trip_the_answer_asks_for_it(self):
@@ -453,7 +453,7 @@ class TestChannels:
         answer asks where and when, never for the extras of a trip nobody said."""
         conv = _conv({"proactive_trigger": "quote", "proactive_trip": None})
         out, _, _ = await _tap(_req("email", "Email: client@example.com"), conv, lead={"id": "L1"})
-        assert out.message.startswith("Done — an agent will email your fares to client@example.com")
+        assert out.message.startswith("Done, an agent will email your fares to client@example.com")
         assert out.message.endswith("Where would you like to fly, and roughly when? Write it here.")
         assert "flexible dates" not in out.message
 
@@ -496,7 +496,7 @@ class TestChannels:
     @pytest.mark.parametrize("button, message", [("sms", "Text message: +61 412 345 678"),
                                                  ("email", "Email: client@example.com")])
     async def test_a_contact_not_saved_is_never_said_done(self, button, message):
-        """The write failed: no "Done — an agent will…", no queue, no message saved here. The model's turn
+        """The write failed: no "Done, an agent will…", no queue, no message saved here. The model's turn
         takes the message, saves it and tries the contact again (CodeRabbit #270)."""
         out, saved, m = await _tap(_req(button, message), _conv(), saves=False)
         assert out is None and saved.rows == []
@@ -535,7 +535,7 @@ class TestWait:
     @pytest.mark.asyncio
     async def test_the_minute_is_promised_only_with_an_agent_online(self):
         out, _, m = await _tap(_req("wait", "I'll wait here"), _conv(), online=[{"id": "u1"}])
-        assert out.message == "Great — an agent can join you here in about a minute." and out.buttons is None
+        assert out.message == "Great, an agent can join you here in about a minute." and out.buttons is None
         assert m["queue"].await_args.kwargs["reason"] == "waits in the chat"
 
     @pytest.mark.asyncio
@@ -565,7 +565,7 @@ class TestBeforeYouGo:
     @pytest.mark.asyncio
     async def test_once_with_the_trip_and_the_buttons(self):
         out, saved = await self._ask(_conv())
-        assert out["show"] and out["message"].startswith("Before you go — an agent can send you the fares for New York")
+        assert out["show"] and out["message"].startswith("Before you go, an agent can send you the fares for New York")
         assert [b["kind"] for b in out["buttons"]] == ["sms", "email"]
         assert out["id"] == "m1" and saved.rows[0]["role"] == "ai"
 
@@ -663,7 +663,7 @@ class TestBeforeYouGo:
         finally:
             for p in ps:
                 p.stop()
-        assert out["message"] == "Before you go — where should an agent send you the fares: by text or by email?"
+        assert out["message"] == "Before you go, where should an agent send you the fares: by text or by email?"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -696,6 +696,7 @@ class TestWhatsAppInWords:
         run, mocks = _callback_turn("+1 210 555 0100", lead_signals={"contact_channel": "whatsapp"},
                                     conv_extra={"visitor_email": "cliente@example.com"})
         resp = await run()
+        # The template as written; the client reads it after the output guard (db.add_message, mocked here).
         assert resp.message.startswith("Got it — your consultant will write to you on WhatsApp at +12105550100.")
         payload = _lead_payloads(mocks)[-1]
         assert payload["intent_signals"]["contact_channel"] == "whatsapp"
@@ -766,6 +767,8 @@ def test_nothing_we_offer_names_whatsapp_any_more(monkeypatch, lang):
     every += [out["message"], out["confirm"]["message"], out["channel"]["label"],
               *(b["label"] for b in out["confirm"]["buttons"])]
     assert every and not [w for w in every if "whatsapp" in w.lower()]
+    # …and none of them has the long dash (20 Nov: it reads as a machine's; tests/test_no_long_dash.py).
+    assert not [w for w in every if "—" in w]
     assert any("SMS" in w or "text" in w for w in every)
     assert card_words.device_channel("phone") == "sms" and "whatsapp" not in card_words.KINDS
 

@@ -112,7 +112,7 @@ async def is_agent_effectively_offline(conversation_id: str) -> bool:
 
 
 _FALLBACK_MSG = (
-    "Sorry for the wait — I'm here and we can pick up right where we left off."
+    "Sorry for the wait, I'm here and we can pick up right where we left off."
 )
 
 

@@ -20,7 +20,8 @@ still answered as WhatsApp: that client typed a number into a field that said Wh
 - C1/C2 (ADR-3a/3b): the card's own channel button, and the pill that stays after "Not now".
 
 English, Spanish and French, like the card (ADR-9b). No amount anywhere (owner, 18 Nov): the price the
-client says is kept for the agent, never repeated.
+client says is kept for the agent, never repeated. No long dash either (owner, 20 Nov: it reads as a machine's;
+app.ai.output_guard.no_long_dash takes it out of everything stored, and these words never had to lose it).
 """
 
 from __future__ import annotations
@@ -46,9 +47,9 @@ _CARD_CHANNEL: dict[str, dict[str, str]] = {
 
 _CONFIRM: dict[str, dict[str, str]] = {
     "en": {
-        "fares": ("Got it — {line}. An agent will check live fares for exactly this trip and write to you. "
+        "fares": ("Got it, {line}. An agent will check live fares for exactly this trip and write to you. "
                   "Where should they write: by text or by email?"),
-        "beat": ("Got it — {line}. An agent will check if they can beat the price you saw, and write to you. "
+        "beat": ("Got it, {line}. An agent will check if they can beat the price you saw, and write to you. "
                  "Where should they write: by text or by email?"),
     },
     "es": {
@@ -73,10 +74,10 @@ _WHEN: dict[str, tuple[str, str]] = {
 }
 _DONE: dict[str, dict[str, str]] = {
     "en": {
-        "sms": "Done — an agent will text your fares to {contact} {when}.",
+        "sms": "Done, an agent will text your fares to {contact} {when}.",
         # A tap from a widget cached from before SMS (a day at most): that client chose WhatsApp.
-        "whatsapp": "Done — an agent will send your fares on WhatsApp to {contact} {when}.",
-        "email": "Done — an agent will email your fares to {contact} {when}.",
+        "whatsapp": "Done, an agent will send your fares on WhatsApp to {contact} {when}.",
+        "email": "Done, an agent will email your fares to {contact} {when}.",
         "tail": " Anything they should know, like flexible dates or an airline you prefer? Write it here.",
         "tail_trip": " Where would you like to fly, and roughly when? Write it here.",
     },
@@ -96,8 +97,8 @@ _DONE: dict[str, dict[str, str]] = {
     },
 }
 _WAIT: dict[str, tuple[str, str]] = {
-    "en": ("Great — an agent can join you here in about a minute.",
-           "Great — an agent will write here as soon as one is free. If you need to go, tap Text message or Email "
+    "en": ("Great, an agent can join you here in about a minute.",
+           "Great, an agent will write here as soon as one is free. If you need to go, tap Text message or Email "
            "and the fares will reach you there."),
     "es": ("Perfecto: un agente puede unirse aquí en un minuto, más o menos.",
            "Perfecto: un agente le escribirá aquí en cuanto esté libre. Si tiene que irse, toque SMS o "
@@ -107,8 +108,8 @@ _WAIT: dict[str, tuple[str, str]] = {
            "E-mail et les tarifs vous y parviendront."),
 }
 _BEFORE_YOU_GO: dict[str, tuple[str, str]] = {
-    "en": ("Before you go — an agent can send you the fares for {line}. Where should they write: by text or by email?",
-           "Before you go — where should an agent send you the fares: by text or by email?"),
+    "en": ("Before you go, an agent can send you the fares for {line}. Where should they write: by text or by email?",
+           "Before you go, where should an agent send you the fares: by text or by email?"),
     "es": ("Antes de irse: un agente puede enviarle las tarifas para {line}. ¿Dónde le escribe: SMS o correo?",
            "Antes de irse: ¿dónde le envía un agente las tarifas: SMS o correo?"),
     "fr": ("Avant de partir : un agent peut vous envoyer les tarifs pour {line}. Où doit-il vous écrire : "
@@ -182,7 +183,7 @@ def before_you_go(line: Optional[str], lang: Optional[str] = None) -> tuple[str,
 # per chat) or when they turned a channel down: nothing is promised ("We'll be in touch soon" was, to a client
 # nobody could reach: a quote-card chat on 19 Nov) and nothing is asked again (CodeRabbit #270).
 _GOODBYE_NO_CONTACT: dict[str, str] = {
-    "en": "Thanks for stopping by — whenever you'd like the fares, just write here.",
+    "en": "Thanks for stopping by. Whenever you'd like the fares, just write here.",
     "es": "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí.",
     "fr": "Merci de votre visite : quand vous voudrez les tarifs, écrivez-nous ici.",
 }

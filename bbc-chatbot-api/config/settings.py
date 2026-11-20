@@ -205,7 +205,7 @@ class Settings(BaseSettings):
     quick_replies_support: list = ["Change my booking", "Cancel or refund", "Flight status", "Other question"]
 
     # Message shown to widget when heartbeat assigns an AI conv to a newly available agent
-    heartbeat_joined_template: str = "{agent_name} has joined — they’ll take it from here."
+    heartbeat_joined_template: str = "{agent_name} has joined, they’ll take it from here."
 
     # CRM
     crm_api_url: str = "https://webapi.buybusinessclass.com"
