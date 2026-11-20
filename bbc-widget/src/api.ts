@@ -7,7 +7,7 @@
 
 import type { ButtonKind, ChannelKind, ChatButton } from './channel'
 
-const BUTTON_KINDS: readonly ButtonKind[] = ['whatsapp', 'email', 'wait', 'change']
+const BUTTON_KINDS: readonly ButtonKind[] = ['sms', 'email', 'wait', 'change']
 
 /** The server's buttons ({"kind", "label"}: app/services/card_words.py), each with a known kind and a label;
  *  anything else dropped. The widget acts on the kind, whatever the language of the label. */
@@ -22,10 +22,10 @@ export function readButtons(raw: unknown): ChatButton[] {
   })
 }
 
-/** One channel button (WhatsApp or email), or null. */
+/** One channel button (SMS or email), or null. */
 export function readChannel(raw: unknown): (ChatButton & { kind: ChannelKind }) | null {
   const [b] = readButtons([raw])
-  return b && (b.kind === 'whatsapp' || b.kind === 'email') ? (b as ChatButton & { kind: ChannelKind }) : null
+  return b && (b.kind === 'sms' || b.kind === 'email') ? (b as ChatButton & { kind: ChannelKind }) : null
 }
 
 const VISITOR_KEY = 'bbc_visitor_id'

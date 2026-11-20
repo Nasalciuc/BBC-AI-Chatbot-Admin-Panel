@@ -11,7 +11,7 @@ import type { ProactiveOpening } from './proactive'
  * chat card ("Looks like the quote form is giving you trouble" caught 0 of 23). 64 sends were refused in a
  * day and 54 of those people never sent anything after: they pressed "Get free quote" to see a price, and
  * the form asked for three personal details first. The row offers a shortcut, never a reproach: the fares
- * on WhatsApp or by email, one field — the chat opens on it (ChatWindow, `firstChannel`).
+ * by SMS or by email, one field — the chat opens on it (ChatWindow, `firstChannel`).
  *
  * It sits under the form's button, inside the form's card and outside the widget's root, so it has its own
  * styles (styles.ts, #bbc-form-row) and the brand's colour set on its host. It covers nothing and does not
@@ -28,7 +28,7 @@ export function FormRow({ opening, onPick, onClose }: {
     <div class="bw-row-offer" role="region" aria-label={opening.message}>
       <p class="bw-row-offer__text">{opening.message}</p>
       <div class="bw-row-offer__actions">
-        {(opening.buttons || []).filter(b => b.kind === 'whatsapp' || b.kind === 'email').map(b => (
+        {(opening.buttons || []).filter(b => b.kind === 'sms' || b.kind === 'email').map(b => (
           <button key={b.kind} type="button" class="bw-row-offer__btn" onClick={() => onPick(b.kind as ChannelKind)}>
             <ChannelIcon kind={b.kind as ChannelKind} />{b.label}
           </button>

@@ -1,7 +1,8 @@
 /**
  * What follows the card (18 Nov 2026, "12 probleme Kayak și chat"): the instant answer to its yes and the
- * channel buttons (A1, A2), the client's own WhatsApp number or email (the owner: "spune că îi vom scrie,
- * unde: pe email și WhatsApp"), the card's channel button and the pill after "Not now" (C1, C2), the row
+ * channel buttons (A1, A2), the client's own mobile number for SMS or email (the owner, 18 Nov: "spune că îi
+ * vom scrie, unde: pe email și WhatsApp"; 20 Nov: SMS in place of WhatsApp everywhere), the card's channel
+ * button and the pill after "Not now" (C1, C2), the row
  * beside the refused quote form (D1), one message before a contactless client leaves (B1), popups (E1),
  * the keyboard (E2), the card in Spanish and French (ADR-9b), and the Kayak card's sooner moment (ADR A1, which
  * retired the C4 test).
@@ -14,7 +15,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validWhatsapp } from '../src/channel.ts'
+import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validPhone } from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
@@ -39,7 +40,7 @@ const row = read('FormRow.tsx')
 const AU = COUNTRIES.find(c => c.code === 'AU')
 const US = COUNTRIES[0]
 
-// ── The client's contact: WhatsApp number or email ─────────────────────────────────────────
+// ── The client's contact: a mobile number for SMS, or email ──────────────────────────────────
 
 test('a number is placed in its country: its own code first, then the country beside the field', () => {
   assert.equal(phoneFor('0412 345 678', AU), '+61412345678')         // #3296: the trunk 0 dropped
@@ -48,15 +49,15 @@ test('a number is placed in its country: its own code first, then the country be
   assert.equal(phoneFor('(210) 555-0100', US), '+12105550100')
   assert.equal(phoneFor('1 210 555 0100', US), '+12105550100')
   assert.equal(phoneFor('12 34', AU), '')
-  assert.equal(validWhatsapp(COUNTRIES, '0412 345 678', AU), '+61412345678')
-  assert.equal(validWhatsapp(COUNTRIES, '0412 345', AU), null)       // too short for Australia
-  assert.equal(validWhatsapp(COUNTRIES, '210 555 0100', US), '+12105550100')
+  assert.equal(validPhone(COUNTRIES, '0412 345 678', AU), '+61412345678')
+  assert.equal(validPhone(COUNTRIES, '0412 345', AU), null)       // too short for Australia
+  assert.equal(validPhone(COUNTRIES, '210 555 0100', US), '+12105550100')
   assert.equal(readablePhone(COUNTRIES, '+61412345678'), '+61 412 345 678')
   assert.equal(ownerOf(COUNTRIES, '+971501234567').code, 'AE')
   // Italy dials its leading 0 from abroad too (CodeRabbit #270): never +39 2 1234 5678.
   const IT = COUNTRIES.find(c => c.code === 'IT')
   assert.equal(phoneFor('02 1234 5678', IT), '+390212345678')
-  assert.equal(validWhatsapp(COUNTRIES, '02 1234 5678', IT), '+390212345678')
+  assert.equal(validPhone(COUNTRIES, '02 1234 5678', IT), '+390212345678')
   assert.equal(phoneFor('312 345 6789', IT), '+393123456789')         // a mobile has no 0
   assert.equal(phoneFor('0039 02 1234 5678', AU), '+390212345678')
 })
@@ -77,7 +78,9 @@ test('an email is one, or nothing', () => {
 })
 
 test('what goes out as the client\'s message is what the agent reads, in the client\'s language', () => {
-  assert.equal(channelMessage('en', 'whatsapp', '+61 412 345 678'), 'WhatsApp: +61 412 345 678')
+  assert.equal(channelMessage('en', 'sms', '+61 412 345 678'), 'Text message: +61 412 345 678')
+  assert.equal(channelMessage('es', 'sms', '+34 612 345 678'), 'SMS: +34 612 345 678')
+  assert.equal(channelMessage('fr', 'sms', '+33 6 12 34 56 78'), 'SMS : +33 6 12 34 56 78')
   assert.equal(channelMessage('es', 'email', 'cliente@example.com', '4,200'), 'Correo: cliente@example.com · Precio visto: 4,200')
   assert.equal(channelMessage('fr', 'email', 'client@example.com'), 'E-mail : client@example.com')
   assert.equal(widgetLang({ language: 'es-MX' }), 'es')
@@ -93,11 +96,15 @@ test('what goes out as the client\'s message is what the agent reads, in the cli
 
 test('only buttons the widget knows how to act on pass', () => {
   assert.deepEqual(
-    readButtons([{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'call', label: 'Call' }, { kind: 'email', label: ' ' },
+    readButtons([{ kind: 'sms', label: 'Text message' }, { kind: 'call', label: 'Call' }, { kind: 'email', label: ' ' },
       { kind: 'wait', label: "I'll wait here" }, 'x', null]),
-    [{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'wait', label: "I'll wait here" }],
+    [{ kind: 'sms', label: 'Text message' }, { kind: 'wait', label: "I'll wait here" }],
   )
   assert.equal(readChannel({ kind: 'wait', label: 'x' }), null)
+  // SMS in place of WhatsApp everywhere (20 Nov): the widget offers no WhatsApp, whatever the server says.
+  assert.deepEqual(readButtons([{ kind: 'whatsapp', label: 'WhatsApp' }]), [])
+  assert.equal(readChannel({ kind: 'whatsapp', label: 'Fares on WhatsApp' }), null)
+  assert.deepEqual(readChannel({ kind: 'sms', label: 'Fares by text' }), { kind: 'sms', label: 'Fares by text' })
   assert.deepEqual(readChannel({ kind: 'email', label: 'Email me fares' }), { kind: 'email', label: 'Email me fares' })
 })
 
@@ -108,8 +115,8 @@ test('the offer brings what follows the yes, the card\'s channel, the row\'s but
     sent = JSON.parse(init.body)
     return new Response(JSON.stringify({
       show: true, arm: 'proactive', message: 'Hola', quick_replies: ['Sí, envíenme tarifas', 'Ahora no'], lang: 'es',
-      confirm: { message: 'Perfecto: …', buttons: [{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'nope', label: 'x' }] },
-      channel: { kind: 'whatsapp', label: 'Tarifas por WhatsApp' }, variant: 'beat',
+      confirm: { message: 'Perfecto: …', buttons: [{ kind: 'sms', label: 'SMS' }, { kind: 'nope', label: 'x' }] },
+      channel: { kind: 'sms', label: 'Tarifas por SMS' }, variant: 'beat',
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }
   try {
@@ -121,8 +128,8 @@ test('the offer brings what follows the yes, the card\'s channel, the row\'s but
     assert.equal(sent.c4, undefined)
     assert.equal(res.lang, 'es')
     assert.equal(res.variant, 'beat')
-    assert.deepEqual(res.confirm, { message: 'Perfecto: …', buttons: [{ kind: 'whatsapp', label: 'WhatsApp' }] })
-    assert.deepEqual(res.channel, { kind: 'whatsapp', label: 'Tarifas por WhatsApp' })
+    assert.deepEqual(res.confirm, { message: 'Perfecto: …', buttons: [{ kind: 'sms', label: 'SMS' }] })
+    assert.deepEqual(res.channel, { kind: 'sms', label: 'Tarifas por SMS' })
   } finally {
     globalThis.fetch = realFetch
   }
@@ -132,7 +139,7 @@ test('before you go: the server\'s message with its buttons, or nothing', async 
   const realFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({
     show: true, message: 'Before you go — …', id: 'm9', created_at: '2026-11-18T10:00:00+00:00',
-    buttons: [{ kind: 'whatsapp', label: 'WhatsApp' }, { kind: 'email', label: 'Email' }],
+    buttons: [{ kind: 'sms', label: 'Text message' }, { kind: 'email', label: 'Email' }],
   }), { status: 200 })
   try {
     const out = await askBeforeYouGo('https://api.test', 'conv-1')
@@ -247,7 +254,7 @@ test('A1/A2: the card\'s yes shows its answer and buttons at once; the stored ro
 
 test('a channel opens its field; the contact goes out as the button it was, through the line too', () => {
   const quick = chat.slice(chat.indexOf('const handleQuickReply'), chat.indexOf('const handleKeyDown'))
-  assert.ok(quick.indexOf("chip.kind === 'whatsapp' || chip.kind === 'email'") < quick.indexOf('sendMessage(text)'))
+  assert.ok(quick.indexOf("chip.kind === 'sms' || chip.kind === 'email'") < quick.indexOf('sendMessage(text)'))
   assert.match(quick, /if \(chip\.kind === 'wait'\) return sendOrQueue\(text, \{ button: 'wait' \}\)/)
   assert.match(quick, /sendOrQueue\(text, \{ button: kind, \.\.\.\(beatRef\.current && price \? \{ priceSeen: price \} : \{\}\) \}\)/)
   assert.match(chat, /sendMessage\(next\.text, next\.opts\)/)
@@ -256,7 +263,10 @@ test('a channel opens its field; the contact goes out as the button it was, thro
   assert.match(quick, /posthog\?\.capture\('chat_channel_given', \{ channel: kind, tunnel,/)
   assert.doesNotMatch(quick.slice(quick.indexOf("'chat_channel_given'"), quick.indexOf("'chat_channel_given'") + 120), /contact|channelValue/)
   // The field: a country beside a number, or one email; the price they saw only on the card's tested sentence.
-  assert.match(chat, /type=\{channelForm === 'whatsapp' \? 'tel' : 'email'\}/)
+  assert.match(chat, /type=\{channelForm === 'sms' \? 'tel' : 'email'\}/)
+  assert.match(chat, /\{channelForm === 'sms' \? w\.phoneLabel : w\.emailLabel\}/)
+  // Back from the field, the channels again: the same words as the server's buttons.
+  assert.match(chat, /\{ label: w\.sentSms, kind: 'sms' \},\s+\{ label: w\.sentEmail, kind: 'email' \},/)
   assert.match(chat, /\{beatRef\.current && \(\s+<input\s+class="bw-channel__price"/)
 })
 
@@ -267,7 +277,7 @@ test('C1/C2: the card\'s own channel, and the pill after "Not now" until ✕ or 
   assert.match(buttons, /\) : pill\?\.channel && count === 0 \? \(/)
   assert.match(widget, /openProactive\(\{ \.\.\.p, shownAt: Date\.now\(\), firstChannel: p\.channel\.kind \}\)/)
   // A channel icon is a bubble or an envelope, never a brand's logo.
-  assert.match(buttons, /kind === 'whatsapp' \? <IconMessage size=\{18\} \/> : <IconMail size=\{18\} \/>/)
+  assert.match(buttons, /kind === 'sms' \? <IconMessage size=\{18\} \/> : <IconMail size=\{18\} \/>/)
 })
 
 test('B1: one message as a contactless client leaves, asked once per tab, never over a send or a field', () => {
@@ -287,8 +297,8 @@ test('the conversation keeps the browser\'s language and time zone: a local numb
 test('an unanswered opening keeps what follows it across pages; anything else written there is dropped', () => {
   const o = {
     trigger: 'kayak', message: 'Hi', quickReplies: ['Yes, send me fares', 'Not now'], trip: null, surface: 'row', shownAt: 5,
-    confirm: { message: 'Got it', buttons: [{ kind: 'email', label: 'Email' }] }, channel: { kind: 'whatsapp', label: 'Fares on WhatsApp' },
-    buttons: [{ kind: 'whatsapp', label: 'Fares on WhatsApp' }], lang: 'fr', firstReply: 'x', firstChannel: 'email',
+    confirm: { message: 'Got it', buttons: [{ kind: 'email', label: 'Email' }] }, channel: { kind: 'sms', label: 'Fares by text' },
+    buttons: [{ kind: 'sms', label: 'Fares by text' }], lang: 'fr', firstReply: 'x', firstChannel: 'email',
   }
   const kept = keepOpening(o)
   assert.equal(kept.firstReply, undefined)
@@ -304,6 +314,8 @@ test('an unanswered opening keeps what follows it across pages; anything else wr
   assert.equal(odd.confirm, undefined)
   assert.equal(odd.channel, undefined)
   assert.equal(odd.lang, undefined)
+  // An opening kept before SMS (20 Nov) loses its WhatsApp channel: nothing offers WhatsApp any more.
+  assert.equal(readKeptOpening({ ...kept, channel: { kind: 'whatsapp', label: 'Fares on WhatsApp' } }).channel, undefined)
 })
 
 test('reading back up while an answer streams is never pulled down again', () => {
@@ -387,5 +399,20 @@ test('ADR A3: the offer keeps the title and its question together, or neither', 
     assert.equal((await ask()).headline, undefined)
   } finally {
     globalThis.fetch = realFetch
+  }
+})
+
+test('SMS in place of WhatsApp everywhere: the field, its words and the channel kinds (20 Nov)', () => {
+  const field = words('en')
+  assert.equal(field.phoneLabel, 'Your mobile number')
+  assert.equal(field.phoneHint, 'The agent texts the fares to this number.')
+  for (const lang of ['en', 'es', 'fr']) {
+    for (const [k, v] of Object.entries(words(lang))) assert.doesNotMatch(v, /whats\s*app/i, `${lang}.${k}`)
+  }
+  // The widget's source offers no WhatsApp: only the site's own contact links (siteSignals) still name it.
+  const src = ['ChatWindow.tsx', 'FloatingButtons.tsx', 'FormRow.tsx', 'api.ts', 'keptOpening.ts', 'i18n.ts', 'channel.ts']
+  for (const f of src) {
+    const code = read(f).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
+    assert.doesNotMatch(code, /whatsapp/i, f)
   }
 })

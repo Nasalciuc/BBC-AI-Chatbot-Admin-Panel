@@ -59,7 +59,7 @@ export interface ProactiveOpening {
   variant?: string
   /** A2: the instant answer to the card's yes, when the card knew the whole trip (the server's words). */
   confirm?: OfferConfirm
-  /** C1/C2: the card's own channel button (WhatsApp on a phone, email on a computer). */
+  /** C1/C2: the card's own channel button (SMS on a phone, email on a computer). */
   channel?: ChatButton & { kind: ChannelKind }
   /** D1: the row's two buttons beside the refused form. */
   buttons?: ChatButton[]

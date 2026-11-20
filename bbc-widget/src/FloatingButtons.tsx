@@ -29,7 +29,7 @@ interface Props {
   onCardDismiss?: () => void
   /** A tap on the 10 s note: the chat with Alex and no form (Widget.tsx). Without it, the form. */
   onNoteOpen?: () => void
-  /** C1: the card's own channel button (WhatsApp on a phone, email on a computer): the chat opens on its
+  /** C1: the card's own channel button (SMS on a phone, email on a computer): the chat opens on its
    *  field, no message sent before the client leaves the contact. */
   onCardChannel?: (kind: ChannelKind) => void
   /** C2: the pill after "Not now" — the card's channel, small, until ✕ or a tap. */
@@ -38,9 +38,9 @@ interface Props {
   onPillClose?: () => void
 }
 
-/** The icon of a channel: a message bubble for WhatsApp, an envelope for email (never a brand's logo). */
+/** The icon of a channel: a message bubble for SMS, an envelope for email (never a brand's logo). */
 export function ChannelIcon({ kind }: { kind: ChannelKind }) {
-  return kind === 'whatsapp' ? <IconMessage size={18} /> : <IconMail size={18} />
+  return kind === 'sms' ? <IconMessage size={18} /> : <IconMail size={18} />
 }
 
 /** How long the greeting stays before it steps aside by itself. */

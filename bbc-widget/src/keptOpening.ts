@@ -30,7 +30,7 @@ export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstR
 }
 
 // What a kept button may be (api.ts readButtons, repeated: no runtime imports here).
-const BUTTON_KINDS = ['whatsapp', 'email', 'wait', 'change']
+const BUTTON_KINDS = ['sms', 'email', 'wait', 'change']
 
 function keptButtons(v: unknown): ChatButton[] {
   if (!Array.isArray(v)) return []
@@ -73,7 +73,7 @@ function keptAfter(o: Record<string, unknown>): Partial<ProactiveOpening> {
     out.confirm = { message: confirm.message, buttons: confirmButtons }
   }
   const [channel] = keptButtons([o.channel])
-  if (channel && (channel.kind === 'whatsapp' || channel.kind === 'email')) {
+  if (channel && (channel.kind === 'sms' || channel.kind === 'email')) {
     out.channel = channel as ChatButton & { kind: ChannelKind }
   }
   const buttons = keptButtons(o.buttons)

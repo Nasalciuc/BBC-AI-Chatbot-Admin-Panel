@@ -1,11 +1,12 @@
 /**
- * Where the agent writes: WhatsApp or email, the client's own contact (owner, 18 Nov 2026: "spune că îi
- * vom scrie, unde: pe email și WhatsApp" — no business number to message; the client leaves theirs).
+ * Where the agent writes: SMS or email, the client's own contact (owner, 18 Nov 2026: "spune că îi vom
+ * scrie, unde: pe email și WhatsApp"; 20 Nov: "peste tot în loc de WhatsApp să fie SMS" — the agents text
+ * from the company's number; the client leaves theirs).
  *
  * The buttons come from the server with what each does (`kind`), whatever the language of the label:
- * after the card's yes (WhatsApp, Email, "I'll wait here", Change details — A2), on the card itself and
+ * after the card's yes (SMS, Email, "I'll wait here", Change details — A2), on the card itself and
  * on the pill after "Not now" (C1, C2), beside the refused quote form (D1) and in the message before a
- * contactless client leaves (B1). A WhatsApp number is placed in its country here, the way #3296's was
+ * contactless client leaves (B1). A mobile number is placed in its country here, the way #3296's was
  * not ("04…" typed in Australia became an impossible US number): with + or 00 it names its own; without,
  * the country picked beside the field (guessed from the browser) and its trunk 0 dropped.
  *
@@ -14,7 +15,7 @@
  */
 import type { Country } from './countries'
 
-export type ChannelKind = 'whatsapp' | 'email'
+export type ChannelKind = 'sms' | 'email'
 export type ButtonKind = ChannelKind | 'wait' | 'change'
 
 export interface ChatButton {
@@ -73,9 +74,9 @@ export function phoneFor(value: string, country: Country): string {
   return `+${dial}${digits}`
 }
 
-/** A number the agent can write to: placed (phoneFor) and as long as its country's numbers are; a code the
+/** A number the agent can text: placed (phoneFor) and as long as its country's numbers are; a code the
  *  list does not know is taken at 8 to 15 digits. */
-export function validWhatsapp(countries: readonly Country[], value: string, country: Country): string | null {
+export function validPhone(countries: readonly Country[], value: string, country: Country): string | null {
   const e164 = phoneFor(value, country)
   if (!e164) return null
   const owner = ownerOf(countries, e164)

@@ -147,7 +147,7 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-card__yes:hover { background: var(--bw-primary-hover, #203359); }
 #bbc-widget-root .bw-card__no { min-height: 44px; padding: 10px 14px; border-radius: 999px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
 #bbc-widget-root .bw-card__no:hover { color: var(--bw-text); background: rgba(var(--bw-primary-rgb, 30,79,216), 0.06); }
-/* C1: the card's own channel (WhatsApp on a phone, email on a computer) under the yes, "Not now" beside it. */
+/* C1: the card's own channel (SMS on a phone, email on a computer) under the yes, "Not now" beside it. */
 #bbc-widget-root .bw-card__actions--channel { flex-wrap: wrap; }
 #bbc-widget-root .bw-card__actions--channel .bw-card__yes { flex: 1 1 100%; }
 #bbc-widget-root .bw-card__channel {
