@@ -50,6 +50,13 @@ def is_within_team_hours(now: datetime | None = None) -> bool:
     return TEAM_HOURS[0] <= local.hour < TEAM_HOURS[1]
 
 
+def when_we_reach_out(now: datetime | None = None) -> str:
+    """When the short acknowledgements after the closing say the consultant writes: "soon" while the team
+    is at its desks, "first thing when the team is back" otherwise. "Our consultant will reach out shortly"
+    was said at 01:54 US Eastern (#3361, 19 Nov), with nobody there until nine."""
+    return "soon" if is_within_team_hours(now) else "first thing when the team is back"
+
+
 def closing_promise(crm_ok: bool, now: datetime | None = None) -> str:
     """What we are allowed to promise — nothing more.
 

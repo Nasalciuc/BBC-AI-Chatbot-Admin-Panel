@@ -78,18 +78,21 @@ _DONE: dict[str, dict[str, str]] = {
         "whatsapp": "Done — an agent will send your fares on WhatsApp to {contact} {when}.",
         "email": "Done — an agent will email your fares to {contact} {when}.",
         "tail": " Anything they should know, like flexible dates or an airline you prefer? Write it here.",
+        "tail_trip": " Where would you like to fly, and roughly when? Write it here.",
     },
     "es": {
         "sms": "Listo: un agente le enviará las tarifas por SMS al {contact} {when}.",
         "whatsapp": "Listo: un agente le enviará las tarifas por WhatsApp al {contact} {when}.",
         "email": "Listo: un agente le enviará las tarifas a {contact} {when}.",
         "tail": " ¿Algo que deba saber, como fechas flexibles o una aerolínea preferida? Escríbalo aquí.",
+        "tail_trip": " ¿A dónde quiere volar y, más o menos, cuándo? Escríbalo aquí.",
     },
     "fr": {
         "sms": "C'est noté : un agent vous enverra les tarifs par SMS au {contact} {when}.",
         "whatsapp": "C'est noté : un agent vous enverra les tarifs sur WhatsApp au {contact} {when}.",
         "email": "C'est noté : un agent vous enverra les tarifs à {contact} {when}.",
         "tail": " Quelque chose à savoir, comme des dates flexibles ou une compagnie préférée ? Écrivez-le ici.",
+        "tail_trip": " Où souhaitez-vous aller, et à peu près quand ? Écrivez-le ici.",
     },
 }
 _WAIT: dict[str, tuple[str, str]] = {
@@ -150,10 +153,14 @@ def when(lang: Optional[str], team_online: bool) -> str:
     return online if team_online else offline
 
 
-def channel_done(kind: str, contact: str, lang: Optional[str], team_online: bool) -> str:
-    """The contact the client left on the channel they picked, said back, with when the agent writes."""
+def channel_done(
+    kind: str, contact: str, lang: Optional[str], team_online: bool, *, trip_known: bool = True,
+) -> str:
+    """The contact the client left on the channel they picked, said back, with when the agent writes; then
+    the extras for a known trip, or the trip itself when none is known (#3355)."""
     words = _DONE[_lang(lang)]
-    return words[kind].format(contact=contact, when=when(lang, team_online)) + words["tail"]
+    tail = words["tail"] if trip_known else words["tail_trip"]
+    return words[kind].format(contact=contact, when=when(lang, team_online)) + tail
 
 
 def wait_answer(lang: Optional[str], agent_online: bool) -> tuple[str, list[dict]]:
@@ -173,7 +180,7 @@ def before_you_go(line: Optional[str], lang: Optional[str] = None) -> tuple[str,
 
 # A goodbye from a client who left no way to reach them, once the before-you-go ask was said (it is said once
 # per chat) or when they turned a channel down: nothing is promised ("We'll be in touch soon" was, to a client
-# nobody could reach: 19 Nov, Sydney → Amman) and nothing is asked again (CodeRabbit #270).
+# nobody could reach: a quote-card chat on 19 Nov) and nothing is asked again (CodeRabbit #270).
 _GOODBYE_NO_CONTACT: dict[str, str] = {
     "en": "Thanks for stopping by — whenever you'd like the fares, just write here.",
     "es": "Gracias por su visita: cuando quiera las tarifas, escríbanos aquí.",

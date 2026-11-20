@@ -63,19 +63,22 @@ def _asks_for_transfer(lower: str) -> bool:
     return False
 
 _CLOSING_RE = re.compile(r"(thank|bye|goodbye|see\s+you|that.?s\s+all)", re.I)
-# A goodbye is a message that says only goodbye. "thank you price matters" (19 Nov, Sydney → Amman) answered
-# "what's your email?" with a price worry, was heard as a goodbye, and the client was told "We'll be in
-# touch soon" with no contact on file; "thanks, how much?" or "no thanks" are not goodbyes either.
+# A goodbye is a message that says only goodbye. "thank you price matters" (a quote-card chat, 19 Nov)
+# answered "what's your email?" with a price worry, was heard as a goodbye, and the client was told "We'll
+# be in touch soon" with no contact on file; "thanks, how much?" or "no thanks" are not goodbyes either.
 # Goodbyes said with no "thank" or "bye" in them: a goodbye on their own ("Have a nice day", "I appreciate
-# your help", "Take care") as much as beside a thank-you (CodeRabbit #270). "nothing else" and "for now" are
-# not here: alone, they answer a question ("anything else?") as often as they close.
+# your help", "Take care") as much as beside a thank-you (CodeRabbit #270), and the short thanks a phone
+# types ("Tks" after the consultant line was not one, and the line was said again: #3352).
+# "nothing else" and "for now" are not here: alone, they answer a question ("anything else?") as often as
+# they close.
 _GOODBYE_ALONE = (
     r"i?\s*appreciate\s+(?:it|that|your\s+help)|take\s+care"
     r"|have\s+a\s+(?:good|nice|great|lovely)\s+(?:day|night|evening|weekend|one)|that\s+is\s+all"
+    r"|thx|tks|tnx|thanx|thnx|tysm|ty"
 )
 _GOODBYE_ALONE_RE = re.compile(r"\b(?:" + _GOODBYE_ALONE + r")\b", re.I)
 _GOODBYE_PHRASES_RE = re.compile(
-    r"\b(?:thank\s*(?:you|u|ya)|thanks?|thx|tysm|ty"
+    r"\b(?:thank\s*(?:you|u|ya)|thanks?"
     r"|for\s+(?:all\s+)?(?:your|the)\s+(?:help|time|info(?:rmation)?|assistance)|for\s+everything"
     r"|good\s*bye|bye(?:\s+bye)?|see\s+(?:you|ya)(?:\s+(?:soon|later))?|for\s+now"
     r"|that.?s\s+(?:all|it|everything)(?:\s+i\s+(?:need(?:ed)?|want(?:ed)?))?|nothing\s+else|"

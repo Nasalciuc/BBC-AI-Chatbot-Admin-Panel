@@ -326,6 +326,7 @@ def _buttons_patches(conv, users=0, agents=0, lead=None, online=(), saves=True):
         patch("app.services.routing.queue_for_person", new=AsyncMock(return_value=True)),
         patch("app.services.tasks_service.withdraw_call_tasks", new=AsyncMock(return_value=0)),
         patch("app.db.supabase.get_available_agents", new=AsyncMock(return_value=list(online))),
+        patch("app.db.supabase.get_recent_messages", new=AsyncMock(return_value=[])),
         patch("app.services.closing.is_within_team_hours", return_value=True),
     ]
 
@@ -447,6 +448,30 @@ class TestChannels:
         assert out.message.startswith("Done — an agent will email your fares to client@example.com")
 
     @pytest.mark.asyncio
+    async def test_without_a_trip_the_answer_asks_for_it(self):
+        """The row beside the quote form: an email, no trip on the page or the lead (#3355). The
+        answer asks where and when, never for the extras of a trip nobody said."""
+        conv = _conv({"proactive_trigger": "quote", "proactive_trip": None})
+        out, _, _ = await _tap(_req("email", "Email: client@example.com"), conv, lead={"id": "L1"})
+        assert out.message.startswith("Done — an agent will email your fares to client@example.com")
+        assert out.message.endswith("Where would you like to fly, and roughly when? Write it here.")
+        assert "flexible dates" not in out.message
+
+    @pytest.mark.asyncio
+    async def test_a_trip_on_the_lead_keeps_the_extras_question(self):
+        conv = _conv({"proactive_trigger": "quote", "proactive_trip": None})
+        out, _, _ = await _tap(_req("email", "Email: client@example.com"), conv,
+                               lead={"id": "L1", "destination_code": "LHR"})
+        assert out.message.endswith("Anything they should know, like flexible dates or an airline you prefer? "
+                                    "Write it here.")
+
+    def test_the_trip_question_in_each_language(self):
+        assert card_words.channel_done("email", "a@b.co", "es", True, trip_known=False).endswith(
+            "¿A dónde quiere volar y, más o menos, cuándo? Escríbalo aquí.")
+        assert card_words.channel_done("whatsapp", "+33612345678", "fr", False, trip_known=False).endswith(
+            "Où souhaitez-vous aller, et à peu près quand ? Écrivez-le ici.")
+
+    @pytest.mark.asyncio
     async def test_off_hours_the_promise_is_the_vaguer_one(self):
         saved, ps = _buttons_patches(_conv())
         ps[-1] = patch("app.services.closing.is_within_team_hours", return_value=False)
@@ -557,6 +582,42 @@ class TestBeforeYouGo:
     async def test_never_with_a_contact_an_agent_or_twice(self, conv, users, agents, claim, why):
         out, saved = await self._ask(conv, users=users, agents=agents, claim=claim)
         assert out == {"show": False, "why": why} and saved.rows == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ago_s, last, shows", [
+        (30, "Denver to Athens, flexible — what's the best email for them to reach you?", False),
+        (30, "Where should they write: WhatsApp or email?", False),
+        (30, "And a number for your consultant — would a text or a quick call work better?", False),
+        (180, "What's the best email for them to reach you?", True),     # asked long ago: the client left
+        (30, "Email noted. When are you looking to travel?", True),      # the email named, not asked
+    ])
+    async def test_not_over_alexs_own_ask_for_the_contact(self, ago_s, last, shows):
+        """30 s after "what's the best email for them to reach you?", with the client still in the chat,
+        the before-you-go asked the same again (#3359, 19 Nov). Under two minutes after Alex asked for an
+        email, a WhatsApp or a number, it is not said."""
+        said = (datetime.now(timezone.utc) - timedelta(seconds=ago_s)).isoformat()
+        saved, ps = _buttons_patches(_conv(), users=1)
+        # One patch per name: two on the same one, stopped in start order, leave a mock behind.
+        ps = [p for p in ps if getattr(p, "attribute", None) != "get_recent_messages"]
+        ps.append(patch.object(card_buttons, "_claim", new=AsyncMock(return_value=True)))
+        ps.append(patch("app.db.supabase.get_recent_messages",
+                        new=AsyncMock(return_value=[{"role": "ai", "content": last, "created_at": said}])))
+        for p in ps:
+            p.start()
+        try:
+            out = await card_buttons.before_you_go(_CID)
+        finally:
+            for p in ps:
+                p.stop()
+        assert out["show"] is shows
+        if not shows:
+            assert out == {"show": False, "why": "just_asked"} and saved.rows == []
+
+    @pytest.mark.parametrize("created_at", ["2026-11-19T10:00:00", None, "yesterday"])
+    def test_a_time_it_cannot_read_lets_it_go_on(self, created_at):
+        """A zoneless, missing or unreadable time is no recent ask: the before-you-go goes on, as before."""
+        recent = [{"role": "ai", "content": "What's the best email for them to reach you?", "created_at": created_at}]
+        assert card_buttons._just_asked_contact(recent) is False
 
     @pytest.mark.asyncio
     async def test_the_trip_the_client_changed_to_is_the_one_said(self):

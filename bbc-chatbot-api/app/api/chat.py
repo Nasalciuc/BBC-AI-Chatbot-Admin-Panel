@@ -6,6 +6,7 @@ import logging
 import uuid as _uuid_mod
 
 import asyncio
+import weakref
 import json
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -559,6 +560,74 @@ async def _mark_client_active(conversation_id: str) -> None:
 CHAT_OWNER_HEALTH: dict = {"refused": 0}
 
 
+# After the closing (shown in /health): what clients wrote and was kept, the widget's resends answered without
+# a second row, and the sends that could not be stored (the client was told to try again: 503).
+POST_SALE_HEALTH: dict = {"kept": 0, "resends": 0, "unsaved": 0}
+
+# The same send arriving again this soon is the widget's retry (a turn that outlived its wait), not new words.
+_RESEND_WINDOW_S = 120
+# One post-sale send at a time per conversation: the read that spots a resend and the writes after it run as
+# one. The API is one process (Dockerfile: --workers 1), as for lead_service._lead_lock.
+_POST_SALE_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _post_sale_lock(conversation_id: str) -> asyncio.Lock:
+    lock = _POST_SALE_LOCKS.get(conversation_id)
+    if lock is None:
+        lock = _POST_SALE_LOCKS[conversation_id] = asyncio.Lock()
+    return lock
+
+
+def _resent(row: dict, text: str) -> bool:
+    """`row` is the client's `text`, sent under _RESEND_WINDOW_S ago: this send is the widget's retry of it."""
+    if (row.get("content") or "").strip() != text:
+        return False
+    try:
+        sent = datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - sent).total_seconds() < _RESEND_WINDOW_S
+    except (TypeError, ValueError):  # noqa: silent — an unreadable time is no resend: the message is kept and answered like any new one
+        return False
+
+
+def _post_sale_response(conversation_id: str, text: str, row: Optional[dict]) -> ChatResponse:
+    """The answer, naming its stored row when there is one: the widget then never draws it twice."""
+    return ChatResponse(
+        conversation_id=conversation_id, message=text, type="post_sale", model_used="template",
+        message_id=(row or {}).get("id"), created_at=(row or {}).get("created_at"),
+    )
+
+
+async def _post_sale_reply(conversation_id: str, message: str) -> ChatResponse:
+    """A client who writes once the conversation is done (post-CRM, or the closing sent).
+
+    What they wrote is kept, for the consultant to read: it used to be dropped, and only "Our consultant will
+    reach out shortly" was stored (#3323, #3361; 18-19 Nov). A save that fails is a 503, never an ack: the
+    widget takes a 200 for the save receipt. The same words again within two minutes are the widget's retry:
+    nothing new is stored, and the answer that send got is said again — or the ack, while that send's turn is
+    still being written. The ack names the time the team can keep (app.services.closing.when_we_reach_out)."""
+    from app.services.closing import when_we_reach_out
+
+    text = (message or "").strip()
+    ack = f"Thank you! Your consultant will reach out {when_we_reach_out()}."
+    async with _post_sale_lock(conversation_id):
+        recent = await db.get_recent_messages(conversation_id, limit=4)
+        users = [i for i, m in enumerate(recent) if m.get("role") == "user"]
+        if text and users and _resent(recent[users[-1]], text):
+            answer = next(
+                (m for m in recent[users[-1] + 1:] if m.get("role") == "ai" and (m.get("content") or "").strip()),
+                None,
+            )
+            POST_SALE_HEALTH["resends"] += 1
+            return _post_sale_response(conversation_id, answer["content"] if answer else ack, answer)
+        if text:
+            if not await conversation_service.add_message(conversation_id, "user", text):
+                POST_SALE_HEALTH["unsaved"] += 1
+                raise HTTPException(status_code=503, detail="Message could not be saved")
+            POST_SALE_HEALTH["kept"] += 1
+        row = await conversation_service.add_message(conversation_id, "ai", ack, model_used="template", cost=0.0)
+    return _post_sale_response(conversation_id, ack, row)
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     req: ChatRequest,
@@ -641,29 +710,11 @@ async def chat(
             )
             raise HTTPException(status_code=403, detail=BLOCK_REFUSAL)
         if conv_info and conv_info.get('status') in ('closed', 'completed'):
-            # 'completed' = post-CRM, never reopen
-            if conv_info.get('status') == 'completed':
-                _ack = "Thank you! Our consultant will reach out shortly."
-                await conversation_service.add_message(
-                    req.conversation_id, "ai", _ack,
-                    model_used="template", cost=0.0,
-                )
-                return ChatResponse(
-                    conversation_id=req.conversation_id,
-                    message=_ack, type="post_sale", model_used="template",
-                )
+            # 'completed' = post-CRM, never reopen; a closing already sent = post-sale too:
+            # a polite ack instead of a reopen.
             _meta = dict(conv_info.get("metadata") or {})
-            # Don't reopen post-sale conversations — send polite ack instead
-            if _meta.get("closing_sent_at"):
-                _ack = "Thank you! Our consultant will reach out shortly."
-                await conversation_service.add_message(
-                    req.conversation_id, "ai", _ack,
-                    model_used="template", cost=0.0,
-                )
-                return ChatResponse(
-                    conversation_id=req.conversation_id,
-                    message=_ack, type="post_sale", model_used="template",
-                )
+            if conv_info.get('status') == 'completed' or _meta.get("closing_sent_at"):
+                return await _post_sale_reply(req.conversation_id, clean_message)
             logger.info(f"[reopen] Conv {req.conversation_id} closed — client wrote again, reopening")
             reopen_mode = "human" if conv_info.get("assigned_agent_id") else "ai"
             await db.update_conversation(req.conversation_id, {
@@ -745,7 +796,9 @@ async def chat(
                         "appreciate it", "thx", "ty",
                     )
                     if _polite:
-                        _ack = "You're welcome! Our team will be in touch shortly."
+                        from app.services.closing import when_we_reach_out
+
+                        _ack = f"You're welcome! Our team will be in touch {when_we_reach_out()}."
                     else:
                         _ack = (
                             "Noted — we'll include that in your request. "
@@ -771,7 +824,9 @@ async def chat(
                 # First post-CRM closing (PR-A claim handles dedup)
                 _claimed = await claim_closing_sent(req.conversation_id)
                 _closing = compute_closing_text(_meta.get("site"))
-                _msg = _closing if _claimed else "You're all set! Our consultant will reach out shortly."
+                from app.services.closing import when_we_reach_out
+
+                _msg = _closing if _claimed else f"You're all set! Our consultant will reach out {when_we_reach_out()}."
                 await conversation_service.add_message(
                     req.conversation_id, "ai", _msg,
                     model_used="template", cost=0.0,
