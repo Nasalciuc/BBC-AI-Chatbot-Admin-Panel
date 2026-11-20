@@ -429,9 +429,18 @@ class TestChannels:
 
     @pytest.mark.asyncio
     async def test_the_wish_not_written_is_written_again_once_before_done(self):
-        """CodeRabbit #272: the number is kept; only the wish is written again, and "Done" follows."""
+        """CodeRabbit #272: the number is kept; only the wish is written again, and "Done" follows. Both tries
+        hold the same lock (round 3): no other choice is written between them, and the lead is read again."""
+        from app.services import lead_service
+
+        held = []
+
+        async def update_lead(lead_id, payload):
+            held.append(lead_service._lead_lock(_CID).locked())
+            return None if len(held) == 1 else {"id": lead_id}
+
         saved, ps = _buttons_patches(_conv())
-        ps[5] = patch("app.db.supabase.update_lead", new=AsyncMock(side_effect=[None, {"id": "L1"}]))
+        ps[5] = patch("app.db.supabase.update_lead", new=AsyncMock(side_effect=update_lead))
         started = [p.start() for p in ps]
         try:
             out = await card_buttons.answer(_req("sms", "Text message: +61 412 345 678"),
@@ -441,6 +450,7 @@ class TestChannels:
                 p.stop()
         assert out.message.startswith("Done, an agent will text your fares to +61412345678")
         assert started[5].await_count == 2 and started[3].await_count == 1      # the number once
+        assert held == [True, True] and started[4].await_count == 2              # one hold, the lead read again
         assert [r["role"] for r in saved.rows] == ["user", "ai"]                # the message once
         assert card_buttons.CARD_BUTTONS_HEALTH["channel_not_noted"] == 0
 

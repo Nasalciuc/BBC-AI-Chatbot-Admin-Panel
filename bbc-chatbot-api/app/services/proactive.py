@@ -943,7 +943,9 @@ async def _mark_page_trip(conversation_id: str, trip: TripContext) -> None:
         return  # migration 040 not applied: nowhere to say where it came from
     notes = dict(lead.get("trip_notes") or {}) if isinstance(lead.get("trip_notes"), dict) else {}
     notes["page_trip"] = {
-        **trip.model_dump(mode="json", exclude_none=True),
+        # The ad's search stays off the lead (TripContext.keyword): the place and the cabin read from it are
+        # kept, the words typed are not (CodeRabbit #272, round 3).
+        **trip.model_dump(mode="json", exclude_none=True, exclude={"keyword"}),
         "confirmed": False,
         # What the seed wrote, read back now: later the lead cannot tell a
         # field the seed never wrote from one the client set back to the

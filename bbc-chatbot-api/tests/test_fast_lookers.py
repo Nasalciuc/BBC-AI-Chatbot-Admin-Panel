@@ -264,3 +264,27 @@ async def test_another_cards_opening_seeds_the_page_trip_as_it_was():
          patch("app.services.proactive.seed_lead", new=AsyncMock()) as seed:
         await proactive.open_conversation("conv-1", "reader", trip)
     assert seed.await_args.args[1] is trip
+
+
+@pytest.mark.asyncio
+async def test_the_ads_search_itself_never_reaches_the_lead():
+    """CodeRabbit #272, round 3: the place and the cabin read from the search are on the lead's page trip;
+    the words typed are not."""
+    from unittest.mock import MagicMock
+
+    trip = proactive.with_keyword(TripContext(source="route_page", keyword="first class flights to lakeside"))
+    assert trip.keyword  # the trip the card spoke of still carries it: only the lead leaves it out
+    client = MagicMock()
+    client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+        MagicMock(data=[{"id": "L1", "trip_notes": {}, "cabin_class": "business"}]))
+    written = []
+    client.table.return_value.update.side_effect = lambda payload: written.append(payload) or MagicMock()
+
+    async def run_sync(fn):
+        return fn()
+
+    with patch("app.db.supabase.get_client", return_value=client), patch("app.db.supabase._run_sync", new=run_sync):
+        await proactive._mark_page_trip("conv-1", trip)
+    page = written[0]["trip_notes"]["page_trip"]
+    assert "keyword" not in page and "flights" not in str(page)
+    assert page["destination_name"] == "Lakeside" and page["cabin"] == "first"
