@@ -17,7 +17,7 @@ const OPENING_TRIGGERS: readonly OpeningTrigger[] = ['kayak', 'ads', 'quote', 'r
 
 /** The opening as it is kept. The reply tapped on the card is not kept: it went out already; nor the channel
  *  picked before the chat opened (its field was on that page). What follows the card stays with it: the
- *  answer to its yes, its channel button, the row's buttons, its language and its C4 side. */
+ *  answer to its yes, its channel button, the row's buttons and its language. */
 export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstReply' | 'firstChannel'> {
   return {
     trigger: o.trigger, message: o.message, quickReplies: o.quickReplies, trip: o.trip, surface: o.surface, shownAt: o.shownAt,
@@ -26,7 +26,6 @@ export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstR
     ...(o.channel ? { channel: o.channel } : {}),
     ...(o.buttons ? { buttons: o.buttons } : {}),
     ...(o.lang ? { lang: o.lang } : {}),
-    ...(o.c4 ? { c4: o.c4 } : {}),
   }
 }
 
@@ -80,6 +79,5 @@ function keptAfter(o: Record<string, unknown>): Partial<ProactiveOpening> {
   const buttons = keptButtons(o.buttons)
   if (buttons.length) out.buttons = buttons
   if (o.lang === 'es' || o.lang === 'fr') out.lang = o.lang
-  if (o.c4 === 'early' || o.c4 === 'now') out.c4 = o.c4
   return out
 }

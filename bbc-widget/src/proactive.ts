@@ -33,9 +33,9 @@ import {
 } from './siteSignals'
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
-  C4_HOLD_ARM, KAYAK_EARLY_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
-  adVisit, blockedPath, c4Arm, inViewBeforeStartMs, offAfter, pauseRunning, pickTrigger, readOff, replyKind,
-  type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
+  adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
+  replyKind, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
@@ -65,8 +65,10 @@ export interface ProactiveOpening {
   buttons?: ChatButton[]
   /** The language the server wrote the words in ("es", "fr"); sent back so the chat starts in it. */
   lang?: string
-  /** The C4 side this card was shown on (measured with the card). */
-  c4?: 'early' | 'now'
+  /** ADR A3 (20 Nov): the phone card's own face — the trip as its title and only the opening's question under
+   *  it; the chat still opens with `message`. Absent: the card shows `message`, as before. */
+  headline?: string
+  cardText?: string
   /** The channel the client picked before the chat opened (the card's channel button, the pill, the row):
    *  the chat opens on its field, and the conversation starts with what they leave there. */
   firstChannel?: ChannelKind
@@ -93,8 +95,6 @@ const NOTE_CLOSED_KEY = 'bbc_note_closed'
 const CONV_KEY = 'bbc_conv_proactive'
 // sessionStorage: Widget.tsx's once-per-visit note; set when a card shows so the note never follows it.
 const ATTENTION_KEY = 'bbc_attention_shown'
-// localStorage: this browser heard that C4's early side is over (C4_HOLD_ARM): the usual moment from now on.
-const C4_OVER_KEY = 'bbc_c4_over'
 // sessionStorage: the pill after "Not now" (C2), kept for this visit's pages; localStorage: closed with ✕ for good.
 const PILL_KEY = 'bbc_pill'
 const PILL_CLOSED_KEY = 'bbc_pill_closed'
@@ -211,6 +211,37 @@ function currentTrip(): TripPayload | null {
  *  moment and the words both take this one. */
 function destinationTrip(): TripPayload | null {
   return pickTrip(...pageTrips().filter(hasContext))
+}
+
+/** What the ad visitor searched before the click (utm_term, triggers.ts adKeyword), on an ad visit only. */
+function adKeywordNow(): string | null {
+  return adVisitNow() ? adKeyword(getUtm().utm_term) : null
+}
+
+/** The trip the ads card asks with (ADR A5): the page's destination, and the ad's search beside it — the server
+ *  reads the cabin from it, and the place when the page names none (the home page). */
+function adsTrip(): TripPayload | null {
+  const dest = destinationTrip()
+  const keyword = adKeywordNow()
+  if (!keyword) return dest
+  return { ...(dest ?? { source: 'route_page' as const }), keyword }
+}
+
+/** When the site asked for this script (seconds after the page opened) and how long it took to arrive, from the
+ *  browser's resource timing (ADR A2): whether the widget starts late because the site asks for it late or because
+ *  it is slow to come. Nothing when the browser does not say. */
+function scriptTiming(): { script_req_s?: number; script_dl_ms?: number } {
+  try {
+    const e = performance.getEntriesByType('resource')
+      .find((r) => /-widget\.js(?:[?#]|$)/.test(r.name)) as PerformanceResourceTiming | undefined
+    if (!e) return {}
+    return {
+      script_req_s: Math.round(e.startTime / 100) / 10,
+      script_dl_ms: Math.round(Math.max(0, e.responseEnd - e.startTime)),
+    }
+  } catch {
+    return {}
+  }
 }
 
 /** A form the site asks for a quote with: form.qf on buybusinessclass.com, or one labelled as a quote. */
@@ -368,9 +399,6 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let sentInline = false
     let popupHeldOnce = false
     const start = Date.now()
-    // C4 (triggers.ts): this visitor's side of the Kayak card's moment, from its start date, until the server
-    // says the early side is over.
-    let c4 = c4Arm(ensureVisitorId(), Date.now(), lsGet(C4_OVER_KEY) === '1')
     // E1 (overlay.ts): the site's popups over the page; a card waits while one is open.
     const popups = watchPopups()
     // The moments count the visitor's seconds, not the widget's (triggers.ts, "in view"): the time the page
@@ -528,7 +556,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null,
       quoteForm: quoteFormAt, search: lastSearch(),
     })
-    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, adsTrip: string | null): string | null => {
+    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, askedAds: string | null): string | null => {
       if (stopped) return stopped
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
@@ -544,22 +572,21 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (lastSearch() !== before.search) return 'searched'
       // The ads card names the destination it was asked with: another one on the page by now (its address, its
       // title or the site's word changed) makes those words stale (CodeRabbit #269).
-      if (trigger === 'ads' && JSON.stringify(destinationTrip()) !== adsTrip) return 'trip_changed'
+      if (trigger === 'ads' && JSON.stringify(adsTrip()) !== askedAds) return 'trip_changed'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
       return null
     }
 
     const ask = async (trigger: Trigger, phone: boolean) => {
       const before = seen()
-      // The ads card asks with the trip that made it due (destinationTrip): the words name that destination.
-      const trip = trigger === 'ads' ? destinationTrip() : currentTrip()
-      const adsTrip = trigger === 'ads' ? JSON.stringify(trip) : null
+      // The ads card asks with the trip that made it due (adsTrip): the words name that destination.
+      const trip = trigger === 'ads' ? adsTrip() : currentTrip()
+      const askedAds = trigger === 'ads' ? JSON.stringify(trip) : null
       const device = phone ? 'phone' : 'computer'
       // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
       const took: OfferTiming[] = []
       // D1: the row stands beside the form that was pressed, when the widget can still see it.
       const rowAt = trigger === 'quote' && press?.form?.isConnected ? press.form : null
-      const side = trigger === 'kayak' ? c4 : null
       const lang = browserLanguage()
       const res = await fetchProactiveOffer(apiUrl, {
         visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
@@ -567,16 +594,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(lang ? { lang } : {}),
         device,
         ...(rowAt ? { place: 'form' as const } : {}),
-        ...(side ? { c4: side } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
-      let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, adsTrip) : null
+      let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, askedAds) : null
       // E1: a popup of the site opened while the answer was on its way — the card waits for it to close. The
       // quote card too, looking past the quote form's own modal as its moment did (CodeRabbit #270).
       const pressed = press?.form ?? null
       const ignore = trigger === 'quote' ? (el: Element) => !!pressed && el.contains(pressed) : undefined
       if (!passed && !disposed && res?.show && res.message && popups.open(ignore)) {
         await untilPopupCloses(ignore)
-        passed = disposed ? 'popup' : momentPassed(trigger, before, adsTrip) ?? (popups.open(ignore) ? 'popup' : null)
+        passed = disposed ? 'popup' : momentPassed(trigger, before, askedAds) ?? (popups.open(ignore) ? 'popup' : null)
       }
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
@@ -587,19 +613,12 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         // showed this script started: what OFFER_TIMEOUT_MS and the "in view" count rest on (triggers.ts).
         ...offerMeasures(took[0]),
         ...(widgetStartS !== null ? { widget_start_s: widgetStartS } : {}),
+        ...scriptTiming(),
         ...(passed ? { moment_passed: passed } : {}),
-        ...(side ? { c4: side } : {}),
         ...(res?.lang ? { lang: res.lang } : {}),
+        // The ad's search asked with (never its words): the server reads a place from it or switches ads off.
+        ...(trigger === 'ads' && trip?.keyword ? { ad_keyword: true } : {}),
       })
-      if (res && !res.show && res.arm === C4_HOLD_ARM) {
-        // C4's early side is over: this browser takes the usual moment from now on, and this visit's moment
-        // is asked again then (the reservation this answer owned is given back).
-        lsSet(C4_OVER_KEY, '1')
-        c4 = null
-        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
-        fired = false
-        return
-      }
       if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
         // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
         // in this visit, and the visit keeps its one moment for the others (the reader may still come).
@@ -629,7 +648,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.channel ? { channel: res.channel } : {}),
         ...(res.buttons ? { buttons: res.buttons } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
-        ...(side ? { c4: side } : {}),
+        ...(res.headline && res.card_text ? { headline: res.headline, cardText: res.card_text } : {}),
       }
       if (row) setRowForm(rowAt)
       ssSet(DONE_KEY, 'shown')
@@ -639,7 +658,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       setOffer(opening)
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
-        ...(side ? { c4: side } : {}), ...(res.lang ? { lang: res.lang } : {}),
+        ...(res.lang ? { lang: res.lang } : {}),
+        // The phone card led with the trip (ADR A3): measured against the cards that did not.
+        ...(surface === 'card' && opening.headline ? { titled: true } : {}),
       })
     }
 
@@ -678,8 +699,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         path: location.pathname,
         kayak: kayakVisit(),
         ad,
-        // The page's trip is read only for a visit from an ad: the ads card says its destination back.
-        destination: ad && destinationTrip() !== null,
+        // The page's trip is read only for a visit from an ad: the ads card says its destination back — the
+        // page's, or the one the ad's search names (ADR A5; the server reads it and may still say no).
+        destination: ad && (destinationTrip() !== null || keywordNamesPlace(adKeywordNow())),
         visibleS: visibleS(),
         watchedS: (now - start) / 1000,
         sinceActivityS: (now - lastActivity) / 1000,
@@ -690,7 +712,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         sinceQuoteFormS: quoteFormAt === null ? null : (now - quoteFormAt) / 1000,
         exitIntent: now - exitAt < 1500,
         off: offMoments(),
-        kayakS: c4 === 'early' ? KAYAK_EARLY_S : KAYAK_VISIBLE_S,
+        siteSignals: !!sitePage(),
       }
       const trigger = pickTrigger(state)
       if (!trigger) return
@@ -756,7 +778,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (o) {
         posthog?.capture('proactive_dismissed', {
           trigger: o.trigger, how, surface: o.surface, seconds_visible: Math.round((Date.now() - o.shownAt) / 1000),
-          site: brand.id, ...(o.variant ? { variant: o.variant } : {}), ...(o.c4 ? { c4: o.c4 } : {}),
+          site: brand.id, ...(o.variant ? { variant: o.variant } : {}),
         })
         // C2: after "Not now" the card's channel stays as a small pill, once per visit, until ✕ or a tap.
         if (how === 'not_now' && o.channel && lsGet(PILL_CLOSED_KEY) !== '1') {
@@ -793,7 +815,6 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
         site: brand.id,
         ...(o.variant ? { variant: o.variant } : {}),
-        ...(o.c4 ? { c4: o.c4 } : {}),
       })
     },
     noteOpening: async (stillWanted, door = 'note') => {

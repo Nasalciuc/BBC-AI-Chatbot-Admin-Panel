@@ -131,6 +131,12 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-nudge--card { flex-direction: column; align-items: stretch; width: 330px; }
 #bbc-widget-root .bw-nudge--card .bw-nudge__open { padding: 16px 16px 4px; }
 #bbc-widget-root .bw-nudge--card .bw-nudge__text { -webkit-line-clamp: 6; font-size: 15px; }
+/* ADR A3 (20 Nov): the trip as the card's title, then only the question. Two lines at most: a long route wraps. */
+#bbc-widget-root .bw-nudge--card .bw-nudge__headline {
+  margin-top: 6px; font-size: 17px; font-weight: 700; line-height: 1.3; color: var(--bw-text); letter-spacing: -0.01em;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+#bbc-widget-root .bw-nudge--card .bw-nudge__headline + .bw-nudge__text { margin-top: 4px; -webkit-line-clamp: 3; }
 #bbc-widget-root .bw-card__actions { display: flex; align-items: center; gap: 8px; padding: 12px 16px 16px; }
 #bbc-widget-root .bw-card__yes {
   flex: 1; min-height: 44px; padding: 10px 18px; border-radius: 999px;

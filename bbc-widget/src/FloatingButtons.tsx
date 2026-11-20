@@ -135,7 +135,15 @@ export function FloatingButtons({
         <div class="bw-nudge bw-nudge--card" role="status" aria-live="polite">
           <button type="button" class="bw-nudge__open" onClick={() => onCardOpen?.()}>
             <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
-            <span class="bw-nudge__text">{card.message}</span>
+            {card.headline && card.cardText ? (
+              // ADR A3: the trip first, in one line a visitor of three seconds reads, then only the question.
+              <>
+                <span class="bw-nudge__headline">{card.headline}</span>
+                <span class="bw-nudge__text">{card.cardText}</span>
+              </>
+            ) : (
+              <span class="bw-nudge__text">{card.message}</span>
+            )}
           </button>
           <div class={`bw-card__actions${cardChannel ? ' bw-card__actions--channel' : ''}`}>
             {cardYes && (
