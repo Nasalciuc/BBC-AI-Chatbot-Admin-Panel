@@ -8,6 +8,7 @@ tests; none is a client's.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -228,3 +229,38 @@ def test_a_kayak_card_without_a_destination_has_no_title():
 def test_every_question_ends_its_sentence_in_every_language(key, ask, lang):
     whole = proactive_i18n.SENTENCES[lang][key]
     assert whole.endswith(proactive_i18n.SENTENCES[lang][ask])
+
+
+# --- the lead the ads card opens (CodeRabbit #272) ---------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_ads_opening_and_its_lead_say_the_same_cabin_and_place():
+    """A business class page visited for "first class flights to lakeside": the opening says first class
+    fares, and the lead is seeded with first and the place, not the page's business and nothing."""
+    trip = TripContext(source="route_page", cabin="business", keyword="first class flights to lakeside")
+    with patch("app.db.supabase.count_messages", new=AsyncMock(return_value=0)), \
+         patch("app.services.proactive._claim_opening", new=AsyncMock(return_value=True)), \
+         patch("app.services.conversation_service.add_message",
+               new=AsyncMock(return_value={"id": "m1", "content": "x", "created_at": None})) as add, \
+         patch("app.db.supabase._merge_conv_metadata", new=AsyncMock()) as meta, \
+         patch("app.services.proactive.seed_lead", new=AsyncMock()) as seed:
+        await proactive.open_conversation("conv-1", "ads", trip)
+    assert "first class fares" in add.await_args.args[2]
+    seeded = seed.await_args.args[1]
+    assert seeded.cabin == "first" and seeded.destination_name == "Lakeside"
+    assert proactive._entities_from_trip(seeded)["cabin_class"] == "first"
+    assert meta.await_args.args[1]["proactive_trip"]["cabin"] == "first"
+
+
+@pytest.mark.asyncio
+async def test_another_cards_opening_seeds_the_page_trip_as_it_was():
+    trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business",
+                       keyword="first class flights to lakeside")
+    with patch("app.db.supabase.count_messages", new=AsyncMock(return_value=0)), \
+         patch("app.services.proactive._claim_opening", new=AsyncMock(return_value=True)), \
+         patch("app.services.conversation_service.add_message",
+               new=AsyncMock(return_value={"id": "m1", "content": "x", "created_at": None})), \
+         patch("app.db.supabase._merge_conv_metadata", new=AsyncMock()), \
+         patch("app.services.proactive.seed_lead", new=AsyncMock()) as seed:
+        await proactive.open_conversation("conv-1", "reader", trip)
+    assert seed.await_args.args[1] is trip

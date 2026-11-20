@@ -86,6 +86,50 @@ def test_the_dash_split_between_two_chunks_is_still_one_comma(monkeypatch, parts
     assert not any("—" in piece for piece in out)
 
 
+@pytest.mark.parametrize("parts, said", [
+    (["Done. ", "— An agent writes."], "Done. An agent writes."),     # CodeRabbit #272: no ". ,"
+    (["Hi,", " — there"], "Hi, there"),                             # …and no ",,"
+    (["Hi,", "— there"], "Hi, there"),
+    (["Done.", " — An agent writes."], "Done. An agent writes."),
+    (["a line\n", "— another"], "a line\nanother"),                 # a line's start, in the next piece
+    (["2", "—3 days"], "2–3 days"),                                  # a range across the cut
+])
+def test_a_piece_is_read_after_what_went_out_before_it(monkeypatch, parts, said):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
+    g = StreamGuard()
+    assert "".join(g.feed(p) for p in parts) + g.flush() == said == no_long_dash("".join(parts))
+
+
+_CUT_ANYWHERE = [
+    SEEN, "Done. — An agent writes.", "Hi, — there", "— a line\n— another", "it — (maybe) — yes",
+    "Two quick things —", "Fair question — we're IATA accredited.", "Sure!  — I can help — today.",
+]
+
+
+@pytest.mark.parametrize("mode", ["log", "enforce"])
+@pytest.mark.parametrize("text", _CUT_ANYWHERE)
+def test_cut_anywhere_the_stream_says_what_the_stored_reply_says(monkeypatch, mode, text):
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", mode)
+    for seed in range(120):
+        rnd = random.Random(seed)
+        n = min(len(text) - 1, rnd.randint(1, 8))
+        cuts = sorted(rnd.sample(range(1, len(text)), n))
+        parts = [text[a:b] for a, b in zip([0, *cuts], [*cuts, len(text)])]
+        g = StreamGuard()
+        out = [g.feed(p) for p in parts] + [g.flush()]
+        assert "".join(out) == no_long_dash(text), (seed, parts)
+        assert not any("—" in piece for piece in out)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["log", "enforce"])
+async def test_the_line_said_in_place_of_a_price_has_none_either(monkeypatch, mode):
+    """CodeRabbit #272: the price check puts its own line in the reply, after the dash was taken out."""
+    monkeypatch.setenv("OUTPUT_GUARD_MODE", mode)
+    out = await guard_ai_text("It costs $3,200.")
+    assert out == output_guard.PRICE_LINE and "—" not in out and "3,200" not in out
+
+
 def test_a_dash_that_starts_a_mid_line_chunk_is_a_pause_not_a_line_start(monkeypatch):
     monkeypatch.setenv("OUTPUT_GUARD_MODE", "log")
     g = StreamGuard()

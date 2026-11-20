@@ -45,7 +45,7 @@ MODEL_USED = "template"
 CARD_BUTTONS_HEALTH: dict = {
     "yes": 0, "sms": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
     "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0, "before_you_go_too_long": 0,
-    "goodbye_asked": 0, "goodbye_no_contact": 0,
+    "goodbye_asked": 0, "goodbye_no_contact": 0, "channel_not_noted": 0,
 }
 
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
@@ -186,7 +186,13 @@ async def _channel(
         logger.error(f"[{cid}] card button: the {kind} contact was not saved, the model answers")
         return None
     await _save(cid, "user", message)
-    await _note_channel(cid, kind, contact, price_from(price_seen))
+    price = price_from(price_seen)
+    # Not written: the contact and the message are kept and only the wish is written again, once, before "Done"
+    # (CodeRabbit #272). Still not written: the client is answered all the same (the number is on the
+    # conversation), and the count says the lead may still read an older wish.
+    if not await _note_channel(cid, kind, contact, price) and not await _note_channel(cid, kind, contact, price):
+        CARD_BUTTONS_HEALTH["channel_not_noted"] += 1
+        logger.error(f"[{cid}] card button: the {kind} wish is not on the lead after a retry")
     from app.services.routing import queue_for_person
 
     await queue_for_person(cid, reason=f"{kind} request")
@@ -203,10 +209,11 @@ async def _channel(
     return _response(cid, row, text, [], MODEL_USED)
 
 
-async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str]) -> None:
+async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str]) -> bool:
     """The channel on the lead, where the panel and the CRM note read how to reach the client: the wish
     (intent_signals.contact_channel: "text" for SMS), the price the client saw when they said one, and for
-    a number the line the consultant reads first ("CLIENT ASKED FOR TEXTS, NOT CALLS")."""
+    a number the line the consultant reads first ("CLIENT ASKED FOR TEXTS, NOT CALLS"). True once written;
+    writing it again writes the same (merge_contact_channel, notes_with_callback)."""
     from app.db import supabase as db
     from app.pipeline.callback_intent import callback_note, notes_with_callback
     from app.pipeline.entity_extractor import merge_contact_channel
@@ -220,7 +227,7 @@ async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str])
             lead = await lead_service.get_or_create_lead(cid)
             if not isinstance(lead, dict) or not lead.get("id"):
                 logger.warning(f"[{cid}] card button: no lead to note the {kind} channel on")
-                return
+                return False
             raw = lead.get("intent_signals")
             signals = dict(raw) if isinstance(raw, dict) else ({} if not raw else {"legacy": raw})
             wish = _PHONE_CHANNEL.get(kind, kind)
@@ -235,8 +242,11 @@ async def _note_channel(cid: str, kind: str, contact: str, price: Optional[str])
                 update["notes"] = notes_with_callback(lead.get("notes"), callback_note(contact, channel=wish))
             if not await db.update_lead(lead["id"], update):
                 logger.warning(f"[{cid}] card button: channel not noted on the lead (no row written)")
-    except Exception as e:  # noqa: silent — logged; the contact itself is already on the conversation
+                return False
+            return True
+    except Exception as e:  # noqa: silent — logged and returned False; the caller tries once more
         logger.warning(f"[{cid}] card button: channel not noted on the lead ({type(e).__name__})")
+        return False
 
 
 async def _wait(cid: str, message: str, meta: dict, tunnel: str) -> ChatResponse:

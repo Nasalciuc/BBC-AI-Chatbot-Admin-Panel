@@ -280,6 +280,9 @@ def test_otherwise_the_dates_are_left_alone(lead, history, meta):
     ("When would you like to return?", True),
     ("¿Es solo ida, o cuándo vuelve?", True),
     ("Is Feb 11 your return, or the day you arrive?", True),
+    ("When is your return flight?", True),                        # CodeRabbit #272: asked directly
+    ("What's your return date?", True),
+    ("What date works for the return?", True),
     ("Departing Feb 10, returning Feb 11, 1 traveler — is that right?", False),  # the summary, said back
     ("Would you prefer a refundable ticket for the return?", False),  # names it, asks something else
 ])

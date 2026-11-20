@@ -730,14 +730,21 @@ def contact_channel_of(text: str) -> Optional[str]:
     return ", ".join(found) or None
 
 
+# A message to the phone is one of the two: SMS chosen after WhatsApp is SMS, and the other way round
+# (CodeRabbit #272: "whatsapp, text" kept the older WhatsApp first for the next bare number).
+_ONE_PHONE_MESSAGE = {"text": "whatsapp", "whatsapp": "text"}
+
+
 def merge_contact_channel(stored: Optional[str], new: str) -> str:
     """The channel wishes so far, with this message's: a later withdrawal
     replaces the wish ("text only", then "please don't text me" → "no texts"),
-    a later wish replaces the withdrawal, and unrelated wishes stay ("no calls",
-    then "no texts" → "no calls, no texts")."""
+    a later wish replaces the withdrawal, a later SMS replaces an earlier
+    WhatsApp (and the other way round), and unrelated wishes stay ("no calls",
+    then "no texts" → "no calls, no texts"). Both said in one message stay both."""
     new_parts = [p.strip() for p in (new or "").split(",") if p.strip()]
     old_parts = [p.strip() for p in stored.split(",") if p.strip()] if isinstance(stored, str) else []
-    kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts]
+    kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts
+            and _ONE_PHONE_MESSAGE.get(p) not in new_parts]
     return ", ".join(kept + new_parts)
 
 

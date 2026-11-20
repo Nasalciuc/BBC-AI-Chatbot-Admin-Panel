@@ -417,6 +417,50 @@ class TestChannels:
         assert m["update_lead"].await_args.args[1]["intent_signals"]["contact_channel"] == "no calls, text"
 
     @pytest.mark.asyncio
+    async def test_an_sms_tapped_after_whatsapp_is_the_wish_a_later_bare_number_follows(self):
+        """CodeRabbit #272: "whatsapp, text" kept WhatsApp first; the latest of the two is the wish."""
+        from app.pipeline.contact_capture import callback_channel
+
+        lead = {"id": "L1", "intent_signals": {"contact_channel": "whatsapp"}, "notes": None}
+        _, _, m = await _tap(_req("sms", "Text message: +61 412 345 678"), _conv(), lead=lead)
+        stored = m["update_lead"].await_args.args[1]["intent_signals"]["contact_channel"]
+        assert stored == "text"
+        assert callback_channel("+61 412 345 678", "number", stored) == "text"
+
+    @pytest.mark.asyncio
+    async def test_the_wish_not_written_is_written_again_once_before_done(self):
+        """CodeRabbit #272: the number is kept; only the wish is written again, and "Done" follows."""
+        saved, ps = _buttons_patches(_conv())
+        ps[5] = patch("app.db.supabase.update_lead", new=AsyncMock(side_effect=[None, {"id": "L1"}]))
+        started = [p.start() for p in ps]
+        try:
+            out = await card_buttons.answer(_req("sms", "Text message: +61 412 345 678"),
+                                            "Text message: +61 412 345 678", {})
+        finally:
+            for p in ps:
+                p.stop()
+        assert out.message.startswith("Done, an agent will text your fares to +61412345678")
+        assert started[5].await_count == 2 and started[3].await_count == 1      # the number once
+        assert [r["role"] for r in saved.rows] == ["user", "ai"]                # the message once
+        assert card_buttons.CARD_BUTTONS_HEALTH["channel_not_noted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_wish_not_written_twice_is_counted_and_the_client_still_answered(self, caplog):
+        _, ps = _buttons_patches(_conv())
+        ps[5] = patch("app.db.supabase.update_lead", new=AsyncMock(return_value=None))
+        started = [p.start() for p in ps]
+        try:
+            with caplog.at_level(logging.ERROR):
+                out = await card_buttons.answer(_req("email", "Email: client@example.com"),
+                                                "Email: client@example.com", {})
+        finally:
+            for p in ps:
+                p.stop()
+        assert out is not None and started[5].await_count == 2
+        assert card_buttons.CARD_BUTTONS_HEALTH["channel_not_noted"] == 1
+        assert "client@example.com" not in caplog.text                          # no PII in the log
+
+    @pytest.mark.asyncio
     async def test_a_whatsapp_tap_from_a_widget_cached_from_before_stays_whatsapp(self):
         """A widget cached from before SMS (a day at most) still offers WhatsApp: that client typed the number
         into a field that said WhatsApp, and is answered and noted as such (never "will text you")."""

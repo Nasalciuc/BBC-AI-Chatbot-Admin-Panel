@@ -979,13 +979,16 @@ def _alex_asked(history: Optional[list[dict]], pattern) -> bool:
 
 
 # Alex's question about the return itself ("Is it one-way?", "When do you fly back?", "When would you like to
-# return?", "Is the 11th your return, or the day you arrive?", "¿Es solo ida?"): not the summary said back
-# for a yes ("returning Feb 11 — is that right?"), nor a question that only names the return ("a refundable
-# ticket for the return?", CodeRabbit #271).
+# return?", "When is your return flight?", "What's your return date?", "Is the 11th your return, or the day
+# you arrive?", "¿Es solo ida?"): not the summary said back for a yes ("returning Feb 11 — is that right?"),
+# nor a question that only names the return ("a refundable ticket for the return?", CodeRabbit #271, #272).
 _ONE_WAY_ASK_RE = _re.compile(
     r"\bone[\s-]way\b|\bs[oó]lo\s+ida\b|\baller\s+simple\b"
     r"|\b(?:fly|flying|come|coming|head|heading)\s+back\b"
     r"|\bwhen\s+(?:do|would|will|are|did|can)\s+(?:you|they)\b[^?]*\breturn"
+    r"|\bwhen(?:\s+is|'s|\s+will\s+be)\s+(?:your|the|their)\s+return\b"
+    r"|\b(?:when|what|which)\b[^?]*\breturn(?:ing)?\s+(?:date|day|flight)s?\b"
+    r"|\b(?:what|which)\s+(?:date|day)\b[^?]*\breturn"
     r"|\barriv(?:al|e|es|ing)\b[^?]*\breturn|\breturn[^?]*\barriv(?:al|e|es|ing)\b",
     _re.I,
 )

@@ -844,6 +844,10 @@ async def open_conversation(
         # the label and the seed. Its words and time go back to this widget too.
         logger.info(f"[{conversation_id}] proactive opening written by a concurrent /chat/init")
         return await _stored_opening(conversation_id)
+    if trigger == "ads":
+        # The trip the ads card spoke of, from here on: the opening, the label and the lead's seed say the
+        # same cabin and place ("first class fares" opens a lead whose cabin is first, CodeRabbit #272).
+        trip = with_keyword(trip)
     # The variant the widget sent back, kept only where it shaped the words (the note with no destination
     # named, the quote card's CONTACT or ROW, the Kayak card's BEAT).
     variant = applied_variant(trigger, trip, variant)

@@ -280,7 +280,8 @@ _CUR_WORDS = ("usd", "us$", "r$", "eur", "euro", "euros", "gbp", "cad", "aud", "
               "shekels", "kr", "zł", "rs", "rs.")
 _CUR_PREFIXES = frozenset(w[:i] for w in _CUR_WORDS for i in range(1, len(w) + 1))
 _TRAILING_WORD = re.compile(r"(?<![^\W\d_])[^\W\d_][\w.$]{0,7}\Z")
-PRICE_LINE = "Exact fares come from your consultant — they check live availability for your dates."
+# No long dash: it is said to the client as it is (CodeRabbit #272; the prompt's own words, rule 5c).
+PRICE_LINE = "Exact fares come from your consultant. They check live availability for your dates."
 
 
 def _pieces(text: str) -> list[str]:
@@ -449,8 +450,8 @@ async def guard_ai_text(text: Optional[str], conversation_id: Optional[str] = No
     The long dash goes in every mode (no_long_dash), like an amount."""
     if not text:
         return text
-    text = no_long_dash(text)
-    text = _price_checked(text, conversation_id)
+    # After the price check: whatever it put in the reply is said without the long dash too (CodeRabbit #272).
+    text = no_long_dash(_price_checked(text, conversation_id))
     mode = _mode()
     OUTPUT_GUARD_HEALTH["scanned"] += 1
     clean, removed = _scrub(text)
@@ -544,7 +545,7 @@ class StreamGuard:
         self._held = ""
         self._holding = False   # 'log' mode: the current sentence showed a digit or a currency sign
         self._dash_tail = ""    # the last piece's trailing spaces and dash, not sent yet
-        self._line_start = True
+        self._sent = ""         # the last two characters sent: what the next piece's first dash follows
 
     def _no_dash(self, out: str, final: bool = False) -> str:
         """What goes out of `out`, the long dash said as a comma; the tail it may still need is kept."""
@@ -555,10 +556,14 @@ class StreamGuard:
                 text, self._dash_tail = text[:tail.start()], text[tail.start():]
         if not text:
             return text
-        # Mid-line, a piece's first dash is no line's first: a mark in front keeps it a pause.
-        lead = "" if self._line_start else "\x00"
-        self._line_start = text.endswith("\n")
-        return no_long_dash(lead + text)[len(lead):]
+        # The piece is read after what went out before it, as the whole reply would be: a dash after "Done. "
+        # just goes, after "Hi," it is no second comma, at a line's start it goes, mid-line it is a comma
+        # (CodeRabbit #272). What went out is never changed: only what follows it is sent.
+        lead = self._sent
+        said = no_long_dash(lead + text)
+        out = said[len(lead):] if said.startswith(lead) else no_long_dash(text)
+        self._sent = (lead + out)[-2:]
+        return out
 
     def feed(self, delta: str) -> str:
         if not delta:
