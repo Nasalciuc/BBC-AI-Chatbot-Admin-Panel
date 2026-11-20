@@ -88,6 +88,9 @@ export interface ProactiveOffer {
   card_text?: string
 }
 
+/** The longest card title the server sends (app/services/proactive.py, TITLE_MAX): the same number. */
+export const TITLE_MAX = 240
+
 /** A line of the server's for the card: a non-empty string up to `max` characters, else nothing. */
 function shortText(v: unknown, max: number): string | null {
   return typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : null
@@ -159,8 +162,9 @@ export async function fetchProactiveOffer(
     const confirmButtons = readButtons(data.confirm?.buttons)
     const channel = readChannel(data.channel)
     const buttons = readButtons(data.buttons)
-    // ADR A3: both or neither — a title without its question (or the reverse) would be half a card.
-    const headline = shortText(data.headline, 140)
+    // ADR A3: both or neither — a title without its question (or the reverse) would be half a card. The title's
+    // limit is the server's own cap (proactive.TITLE_MAX): a title it sends is one this shows (CodeRabbit #272).
+    const headline = shortText(data.headline, TITLE_MAX)
     const cardText = shortText(data.card_text, 240)
     return done(null, {
       show: data.show,

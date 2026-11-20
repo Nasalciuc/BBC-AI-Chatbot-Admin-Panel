@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validWhatsapp } from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
-import { askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
+import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, WATCHED_FIRST_S, WATCHED_FIRST_SIGNALS_S,
   adKeyword, isNotNow, keywordNamesPlace, pickTrigger,
@@ -344,6 +344,12 @@ test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a pl
   assert.match(hook, /\.\.\.\(trigger === 'ads' && trip\?\.keyword \? \{ ad_keyword: true \} : \{\}\),/)
 })
 
+test('ADR A5: a "no" about the ad\'s trip as it was is no "no" about the page now (CodeRabbit #272)', () => {
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  // The stale answer gives the reservation back and asks again; only one about the trip of now switches ads off.
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedAds\) \{[\s\S]*?if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
+})
+
 test('ADR A2: the moment says when the site asked for the script and how long it took to come', () => {
   assert.match(hook, /\.\.\.scriptTiming\(\),/)
   assert.match(hook, /\.find\(\(r\) => \/-widget\\\.js\(\?:\[\?#\]\|\$\)\/\.test\(r\.name\)\)/)
@@ -373,7 +379,11 @@ test('ADR A3: the offer keeps the title and its question together, or neither', 
     const half = await ask()
     assert.equal(half.headline, undefined)
     assert.equal(half.card_text, undefined)
-    globalThis.fetch = answer({ headline: 'x'.repeat(141), card_text: 'Want fares?' })
+    // The server's longest title fits (CodeRabbit #272: a 171-character one was refused at 140); past its cap, none.
+    globalThis.fetch = answer({ headline: 'x'.repeat(171), card_text: 'Want fares?' })
+    assert.equal((await ask()).headline, 'x'.repeat(171))
+    assert.equal(TITLE_MAX, 240)
+    globalThis.fetch = answer({ headline: 'x'.repeat(TITLE_MAX + 1), card_text: 'Want fares?' })
     assert.equal((await ask()).headline, undefined)
   } finally {
     globalThis.fetch = realFetch

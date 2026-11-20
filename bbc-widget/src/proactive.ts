@@ -619,6 +619,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         // The ad's search asked with (never its words): the server reads a place from it or switches ads off.
         ...(trigger === 'ads' && trip?.keyword ? { ad_keyword: true } : {}),
       })
+      if (res && !res.show && res.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON.stringify(adsTrip()) !== askedAds) {
+        // A "no" about the ad's trip as it was: the page named another meanwhile, so it says nothing about this one.
+        // The reservation goes back and the moment is asked again with the trip of now (CodeRabbit #272).
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
       if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
         // This moment is switched off on the server (PROACTIVE_TRIGGERS), not the feature: it is not asked again
         // in this visit, and the visit keeps its one moment for the others (the reader may still come).
