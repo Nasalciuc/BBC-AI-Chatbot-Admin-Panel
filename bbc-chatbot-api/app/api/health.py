@@ -176,6 +176,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.services.lead_access import LEAD_ACCESS_HEALTH
     from app.services.qa_sample import QA_HEALTH
     from app.services.crm import CRM_LOOKUP_HEALTH
+    # The search box: the route part, the message search, its limit, the recent chats.
+    from app.services.chat_search import SEARCH_HEALTH
+    from app.services.recent_chats import RECENT_HEALTH
 
     if not full:
         return {
@@ -214,6 +217,7 @@ async def health_detail(full: bool = False) -> dict:
             "lead_access": dict(LEAD_ACCESS_HEALTH),
             "qa_sample": dict(QA_HEALTH),
             "crm_lookup": dict(CRM_LOOKUP_HEALTH),
+            "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),

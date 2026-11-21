@@ -878,6 +878,193 @@ def _readable_to_agent(viewer_id: str, with_queue: bool) -> str:
     )
 
 
+def _search_kind(search: str) -> Optional[str]:
+    from app.services.chat_search import parse
+
+    parsed = parse(search)
+    return parsed.kind if parsed else None
+
+
+_phone_digits_ok: bool | None = None
+_phone_digits_downgraded_at: float | None = None
+
+
+def _phone_digits_column_available() -> bool:
+    """visitor_phone_digits (054, a computed field PostgREST resolves like a column) usable, unless a
+    missing-column error is in its TTL."""
+    if _phone_digits_ok is not False or _phone_digits_downgraded_at is None:
+        return True
+    return time.time() - _phone_digits_downgraded_at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_phone_digits(err: Exception) -> bool:
+    """True when the error was the missing 054 column (then the phone search falls back)."""
+    global _phone_digits_ok, _phone_digits_downgraded_at
+    if not _is_missing_column_error(err) or "visitor_phone_digits" not in str(err):
+        return False
+    if _phone_digits_ok is not False:
+        logger.warning(
+            "conversations.visitor_phone_digits is missing — apply migrations/054_conversations_phone_digits.sql. "
+            "The phone search reads the digits with a regex instead (row by row, same answers); re-probing in 60s."
+        )
+    _phone_digits_ok = False
+    _phone_digits_downgraded_at = time.time()
+    return True
+
+
+def _readable_inner(readable: str) -> str:
+    """`or(a,b,...)` as the inside, for a top-level or= that ANDs with the rest of the query."""
+    return readable[3:-1] if readable.startswith("or(") and readable.endswith(")") else readable
+
+
+def _apply_search(q, search: str, readable: Optional[str], with_supervisor_cols: bool,
+                  route_ids: Optional[list[str]]):
+    """The search box (app.services.chat_search): one condition, every value quoted."""
+    from app.services import chat_search as cs
+
+    parsed = cs.parse(search)
+    if parsed is None:
+        return q
+    if parsed.kind == "number" and with_supervisor_cols:
+        return q.or_(f"chat_number.eq.{int(parsed.value)}")
+    if parsed.kind == "email":
+        return q.or_(cs.guarded(cs.contains("visitor_email", parsed.value), readable))
+    if parsed.kind == "phone":
+        return q.or_(cs.guarded(cs.phone_condition(parsed.value, digits_column=_phone_digits_column_available()),
+                                readable))
+    if parsed.kind == "airport":
+        q = q.or_(cs.airport_condition(parsed.value), reference_table="leads")
+        return q.or_(_readable_inner(readable)) if readable else q
+    # A name; and, as before this change, an e-mail or a phone that contains the text; or a city in the route.
+    text = parsed.value
+    contact = f"{cs.contains('visitor_email', text)},{cs.contains('visitor_phone', text)}"
+    parts = [cs.contains("visitor_name", text), cs.guarded(contact, readable)]
+    by_route = cs.ids_condition(route_ids or [])
+    if by_route:
+        parts.append(cs.guarded(by_route, readable))
+    return q.or_(",".join(parts))
+
+
+_NO_CONTACT = (
+    'or(visitor_email.is.null,visitor_email.eq."")',
+    'or(visitor_phone.is.null,visitor_phone.eq."")',
+    'or(metadata->>phone_to_check.is.null,metadata->>phone_to_check.eq."")',
+)
+
+
+def _apply_filters(q, f: dict, readable: Optional[str]):
+    """The filter row (see get_conversations). Values come typed from the endpoint; inside an or=()
+    they go quoted all the same. For an agent, where the client came from and the trip are what the
+    blind take keeps back: those filters only keep chats the agent may read."""
+    from app.services import chat_search as cs
+
+    if f.get("created_from"):
+        q = q.gte("created_at", f["created_from"])
+    if f.get("created_to"):
+        q = q.lt("created_at", f["created_to"])
+    agent = f.get("agent")
+    if agent:
+        who = cs.quoted(agent)
+        q = q.or_(f"assigned_agent_id.eq.{who},metadata->>closed_by_agent_id.eq.{who},"
+                  f"metadata->>engaged_agent_id.eq.{who}")
+    # The list row's has_contact: an e-mail, a phone, or a local number kept to check (ADR-6f).
+    if f.get("has_contact") is True:
+        q = q.or_(",".join(f"not.{c}" for c in _NO_CONTACT))
+    elif f.get("has_contact") is False:
+        for c in _NO_CONTACT:
+            q = q.or_(c[3:-1])
+    hidden_from_blind = False
+    if f.get("source"):
+        for condition in cs.source_conditions(f["source"]):
+            q = q.or_(condition)
+        hidden_from_blind = True
+    if f.get("route_from"):
+        q = q.eq("leads.origin_code", f["route_from"])
+        hidden_from_blind = True
+    if f.get("route_to"):
+        q = q.eq("leads.destination_code", f["route_to"])
+        hidden_from_blind = True
+    if f.get("crm") in ("in", "out"):
+        q = q.eq("leads.created_in_crm", f["crm"] == "in")
+        hidden_from_blind = True
+    if hidden_from_blind and readable:
+        q = q.or_(_readable_inner(readable))
+    return q
+
+
+async def get_route_conversation_ids(text: str, limit: int = 200) -> list[str]:
+    """The chats whose lead's route names `text` ("Istanbul" in "New York → Istanbul"), newest first:
+    the city part of the search box, read before the list and matched there by id. A top-level ilike
+    takes its value unquoted (PostgREST), LIKE's wildcards escaped. RAISES on a failed read."""
+    from app.services.chat_search import contains_pattern
+
+    def _q():
+        return (
+            get_client().table("leads").select("conversation_id")
+            .ilike("route_display", contains_pattern(text))
+            .order("created_at", desc=True).limit(limit).execute()
+        )
+
+    res = await _run_sync(_q, label="search")
+    return [r["conversation_id"] for r in (res.data or []) if r.get("conversation_id")]
+
+
+SEARCHED_ROLES = ("user", "ai", "agent")  # what was said in the chat; system lines are the app's own
+
+
+async def search_messages(text: str, *, since_iso: str, limit: int = 60) -> list[dict]:
+    """Messages that contain `text` (case-insensitive, LIKE's wildcards literal) since `since_iso`, newest
+    first: id, conversation_id, role, content, created_at. Without 055 this reads the window's rows one by
+    one (37k messages in all on 21 Nov, about 5k a month). RAISES on a failed read."""
+    from app.services.chat_search import contains_pattern
+
+    def _q():
+        return (
+            get_client().table("messages")
+            .select("id,conversation_id,role,content,created_at")
+            .in_("role", list(SEARCHED_ROLES))
+            .gte("created_at", since_iso)
+            .ilike("content", contains_pattern(text))
+            .order("created_at", desc=True).limit(limit).execute()
+        )
+
+    res = await _run_sync(_q, label="search")
+    return res.data or []
+
+
+_BRIEF_COLUMNS = ("id,tunnel,team_id,status,mode,assigned_agent_id,visitor_name,updated_at,"
+                  "engaged_agent_id:metadata->>engaged_agent_id")
+
+
+async def get_conversations_brief(conv_ids: list[str]) -> dict[str, dict]:
+    """{id: the few fields a search result or the recent list shows, and the blind take reads}, one read
+    per 100 ids. chat_number and queued_at (023/024) when they exist. A chat that no longer exists is
+    absent. RAISES on a failed read: the caller shows nothing rather than guess who may read what."""
+    ids = list(dict.fromkeys(i for i in conv_ids if i))
+    out: dict[str, dict] = {}
+    with_supervisor_cols = _supervisor_columns_available()
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+
+        def _q(extra: bool, chunk=chunk):
+            cols = _BRIEF_COLUMNS + (",chat_number,queued_at" if extra else "")
+            return get_client().table("conversations").select(cols).in_("id", chunk).execute()
+
+        try:
+            res = await _run_sync(lambda: _q(with_supervisor_cols), label="search")
+        except Exception as e:
+            if not with_supervisor_cols or not _is_missing_column_error(e):
+                logger.error(f"get_conversations_brief({len(chunk)} chats) failed: {type(e).__name__}")
+                raise
+            _downgrade_supervisor_columns(e)
+            with_supervisor_cols = False
+            res = await _run_sync(lambda: _q(False), label="search")
+        for row in res.data or []:
+            if row.get("id"):
+                out[row["id"]] = row
+    return out
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -892,8 +1079,22 @@ async def get_conversations(
     limit: int = 50,
     offset: int = 0,
     blind_viewer: Optional[str] = None,
+    filters: Optional[dict] = None,
+    search_route_ids: Optional[list[str]] = None,
 ) -> tuple[list, int]:
     """List conversations with filters. Returns (rows, total_count).
+
+    search: what the panel's box holds, read by app.services.chat_search (the
+    chat number, an e-mail, a phone by its digits, an airport, else a name or a
+    city in the route: search_route_ids, read beforehand from the leads). Every
+    value goes in quoted (hole A, 21 Nov): nothing typed can add a condition.
+
+    filters (the panel's filter row, every one optional): created_from and
+    created_to (ISO times), has_contact (bool), agent (an id, managers only),
+    source (kayak | ads | site), route_from and route_to (airport codes) and
+    crm (in | out), the last three on the chat's lead (an inner join: a chat
+    without a lead does not match them). For an agent, a filter on the trip
+    keeps only chats they may read, like the search.
 
     blind_viewer: the id of an agent (sales/support) searching. Their search
     still finds any chat by name, but by e-mail or phone only the chats they
@@ -917,7 +1118,14 @@ async def get_conversations(
     """
     try:
         db = get_client()
+        f = filters or {}
+        lead_filtered = bool(f.get("route_from") or f.get("route_to") or f.get("crm")) or (
+            bool(search) and _search_kind(search) == "airport"
+        )
+
         def _query(columns: str, with_supervisor_cols: bool):
+            if lead_filtered:
+                columns = columns + ", leads!inner(id)"
             q = db.table("conversations").select(columns, count=list_count_mode()).order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
             if team_ids:
@@ -936,25 +1144,13 @@ async def get_conversations(
                 )
             elif agent_id_is_null:
                 q = q.is_("assigned_agent_id", "null")
+            readable = (
+                _readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)
+                if blind_viewer is not None else None
+            )
             if search:
-                stripped = search.strip()
-                # "#1042" / "1042" → exact chat_number match in addition to
-                # the usual visitor fields (supervisors search by number).
-                num_part = stripped[1:] if stripped.startswith("#") else stripped
-                contact_match = (
-                    f"visitor_email.ilike.%{stripped}%,"
-                    f"visitor_phone.ilike.%{stripped}%"
-                )
-                if blind_viewer is not None:
-                    contact_match = (
-                        f"and(or({contact_match}),"
-                        f"{_readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)})"
-                    )
-                visitor_match = f"visitor_name.ilike.%{stripped}%,{contact_match}"
-                if num_part.isdigit() and with_supervisor_cols:
-                    q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
-                else:
-                    q = q.or_(visitor_match)
+                q = _apply_search(q, search, readable, with_supervisor_cols, search_route_ids)
+            q = _apply_filters(q, f, readable)
             if quiet_before and with_supervisor_cols:
                 # Pre-filter for the Abandoned chip: customer silence older
                 # than the cutoff. Final tag still comes from derive_*.
@@ -986,13 +1182,25 @@ async def get_conversations(
 
         use_supervisor_cols = _supervisor_columns_available()
         try:
-            res = await _run_sync(
-                lambda: _query(
-                    _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
-                    use_supervisor_cols,
-                ),
-                label="list",
-            )
+            try:
+                res = await _run_sync(
+                    lambda: _query(
+                        _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
+                        use_supervisor_cols,
+                    ),
+                    label="list",
+                )
+            except Exception as digits_err:
+                # 054 not applied: a phone search asks for the digits in order instead.
+                if not _downgrade_phone_digits(digits_err):
+                    raise
+                res = await _run_sync(
+                    lambda: _query(
+                        _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
+                        use_supervisor_cols,
+                    ),
+                    label="list",
+                )
         except Exception as e:
             if not use_supervisor_cols:
                 raise
@@ -1011,6 +1219,7 @@ async def get_conversations(
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
         for row in rows:
+            row.pop("leads", None)  # the inner join of a filter on the lead, not a field
             _to_check = row.pop("phone_to_check", None)
             _email, _phone = row.pop("contact_email", None), row.pop("contact_phone", None)
             row["has_contact"] = any(
@@ -1230,9 +1439,11 @@ async def get_last_agent_for_visitor(
                 .limit(1)
             )
             if email_clean and phone_clean:
+                # Quoted: a phone like "+1 (214) 208-5185" broke the or=() parse (hole A, 21 Nov).
+                from app.services.chat_search import quoted
                 q = q.or_(
-                    f"visitor_email.eq.{email_clean},"
-                    f"visitor_phone.eq.{phone_clean}"
+                    f"visitor_email.eq.{quoted(email_clean)},"
+                    f"visitor_phone.eq.{quoted(phone_clean)}"
                 )
             elif email_clean:
                 q = q.eq("visitor_email", email_clean)
@@ -2116,10 +2327,9 @@ async def get_users(
             else:
                 q = q.in_("team_id", team_ids)
         if search:
-            q = q.or_(
-                f"name.ilike.%{search}%,"
-                f"email.ilike.%{search}%"
-            )
+            # Quoted, LIKE wildcards literal (hole A, 21 Nov): "Smith, John" is one search, not two filters.
+            from app.services.chat_search import contains
+            q = q.or_(f"{contains('name', search)},{contains('email', search)}")
         q = _hide_decoys(q, "users")
         return q.range(offset, offset + limit - 1).execute()
     try:

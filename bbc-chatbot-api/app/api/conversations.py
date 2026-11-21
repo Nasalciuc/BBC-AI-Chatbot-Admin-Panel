@@ -1,7 +1,7 @@
 """Admin API — conversations CRUD."""
 import logging
 import re as _re
-from typing import Optional
+from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from app.db import supabase as db
@@ -181,10 +181,25 @@ async def list_conversations(
     offset: int = Query(0, ge=0),
     with_counts: bool = Query(False),
     user: dict = Depends(get_current_user),
+    # The filter row (part 4, 21 Nov): days in New York, inclusive; an agent id (managers only);
+    # where the client came from; the lead's airports; the lead in the CRM or not. Annotated, so a
+    # direct call (the tests) gets a real None, not the Query marker.
+    date_from: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    date_to: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    has_contact: Annotated[Optional[bool], Query()] = None,
+    agent: Annotated[Optional[str], Query(max_length=36)] = None,
+    source: Annotated[Optional[str], Query(pattern="^(kayak|ads|site)$")] = None,
+    route_from: Annotated[Optional[str], Query(pattern="^[A-Z]{3}$")] = None,
+    route_to: Annotated[Optional[str], Query(pattern="^[A-Z]{3}$")] = None,
+    crm: Annotated[Optional[str], Query(pattern="^(in|out)$")] = None,
 ):
     counts_task = None
     try:
         tunnel = _enforce_tunnel(user, tunnel)
+        filters = _list_filters(
+            user, date_from=date_from, date_to=date_to, has_contact=has_contact, agent=agent,
+            source=source, route_from=route_from, route_to=route_to, crm=crm,
+        )
 
         # Phase 2 team scoping (supervisor/PM): restrict to their team(s).
         # Fail closed — a scoped caller with no team sees an empty list, and
@@ -272,6 +287,8 @@ async def list_conversations(
             # Blind take: an agent's search can't find a waiting chat by the
             # e-mail or phone it hides from them — the match would tell.
             blind_viewer=(user.get("id") or "") if user.get("role") in db._OPERATOR_ROLES else None,
+            filters=filters,
+            search_route_ids=await _route_ids_for(search),
         )
         if handled_by == "human":
             rows = [c for c in rows if c.get("agent_state") == "active"]
@@ -328,6 +345,83 @@ async def list_conversations(
 
 
 _ZERO_COUNTS = {"my_active": 0, "queue": 0, "my_closed": 0, "all_active": 0, "all_closed": 0}
+
+
+_NEW_YORK = "America/New_York"
+
+
+def _ny_midnight(day: str, *, plus_days: int = 0) -> str:
+    """The start of a New York day (the business's), as a UTC instant."""
+    from datetime import date as _date, datetime as _dt, time as _time, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo
+
+    try:
+        d = _date.fromisoformat(day) + _td(days=plus_days)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Dates are YYYY-MM-DD") from e
+    return _dt.combine(d, _time(0), tzinfo=ZoneInfo(_NEW_YORK)).astimezone(_tz.utc).isoformat()
+
+
+def _list_filters(user: dict, *, date_from: Optional[str], date_to: Optional[str], has_contact: Optional[bool],
+                  agent: Optional[str], source: Optional[str], route_from: Optional[str],
+                  route_to: Optional[str], crm: Optional[str]) -> dict:
+    """The filter row as db.get_conversations reads it. Filtering by agent is for managers: an agent's
+    own chats are the Mine tab, and a colleague's are not theirs to sort."""
+    f: dict = {}
+    if date_from:
+        f["created_from"] = _ny_midnight(date_from)
+    if date_to:
+        f["created_to"] = _ny_midnight(date_to, plus_days=1)
+    if date_from and date_to and f["created_from"] >= f["created_to"]:
+        raise HTTPException(status_code=400, detail="date_from is after date_to")
+    if has_contact is not None:
+        f["has_contact"] = has_contact
+    if agent:
+        if user.get("role") in db._OPERATOR_ROLES:
+            raise HTTPException(status_code=403, detail="Filtering by agent is for managers.")
+        try:
+            import uuid as _uuid
+            _uuid.UUID(agent)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="Unknown agent") from e
+        f["agent"] = agent
+    for key, value in (("source", source), ("route_from", route_from), ("route_to", route_to), ("crm", crm)):
+        if value:
+            f[key] = value
+    return f
+
+
+# The panel polls the list every 5 s with the box's text: the route ids of a text are kept 30 s.
+_ROUTE_IDS_TTL_S = 30.0
+_ROUTE_IDS_MAX = 200
+_route_ids_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+async def _route_ids_for(search: Optional[str]) -> Optional[list[str]]:
+    """The chats whose route names what was typed, when it reads as a name or a city (chat_search).
+    A failed read leaves the city out of this search, counted, rather than failing the list."""
+    import time as _time
+    from app.services import chat_search
+
+    parsed = chat_search.parse(search)
+    if parsed is None or parsed.kind != "text" or len(parsed.value) < chat_search.MIN_ROUTE_TEXT:
+        return None
+    key = parsed.value.casefold()
+    now = _time.monotonic()
+    kept = _route_ids_cache.get(key)
+    if kept and kept[0] > now:
+        return kept[1]
+    try:
+        ids = await db.get_route_conversation_ids(parsed.value)
+        if len(_route_ids_cache) >= _ROUTE_IDS_MAX:
+            _route_ids_cache.clear()
+        _route_ids_cache[key] = (now + _ROUTE_IDS_TTL_S, ids)
+        return ids
+    except Exception as e:
+        chat_search.SEARCH_HEALTH["route_read_failed"] += 1
+        # The type only: the error can quote the filter, and the filter holds what was typed (a name).
+        logger.warning(f"list_conversations: the route part of the search was not read ({type(e).__name__})")
+        return None
 
 
 async def _counts_or_none(task) -> Optional[dict]:
@@ -610,6 +704,10 @@ async def get_conversation(
     ):
         from app.services import lead_lottery
         await lead_lottery.confirm(conversation_id, user, _followup, "opened")
+
+    # The search box's "opened lately" (app.services.recent_chats): best-effort, never in the way.
+    from app.services import recent_chats
+    await recent_chats.remember(user.get("id"), conversation_id)
 
     # Whether the client left any contact, said before the row is masked or blinded: "Left 3 min ago ·
     # no contact" (ADR-6c) is a fact about the chat, never the contact itself. Same rule as the list's.
