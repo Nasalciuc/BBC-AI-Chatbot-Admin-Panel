@@ -6,6 +6,11 @@ carry on (Supabase is the truth). A key that is not listed here belongs to one s
 
 No key or value carries a name, an email or a phone number. Ids are UUIDs.
 
+## "On the site now" (`contracts/live.md`)
+
+The `live:` keys and the `live:inbox` channel are the API's and bbc-live's together, `rl:livepass:` the
+API's alone; their table, scripts and lives are in [`live.md`](live.md#redis-keys).
+
 ## Conversation locks (`app/services/conversation_lock.py`)
 
 | Key | Type | Value | Life |

@@ -22,26 +22,32 @@ tells the widget nothing; bbc-live then has nobody to serve.
 
 ## Tokens
 
-The API issues them all; bbc-live only reads. `contracts/live_tokens.json` holds vectors the Python
-suite (`tests/test_live_tokens.py`) and the Go suite (`internal/token`) both check.
+The API issues them all, with one secret (`LIVE_TOKEN_SECRET`); bbc-live only reads. The prefix keeps
+one kind from passing for another. `contracts/live_tokens.json` holds vectors the Python suite
+(`tests/test_live_visitors.py`) and the Go suite (`internal/token`) both check.
 
 | Token | Shape | Signed with | Life | Who shows it to whom |
 |---|---|---|---|---|
-| visitor | `v1.<visitor_id>.<iat>.<exp>.<hex hmac>` | `VISITOR_TOKEN_SECRET` | 24 h | the widget, to bbc-live (`X-Visitor-Token`) and the API |
+| pass | `b1.<payload>.<hex hmac>`, payload `{"exp","iat","v"}` | `LIVE_TOKEN_SECRET` | 24 h | the widget (from `POST /chat/live`), to bbc-live (`X-Live-Pass`) |
 | agent | `l1.<payload>.<hex hmac>`, payload `{"exp","iat","r","t","u"}` | `LIVE_TOKEN_SECRET` | 60 s | the panel (from the heartbeat), to bbc-live (`Authorization: Bearer`) |
 | tap | `t1.<payload>.<hex hmac>`, payload `{"a","exp","h","iat","v"}` | `LIVE_TOKEN_SECRET` | 15 min | the widget (inside a hello), to the API's `/chat/init` |
 
 - `<payload>` is base64url without padding of the JSON with sorted keys and no spaces; the HMAC is
-  SHA-256 over `<prefix>.<payload>`, hex. The visitor token's HMAC is over its first four parts.
+  SHA-256 over `<prefix>.<payload>`, hex.
+- The pass is not the chat's visitor token (`v1`, `VISITOR_TOKEN_SECRET`): a visitor who never opened the
+  chat has no `v1`, and "On the site now" is for exactly those. bbc-live reads no `v1`.
+- A visitor id gets its first pass without proof, its next ones only by showing the last (`pass.lua`,
+  run by the API): an id an agent sees in the list is not theirs to beat, poll or dismiss with. New ids
+  are limited to 20 an hour per address.
 - `u` user id, `r` role, `t` tunnel scope; `v` visitor id, `a` agent id, `h` hello id.
 
 ## bbc-live's routes
 
 | Route | Who | Answers |
 |---|---|---|
-| `POST /v1/beat` | widget, `X-Visitor-Token` | 200 counted; 202 a beat under 5 s after the last, not counted; 400 not JSON; 401; 503 not configured or Redis down |
-| `GET /v1/inbox` | widget, `X-Visitor-Token` | 200 `{"messages":[…]}` at once or the moment a hello lands; 204 after 25 s with nothing; 429 a fourth tab waiting |
-| `POST /v1/dismiss` | widget, `X-Visitor-Token` | 200: "not now", nobody says hello for an hour, the claim and the inbox go |
+| `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted; 400 not JSON; 401; 503 not configured or Redis down |
+| `GET /v1/inbox` | widget, `X-Live-Pass` | 200 `{"messages":[…]}` at once or the moment a hello lands; 204 after 25 s with nothing; 429 a fourth tab waiting |
+| `POST /v1/dismiss` | widget, `X-Live-Pass` | 200: "not now", nobody says hello for an hour, the claim and the inbox go |
 | `GET /v1/live` | panel, `Bearer l1…`, roles sales, owner, admin, dev, supervisor | 200 `{"data":[visitor…],"max_claims":3,"claim_seconds":600}` |
 | `POST /v1/claim` `{"visitor_id"}` | panel, role sales, line sales or all | 200 `claimed`/`mine`; 409 `taken`, `full`, `declined`, `in_a_chat`; 410 `gone` |
 | `POST /v1/release` `{"visitor_id"}` | panel | 200 `{"released": bool}` |
@@ -59,7 +65,11 @@ A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`
 
 - The heartbeat (`POST /api/agent/heartbeat`) answers `live: {"url", "token", "expires_at"}` to the
   roles that see the list, while `LIVE_VISITORS` is on and both secrets and `LIVE_SERVICE_URL` are set.
-- `GET /chat/live` (the widget, public): `{"enabled", "url", "after_s": 20, "beat_s": 15}`.
+- `POST /chat/live` `{"visitor_id", "live_pass"?}` (the widget, public, never cached), from 20 s on the
+  page: `{"enabled": false}`, or `{"enabled": true, "url", "after_s": 20, "beat_s": 15, "hello", "pass",
+  "pass_expires_at"}`. The widget keeps the pass and shows it at the next page (`live_pass`): that renews
+  it. A refused pass (the id has one and none was shown, too many new ids from the address, Redis down)
+  answers `{"enabled": false}`, counted in `/health`.
 - `POST /api/live/send` `{"visitor_id", "text"}` (an agent holding that visitor): 1 to 300 characters,
   no e-mail, phone or link in it (`output_guard.foreign_contact_kinds`); runs `send.lua`.
 - `POST /chat/init` with `live_tap`: a valid tap for this visitor takes the hello (`take_hello.lua`),
@@ -78,6 +88,8 @@ A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`
 | `live:inbox:<vid>` | list | messages for the widget (JSON, `live_inbox_message.json`) | 900 s | the API |
 | `live:hello:<hello id>` | string | the hello for `/chat/init` (JSON) | 900 s | the API |
 | `live:said:<vid>` | string | the agent who said hello | 900 s | the API |
+| `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 24 h after the last pass | the API (`pass.lua`) |
+| `rl:livepass:<address>:<hour>` | string | new ids that address got passes for this hour; `<address>` a keyed hash, never the address | 1 h | the API (`pass.lua`) |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
 The scripts are in `contracts/live/` and copied next to the code that runs them (bbc-live

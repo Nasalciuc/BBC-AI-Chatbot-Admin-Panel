@@ -1,33 +1,38 @@
 {
   "_": "Test vectors for contracts/live.md: the API (Python) issues, bbc-live (Go) reads. Both suites check every line.",
-  "visitor": {
-    "secret": "visitor-test-secret",
+  "pass": {
+    "secret": "live-test-secret",
     "now": 1763700000,
     "valid": [
       {
-        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c",
-        "visitor_id": "3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10"
+        "token": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca2",
+        "visitor_id": "3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10",
+        "exp": 1763786300
       }
     ],
     "invalid": [
       {
-        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763613500.1763699999.20f1537898fde4750d5e7cb676be9d290cad37bf60edc05fb1808958c30e394f",
+        "token": "b1.eyJleHAiOjE3NjM2OTk5OTksImlhdCI6MTc2MzYxMzU5OSwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.9260034fb0ad7574eeb29bf46edafd1f2544e3680335a2a8bc1ce8faf5d98be0",
         "reason": "expired"
       },
       {
-        "token": "v1.aaaaaaaa-0000-4000-8000-000000000999.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c",
+        "token": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDk5OSJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca2",
         "reason": "invalid"
       },
       {
-        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d150",
+        "token": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca0",
         "reason": "invalid"
       },
       {
-        "token": "v2.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c",
+        "token": "l1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca2",
         "reason": "invalid"
       },
       {
-        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300",
+        "token": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.9c029340a2cabe3fb9c59b929bbff5d4c6478ba71e731e7cdd11ce778fe98e74",
+        "reason": "invalid"
+      },
+      {
+        "token": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9",
         "reason": "invalid"
       },
       {
