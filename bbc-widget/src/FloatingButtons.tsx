@@ -8,6 +8,7 @@ import { PersonaAvatar } from './PersonaAvatar'
 import type { PageContext } from './pageContext'
 import type { Unread } from './ChatWindow'
 import { markNoteClosed, type ProactiveOpening } from './proactive'
+import type { LiveHello } from './live'
 import { isNotNow } from './triggers'
 
 interface Props {
@@ -36,6 +37,15 @@ interface Props {
   pill?: ProactiveOpening | null
   onPillOpen?: () => void
   onPillClose?: () => void
+  /** An agent's hello (live.ts): plain text, their name; "Reply" opens the chat that is already theirs. */
+  hello?: LiveHello | null
+  onHelloReply?: () => void
+  onHelloDismiss?: () => void
+}
+
+/** The agent's initials, for the card's avatar (no photo travels with a hello). */
+function initials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('') || '•'
 }
 
 /** The icon of a channel: a message bubble for SMS, an envelope for email (never a brand's logo). */
@@ -54,6 +64,7 @@ const NUDGE_VISIBLE_MS = 30_000
 export function FloatingButtons({
   onSelect, showAttention = false, onDismissAttention, autoFocus = false, context, unread,
   card, onCardOpen, onCardDismiss, onNoteOpen, onCardChannel, pill, onPillOpen, onPillClose,
+  hello, onHelloReply, onHelloDismiss,
 }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null)
   const count = unread?.count || 0
@@ -80,8 +91,8 @@ export function FloatingButtons({
   }, [unread?.count])
 
   useEffect(() => {
-    if (card) setPulseKey(k => k + 1)
-  }, [card])
+    if (card || hello) setPulseKey(k => k + 1)
+  }, [card, hello])
 
   // The card: its first button is the server's first reply ("Yes, send me fares"); "Not now" closes it.
   const cardYes = card?.quickReplies.find(r => !isNotNow(r))
@@ -130,6 +141,21 @@ export function FloatingButtons({
           <button type="button" class="bw-nudge__x" onClick={() => setPreviewHiddenAt(count)} aria-label="Hide this message">
             <IconClose />
           </button>
+        </div>
+      ) : hello && count === 0 ? (
+        // An agent's hello (live.ts): their words as text, never markup; the name is theirs, not Alex's.
+        <div class="bw-nudge bw-nudge--card bw-nudge--hello" role="status" aria-live="polite">
+          <button type="button" class="bw-nudge__open" onClick={() => onHelloReply?.()}>
+            <span class="bw-nudge__who">
+              <span class="bw-nudge__ava bw-nudge__ava--initials">{initials(hello.agent)}</span>
+              <span class="bw-nudge__id"><b>{hello.agent}</b><small>{brand.name}</small></span>
+            </span>
+            <span class="bw-nudge__text">{hello.text}</span>
+          </button>
+          <div class="bw-card__actions">
+            <button type="button" class="bw-card__yes" onClick={() => onHelloReply?.()}>Reply</button>
+            <button type="button" class="bw-card__no" onClick={onHelloDismiss}>Not now</button>
+          </div>
         </div>
       ) : card && count === 0 ? (
         <div class="bw-nudge bw-nudge--card" role="status" aria-live="polite">

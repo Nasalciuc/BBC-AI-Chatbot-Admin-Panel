@@ -4,14 +4,17 @@ import { TunnelForm, type FormCheck } from './TunnelForm'
 import { ChatWindow, type Unread } from './ChatWindow'
 import { armChime, playChime } from './chime'
 import { readPageContext } from './pageContext'
-import { apiFetch, clearVisitorToken, ensureVisitorId, ensureVisitorToken, getVisitorId, makeVisitorId } from './api'
+import { apiFetch, clearVisitorToken, ensureVisitorId, ensureVisitorToken, getVisitorId, makeVisitorId, saveVisitorToken } from './api'
 import brand from './config'
 import { usePhoneSheet } from './phoneSheet'
-import { posthog } from './posthog'
+import { posthog, posthogSessionId } from './posthog'
 import {
-  forgetProactiveConversation, isProactiveConversation, proactiveChatStarted, proactiveMetadata, useProactive,
-  watchQuoteForm, type ProactiveOpening,
+  currentTrip, forgetProactiveConversation, isProactiveConversation, markProactiveConversation, proactiveChatStarted,
+  proactiveMetadata, useProactive, watchQuoteForm, type ProactiveOpening,
 } from './proactive'
+import { useLive } from './live'
+import { siteMetadata } from './siteSignals'
+import { getTurnstileToken } from './turnstile'
 import { noteWaitMs } from './triggers'
 import { keepOpening, readKeptOpening } from './keptOpening'
 import { placeFormRow } from './FormRow'
@@ -398,6 +401,50 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proactive.offer, proactive.rowForm])
 
+  // "On the site now" (live.ts): an agent may say hello first, while this visitor has no chat and the panel is
+  // closed. "Reply" starts the chat at once, already the agent's, with the hello as its first message (the
+  // server checks the tap); a tap that doesn't hold opens an ordinary chat. No form behind it, like the card's.
+  const live = useLive({
+    apiUrl, active: !embedded && step === 'buttons' && !cachedConvId && !sessionActive,
+    chatOpen: step === 'chat', trip: currentTrip, site: brand.id,
+  })
+  const liveBusyRef = useRef(false)
+  const openLive = async () => {
+    const h = live.hello
+    if (!h || liveBusyRef.current) return
+    liveBusyRef.current = true
+    live.taken()
+    try {
+      const sid = posthogSessionId()
+      const res = await apiFetch(`${apiUrl}/api/chat/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tunnel: 'sales', visitor: {}, visitor_id: ensureVisitorId(), turnstile_token: await getTurnstileToken(),
+          metadata: { ...proactiveMetadata(), ...(sid ? { posthog_session_id: sid } : {}), ...siteMetadata() },
+          live_tap: h.tap,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        saveVisitorToken(data.visitor_token)
+        const cid = typeof data.conversation_id === 'string' ? data.conversation_id : ''
+        if (cid) {
+          try {
+            localStorage.setItem('bbc_conv_id', cid)
+            localStorage.setItem('bbc_conv_ts', Date.now().toString())
+            localStorage.setItem('bbc_conv_tunnel', 'sales')
+          } catch { /* storage off: the chat still opens */ }
+          markProactiveConversation(cid)
+        }
+        posthog?.capture('live_hello_replied', { held: typeof data.live_agent === 'string', site: brand.id })
+      }
+    } catch { /* the chat opens as any other */ }
+    liveBusyRef.current = false
+    setTunnel('sales')
+    setStep('chat')
+  }
+
   // C2: the pill after "Not now" opens the chat on the card's channel field.
   const openPill = () => {
     const p = proactive.pill
@@ -546,6 +593,12 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           onPillOpen={openPill}
           onPillClose={proactive.closePill}
           onNoteOpen={() => { if (proactive.offer) openProactive(proactive.offer); else void openNote() }}
+          hello={live.hello}
+          onHelloReply={() => { void openLive() }}
+          onHelloDismiss={() => {
+            posthog?.capture('live_hello_dismissed', { site: brand.id })
+            live.dismiss()
+          }}
         />
       )}
       {step === 'form' && (

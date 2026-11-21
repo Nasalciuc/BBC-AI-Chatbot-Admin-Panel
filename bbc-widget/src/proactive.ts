@@ -202,7 +202,7 @@ function pageTrips(): (TripPayload | null)[] {
 }
 
 /** The trip the card and the note start from (tripContext.pickTrip): the newest of the page's trips. */
-function currentTrip(): TripPayload | null {
+export function currentTrip(): TripPayload | null {
   return pickTrip(...pageTrips())
 }
 
