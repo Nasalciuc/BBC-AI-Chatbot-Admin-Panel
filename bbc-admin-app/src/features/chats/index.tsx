@@ -2,10 +2,11 @@ import { useState, useRef, useEffect, useLayoutEffect, useDeferredValue, useCall
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Clock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
-import { getConversations, getNotifications, apiFetch } from '@/lib/api'
+import { getConversations, getNotifications, getRecentChats, searchMessages, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
+import { EMPTY_FILTERS, type ListFilters, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
 import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
@@ -117,6 +118,12 @@ export function Chats() {
   const [tunnelFilter, setTunnel] = useState('')
   const [handledByFilter, setHandledByFilter] = useState('all')
   const [tagFilter, setTagFilter] = useState<ConversationTag | 'all'>('all')
+  // The filter row (part 4): days, contact, where they came from, the trip, the CRM.
+  const [filters, setFilters] = useState<ListFilters>(EMPTY_FILTERS)
+  const setFilter = <K extends keyof ListFilters>(k: K, v: ListFilters[K]) => setFilters((f) => ({ ...f, [k]: v }))
+  // The search box's other answers: the chats I opened lately, and what was said.
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [inMessages, setInMessages] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(urlHighlight)
   const [highlightId] = useState<string | null>(urlHighlight)
   const setViewingConversationId = useReadyStore((s) => s.setViewingConversationId)
@@ -222,6 +229,9 @@ export function Chats() {
   if (tunnelFilter) listParams.tunnel = tunnelFilter
   if (handledByFilter !== 'all') listParams.handled_by = handledByFilter
   if (canFilterTag && tagFilter !== 'all') listParams.tag = tagFilter
+  Object.assign(listParams, filterParams(filters))
+  const filtersPart = filterKey(filters)
+  const listKey = ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter, tagFilter]
 
   // On the default Mine view this key equals ATTENTION_QUERY_KEY in
   // use-heartbeat.ts, so the heartbeat's attention check reuses this cache
@@ -231,7 +241,8 @@ export function Chats() {
   const reading = activeTab === 'to_read'
   const { data: convResponse, isLoading, isError } = useQuery({
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
-    queryKey: ['conversations', activeTab, debouncedSearch, tunnelFilter, handledByFilter, tagFilter],
+    // The filter row's part only when a filter is on: with none, the key stays the heartbeat's (ATTENTION_QUERY_KEY).
+    queryKey: filtersPart ? [...listKey, filtersPart] : listKey,
     queryFn: () => getConversations(listParams),
     enabled: !reading,
     // Bug 3: agents need near-realtime assignment visibility
@@ -327,6 +338,15 @@ export function Chats() {
   }
 
   const filtersOn = (tunnelFilter ? 1 : 0) + (handledByFilter !== 'all' ? 1 : 0) + (tagFilter !== 'all' ? 1 : 0) + (idleOnly ? 1 : 0)
+    + filterCount(filters)
+  const recent = useQuery({
+    queryKey: ['recent-chats'], queryFn: getRecentChats, enabled: searchFocused && !search, staleTime: 10_000,
+  })
+  const wantMessages = inMessages && messagesSearchable(debouncedSearch)
+  const hits = useQuery({
+    queryKey: ['message-hits', debouncedSearch.trim()], queryFn: () => searchMessages(debouncedSearch.trim()),
+    enabled: wantMessages, staleTime: 30_000, retry: false,
+  })
   const chipCls = (on: boolean) =>
     cn(
       'min-h-11 md:min-h-8 rounded-full border px-3 text-[13px] font-bold transition-colors',
@@ -521,17 +541,33 @@ export function Chats() {
         <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
         {tabBar}
         <div className='flex gap-2'>
-          <label className='relative flex flex-1'>
-            <span className='sr-only'>Search chats</span>
+          <div className='relative flex flex-1'>
+            <label htmlFor='chat-search' className='sr-only'>Search chats</label>
             <Search aria-hidden='true' className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-k-6b6b6b' />
             <input
+              id='chat-search'
               type='search'
-              placeholder='Search a name or #4810'
+              placeholder='A name, #4810, an e-mail, a phone, IST'
               value={search}
               onChange={e => setSearch(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
               className='h-10 w-full rounded-xl border-none bg-k-ffffff ps-9 pe-3 text-sm text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)] placeholder:text-k-8a8a8a focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
             />
-          </label>
+            {searchFocused && !search && (recent.data?.data.length ?? 0) > 0 && (
+              <div role='listbox' aria-label='Opened lately' className='absolute top-11 right-0 left-0 z-20 flex flex-col gap-0.5 rounded-xl bg-k-ffffff p-1.5 shadow-[0_4px_16px_rgba(32,32,32,0.12)]'>
+                <span className='px-2 pt-1 pb-0.5 text-xs text-k-6b6b6b'>Opened lately</span>
+                {recent.data!.data.map((r) => (
+                  <button key={r.id} type='button' role='option' aria-selected='false'
+                    onMouseDown={(e) => e.preventDefault()} onClick={() => { pick(r.id); setSearchFocused(false) }}
+                    className='flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-start text-sm text-k-202020 hover:bg-k-f7f7f7'>
+                    <span className='truncate'>{r.visitor_name || 'Visitor'}</span>
+                    {r.chat_number != null && <span className='flex-none text-xs text-k-6b6b6b'>#{r.chat_number}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <Popover>
             <PopoverTrigger asChild>
               <button
@@ -587,6 +623,55 @@ export function Chats() {
                   </div>
                 </div>
               )}
+              <div className='flex flex-col gap-1.5'>
+                <span className='text-xs text-k-555555'>Started (New York days)</span>
+                <div className='flex gap-1.5'>
+                  <input type='date' aria-label='From' value={filters.dateFrom} onChange={(e) => setFilter('dateFrom', e.target.value)}
+                    className='h-10 min-w-0 flex-1 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2 text-sm text-k-202020' />
+                  <input type='date' aria-label='To' value={filters.dateTo} onChange={(e) => setFilter('dateTo', e.target.value)}
+                    className='h-10 min-w-0 flex-1 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2 text-sm text-k-202020' />
+                </div>
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <span className='text-xs text-k-555555'>Contact</span>
+                <div className='flex flex-wrap gap-1.5'>
+                  {([['any', 'Any'], ['yes', 'Left one'], ['no', 'None']] as const).map(([k, label]) => (
+                    <button key={k} type='button' onClick={() => setFilter('contact', k)} className={chipCls(filters.contact === k)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <span className='text-xs text-k-555555'>Came from</span>
+                <div className='flex flex-wrap gap-1.5'>
+                  {([['any', 'Anywhere'], ['kayak', 'Kayak'], ['ads', 'Ads'], ['site', 'The site']] as const).map(([k, label]) => (
+                    <button key={k} type='button' onClick={() => setFilter('source', k)} className={chipCls(filters.source === k)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <span className='text-xs text-k-555555'>Trip (airport codes)</span>
+                <div className='flex gap-1.5'>
+                  <input aria-label='From airport' placeholder='JFK' maxLength={3} value={filters.routeFrom}
+                    onChange={(e) => setFilter('routeFrom', e.target.value.toUpperCase())}
+                    className='h-10 min-w-0 flex-1 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2.5 text-sm text-k-202020 uppercase' />
+                  <input aria-label='To airport' placeholder='IST' maxLength={3} value={filters.routeTo}
+                    onChange={(e) => setFilter('routeTo', e.target.value.toUpperCase())}
+                    className='h-10 min-w-0 flex-1 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2.5 text-sm text-k-202020 uppercase' />
+                </div>
+              </div>
+              <div className='flex flex-col gap-1.5'>
+                <span className='text-xs text-k-555555'>In the CRM</span>
+                <div className='flex flex-wrap gap-1.5'>
+                  {([['any', 'Either'], ['in', 'In the CRM'], ['out', 'Not yet']] as const).map(([k, label]) => (
+                    <button key={k} type='button' onClick={() => setFilter('crm', k)} className={chipCls(filters.crm === k)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              {filterCount(filters) > 0 && (
+                <button type='button' onClick={() => setFilters(EMPTY_FILTERS)} className='self-start text-sm font-bold text-k-5b45e0 hover:underline'>
+                  Clear these filters
+                </button>
+              )}
               {/* Idle is a view, not a permission: every operator who can
                   reach it through the nudge's Review must also be able to
                   turn it off. Sales is not in canFilterTag. */}
@@ -602,6 +687,40 @@ export function Chats() {
           </Popover>
         </div>
       </div>
+
+      {search.trim() && (
+        <div className={cn('flex items-center justify-between gap-2 pb-1.5 text-xs text-k-6b6b6b', layout === 'narrow' ? 'px-0' : 'px-3.5')}>
+          <span>Looking for: {searchHint(search)}</span>
+          {messagesSearchable(search) && (
+            <button type='button' aria-pressed={inMessages} onClick={() => setInMessages((v) => !v)}
+              className={cn('rounded-full px-2.5 py-1 font-bold', inMessages ? 'bg-kb-202020 text-on-btn' : 'bg-k-ffffff text-k-444444 ring-1 ring-k-e3e2e2')}>
+              In what was said
+            </button>
+          )}
+        </div>
+      )}
+      {wantMessages && (
+        <section aria-label='What was said' className={cn('flex flex-col gap-1 pb-2', layout === 'narrow' ? 'px-0' : 'px-3.5')}>
+          {hits.isLoading ? (
+            <p className='text-xs text-k-6b6b6b'>Searching the last 30 days…</p>
+          ) : hits.isError ? (
+            <p className='text-xs text-k-b3261e'>{hits.error instanceof Error ? hits.error.message : 'Couldn’t search what was said.'}</p>
+          ) : (hits.data ?? []).length === 0 ? (
+            <p className='text-xs text-k-6b6b6b'>Nobody said that in the last 30 days, in the chats you can read.</p>
+          ) : (
+            (hits.data ?? []).map((h) => (
+              <button key={h.message_id} type='button' onClick={() => pick(h.conversation_id)}
+                className='flex flex-col gap-0.5 rounded-xl bg-k-ffffff px-3 py-2 text-start shadow-[inset_0_0_0_1px_var(--k-e3e2e2)] hover:bg-k-f7f7f7'>
+                <span className='flex items-center justify-between gap-2 text-xs text-k-6b6b6b'>
+                  <span className='truncate font-bold text-k-202020'>{h.visitor_name || 'Visitor'}{h.chat_number != null ? ` · #${h.chat_number}` : ''}</span>
+                  <span className='flex-none'>{h.said_by}</span>
+                </span>
+                <span className='line-clamp-2 text-[13px] text-k-444444'>{h.snippet}</span>
+              </button>
+            ))
+          )}
+        </section>
+      )}
 
       {/* A desk somebody walked away from. No close-all: only the agent
           who owns a chat closes it, one at a time, after opening it. */}

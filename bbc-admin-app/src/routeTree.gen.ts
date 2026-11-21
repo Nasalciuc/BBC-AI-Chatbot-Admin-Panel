@@ -28,6 +28,8 @@ import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authentic
 import { Route as AuthenticatedTeamsIndexRouteImport } from './routes/_authenticated/teams/index'
 import { Route as AuthenticatedTasksIndexRouteImport } from './routes/_authenticated/tasks/index'
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
+import { Route as AuthenticatedQaIndexRouteImport } from './routes/_authenticated/qa/index'
+import { Route as AuthenticatedLiveIndexRouteImport } from './routes/_authenticated/live/index'
 import { Route as AuthenticatedLearningIndexRouteImport } from './routes/_authenticated/learning/index'
 import { Route as AuthenticatedLeadsIndexRouteImport } from './routes/_authenticated/leads/index'
 import { Route as AuthenticatedKnowledgeIndexRouteImport } from './routes/_authenticated/knowledge/index'
@@ -138,6 +140,16 @@ const AuthenticatedSettingsIndexRoute =
     path: '/',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedQaIndexRoute = AuthenticatedQaIndexRouteImport.update({
+  id: '/qa/',
+  path: '/qa/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedLiveIndexRoute = AuthenticatedLiveIndexRouteImport.update({
+  id: '/live/',
+  path: '/live/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedLearningIndexRoute =
   AuthenticatedLearningIndexRouteImport.update({
     id: '/learning/',
@@ -242,6 +254,8 @@ export interface FileRoutesByFullPath {
   '/knowledge/': typeof AuthenticatedKnowledgeIndexRoute
   '/leads/': typeof AuthenticatedLeadsIndexRoute
   '/learning/': typeof AuthenticatedLearningIndexRoute
+  '/live/': typeof AuthenticatedLiveIndexRoute
+  '/qa/': typeof AuthenticatedQaIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/tasks/': typeof AuthenticatedTasksIndexRoute
   '/teams/': typeof AuthenticatedTeamsIndexRoute
@@ -274,6 +288,8 @@ export interface FileRoutesByTo {
   '/knowledge': typeof AuthenticatedKnowledgeIndexRoute
   '/leads': typeof AuthenticatedLeadsIndexRoute
   '/learning': typeof AuthenticatedLearningIndexRoute
+  '/live': typeof AuthenticatedLiveIndexRoute
+  '/qa': typeof AuthenticatedQaIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/tasks': typeof AuthenticatedTasksIndexRoute
   '/teams': typeof AuthenticatedTeamsIndexRoute
@@ -309,6 +325,8 @@ export interface FileRoutesById {
   '/_authenticated/knowledge/': typeof AuthenticatedKnowledgeIndexRoute
   '/_authenticated/leads/': typeof AuthenticatedLeadsIndexRoute
   '/_authenticated/learning/': typeof AuthenticatedLearningIndexRoute
+  '/_authenticated/live/': typeof AuthenticatedLiveIndexRoute
+  '/_authenticated/qa/': typeof AuthenticatedQaIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/tasks/': typeof AuthenticatedTasksIndexRoute
   '/_authenticated/teams/': typeof AuthenticatedTeamsIndexRoute
@@ -344,6 +362,8 @@ export interface FileRouteTypes {
     | '/knowledge/'
     | '/leads/'
     | '/learning/'
+    | '/live/'
+    | '/qa/'
     | '/settings/'
     | '/tasks/'
     | '/teams/'
@@ -376,6 +396,8 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/leads'
     | '/learning'
+    | '/live'
+    | '/qa'
     | '/settings'
     | '/tasks'
     | '/teams'
@@ -410,6 +432,8 @@ export interface FileRouteTypes {
     | '/_authenticated/knowledge/'
     | '/_authenticated/leads/'
     | '/_authenticated/learning/'
+    | '/_authenticated/live/'
+    | '/_authenticated/qa/'
     | '/_authenticated/settings/'
     | '/_authenticated/tasks/'
     | '/_authenticated/teams/'
@@ -567,6 +591,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsIndexRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/qa/': {
+      id: '/_authenticated/qa/'
+      path: '/qa'
+      fullPath: '/qa/'
+      preLoaderRoute: typeof AuthenticatedQaIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/live/': {
+      id: '/_authenticated/live/'
+      path: '/live'
+      fullPath: '/live/'
+      preLoaderRoute: typeof AuthenticatedLiveIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/learning/': {
       id: '/_authenticated/learning/'
       path: '/learning'
@@ -698,6 +736,8 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedKnowledgeIndexRoute: typeof AuthenticatedKnowledgeIndexRoute
   AuthenticatedLeadsIndexRoute: typeof AuthenticatedLeadsIndexRoute
   AuthenticatedLearningIndexRoute: typeof AuthenticatedLearningIndexRoute
+  AuthenticatedLiveIndexRoute: typeof AuthenticatedLiveIndexRoute
+  AuthenticatedQaIndexRoute: typeof AuthenticatedQaIndexRoute
   AuthenticatedTasksIndexRoute: typeof AuthenticatedTasksIndexRoute
   AuthenticatedTeamsIndexRoute: typeof AuthenticatedTeamsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
@@ -713,6 +753,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedKnowledgeIndexRoute: AuthenticatedKnowledgeIndexRoute,
   AuthenticatedLeadsIndexRoute: AuthenticatedLeadsIndexRoute,
   AuthenticatedLearningIndexRoute: AuthenticatedLearningIndexRoute,
+  AuthenticatedLiveIndexRoute: AuthenticatedLiveIndexRoute,
+  AuthenticatedQaIndexRoute: AuthenticatedQaIndexRoute,
   AuthenticatedTasksIndexRoute: AuthenticatedTasksIndexRoute,
   AuthenticatedTeamsIndexRoute: AuthenticatedTeamsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,

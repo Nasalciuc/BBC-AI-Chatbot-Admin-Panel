@@ -227,3 +227,22 @@ export function leadsCsv(rows: LeadRow[]): string {
   )
   return [head.map(csvCell).join(','), ...lines].join('\n')
 }
+
+
+/** How the lead reached the CRM (part 3: the chat's metadata.crm), in one line; null when it didn't say. */
+export function crmSourceLine(note: unknown, names: Record<string, string> = {}): string | null {
+  if (!note || typeof note !== 'object') return null
+  const n = note as { source?: unknown; set_by?: unknown; shape?: unknown }
+  const by = typeof n.set_by === 'string' && names[n.set_by] ? names[n.set_by].split(/\s+/)[0] : null
+  const how = n.source === 'push' ? (by ? `Sent by ${by} from the chat` : 'Sent from the chat')
+    : n.source === 'cron' ? 'Sent by the nightly check'
+    : n.source === 'manual' ? (by ? `Number pasted by ${by}` : 'Number pasted by hand')
+    : null
+  if (!how) return null
+  return n.shape === 'odd' ? `${how} · the number doesn’t look like the CRM’s` : how
+}
+
+/** The API's answer to an id that doesn't look like the CRM's: asks once, then keeps it when sent again. */
+export function isOddCrmIdRefusal(e: { status?: number; message?: string } | null | undefined): boolean {
+  return !!e && e.status === 422 && /doesn't look like an id from the CRM/i.test(e.message || '')
+}

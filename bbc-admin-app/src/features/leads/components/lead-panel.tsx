@@ -19,7 +19,7 @@ import {
   tripRows,
   whereRows,
 } from '@/features/chats/view'
-import { LEVELS, TONE_DOT, TONE_TEXT, agoText, chatWithText, checklist, crmLine, historyOf, missingText, reviewerText } from '../view'
+import { LEVELS, TONE_DOT, TONE_TEXT, agoText, chatWithText, checklist, crmLine, crmSourceLine, historyOf, isOddCrmIdRefusal, missingText, reviewerText } from '../view'
 
 const h3 = 'm-0 text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'
 const btn = 'h-9 rounded-full px-4 text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-k-6ea8ff disabled:opacity-60'
@@ -127,14 +127,20 @@ export function LeadPanel({
     },
   })
   const saveManual = useMutation({
-    mutationFn: (v: { leadId: string; crmId: string }) => setLeadCrmId(v.leadId, v.crmId),
+    mutationFn: (v: { leadId: string; crmId: string; confirmOdd?: boolean }) => setLeadCrmId(v.leadId, v.crmId, v.confirmOdd),
     onSuccess: (_r, v) => {
       toast.success(`Saved: CRM lead ${v.crmId}.`)
       if (v.leadId === id) setManual('')
       onPatched(v.leadId, { crm_state: 'in_crm', created_in_crm: true, crm_lead_id: v.crmId, created_in_crm_at: new Date().toISOString() })
       refresh(v.leadId)
     },
-    onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.'),
+    onError: (e, v) => {
+      if (isOddCrmIdRefusal(e as ApiError)) {
+        toast.warning((e as ApiError).message, { action: { label: 'Keep it', onClick: () => saveManual.mutate({ ...v, confirmOdd: true }) } })
+        return
+      }
+      toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.')
+    },
   })
   const review = useMutation({
     mutationFn: (v: { leadId: string; reviewed: boolean; notes?: string; next?: boolean }) => reviewLead(v.leadId, v.reviewed, v.notes),
@@ -418,6 +424,11 @@ export function LeadPanel({
                 <span aria-hidden='true' className={cn('size-2 rounded-full', TONE_DOT[crm.tone])} />
                 {crm.text}
               </p>
+              {crmSourceLine((conv.data?.metadata as Record<string, unknown> | undefined)?.crm, userNames) && (
+                <p className='m-0 text-[13px] text-k-555555'>
+                  {crmSourceLine((conv.data?.metadata as Record<string, unknown> | undefined)?.crm, userNames)}
+                </p>
+              )}
               {row.crm_state !== 'in_crm' && (
                 <p className='m-0 text-[13px] text-k-555555'>
                   {row.crm_state === 'no_phone'

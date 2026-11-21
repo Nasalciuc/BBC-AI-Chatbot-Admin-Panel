@@ -1,7 +1,7 @@
 // Offers to send (ADR-6b, ADR-8b) — every sentence the queue shows, pure (tests/offers-view.test.ts).
 // The rows, their order and who sees what come from the server (app/services/offers_view.py).
 
-import type { OfferChannel, OfferDone, OfferRefusal, OfferRow, OffersView } from '../../lib/types.ts'
+import type { OfferChannel, OfferDone, OfferFollowup, OfferRefusal, OfferRow, OffersView } from '../../lib/types.ts'
 import { dayMonth, firstName, travelersText } from '../chats/view.ts'
 import { crmLine, type Tone } from '../leads/view.ts'
 import { clockIn, dayIn, span } from './view.ts'
@@ -143,3 +143,33 @@ export function markedText(state: 'sent' | 'not_needed' | 'open', name: string):
 /** The line under the queue's title: what it holds and why. */
 export const QUEUE_NOTE =
   'Every client who left a contact and a trip, oldest first, until someone sends the written offer. Only a consultant quotes a fare: the assistant never does.'
+
+
+/** How the lead reached its agent (the follow-up lottery), in one line; null when it didn't come that way. */
+export function followupText(f: OfferFollowup | null | undefined, timeOf: (iso: string) => string = shortTime): string | null {
+  if (!f || !f.agent_name) return null
+  const who = firstName(f.agent_name)
+  const when = f.at ? ` at ${timeOf(f.at)}` : ''
+  switch (f.state) {
+    case 'pending':
+      return `Given by the lottery to ${who}${when}: waiting for ${who} to open it`
+    case 'acked':
+      return f.by === 'manager' ? `Given to ${who} by a manager${when}` : `${who} took it from the lottery${when}`
+    case 'missed':
+      return `${who} didn’t open it in time: back to the lottery`
+    case 'manual':
+      return `Given to ${who} by a manager${when}`
+    default:
+      return null
+  }
+}
+
+function shortTime(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+/** The rows that are mine, when the lottery shares leads out (the "Mine" view). */
+export function mineOnly<T extends { agent_id?: string | null }>(rows: T[], me: string | undefined): T[] {
+  return me ? rows.filter((r) => r.agent_id === me) : []
+}

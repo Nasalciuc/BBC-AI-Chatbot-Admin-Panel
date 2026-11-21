@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import type { Lead, LeadRow } from '../src/lib/types.ts'
-import { ageText, agoText, checklist, crmLine, historyOf, leadsCsv, leadsTabsFor, missingText, navText, reviewCards, reviewerText, summaryCards, tripLine } from '../src/features/leads/view.ts'
+import { ageText, agoText, checklist, crmLine, crmSourceLine, historyOf, isOddCrmIdRefusal, leadsCsv, leadsTabsFor, missingText, navText, reviewCards, reviewerText, summaryCards, tripLine } from '../src/features/leads/view.ts'
 import { confirmedOf, levelOf, missingForReady } from '../src/features/chats/view.ts'
 
 const NOW = Date.parse('2026-11-06T12:00:00Z')
@@ -130,9 +130,31 @@ test('the lead panel keeps a CRM number, a save and a review with their own lead
   assert.match(panel, /push\.mutate\(\{ leadId, confirmLocked: true \}\)/)
   assert.match(panel, /saveManual\.mutate\(\{ leadId: id, crmId: manual\.trim\(\) \}\)/)
   assert.equal((panel.match(/review\.mutate\(\{ leadId: id,/g) ?? []).length, 3)
-  assert.match(panel, /mutationFn: \(v: \{ leadId: string; crmId: string \}\) => setLeadCrmId\(v\.leadId, v\.crmId\)/)
+  // Part 3: the same call, and an odd number asked about once (confirmOdd), still with its own lead.
+  assert.match(panel, /mutationFn: \(v: \{ leadId: string; crmId: string; confirmOdd\?: boolean \}\) => setLeadCrmId\(v\.leadId, v\.crmId, v\.confirmOdd\)/)
+  assert.match(panel, /saveManual\.mutate\(\{ \.\.\.v, confirmOdd: true \}\)/)
   assert.match(panel, /if \(v\.leadId === id\) setManual\(''\)/)
   assert.match(panel, /if \(v\.next && nav\?\.next && v\.leadId === id\) nav\.next\(\)/)
   assert.ok(!/onPatched\(\{/.test(panel), 'a patch without its lead')
   assert.match(page, /onPatched=\{\(leadId, patch\) => setOpenSnap\(\(s\) => \(s && s\.id === leadId \? \{ \.\.\.s, \.\.\.patch \} : s\)\)\}/)
+})
+
+// Part 3: how the lead reached the CRM, and the odd number asked about once.
+
+test('how the lead reached the CRM, in one line', () => {
+  const names = { u1: 'Ana Agent' }
+  assert.equal(crmSourceLine({ source: 'push', set_by: 'u1' }, names), 'Sent by Ana from the chat')
+  assert.equal(crmSourceLine({ source: 'push' }), 'Sent from the chat')
+  assert.equal(crmSourceLine({ source: 'cron' }), 'Sent by the nightly check')
+  assert.equal(crmSourceLine({ source: 'manual', set_by: 'u1', shape: 'odd' }, names),
+    'Number pasted by Ana · the number doesn’t look like the CRM’s')
+  assert.equal(crmSourceLine({ source: 'weird' }), null)
+  assert.equal(crmSourceLine(null), null)
+})
+
+test('only the odd-number answer asks again', () => {
+  assert.equal(isOddCrmIdRefusal({ status: 422, message: "This doesn't look like an id from the CRM (24 letters and digits). Send it again to keep it." }), true)
+  assert.equal(isOddCrmIdRefusal({ status: 422, message: 'crm_id must be non-empty' }), false)
+  assert.equal(isOddCrmIdRefusal({ status: 409, message: 'This CRM id is already on chat #4242, another client.' }), false)
+  assert.equal(isOddCrmIdRefusal(null), false)
 })

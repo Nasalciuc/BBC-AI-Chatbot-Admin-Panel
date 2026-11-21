@@ -664,6 +664,18 @@ export interface OfferRow extends OfferClient {
   chat_status: string | null
   /** Since the client's oldest chat in the window. */
   waiting_since: string
+  /** The follow-up lottery (part 2): whose lead this is, and how it got to them. */
+  agent_id?: string | null
+  followup?: OfferFollowup | null
+  /** Another agent's lead while the lottery is on: the trip and whose it is, never how to reach the client. */
+  hidden?: boolean
+}
+
+export interface OfferFollowup {
+  by: 'lottery' | 'manager' | string
+  state: 'pending' | 'acked' | 'missed' | 'manual' | string
+  at: string | null
+  agent_name: string | null
 }
 
 export interface OfferDone extends OfferClient {
@@ -678,6 +690,8 @@ export interface OffersView {
   counts: { waiting: number; sent: number; not_needed: number }
   days: number
   can: { mark: boolean }
+  /** The follow-up lottery is on: leads go to one agent each. */
+  lottery?: boolean
 }
 
 export interface OffersResponse {
@@ -1156,4 +1170,111 @@ declare global {
      *  cleanup runs) and removes its root, so it can be loaded again. */
     __BBC_WIDGET_TEARDOWN__?: () => void
   }
+}
+
+// ── On the site now (bbc-live, contracts/live.md) ─────────────────────
+
+/** The heartbeat's pass to bbc-live: its address, a 60 s token, whether this person may say hello first. */
+export interface LivePass {
+  url: string
+  token: string
+  expires_at: string
+  can_say_hello: boolean
+}
+
+/** A visitor on the site now, anonymous: the page, the page's trip, where they came from. */
+export interface LiveVisitor {
+  visitor_id: string
+  first_at: number
+  last_at: number
+  seconds_on_site: number
+  page: string
+  trip?: { from?: string; to?: string; depart?: string; return?: string; cabin?: string; pax?: number }
+  source: 'kayak' | 'ads' | 'site' | string
+  device?: 'phone' | 'computer' | string
+  site?: 'bbc' | 'bct' | string
+  chat_open: boolean
+  has_chat: boolean
+  /** The agent holding them to say hello, absent when nobody does. */
+  claimed_by?: string
+  /** They said "not now" to a hello lately: nobody says hello for an hour. */
+  dismissed: boolean
+}
+
+export interface LiveListResponse {
+  ok: boolean
+  data: LiveVisitor[]
+  count: number
+  max_claims: number
+  claim_seconds: number
+}
+
+export type LiveClaimState = 'claimed' | 'mine' | 'gone' | 'taken' | 'full' | 'declined' | 'in_a_chat'
+
+export interface LiveClaimResponse {
+  ok: boolean
+  state: LiveClaimState
+  claim_seconds: number
+}
+
+export interface LiveHelloSent {
+  hello_id: string
+  sent_at: string
+  expires_at: string
+}
+
+// ── The search box (part 4) ─────────────────────────────────────────
+
+/** A chat this person opened lately (GET /api/search/recent). */
+export interface RecentChat {
+  id: string
+  chat_number: number | null
+  visitor_name: string | null
+  status: string | null
+  updated_at: string | null
+}
+
+/** A message that holds the words searched (GET /api/search/messages), the last 30 days. */
+export interface MessageHit {
+  conversation_id: string
+  chat_number: number | null
+  visitor_name: string | null
+  status: string | null
+  message_id: string
+  said_by: 'client' | 'assistant' | 'agent' | string
+  said_at: string
+  snippet: string
+}
+
+// ── The morning QA sample (part 3) ──────────────────────────────────
+
+export type QaVerdict = 'ok' | 'problem' | 'discuss'
+
+export interface QaItem {
+  conversation_id: string
+  chat_number: number | null
+  lead_id: string | null
+  agent_id: string | null
+  agent_name: string | null
+  reasons: { code: string; label: string }[]
+  verdict: QaVerdict | null
+  note: string | null
+  verdict_by: string | null
+  verdict_at: string | null
+}
+
+export interface QaSample {
+  day: string
+  items: QaItem[]
+  counts: Record<QaVerdict | 'open', number>
+}
+
+export interface QaAgentStats {
+  agent_id: string
+  agent_name: string | null
+  picked: number
+  ok: number
+  problem: number
+  discuss: number
+  open: number
 }

@@ -1,10 +1,12 @@
 import {
   BookOpen,
+  ClipboardCheck,
   CircleDot,
   GraduationCap,
   KeyRound,
   LayoutGrid,
   MessageCircle,
+  Radio,
   ShieldAlert,
   SlidersHorizontal,
   SquareCheck,
@@ -25,6 +27,8 @@ export type NavKey =
   | 'learning'
   | 'bans'
   | 'settings'
+  | 'live'
+  | 'qa'
 
 export type PanelNavItem = {
   key: NavKey
@@ -54,7 +58,9 @@ export function isOperatorRole(role: string | undefined): boolean {
  */
 export function getNavGroups(
   role: UserRole,
-  permissions: Permissions
+  permissions: Permissions,
+  // "On the site now": only while the heartbeat hands this person a pass to bbc-live (the switch is on).
+  extras: { live?: boolean } = {}
 ): PanelNavItem[][] {
   const op = isOperatorRole(role)
   const g1: PanelNavItem[] = [
@@ -66,6 +72,13 @@ export function getNavGroups(
     { key: 'dash', title: 'Dashboard', url: '/', icon: LayoutGrid },
     ...(permissions.canViewLeads
       ? [{ key: 'leads' as const, title: 'Leads', url: '/leads', icon: CircleDot }]
+      : []),
+    ...(extras.live
+      ? [{ key: 'live' as const, title: 'On the site now', url: '/live', icon: Radio }]
+      : []),
+    // The morning QA sample: QA and management only (app/api/qa.py READERS).
+    ...(['qa', 'owner', 'admin', 'dev'].includes(role)
+      ? [{ key: 'qa' as const, title: 'QA sample', url: '/qa', icon: ClipboardCheck }]
       : []),
   ]
   const g2: PanelNavItem[] = [

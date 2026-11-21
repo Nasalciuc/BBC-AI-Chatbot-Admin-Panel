@@ -2,6 +2,7 @@ import { Link, useLocation } from '@tanstack/react-router'
 import { ChevronsUpDown, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { useQueueStore } from '@/stores/queue-store'
+import { useLiveStore } from '@/stores/live-store'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { cn } from '@/lib/utils'
@@ -57,7 +58,9 @@ export function AppSidebar() {
   const user = useAuthStore((s) => s.auth.user)
   const role = (user?.role ?? 'sales') as UserRole
   const permissions = usePermissions(role)
-  const groups = getNavGroups(role, permissions)
+  const livePass = useLiveStore((s) => s.pass)
+  const followupsNew = useLiveStore((s) => s.followupsNew)
+  const groups = getNavGroups(role, permissions, { live: !!livePass })
   const queueCount = useQueueStore((s) => s.queueCount)
 
   const tasks = useTaskAlerts().data
@@ -66,6 +69,8 @@ export function AppSidebar() {
   const badgeFor = (item: PanelNavItem): { text: string; label: string } | null => {
     if (item.key === 'conv' && queueCount > 0 && role !== 'qa') return { text: String(queueCount), label: `${queueCount} waiting for a person` }
     if (item.key === 'tasks' && taskCount > 0) return { text: String(taskCount), label: `${taskCount} late` }
+    // The follow-up lottery: leads given to me that I haven't opened yet (the offers to send are under Tasks).
+    if (item.key === 'tasks' && followupsNew) return { text: String(followupsNew), label: `${followupsNew} new lead${followupsNew === 1 ? '' : 's'} given to you` }
     return null
   }
 

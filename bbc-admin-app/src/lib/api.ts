@@ -16,6 +16,15 @@ export class ApiError extends Error {
 
 import type {
   AccessEvent,
+  QaAgentStats,
+  QaSample,
+  QaVerdict,
+  MessageHit,
+  RecentChat,
+  LiveClaimResponse,
+  LiveHelloSent,
+  LiveListResponse,
+  LivePass,
   Conversation,
   ConversationsResponse,
   DashboardStats,
@@ -364,9 +373,11 @@ export function pushLeadToCrm(leadId: string, confirmLocked = false): Promise<{ 
 
 /** The operator added the client in the CRM by hand: record the CRM's lead
  *  number as the proof. No push happens. */
-export function setLeadCrmId(leadId: string, crmId: string): Promise<{ success: boolean; data: Lead }> {
+export function setLeadCrmId(leadId: string, crmId: string, confirmOdd = false): Promise<{ success: boolean; data: Lead }> {
+  // A number that doesn't look like the CRM's is asked about once (422); sent again with confirmOdd it is kept,
+  // marked for QA (part 3).
   return apiFetch(
-    `/api/leads/${encodeURIComponent(leadId)}/crm-id?crm_id=${encodeURIComponent(crmId)}`,
+    `/api/leads/${encodeURIComponent(leadId)}/crm-id?crm_id=${encodeURIComponent(crmId)}${confirmOdd ? '&confirm_odd=true' : ''}`,
     { method: 'PATCH' }
   )
 }
@@ -801,6 +812,14 @@ export function getOffers(days: number) {
   return apiFetch<OffersResponse>(`/api/offers?days=${days}`)
 }
 
+/** A manager gives a lead to an agent by hand (the lottery's other door): owner, admin, dev, a supervisor
+ *  within their team. */
+export function assignFollowup(conversationId: string, agentId: string) {
+  return apiFetch<{ success: boolean }>(`/api/followups/${encodeURIComponent(conversationId)}/assign`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId }),
+  })
+}
+
 /** Sent, not needed, or open again (Undo) — on the chat and the client's other chats. */
 export function markOffer(conversationId: string, state: OfferMark, chats: string[] = []) {
   return apiFetch<{ success: boolean; data: { state: OfferMark; at: string; chats: string[] } }>(
@@ -914,4 +933,82 @@ export async function unlockConversation(conversationId: string): Promise<void> 
     `/api/admin/conversations/${conversationId}/unlock`, { method: 'POST' },
   )
   if (!res.success) throw new ApiError(500, res.error ?? 'Unlock failed')
+}
+
+
+// ── On the site now (bbc-live) ───────────────────────────────────
+// bbc-live is its own service: its address and a 60 s pass come with the heartbeat (useLiveStore). The
+// pass is the only credential it takes; the panel's own token never goes there.
+
+async function liveFetch<T>(pass: LivePass, path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${pass.url}${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${pass.token}`, ...(init.headers as Record<string, string> | undefined) },
+    signal: AbortSignal.timeout(8000),
+  })
+  const body = (await res.json().catch(() => null)) as (T & { error?: string }) | null
+  // A claim refused (taken, full, declined…) is an answer, not an error: the page reads its state.
+  if (!res.ok && !(res.status === 409 || res.status === 410)) {
+    throw new ApiError(res.status, body?.error || `HTTP ${res.status}`)
+  }
+  return body as T
+}
+
+export function getLiveVisitors(pass: LivePass) {
+  return liveFetch<LiveListResponse>(pass, '/v1/live')
+}
+
+export function claimVisitor(pass: LivePass, visitorId: string) {
+  return liveFetch<LiveClaimResponse>(pass, '/v1/claim', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId }),
+  })
+}
+
+export function releaseVisitor(pass: LivePass, visitorId: string) {
+  return liveFetch<{ ok: boolean; released: boolean }>(pass, '/v1/release', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId }),
+  })
+}
+
+/** The hello itself goes through the API: it checks the words (no contact, no link) and the claim. */
+export async function sendHello(visitorId: string, text: string): Promise<LiveHelloSent> {
+  const res = await apiFetch<{ success: boolean; data: LiveHelloSent }>('/api/live/send', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, text }),
+  })
+  return res.data
+}
+
+
+// ── The search box (part 4) ───────────────────────────────────────
+
+/** The chats I opened lately; `available` false when the server can't say (Redis down). */
+export async function getRecentChats(): Promise<{ data: RecentChat[]; available: boolean }> {
+  const res = await apiFetch<{ success: boolean; data: RecentChat[]; available: boolean }>('/api/search/recent')
+  return { data: res.data ?? [], available: res.available !== false }
+}
+
+/** What was said, in the last 30 days (a few searches a minute). */
+export async function searchMessages(q: string): Promise<MessageHit[]> {
+  const res = await apiFetch<{ success: boolean; data: MessageHit[] }>(`/api/search/messages?q=${encodeURIComponent(q)}`)
+  return res.data ?? []
+}
+
+
+// ── The morning QA sample (part 3) ───────────────────────────────
+
+/** The day's sample (New York days; yesterday by default): the chats picked, why, and the verdicts so far. */
+export async function getQaSample(day?: string): Promise<QaSample> {
+  const res = await apiFetch<{ success: boolean; data: QaSample }>(`/api/qa/sample${day ? `?day=${encodeURIComponent(day)}` : ''}`)
+  return res.data
+}
+
+export function setQaVerdict(conversationId: string, day: string, verdict: QaVerdict, note: string | null) {
+  return apiFetch<{ success: boolean }>(`/api/qa/sample/${encodeURIComponent(conversationId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ day, verdict, note }),
+  })
+}
+
+export async function getQaStats(days = 7): Promise<QaAgentStats[]> {
+  const res = await apiFetch<{ success: boolean; data: QaAgentStats[] }>(`/api/qa/stats?days=${days}`)
+  return res.data ?? []
 }

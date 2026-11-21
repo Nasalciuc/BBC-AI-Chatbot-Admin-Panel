@@ -15,6 +15,8 @@ import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bri
 import { notifyName } from '@/lib/alert-prefs'
 import { syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
+import { useLiveStore } from '@/stores/live-store'
+import type { LivePass } from '@/lib/types'
 
 const HEARTBEAT_INTERVAL_MS = 5_000
 
@@ -53,6 +55,10 @@ type HeartbeatResponse = {
    *  the operator has the chat open — the countdown after Take uses these. */
   response_deadline_seconds?: number
   viewing_grace_seconds?: number
+  /** Leads the follow-up lottery gave this agent, not opened yet; null when the server can't say. */
+  followups_new?: number | null
+  /** "On the site now": the pass to bbc-live, for the roles that see the list while it is on. */
+  live?: LivePass | null
 }
 
 /**
@@ -98,6 +104,10 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     active.current = true
 
     const processResponse = (res: HeartbeatResponse) => {
+      useLiveStore.getState().setFromBeat(
+        res?.live && typeof res.live.url === 'string' && typeof res.live.token === 'string' ? res.live : null,
+        typeof res?.followups_new === 'number' ? res.followups_new : null,
+      )
       if (
         typeof res?.response_deadline_seconds === 'number' &&
         typeof res?.viewing_grace_seconds === 'number'
