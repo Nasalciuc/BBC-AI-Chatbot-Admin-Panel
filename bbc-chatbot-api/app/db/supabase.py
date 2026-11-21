@@ -1993,48 +1993,52 @@ async def get_existing_lead_by_contact(
     email: Optional[str] = None,
     phone: Optional[str] = None,
 ) -> Optional[dict]:
-    """Check if a lead exists by email or phone (CRM duplicate check).
-    Returns the lead with conversation contact info and assigned agent if found.
-    Used for: Routing returning visitors to same agent, CRM integration checks."""
+    """The newest lead whose chat has this e-mail or this phone, with the chat's contact and agent; None when
+    there is none. Raises when it cannot read, so the caller tells "none" from "couldn't look" (rule 7).
+
+    The chat is an inner embed (a filter on it narrows the leads, not only the embed), and e-mail OR phone is one
+    condition on the embed: a top-level or() cannot name an embedded column in PostgREST v12. Values inside it
+    are quoted (chat_search.quoted): a comma in what was typed adds no condition."""
     if not email and not phone:
         return None
+    from app.services.chat_search import quoted
+
     email_clean = email.lower().strip() if email else None
     phone_clean = phone.strip() if phone else None
+    db_client = get_client()
+
+    def _q():
+        q = (
+            db_client.table("leads")
+            .select("*, conversations!inner(id, visitor_name, visitor_email, visitor_phone, assigned_agent_id, tunnel)")
+            .order("created_at", desc=True)
+            .limit(1)
+        )
+        if email_clean and phone_clean:
+            q = q.or_(f"visitor_email.eq.{quoted(email_clean)},visitor_phone.eq.{quoted(phone_clean)}",
+                      reference_table="conversations")
+        elif email_clean:
+            q = q.eq("conversations.visitor_email", email_clean)
+        else:
+            q = q.eq("conversations.visitor_phone", phone_clean)
+        return q.execute()
+
     try:
-        db_client = get_client()
-        def _q():
-            q = (
-                db_client.table("leads")
-                .select("*, conversations(id, visitor_name, visitor_email, visitor_phone, assigned_agent_id, tunnel)")
-                .order("created_at", desc=True)
-                .limit(1)
-            )
-            # Search by email OR phone in conversations
-            if email_clean and phone_clean:
-                q = q.or_(
-                    f"conversations.visitor_email.eq.{email_clean},"
-                    f"conversations.visitor_phone.eq.{phone_clean}"
-                )
-            elif email_clean:
-                q = q.eq("conversations.visitor_email", email_clean)
-            else:
-                q = q.eq("conversations.visitor_phone", phone_clean)
-            return q.execute()
         res = await _run_sync(_q)
-        if res and res.data:
-            lead = dict(res.data[0])
-            conv = lead.pop("conversations", {}) or {}
-            lead["visitor_name"] = conv.get("visitor_name")
-            lead["visitor_email"] = conv.get("visitor_email")
-            lead["visitor_phone"] = conv.get("visitor_phone")
-            lead["assigned_agent_id"] = conv.get("assigned_agent_id")
-            lead["conversation_id"] = conv.get("id")
-            lead["tunnel"] = conv.get("tunnel")
-            return lead
-        return None
     except Exception as e:
-        logger.error(f"get_existing_lead_by_contact error: {e}")
+        logger.error(f"get_existing_lead_by_contact failed: {type(e).__name__}: {e}")
+        raise
+    if not (res and res.data):
         return None
+    lead = dict(res.data[0])
+    conv = lead.pop("conversations", {}) or {}
+    lead["visitor_name"] = conv.get("visitor_name")
+    lead["visitor_email"] = conv.get("visitor_email")
+    lead["visitor_phone"] = conv.get("visitor_phone")
+    lead["assigned_agent_id"] = conv.get("assigned_agent_id")
+    lead["conversation_id"] = conv.get("id")
+    lead["tunnel"] = conv.get("tunnel")
+    return lead
 
 
 async def mark_lead_created_in_crm(

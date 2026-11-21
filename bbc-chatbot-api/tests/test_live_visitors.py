@@ -451,21 +451,22 @@ def _request():
     return req
 
 
-def _init_patches(claim_won=True):
+def _init_patches(claim_won=True, agent_row=None):
+    row = {**SALES_DB, "avatar_url": None} if agent_row is None else agent_row
     return [
         patch("app.api.chat.is_blocked", new=AsyncMock(return_value=False)),
         patch("app.services.conversation_service.get_or_create_conversation", new=AsyncMock(return_value={"id": "c1"})),
         patch("app.db.supabase.claim_conversation_if_unassigned", new=AsyncMock(return_value={"won": claim_won})),
         patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)),
-        patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value={"name": "Ana Agent", "avatar_url": None})),
+        patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=row)),
         patch("app.services.conversation_service.db.add_message", new=AsyncMock(return_value={"id": "m1"})),
     ]
 
 
-async def _init(payload, claim_won=True):
+async def _init(payload, claim_won=True, agent_row=None):
     from app.api.chat import chat_init
 
-    ps = _init_patches(claim_won)
+    ps = _init_patches(claim_won, agent_row)
     mocks = [p.start() for p in ps]
     try:
         res = await chat_init(payload, _request(), None)
@@ -501,6 +502,22 @@ async def test_a_tap_that_does_not_hold_starts_an_ordinary_chat(redis):
         assert res.conversation_id == "c1" and res.live_agent is None
         m["claim"].assert_not_awaited()
         m["add"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("row", [{**SALES_DB, "is_active": False}, {**SALES_DB, "chat_enabled": False}, {}])
+@pytest.mark.asyncio
+async def test_a_hello_from_an_agent_who_no_longer_takes_chats_starts_an_ordinary_chat(redis, row):
+    """The hello is up to 15 minutes old: an agent switched off or gone since gets no chat from it."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), agent_row=row)
+    assert res.conversation_id == "c1" and res.live_agent is None and res.live_hello is None
+    m["claim"].assert_not_awaited()
+    m["add"].assert_not_awaited()
+    assert live_visitors.LIVE_HEALTH["taps_refused"] == 1 and live_visitors.LIVE_HEALTH["tap_failed"] == 0
 
 
 @pytest.mark.asyncio

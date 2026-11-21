@@ -271,12 +271,21 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
     from app.db import supabase as db
     from app.services.conversation_service import add_message
 
+    from app.services.agent_presence import _may_take_chats
+
     hello = await take_tap(visitor_id, tap)
     if not hello:
         return {}
     agent_id = hello["agent_id"]
     agent: dict = {}
     try:
+        # The hello may be 15 minutes old: an agent who no longer takes chats (switched off, deactivated) gets
+        # no chat from it; the visitor's chat then starts as any other, never waiting on someone who can't answer.
+        agent = await db.get_user_by_id(agent_id) or {}
+        if not _may_take_chats(agent):
+            LIVE_HEALTH["taps_refused"] += 1
+            logger.warning(f"[live] conv {conv_id}: the tapped hello's agent no longer takes chats")
+            return {}
         won = (await db.claim_conversation_if_unassigned(conv_id, agent_id)).get("won")
         if not won:
             LIVE_HEALTH["tap_failed"] += 1
@@ -288,7 +297,6 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
             "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
                            "tapped_at": now},
         })
-        agent = await db.get_user_by_id(agent_id) or {}
         await add_message(conv_id, "agent", hello["text"], live_extra={
             "agent_name": agent.get("name") or "Consultant", "agent_avatar_url": agent.get("avatar_url")})
     except Exception as e:

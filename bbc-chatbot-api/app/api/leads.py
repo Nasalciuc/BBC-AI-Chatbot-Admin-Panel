@@ -282,33 +282,43 @@ async def update_lead(
 async def check_existing_lead(
     email: Optional[str] = Query(None, max_length=255),
     phone: Optional[str] = Query(None, max_length=50),
+    user: dict = Depends(get_current_user),
 ):
     """Check if a lead already exists in the system by email or phone.
     Used for: CRM duplicate detection, returning visitor identification.
     Returns: { exists: bool, lead: {...}, assigned_agent_id: "...", tunnel: "..." }
+
+    Management only (owner, admin, dev): it answers a client's name and contact for an e-mail or a phone, which
+    an agent may not read for a chat that isn't theirs (lead_access, the blind line).
     """
+    from app.security.gates import MANAGEMENT
+
+    if (user.get("role") or "") not in MANAGEMENT:
+        raise HTTPException(403, "The contact check is for management")
     if not email and not phone:
         return {"success": False, "error": "Must provide email or phone", "exists": False}
-    
+    existing = None
     try:
         existing = await db.get_existing_lead_by_contact(email=email, phone=phone)
-        if existing:
-            return {
-                "success": True,
-                "exists": True,
-                "lead_id": existing.get("id"),
-                "conversation_id": existing.get("conversation_id"),
-                "visitor_name": existing.get("visitor_name"),
-                "visitor_email": existing.get("visitor_email"),
-                "visitor_phone": existing.get("visitor_phone"),
-                "assigned_agent_id": existing.get("assigned_agent_id"),
-                "lead_tier": existing.get("tier"),
-                "lead_status": existing.get("status"),
-                "tunnel": existing.get("tunnel"),
-            }
-        return {"success": True, "exists": False}
     except Exception as e:
-        return {"success": False, "error": str(e), "exists": False}
+        # Logged with its cause in get_existing_lead_by_contact; the caller gets no database text.
+        logger.error(f"[leads] the contact check could not run: {type(e).__name__}")
+        return {"success": False, "error": "The check could not run. Try again.", "exists": False}
+    if not existing:
+        return {"success": True, "exists": False}
+    return {
+        "success": True,
+        "exists": True,
+        "lead_id": existing.get("id"),
+        "conversation_id": existing.get("conversation_id"),
+        "visitor_name": existing.get("visitor_name"),
+        "visitor_email": existing.get("visitor_email"),
+        "visitor_phone": existing.get("visitor_phone"),
+        "assigned_agent_id": existing.get("assigned_agent_id"),
+        "lead_tier": existing.get("tier"),
+        "lead_status": existing.get("status"),
+        "tunnel": existing.get("tunnel"),
+    }
 
 
 @router.patch("/leads/{lead_id}/mark-crm-created")

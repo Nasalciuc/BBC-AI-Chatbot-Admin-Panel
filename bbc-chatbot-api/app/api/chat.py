@@ -275,7 +275,9 @@ async def chat_live(payload: LivePassRequest, request: Request):
     from fastapi.responses import JSONResponse
     from app.services.live_visitors import widget_pass
 
-    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request))
+    # The address as the rate limiter reads it (X-Forwarded-For, then the peer): a cf-connecting-ip header is the
+    # client's to write unless the edge is Cloudflare, and the limit on new ids would not hold.
+    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False))
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
