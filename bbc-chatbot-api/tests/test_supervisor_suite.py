@@ -289,11 +289,12 @@ class TestCrmOutcomeTagBlock:
                 new=AsyncMock(return_value=CRMResult(success=True, request_id="R-1")),
             ) as push,
         ):
-            out = await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "u1"})
+            # The agent the chat belongs to (hole B: a colleague's lead is a 403, test_lead_access.py).
+            out = await mark_lead_created_in_crm("L1", user={"role": "sales", "id": "a1"})
             assert out["success"] is True
             assert out.get("pushed_with_defaults") is True
             push.assert_awaited_once()
-            mark.assert_awaited_once_with("L1", crm_lead_id="R-1")
+            mark.assert_awaited_once_with("L1", crm_lead_id="R-1", source="push", set_by="a1")
 
     @pytest.mark.asyncio
     async def test_no_engagement_pushes_with_defaults_and_flag(self):
@@ -318,7 +319,7 @@ class TestCrmOutcomeTagBlock:
             # The silent-lead marker rides into the payload conv so the
             # consultant sees "No engagement — form only" on the CRM row.
             assert push.await_args.args[0].get("_no_engagement") is True
-            mark.assert_awaited_once_with("L1", crm_lead_id="R-2")
+            mark.assert_awaited_once_with("L1", crm_lead_id="R-2", source="push", set_by="u1")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["fresh", "active", "main_queue", "completed"])
@@ -365,8 +366,10 @@ class TestCrmOutcomeTagBlock:
                 new=AsyncMock(return_value=CRMResult(success=True, request_id="R-1")),
             ) as push,
         ):
+            # The agent who has the chat ("a1" where one does): since hole B, a colleague's lead is a 403
+            # (test_lead_access.py).
             result = await mark_lead_created_in_crm(
-                "L1", user={"role": "sales", "id": "u1"}
+                "L1", user={"role": "sales", "id": "a1"}
             )
             assert result["success"] is True
             push.assert_called_once()

@@ -1827,13 +1827,22 @@ async def get_existing_lead_by_contact(
 
 
 async def mark_lead_created_in_crm(
-    lead_id: str, crm_lead_id: Optional[str] = None
+    lead_id: str, crm_lead_id: Optional[str] = None, *,
+    source: str = "push", set_by: Optional[str] = None, shape: Optional[str] = None,
 ) -> Optional[dict]:
     """Mark a lead as successfully created in the CRM system.
     Updates: created_in_crm=true, created_in_crm_at=NOW(), and — when the
     caller has the CRM's id (the proof) — crm_lead_id, clearing any gate
     refusal. Falls back without the 030 columns if the migration isn't
-    applied yet."""
+    applied yet.
+
+    Then says how the lead got there, on its conversation (metadata.crm, merged
+    server-side, no migration): source push (the system sent it, the panel's
+    button included), cron (a scheduled job sent it) or manual (an agent pasted
+    the id), who, when, and for a pasted id whether it looks like the CRM's own
+    (shape). Until 21 Nov nothing told a pushed id from a pasted one. That note
+    never fails the mark: a note that is not saved is counted
+    (CRM_SOURCE_HEALTH) and logged."""
     try:
         db_client = get_client()
         from datetime import datetime
@@ -1874,10 +1883,42 @@ async def mark_lead_created_in_crm(
                 "exists but our flag does not. This lead WILL be re-pushed."
             )
             return None
-        return res.data[0]
+        row = res.data[0]
+        await _note_crm_source(row, source=source, set_by=set_by, shape=shape)
+        return row
     except Exception as e:
         logger.error(f"mark_lead_created_in_crm error: {e}")
         return None
+
+
+CRM_SOURCE_HEALTH: dict[str, int] = {"push": 0, "cron": 0, "manual": 0, "odd_shape": 0, "not_noted": 0}
+
+
+async def _note_crm_source(lead_row: dict, *, source: str, set_by: Optional[str], shape: Optional[str]) -> None:
+    """metadata.crm on the lead's conversation: {source, set_by, set_at, shape}. Never raises."""
+    from app.flags import flag
+
+    if not flag("CRM_SOURCE_RECORD", True):
+        return
+    conv_id = lead_row.get("conversation_id") if isinstance(lead_row, dict) else None
+    if not conv_id:
+        return
+    note = {"source": source if source in ("push", "cron", "manual") else "push",
+            "set_by": set_by, "set_at": datetime.now(timezone.utc).isoformat()}
+    if shape:
+        note["shape"] = shape
+    CRM_SOURCE_HEALTH[note["source"]] += 1
+    if shape == "odd":
+        CRM_SOURCE_HEALTH["odd_shape"] += 1
+    saved = False
+    try:
+        saved = await patch_conversation_presence(conv_id, {"crm": note})
+    except Exception as e:
+        saved = False
+        logger.warning(f"[crm-source] {conv_id}: note not saved ({type(e).__name__}: {e})")
+    if not saved:
+        CRM_SOURCE_HEALTH["not_noted"] += 1
+        logger.warning(f"[crm-source] {conv_id}: how the lead reached the CRM was not noted ({note['source']})")
 
 
 async def update_lead_crm_push_state(
@@ -5274,7 +5315,9 @@ _UNIVERSE_CONV_COLUMNS = (
     "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by, "
     # The follow-up lottery (app/services/lead_lottery.py): who was given the lead, how, when; and the
     # decoys, which nobody is ever given.
-    "followup:metadata->followup, is_decoy"
+    "followup:metadata->followup, is_decoy, "
+    # The QA sample (app/services/qa_sample.py): how the lead reached the CRM, and the client's last word.
+    "crm:metadata->crm, last_user_message_at"
 )
 
 
@@ -5349,6 +5392,8 @@ async def get_leads_universe() -> list[dict]:
                 "offer_skipped_by": c.get("offer_skipped_by"),
                 "followup": c.get("followup") if isinstance(c.get("followup"), dict) else None,
                 "is_decoy": bool(c.get("is_decoy")),
+                "crm": c.get("crm") if isinstance(c.get("crm"), dict) else None,
+                "last_user_message_at": c.get("last_user_message_at"),
             })
             rows.append(row)
         _LEADS_UNIVERSE.update({"at": time.monotonic(), "rows": rows})
@@ -6386,7 +6431,7 @@ async def get_operator_rows(
             q = q.gte("last_seen_at", cutoff)
         return q.execute()
 
-    base = "id, name, role, is_active, tunnel_scope, last_seen_at"
+    base = "id, name, role, is_active, tunnel_scope, last_seen_at, created_at"
     try:
         try:
             res = await _run_sync(lambda: _q(base + ", chat_enabled"), label="lottery")
@@ -6427,3 +6472,68 @@ async def get_open_task_owners(conversation_ids: list[str]) -> Optional[dict[str
         LOTTERY_DB_HEALTH["task_read_errors"] += 1
         logger.warning(f"[lottery] open tasks not read: {e}")
         return None
+
+
+# ════════════════════════════════════════════════════════════════
+# CRM ids and the QA sample (app/api/leads.py, app/services/qa_sample.py)
+# ════════════════════════════════════════════════════════════════
+
+
+async def get_leads_by_crm_id(crm_lead_id: str) -> list[dict]:
+    """The leads that carry this CRM id. Raises: a duplicate check that cannot run must not pass."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("leads").select("id, conversation_id")
+        .eq("crm_lead_id", crm_lead_id).limit(20).execute(),
+        label="crm_id",
+    )
+    return [r for r in (res.data or []) if isinstance(r, dict)]
+
+
+async def get_audit_rows(actions: list[str], since_iso: str, *, until_iso: Optional[str] = None,
+                         limit: int = 5000) -> list[dict]:
+    """audit_log rows of these actions in [since, until), oldest first. Raises."""
+    db_client = get_client()
+
+    def _q():
+        q = (db_client.table("audit_log")
+             .select("action, user_id, target_table, target_id, details, created_at")
+             .in_("action", list(actions)).gte("created_at", since_iso))
+        if until_iso:
+            q = q.lt("created_at", until_iso)
+        return q.order("created_at").limit(limit).execute()
+
+    res = await _run_sync(_q, label="audit_read")
+    return [r for r in (res.data or []) if isinstance(r, dict)]
+
+
+async def get_agent_messages(conversation_ids: list[str], since_iso: str, until_iso: str) -> list[dict]:
+    """What agents wrote in these chats in [since, until): conversation_id and content. Raises.
+
+    The content holds what the client and the agent said: read in memory, never logged."""
+    ids = [c for c in dict.fromkeys(conversation_ids) if c]
+    if not ids:
+        return []
+    db_client = get_client()
+    out: list[dict] = []
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+        res = await _run_sync(
+            lambda chunk=chunk: db_client.table("messages").select("conversation_id, content")
+            .in_("conversation_id", chunk).eq("role", "agent")
+            .gte("created_at", since_iso).lt("created_at", until_iso).limit(5000).execute(),
+            label="qa_messages",
+        )
+        out.extend(r for r in (res.data or []) if isinstance(r, dict))
+    return out
+
+
+async def get_active_emails_for_role(role: str) -> list[str]:
+    """The e-mails of the active people with this role (the QA sample's recipients). Raises."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("users").select("email, is_active").eq("role", role).execute(),
+        label="role_emails",
+    )
+    return [r["email"] for r in (res.data or [])
+            if isinstance(r, dict) and r.get("email") and r.get("is_active", True)]

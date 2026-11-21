@@ -171,6 +171,11 @@ async def health_detail(full: bool = False) -> dict:
     # The follow-up lottery: what it gave, what came back unconfirmed, what waits, what it could not write.
     from app.services.lead_lottery import LOTTERY_HEALTH
     from app.db.supabase import LOTTERY_DB_HEALTH
+    # How each CRM id got there, who may act on a lead, the morning QA sample.
+    from app.db.supabase import CRM_SOURCE_HEALTH
+    from app.services.lead_access import LEAD_ACCESS_HEALTH
+    from app.services.qa_sample import QA_HEALTH
+    from app.services.crm import CRM_LOOKUP_HEALTH
 
     if not full:
         return {
@@ -205,6 +210,10 @@ async def health_detail(full: bool = False) -> dict:
             "locks": dict(LOCK_HEALTH),
             "agent_presence": dict(AGENT_PRESENCE_HEALTH),
             "lottery": {**LOTTERY_HEALTH, **LOTTERY_DB_HEALTH},
+            "crm_source": dict(CRM_SOURCE_HEALTH),
+            "lead_access": dict(LEAD_ACCESS_HEALTH),
+            "qa_sample": dict(QA_HEALTH),
+            "crm_lookup": dict(CRM_LOOKUP_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),

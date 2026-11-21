@@ -566,6 +566,9 @@ async def push_lead_to_crm(
     conv_metadata: dict | None = None,
     client_ip: str | None = None,
     suid: str | None = None,
+    *,
+    source: str = "push",
+    set_by: str | None = None,
 ) -> CRMResult:
     """THE push path: gate → submit → flag ONLY on proof (2xx + crm id).
 
@@ -595,8 +598,9 @@ async def push_lead_to_crm(
         conv_metadata=conv_metadata, client_ip=client_ip, suid=suid,
     )
     if result.success and result.request_id:
+        # How it got there (metadata.crm): the system sent it; a person may have pressed Push.
         marked = await db.mark_lead_created_in_crm(
-            lead["id"], crm_lead_id=result.request_id
+            lead["id"], crm_lead_id=result.request_id, source=source, set_by=set_by
         )
         if marked is None:
             # The CRM row EXISTS but our flag write died. Reporting success
@@ -793,3 +797,40 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
         return CRMResult(success=False, error="Timeout")
     except Exception as e:
         return CRMResult(success=False, error=str(e))
+
+
+# ── Reading a lead back from the CRM (off until the CRM has the route) ─────────
+# Problem #3 asks "is this id really in the CRM?". The CRM only takes leads today (POST /requests/chatbot);
+# reading one by id is a question for its owners (Dan, 21 Nov). The adapter is ready: CRM_LOOKUP_PATH set
+# (for example "/requests/{id}") turns it on, without a deploy; until then it answers None, "cannot say",
+# and the panel shows how the id got there instead of a verified mark.
+
+CRM_LOOKUP_HEALTH: dict[str, int] = {"found": 0, "not_found": 0, "errors": 0, "off": 0}
+
+
+async def lookup(crm_lead_id: str, site: str | None = None) -> bool | None:
+    """True when the CRM knows this id, False when it says it does not, None when it can't be asked."""
+    from app.flags import flag
+
+    path = str(flag("CRM_LOOKUP_PATH", "") or "").strip()
+    if not path or not settings.crm_api_url or not crm_lead_id:
+        CRM_LOOKUP_HEALTH["off"] += 1
+        return None
+    import urllib.parse
+
+    url = f"{_resolve_crm_base(site).rstrip('/')}{path.replace('{id}', urllib.parse.quote(crm_lead_id, safe=''))}"
+    try:
+        resp = await _get_crm_client().get(url)
+    except Exception as e:
+        CRM_LOOKUP_HEALTH["errors"] += 1
+        logger.warning(f"[crm-lookup] {crm_lead_id}: not asked ({type(e).__name__}: {e})")
+        return None
+    if resp.status_code == 200:
+        CRM_LOOKUP_HEALTH["found"] += 1
+        return True
+    if resp.status_code == 404:
+        CRM_LOOKUP_HEALTH["not_found"] += 1
+        return False
+    CRM_LOOKUP_HEALTH["errors"] += 1
+    logger.warning(f"[crm-lookup] {crm_lead_id}: the CRM answered {resp.status_code}")
+    return None

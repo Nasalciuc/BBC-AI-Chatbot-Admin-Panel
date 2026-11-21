@@ -190,6 +190,15 @@ async def _visitor_contact(conversation_id: Optional[str]) -> set[str]:
     return own_contacts(conv.get("visitor_phone"), conv.get("visitor_email"))
 
 
+def foreign_contact_kinds(text: Optional[str], phone: Optional[str] = None, email: Optional[str] = None) -> list[str]:
+    """The kinds ("email", "phone", "url") of the contacts in `text` that are neither the brand's nor this
+    client's. Only kinds come back, never the values: the QA sample and the live message check store and
+    log kinds alone (rule 7)."""
+    _, removed = _scrub(text or "")
+    own = own_contacts(phone, email)
+    return [_kind(r) for r in removed if not _is_own(r, own)]
+
+
 def _is_own(snippet: str, own: set[str]) -> bool:
     if not own:
         return False

@@ -165,7 +165,7 @@ class TestPushPath:
             res = await push_lead_to_crm(GOOD_LEAD, GOOD_VISITOR, "conv-1")
 
         assert res.success
-        mark.assert_awaited_once_with("lead-1", crm_lead_id="R-9")
+        mark.assert_awaited_once_with("lead-1", crm_lead_id="R-9", source="push", set_by=None)
         assert CRM_PUSH_HEALTH["ok"] == 1
 
     @pytest.mark.asyncio
@@ -265,12 +265,16 @@ class TestButtonTruth:
         from app.api import leads as leads_api
         from app.db import supabase as sb
 
-        with patch.object(sb, "mark_lead_created_in_crm", new_callable=AsyncMock) as mark:
+        with patch.object(sb, "mark_lead_created_in_crm", new_callable=AsyncMock) as mark, \
+             patch.object(sb, "get_lead_full", new=AsyncMock(return_value=dict(GOOD_LEAD, id="lead-1"))), \
+             patch.object(sb, "get_leads_by_crm_id", new=AsyncMock(return_value=[])), \
+             patch.object(sb, "log_audit", new=AsyncMock()):
             mark.return_value = dict(GOOD_LEAD, created_in_crm=True, crm_lead_id="MAN-1")
-            out = await leads_api.set_manual_crm_id("lead-1", crm_id="MAN-1", user={"role": "admin"})
+            out = await leads_api.set_manual_crm_id("lead-1", crm_id="MAN-1", confirm_odd=True,
+                                                    user={"role": "admin", "id": "adm"})
 
-        assert out["success"]
-        mark.assert_awaited_once_with("lead-1", crm_lead_id="MAN-1")
+        assert out["success"] and out["shape"] == "odd"
+        mark.assert_awaited_once_with("lead-1", crm_lead_id="MAN-1", source="manual", set_by="adm", shape="odd")
 
 
 # ════════════════════════════════════════════════════════════

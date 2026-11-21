@@ -1,11 +1,14 @@
 """Admin API — leads CRUD."""
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.db import supabase as db
+from app.flags import flag
 from app.models.admin import LeadFull, LeadReviewUpdate, LeadStatusUpdate
 from app.security.auth import get_current_user
+from app.services import lead_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -260,6 +263,12 @@ async def update_lead(
     payload = {k: v for k, v in body.items() if k in allowed}
     if not payload:
         raise HTTPException(400, "No valid fields to update")
+    if user.get("role") == "sales":
+        # An agent edits their own leads, not a colleague's (hole B, app.services.lead_access).
+        existing = await db.get_lead_full(lead_id)
+        if not existing:
+            raise HTTPException(404, "Lead not found")
+        await lead_access.check(user, existing, "lead edit")
     if "dates_flexibility" in payload and payload["dates_flexibility"] not in ("exact", "flexible", "window", "unknown"):
         raise HTTPException(400, "dates_flexibility must be exact, flexible, window or unknown")
     result = await db.update_lead(lead_id, payload)
@@ -325,6 +334,8 @@ async def mark_lead_created_in_crm(
         lead = await db.get_lead_full(lead_id)
         if not lead:
             raise HTTPException(404, "Lead not found")
+        # An agent pushes their own leads, not a colleague's (hole B, app.services.lead_access).
+        await lead_access.check(user, lead, "crm push")
         if lead.get("created_in_crm"):
             return {"success": True, "data": lead, "already": True}
         conv_id = lead.get("conversation_id")
@@ -352,7 +363,7 @@ async def mark_lead_created_in_crm(
             result = await submit_abandoned_to_crm(_conv_payload, lead)
             if result.success and result.request_id:
                 await db.mark_lead_created_in_crm(
-                    lead_id, crm_lead_id=result.request_id
+                    lead_id, crm_lead_id=result.request_id, source="push", set_by=user.get("id")
                 )
                 db.invalidate_leads_universe()
                 updated = await db.get_lead_full(lead_id)
@@ -381,6 +392,7 @@ async def mark_lead_created_in_crm(
             conv_id or lead_id,
             conv_metadata=conv.get("metadata"),
             suid=conv.get("visitor_id"),
+            set_by=user.get("id"),
         )
         if not result.success:
             # The refusal reason was written on the lead: show it on the list.
@@ -398,16 +410,61 @@ async def mark_lead_created_in_crm(
         raise HTTPException(500, f"Failed to push lead: {str(e)}")
 
 
+# The CRM's own ids: 24 hexadecimal characters (811 of the last 812, Nov 2026).
+_CRM_ID_SHAPE = re.compile(r"[0-9a-fA-F]{24}")
+
+
+def crm_id_shape(crm_id: str) -> str:
+    """"ok" when the id looks like one the CRM gives, else "odd" (accepted when confirmed, and sampled by QA)."""
+    return "ok" if _CRM_ID_SHAPE.fullmatch(crm_id or "") else "odd"
+
+
+def _client_keys(conv: Optional[dict]) -> set[str]:
+    conv = conv or {}
+    meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+    keys = set()
+    email = (conv.get("visitor_email") or "").strip().lower()
+    if email:
+        keys.add(f"e:{email}")
+    for raw in (conv.get("visitor_phone"), meta.get("phone_to_check")):
+        digits = re.sub(r"\D", "", raw or "")
+        if len(digits) >= 7:
+            keys.add(f"p:{digits[-10:]}")
+    return keys
+
+
+async def _crm_id_on_another_client(crm_id: str, lead: dict) -> Optional[str]:
+    """The chat number of another client's lead that already carries this CRM id, if any.
+
+    One client with several chats is one CRM lead: their other chats may carry it. Raises when it can't
+    be checked; the route then refuses (a duplicate check that cannot run must not pass)."""
+    others = [r for r in await db.get_leads_by_crm_id(crm_id) if r.get("id") != lead.get("id")]
+    if not others:
+        return None
+    mine = _client_keys(await db.get_conversation_simple(lead["conversation_id"])) if lead.get("conversation_id") else set()
+    for other in others:
+        conv = await db.get_conversation_simple(other["conversation_id"]) if other.get("conversation_id") else None
+        if not (mine & _client_keys(conv)):
+            return str((conv or {}).get("chat_number") or "another chat")
+    return None
+
+
 @router.patch("/leads/{lead_id}/crm-id")
 async def set_manual_crm_id(
     lead_id: str,
     crm_id: str = Query(..., min_length=1, max_length=64),
+    confirm_odd: bool = Query(False),
     user: dict = Depends(get_current_user),
 ):
     """The SEPARATE manual action: an operator entered the lead in the CRM
     by hand and pastes the CRM's id here. No push happens — the pasted id
     IS the proof. Distinct from mark-crm-created on purpose: a declaring
-    button and a pushing button must never share a name."""
+    button and a pushing button must never share a name.
+
+    Since 21 Nov: only on the agent's own lead (hole B); an id that does not
+    look like the CRM's asks once (422, then confirm_odd=1) and is kept marked
+    odd for QA; the same id on another client's lead is a 409 naming that chat;
+    who pasted it and when is noted on the chat (metadata.crm) and in audit_log."""
     if user.get("role") not in ("owner", "admin", "dev", "sales"):
         raise HTTPException(status_code=403, detail="Not authorized")
     crm_id = crm_id.strip()
@@ -416,13 +473,34 @@ async def set_manual_crm_id(
         # exactly the lying state this PR exists to kill.
         raise HTTPException(status_code=422, detail="crm_id must be non-empty")
     try:
-        result = await db.mark_lead_created_in_crm(lead_id, crm_lead_id=crm_id)
+        lead = await db.get_lead_full(lead_id)
+        if not lead:
+            raise HTTPException(404, "Lead not found")
+        await lead_access.check(user, lead, "crm id")
+        shape = crm_id_shape(crm_id)
+        if shape == "odd" and flag("CRM_ID_SHAPE_CHECK", True) and not confirm_odd:
+            raise HTTPException(
+                status_code=422,
+                detail="This doesn't look like an id from the CRM (24 letters and digits). Send it again to keep it.",
+            )
+        try:
+            taken = await _crm_id_on_another_client(crm_id, lead)
+        except Exception as e:
+            logger.error(f"[crm-id] lead={lead_id}: the duplicate check did not run ({type(e).__name__}: {e})")
+            raise HTTPException(503, "Couldn't check whether this id is already used. Try again.") from e
+        if taken:
+            raise HTTPException(status_code=409, detail=f"This CRM id is already on chat #{taken}, another client.")
+        result = await db.mark_lead_created_in_crm(
+            lead_id, crm_lead_id=crm_id, source="manual", set_by=user.get("id"), shape=shape,
+        )
         if not result:
             raise HTTPException(404, "Lead not found")
+        await db.log_audit(user.get("id"), user.get("email"), "crm_id_set", "leads", lead_id,
+                           {"shape": shape, "conversation_id": lead.get("conversation_id")})
         db.invalidate_leads_universe()
-        return {"success": True, "data": result}
+        return {"success": True, "data": result, "shape": shape}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to record CRM id: {str(e)}")
-
+        logger.error(f"[crm-id] lead={lead_id}: not recorded ({type(e).__name__}: {e})")
+        raise HTTPException(500, "Failed to record CRM id") from e

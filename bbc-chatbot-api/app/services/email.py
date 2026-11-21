@@ -363,3 +363,50 @@ async def _send_super_inbox_email(
     except Exception as e:
         logger.error(f"Exception sending {what}: {type(e).__name__}")
         return False
+
+
+async def send_qa_sample_email(to: list[str], day: str, lines: list[dict]) -> bool:
+    """The morning QA sample (app.services.qa_sample): chat numbers, agents and reasons — never a client's
+    name or contact. One e-mail to every active QA person. Never raises; False on any failure."""
+    recipients = ", ".join(sorted({t.strip() for t in to if t and t.strip()}))
+    if not settings.postmark_token or not recipients:
+        logger.warning("POSTMARK_TOKEN or recipients missing — skipping the QA sample email")
+        return False
+    link = f"{settings.admin_panel_url.rstrip('/')}/qa?day={day}"
+    rows_html = "".join(
+        f"<tr><td>#{html.escape(str(l.get('chat_number') or '—'))}</td>"
+        f"<td>{html.escape(l.get('agent') or '—')}</td>"
+        f"<td>{html.escape('; '.join(l.get('reasons') or []))}</td></tr>"
+        for l in lines
+    )
+    rows_text = "\n".join(
+        f"#{l.get('chat_number') or '—'}  {l.get('agent') or '—'}  {'; '.join(l.get('reasons') or [])}" for l in lines
+    )
+    subject = f"QA: {len(lines)} chat{'s' if len(lines) != 1 else ''} to check from {day}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(
+                "https://api.postmarkapp.com/email",
+                headers={"X-Postmark-Server-Token": settings.postmark_token, "Content-Type": "application/json"},
+                json={
+                    "From": settings.email_from,
+                    "To": recipients,
+                    "Subject": subject,
+                    "MessageStream": "outbound",
+                    "HtmlBody": (
+                        f"<h2>Chats to check from {html.escape(day)}</h2>"
+                        "<table cellpadding=\"6\"><tr><th align=\"left\">Chat</th><th align=\"left\">Agent</th>"
+                        f"<th align=\"left\">Why</th></tr>{rows_html}</table>"
+                        f'<p><a href="{link}">Open the QA page</a></p>'
+                    ),
+                    "TextBody": f"Chats to check from {day}\n\n{rows_text}\n\nOpen: {link}\n",
+                },
+            )
+        if res.status_code == 200:
+            logger.info(f"QA sample email sent for {day}: {len(lines)} chats → {len(to)} people")
+            return True
+        logger.error(f"QA sample email failed: {res.status_code} {_postmark_said(res)}")
+        return False
+    except Exception as e:
+        logger.error(f"QA sample email exception: {type(e).__name__}")
+        return False
