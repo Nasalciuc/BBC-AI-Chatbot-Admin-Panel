@@ -1,0 +1,78 @@
+{
+  "_": "Test vectors for contracts/live.md: the API (Python) issues, bbc-live (Go) reads. Both suites check every line.",
+  "visitor": {
+    "secret": "visitor-test-secret",
+    "now": 1763700000,
+    "valid": [
+      {
+        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c",
+        "visitor_id": "3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10"
+      }
+    ],
+    "invalid": [
+      {
+        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763613500.1763699999.20f1537898fde4750d5e7cb676be9d290cad37bf60edc05fb1808958c30e394f",
+        "reason": "expired"
+      },
+      {
+        "token": "v1.aaaaaaaa-0000-4000-8000-000000000999.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c",
+        "reason": "invalid"
+      },
+      {
+        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d150",
+        "reason": "invalid"
+      },
+      {
+        "token": "v2.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c",
+        "reason": "invalid"
+      },
+      {
+        "token": "v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1763699900.1763786300",
+        "reason": "invalid"
+      },
+      {
+        "token": "",
+        "reason": "missing"
+      }
+    ]
+  },
+  "agent": {
+    "secret": "live-test-secret",
+    "now": 1763700000,
+    "valid": [
+      {
+        "token": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.9c029340a2cabe3fb9c59b929bbff5d4c6478ba71e731e7cdd11ce778fe98e74",
+        "user": "aaaaaaaa-0000-4000-8000-000000000001",
+        "role": "sales",
+        "tunnel": "sales",
+        "exp": 1763700050
+      }
+    ],
+    "invalid": [
+      {
+        "token": "l1.eyJleHAiOjE3NjM2OTk5OTksImlhdCI6MTc2MzY5OTkzMCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.49c84df41aad826b190e5aab28faaf1ee1fafc8b2eb0314371804a39f8abdb70",
+        "reason": "expired"
+      },
+      {
+        "token": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6Im93bmVyIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.9c029340a2cabe3fb9c59b929bbff5d4c6478ba71e731e7cdd11ce778fe98e74",
+        "reason": "invalid"
+      },
+      {
+        "token": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.f91a1ac07557d53e41af524fcaa7a91c5ed78809b1561aab24d44fe460c0e043",
+        "reason": "invalid"
+      },
+      {
+        "token": "t1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.1573d5ab7668d481285d43f64b7eeb5deb0fda9915d9267a94acd6fa00abace1",
+        "reason": "invalid"
+      },
+      {
+        "token": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9",
+        "reason": "invalid"
+      },
+      {
+        "token": "",
+        "reason": "missing"
+      }
+    ]
+  }
+}

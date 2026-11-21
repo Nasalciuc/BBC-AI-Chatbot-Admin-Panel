@@ -1,0 +1,9 @@
+{
+  "id": "6f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10",
+  "kind": "hello",
+  "agent": "Ana",
+  "text": "Hi, I'm Ana from the travel team. Looking at New York to Istanbul? I can check business class fares for your dates.",
+  "sent_at": "2026-11-21T22:00:00+00:00",
+  "expires_at": "2026-11-21T22:15:00+00:00",
+  "tap": "t1.eyJhIjoiYWdlbnQiLCJleHAiOjEsImgiOiJoIiwiaWF0IjowLCJ2IjoidiJ9.0000000000000000000000000000000000000000000000000000000000000000"
+}
