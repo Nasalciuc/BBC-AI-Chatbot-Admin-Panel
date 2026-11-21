@@ -1,9 +1,8 @@
-// Package token reads the two tokens bbc-live is shown (contracts/live.md):
+// Package token reads the two tokens bbc-live is shown (contracts/live.md), both signed by the API with
+// LIVE_TOKEN_SECRET (app/services/live_tokens.py):
 //
-//	v1.<visitor_id>.<iat>.<exp>.<hex hmac>   the widget's visitor token, issued by the API
-//	                                         (app/security/visitor_token.py), VISITOR_TOKEN_SECRET
-//	l1.<payload>.<hex hmac>                  an agent's live token, issued by the API's heartbeat
-//	                                         (app/services/live_tokens.py), LIVE_TOKEN_SECRET
+//	b1.<payload>.<hex hmac>   a visitor's pass, from POST /chat/live: {"exp","iat","v"}
+//	l1.<payload>.<hex hmac>   an agent's live token, from the API's heartbeat: {"exp","iat","r","t","u"}
 //
 // bbc-live never issues either: the API is the only authority on who is who.
 package token
@@ -37,32 +36,51 @@ func signedBy(secret []byte, body, sig string) bool {
 	return hmac.Equal([]byte(sig), []byte(sign(secret, body)))
 }
 
-// Visitor reads a widget's visitor token and returns its visitor id.
-func Visitor(tok string, secret []byte, now time.Time) (string, error) {
+// read checks a "<prefix>.<payload>.<hmac>" token and decodes its payload into v.
+func read(tok, prefix string, secret []byte, v any) error {
 	if len(secret) == 0 {
-		return "", ErrNoKey
+		return ErrNoKey
 	}
 	if tok == "" {
-		return "", ErrMissing
+		return ErrMissing
 	}
 	parts := strings.Split(tok, ".")
-	if len(parts) != 5 || parts[0] != "v1" || parts[1] == "" {
-		return "", ErrInvalid
+	if len(parts) != 3 || parts[0] != prefix {
+		return ErrInvalid
 	}
-	if !signedBy(secret, strings.Join(parts[:4], "."), parts[4]) {
-		return "", ErrInvalid
+	if !signedBy(secret, parts[0]+"."+parts[1], parts[2]) {
+		return ErrInvalid
 	}
-	if _, err := strconv.ParseInt(parts[2], 10, 64); err != nil {
-		return "", ErrInvalid
-	}
-	exp, err := strconv.ParseInt(parts[3], 10, 64)
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
+		return ErrInvalid
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// Pass is a visitor's pass to bbc-live, signed by the API.
+type Pass struct {
+	Visitor  string `json:"v"`
+	IssuedAt int64  `json:"iat"`
+	Expires  int64  `json:"exp"`
+}
+
+// ReadPass reads a widget's pass and returns its visitor id.
+func ReadPass(tok string, secret []byte, now time.Time) (string, error) {
+	var p Pass
+	if err := read(tok, "b1", secret, &p); err != nil {
+		return "", err
+	}
+	if p.Visitor == "" || p.Expires == 0 {
 		return "", ErrInvalid
 	}
-	if now.Unix() > exp {
+	if now.Unix() > p.Expires {
 		return "", ErrExpired
 	}
-	return parts[1], nil
+	return p.Visitor, nil
 }
 
 // Agent is who the panel says is asking, signed by the API.
@@ -76,25 +94,11 @@ type Agent struct {
 
 // ReadAgent reads an agent's live token.
 func ReadAgent(tok string, secret []byte, now time.Time) (Agent, error) {
-	if len(secret) == 0 {
-		return Agent{}, ErrNoKey
-	}
-	if tok == "" {
-		return Agent{}, ErrMissing
-	}
-	parts := strings.Split(tok, ".")
-	if len(parts) != 3 || parts[0] != "l1" {
-		return Agent{}, ErrInvalid
-	}
-	if !signedBy(secret, parts[0]+"."+parts[1], parts[2]) {
-		return Agent{}, ErrInvalid
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return Agent{}, ErrInvalid
-	}
 	var a Agent
-	if err := json.Unmarshal(raw, &a); err != nil || a.User == "" || a.Role == "" || a.Expires == 0 {
+	if err := read(tok, "l1", secret, &a); err != nil {
+		return Agent{}, err
+	}
+	if a.User == "" || a.Role == "" || a.Expires == 0 {
 		return Agent{}, ErrInvalid
 	}
 	if now.Unix() > a.Expires {
@@ -114,10 +118,11 @@ func IssueAgentForTests(a Agent, secret []byte) string {
 	return "l1." + p + "." + sign(secret, "l1."+p)
 }
 
-// IssueVisitorForTests makes a visitor token the way the API does.
-func IssueVisitorForTests(visitorID string, iat, exp int64, secret []byte) string {
-	body := "v1." + visitorID + "." + strconv.FormatInt(iat, 10) + "." + strconv.FormatInt(exp, 10)
-	return body + "." + sign(secret, body)
+// IssuePassForTests makes a visitor's pass the way the API does (sorted keys, no spaces).
+func IssuePassForTests(visitorID string, iat, exp int64, secret []byte) string {
+	body := `{"exp":` + strconv.FormatInt(exp, 10) + `,"iat":` + strconv.FormatInt(iat, 10) + `,"v":` + quote(visitorID) + `}`
+	p := base64.RawURLEncoding.EncodeToString([]byte(body))
+	return "b1." + p + "." + sign(secret, "b1."+p)
 }
 
 func quote(s string) string {

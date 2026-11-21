@@ -11,7 +11,7 @@ routes, tokens and Redis keys are in [`../contracts/live.md`](../contracts/live.
 ## Run
 
 ```sh
-REDIS_URL=redis://localhost:6379 VISITOR_TOKEN_SECRET=… LIVE_TOKEN_SECRET=… \
+REDIS_URL=redis://localhost:6379 LIVE_TOKEN_SECRET=… \
 ALLOWED_ORIGINS=https://www.buybusinessclass.com,https://admin.example.com go run .
 ```
 

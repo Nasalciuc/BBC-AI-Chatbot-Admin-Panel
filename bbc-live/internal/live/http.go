@@ -17,21 +17,21 @@ import (
 
 // Server is bbc-live's HTTP side (contracts/live.md):
 //
-//	POST /v1/beat     the widget: a visitor is on the site        X-Visitor-Token
-//	GET  /v1/inbox    the widget: wait for an agent's hello        X-Visitor-Token
-//	POST /v1/dismiss  the widget: "not now"                        X-Visitor-Token
+//	POST /v1/beat     the widget: a visitor is on the site        X-Live-Pass: <b1 pass>
+//	GET  /v1/inbox    the widget: wait for an agent's hello        X-Live-Pass: <b1 pass>
+//	POST /v1/dismiss  the widget: "not now"                        X-Live-Pass: <b1 pass>
 //	GET  /v1/live     the panel: who is on the site now            Authorization: Bearer <l1 token>
 //	POST /v1/claim    the panel: hold a visitor to say hello       Authorization: Bearer <l1 token>
 //	POST /v1/release  the panel: let them go                       Authorization: Bearer <l1 token>
 //	GET  /health
 type Server struct {
-	Store         *Store
-	Hub           *Hub
-	VisitorSecret []byte
-	AgentSecret   []byte
-	Origins       map[string]bool
-	Log           *slog.Logger
-	Now           func() time.Time
+	Store *Store
+	Hub   *Hub
+	// LIVE_TOKEN_SECRET: the API signs the visitor's pass and the agent's token with it.
+	Secret  []byte
+	Origins map[string]bool
+	Log     *slog.Logger
+	Now     func() time.Time
 
 	// The inbox poll: how long it waits, and how often it looks again on its own.
 	PollWait time.Duration
@@ -86,7 +86,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Add("Vary", "Origin")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Content-Type, X-Visitor-Token, Authorization")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, X-Live-Pass, Authorization")
 			h.Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {
@@ -109,21 +109,24 @@ func fail(w http.ResponseWriter, status int, why string) {
 }
 
 func (s *Server) visitor(w http.ResponseWriter, r *http.Request) (string, bool) {
-	vid, err := token.Visitor(r.Header.Get("X-Visitor-Token"), s.VisitorSecret, s.now())
+	vid, err := token.ReadPass(r.Header.Get("X-Live-Pass"), s.Secret, s.now())
+	if err == nil && !visitorID.MatchString(vid) {
+		err = token.ErrInvalid // the API checks ids before it signs; keys are built from this one
+	}
 	switch {
 	case err == nil:
 		return vid, true
 	case errors.Is(err, token.ErrNoKey):
 		fail(w, http.StatusServiceUnavailable, "not configured")
 	default:
-		fail(w, http.StatusUnauthorized, "visitor token "+reason(err))
+		fail(w, http.StatusUnauthorized, "pass "+reason(err))
 	}
 	return "", false
 }
 
 func (s *Server) agent(w http.ResponseWriter, r *http.Request) (token.Agent, bool) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	a, err := token.ReadAgent(raw, s.AgentSecret, s.now())
+	a, err := token.ReadAgent(raw, s.Secret, s.now())
 	switch {
 	case err == nil && listRoles[a.Role]:
 		return a, true
@@ -437,7 +440,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, map[string]any{
 		"ok": redisOK, "redis": redisOK,
-		"configured": map[string]bool{"visitor_token": len(s.VisitorSecret) > 0, "live_token": len(s.AgentSecret) > 0},
+		"configured": map[string]bool{"live_token": len(s.Secret) > 0},
 		"waiting":    s.Hub.Waiting(),
 		"counters": map[string]int64{
 			"beats": c.Beats.Load(), "beats_too_soon": c.BeatsTooSoon.Load(), "beats_refused": c.BeatsRefused.Load(),

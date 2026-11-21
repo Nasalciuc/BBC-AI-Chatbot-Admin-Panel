@@ -13,18 +13,19 @@ import (
 
 // contracts/live_tokens.json: the API issued every token in it; bbc-live must read each the same way.
 type vectors struct {
-	Visitor struct {
+	Pass struct {
 		Secret string `json:"secret"`
 		Now    int64  `json:"now"`
 		Valid  []struct {
 			Token     string `json:"token"`
 			VisitorID string `json:"visitor_id"`
+			Exp       int64  `json:"exp"`
 		} `json:"valid"`
 		Invalid []struct {
 			Token  string `json:"token"`
 			Reason string `json:"reason"`
 		} `json:"invalid"`
-	} `json:"visitor"`
+	} `json:"pass"`
 	Agent struct {
 		Secret string `json:"secret"`
 		Now    int64  `json:"now"`
@@ -69,17 +70,21 @@ func reason(err error) string {
 	return err.Error()
 }
 
-func TestTheVisitorTokensTheAPIIssued(t *testing.T) {
+func TestThePassesTheAPIIssued(t *testing.T) {
 	v := load(t)
-	now := time.Unix(v.Visitor.Now, 0)
-	for _, c := range v.Visitor.Valid {
-		vid, err := token.Visitor(c.Token, []byte(v.Visitor.Secret), now)
+	now := time.Unix(v.Pass.Now, 0)
+	for _, c := range v.Pass.Valid {
+		vid, err := token.ReadPass(c.Token, []byte(v.Pass.Secret), now)
 		if err != nil || vid != c.VisitorID {
 			t.Errorf("%s: got %q %v", c.Token, vid, err)
 		}
+		// The Go test issuer writes the same bytes as the API.
+		if again := token.IssuePassForTests(c.VisitorID, c.Exp-86400, c.Exp, []byte(v.Pass.Secret)); again != c.Token {
+			t.Errorf("issued %s, the API issued %s", again, c.Token)
+		}
 	}
-	for _, c := range v.Visitor.Invalid {
-		if _, err := token.Visitor(c.Token, []byte(v.Visitor.Secret), now); reason(err) != c.Reason {
+	for _, c := range v.Pass.Invalid {
+		if _, err := token.ReadPass(c.Token, []byte(v.Pass.Secret), now); reason(err) != c.Reason {
 			t.Errorf("%q: got %s, want %s", c.Token, reason(err), c.Reason)
 		}
 	}
@@ -107,20 +112,24 @@ func TestTheAgentTokensTheAPIIssued(t *testing.T) {
 
 func TestNoSecretReadsNothing(t *testing.T) {
 	v := load(t)
-	if _, err := token.Visitor(v.Visitor.Valid[0].Token, nil, time.Unix(v.Visitor.Now, 0)); !errors.Is(err, token.ErrNoKey) {
-		t.Fatalf("visitor without a secret: %v", err)
+	if _, err := token.ReadPass(v.Pass.Valid[0].Token, nil, time.Unix(v.Pass.Now, 0)); !errors.Is(err, token.ErrNoKey) {
+		t.Fatalf("pass without a secret: %v", err)
 	}
 	if _, err := token.ReadAgent(v.Agent.Valid[0].Token, nil, time.Unix(v.Agent.Now, 0)); !errors.Is(err, token.ErrNoKey) {
 		t.Fatalf("agent without a secret: %v", err)
 	}
 }
 
-func TestAVisitorTokenIsNotAnAgentToken(t *testing.T) {
+// One secret signs both: the prefix is what keeps a visitor's pass from opening the panel's routes.
+func TestAPassIsNotAnAgentToken(t *testing.T) {
 	v := load(t)
-	if _, err := token.ReadAgent(v.Visitor.Valid[0].Token, []byte(v.Agent.Secret), time.Unix(v.Agent.Now, 0)); !errors.Is(err, token.ErrInvalid) {
+	if v.Pass.Secret != v.Agent.Secret {
+		t.Fatal("the vectors share one secret, as production does")
+	}
+	if _, err := token.ReadAgent(v.Pass.Valid[0].Token, []byte(v.Agent.Secret), time.Unix(v.Agent.Now, 0)); !errors.Is(err, token.ErrInvalid) {
 		t.Fatalf("got %v", err)
 	}
-	if _, err := token.Visitor(v.Agent.Valid[0].Token, []byte(v.Visitor.Secret), time.Unix(v.Visitor.Now, 0)); !errors.Is(err, token.ErrInvalid) {
+	if _, err := token.ReadPass(v.Agent.Valid[0].Token, []byte(v.Pass.Secret), time.Unix(v.Pass.Now, 0)); !errors.Is(err, token.ErrInvalid) {
 		t.Fatalf("got %v", err)
 	}
 }

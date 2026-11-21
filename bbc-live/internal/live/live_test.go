@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,8 +29,7 @@ func TestMain(m *testing.M) {
 }
 
 var (
-	visitorSecret = []byte("visitor-test-secret")
-	agentSecret   = []byte("live-test-secret")
+	secret = []byte("live-test-secret")
 )
 
 const (
@@ -55,7 +55,7 @@ func setup(t *testing.T) (*Server, *clock, *resp.Client) {
 	c := &clock{}
 	c.t.Store(time.Now().Unix())
 	s := &Server{
-		Store: &Store{R: rc, Now: c.now}, Hub: NewHub(), VisitorSecret: visitorSecret, AgentSecret: agentSecret,
+		Store: &Store{R: rc, Now: c.now}, Hub: NewHub(), Secret: secret,
 		Origins: map[string]bool{"https://www.example-site.test": true}, Now: c.now,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		PollWait: 2 * time.Second, Recheck: 300 * time.Millisecond, MinBeatGap: 5 * time.Second,
@@ -63,14 +63,14 @@ func setup(t *testing.T) (*Server, *clock, *resp.Client) {
 	return s, c, rc
 }
 
-func visitorToken(c *clock, vid string) string {
+func visitorPass(c *clock, vid string) string {
 	n := c.now().Unix()
-	return token.IssueVisitorForTests(vid, n-10, n+3600, visitorSecret)
+	return token.IssuePassForTests(vid, n-10, n+86400, secret)
 }
 
 func agentToken(c *clock, user, role, tunnel string) string {
 	n := c.now().Unix()
-	return token.IssueAgentForTests(token.Agent{User: user, Role: role, Tunnel: tunnel, IssuedAt: n, Expires: n + 60}, agentSecret)
+	return token.IssueAgentForTests(token.Agent{User: user, Role: role, Tunnel: tunnel, IssuedAt: n, Expires: n + 60}, secret)
 }
 
 func do(t *testing.T, h http.Handler, method, path string, headers map[string]string, body any) *httptest.ResponseRecorder {
@@ -129,7 +129,7 @@ func TestABeatListsTheVisitorWithOnlyWhatThePanelMayShow(t *testing.T) {
 		"depart": "2026-12-14", "return": "14 Dec", "cabin": "business", "pax": 2, "source": "kayak",
 		"device": "phone", "site": "bbc", "chat_open": false, "has_chat": false, "name": "Dana Example",
 	}
-	w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Visitor-Token": visitorToken(c, vid1)}, beat)
+	w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, beat)
 	if w.Code != http.StatusOK {
 		t.Fatalf("beat: %d %s", w.Code, w.Body.String())
 	}
@@ -176,7 +176,7 @@ func TestAVisitorGoneQuietLeavesTheList(t *testing.T) {
 func TestBeatsTooCloseCountOnce(t *testing.T) {
 	s, c, _ := setup(t)
 	h := s.Handler()
-	hdr := map[string]string{"X-Visitor-Token": visitorToken(c, vid1)}
+	hdr := map[string]string{"X-Live-Pass": visitorPass(c, vid1)}
 	if w := do(t, h, "POST", "/v1/beat", hdr, map[string]any{"page": "/"}); w.Code != http.StatusOK {
 		t.Fatal(w.Code)
 	}
@@ -189,21 +189,30 @@ func TestBeatsTooCloseCountOnce(t *testing.T) {
 	}
 }
 
-func TestTheWidgetRoutesWantAVisitorToken(t *testing.T) {
+func TestTheWidgetRoutesWantAPass(t *testing.T) {
 	s, c, _ := setup(t)
 	h := s.Handler()
-	expired := token.IssueVisitorForTests(vid1, c.now().Unix()-7200, c.now().Unix()-1, visitorSecret)
-	forged := token.IssueVisitorForTests(vid1, c.now().Unix(), c.now().Unix()+60, []byte("not-the-secret"))
-	for _, tok := range []string{"", expired, forged, agentToken(c, agentA, "sales", "sales")} {
+	n := c.now().Unix()
+	expired := token.IssuePassForTests(vid1, n-90000, n-1, secret)
+	forged := token.IssuePassForTests(vid1, n, n+60, []byte("not-the-secret"))
+	oddID := token.IssuePassForTests("live:claims:x", n, n+60, secret)
+	for _, tok := range []string{"", expired, forged, oddID, agentToken(c, agentA, "sales", "sales")} {
 		for _, route := range []struct{ method, path string }{{"POST", "/v1/beat"}, {"GET", "/v1/inbox"}, {"POST", "/v1/dismiss"}} {
-			w := do(t, h, route.method, route.path, map[string]string{"X-Visitor-Token": tok}, map[string]any{"page": "/"})
+			w := do(t, h, route.method, route.path, map[string]string{"X-Live-Pass": tok}, map[string]any{"page": "/"})
 			if w.Code != http.StatusUnauthorized {
 				t.Errorf("%s %s with %q: %d", route.method, route.path, tok, w.Code)
 			}
 		}
 	}
-	s.VisitorSecret = nil
-	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Visitor-Token": visitorToken(c, vid1)}, map[string]any{}); w.Code != http.StatusServiceUnavailable {
+	// The chat's own visitor token is not a pass, under either header.
+	v1 := "v1." + vid1 + ".1763699900.1763786300.0531d430f604fa6d443d52c7023ad87e985aa10be420abb4c0d3e42ca828d15c"
+	for _, hdr := range []string{"X-Live-Pass", "X-Visitor-Token"} {
+		if w := do(t, h, "POST", "/v1/beat", map[string]string{hdr: v1}, map[string]any{}); w.Code != http.StatusUnauthorized {
+			t.Errorf("a chat token under %s: %d", hdr, w.Code)
+		}
+	}
+	s.Secret = nil
+	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, map[string]any{}); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("no secret: %d", w.Code)
 	}
 }
@@ -380,6 +389,57 @@ func example(t *testing.T) string {
 	return compact.String()
 }
 
+// pass.lua is the API's (POST /chat/live: may this visitor id have a pass?); it runs here so its Lua meets a
+// real Redis too.
+func TestThePassScriptHoldsTheRules(t *testing.T) {
+	_, _, rc := setup(t)
+	ctx := context.Background()
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "live", "pass.lua"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(vid, address string, proven bool, most int) int64 {
+		t.Helper()
+		shown := "0"
+		if proven {
+			shown = "1"
+		}
+		v, err := rc.Do(ctx, "EVAL", string(src), "2", "live:passed:"+vid, "rl:livepass:"+address+":h", shown, "86400", strconv.Itoa(most))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.Int
+	}
+	third := "e2e00000-0000-4000-8000-000000000003"
+	if n := ask(vid1, "a1", false, 2); n != 1 {
+		t.Fatalf("a new id: %d", n)
+	}
+	if n := ask(vid1, "a1", false, 2); n != -1 {
+		t.Fatalf("the id again, no pass shown: %d", n)
+	}
+	if n := ask(vid1, "a2", true, 2); n != 1 {
+		t.Fatalf("its own pass shown: %d", n)
+	}
+	if ttl, _ := rc.Do(ctx, "TTL", "live:passed:"+vid1); ttl.Int < 86000 {
+		t.Fatalf("the id stays bound a day: %d", ttl.Int)
+	}
+	if n := ask(vid2, "a1", false, 2); n != 1 {
+		t.Fatalf("a second new id from one address: %d", n)
+	}
+	if n := ask(third, "a1", false, 2); n != -2 {
+		t.Fatalf("a third: %d", n)
+	}
+	if ex, _ := rc.Do(ctx, "EXISTS", "live:passed:"+third); ex.Int != 0 {
+		t.Fatal("a refused id is not bound")
+	}
+	if n := ask(vid1, "a1", true, 2); n != 1 {
+		t.Fatalf("a renewal is no new id: %d", n)
+	}
+	if ttl, _ := rc.Do(ctx, "TTL", "rl:livepass:a1:h"); ttl.Int <= 0 || ttl.Int > 3600 {
+		t.Fatalf("the count lives an hour: %d", ttl.Int)
+	}
+}
+
 func TestTheSendScriptHoldsTheRules(t *testing.T) {
 	s, _, rc := setup(t)
 	ctx := context.Background()
@@ -423,7 +483,7 @@ func poll(t *testing.T, base string, tok string) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("X-Visitor-Token", tok)
+	req.Header.Set("X-Live-Pass", tok)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -438,6 +498,14 @@ func TestAHelloReachesTheWaitingWidgetAtOnceAndOnce(t *testing.T) {
 	s.Recheck = time.Hour // only pub/sub can wake it
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	subscribers := func() int64 {
+		v, _ := rc.Do(context.Background(), "PUBSUB", "NUMSUB", InboxChannel)
+		if len(v.Array) != 2 {
+			return -1
+		}
+		return v.Array[1].Int
+	}
+	before := subscribers() // a Redis shared with a running bbc-live has its subscriber already
 	go s.Hub.Listen(ctx, rc, s.Log)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -447,7 +515,7 @@ func TestAHelloReachesTheWaitingWidgetAtOnceAndOnce(t *testing.T) {
 	if r, _ := s.Store.Claim(context.Background(), agentA, vid1); r != Claimed {
 		t.Fatal(r)
 	}
-	tok := visitorToken(c, vid1)
+	tok := visitorPass(c, vid1)
 	type got struct {
 		code int
 		body string
@@ -465,8 +533,7 @@ func TestAHelloReachesTheWaitingWidgetAtOnceAndOnce(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	for deadline := time.Now().Add(2 * time.Second); ; {
-		v, _ := rc.Do(context.Background(), "PUBSUB", "NUMSUB", InboxChannel)
-		if len(v.Array) == 2 && v.Array[1].Int == 1 {
+		if before >= 0 && subscribers() == before+1 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -498,7 +565,7 @@ func TestWithoutPubSubTheRecheckStillDelivers(t *testing.T) {
 	s, c, rc := setup(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
-	tok := visitorToken(c, vid1)
+	tok := visitorPass(c, vid1)
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		if _, err := rc.Do(context.Background(), "RPUSH", inboxKey(vid1), example(t)); err != nil {
@@ -518,7 +585,7 @@ func TestNothingForTheVisitorIsANoContentAfterTheWait(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 	start := time.Now()
-	if code, _ := poll(t, ts.URL, visitorToken(c, vid1)); code != http.StatusNoContent || time.Since(start) < 250*time.Millisecond {
+	if code, _ := poll(t, ts.URL, visitorPass(c, vid1)); code != http.StatusNoContent || time.Since(start) < 250*time.Millisecond {
 		t.Fatalf("%d after %s", code, time.Since(start))
 	}
 }
@@ -531,7 +598,7 @@ func TestAMessageThatIsNotJSONNeverReachesTheWidget(t *testing.T) {
 	if _, err := rc.Do(context.Background(), "RPUSH", inboxKey(vid1), "<script>alert(1)</script>"); err != nil {
 		t.Fatal(err)
 	}
-	if code, body := poll(t, ts.URL, visitorToken(c, vid1)); code != http.StatusNoContent {
+	if code, body := poll(t, ts.URL, visitorPass(c, vid1)); code != http.StatusNoContent {
 		t.Fatalf("%d %s", code, body)
 	}
 }
@@ -570,6 +637,13 @@ func TestCORSOnlyForTheListedOrigins(t *testing.T) {
 		"Access-Control-Request-Method": "POST"}, nil)
 	if w.Code != http.StatusNoContent || w.Header().Get("Access-Control-Allow-Origin") != "https://www.example-site.test" {
 		t.Fatalf("preflight: %d %v", w.Code, w.Header())
+	}
+	allowed := map[string]bool{}
+	for _, h := range strings.Split(w.Header().Get("Access-Control-Allow-Headers"), ",") {
+		allowed[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+	if !allowed["x-live-pass"] || !allowed["authorization"] || !allowed["content-type"] || allowed["x-visitor-token"] {
+		t.Fatalf("the headers a browser may send: %q", w.Header().Get("Access-Control-Allow-Headers"))
 	}
 	w = do(t, h, "OPTIONS", "/v1/beat", map[string]string{"Origin": "https://evil.test"}, nil)
 	if w.Header().Get("Access-Control-Allow-Origin") != "" {

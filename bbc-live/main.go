@@ -3,11 +3,10 @@
 // It holds no database and no secrets of its own: Redis is its only store (coordination, never the
 // truth), and the API issues every token it reads. Environment:
 //
-//	PORT                  where to listen (Railway sets it); 8080 otherwise
-//	REDIS_URL             redis:// or rediss://, the same Redis as the API
-//	VISITOR_TOKEN_SECRET  the API's, to read the widget's visitor token
-//	LIVE_TOKEN_SECRET     the API's, to read the panel's live token
-//	ALLOWED_ORIGINS       the sites and the panel, comma-separated (https://www.example.com,...)
+//	PORT               where to listen (Railway sets it); 8080 otherwise
+//	REDIS_URL          redis:// or rediss://, the same Redis as the API
+//	LIVE_TOKEN_SECRET  the API's, to read the visitor's pass and the panel's live token
+//	ALLOWED_ORIGINS    the sites and the panel, comma-separated (https://www.example.com,...)
 package main
 
 import (
@@ -52,18 +51,17 @@ func run(log *slog.Logger) error {
 	defer func() { _ = rc.Close() }()
 
 	srv := &live.Server{
-		Store:         &live.Store{R: rc},
-		Hub:           live.NewHub(),
-		VisitorSecret: []byte(os.Getenv("VISITOR_TOKEN_SECRET")),
-		AgentSecret:   []byte(os.Getenv("LIVE_TOKEN_SECRET")),
-		Origins:       origins(os.Getenv("ALLOWED_ORIGINS")),
-		Log:           log,
-		PollWait:      25 * time.Second,
-		Recheck:       5 * time.Second,
-		MinBeatGap:    5 * time.Second,
+		Store:      &live.Store{R: rc},
+		Hub:        live.NewHub(),
+		Secret:     []byte(os.Getenv("LIVE_TOKEN_SECRET")),
+		Origins:    origins(os.Getenv("ALLOWED_ORIGINS")),
+		Log:        log,
+		PollWait:   25 * time.Second,
+		Recheck:    5 * time.Second,
+		MinBeatGap: 5 * time.Second,
 	}
-	if len(srv.VisitorSecret) == 0 || len(srv.AgentSecret) == 0 {
-		log.Warn("a token secret is missing: the widget and panel routes answer 503 until it is set")
+	if len(srv.Secret) == 0 {
+		log.Warn("LIVE_TOKEN_SECRET is missing: the widget and panel routes answer 503 until it is set")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
