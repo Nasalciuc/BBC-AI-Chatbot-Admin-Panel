@@ -185,3 +185,34 @@ async def _release_redis(kind: str, conversation_id: str, token: str) -> None:
         LOCK_HEALTH["expired_before_release"] += 1
         logger.warning(f"[lock] {kind} {conversation_id}: the work outlived the {TTL_MS // 1000}s lock; "
                        f"another process may have written alongside it")
+
+
+# ── a job that must not run twice at once (two replicas, one schedule) ──────
+
+
+async def try_job_lock(job: str, *, ttl_ms: int) -> tuple[bool, Optional[str]]:
+    """(held, token) for a scheduled job, never waiting.
+
+    (True, token): this process holds lock:job:<job> in Redis; release it with the token.
+    (True, None): no Redis to ask (not configured, cooling down, LOCK_REDIS off, or it did not
+    answer): one process is the only case there is today, so the job runs (the scheduler's
+    in-process lock still keeps it from overlapping itself).
+    (False, None): another process holds it: this run is skipped."""
+    if not flag("LOCK_REDIS", True):
+        return True, None
+    r = get_redis()
+    if r is None:
+        return True, None
+    token = secrets.token_hex(16)
+    try:
+        got = await r.set(_key("job", job), token, nx=True, px=ttl_ms)
+    except Exception as e:
+        redis_failed("job lock", e)
+        LOCK_HEALTH["redis_errors"] += 1
+        logger.warning(f"[lock] job {job}: Redis did not answer, the run goes ahead here ({type(e).__name__}: {e})")
+        return True, None
+    return (True, token) if got else (False, None)
+
+
+async def release_job_lock(job: str, token: str) -> None:
+    await _release_redis("job", job, token)

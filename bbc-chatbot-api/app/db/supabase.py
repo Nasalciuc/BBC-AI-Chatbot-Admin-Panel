@@ -5271,7 +5271,10 @@ _UNIVERSE_CONV_COLUMNS = (
     # The offers queue: the blind rule's last input, a number to check, and the marks.
     "engaged_agent_id:metadata->>engaged_agent_id, phone_to_check:metadata->>phone_to_check, "
     "offer_sent_at:metadata->>offer_sent_at, offer_sent_by:metadata->>offer_sent_by, "
-    "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by"
+    "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by, "
+    # The follow-up lottery (app/services/lead_lottery.py): who was given the lead, how, when; and the
+    # decoys, which nobody is ever given.
+    "followup:metadata->followup, is_decoy"
 )
 
 
@@ -5344,6 +5347,8 @@ async def get_leads_universe() -> list[dict]:
                 "offer_sent_by": c.get("offer_sent_by"),
                 "offer_skipped_at": c.get("offer_skipped_at"),
                 "offer_skipped_by": c.get("offer_skipped_by"),
+                "followup": c.get("followup") if isinstance(c.get("followup"), dict) else None,
+                "is_decoy": bool(c.get("is_decoy")),
             })
             rows.append(row)
         _LEADS_UNIVERSE.update({"at": time.monotonic(), "rows": rows})
@@ -6282,3 +6287,143 @@ async def get_operator_load(timeout_seconds: int = 90) -> dict:
     except Exception as e:
         logger.warning(f"get_operator_load error: {e}")
         return out
+
+
+# ════════════════════════════════════════════════════════════════
+# FOLLOW-UP LOTTERY — closed leads with a trip and a contact, nobody on them
+# (app/services/lead_lottery.py)
+# ════════════════════════════════════════════════════════════════
+
+# What the lottery could not write or read, for /health (`lottery`): every one
+# of these is a lead that waits a minute longer, never one that is lost.
+LOTTERY_DB_HEALTH: dict[str, int] = {
+    "assign_errors": 0, "won_after_check": 0, "release_errors": 0, "operator_read_errors": 0,
+    "task_read_errors": 0,
+}
+
+_LOTTERY_OWNABLE = ("closed", "completed")
+
+
+async def assign_closed_if_unowned(conversation_id: str, agent_id: str) -> bool:
+    """Give a closed chat to an agent ONLY if nobody holds it.
+
+    The lottery's compare-and-swap, the closed-chat twin of
+    claim_conversation_if_unassigned: one UPDATE, matched only while
+    assigned_agent_id is NULL and the chat is still closed or completed, so two
+    runs (or a manager and a run) never both win. status, mode and queued_at
+    are left alone: the chat stays closed, it does not re-enter the shared line.
+    After an error the owner is read: the write may have landed before the
+    connection broke (#2678, #3245), and if it is this agent, this call won."""
+    db_client = get_client()
+    try:
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"assigned_agent_id": agent_id})
+            .eq("id", conversation_id)
+            .is_("assigned_agent_id", "null")
+            .in_("status", list(_LOTTERY_OWNABLE))
+            .execute(),
+            label="lottery",
+        )
+        return bool(res.data)
+    except Exception as e:
+        LOTTERY_DB_HEALTH["assign_errors"] += 1
+        logger.warning(f"[lottery] assign {conversation_id} answered with an error, reading the owner: {e}")
+    try:
+        cur = await _run_sync(
+            lambda: db_client.table("conversations").select("assigned_agent_id")
+            .eq("id", conversation_id).limit(1).execute(),
+            label="lottery",
+        )
+        rows = cur.data or []
+        if rows and rows[0].get("assigned_agent_id") == agent_id:
+            LOTTERY_DB_HEALTH["won_after_check"] += 1
+            return True
+    except Exception as e:
+        logger.warning(f"[lottery] owner of {conversation_id} not read after the error: {e}")
+    return False
+
+
+async def release_closed_if_agent(conversation_id: str, agent_id: str) -> bool:
+    """Take a closed chat back from an agent who did not confirm it, only while it is still theirs."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"assigned_agent_id": None})
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", agent_id)
+            .in_("status", list(_LOTTERY_OWNABLE))
+            .execute(),
+            label="lottery",
+        )
+        return bool(res.data)
+    except Exception as e:
+        LOTTERY_DB_HEALTH["release_errors"] += 1
+        logger.warning(f"[lottery] release of {conversation_id} failed: {e}")
+        return False
+
+
+async def get_operator_rows(
+    user_ids: Optional[list[str]] = None, *, seen_within_seconds: Optional[int] = None,
+) -> Optional[list[dict]]:
+    """The operators the lottery may give a lead to, with what decides it.
+
+    By id (who Redis says is at the desk), or by last_seen_at when Redis cannot
+    say. None when the read failed: "nobody" and "could not ask" are different
+    answers (rule 7). Without chat_enabled (033 not applied) every row reads as
+    chat on, as the heartbeat does."""
+    if user_ids is not None and not user_ids:
+        return []
+    db_client = get_client()
+
+    def _q(cols: str):
+        q = db_client.table("users").select(cols).in_("role", list(_OPERATOR_ROLES))
+        if user_ids is not None:
+            q = q.in_("id", list(dict.fromkeys(user_ids)))
+        if seen_within_seconds is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=seen_within_seconds)).isoformat()
+            q = q.gte("last_seen_at", cutoff)
+        return q.execute()
+
+    base = "id, name, role, is_active, tunnel_scope, last_seen_at"
+    try:
+        try:
+            res = await _run_sync(lambda: _q(base + ", chat_enabled"), label="lottery")
+        except Exception as col_err:
+            if not _is_missing_column_error(col_err):
+                raise
+            logger.warning(f"[lottery] users.chat_enabled missing, every operator reads as chat on: {col_err}")
+            res = await _run_sync(lambda: _q(base), label="lottery")
+        return [r for r in (res.data or []) if isinstance(r, dict) and r.get("id")]
+    except Exception as e:
+        LOTTERY_DB_HEALTH["operator_read_errors"] += 1
+        logger.warning(f"[lottery] operators not read: {e}")
+        return None
+
+
+async def get_open_task_owners(conversation_ids: list[str]) -> Optional[dict[str, str]]:
+    """conversation id -> the person an open task on it belongs to.
+
+    A chat with an open task already has someone on the follow-up (a departure
+    task, a promise caught in the chat): one client, one agent. None when the
+    tasks could not be read; the lottery then gives nothing out this run."""
+    ids = [c for c in dict.fromkeys(conversation_ids) if c]
+    if not ids:
+        return {}
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("tasks").select("conversation_id, assignee_id")
+            .in_("conversation_id", ids)
+            .is_("done_at", "null")
+            .is_("dismissed_at", "null")
+            .not_.is_("assignee_id", "null")
+            .execute(),
+            label="lottery",
+        )
+        return {r["conversation_id"]: r["assignee_id"] for r in (res.data or []) if r.get("conversation_id")}
+    except Exception as e:
+        LOTTERY_DB_HEALTH["task_read_errors"] += 1
+        logger.warning(f"[lottery] open tasks not read: {e}")
+        return None

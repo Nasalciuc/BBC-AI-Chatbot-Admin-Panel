@@ -167,6 +167,10 @@ class FakeRedis:
         self._check("zscore")
         return self._zset(key).get(str(member))
 
+    async def zcard(self, key: str) -> int:
+        self._check("zcard")
+        return len(self._zset(key))
+
     # ── hashes ───────────────────────────────────────────────
     def _hash(self, key: str) -> dict[str, str]:
         if not self._alive(key):

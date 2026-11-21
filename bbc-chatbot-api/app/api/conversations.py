@@ -599,6 +599,18 @@ async def get_conversation(
     # _enforce_tunnel signals 403 via HTTPException — it must propagate untouched.
     _enforce_tunnel(user, conv.get("tunnel"))
 
+    # The follow-up lottery: the agent who was given this lead and opens it has confirmed it
+    # (app.services.lead_lottery). Only for their own pending lead; anything else reads as before.
+    _meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+    _followup = _meta.get("followup")
+    if (
+        isinstance(_followup, dict)
+        and _followup.get("state") == "pending"
+        and conv.get("assigned_agent_id") == user.get("id")
+    ):
+        from app.services import lead_lottery
+        await lead_lottery.confirm(conversation_id, user, _followup, "opened")
+
     # Whether the client left any contact, said before the row is masked or blinded: "Left 3 min ago ·
     # no contact" (ADR-6c) is a fact about the chat, never the contact itself. Same rule as the list's.
     conv = {**conv, "has_contact": _has_contact(conv)}

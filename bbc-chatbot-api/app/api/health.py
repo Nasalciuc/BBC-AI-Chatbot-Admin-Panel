@@ -168,6 +168,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.infra.redis_client import REDIS_HEALTH
     from app.services.conversation_lock import LOCK_HEALTH
     from app.services.agent_presence import AGENT_PRESENCE_HEALTH
+    # The follow-up lottery: what it gave, what came back unconfirmed, what waits, what it could not write.
+    from app.services.lead_lottery import LOTTERY_HEALTH
+    from app.db.supabase import LOTTERY_DB_HEALTH
 
     if not full:
         return {
@@ -201,6 +204,7 @@ async def health_detail(full: bool = False) -> dict:
             "redis": dict(REDIS_HEALTH),
             "locks": dict(LOCK_HEALTH),
             "agent_presence": dict(AGENT_PRESENCE_HEALTH),
+            "lottery": {**LOTTERY_HEALTH, **LOTTERY_DB_HEALTH},
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),

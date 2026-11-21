@@ -390,6 +390,12 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         # The queue must never break the heartbeat: presence is more important
         # than the badge. Logged, never silent.
         logger.warning(f"[heartbeat] queue fetch failed for {user_id}: {e}")
+    # Leads the follow-up lottery gave this agent that they have not opened yet: one Redis read, no
+    # database (app.services.lead_lottery). None when Redis can't say: the panel shows no number.
+    _followups_new = None
+    if _qa_ok_for_followups(user_db, role_db):
+        from app.services import lead_lottery
+        _followups_new = await lead_lottery.new_count(user_id)
     _now = time.monotonic()
     HEARTBEAT_HEALTH["latency_ms"].append((_now, (_now - _t0) * 1000.0))
     HEARTBEAT_HEALTH["calls"] += 1
@@ -407,7 +413,13 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         # countdown after Take is the server's, not a copy that can drift.
         "response_deadline_seconds": settings.agent_first_response_timeout_seconds,
         "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
+        "followups_new": _followups_new,
     }
+
+
+def _qa_ok_for_followups(user_db: Optional[dict], role_db: str) -> bool:
+    """Only an operator who may be given leads has a lottery badge."""
+    return bool(user_db) and role_db in db._OPERATOR_ROLES
 
 
 @router.get("/agent/day")

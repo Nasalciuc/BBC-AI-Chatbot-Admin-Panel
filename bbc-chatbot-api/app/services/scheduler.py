@@ -40,6 +40,9 @@ _QUIET_WHEN: dict[str, Callable[[dict], bool]] = {
     "stale_presence": lambda r: not r.get("closed"),
     "attention_emails": lambda r: not r.get("sent"),
     "departure_tasks": lambda r: not r.get("created"),
+    "lead_lottery": lambda r: r.get("state") == "off" or (
+        r.get("state") == "ok" and not r.get("assigned") and not r.get("missed")
+    ),
 }
 _was_quiet: dict[str, Any] = {}
 
@@ -140,6 +143,7 @@ def start(app_state, settings) -> list[asyncio.Task]:
     """Called from startup. Returns tasks so shutdown can cancel them."""
     from app.services.departure import run_departure_tasks
     from app.services.ip_selftest import run_ip_selftest
+    from app.services.lead_lottery import run_lead_lottery
     from app.services.learning import run_learning_tick
     from app.api.cron import (
         run_abandoned_crm,
@@ -175,6 +179,9 @@ def start(app_state, settings) -> list[asyncio.Task]:
         # Every 60s: a client who left with a contact becomes a task for the
         # free agent while they are still warm (off until DEPARTURE_TASKS_ENABLED).
         ("departure_tasks", run_departure_tasks, 60),
+        # Every 60s: a closed lead with a trip and a contact that nobody has goes to an agent at the
+        # desk, in turn (off until FOLLOWUP_LOTTERY; app/services/lead_lottery.py).
+        ("lead_lottery", run_lead_lottery, 60),
         # Hourly: does the edge let a client forge its IP? (ip_selftest)
         ("ip_selftest", run_ip_selftest, 3600),
         # Hourly tick; runs the daily learning once per day at LEARNING_HOUR_UTC.
