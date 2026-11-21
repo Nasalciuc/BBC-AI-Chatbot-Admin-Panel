@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { beatBody, nextPollDelay, readConfig, readHello, sourceOf } from '../src/liveRead.ts'
+import { beatBody, keptPass, nextPollDelay, readConfig, readHello, sourceOf } from '../src/liveRead.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const contract = JSON.parse(readFileSync(join(here, '..', '..', 'contracts', 'live_inbox_message.json'), 'utf8'))
@@ -41,13 +41,33 @@ test('the first good hello wins, and a long name is cut', () => {
   assert.equal(h.agent.length, 40)
 })
 
-test('the config: on only with a URL, numbers kept in range', () => {
-  assert.deepEqual(readConfig({ enabled: false, url: 'https://live.example.test' }), { enabled: false })
-  assert.deepEqual(readConfig({ enabled: true }), { enabled: false })
-  assert.deepEqual(readConfig({ enabled: true, url: 'javascript:alert(1)' }), { enabled: false })
-  assert.deepEqual(readConfig({ enabled: true, url: 'https://live.example.test/', after_s: 20, beat_s: 9999, hello: true }),
-    { enabled: true, url: 'https://live.example.test', after_s: 20, beat_s: 15, hello: true })
+const tokens = JSON.parse(readFileSync(join(here, '..', '..', 'contracts', 'live_tokens.json'), 'utf8'))
+const PASS = tokens.pass.valid[0].token
+
+test('the config: on only with a URL and a pass, numbers kept in range', () => {
+  assert.deepEqual(readConfig({ enabled: false, url: 'https://live.example.test', pass: PASS }), { enabled: false })
+  assert.deepEqual(readConfig({ enabled: true, pass: PASS }), { enabled: false })
+  assert.deepEqual(readConfig({ enabled: true, url: 'javascript:alert(1)', pass: PASS }), { enabled: false })
+  assert.deepEqual(readConfig({ enabled: true, url: 'https://live.example.test/' }), { enabled: false }, 'no pass, no beats')
+  assert.deepEqual(readConfig({ enabled: true, url: 'https://live.example.test/', after_s: 20, beat_s: 9999, hello: true, pass: PASS }),
+    { enabled: true, url: 'https://live.example.test', after_s: 20, beat_s: 15, hello: true, pass: PASS })
   assert.deepEqual(readConfig(null), { enabled: false })
+})
+
+test('a pass is the API\u2019s b1 shape, never the chat token or an agent token', () => {
+  assert.equal(keptPass(PASS), PASS)
+  for (const bad of [tokens.agent.valid[0].token, 'v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1.2.' + 'a'.repeat(64),
+    PASS.slice(0, -1), PASS + '0', 'b1.' + 'x'.repeat(401) + '.' + 'a'.repeat(64), 'b1..' + 'a'.repeat(64), '', null]) {
+    assert.equal(keptPass(bad), null, String(bad))
+    assert.deepEqual(readConfig({ enabled: true, url: 'https://live.example.test', pass: bad }), { enabled: false })
+  }
+})
+
+test('the widget shows bbc-live its pass, never the chat token', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  assert.match(src, /headers\.set\('X-Live-Pass', pass\)/)
+  assert.doesNotMatch(src, /X-Visitor-Token|getVisitorToken/)
+  assert.match(src, /\/api\/chat\/live`, \{\s*method: 'POST'/)
 })
 
 test('a beat carries the path, codes and dates, never the query', () => {

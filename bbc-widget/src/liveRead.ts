@@ -12,6 +12,8 @@ export interface LiveConfig {
   after_s?: number
   beat_s?: number
   hello?: boolean
+  /** The visitor's pass to bbc-live (b1…), sent as X-Live-Pass; kept to renew it on the next page. */
+  pass?: string
 }
 
 export interface LiveHello {
@@ -43,15 +45,22 @@ const BEAT_S = 15
 const MAX_TEXT = 300
 const COMPARISON = new Set(['kayak', 'skyscanner', 'momondo', 'kiwi', 'cheapflights', 'expedia'])
 const CABINS = new Set(['economy', 'premium', 'business', 'first'])
+const PASS = /^b1\.[A-Za-z0-9_-]{1,400}\.[0-9a-f]{64}$/
 
-/** The config the API answered, or "off" for anything else. */
+/** The config the API answered (POST /chat/live), or "off" for anything else: on means a place and a pass. */
 export function readConfig(raw: unknown): LiveConfig {
   if (!raw || typeof raw !== 'object') return { enabled: false }
   const r = raw as Record<string, unknown>
   if (r.enabled !== true || typeof r.url !== 'string' || !/^https?:\/\/[^\s/]+/.test(r.url)) return { enabled: false }
+  if (typeof r.pass !== 'string' || !PASS.test(r.pass)) return { enabled: false }
   const n = (v: unknown, d: number) => (typeof v === 'number' && v >= 1 && v <= 600 ? v : d)
   return { enabled: true, url: r.url.replace(/\/+$/, ''), after_s: n(r.after_s, AFTER_S), beat_s: n(r.beat_s, BEAT_S),
-    hello: r.hello === true }
+    hello: r.hello === true, pass: r.pass }
+}
+
+/** A kept pass worth showing the API again: the shape only (the API checks the rest). */
+export function keptPass(raw: string | null): string | null {
+  return raw && PASS.test(raw) ? raw : null
 }
 
 /** The first hello in bbc-live's answer, held to the contract's shape (contracts/live_inbox_message.json); null

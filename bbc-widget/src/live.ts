@@ -4,12 +4,14 @@
  * text; a tap on it starts a chat that is already the agent's (/chat/init with the tap token inside the hello).
  *
  * Nothing the visitor typed goes in a beat: the path (its query and fragment cut), the page's trip as codes and
- * dates, where they came from, the screen. The API says whether this is on (GET /chat/live) and where bbc-live is.
+ * dates, where they came from, the screen. The API says whether this is on and where bbc-live is, and hands the
+ * visitor's pass to it (POST /chat/live): the visitor id's first pass needs no proof, the next ones the last
+ * one, which this keeps in localStorage. The chat's own visitor token is not used: most visitors have none.
  */
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { apiFetch, getVisitorToken } from './api'
-import { beatBody, nextPollDelay, readConfig, readHello, type LiveConfig, type LiveHello } from './liveRead'
+import { apiFetch, ensureVisitorId } from './api'
+import { beatBody, keptPass, nextPollDelay, readConfig, readHello, type LiveConfig, type LiveHello } from './liveRead'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
 
@@ -17,6 +19,9 @@ export type { LiveHello } from './liveRead'
 
 const AFTER_S = 20
 const BEAT_S = 15
+const PASS_KEY = 'bbc_live_pass'
+/** A pass bbc-live refuses (401) is renewed at most this often. */
+const RENEW_MS = 5 * 60_000
 
 function visible(): boolean {
   try { return document.visibilityState !== 'hidden' } catch { return true }
@@ -26,11 +31,30 @@ function isPhone(): boolean {
   try { return window.matchMedia('(max-width: 767px)').matches } catch { return false }
 }
 
-function liveFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = getVisitorToken()
+function storedPass(): string | null {
+  try { return keptPass(localStorage.getItem(PASS_KEY)) } catch { return null }
+}
+
+function keepPass(pass: string): void {
+  try { localStorage.setItem(PASS_KEY, pass) } catch { /* this page beats with it all the same */ }
+}
+
+function liveFetch(url: string, pass: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
-  if (token) headers.set('X-Visitor-Token', token)
+  headers.set('X-Live-Pass', pass)
   return fetch(url, { ...init, headers, credentials: 'omit', mode: 'cors' })
+}
+
+/** POST /chat/live: on or off, where, and a pass (kept for the next page). */
+async function askConfig(apiUrl: string): Promise<LiveConfig> {
+  const res = await apiFetch(`${apiUrl}/api/chat/live`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: ensureVisitorId(), live_pass: storedPass() }),
+  })
+  const cfg = readConfig(res.ok ? await res.json() : null)
+  if (cfg.enabled && cfg.pass) keepPass(cfg.pass)
+  return cfg
 }
 
 /**
@@ -55,16 +79,37 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
     let abort: AbortController | null = null
     const later = (fn: () => void, ms: number) => { timers.push(setTimeout(fn, ms)) }
 
+    // A pass bbc-live refuses (run out, the secret changed) is asked for again, at most every RENEW_MS; the beat
+    // and the poll refused together share one renewal.
+    let renewedAt = 0
+    let renewing: Promise<boolean> | null = null
+    const renew = (): Promise<boolean> => {
+      if (renewing) return renewing
+      if (Date.now() - renewedAt < RENEW_MS) return Promise.resolve(false)
+      renewedAt = Date.now()
+      renewing = askConfig(apiUrl)
+        .then(cfg => {
+          if (stopped) return false
+          configRef.current = cfg
+          return cfg.enabled
+        })
+        .catch(() => false)
+        .finally(() => { renewing = null })
+      return renewing
+    }
+
     const beat = () => {
       const cfg = configRef.current
-      if (stopped || !cfg?.enabled || !cfg.url) return
+      if (stopped || !cfg?.enabled || !cfg.url || !cfg.pass) return
       if (visible()) {
         let path = '/'
         try { path = location.pathname } catch { /* keep "/" */ }
         const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
           phone: isPhone(), site, chatOpen: chatOpenRef.current, hasChat: false })
-        liveFetch(`${cfg.url}/v1/beat`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body) }).catch(() => { /* a missed beat: the next one counts */ })
+        liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body) })
+          .then(res => { if (res.status === 401) void renew() })
+          .catch(() => { /* a missed beat: the next one counts */ })
       }
       later(beat, (cfg.beat_s || BEAT_S) * 1000)
     }
@@ -72,19 +117,26 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
     let failures = 0
     const poll = async () => {
       const cfg = configRef.current
-      if (stopped || !cfg?.enabled || !cfg.hello || !cfg.url) return
+      if (stopped || !cfg?.enabled || !cfg.hello || !cfg.url || !cfg.pass) return
       if (!visible()) { later(poll, 5_000); return }
       abort = new AbortController()
       const timeout = setTimeout(() => abort?.abort(), 35_000)
       let status: number | 'error' = 'error'
       try {
-        const res = await liveFetch(`${cfg.url}/v1/inbox`, { signal: abort.signal })
+        const res = await liveFetch(`${cfg.url}/v1/inbox`, cfg.pass, { signal: abort.signal })
         status = res.status
         if (res.status === 200) {
           const h = readHello(await res.json(), Date.now())
           if (h && !stopped) { setHello(h); return }
         }
-        if (res.status === 401 || res.status === 503) { stopped = true; return }
+        if (res.status === 401) {
+          // Renewed since this poll began (by the beat): wait with the new pass.
+          const fresh = configRef.current?.pass !== cfg.pass
+          if (fresh || await renew()) later(poll, 0)
+          else stopped = true
+          return
+        }
+        if (res.status === 503) { stopped = true; return }
       } catch { /* aborted or offline: try again below */ } finally {
         clearTimeout(timeout)
       }
@@ -94,11 +146,10 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
 
     later(() => {
       if (stopped) return
-      apiFetch(`${apiUrl}/api/chat/live`)
-        .then(r => (r.ok ? r.json() : null))
-        .then(raw => {
-          configRef.current = readConfig(raw)
-          if (stopped || !configRef.current.enabled) return
+      askConfig(apiUrl)
+        .then(cfg => {
+          configRef.current = cfg
+          if (stopped || !cfg.enabled) return
           beat()
           void poll()
         })
@@ -125,7 +176,9 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       const cfg = configRef.current
       doneRef.current = true
       setHello(null)
-      if (cfg?.url) liveFetch(`${cfg.url}/v1/dismiss`, { method: 'POST' }).catch(() => { /* runs out in 15 min */ })
+      if (cfg?.url && cfg.pass) {
+        liveFetch(`${cfg.url}/v1/dismiss`, cfg.pass, { method: 'POST' }).catch(() => { /* runs out in 15 min */ })
+      }
     },
     taken: () => { doneRef.current = true; setHello(null) },
   }
