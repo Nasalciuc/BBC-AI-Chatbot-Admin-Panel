@@ -23,6 +23,7 @@ from app.pipeline.orchestrator import process_message, _fire_and_forget
 from app.db import supabase as db
 from app.realtime.manager import manager
 from app.services import conversation_service, lead_service
+from app.services.conversation_lock import ConversationLock, conversation_lock, local_locks
 from app.services.routing import route_conversation
 from app.services.handoff import perform_handoff_to_agent
 
@@ -567,15 +568,12 @@ POST_SALE_HEALTH: dict = {"kept": 0, "resends": 0, "unsaved": 0}
 # The same send arriving again this soon is the widget's retry (a turn that outlived its wait), not new words.
 _RESEND_WINDOW_S = 120
 # One post-sale send at a time per conversation: the read that spots a resend and the writes after it run as
-# one. The API is one process (Dockerfile: --workers 1), as for lead_service._lead_lock.
-_POST_SALE_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+# one, in this process and across processes (app.services.conversation_lock, as for lead_service._lead_lock).
+_POST_SALE_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = local_locks("post_sale")
 
 
-def _post_sale_lock(conversation_id: str) -> asyncio.Lock:
-    lock = _POST_SALE_LOCKS.get(conversation_id)
-    if lock is None:
-        lock = _POST_SALE_LOCKS[conversation_id] = asyncio.Lock()
-    return lock
+def _post_sale_lock(conversation_id: str) -> ConversationLock:
+    return conversation_lock("post_sale", conversation_id)
 
 
 def _resent(row: dict, text: str) -> bool:

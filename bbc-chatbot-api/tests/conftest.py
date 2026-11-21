@@ -23,6 +23,20 @@ def _token_version_reads_zero(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_shared_redis_or_presence_between_tests():
+    """The shared Redis client and the heartbeat's last-write memory live for the
+    process; a test starts with neither (no Redis, every beat writes)."""
+    from app.infra import redis_client
+    from app.services import agent_presence
+
+    redis_client.set_client_for_tests(None)
+    agent_presence._reset_for_tests()
+    yield
+    redis_client.set_client_for_tests(None)
+    agent_presence._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _no_contact_in_crm_by_default():
     """The automatic CRM pushes ask "is this human already in the CRM?"
     before pushing. Tests have no database: the default answer is "nobody"

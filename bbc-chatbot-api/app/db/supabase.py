@@ -2443,6 +2443,9 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
     try:
         db = get_client()
         res = await _run_sync(lambda: db.table("users").update(payload).eq("id", user_id).execute())
+        # Ready, a role, a scope: the heartbeat must not answer from the row it wrote before.
+        from app.services import agent_presence
+        agent_presence.forget(user_id)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"update_user error: {e}")
@@ -2669,6 +2672,9 @@ async def set_user_team(user_id: str, team_id: Optional[str]) -> Optional[dict]:
             .eq("id", user_id)
             .execute()
         )
+        # The heartbeat reads the queue for the team in the row it last wrote.
+        from app.services import agent_presence
+        agent_presence.forget(user_id)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"set_user_team error: {e}")
@@ -5530,6 +5536,8 @@ async def reset_stale_ready_users(timeout_seconds: int = 600) -> list[dict]:
                 )
 
             await _run_sync(_reset)
+            from app.services import agent_presence
+            agent_presence.forget(uid)
             try:
 
                 def _audit(user_id=uid):

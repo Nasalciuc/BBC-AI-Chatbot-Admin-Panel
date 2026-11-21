@@ -760,6 +760,10 @@ async def send_agent_message(
         await db.update_user_last_seen(_user_id)
     except Exception as e:
         logger.warning(f"last_seen update after agent message failed (non-fatal): {e}")
+    # That write cleared viewing_conversation_id: the next heartbeat writes it again instead of
+    # reusing its last row (app.services.agent_presence).
+    from app.services import agent_presence
+    agent_presence.forget(_user_id)
 
     _at = (conv.get("metadata") or {}).get("agent_assigned_at")
     if _at and await db.count_agent_messages_since(conversation_id, _at) == 1:

@@ -164,6 +164,10 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.chat import CHAT_OWNER_HEALTH, POST_SALE_HEALTH
     from app.services.note_bandit import NOTE_BANDIT_HEALTH
     from app.pipeline.operator_contact import OPERATOR_CONTACT_HEALTH
+    # The shared Redis client, the conversation locks on it, and the heartbeat's presence writes.
+    from app.infra.redis_client import REDIS_HEALTH
+    from app.services.conversation_lock import LOCK_HEALTH
+    from app.services.agent_presence import AGENT_PRESENCE_HEALTH
 
     if not full:
         return {
@@ -194,6 +198,9 @@ async def health_detail(full: bool = False) -> dict:
             "post_sale": dict(POST_SALE_HEALTH),
             "note_bandit": dict(NOTE_BANDIT_HEALTH),
             "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
+            "redis": dict(REDIS_HEALTH),
+            "locks": dict(LOCK_HEALTH),
+            "agent_presence": dict(AGENT_PRESENCE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),

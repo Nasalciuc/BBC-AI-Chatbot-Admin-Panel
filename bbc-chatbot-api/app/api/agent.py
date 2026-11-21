@@ -277,9 +277,9 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # scheduler sweep can honour the "operator is viewing → 120s" extension
     # without this endpoint doing the sweep itself.
     _t0 = time.monotonic()
-    _written = await db.update_user_last_seen(
-        user_id, viewing_conversation_id=body.viewing_conversation_id
-    )
+    # Redis hears every beat; Supabase every few seconds (app.services.agent_presence).
+    from app.services import agent_presence
+    _written = await agent_presence.beat(user_id, body.viewing_conversation_id)
     from app.services.presence import record_presence_tick
     _fire_and_forget(record_presence_tick(user_id, db))
     # The stale/deadline sweep used to run HERE — on every heartbeat, from every

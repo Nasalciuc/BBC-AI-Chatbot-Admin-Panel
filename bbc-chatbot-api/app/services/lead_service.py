@@ -8,6 +8,7 @@ from typing import Optional
 
 from app.pipeline.callback_intent import notes_without_call
 from app.pipeline.entity_extractor import DREAM_OUTCOMES, merge_contact_channel, turns_down_calls
+from app.services.conversation_lock import ConversationLock, conversation_lock, local_locks
 
 logger = logging.getLogger(__name__)
 
@@ -249,16 +250,14 @@ _CONTACT_FIELDS = ("visitor_name", "visitor_email", "visitor_phone")
 # message to an operator starts the contact recorder and the operator card side by
 # side, and the pipeline writes the lead too: each reads the stored contacts, writes
 # its own and scores from what it read, so the last score written could miss the
-# other's contact. The API runs in one process (Dockerfile: --workers 1), so a lock
-# per conversation orders every writer; a lock nobody holds or waits on goes away.
-_LEAD_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+# other's contact. A lock per conversation orders every writer, in this process and,
+# through Redis, across processes (app.services.conversation_lock); a lock nobody
+# holds or waits on goes away.
+_LEAD_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = local_locks("lead")
 
 
-def _lead_lock(conversation_id: str) -> asyncio.Lock:
-    lock = _LEAD_LOCKS.get(conversation_id)
-    if lock is None:
-        lock = _LEAD_LOCKS[conversation_id] = asyncio.Lock()
-    return lock
+def _lead_lock(conversation_id: str) -> ConversationLock:
+    return conversation_lock("lead", conversation_id)
 
 
 async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
