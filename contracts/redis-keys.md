@@ -39,3 +39,23 @@ No key or value carries a name, an email or a phone number. Ids are UUIDs.
 - Scores older than a day are removed as beats come in.
 - Readers must tell "nobody is there" (an empty answer) from "Redis cannot say" (no answer):
   the second falls back to `users.last_seen_at` in Supabase.
+
+## Scheduled jobs that must not run twice (`app/services/conversation_lock.py`)
+
+| Key | Type | Value | Life |
+|---|---|---|---|
+| `lock:job:<job>` | string | a random token of the process running the job | the job's own TTL |
+
+- `SET NX PX` without waiting: a process that does not get it skips that run. Released with the
+  same compare-and-delete script as the conversation locks.
+
+## The follow-up lottery's badge (`app/services/lead_lottery.py`)
+
+| Key | Type | Member | Score |
+|---|---|---|---|
+| `followup:new:<agent id>` | sorted set | conversation id | unix seconds it was given |
+
+- A member is added when a lead is given to the agent (by the lottery or by a manager) and removed
+  when they open it or mark its offer, or when it goes back unconfirmed.
+- The heartbeat answers `followups_new = ZCARD`; no answer from Redis means no number, not zero.
+- The truth is `conversations.assigned_agent_id` and `metadata.followup`; this is only the count.
