@@ -261,14 +261,22 @@ async def chat_init(
     )
 
 
-@router.get("/chat/live")
-async def chat_live():
-    """Whether the widget beats to bbc-live, and where (contracts/live.md). No rate limit: a config read,
-    no database, no Redis."""
-    from fastapi.responses import JSONResponse
-    from app.services.live_visitors import widget_config
+class LivePassRequest(BaseModel):
+    visitor_id: str = Field(..., min_length=8, max_length=64)
+    # The pass this visitor was handed before (the widget keeps it): with it, a new one.
+    live_pass: Optional[str] = Field(default=None, max_length=512)
 
-    return JSONResponse(widget_config(), headers={"Cache-Control": "public, max-age=60"})
+
+@router.post("/chat/live")
+async def chat_live(payload: LivePassRequest, request: Request):
+    """Whether the widget beats to bbc-live, where, and the visitor's pass to it (contracts/live.md). No chat
+    rate limit: a page read costs the visitor nothing of their chat; new visitor ids are limited per address
+    (live_visitors.widget_pass). Never cached: the pass is this visitor's."""
+    from fastapi.responses import JSONResponse
+    from app.services.live_visitors import widget_pass
+
+    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request))
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 class ProactiveOfferRequest(BaseModel):

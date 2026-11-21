@@ -39,7 +39,7 @@ SALES_DB = {"id": AGENT, "role": "sales", "tunnel_scope": "sales", "is_active": 
 
 
 def test_the_scripts_are_the_contracts():
-    for name in ("send.lua", "take_hello.lua", "release.lua"):
+    for name in ("send.lua", "take_hello.lua", "release.lua", "pass.lua"):
         mine = (pathlib.Path(live_visitors.__file__).with_name("live_lua") / name).read_bytes()
         assert mine == (CONTRACTS / "live" / name).read_bytes(), f"app/services/live_lua/{name}: copy the contract"
 
@@ -59,16 +59,29 @@ def test_the_agent_tokens_in_the_contract_read_back():
         assert live_tokens.decode(c["token"], "l1", secret, now=v["now"])[1] == c["reason"], c
 
 
-def test_the_visitor_tokens_in_the_contract_read_back(monkeypatch):
-    from app.security import visitor_token
+def test_the_passes_in_the_contract_read_back():
+    v = _vectors()["pass"]
+    secret = v["secret"].encode()
+    for c in v["valid"]:
+        payload, reason = live_tokens.decode(c["token"], "b1", secret, now=v["now"])
+        assert reason == "ok" and payload["v"] == c["visitor_id"] and payload["exp"] == c["exp"]
+        assert live_tokens.encode("b1", payload, secret) == c["token"], "the same bytes as the API issued"
+    for c in v["invalid"]:
+        assert live_tokens.decode(c["token"], "b1", secret, now=v["now"])[1] == c["reason"], c
+
+
+def test_the_vectors_are_what_this_module_issues(monkeypatch):
+    """contracts/live_tokens.json was written by beat_pass and agent_token: they still write the same."""
     from config.settings import settings
 
-    v = _vectors()["visitor"]
-    monkeypatch.setattr(settings, "visitor_token_secret", v["secret"])
-    for c in v["valid"]:
-        assert visitor_token.parse(c["token"], now=v["now"]) == (c["visitor_id"], "ok")
-    for c in v["invalid"]:
-        assert visitor_token.parse(c["token"], now=v["now"])[1] == c["reason"], c
+    v = _vectors()
+    monkeypatch.setattr(settings, "live_token_secret", v["pass"]["secret"])
+    first = v["pass"]["valid"][0]
+    assert live_tokens.beat_pass(first["visitor_id"], now=first["exp"] - live_tokens.PASS_TTL) == first["token"]
+    a = v["agent"]["valid"][0]
+    user = {"id": a["user"], "role": a["role"], "tunnel_scope": a["tunnel"]}
+    monkeypatch.setattr(settings, "live_token_secret", v["agent"]["secret"])
+    assert live_tokens.agent_token(user, now=a["exp"] - live_tokens.AGENT_TTL) == a["token"]
 
 
 @pytest.fixture
@@ -124,14 +137,113 @@ def test_the_switches_are_off_at_merge():
     assert live_visitors.list_enabled() is False and live_visitors.hello_enabled() is False
 
 
-def test_the_widget_learns_where_to_beat(configured):
+# ── the widget's pass ───────────────────────────────────────────────
+
+
+def _pass_lua(fake, keys, args):
+    """pass.lua, line by line."""
+    passed, per_address = keys
+    proven, ttl, most = args
+    if proven == "1":
+        fake.kv[passed] = "1"
+        fake._set_expiry(passed, ex=int(ttl))
+        return 1
+    if fake._alive(passed):
+        return -1
+    n = (int(fake.kv[per_address]) if fake._alive(per_address) else 0) + 1
+    fake.kv[per_address] = str(n)
+    if n == 1:
+        fake._set_expiry(per_address, ex=3600)
+    if n > int(most):
+        return -2
+    fake.kv[passed] = "1"
+    fake._set_expiry(passed, ex=int(ttl))
+    return 1
+
+
+@pytest.fixture
+def passes(redis):
+    redis.register(live_visitors.PASS_LUA, _pass_lua)
+    return redis
+
+
+def _ask(vid=VID, live_pass=None, ip="203.0.113.7"):
     from app.api import chat as chat_api
 
     app = FastAPI()
     app.include_router(chat_api.router)
-    r = TestClient(app).get("/chat/live")
-    assert r.json() == {"enabled": True, "url": "https://live.example.test", "after_s": 20, "beat_s": 15, "hello": True}
-    assert "max-age=60" in r.headers["cache-control"]
+    body = {"visitor_id": vid, **({"live_pass": live_pass} if live_pass is not None else {})}
+    with patch("app.api.chat.client_ip", return_value=ip):
+        return TestClient(app).post("/chat/live", json=body)
+
+
+def test_a_new_visitor_gets_where_to_beat_and_a_pass(passes):
+    r = _ask()
+    out = r.json()
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store", "the pass is this visitor's"
+    assert {k: out[k] for k in ("enabled", "url", "after_s", "beat_s", "hello")} == {
+        "enabled": True, "url": "https://live.example.test", "after_s": 20, "beat_s": 15, "hello": True}
+    payload, reason = live_tokens.read_pass(out["pass"])
+    assert reason == "ok" and payload["v"] == VID and payload["exp"] - payload["iat"] == live_tokens.PASS_TTL
+    assert out["pass_expires_at"] and live_visitors.LIVE_HEALTH["passes"] == 1
+    assert not any("203.0.113.7" in k for k in passes.kv), "the address itself is not stored"
+
+
+def test_a_visitor_id_with_a_pass_is_nobody_elses(passes):
+    first = _ask().json()["pass"]
+    assert _ask().json() == {"enabled": False}, "someone who saw the id in the list gets no pass for it"
+    assert live_visitors.LIVE_HEALTH["passes_refused"] == 1
+    again = _ask(live_pass=first).json()
+    assert again["enabled"] is True and live_tokens.read_pass(again["pass"])[0]["v"] == VID, "the visitor's own pass renews"
+    other = _ask(OTHER_VID).json()["pass"]
+    assert _ask(VID, live_pass=other).json() == {"enabled": False}, "another visitor's pass proves nothing"
+    forged = first[:-1] + ("0" if first[-1] != "0" else "1")
+    assert _ask(VID, live_pass=forged).json() == {"enabled": False}
+    agent = live_tokens.agent_token(SALES)
+    assert _ask(VID, live_pass=agent).json() == {"enabled": False}, "an agent token is no pass"
+
+
+def test_a_pass_just_past_its_time_still_renews(passes):
+    first = _ask().json()["pass"]
+    exp = live_tokens.read_pass(first)[0]["exp"]
+    with patch("app.services.live_tokens.time.time", return_value=exp + live_tokens.PASS_GRACE):
+        assert live_tokens.read_pass(first, grace=live_tokens.PASS_GRACE)[1] == "ok"
+        assert _ask(live_pass=first).json()["enabled"] is True
+    with patch("app.services.live_tokens.time.time", return_value=exp + live_tokens.PASS_GRACE + 1):
+        assert _ask(live_pass=first).json() == {"enabled": False}, "the id is still bound: an old pass is no proof"
+
+
+def test_new_ids_from_one_address_are_limited(passes):
+    ids = [f"{n:08d}-0000-4000-8000-00000000abcd" for n in range(live_visitors.PASS_NEW_PER_ADDRESS + 1)]
+    answers = [_ask(vid, ip="198.51.100.4").json()["enabled"] for vid in ids]
+    assert answers == [True] * live_visitors.PASS_NEW_PER_ADDRESS + [False]
+    assert _ask(ids[-1], ip="198.51.100.5").json()["enabled"] is True, "another address is not limited by it"
+    held = _ask(ids[0], ip="198.51.100.4", live_pass=None)
+    assert held.json() == {"enabled": False}
+    renewed = _ask(ids[1], ip="198.51.100.4", live_pass=live_tokens.beat_pass(ids[1]))
+    assert renewed.json()["enabled"] is True, "a renewal is no new id: the limit doesn't stop it"
+
+
+@pytest.mark.parametrize("vid", ["short", "x" * 65, "has/slash-00000", "spaces in it 000"])
+def test_a_visitor_id_that_is_not_one_gets_nothing(passes, vid):
+    r = _ask(vid)
+    assert r.status_code in (200, 422)
+    assert r.json().get("enabled") is not True and not any(k.startswith("live:passed:") for k in passes.kv)
+
+
+def test_off_or_redis_down_hands_no_pass_and_off_asks_no_redis(passes, monkeypatch):
+    monkeypatch.setenv("LIVE_VISITORS", "false")
+    with patch.object(passes, "eval", new=AsyncMock()) as ev:
+        assert _ask().json() == {"enabled": False}
+    ev.assert_not_called()
+    monkeypatch.setenv("LIVE_VISITORS", "true")
+    with patch.object(passes, "eval", new=AsyncMock(side_effect=ConnectionError("down"))):
+        assert _ask().json() == {"enabled": False}
+    assert live_visitors.LIVE_HEALTH["pass_failed"] == 1
+    redis_client.set_client_for_tests(None)
+    with patch("config.settings.settings.redis_url", ""):
+        assert _ask().json() == {"enabled": False}
+    assert live_visitors.LIVE_HEALTH["pass_failed"] == 2
 
 
 # ── the hello ───────────────────────────────────────────────────────

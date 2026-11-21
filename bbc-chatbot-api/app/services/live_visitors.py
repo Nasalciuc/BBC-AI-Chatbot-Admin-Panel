@@ -38,8 +38,10 @@ BEAT_S = 15
 VISITOR_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+PASS_NEW_PER_ADDRESS = 20   # new visitor ids one address gets passes for in an hour (pass.lua ARGV[3])
+
 LIVE_HEALTH: dict = {"tokens": 0, "sent": 0, "refused": 0, "send_failed": 0, "taps": 0, "taps_refused": 0,
-                     "tap_failed": 0, "redis_failed": 0}
+                     "tap_failed": 0, "redis_failed": 0, "passes": 0, "passes_refused": 0, "pass_failed": 0}
 
 _LUA_DIR = Path(__file__).with_name("live_lua")
 
@@ -48,6 +50,7 @@ def _lua(name: str) -> str:
     return (_LUA_DIR / name).read_text(encoding="utf-8")
 
 
+PASS_LUA = _lua("pass.lua")
 SEND_LUA = _lua("send.lua")
 TAKE_HELLO_LUA = _lua("take_hello.lua")
 RELEASE_LUA = _lua("release.lua")
@@ -84,11 +87,60 @@ def heartbeat_live(user: Optional[dict]) -> Optional[dict]:
 
 
 def widget_config() -> dict:
-    """GET /chat/live: whether the widget beats, and where."""
+    """Whether the widget beats, and where (without the pass: widget_pass)."""
     if not list_enabled():
         return {"enabled": False}
     return {"enabled": True, "url": _url(), "after_s": AFTER_S, "beat_s": BEAT_S,
             "hello": hello_enabled()}
+
+
+_PASS_REFUSALS = {-1: "the id has a pass already", -2: "too many new visitors from one address"}
+
+
+async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Optional[str]) -> dict:
+    """POST /chat/live: widget_config() and, while it is on, the visitor's pass to bbc-live (b1).
+
+    A visitor id gets a pass without proof once (pass.lua); after that only by showing its own pass, which
+    the widget keeps and shows on every page. {"enabled": False} whenever no pass is handed: the widget then
+    beats nowhere. Every refusal and failure is counted in LIVE_HEALTH."""
+    config = widget_config()
+    if not config["enabled"]:
+        return config
+    off = {"enabled": False}
+    if not VISITOR_ID.fullmatch(visitor_id or ""):
+        LIVE_HEALTH["passes_refused"] += 1
+        return off
+    proof, reason = (None, "missing")
+    if old_pass:
+        proof, reason = live_tokens.read_pass(old_pass, grace=live_tokens.PASS_GRACE)
+    proven = proof is not None and proof.get("v") == visitor_id
+    r = get_redis()
+    if r is None:
+        LIVE_HEALTH["pass_failed"] += 1
+        return off
+    hour = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+    keys = [f"live:passed:{visitor_id}", f"rl:livepass:{live_tokens.address_key(ip)}:{hour}"]
+    result = 0
+    try:
+        result = int(await r.eval(PASS_LUA, len(keys), *keys, "1" if proven else "0",
+                                  str(live_tokens.PASS_TTL), str(PASS_NEW_PER_ADDRESS)))
+    except Exception as e:
+        redis_failed("live pass", e)
+        LIVE_HEALTH["pass_failed"] += 1
+        logger.error(f"[live] no pass handed: {type(e).__name__}: {e}")
+        return off
+    if result != 1:
+        LIVE_HEALTH["passes_refused"] += 1
+        logger.info(f"[live] pass refused: {_PASS_REFUSALS.get(result, 'refused')} (shown pass: {reason})")
+        return off
+    token = live_tokens.beat_pass(visitor_id)
+    if not token:
+        LIVE_HEALTH["pass_failed"] += 1
+        logger.error("[live] no pass handed: the token could not be made")
+        return off
+    LIVE_HEALTH["passes"] += 1
+    expires = datetime.now(timezone.utc) + timedelta(seconds=live_tokens.PASS_TTL)
+    return {**config, "pass": token, "pass_expires_at": expires.isoformat()}
 
 
 class SendRefused(Exception):
