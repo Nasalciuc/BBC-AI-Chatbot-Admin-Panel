@@ -59,3 +59,16 @@ No key or value carries a name, an email or a phone number. Ids are UUIDs.
   when they open it or mark its offer, or when it goes back unconfirmed.
 - The heartbeat answers `followups_new = ZCARD`; no answer from Redis means no number, not zero.
 - The truth is `conversations.assigned_agent_id` and `metadata.followup`; this is only the count.
+
+## The API's own keys (listed so no other service takes the prefix)
+
+| Key | Type | Value | Life |
+|---|---|---|---|
+| `recent:<user id>` | list | conversation ids, newest first, at most 10 | 30 days after the last open |
+| `rl:search:<user id>:<unix minute>` | string | how many message searches that minute | 120 s |
+
+- `recent:` (`app/services/recent_chats.py`): the chat's detail does `LREM 0 id`, `LPUSH id`,
+  `LTRIM 0 9`, `EXPIRE` in one transaction; the search box reads `LRANGE 0 9` and reads the chats
+  fresh from Supabase. No answer from Redis means no list, not an empty one.
+- `rl:search:` (`app/api/search.py`): `INCR` + `EXPIRE 120`; over `SEARCH_MESSAGES_PER_MINUTE` the
+  search answers 429. Without Redis each process counts on its own.
