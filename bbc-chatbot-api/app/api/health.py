@@ -179,6 +179,8 @@ async def health_detail(full: bool = False) -> dict:
     # The search box: the route part, the message search, its limit, the recent chats.
     from app.services.chat_search import SEARCH_HEALTH
     from app.services.recent_chats import RECENT_HEALTH
+    # "On the site now": tokens handed out, hellos sent or refused, taps honoured or not.
+    from app.services.live_visitors import LIVE_HEALTH
 
     if not full:
         return {
@@ -218,6 +220,7 @@ async def health_detail(full: bool = False) -> dict:
             "qa_sample": dict(QA_HEALTH),
             "crm_lookup": dict(CRM_LOOKUP_HEALTH),
             "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
+            "live": dict(LIVE_HEALTH),
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),

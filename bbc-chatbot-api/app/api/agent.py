@@ -414,7 +414,17 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "response_deadline_seconds": settings.agent_first_response_timeout_seconds,
         "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
         "followups_new": _followups_new,
+        # "On the site now": the address of bbc-live and a 60 s pass to it, for the roles that see the
+        # list, while LIVE_VISITORS is on (app.services.live_visitors). None otherwise.
+        "live": _live_for(user, user_db),
     }
+
+
+def _live_for(user: dict, user_db: Optional[dict]) -> Optional[dict]:
+    from app.services import live_visitors
+
+    who = {**user, **{k: user_db[k] for k in ("role", "tunnel_scope") if user_db and user_db.get(k)}}
+    return live_visitors.heartbeat_live(who)
 
 
 def _qa_ok_for_followups(user_db: Optional[dict], role_db: str) -> bool:

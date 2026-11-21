@@ -66,6 +66,9 @@ class ChatInitRequest(BaseModel):
     # server composes the card's words from it again (app/services/proactive).
     trip: Optional[TripContext] = None
     proactive: Optional["ProactiveInit"] = None
+    # "On the site now" (contracts/live.md): the visitor tapped an agent's hello; the tap token inside
+    # it makes this chat the agent's (app.services.live_visitors). One that doesn't hold is ignored.
+    live_tap: Optional[str] = Field(default=None, max_length=2048)
 
     # Neither may cost the visitor the chat: a trip that is not an object, or
     # a trigger this server does not know yet (a newer widget), is dropped and
@@ -125,6 +128,10 @@ class ChatInitResponse(BaseModel):
     # and reads messages after `opening_at` so the opening is not shown twice.
     opening: Optional[str] = None
     opening_at: Optional[str] = None
+    # The agent whose hello the visitor tapped, when the chat started as theirs: their first name
+    # and their hello's words, which are the chat's first message.
+    live_agent: Optional[str] = None
+    live_hello: Optional[str] = None
 
 
 async def _widget_gate(request: Request, turnstile_token: Optional[str], form_check: Optional[dict], meta: dict) -> None:
@@ -239,13 +246,29 @@ async def chat_init(
         except Exception as e:
             _proactive.PROACTIVE_HEALTH["open_failures"] += 1
             logger.error(f"[init] proactive opening failed (conv={conv_id}): {type(e).__name__}")
+    _live: dict = {}
+    if payload.live_tap and payload.tunnel == "sales" and not _opening:
+        from app.services.live_visitors import start_with_the_agent
+        _live = await start_with_the_agent(conv_id, payload.visitor_id, payload.live_tap)
     from app.security.visitor_token import issue as _issue_token
     return ChatInitResponse(
         conversation_id=conv_id,
         visitor_token=_issue_token(payload.visitor_id) if payload.visitor_id else None,
         opening=_opening.get("content"),
         opening_at=_opening.get("created_at"),
+        live_agent=_live.get("agent"),
+        live_hello=_live.get("text"),
     )
+
+
+@router.get("/chat/live")
+async def chat_live():
+    """Whether the widget beats to bbc-live, and where (contracts/live.md). No rate limit: a config read,
+    no database, no Redis."""
+    from fastapi.responses import JSONResponse
+    from app.services.live_visitors import widget_config
+
+    return JSONResponse(widget_config(), headers={"Cache-Control": "public, max-age=60"})
 
 
 class ProactiveOfferRequest(BaseModel):

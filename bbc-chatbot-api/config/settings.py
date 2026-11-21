@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     ban_ignore_ips: str = ""
     # PR-12: HMAC secret for the widget's visitor token; Turnstile's secret.
     visitor_token_secret: str = ""
+    # Part 5 (bbc-live, "On the site now"): the key the live tokens are signed with (shared with the Go
+    # service, contracts/live.md) and the service's public address. Either empty = the feature is off.
+    live_token_secret: str = ""
+    live_service_url: str = ""
     # PR-13: the key the TOTP secrets are encrypted with (any long random string).
     mfa_encryption_key: str = ""
     turnstile_secret: str = ""

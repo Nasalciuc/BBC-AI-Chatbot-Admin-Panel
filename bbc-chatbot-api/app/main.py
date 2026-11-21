@@ -21,6 +21,7 @@ from app.api.offers import router as offers_router
 from app.api.followups import router as followups_router
 from app.api.qa import router as qa_router
 from app.api.search import router as search_router
+from app.api.live import router as live_router
 from app.api.notifications import router as notifications_router
 from app.api.lessons import router as lessons_router
 from app.api.auth_routes import router as auth_router
@@ -108,6 +109,7 @@ app.include_router(offers_router,        prefix="/api", tags=["offers"],        
 app.include_router(followups_router,     prefix="/api", tags=["followups"],     dependencies=admin_deps)
 app.include_router(qa_router,            prefix="/api", tags=["qa"],            dependencies=admin_deps)
 app.include_router(search_router,        prefix="/api", tags=["search"],        dependencies=admin_deps)
+app.include_router(live_router,          prefix="/api", tags=["live"],          dependencies=admin_deps)
 app.include_router(notifications_router, prefix="/api", tags=["notifications"], dependencies=admin_deps)
 app.include_router(lessons_router,       prefix="/api", tags=["lessons"],       dependencies=admin_deps)
 app.include_router(security_bans_router, prefix="/api", tags=["security"],      dependencies=admin_deps)
