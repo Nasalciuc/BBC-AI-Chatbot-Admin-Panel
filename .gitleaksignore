@@ -32,7 +32,10 @@ f71f63a1df229c5d77d43830b07a0fa4995684b9:bbc-chatbot-api/tests/test_db_transport
 
 # contracts/live_tokens.json: the test vectors of "On the site now" — tokens the
 # API's code signed with made-up secrets ("visitor-test-secret", "live-test-secret")
-# for both suites to read back (#273). Nothing here opens anything.
+# for both suites to read back (#273). Nothing here opens anything. The merged file
+# keeps each one under "value", a key the rule does not read, so the squash commit
+# on master (a SHA no line here can name) has nothing to flag; these lines cover
+# the PR's own commits, written before the key changed.
 65511d233c39c31536146f5c1c703f95ebbe8533:contracts/live_tokens.json:generic-api-key:8
 65511d233c39c31536146f5c1c703f95ebbe8533:contracts/live_tokens.json:generic-api-key:14
 65511d233c39c31536146f5c1c703f95ebbe8533:contracts/live_tokens.json:generic-api-key:22
@@ -40,3 +43,8 @@ f71f63a1df229c5d77d43830b07a0fa4995684b9:bbc-chatbot-api/tests/test_db_transport
 65511d233c39c31536146f5c1c703f95ebbe8533:contracts/live_tokens.json:generic-api-key:30
 65511d233c39c31536146f5c1c703f95ebbe8533:contracts/live_tokens.json:generic-api-key:69
 57c610892da169231ac2c3a3f7ea4291f357a29d:contracts/live_tokens.json:generic-api-key:35
+
+# bbc-widget/tests/live.test.mjs: the old chat token a pass must refuse, made up
+# and unsigned, written after the vectors' old key in the first version of the
+# test (#273); the key is "value" now, so the line matches that one commit only
+c0fdaf1606aaf78b41c54f2f53f3d5af42d9a12b:bbc-widget/tests/live.test.mjs:generic-api-key:59
