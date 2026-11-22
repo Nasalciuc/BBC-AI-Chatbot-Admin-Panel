@@ -18,10 +18,14 @@ from typing import Any, Optional
 import httpx
 
 from config.settings import settings
-from app.ai.claude import call_sonnet_learning
+from app.ai.claude import ModelTimeout, call_sonnet_learning
 from app.db import supabase as db
 
 logger = logging.getLogger(__name__)
+
+# Per instance, in /health (`learning`): why the synthesis calls gave nothing. From 17 Nov 2026 every call
+# ran out at the chat's 15 s and read as "invalid JSON" for five days; each reason is counted on its own now.
+LEARNING_HEALTH: dict[str, int] = {"calls": 0, "timeouts": 0, "no_answer": 0, "invalid_json": 0}
 
 PAGE_SIZE = 100          # conversations fetched per page
 CHUNK_SIZE = 30          # cards per MAP call
@@ -329,20 +333,36 @@ def _parse_json(raw: Optional[str]) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _call_json(system: str, payload: str, task: str = "learn") -> tuple[Optional[dict], float]:
-    """One LLM call that must return JSON. One retry, then give up on this chunk."""
-    text, cost = call_sonnet_learning(system, payload, task=task)
-    parsed = _parse_json(text)
-    if parsed is not None:
-        return parsed, cost
-
-    retry_text, retry_cost = call_sonnet_learning(
-        system, f"{payload}\n\nYour previous output was not valid JSON — return ONLY the JSON.", task=task
-    )
+def _call_json(system: str, payload: str, task: str = "learn") -> tuple[Optional[dict], float, str]:
+    """One LLM call that must return JSON: (the JSON or None, cost, why). `why` says what came back:
+    "ok"; "timeout", no answer in time (not asked again: a second call would wait as long); "no_answer", an
+    error or a refusal; "invalid_json", an answer that is not JSON, asked once more and then given up."""
+    LEARNING_HEALTH["calls"] += 1
+    text: Optional[str] = None
+    retry_text: Optional[str] = None
+    cost = retry_cost = 0.0
+    try:
+        text, cost = call_sonnet_learning(system, payload, task=task)
+        parsed = _parse_json(text)
+        if parsed is not None:
+            return parsed, cost, "ok"
+        if text is None:
+            LEARNING_HEALTH["no_answer"] += 1
+            logger.warning("Learning: chunk skipped — the model gave no answer (an error or a refusal, logged above)")
+            return None, cost, "no_answer"
+        retry_text, retry_cost = call_sonnet_learning(
+            system, f"{payload}\n\nYour previous output was not valid JSON — return ONLY the JSON.", task=task
+        )
+    except ModelTimeout as e:
+        LEARNING_HEALTH["timeouts"] += 1
+        logger.warning(f"Learning: chunk skipped — {e} (LEARNING_TIMEOUT_SECONDS)")
+        return None, cost, "timeout"
     parsed = _parse_json(retry_text)
     if parsed is None:
+        LEARNING_HEALTH["invalid_json"] += 1
         logger.warning("Learning: chunk skipped — model did not return valid JSON")
-    return parsed, cost + retry_cost
+        return None, cost + retry_cost, "invalid_json"
+    return parsed, cost + retry_cost, "ok"
 
 
 # ── Lesson storage ────────────────────────────────────────────
@@ -709,6 +729,7 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
 
         chunk_findings: list[dict] = []
         skipped_chunks = 0
+        skipped_why: set[str] = set()   # timeout | no_answer | invalid_json: the run's status names the worst
         if cards:
             for start in range(0, len(cards), CHUNK_SIZE):
                 if cost >= budget:
@@ -718,12 +739,13 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                 chunk = cards[start:start + CHUNK_SIZE]
                 # The model call is sync (seconds each): in a worker thread, so
                 # chats, /health and the other jobs keep running meanwhile.
-                parsed, chunk_cost = await asyncio.to_thread(
+                parsed, chunk_cost, why = await asyncio.to_thread(
                     _call_json, _MAP_SYSTEM, json.dumps(chunk, default=str), task="learn_map"
                 )
                 cost += chunk_cost
                 if parsed is None:
                     skipped_chunks += 1
+                    skipped_why.add(why)
                     continue
                 chunk_findings.append(parsed)
 
@@ -745,10 +767,13 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                 },
                 default=str,
             )
-            reduced, reduce_cost = await asyncio.to_thread(_call_json, _REDUCE_SYSTEM, reduce_payload, task="learn_reduce")
+            reduced, reduce_cost, why = await asyncio.to_thread(
+                _call_json, _REDUCE_SYSTEM, reduce_payload, task="learn_reduce"
+            )
             cost += reduce_cost
             if reduced is None:
                 skipped_chunks += 1
+                skipped_why.add(why)
             else:
                 cards_by_id = {str(card["chat"]): card for card in cards}
                 new_lessons, reinforced = await merge_lessons(
@@ -756,7 +781,9 @@ async def run_learning(bootstrap: bool = False, force: bool = False) -> dict:
                 )
 
         if skipped_chunks and status == "ok":
-            status = "partial_json"
+            # What kept the lessons away, the worst first: the model's time, then its errors, then its JSON.
+            status = ("partial_timeout" if "timeout" in skipped_why
+                      else "partial_error" if "no_answer" in skipped_why else "partial_json")
 
     except Exception as e:
         logger.error(f"Learning run failed: {type(e).__name__}: {e}", exc_info=True)

@@ -63,6 +63,11 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
+class ModelTimeout(Exception):
+    """The model gave no answer within the call's time, its one retry included (raise_on_timeout): a caller
+    that must tell "no answer in time" from "an answer it can't use" (the learning loop) gets this, never None."""
+
+
 # ── Cost estimation ───────────────────────────────────────────
 COSTS: dict[str, dict[str, float]] = {
     "claude-haiku-4-5-20251001": {
@@ -236,6 +241,11 @@ def call_sonnet_learning(system_prompt, user_message: str, task: str = "learn") 
         max_tokens=LEARNING_MAX_TOKENS,
         temperature=0.2,
         task=task,
+        # Its own wait: up to 2,500 tokens over a day's chats don't come in the chat's 15 s. No SDK retry on
+        # top (with it, each try waited three times over), and a timeout is told apart (ModelTimeout).
+        timeout=settings.learning_timeout_seconds,
+        sdk_retries=0,
+        raise_on_timeout=True,
     )
 
 
@@ -293,14 +303,22 @@ def _call_model(
     _is_fallback: bool = False,
     task: str = "other",
     effort: str = "low",
+    timeout: Optional[float] = None,
+    sdk_retries: Optional[int] = None,
+    raise_on_timeout: bool = False,
 ) -> tuple[Optional[str], float]:
     """Internal: make a single Claude API call with logging and 1 retry on timeout. Returns (text, cost).
     `effort` applies to the 5.5 family only (output_config); every caller but
-    the REPLY_MODEL re-call keeps the default."""
+    the REPLY_MODEL re-call keeps the default. `timeout`: this call's wait
+    (settings.claude_timeout when None); `sdk_retries`: the SDK's own retries
+    for it (the client's default when None); `raise_on_timeout`: ModelTimeout
+    instead of (None, 0.0) when both tries ran out of time."""
     # Never on the fallback: fallback_model is the old Haiku, and routing it
     # back to Haiku 5.5 would retry the model that just failed.
     if not _is_fallback:
         model = _utility_model(model, task)
+    wait = timeout or settings.claude_timeout
+    client = _get_client() if sdk_retries is None else _get_client().with_options(max_retries=sdk_retries)
     start = time.time()
     logger.info(f"Claude START | model={model} max_tokens={max_tokens} task={task}")
 
@@ -317,13 +335,13 @@ def _call_model(
             else:
                 params = _sampling_params(model, temperature=temperature)
                 call_max = max_tokens
-            response = _get_client().messages.create(
+            response = client.messages.create(
                 model=model,
                 max_tokens=call_max,
                 **params,
                 system=_build_system(system_prompt),
                 messages=_build_messages(user_message),
-                timeout=settings.claude_timeout,
+                timeout=wait,
             )
 
             elapsed = round(time.time() - start, 3)
@@ -348,11 +366,13 @@ def _call_model(
             )
             return text, cost
 
-        except anthropic.APITimeoutError:
-            logger.error(f"Claude timeout ({settings.claude_timeout}s) model={model} attempt={attempt + 1}/2")
+        except anthropic.APITimeoutError as e:
+            logger.error(f"Claude timeout ({wait}s) model={model} attempt={attempt + 1}/2: {type(e).__name__}")
             if attempt == 0:
                 continue  # retry once — timeouts never trigger the fallback model
             record_ai_call(task=task, model=model, cost=0.0, status="timeout")
+            if raise_on_timeout:
+                raise ModelTimeout(f"no answer from {model} in {wait}s, twice") from e
             return None, 0.0
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e} | model={model} | status={getattr(e, 'status_code', 'N/A')}")
@@ -366,6 +386,7 @@ def _call_model(
                 return _call_model(
                     settings.fallback_model, system_prompt, user_message,
                     max_tokens, temperature, _is_fallback=True, task=task,
+                    timeout=timeout, sdk_retries=sdk_retries, raise_on_timeout=raise_on_timeout,
                 )
             record_ai_call(task=task, model=model, cost=0.0, status="error")
             return None, 0.0

@@ -153,6 +153,8 @@ async def health_detail(full: bool = False) -> dict:
     from app.services.retention import RETENTION_HEALTH
     from app.security.behavior import BEHAVIOR_HEALTH
     from app.learning.outcomes import OUTCOMES_HEALTH
+    # The daily learning's model calls: timed out, no answer, not JSON (each apart).
+    from app.services.learning import LEARNING_HEALTH
     from app.security.token_version import TOKEN_VERSION_HEALTH
     from app.services.proactive import PROACTIVE_HEALTH
     # What follows the card: the yes answered at once, the channel taps, "I'll wait here", before-you-go.
@@ -183,6 +185,7 @@ async def health_detail(full: bool = False) -> dict:
             "retention": dict(RETENTION_HEALTH),
             "behavior": dict(BEHAVIOR_HEALTH),
             "learning_outcomes": dict(OUTCOMES_HEALTH),
+            "learning": dict(LEARNING_HEALTH),
             "token_version": dict(TOKEN_VERSION_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
@@ -281,6 +284,7 @@ async def health_detail(full: bool = False) -> dict:
         "retention": dict(RETENTION_HEALTH),
         "behavior": dict(BEHAVIOR_HEALTH),
         "learning_outcomes": dict(OUTCOMES_HEALTH),
+        "learning": dict(LEARNING_HEALTH),
         "token_version": dict(TOKEN_VERSION_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,
