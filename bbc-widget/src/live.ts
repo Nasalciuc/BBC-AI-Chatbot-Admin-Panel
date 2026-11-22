@@ -50,13 +50,16 @@ function liveFetch(url: string, pass: string, init: RequestInit = {}): Promise<R
 
 /** POST /chat/live: on or off, where, and a pass (kept for the next page). */
 async function askConfig(apiUrl: string): Promise<LiveConfig> {
+  const visitorId = ensureVisitorId()
   const res = await apiFetch(`${apiUrl}/api/chat/live`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ visitor_id: ensureVisitorId(), live_pass: storedPass() }),
+    body: JSON.stringify({ visitor_id: visitorId, live_pass: storedPass() }),
   })
   const cfg = res.ok ? readConfig(await res.json()) : failedAsk(res.status)
-  if (cfg.enabled && cfg.pass) keepPass(cfg.pass)
+  // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
+  // inherit the last one's pass, which would only be refused (CodeRabbit #273).
+  if (cfg.enabled && cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
   return cfg
 }
 

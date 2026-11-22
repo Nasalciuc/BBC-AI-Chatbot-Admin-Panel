@@ -182,3 +182,11 @@ test('a renewal for now keeps the config in hand, and the first ask tries again 
   assert.match(start, /\.catch\(\(\) => \{ if \(!stopped\) later\(start, RENEW_MS\) \}\)/)
   assert.match(src, /const cfg = res\.ok \? readConfig\(await res\.json\(\)\) : failedAsk\(res\.status\)/)
 })
+
+test('a pass is kept only for the visitor id it was asked for (CodeRabbit #273, round 4)', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  const ask = src.slice(src.indexOf('async function askConfig('), src.indexOf('export function useLive('))
+  assert.match(ask, /const visitorId = ensureVisitorId\(\)\s+const res = await apiFetch/)
+  assert.match(ask, /visitor_id: visitorId,/)
+  assert.match(ask, /if \(cfg\.enabled && cfg\.pass && ensureVisitorId\(\) === visitorId\) keepPass\(cfg\.pass\)/)
+})
