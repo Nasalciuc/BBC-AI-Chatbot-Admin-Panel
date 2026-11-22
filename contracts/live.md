@@ -88,7 +88,7 @@ A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`
 | `live:inbox:<vid>` | list | messages for the widget (JSON, `live_inbox_message.json`) | 900 s | the API |
 | `live:hello:<hello id>` | string | the hello for `/chat/init` (JSON) | 900 s | the API |
 | `live:said:<vid>` | string | the agent who said hello | 900 s | the API |
-| `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 24 h after the last pass | the API (`pass.lua`) |
+| `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 25 h after the last pass: its 24 h and the hour it still renews | the API (`pass.lua`) |
 | `rl:livepass:<address>:<hour>` | string | new ids that address got passes for this hour; `<address>` a keyed hash, never the address | 1 h | the API (`pass.lua`) |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
