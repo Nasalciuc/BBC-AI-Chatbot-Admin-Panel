@@ -58,11 +58,12 @@ API's alone; their table, scripts and lives are in [`live.md`](live.md#redis-key
 
 | Key | Type | Member | Score |
 |---|---|---|---|
-| `followup:new:<agent id>` | sorted set | conversation id | unix seconds it was given, with the fraction (two leads given in one second keep their order) |
+| `followup:new:<agent id>` | sorted set | conversation id | unix seconds it was given, with the fraction (two leads given in one second keep their order), and always after the badge's newest: a millisecond after it when the giving process's clock says otherwise (`lead_lottery.BADGE_ADD_LUA`), so the panel announces every later lead |
 
 - A member is added when a lead is given to the agent (by the lottery or by a manager) and removed
-  when they open it or mark its offer, or when it goes back unconfirmed. A manager's give and an open
-  of that lead touch the set under the same conversation lock (`followup`).
+  when they open it or mark its offer, or when it goes back unconfirmed. A manager's give (which reads who
+  held the lead under that lock), an open of a hand-given lead and a lottery lead's confirmation touch the
+  set under the same conversation lock (`followup`).
 - The heartbeat answers `followups_new = ZCARD`; no answer from Redis means no number, not zero.
   While it is above zero it also answers `followup_newest` and `followup_newest_at`
   (`ZREVRANGE … 0 0 WITHSCORES`): the lead given last and its score. The panel's alert opens that lead
