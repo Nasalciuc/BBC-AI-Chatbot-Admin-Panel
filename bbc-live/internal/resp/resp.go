@@ -99,8 +99,13 @@ type conn struct {
 	bw *bufio.Writer
 }
 
+// dial connects, then AUTH and SELECT, all before ctx's deadline (o.Timeout from now when it has none).
 func dial(ctx context.Context, o Options) (*conn, error) {
-	d := net.Dialer{Timeout: o.Timeout}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(o.Timeout)
+	}
+	d := net.Dialer{Deadline: deadline}
 	var nc net.Conn
 	var err error
 	if o.TLS {
@@ -119,13 +124,13 @@ func dial(ctx context.Context, o Options) (*conn, error) {
 		if o.Username != "" {
 			args = []string{"AUTH", o.Username, o.Password}
 		}
-		if _, err := c.roundTrip(o.Timeout, args); err != nil {
+		if _, err := c.roundTrip(deadline, args); err != nil {
 			c.close()
 			return nil, fmt.Errorf("redis auth: %w", err)
 		}
 	}
 	if o.DB != 0 {
-		if _, err := c.roundTrip(o.Timeout, []string{"SELECT", strconv.Itoa(o.DB)}); err != nil {
+		if _, err := c.roundTrip(deadline, []string{"SELECT", strconv.Itoa(o.DB)}); err != nil {
 			c.close()
 			return nil, fmt.Errorf("redis select: %w", err)
 		}
@@ -206,9 +211,9 @@ func (c *conn) read() (Value, error) {
 	}
 }
 
-// roundTrip sends one command and reads its reply; an error reply comes back as Error.
-func (c *conn) roundTrip(timeout time.Duration, args []string) (Value, error) {
-	if err := c.nc.SetDeadline(time.Now().Add(timeout)); err != nil {
+// roundTrip sends one command and reads its reply before deadline; an error reply comes back as Error.
+func (c *conn) roundTrip(deadline time.Time, args []string) (Value, error) {
+	if err := c.nc.SetDeadline(deadline); err != nil {
 		return Value{}, err
 	}
 	if err := c.write(args); err != nil {
@@ -283,19 +288,18 @@ func (cl *Client) put(c *conn, healthy bool) {
 	<-cl.slots
 }
 
-// Do runs one command. A network error closes that connection; an error reply (Error) keeps it.
+// Do runs one command within Options.Timeout, all of it: the wait for a pool slot, a dial with its AUTH and
+// SELECT, and the round trip (or ctx's own deadline, when sooner). A network error closes that connection; an
+// error reply (Error) keeps it.
 func (cl *Client) Do(ctx context.Context, args ...string) (Value, error) {
+	ctx, cancel := context.WithTimeout(ctx, cl.o.Timeout)
+	defer cancel()
 	c, err := cl.get(ctx)
 	if err != nil {
 		return Value{}, err
 	}
-	timeout := cl.o.Timeout
-	if dl, ok := ctx.Deadline(); ok {
-		if left := time.Until(dl); left < timeout {
-			timeout = left
-		}
-	}
-	v, err := c.roundTrip(timeout, args)
+	deadline, _ := ctx.Deadline()
+	v, err := c.roundTrip(deadline, args)
 	var replyErr Error
 	cl.put(c, err == nil || errors.As(err, &replyErr))
 	return v, err

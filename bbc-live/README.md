@@ -22,4 +22,6 @@ go vet ./... && go test -race ./...
 ```
 
 The tests use a real Redis: `REDIS_TEST_URL`, or a `redis-server` on the PATH started for the run; without
-either they skip (CI sets `LIVE_TEST_REQUIRE_REDIS=1`, so there they fail instead).
+either they skip (CI sets `LIVE_TEST_REQUIRE_REDIS=1`, so there they fail instead). Every package's tests empty
+that Redis first, so with one shared `REDIS_TEST_URL` run the packages one at a time: `go test -race -p 1 ./...`
+(CI does; with a `redis-server` each test binary starts its own).

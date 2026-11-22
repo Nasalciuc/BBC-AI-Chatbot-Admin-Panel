@@ -227,6 +227,26 @@ func cleanBeat(vid string, in beatIn) Visit {
 	}
 }
 
+// takeBeatTurn says whether this visitor's beat at now counts, and if so records it, in one step: of two beats
+// at once, only one passes the gap.
+func (s *Server) takeBeatTurn(vid string, now time.Time) bool {
+	for {
+		last, seen := s.lastBeat.Load(vid)
+		if !seen {
+			if _, taken := s.lastBeat.LoadOrStore(vid, now); !taken {
+				return true
+			}
+			continue // another beat stored first: judge against it
+		}
+		if now.Sub(last.(time.Time)) < s.MinBeatGap {
+			return false
+		}
+		if s.lastBeat.CompareAndSwap(vid, last, now) {
+			return true
+		}
+	}
+}
+
 func (s *Server) beat(w http.ResponseWriter, r *http.Request) {
 	vid, ok := s.visitor(w, r)
 	if !ok {
@@ -239,13 +259,11 @@ func (s *Server) beat(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad beat")
 		return
 	}
-	now := s.now()
-	if last, seen := s.lastBeat.Load(vid); seen && now.Sub(last.(time.Time)) < s.MinBeatGap {
+	if !s.takeBeatTurn(vid, s.now()) {
 		s.Counters.BeatsTooSoon.Add(1)
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "counted": false})
 		return
 	}
-	s.lastBeat.Store(vid, now)
 	if err := s.Store.Beat(r.Context(), cleanBeat(vid, in)); err != nil {
 		s.redisFailed(w, "beat", err)
 		return
@@ -281,6 +299,12 @@ func (s *Server) deliver(w http.ResponseWriter, msgs []string) bool {
 }
 
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
+	// "GET /v1/inbox" also matches HEAD, whose answer has no body: a HEAD would take the hello and lose it.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Allow", "GET")
+		fail(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
 	vid, ok := s.visitor(w, r)
 	if !ok {
 		s.Counters.PollsRefused.Add(1)

@@ -3,6 +3,7 @@ package resp_test
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -120,6 +121,42 @@ func TestThePoolHoldsUnderConcurrency(t *testing.T) {
 	}
 	if n, err := resp.Int(c.Do(ctx, "GET", "hits")); err != nil || n != 200 {
 		t.Fatalf("hits = %d %v", n, err)
+	}
+}
+
+// The timeout covers the wait for a pool slot too. Against a Redis that never answers, with one connection: the
+// first command holds the slot for a whole Timeout, and the second, started just after, must give up when its own
+// Timeout ends, not a Timeout after it got the slot.
+func TestOneTimeoutCoversTheWaitForASlot(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() }) // read nothing, answer nothing
+		}
+	}()
+	c := resp.New(resp.Options{Addr: l.Addr().String(), Timeout: 300 * time.Millisecond, PoolSize: 1})
+	t.Cleanup(func() { _ = c.Close() })
+	first := make(chan struct{})
+	go func() {
+		close(first)
+		_, _ = c.Do(context.Background(), "PING")
+	}()
+	<-first
+	time.Sleep(20 * time.Millisecond)
+	start := time.Now()
+	if _, err := c.Do(context.Background(), "PING"); err == nil {
+		t.Fatal("a Redis that never answers answered")
+	}
+	if took := time.Since(start); took > 450*time.Millisecond {
+		t.Fatalf("gave up after %s: a Timeout for the slot and another for the round trip", took)
 	}
 }
 

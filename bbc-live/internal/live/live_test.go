@@ -630,6 +630,55 @@ func TestTooManyWaitsForOneVisitorAreRefused(t *testing.T) {
 	}
 }
 
+func TestAHeadDoesNotTakeTheHello(t *testing.T) {
+	s, c, rc := setup(t)
+	if err := s.Store.Beat(context.Background(), Visit{ID: vid1, Page: "/", Source: "site"}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := s.Store.Claim(context.Background(), agentA, vid1); r != Claimed {
+		t.Fatal(r)
+	}
+	if n := send(t, rc, agentA, vid1, example(t)); n != 1 {
+		t.Fatal(n)
+	}
+	h := s.Handler()
+	hdr := map[string]string{"X-Live-Pass": visitorPass(c, vid1)}
+	if w := do(t, h, "HEAD", "/v1/inbox", hdr, nil); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("HEAD: %d", w.Code)
+	}
+	if w := do(t, h, "GET", "/v1/inbox", hdr, nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"kind":"hello"`) {
+		t.Fatalf("the hello is still there for the GET: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOfTwoBeatsAtOnceOneCounts(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	hdr := map[string]string{"X-Live-Pass": visitorPass(c, vid1)}
+	var counted, tooSoon atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch w := do(t, h, "POST", "/v1/beat", hdr, map[string]any{"page": "/"}); w.Code {
+			case http.StatusOK:
+				counted.Add(1)
+			case http.StatusAccepted:
+				tooSoon.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if counted.Load() != 1 || tooSoon.Load() != 19 {
+		t.Fatalf("counted %d, too soon %d", counted.Load(), tooSoon.Load())
+	}
+	c.add(6)
+	if w := do(t, h, "POST", "/v1/beat", hdr, map[string]any{"page": "/"}); w.Code != http.StatusOK {
+		t.Fatalf("after the gap: %d", w.Code)
+	}
+}
+
 func TestCORSOnlyForTheListedOrigins(t *testing.T) {
 	s, _, _ := setup(t)
 	h := s.Handler()
