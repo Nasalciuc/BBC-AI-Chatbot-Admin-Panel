@@ -63,6 +63,8 @@ API's alone; their table, scripts and lives are in [`live.md`](live.md#redis-key
 - A member is added when a lead is given to the agent (by the lottery or by a manager) and removed
   when they open it or mark its offer, or when it goes back unconfirmed.
 - The heartbeat answers `followups_new = ZCARD`; no answer from Redis means no number, not zero.
+  While it is above zero it also answers `followup_newest = ZREVRANGE … 0 0`, the lead given last, which
+  the panel's alert opens (opening it confirms it); `null` otherwise.
 - The truth is `conversations.assigned_agent_id` and `metadata.followup`; this is only the count.
 
 ## The API's own keys (listed so no other service takes the prefix)
