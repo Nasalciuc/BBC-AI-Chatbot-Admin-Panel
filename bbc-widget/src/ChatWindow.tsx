@@ -24,7 +24,7 @@ import { useIsPhone } from './phoneSheet'
 import { posthog, posthogSessionId } from './posthog'
 import { contactTestProps, markProactiveConversation, type ProactiveOpening } from './proactive'
 import { siteMetadata } from './siteSignals'
-import { isNotNow } from './triggers'
+import { isNotNow, keysOnSite } from './triggers'
 import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
 import { createReplyTurns } from './replyTurns'
 
@@ -416,10 +416,12 @@ export function ChatWindow({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, visible, docVisible, convId])
 
-  // The composer takes focus on computers; on touch screens the keyboard waits for a tap.
+  // The composer takes focus on computers; on touch screens the keyboard waits for a tap. Never out of a field
+  // of the site: a panel that opened by itself while a name was being typed took the last keys (22 Nov).
   const focusComposer = () => {
     try {
       if (!window.matchMedia('(pointer: fine)').matches) return
+      if (keysOnSite(document.activeElement)) return
       const el = composerRef.current
       if (!el) return
       el.focus({ preventScroll: true })

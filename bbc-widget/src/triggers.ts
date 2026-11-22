@@ -256,6 +256,23 @@ export function noteWaitMs(sinceQuoteFormS: number | null): number {
   return Math.floor((QUOTE_WATCH_S - Math.max(0, sinceQuoteFormS)) * 1000) + 1
 }
 
+/** A touch, a key or a click that keeps the quote moment waiting after a press: inside the pressed form when
+ *  the widget knows it; when it does not (the site's button with no form.qf around it: secret-site's Vue page,
+ *  22 Nov), in any field of the site. Without that the moment came 8 s after the press while the visitor was
+ *  still typing a name, and the panel that opened took the keys. Never the widget's own fields. */
+export function worksOnPressedForm(t: { formKnown: boolean; inForm: boolean; inWidget: boolean; field: boolean }): boolean {
+  if (t.inWidget) return false
+  return t.formKnown ? t.inForm : t.field
+}
+
+/** The visitor's keyboard is in a field of the site (an input, a text area, a select, an editable block), not
+ *  the widget's: a chat that opens by itself then leaves the focus there. */
+export function keysOnSite(active: Element | null): boolean {
+  if (!active || typeof (active as HTMLElement).matches !== 'function') return false
+  if (active.closest('#bbc-widget-root')) return false
+  return active.matches('input, textarea, select') || (active as HTMLElement).isContentEditable === true
+}
+
 /** The 24 h pause after "Not now" or ✕ is still running. A value that is not a time is no pause. */
 export function pauseRunning(pauseUntil: string | null, nowMs: number): boolean {
   const until = Number(pauseUntil)

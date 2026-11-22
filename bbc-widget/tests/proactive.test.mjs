@@ -24,7 +24,7 @@ const readTrip = (href, h1) => {
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
   SAME_SEND_MS, TRIGGER_OFF_ARM, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs,
-  offAfter, pauseRunning, pickTrigger, readOff, replyKind,
+  keysOnSite, offAfter, pauseRunning, pickTrigger, readOff, replyKind, worksOnPressedForm,
 } from '../src/triggers.ts'
 import { fetchProactiveOffer, offerMeasures, offerVariant, preconnect } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -438,6 +438,45 @@ test('the hook marks the quote form worked on from the page and from the site, p
   // card; the quote moment keeps its press check.
   assert.match(hook, /const seen = \(\) => \(\{[^}]*quoteForm: quoteFormAt,/)
   assert.match(hook, /if \(trigger !== 'quote' && quoteFormAt !== before\.quoteForm\) return 'quote_form'/)
+})
+
+test('a press whose form the widget does not know: any field of the site keeps the quote moment waiting (22 Nov)', () => {
+  // The form known (form.qf): only work inside it counts — a field elsewhere on the page does not.
+  assert.equal(worksOnPressedForm({ formKnown: true, inForm: true, inWidget: false, field: true }), true)
+  assert.equal(worksOnPressedForm({ formKnown: true, inForm: true, inWidget: false, field: false }), true)
+  assert.equal(worksOnPressedForm({ formKnown: true, inForm: false, inWidget: false, field: true }), false)
+  // The form unknown (secret-site's Vue page: the button with no form around it): any field of the site counts,
+  // a click on something that is no field does not, and the widget's own fields never do.
+  assert.equal(worksOnPressedForm({ formKnown: false, inForm: false, inWidget: false, field: true }), true)
+  assert.equal(worksOnPressedForm({ formKnown: false, inForm: false, inWidget: false, field: false }), false)
+  assert.equal(worksOnPressedForm({ formKnown: false, inForm: false, inWidget: true, field: true }), false)
+  // The three ways the hook hears work on the form use it: a key, a focus or change, a click.
+  assert.match(hook, /const worksOnPressed = \(t: EventTarget \| null\) => !!press && worksOnPressedForm\(\{\s+formKnown: !!press\.form, inForm: inPressedForm\(t\), inWidget: inWidget\(t\), field: isField\(t\),/)
+  assert.match(hook, /const onType = [\s\S]*?if \(press && worksOnPressed\(e\.target\)\) press\.activityAt = Date\.now\(\)/)
+  assert.match(hook, /const onFormTouch = \(e: Event\) => \{\s+touchQuoteForm\(e\.target\)\s+if \(press && worksOnPressed\(e\.target\)\) press\.activityAt = Date\.now\(\)/)
+  assert.match(hook, /if \(press && worksOnPressed\(el\)\) \{\s+press\.activityAt = Date\.now\(\)\s+return/)
+  assert.doesNotMatch(hook, /if \(press && inPressedForm\((e\.target|el)\)\) (press\.activityAt|\{)/)
+})
+
+test('a chat that opens by itself leaves the keys in the field of the site the visitor is typing in (22 Nov)', () => {
+  const el = (tag, { inWidget = false, editable = false } = {}) => ({
+    matches: (sel) => sel.split(',').map((s) => s.trim()).includes(tag),
+    closest: (sel) => (inWidget && sel === '#bbc-widget-root' ? {} : null),
+    isContentEditable: editable,
+  })
+  assert.equal(keysOnSite(el('input')), true)
+  assert.equal(keysOnSite(el('textarea')), true)
+  assert.equal(keysOnSite(el('select')), true)
+  assert.equal(keysOnSite(el('div', { editable: true })), true)
+  // Not a field, the widget's own composer or button, or nothing at all: the composer may take the focus.
+  assert.equal(keysOnSite(el('button')), false)
+  assert.equal(keysOnSite(el('body')), false)
+  assert.equal(keysOnSite(el('textarea', { inWidget: true })), false)
+  assert.equal(keysOnSite(el('button', { inWidget: true })), false)
+  assert.equal(keysOnSite(null), false)
+  assert.equal(keysOnSite({}), false)
+  // The composer asks before it takes the focus, on every open.
+  assert.match(chat, /const focusComposer = \(\) => \{\s+try \{\s+if \(!window\.matchMedia\('\(pointer: fine\)'\)\.matches\) return\s+if \(keysOnSite\(document\.activeElement\)\) return\s+const el = composerRef\.current/)
 })
 
 test('the 10 s note waits while the quote form is worked on, as the moments do (owner, 17 Nov)', () => {

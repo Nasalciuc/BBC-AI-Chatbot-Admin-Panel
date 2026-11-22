@@ -38,7 +38,7 @@ import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type 
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
   adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
-  replyKind, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  replyKind, worksOnPressedForm, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
@@ -451,6 +451,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const inPressedForm = (t: EventTarget | null) => !!press?.form && t instanceof Node && press.form.contains(t)
     const isField = (t: EventTarget | null) =>
       t instanceof HTMLElement && (t.matches('input, textarea, select') || t.isContentEditable)
+    // Work on the pressed form: inside it, or any field of the site for a press whose form is unknown (triggers.ts).
+    const worksOnPressed = (t: EventTarget | null) => !!press && worksOnPressedForm({
+      formKnown: !!press.form, inForm: inPressedForm(t), inWidget: inWidget(t), field: isField(t),
+    })
     // A touch inside the site's quote form (quoteForm: form.qf, or one labelled as a quote), pressed or not.
     const touchQuoteForm = (t: EventTarget | null) => {
       if (t instanceof Element && !inWidget(t) && quoteForm(t)) quoteFormAt = Date.now()
@@ -476,11 +480,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (inWidget(e.target)) return
       if (isField(e.target)) lastSiteTyping = Date.now()
       touchQuoteForm(e.target)
-      if (press && inPressedForm(e.target)) press.activityAt = Date.now()
+      if (press && worksOnPressed(e.target)) press.activityAt = Date.now()
     }
     const onFormTouch = (e: Event) => {
       touchQuoteForm(e.target)
-      if (press && inPressedForm(e.target)) press.activityAt = Date.now()
+      if (press && worksOnPressed(e.target)) press.activityAt = Date.now()
     }
     const onClick = (e: Event) => {
       lastActivity = Date.now()
@@ -493,7 +497,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         refused = []
         return
       }
-      if (press && inPressedForm(el)) {
+      if (press && worksOnPressed(el)) {
         press.activityAt = Date.now()
         return
       }
