@@ -503,10 +503,15 @@ async def confirm(conversation_id: str, user: dict, followup: Optional[dict], ho
     """The agent opened the lead (how="opened") or marked its offer (how="marked"): it is theirs for good.
 
     `followup` is metadata.followup as the caller just read it. Nothing happens unless it is a pending
-    follow-up of this very agent."""
+    follow-up of this very agent. A lead a manager gave them by hand ("manual") is theirs already: opening it
+    or marking its offer confirms nothing and only takes it off their badge (contracts/redis-keys.md), which
+    nothing else would ever do."""
     from app.db import supabase as db
 
     uid = user.get("id")
+    if isinstance(followup, dict) and followup.get("state") == "manual" and followup.get("agent_id") == uid:
+        await _badge(uid, remove=conversation_id)
+        return False
     if not isinstance(followup, dict) or followup.get("state") != "pending" or followup.get("agent_id") != uid:
         return False
     now = datetime.now(timezone.utc)

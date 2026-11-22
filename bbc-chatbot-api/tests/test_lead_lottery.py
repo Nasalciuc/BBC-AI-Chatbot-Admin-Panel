@@ -347,6 +347,23 @@ async def test_a_manager_gives_a_closed_lead_without_a_timer(world):
 
 
 @pytest.mark.asyncio
+async def test_a_lead_given_by_hand_leaves_the_badge_when_its_agent_opens_it(world):
+    """contracts/redis-keys.md: given by a manager, it leaves the badge once its agent opens it or marks its
+    offer. Only a pending lead's confirmation took it off, so a hand-given lead stayed on the badge for good."""
+    _, m, r = world
+    m["conv"].return_value = {"id": "c1", "status": "closed", "assigned_agent_id": A, "metadata": {}}
+    f = await lot.give_by_hand("c1", _agent(B), {"id": "mgr", "role": "admin"})
+    assert await lot.new_count(B) == 1
+    m["patch_meta"].reset_mock()
+    assert not await lot.confirm("c1", {"id": A}, f, "opened"), "not theirs: nothing"
+    assert await lot.new_count(B) == 1
+    assert not await lot.confirm("c1", {"id": B}, f, "opened"), "theirs already: nothing to confirm"
+    assert await lot.new_count(B) == 0
+    m["patch_meta"].assert_not_awaited()
+    assert all(c.args[2] != "followup_acked" for c in m["audit"].await_args_list)
+
+
+@pytest.mark.asyncio
 async def test_an_open_chat_is_not_given_here(world):
     _, m, _ = world
     m["conv"].return_value = {"id": "c1", "status": "active", "metadata": {}}

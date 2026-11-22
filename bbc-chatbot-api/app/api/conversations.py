@@ -697,12 +697,13 @@ async def get_conversation(
     _enforce_tunnel(user, conv.get("tunnel"))
 
     # The follow-up lottery: the agent who was given this lead and opens it has confirmed it
-    # (app.services.lead_lottery). Only for their own pending lead; anything else reads as before.
+    # (app.services.lead_lottery). Only for their own pending lead; a lead a manager gave them by hand only
+    # leaves their badge; anything else reads as before.
     _meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
     _followup = _meta.get("followup")
     if (
         isinstance(_followup, dict)
-        and _followup.get("state") == "pending"
+        and _followup.get("state") in ("pending", "manual")
         and conv.get("assigned_agent_id") == user.get("id")
     ):
         from app.services import lead_lottery

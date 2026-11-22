@@ -189,8 +189,31 @@ def test_opening_your_pending_lead_confirms_it():
     assert confirm.await_args.args[3] == "opened"
 
 
+def test_opening_a_lead_given_to_you_by_hand_takes_it_off_your_badge():
+    """lead_lottery.confirm takes a hand-given lead off its agent's badge (and confirms nothing)."""
+    manual = {"state": "manual", "agent_id": ME, "by": "manual"}
+    confirm = _detail({**_conv(assigned_agent_id=ME, metadata={"followup": manual}), "messages": []})
+    confirm.assert_awaited_once()
+    assert confirm.await_args.args[2] == manual and confirm.await_args.args[3] == "opened"
+
+
+def test_marking_a_lead_given_to_you_by_hand_takes_it_off_your_badge(lottery_on):
+    manual = {"state": "manual", "agent_id": ME, "by": "manual"}
+    confirm = AsyncMock(return_value=False)
+    with patch.multiple(db, get_conversation_simple=AsyncMock(
+            return_value=_conv(assigned_agent_id=ME, metadata={"followup": manual})),
+            get_blind_inputs=AsyncMock(return_value=_conv()), patch_conversation_presence=AsyncMock(return_value=True),
+            invalidate_leads_universe=MagicMock()), \
+            patch("app.services.lead_lottery.confirm", new=confirm):
+        resp = _client(offers.router).post(f"/api/offers/{C1}", json={"state": "sent"})
+    assert resp.status_code == 200, resp.text
+    confirm.assert_awaited_once()
+    assert confirm.await_args.args[2] == manual and confirm.await_args.args[3] == "marked"
+
+
 @pytest.mark.parametrize("conv", [
     {"assigned_agent_id": OTHER, "metadata": {"followup": {"state": "pending", "agent_id": OTHER}}},
+    {"assigned_agent_id": OTHER, "metadata": {"followup": {"state": "manual", "agent_id": OTHER}}},
     {"assigned_agent_id": ME, "metadata": {"followup": {"state": "acked", "agent_id": ME}}},
     {"assigned_agent_id": ME, "metadata": {}},
 ])
