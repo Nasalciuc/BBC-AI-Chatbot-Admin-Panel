@@ -56,7 +56,7 @@ test('the first good hello wins, and a long name is cut', () => {
 })
 
 const tokens = JSON.parse(readFileSync(join(here, '..', '..', 'contracts', 'live_tokens.json'), 'utf8'))
-const PASS = tokens.pass.valid[0].token
+const PASS = tokens.pass.valid[0].value
 
 test('the config: on only with a URL and a pass, numbers kept in range', () => {
   assert.deepEqual(readConfig({ enabled: false, url: 'https://live.example.test', pass: PASS }), { enabled: false })
@@ -70,7 +70,7 @@ test('the config: on only with a URL and a pass, numbers kept in range', () => {
 
 test('a pass is the API\u2019s b1 shape, never the chat token or an agent token', () => {
   assert.equal(keptPass(PASS), PASS)
-  for (const bad of [tokens.agent.valid[0].token, 'v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1.2.' + 'a'.repeat(64),
+  for (const bad of [tokens.agent.valid[0].value, 'v1.3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10.1.2.' + 'a'.repeat(64),
     PASS.slice(0, -1), PASS + '0', 'b1.' + 'x'.repeat(401) + '.' + 'a'.repeat(64), 'b1..' + 'a'.repeat(64), '', null]) {
     assert.equal(keptPass(bad), null, String(bad))
     assert.deepEqual(readConfig({ enabled: true, url: 'https://live.example.test', pass: bad }), { enabled: false })
