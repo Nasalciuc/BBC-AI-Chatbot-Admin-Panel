@@ -212,16 +212,20 @@ def _is_own(snippet: str, own: set[str]) -> bool:
     # client's phone ending in 9 must not let that link through as theirs.
     if _kind(snippet) != "phone":
         return False
-    groups = re.findall(r"\d+", snippet)
+    found = list(re.finditer(r"\d+", snippet))
+    groups = [m.group() for m in found]
+    # Where a country code may stand on its own: the match's first group, or one written after a "+".
+    marked = [i == 0 or snippet[m.start() - 1] == "+" for i, m in enumerate(found)]
     nums = [o for o in own if o.isdigit() and len(o) >= 7]
-    return bool(groups) and bool(nums) and _own_number_run(groups, nums)
+    return bool(groups) and bool(nums) and _own_number_run(groups, marked, nums)
 
 
-def _own_number_run(groups: list[str], own: list[str]) -> bool:
+def _own_number_run(groups: list[str], marked: list[bool], own: list[str]) -> bool:
     """The digit groups of one phone match (as written: "+1 207 946 0958" is four) are the client's own number,
     once or more. The phone pattern joins numbers a space or a line apart into one match: the same number
     twice is still theirs, a foreign number next to it is not (CodeRabbit #273). A copy is whole groups, never
-    part of one, so a foreign number can't lend its last digits to the copy after it (round 4)."""
+    part of one, so a foreign number can't lend its last digits to the copy after it (round 4); and a country
+    code standing as a group of its own counts only where one is written, first or after a "+" (round 5)."""
     longest = max(len(o) for o in own) + _CC_MAX
     reach = [False] * (len(groups) + 1)
     reach[0] = True
@@ -233,18 +237,25 @@ def _own_number_run(groups: list[str], own: list[str]) -> bool:
             digits += groups[j]
             if len(digits) > longest:
                 break
-            if _one_copy(digits, own):
+            if _one_copy(digits, own, first=len(groups[i]), marked=marked[i]):
                 reach[j + 1] = True
     return reach[len(groups)]
 
 
-def _one_copy(d: str, own: list[str]) -> bool:
-    """One copy of a kept number: as kept, without its country code, or with one the kept copy lacks; 1 to
-    _CC_MAX digits either way, never more, and a phone's 7 digits at least."""
-    return len(d) >= 7 and any(
-        d == o or (o.endswith(d) and len(o) - len(d) <= _CC_MAX) or (d.endswith(o) and len(d) - len(o) <= _CC_MAX)
-        for o in own
-    )
+def _one_copy(d: str, own: list[str], *, first: int, marked: bool) -> bool:
+    """One copy of a kept number, a phone's 7 digits at least: as kept, or without its country code (1 to
+    _CC_MAX digits), or with one the kept copy lacks. That code is glued to the number's first digits in one
+    group ("12079460958"), or a group of its own where a code is written ("+1 …", or first in the match): a
+    trailing group of the number before it ("… 0958 9\n1207…") is never one."""
+    if len(d) < 7:
+        return False
+    for o in own:
+        if d == o or (o.endswith(d) and len(o) - len(d) <= _CC_MAX):
+            return True
+        extra = len(d) - len(o)
+        if 1 <= extra <= _CC_MAX and d.endswith(o) and (marked or first > extra):
+            return True
+    return False
 
 
 def _alert_later(mode: str, kinds: dict) -> None:

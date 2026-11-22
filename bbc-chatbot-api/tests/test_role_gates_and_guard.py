@@ -507,6 +507,27 @@ def test_a_foreign_number_next_to_the_clients_own_never_lends_it_digits(text):
     assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == ["phone"]
 
 
+@pytest.mark.parametrize("text", [
+    "207 946 0958 9\n12079460958",       # the trailing 9 of the number before is no country code
+    "207 946 0958 9 12079460958",         # on one line too
+    "2079460958 44 2079460958",           # a code that stands alone mid-match, with no "+"
+])
+def test_a_country_code_is_never_borrowed_from_the_number_before(text):
+    """CodeRabbit #273 round 5: a code standing as its own group counts only first in the match or after a "+"."""
+    own = ("12079460958",) if "1207" in text else ("2079460958",)
+    assert output_guard.foreign_contact_kinds(text, also_own=own) == ["phone"]
+
+
+@pytest.mark.parametrize("text, own", [
+    ("+1 207 946 0958", ("2079460958",)),                     # first in the match
+    ("2079460958 +1 207 946 0958", ("2079460958",)),          # after a "+"
+    ("2079460958\n12079460958", ("2079460958",)),             # glued to the number's digits
+    ("+1 207 946 0958\n207 946 0958", ("12079460958",)),      # twice, with and without it
+])
+def test_a_written_country_code_still_counts(text, own):
+    assert output_guard.foreign_contact_kinds(text, also_own=own) == []
+
+
 def test_the_client_number_with_a_code_in_front_is_still_theirs():
     assert output_guard.foreign_contact_kinds("+1 207 946 0958", also_own=("2079460958",)) == []
     assert output_guard.foreign_contact_kinds("(207) 946-0958 and 207.946.0958", also_own=("12079460958",)) == []
