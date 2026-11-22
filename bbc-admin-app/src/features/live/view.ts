@@ -7,6 +7,9 @@ import type { LiveClaimState, LiveVisitor } from '@/lib/types'
 
 export const HELLO_MAX = 300
 
+/** Why a reader who may not say hello sees it locked: the server's words (app/services/live_visitors.py). */
+export const HELLO_RESTRICTED = 'Saying hello first is for agents of the sales line who take chats'
+
 /** "3 min", "45 s", "1 h 05". */
 export function onSite(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds || 0))
@@ -86,14 +89,51 @@ export function claimProblem(state: LiveClaimState): string | null {
   }
 }
 
-/** What's wrong with a hello before it goes, or null. The server checks again (and for contacts). */
+// A phone as the server reads one (bbc-chatbot-api app/ai/output_guard.py, _PHONE_RE and _is_dates): a run of
+// digits and separators with 7 digits or more that is not a date or a range of dates. Counting every digit in
+// the text refused a hello the server sends ("Dec 14, 2026 and Jan 2, 2027" is 11 digits, CodeRabbit #273).
+const PHONE_RUN = /\+?\d[\d\s().-]{7,}\d/g
+const ISO_DATE = /^(\d{4})[-.](\d{1,2})[-.](\d{1,2})$/
+const DMY_DATE = /^(\d{1,2})[-.](\d{1,2})[-.](\d{2}|\d{4})$/
+const RANGE_SPLIT = /\s*[-–]\s+|\s+[-–]\s*/
+
+function isDate(part: string): boolean {
+  const iso = ISO_DATE.exec(part)
+  if (iso) {
+    const [y, mo, d] = iso.slice(1).map(Number)
+    return y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31
+  }
+  const dmy = DMY_DATE.exec(part)
+  if (!dmy) return false
+  const [a, b, y] = dmy.slice(1).map(Number)
+  if (dmy[3].length === 4 && (y < 1900 || y > 2100)) return false
+  // day-month or month-day: one of the two must be a month
+  return a >= 1 && a <= 31 && b >= 1 && b <= 31 && (a <= 12 || b <= 12)
+}
+
+function isDates(run: string): boolean {
+  const parts = run.trim().split(RANGE_SPLIT).filter(Boolean)
+  return parts.length > 0 && parts.every(isDate)
+}
+
+/** True when the text carries a phone number as the server finds one. */
+export function hasPhone(text: string): boolean {
+  for (const [run] of text.matchAll(PHONE_RUN)) {
+    if ((run.match(/\d/g) || []).length >= 7 && !isDates(run)) return true
+  }
+  return false
+}
+
+/** What's wrong with a hello before it goes, or null. The server checks again (and for contacts). It lets the
+ *  brand's own number, address and site through, which the panel doesn't know: a hello carries none of them
+ *  here, as the dialog says. */
 export function helloProblem(text: string): string | null {
   const t = text.trim()
   if (!t) return 'Write a few words first.'
   if (t.length > HELLO_MAX) return `At most ${HELLO_MAX} characters (${t.length} now).`
   if (/https?:\/\/|www\./i.test(t)) return 'No links in a first message.'
   if (/[^\s@]+@[^\s@]+\.[a-z]{2,}/i.test(t)) return 'No e-mail address in a first message: the chat carries it.'
-  if ((t.match(/\d/g) || []).length >= 7) return 'No phone number in a first message: the chat carries it.'
+  if (hasPhone(t)) return 'No phone number in a first message: the chat carries it.'
   return null
 }
 

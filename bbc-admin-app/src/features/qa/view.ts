@@ -14,6 +14,16 @@ export function yesterdayInNewYork(now = new Date()): string {
   return `${ny.getFullYear()}-${pad(ny.getMonth() + 1)}-${pad(ny.getDate())}`
 }
 
+/** The day a link names (the QA e-mail opens /qa?day=YYYY-MM-DD) when it is a real calendar day; otherwise
+ *  yesterday in New York (CodeRabbit #273: the e-mail of the 20th, opened on the 22nd, opens the 20th). */
+export function dayFromLink(raw: unknown, now = new Date()): string {
+  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const d = new Date(`${raw}T12:00:00Z`)
+    if (!Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === raw) return raw
+  }
+  return yesterdayInNewYork(now)
+}
+
 /** "3 to check · 1 problem · 4 fine". */
 export function countsLine(c: Record<string, number>): string {
   const parts = [

@@ -9,6 +9,8 @@ import type { OfferChannel, OfferDone, OfferMark, OfferRow } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { TONE_TEXT } from '@/features/leads/view'
 import {
+  GIVEN_TEXT,
+  GIVE_RESTRICTED,
   MARK_RESTRICTED,
   QUEUE_NOTE,
   WINDOWS,
@@ -101,15 +103,15 @@ function Contacts({ row }: { row: OfferRow }) {
   )
 }
 
-/** A mark this reader may not make: shown, disabled, with a lock and the reason (the panel's rule for
- *  restricted actions), never hidden — a reader who can't mark sees why (CodeRabbit #270). */
-function LockedMark({ label, className }: { label: string; className: string }) {
+/** An action this reader may not take: shown, disabled, with a lock and the reason (the panel's rule for
+ *  restricted actions), never hidden — a reader who can't mark (or give) sees why (CodeRabbit #270, #273). */
+function LockedMark({ label, className, reason = MARK_RESTRICTED }: { label: string; className: string; reason?: string }) {
   return (
     <button
       type='button'
       disabled
-      title={MARK_RESTRICTED}
-      aria-label={`${label} (${MARK_RESTRICTED.toLowerCase()})`}
+      title={reason}
+      aria-label={`${label} (${reason.toLowerCase()})`}
       className={cn('inline-flex cursor-not-allowed items-center gap-1 opacity-60', className)}
     >
       <Lock aria-hidden='true' className='size-3' />
@@ -285,7 +287,7 @@ export function OffersList({ tz }: { tz: string }) {
     onSuccess: () => {
       setGiving(null)
       qc.invalidateQueries({ queryKey: ['offers'] })
-      toast.success('Given. It shows in their list, and they have a while to open it.')
+      toast.success(GIVEN_TEXT)
     },
     onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t give the lead. Try again.'),
   })
@@ -371,7 +373,10 @@ export function OffersList({ tz }: { tz: string }) {
                     busy={mark.isPending}
                     onMark={(state) => mark.mutate({ row: r, state })}
                     onOpenChat={() => openChat(r.conversation_id)}
-                    footer={data.lottery && canGive && !r.blind ? (
+                    footer={data.lottery && !r.blind && !canGive ? (
+                      <LockedMark label='Give to an agent' reason={GIVE_RESTRICTED}
+                        className='text-sm font-bold text-k-555555' />
+                    ) : data.lottery && canGive && !r.blind ? (
                       <div className='flex w-full items-center gap-2 sm:basis-full'>
                         {giving === r.conversation_id ? (
                           <label className='flex items-center gap-2 text-[13px] text-k-555555'>

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Laptop, Smartphone } from 'lucide-react'
+import { Laptop, Lock, Smartphone } from 'lucide-react'
 import { toast } from 'sonner'
 import { claimVisitor, getLiveVisitors, releaseVisitor, sendHello } from '@/lib/api'
 import type { LiveVisitor } from '@/lib/types'
@@ -13,7 +13,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  HELLO_MAX, ROW_LABEL, claimProblem, heldBy, helloProblem, onSite, ordered, rowState, sourceLabel,
+  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, claimProblem, heldBy, helloProblem, onSite, ordered, rowState, sourceLabel,
   suggestedHello, tripLine,
 } from './view'
 
@@ -68,9 +68,11 @@ export function LiveVisitors() {
   })
   const send = useMutation({
     mutationFn: ({ v, words }: { v: LiveVisitor; words: string }) => sendHello(v.visitor_id, words),
-    onSuccess: () => {
+    onSuccess: (_res, { v }) => {
       toast.success('Sent. If they tap Reply, the chat opens in your list, already yours.')
-      setWriting(null)
+      // Close the editor this hello came from, never another: the agent may have opened another visitor's
+      // while it went (CodeRabbit #273).
+      setWriting((cur) => (cur?.visitor_id === v.visitor_id ? null : cur))
       qc.invalidateQueries({ queryKey: ['live-visitors'] })
     },
     onError: (e: Error) => toast.error(e.message),
@@ -118,28 +120,34 @@ export function LiveVisitors() {
                     <span className='truncate text-sm text-k-202020'>{trip || 'No trip on the page'}</span>
                     <span className='truncate text-xs text-k-6b6b6b'>{v.page}</span>
                   </div>
-                  {pass.can_say_hello && (
-                    <div className='flex flex-none gap-2'>
-                      {state === 'free' && (
+                  <div className='flex flex-none gap-2'>
+                    {state === 'free' && (pass.can_say_hello ? (
+                      <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
+                        disabled={claim.isPending || held >= maxClaims} onClick={() => claim.mutate(v)}>
+                        Say hello
+                      </button>
+                    ) : (
+                      // Restricted: shown, disabled, with a lock and the reason (CodeRabbit #273).
+                      <button type='button' disabled title={HELLO_RESTRICTED}
+                        aria-label={`Say hello (${HELLO_RESTRICTED.toLowerCase()})`}
+                        className={cn(btn, 'inline-flex cursor-not-allowed items-center gap-1.5 bg-k-f2f2f2 text-k-555555')}>
+                        <Lock aria-hidden='true' className='size-3.5' />
+                        Say hello
+                      </button>
+                    ))}
+                    {pass.can_say_hello && state === 'mine' && (
+                      <>
                         <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
-                          disabled={claim.isPending || held >= maxClaims} onClick={() => claim.mutate(v)}>
-                          Say hello
+                          onClick={() => { setText(suggestedHello(v, firstName)); setWriting(v) }}>
+                          Write
                         </button>
-                      )}
-                      {state === 'mine' && (
-                        <>
-                          <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
-                            onClick={() => { setText(suggestedHello(v, firstName)); setWriting(v) }}>
-                            Write
-                          </button>
-                          <button type='button' className={cn(btn, 'bg-k-ffffff text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)]')}
-                            disabled={release.isPending} onClick={() => release.mutate(v)}>
-                            Let go
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
+                        <button type='button' className={cn(btn, 'bg-k-ffffff text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)]')}
+                          disabled={release.isPending} onClick={() => release.mutate(v)}>
+                          Let go
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </li>
               )
             })}

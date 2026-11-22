@@ -126,12 +126,12 @@ test('the lead panel keeps a CRM number, a save and a review with their own lead
   assert.match(panel, /if \(row\?\.id !== shownId\) \{[^}]*setManual\(''\)[^}]*\}/)
   // Each call names its lead; the answer patches only that lead. (A locked
   // conversation's "Push anyway" names it too: v2 PR-15.)
-  assert.match(panel, /push\.mutate\(\{ leadId: id \}\)/)
-  assert.match(panel, /push\.mutate\(\{ leadId, confirmLocked: true \}\)/)
-  assert.match(panel, /saveManual\.mutate\(\{ leadId: id, crmId: manual\.trim\(\) \}\)/)
+  assert.match(panel, /push\.mutate\(\{ leadId: id, conversationId: row\.conversation_id \}\)/)
+  assert.match(panel, /push\.mutate\(\{ leadId, conversationId, confirmLocked: true \}\)/)
+  assert.match(panel, /saveManual\.mutate\(\{ leadId: id, conversationId: row\.conversation_id, crmId: manual\.trim\(\) \}\)/)
   assert.equal((panel.match(/review\.mutate\(\{ leadId: id,/g) ?? []).length, 3)
   // Part 3: the same call, and an odd number asked about once (confirmOdd), still with its own lead.
-  assert.match(panel, /mutationFn: \(v: \{ leadId: string; crmId: string; confirmOdd\?: boolean \}\) => setLeadCrmId\(v\.leadId, v\.crmId, v\.confirmOdd\)/)
+  assert.match(panel, /mutationFn: \(v: \{ leadId: string; conversationId: string; crmId: string; confirmOdd\?: boolean \}\) =>\s+setLeadCrmId\(v\.leadId, v\.crmId, v\.confirmOdd\)/)
   assert.match(panel, /saveManual\.mutate\(\{ \.\.\.v, confirmOdd: true \}\)/)
   assert.match(panel, /if \(v\.leadId === id\) setManual\(''\)/)
   assert.match(panel, /if \(v\.next && nav\?\.next && v\.leadId === id\) nav\.next\(\)/)
@@ -157,4 +157,16 @@ test('only the odd-number answer asks again', () => {
   assert.equal(isOddCrmIdRefusal({ status: 422, message: 'crm_id must be non-empty' }), false)
   assert.equal(isOddCrmIdRefusal({ status: 409, message: 'This CRM id is already on chat #4242, another client.' }), false)
   assert.equal(isOddCrmIdRefusal(null), false)
+})
+
+test('a CRM write refreshes the chat it was for, where the CRM line is read from (CodeRabbit #273)', () => {
+  const panel = readFileSync(new URL('../src/features/leads/components/lead-panel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /queryKey: \['lead-conversation', row\?\.conversation_id\]/, 'the query the provenance line reads')
+  assert.match(panel, /if \(conversationId\) qc\.invalidateQueries\(\{ queryKey: \['lead-conversation', conversationId\] \}\)/)
+  // The push (both answers) and the manual save hand on the chat named when they started, never the open one.
+  const push = panel.slice(panel.indexOf('const push = useMutation'), panel.indexOf('const saveManual = useMutation'))
+  assert.equal((push.match(/refresh\(leadId, conversationId\)/g) ?? []).length, 2)
+  const save = panel.slice(panel.indexOf('const saveManual = useMutation'), panel.indexOf('const review = useMutation'))
+  assert.match(save, /refresh\(v\.leadId, v\.conversationId\)/)
+  assert.doesNotMatch(push + save, /row\.conversation_id|row\?\.conversation_id/)
 })

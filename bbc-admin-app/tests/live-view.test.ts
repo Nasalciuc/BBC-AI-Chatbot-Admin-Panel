@@ -3,8 +3,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
-  claimProblem, heldBy, helloProblem, onSite, ordered, rowState, sourceLabel, suggestedHello, tripLine,
+  HELLO_RESTRICTED, claimProblem, heldBy, helloProblem, onSite, ordered, rowState, sourceLabel, suggestedHello, tripLine,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -60,9 +61,39 @@ test('a hello is words, not too many, and never a contact or a link', () => {
   assert.match(helloProblem('call +1 214 208 5185'), /phone/)
 })
 
+test('a phone is a run of digits as the server reads it: dates and short numbers are words (CodeRabbit #273)', () => {
+  // Commas break the digits into short runs: the server finds no contact and sends this one.
+  assert.equal(helloProblem('I can check fares for Dec 14, 2026 and Jan 2, 2027.'), null)
+  assert.equal(helloProblem('Your dates 2026-12-14 - 2027-01-02 look open.'), null)
+  assert.equal(helloProblem('Leaving 14.12.2026, back 02.01.2027?'), null)
+  assert.equal(helloProblem('2 adults, 1 child, 3 nights, gate 12 - 34 - 56.'), null)
+  // A run the server takes for a phone, separators and all; a date that can't be one stays a phone.
+  assert.match(helloProblem('reach me on 214.208.5185'), /phone/)
+  assert.match(helloProblem('my number: (214) 208-5185'), /phone/)
+  assert.match(helloProblem('code 12.34.5678'), /phone/)
+  assert.match(helloProblem('2026-12-14 - 214 208 5185'), /phone/)
+})
+
 test('the first line names the place the page is about', () => {
   assert.match(suggestedHello(v({ trip: { to: 'IST' } }), 'Ana'), /^Hi, I'm Ana from the travel team\. Looking at flights to IST\?/)
   assert.doesNotMatch(suggestedHello(v(), ''), /undefined|null/)
+})
+
+test('a reader who may not say hello sees it locked with the reason, never missing (CodeRabbit #273)', () => {
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(page, /\{pass\.can_say_hello && \(\s*<div/, 'the actions are not hidden for a reader who can’t act')
+  assert.match(page, /state === 'free' && \(pass\.can_say_hello \? \(/)
+  assert.match(page, /disabled title=\{HELLO_RESTRICTED\}/)
+  assert.match(page, /<Lock aria-hidden='true'/)
+  assert.match(HELLO_RESTRICTED, /sales line/)
+})
+
+test('a hello that lands closes its own editor, never another visitor’s (CodeRabbit #273)', () => {
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  const send = page.slice(page.indexOf('const send = useMutation'), page.indexOf('const problem = writing'))
+  assert.match(send, /onSuccess: \(_res, \{ v \}\) =>/)
+  assert.match(send, /setWriting\(\(cur\) => \(cur\?\.visitor_id === v\.visitor_id \? null : cur\)\)/)
+  assert.doesNotMatch(send, /setWriting\(null\)/)
 })
 
 test('every refused claim says why in words', () => {

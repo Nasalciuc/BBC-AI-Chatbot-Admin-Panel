@@ -3,6 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { followupText, mineOnly } from '../src/features/tasks/offers.ts'
 
 const at = '2026-11-21T09:12:00Z'
@@ -27,4 +28,16 @@ test('mine is mine, and nobody is nothing', () => {
   const rows = [{ agent_id: 'me' }, { agent_id: 'other' }, { agent_id: null }, {}]
   assert.deepEqual(mineOnly(rows, 'me'), [{ agent_id: 'me' }])
   assert.deepEqual(mineOnly(rows, undefined), [])
+})
+
+test('the badge of leads given to me is server data: the query cache, not a store (CodeRabbit #273)', () => {
+  const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
+  assert.doesNotMatch(read('src/stores/live-store.ts'), /followupsNew/)
+  // The beat writes it — null when the server says nothing, the number (0 included) when it does…
+  assert.match(read('src/hooks/use-heartbeat.ts'),
+    /queryClient\.setQueryData<number \| null>\(FOLLOWUPS_NEW_KEY, typeof res\?\.followups_new === 'number' \? res\.followups_new : null\)/)
+  // …the menu reads it from the cache, which a sign-out clears with the rest.
+  assert.match(read('src/components/layout/app-sidebar.tsx'), /const followupsNew = useFollowupsNew\(\)/)
+  assert.match(read('src/hooks/use-followups-new.ts'), /queryFn: skipToken/)
+  assert.match(read('src/components/sign-out-dialog.tsx'), /queryClient\.clear\(\)/)
 })

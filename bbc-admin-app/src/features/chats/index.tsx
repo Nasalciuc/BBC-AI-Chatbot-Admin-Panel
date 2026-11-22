@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, useDeferredValue, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Clock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
@@ -6,7 +6,7 @@ import { getConversations, getNotifications, getRecentChats, searchMessages, api
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
-import { EMPTY_FILTERS, type ListFilters, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
+import { EMPTY_FILTERS, SEARCH_DEBOUNCE_MS, type ListFilters, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
 import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
@@ -17,6 +17,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
+import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { QueueSection } from './components/queue-section'
 import { TasksBand } from './components/tasks-band'
 import { ChatAvatar } from './components/chat-avatar'
@@ -188,7 +189,8 @@ export function Chats() {
     refetchInterval: dormant ? false : 30_000,
   })
   const staleIds = new Set(notifData?.stale_conversations?.map(s => s.id) ?? [])
-  const debouncedSearch = useDeferredValue(search)
+  // The requests wait for a pause in the typing; the box itself stays immediate (CodeRabbit #273).
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS)
   const queryClient = useQueryClient()
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -541,7 +543,18 @@ export function Chats() {
         <QueueSection onClaimed={handleTaken} canTake={!canBeReady || ready} flat={layout === 'narrow'} />
         {tabBar}
         <div className='flex gap-2'>
-          <div className='relative flex flex-1'>
+          <div
+            className='relative flex flex-1'
+            // The chats opened lately stay while focus is anywhere in the box and its list (Tab into a choice
+            // keeps them). They go once focus has left both: looked at a moment later, so a tap on a choice still
+            // lands and focus that came back meanwhile keeps them (CodeRabbit #273).
+            onFocus={() => setSearchFocused(true)}
+            onBlur={(e) => {
+              const region = e.currentTarget
+              if (region.contains(e.relatedTarget as Node | null)) return
+              setTimeout(() => { if (!region.contains(document.activeElement)) setSearchFocused(false) }, 150)
+            }}
+          >
             <label htmlFor='chat-search' className='sr-only'>Search chats</label>
             <Search aria-hidden='true' className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-k-6b6b6b' />
             <input
@@ -550,8 +563,6 @@ export function Chats() {
               placeholder='A name, #4810, an e-mail, a phone, IST'
               value={search}
               onChange={e => setSearch(e.target.value)}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
               className='h-10 w-full rounded-xl border-none bg-k-ffffff ps-9 pe-3 text-sm text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)] placeholder:text-k-8a8a8a focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
             />
             {searchFocused && !search && (recent.data?.data.length ?? 0) > 0 && (
@@ -700,7 +711,8 @@ export function Chats() {
         </div>
       )}
       {wantMessages && (
-        <section aria-label='What was said' className={cn('flex flex-col gap-1 pb-2', layout === 'narrow' ? 'px-0' : 'px-3.5')}>
+        // Its own scroll, a third of the screen at most: the list of chats under it keeps its share (CodeRabbit #273).
+        <section aria-label='What was said' className={cn('flex max-h-[35vh] flex-none flex-col gap-1 overflow-y-auto pb-2', layout === 'narrow' ? 'px-0' : 'px-3.5')}>
           {hits.isLoading ? (
             <p className='text-xs text-k-6b6b6b'>Searching the last 30 days…</p>
           ) : hits.isError ? (

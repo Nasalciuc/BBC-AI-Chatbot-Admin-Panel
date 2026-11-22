@@ -3,6 +3,7 @@ import { ChevronsUpDown, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-re
 import { useAuthStore } from '@/stores/auth-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { useLiveStore } from '@/stores/live-store'
+import { useFollowupsNew } from '@/hooks/use-followups-new'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { cn } from '@/lib/utils'
@@ -59,7 +60,7 @@ export function AppSidebar() {
   const role = (user?.role ?? 'sales') as UserRole
   const permissions = usePermissions(role)
   const livePass = useLiveStore((s) => s.pass)
-  const followupsNew = useLiveStore((s) => s.followupsNew)
+  const followupsNew = useFollowupsNew()
   const groups = getNavGroups(role, permissions, { live: !!livePass })
   const queueCount = useQueueStore((s) => s.queueCount)
 

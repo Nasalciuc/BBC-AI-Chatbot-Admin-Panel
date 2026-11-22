@@ -16,6 +16,7 @@ import { notifyName } from '@/lib/alert-prefs'
 import { syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { useLiveStore } from '@/stores/live-store'
+import { FOLLOWUPS_NEW_KEY } from '@/hooks/use-followups-new'
 import type { LivePass } from '@/lib/types'
 
 const HEARTBEAT_INTERVAL_MS = 5_000
@@ -106,8 +107,9 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     const processResponse = (res: HeartbeatResponse) => {
       useLiveStore.getState().setFromBeat(
         res?.live && typeof res.live.url === 'string' && typeof res.live.token === 'string' ? res.live : null,
-        typeof res?.followups_new === 'number' ? res.followups_new : null,
       )
+      // Server data: the query cache, so the sidebar reads it there (null = the server says nothing, 0 = none).
+      queryClient.setQueryData<number | null>(FOLLOWUPS_NEW_KEY, typeof res?.followups_new === 'number' ? res.followups_new : null)
       if (
         typeof res?.response_deadline_seconds === 'number' &&
         typeof res?.viewing_grace_seconds === 'number'

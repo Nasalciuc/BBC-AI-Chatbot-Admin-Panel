@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { getQaSample, getQaStats, setQaVerdict } from '@/lib/api'
 import type { QaItem, QaVerdict } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
-import { VERDICT_LABEL, countsLine, reasonsLine, statsLine, yesterdayInNewYork } from './view'
+import { VERDICT_LABEL, countsLine, dayFromLink, reasonsLine, statsLine } from './view'
 
 const VERDICT_CLS: Record<QaVerdict, string> = {
   ok: 'bg-k-e3f6ea text-k-0a6b35', problem: 'bg-k-fdecea text-k-b3261e', discuss: 'bg-k-fff3e0 text-k-8a4b00',
@@ -56,7 +56,9 @@ function Item({ item, day }: { item: QaItem; day: string }) {
 
 /** The morning QA sample: the chats picked from yesterday, why, a verdict on each; and each agent's week. */
 export function QaPage() {
-  const [day, setDay] = useState(yesterdayInNewYork)
+  // The morning e-mail links to its own day (/qa?day=…): open that one, not today's yesterday.
+  const search = useSearch({ strict: false }) as { day?: unknown }
+  const [day, setDay] = useState(() => dayFromLink(search.day))
   const sample = useQuery({ queryKey: ['qa-sample', day], queryFn: () => getQaSample(day) })
   const stats = useQuery({ queryKey: ['qa-stats'], queryFn: () => getQaStats(7) })
   return (

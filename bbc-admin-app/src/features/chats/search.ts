@@ -63,3 +63,7 @@ export function searchHint(text: string): string {
 export function messagesSearchable(text: string): boolean {
   return text.trim().length >= 3
 }
+
+/** How long the typing pauses before the list and the message search ask the server: one request per word,
+ *  not one per keystroke (the message search allows 20 a minute, CodeRabbit #273). */
+export const SEARCH_DEBOUNCE_MS = 400

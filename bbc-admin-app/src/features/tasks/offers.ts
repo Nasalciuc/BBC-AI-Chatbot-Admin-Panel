@@ -114,6 +114,14 @@ export function otherChats(r: Pick<OfferRow, 'conversation_id' | 'chats'>): stri
 /** Why a reader who may not mark sees the marks locked (QA reads the queue, the sales team marks it). */
 export const MARK_RESTRICTED = 'Only the sales team marks offers'
 
+/** Why a reader who may not give a lead by hand sees the control locked: the server's words (owner, admin,
+ *  dev and supervisors give, app/api/followups.py). */
+export const GIVE_RESTRICTED = 'Only managers give leads by hand'
+
+/** The toast after a give by hand: no clock to open it (the lottery's ack_by is the lottery's own), so no
+ *  deadline in the words (CodeRabbit #273). */
+export const GIVEN_TEXT = 'Given. It now shows in their list.'
+
 /** "Sent · Agent One · 10:42" (today) or "Not needed · Agent One · Tue 17 Nov, 09:05". */
 export function doneLine(d: Pick<OfferDone, 'state' | 'by_name' | 'at'>, nowMs: number, tz: string): string {
   const at = Date.parse(d.at)

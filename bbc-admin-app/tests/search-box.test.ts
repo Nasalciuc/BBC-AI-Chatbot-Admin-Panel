@@ -3,7 +3,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { EMPTY_FILTERS, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
+import { readFileSync } from 'node:fs'
+import { EMPTY_FILTERS, SEARCH_DEBOUNCE_MS, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
 
 test('the box says what it will look for, as the server reads it', () => {
   assert.equal(searchHint('#3403'), 'The chat number')
@@ -37,4 +38,33 @@ test('half-typed values are not sent', () => {
 test('what was said is searched from three characters', () => {
   assert.equal(messagesSearchable('ab'), false)
   assert.equal(messagesSearchable(' abc '), true)
+})
+
+const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
+
+test('the requests wait for a pause in the typing, not one per keystroke (CodeRabbit #273)', () => {
+  const page = read('src/features/chats/index.tsx')
+  assert.doesNotMatch(page, /useDeferredValue/, 'a deferred value still hands every prefix on')
+  assert.match(page, /const debouncedSearch = useDebouncedValue\(search, SEARCH_DEBOUNCE_MS\)/)
+  assert.match(page, /queryKey: \['message-hits', debouncedSearch\.trim\(\)\], queryFn: \(\) => searchMessages\(debouncedSearch\.trim\(\)\)/)
+  assert.ok(SEARCH_DEBOUNCE_MS >= 300 && SEARCH_DEBOUNCE_MS <= 600, String(SEARCH_DEBOUNCE_MS))
+  const hook = read('src/hooks/use-debounced-value.ts')
+  assert.match(hook, /setTimeout\(\(\) => setSettled\(value\), ms\)/)
+  assert.match(hook, /return \(\) => clearTimeout\(timer\)/)
+})
+
+test('the chats opened lately stay while focus is in the box or the list (CodeRabbit #273)', () => {
+  const page = read('src/features/chats/index.tsx')
+  const box = page.slice(page.indexOf("className='relative flex flex-1'"), page.indexOf("<label htmlFor='chat-search'"))
+  assert.match(box, /if \(region\.contains\(e\.relatedTarget as Node \| null\)\) return/)
+  // Focus back in the region by the time the close is looked at keeps the list (a quick blur and refocus).
+  assert.match(box, /setTimeout\(\(\) => \{ if \(!region\.contains\(document\.activeElement\)\) setSearchFocused\(false\) \}, 150\)/)
+  // The input no longer closes the list on its own blur, whatever has the focus next.
+  const input = page.slice(page.indexOf("id='chat-search'"), page.indexOf("placeholder:text-k-8a8a8a"))
+  assert.doesNotMatch(input, /onBlur|onFocus/)
+})
+
+test('what was said scrolls in its own region (CodeRabbit #273)', () => {
+  const page = read('src/features/chats/index.tsx')
+  assert.match(page, /<section aria-label='What was said' className=\{cn\('flex max-h-\[35vh\] flex-none flex-col gap-1 overflow-y-auto/)
 })
