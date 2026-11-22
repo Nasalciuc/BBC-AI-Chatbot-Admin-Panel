@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -155,6 +156,65 @@ func TestABeatListsTheVisitorWithOnlyWhatThePanelMayShow(t *testing.T) {
 		trip["depart"] != "2026-12-14" || trip["pax"] != float64(2) || v["source"] != "kayak" ||
 		v["seconds_on_site"] != float64(30) || v["claimed_by"] != nil {
 		t.Errorf("listed %v", v)
+	}
+}
+
+func TestABeatCarriesThePageKindAndTheStepsTakenNeverWhatWasTyped(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	beat := map[string]any{
+		"page": "/search", "source": "site", "page_type": "search",
+		"activity": "search:JFK-LHR:2026-12-14;quote_opened;dana@example.com;quote_step:2;call me at 555 0100;" +
+			"quote_invalid:phone|dates;contact:sms;quote_failed:network",
+	}
+	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, beat); w.Code != http.StatusOK {
+		t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+	}
+	w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	body := w.Body.String()
+	for _, leak := range []string{"dana@example.com", "call me", "555", "contact:sms"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("the list carries %q: %s", leak, body)
+		}
+	}
+	v := decode(t, w)["data"].([]any)[0].(map[string]any)
+	got := fmt.Sprint(v["activity"])
+	if v["page_type"] != "search" ||
+		got != "[search:JFK-LHR:2026-12-14 quote_opened quote_step:2 quote_invalid:phone|dates quote_failed:network]" {
+		t.Errorf("listed page_type=%v activity=%v", v["page_type"], got)
+	}
+}
+
+func TestOnlyKnownPageKindsAndTheLastStepsAreKept(t *testing.T) {
+	if got := cleanBeat(vid1, beatIn{PageType: "checkout"}).PageType; got != "" {
+		t.Errorf("page_type %q", got)
+	}
+	steps := make([]string, 15)
+	for i := range steps {
+		steps[i] = fmt.Sprintf("quote_step:%d", i+1)
+	}
+	got := strings.Split(cleanActivity(strings.Join(steps, ";")), ";")
+	if len(got) != ActivitySteps || got[0] != "quote_step:4" || got[ActivitySteps-1] != "quote_step:15" {
+		t.Errorf("kept %v", got)
+	}
+	if cleanActivity(strings.Repeat("quote_opened;", 60)) != "" {
+		t.Error("a line over 600 characters is dropped whole")
+	}
+	for _, ok := range []string{"search", "search:?-IST", "search:JFK-?:2026-12-14", "search:2026-12-14", "contact",
+		"contact:whatsapp", "quote_invalid", "quote_submitted", "quote_submitting"} {
+		if cleanActivity(ok) != ok {
+			t.Errorf("dropped %q", ok)
+		}
+	}
+	for _, bad := range []string{"search:jfk-lhr", "search:JFK-LHR:14 Dec", "quote_step:123", "quote_invalid:ssn",
+		"quote_failed", "contact:+15550100", " quote_opened"} {
+		if cleanActivity(bad) != "" {
+			t.Errorf("kept %q", bad)
+		}
+	}
+	// Rule 5: a beat with neither stays as it was, and lists without them.
+	if v := cleanBeat(vid1, beatIn{Page: "/"}); v.PageType != "" || v.Activity != "" {
+		t.Errorf("%+v", v)
 	}
 }
 

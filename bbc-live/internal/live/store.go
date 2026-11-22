@@ -105,6 +105,9 @@ type Visit struct {
 	Site     string
 	ChatOpen bool
 	HasChat  bool
+	// What the site says the page is, and the steps the visitor took there (";" between them).
+	PageType string
+	Activity string
 }
 
 func flag(b bool) string {
@@ -124,6 +127,7 @@ func (s *Store) Beat(ctx context.Context, v Visit) error {
 		"page", v.Page, "from", v.Trip.From, "to", v.Trip.To, "depart", v.Trip.Depart,
 		"return", v.Trip.Return, "cabin", v.Trip.Cabin, "pax", pax, "source", v.Source,
 		"device", v.Device, "site", v.Site, "chat_open", flag(v.ChatOpen), "has_chat", flag(v.HasChat),
+		"page_type", v.PageType, "activity", v.Activity,
 	}
 	args := append([]string{v.ID, strconv.FormatInt(s.now().Unix(), 10), strconv.Itoa(VisitTTL)}, fields...)
 	_, err := s.eval(ctx, beatLua, []string{visitKey(v.ID), VisitorsKey}, args...)
@@ -145,6 +149,9 @@ type Listed struct {
 	HasChat   bool   `json:"has_chat"`
 	ClaimedBy string `json:"claimed_by,omitempty"`
 	Dismissed bool   `json:"dismissed"`
+	// The kind of page (home, search, quote, ...) and the visitor's last steps on the site, oldest first.
+	PageType string   `json:"page_type,omitempty"`
+	Activity []string `json:"activity,omitempty"`
 }
 
 // Live lists who beat in the last Window seconds, longest on the site first.
@@ -170,7 +177,10 @@ func (s *Store) Live(ctx context.Context) ([]Listed, error) {
 		l := Listed{
 			ID: v.Array[i].Str, FirstAt: first, LastAt: last, Page: h["page"], Source: h["source"],
 			Device: h["device"], Site: h["site"], ChatOpen: h["chat_open"] == "1", HasChat: h["has_chat"] == "1",
-			ClaimedBy: v.Array[i+2].Str, Dismissed: v.Array[i+3].Int == 1,
+			ClaimedBy: v.Array[i+2].Str, Dismissed: v.Array[i+3].Int == 1, PageType: h["page_type"],
+		}
+		if h["activity"] != "" {
+			l.Activity = strings.Split(h["activity"], ";")
 		}
 		if first > 0 {
 			l.OnSite = now - first

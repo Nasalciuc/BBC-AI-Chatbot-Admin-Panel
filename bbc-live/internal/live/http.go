@@ -173,6 +173,8 @@ type beatIn struct {
 	Site     string `json:"site"`
 	ChatOpen bool   `json:"chat_open"`
 	HasChat  bool   `json:"has_chat"`
+	PageType string `json:"page_type"`
+	Activity string `json:"activity"`
 }
 
 var (
@@ -183,7 +185,40 @@ var (
 	sources = map[string]bool{"kayak": true, "ads": true, "site": true}
 	devices = map[string]bool{"phone": true, "computer": true}
 	sites   = map[string]bool{"bbc": true, "bct": true}
+	// What the site says the page is (the widget's siteSignals.ts PAGE_TYPES).
+	pageTypes = map[string]bool{"home": true, "route": true, "destination": true, "origin": true, "airline": true,
+		"deals": true, "search": true, "flight": true, "quote": true, "thank_you": true, "blog": true, "about": true,
+		"legal": true, "other": true}
+	// One step of what the visitor did on the site (the widget's siteSignals.ts activityToken): codes, dates, a
+	// step number, kinds of fields and channels from fixed lists. Never what they typed.
+	activityStep = regexp.MustCompile(`^(?:search(?::(?:[A-Z]{3}|\?)-(?:[A-Z]{3}|\?))?(?::\d{4}-\d{2}-\d{2})?` +
+		`|quote_opened|quote_step(?::\d{1,2})?` +
+		`|quote_invalid(?::(?:name|email|phone|origin|destination|dates|passengers|cabin|trip_type|message|consent|captcha|other)` +
+		`(?:\|(?:name|email|phone|origin|destination|dates|passengers|cabin|trip_type|message|consent|captcha|other))*)?` +
+		`|quote_submitting|quote_failed:(?:server|network|captcha|other)|quote_submitted` +
+		`|contact(?::(?:phone|whatsapp|email))?)$`)
 )
+
+// ActivitySteps is how many of the visitor's last steps the list keeps.
+const ActivitySteps = 12
+
+// cleanActivity keeps the steps of the known shapes, the last ActivitySteps of them, in order; anything else
+// in the line (an address, a sentence, a step of a shape it doesn't know) is dropped.
+func cleanActivity(line string) string {
+	if line == "" || len(line) > 600 {
+		return ""
+	}
+	kept := make([]string, 0, ActivitySteps)
+	for _, step := range strings.Split(line, ";") {
+		if activityStep.MatchString(step) {
+			kept = append(kept, step)
+		}
+	}
+	if len(kept) > ActivitySteps {
+		kept = kept[len(kept)-ActivitySteps:]
+	}
+	return strings.Join(kept, ";")
+}
 
 func pick(ok map[string]bool, v string) string {
 	if ok[v] {
@@ -200,7 +235,8 @@ func match(re *regexp.Regexp, v string) string {
 }
 
 // cleanBeat keeps what the panel may show: a path without its query (a query can carry an e-mail),
-// airport codes, dates, a cabin, a count. Nothing the visitor typed passes.
+// airport codes, dates, a cabin, a count, the kind of page, the steps the visitor took on the site.
+// Nothing the visitor typed passes.
 func cleanBeat(vid string, in beatIn) Visit {
 	page := in.Page
 	if i := strings.IndexAny(page, "?#"); i >= 0 {
@@ -224,6 +260,7 @@ func cleanBeat(vid string, in beatIn) Visit {
 			Return: match(isoDay, in.Return), Cabin: pick(cabins, in.Cabin), Pax: pax},
 		Source: source, Device: pick(devices, in.Device), Site: pick(sites, in.Site),
 		ChatOpen: in.ChatOpen, HasChat: in.HasChat,
+		PageType: pick(pageTypes, in.PageType), Activity: cleanActivity(in.Activity),
 	}
 }
 
