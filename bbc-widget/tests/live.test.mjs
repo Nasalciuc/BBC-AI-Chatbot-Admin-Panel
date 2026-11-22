@@ -254,3 +254,117 @@ test('a pass is kept only for the visitor id it was asked for (CodeRabbit #273, 
   assert.match(ask, /visitor_id: visitorId,/)
   assert.match(ask, /if \(cfg\.enabled && cfg\.pass && ensureVisitorId\(\) === visitorId\) keepPass\(cfg\.pass\)/)
 })
+
+// ── The owner's agent-first test (22 Nov; agentTest.ts, bbc-chatbot-api app/services/agent_first_test.py) ─────
+
+test('the side is the server\'s word, kept for the visit and put on every event', async () => {
+  const at = await import('../src/agentTest.ts')
+  at.resetAgentTestForTests()
+  assert.equal(at.side(), null)
+  assert.deepEqual(at.agentTestProps(), {})
+  for (const bad of ['Agent', 'control', 1, null, undefined, {}]) assert.equal(at.readSide(bad), null, String(bad))
+  at.noteSide('agent')
+  assert.equal(at.side(), 'agent')
+  assert.deepEqual(at.agentTestProps(), { agent_test: 'agent' })
+  at.noteSide('alex')
+  assert.deepEqual(at.agentTestProps(), { agent_test: 'alex' })
+  at.noteSide(undefined) // an answer without a side: the test is off
+  assert.equal(at.side(), null)
+  assert.deepEqual(at.agentTestProps(), {})
+  // posthog.ts sends it with every event the widget captures, the event's own properties last.
+  const ph = readFileSync(join(here, '..', 'src', 'posthog.ts'), 'utf8')
+  assert.match(ph, /active\(\)\?\.capture\(event, \{ \.\.\.agentTestProps\(\), \.\.\.properties \}\)/)
+})
+
+test('Alex\'s wait: the server\'s seconds, held to its cap, and the time he comes', async () => {
+  const at = await import('../src/agentTest.ts')
+  at.resetAgentTestForTests()
+  assert.equal(at.waitSeconds(120), 120)
+  assert.equal(at.waitSeconds(44.2), 45)
+  for (const bad of [0, -5, 601, '120', null, Number.NaN, Infinity]) assert.equal(at.waitSeconds(bad), null, String(bad))
+  assert.equal(at.alexAt(), null)
+  assert.equal(at.alexWaitLeftMs(NOW), 0)
+  const when = at.holdAlex(120, null, NOW)
+  assert.equal(when, Math.ceil(NOW / 1000) + 120, 'no time from the server: this clock')
+  assert.equal(at.alexAt(), when)
+  assert.equal(at.alexWaitLeftMs(NOW), 120_000)
+  assert.equal(at.alexWaitLeftMs(NOW + 121_000), 0)
+  // The server's time goes in the beat; the wait still runs by this browser's clock (a visitor's clock may be off).
+  const server = Math.floor(NOW / 1000) + 900
+  assert.equal(at.holdAlex(60, server, NOW), server)
+  assert.equal(at.alexAt(), server)
+  assert.equal(at.alexWaitLeftMs(NOW), 60_000)
+  assert.equal(at.alexShown(), false)
+  at.noteAlexShown()
+  assert.equal(at.alexShown(), true)
+})
+
+test('the live answer carries the side, Alex\'s side without a pass', () => {
+  const pass = `b1.${'a'.repeat(20)}.${'0'.repeat(64)}`
+  assert.deepEqual(readConfig({ enabled: false, test: 'alex' }), { enabled: false, test: 'alex' })
+  assert.deepEqual(readConfig({ enabled: false, later: true, test: 'agent' }), { enabled: false, later: true, test: 'agent' })
+  const on = readConfig({ enabled: true, url: 'https://live.test', pass, hello: true, test: 'agent', hold_s: 120 })
+  assert.equal(on.enabled, true)
+  assert.equal(on.test, 'agent')
+  // Rule 5: no side named (the test off), or a word that isn't one: none kept.
+  assert.equal(readConfig({ enabled: true, url: 'https://live.test', pass }).test, undefined)
+  assert.equal(readConfig({ enabled: false, test: 'control' }).test, undefined)
+})
+
+test('a beat says when Alex comes, only as a whole number of seconds', () => {
+  const base = { path: '/', trip: null, utm: {}, phone: false, site: 'bbc', chatOpen: false, hasChat: false }
+  assert.equal(beatBody({ ...base, alexAt: 1_900_000_120 }).alex_at, 1_900_000_120)
+  for (const bad of [null, undefined, 0, -1, 1.5, Number.NaN]) {
+    assert.equal(beatBody({ ...base, alexAt: bad }).alex_at, undefined, String(bad))
+  }
+  const hook = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  assert.match(hook, /alexAt: alexAt\(\) \}\)/)
+  assert.match(hook, /if \(res\.ok\) noteSide\(cfg\.test\)/)
+  assert.match(hook, /posthog\?\.capture\('live_hello_shown', \{ site, after_alex: alexShown\(\) \}\)/)
+})
+
+test('an offer answer\'s wait and side are read, anything else dropped', async () => {
+  const { fetchProactiveOffer } = await import('../src/api.ts')
+  const realFetch = globalThis.fetch
+  const ask = () => fetchProactiveOffer('https://api.test', { visitor_id: 'visitor-0001', trigger: 'kayak', trip: null, site: 'bbc' }, 2000)
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ show: false, arm: 'agent_first', trigger: 'kayak',
+      message: null, quick_replies: [], reason: 'waiting', test: 'agent', retry_after_s: 120, alex_at: 1_900_000_120 }), { status: 200 })
+    const held = await ask()
+    assert.equal(held.arm, 'agent_first')
+    assert.equal(held.retry_after_s, 120)
+    assert.equal(held.alex_at, 1_900_000_120)
+    assert.equal(held.test, 'agent')
+    assert.equal(held.reason, 'waiting')
+    globalThis.fetch = async () => new Response(JSON.stringify({ show: true, arm: 'proactive', message: 'Hi', quick_replies: [],
+      test: 'agent', after_hold: true }), { status: 200 })
+    const late = await ask()
+    assert.equal(late.after_hold, true)
+    globalThis.fetch = async () => new Response(JSON.stringify({ show: false, arm: 'agent_first', message: null, quick_replies: [],
+      test: 'robot', retry_after_s: 99999, reason: 'because', after_hold: 'yes', alex_at: 12.5 }), { status: 200 })
+    const odd = await ask()
+    for (const k of ['test', 'retry_after_s', 'reason', 'after_hold', 'alex_at']) assert.equal(odd[k], undefined, k)
+    // The same cap as agentTest.ts, which api.ts can't import (it imports nothing but types).
+    const { offerWait } = await import('../src/api.ts')
+    const at = await import('../src/agentTest.ts')
+    for (const v of [0, 1, 44.2, 600, 601, '9']) assert.equal(offerWait(v), at.waitSeconds(v), String(v))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('while Alex waits no moment is asked, and the wait gives the moment back', () => {
+  const src = readFileSync(join(here, '..', 'src', 'proactive.ts'), 'utf8')
+  assert.match(src, /if \(res\) noteSide\(res\.test\)/)
+  const held = src.slice(src.indexOf("if (res && !res.show && res.arm === AGENT_FIRST_ARM && res.retry_after_s) {"))
+  assert.ok(held.length > 0, 'the wait has its branch')
+  const branch = held.slice(0, held.indexOf('return'))
+  assert.match(branch, /holdAlex\(res\.retry_after_s, res\.alex_at\)/)
+  assert.match(branch, /if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)/)
+  assert.match(branch, /fired = false/)
+  // The wait sits before the moment is picked: nothing is asked again until it is over.
+  const ev = src.slice(src.indexOf('const evaluate = () => {'))
+  assert.ok(ev.indexOf('if (alexWaitLeftMs(now) > 0) return') < ev.indexOf('const trigger = pickTrigger(state)'))
+  assert.match(src, /noteAlexShown\(\)\n\s+posthog\?\.capture\('proactive_shown'/)
+  assert.match(src, /\.\.\.\(res\.after_hold \? \{ after_hold: true \} : \{\}\)/)
+})

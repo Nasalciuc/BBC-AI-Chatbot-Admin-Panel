@@ -20,6 +20,7 @@
  * form we recognise (the site's HTML changed: the quote moment would otherwise die silently).
  */
 import { useEffect, useRef, useState } from 'preact/hooks'
+import { alexWaitLeftMs, holdAlex, noteAlexShown, noteSide } from './agentTest'
 import { ensureVisitorId, fetchProactiveOffer, offerMeasures, type OfferConfirm, type OfferTiming } from './api'
 import type { ChannelKind, ChatButton } from './channel'
 import brand from './config'
@@ -73,6 +74,9 @@ export interface ProactiveOpening {
    *  the chat opens on its field, and the conversation starts with what they leave there. */
   firstChannel?: ChannelKind
 }
+
+// The arm an offer answer names while the owner's agent-first test keeps Alex quiet (agent_first_test.HELD_ARM).
+const AGENT_FIRST_ARM = 'agent_first'
 
 // sessionStorage: this visit's moment was used ('asked', 'shown', or 'chat' when the visitor opened the
 // chat themselves first).
@@ -595,6 +599,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         device,
         ...(rowAt ? { place: 'form' as const } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
+      // The owner's agent-first test: the side this answer names is the visit's, on every event from here on.
+      if (res) noteSide(res.test)
       let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, askedAds) : null
       // E1: a popup of the site opened while the answer was on its way — the card waits for it to close. The
       // quote card too, looking past the quote form's own modal as its moment did (CodeRabbit #270).
@@ -638,6 +644,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         fired = false
         return
       }
+      if (res && !res.show && res.arm === AGENT_FIRST_ARM && res.retry_after_s) {
+        // The owner's agent-first test (agentTest.ts): Alex waits for an agent, who sees the visitor in "On the
+        // site now" with the time he comes. The moment goes back; evaluate asks again once the wait is over.
+        // A "no" from this arm (an agent said hello, or the visitor said not now) keeps the moment used.
+        holdAlex(res.retry_after_s, res.alex_at)
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
       if (disposed || !res || !res.show || !res.message || passed) return
       // D1: the server gave the row's words, and the form is still there to stand beside.
       const row = res.variant === 'row' && !!res.buttons?.length && !!rowAt?.isConnected
@@ -663,8 +678,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       shownRef.current = opening
       setQuiet(true)
       setOffer(opening)
+      noteAlexShown()
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
+        // The agent-first test: the card came because Alex's wait ran out with no hello.
+        ...(res.after_hold ? { after_hold: true } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
         // The phone card led with the trip (ADR A3): measured against the cards that did not.
         ...(surface === 'card' && opening.headline ? { titled: true } : {}),
@@ -721,6 +739,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         off: offMoments(),
         siteSignals: !!sitePage(),
       }
+      // The agent-first test: while Alex waits for an agent, no moment is asked (agentTest.ts).
+      if (alexWaitLeftMs(now) > 0) return
       const trigger = pickTrigger(state)
       if (!trigger) return
       // E1: no card over a popup of the site; it comes once the popup closes (the quote moment looks past the

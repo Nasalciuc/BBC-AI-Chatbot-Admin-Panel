@@ -16,6 +16,8 @@ export interface LiveConfig {
   pass?: string
   /** No pass for now (the API's store unreachable, the API down or busy): ask again later, don't stop. */
   later?: boolean
+  /** The owner's agent-first test (agentTest.ts): this visitor's side, on/off answers alike while it runs. */
+  test?: 'agent' | 'alex'
 }
 
 export interface LiveHello {
@@ -44,6 +46,8 @@ export interface Beat {
   page_type?: string
   /** The visitor's last steps on the site (siteSignals.ts activityLine): codes, dates, steps, kinds. */
   activity?: string
+  /** The agent-first test: when Alex's card may come (unix seconds), while he waits for an agent. */
+  alex_at?: number
 }
 
 /** siteSignals.ts PAGE_TYPES, here because this file imports nothing but types (tests/live.test.mjs pins them). */
@@ -64,12 +68,15 @@ const PASS = /^b1\.[A-Za-z0-9_-]{1,400}\.[0-9a-f]{64}$/
 export function readConfig(raw: unknown): LiveConfig {
   if (!raw || typeof raw !== 'object') return { enabled: false }
   const r = raw as Record<string, unknown>
-  if (r.later === true) return { enabled: false, later: true }
-  if (r.enabled !== true || typeof r.url !== 'string' || !/^https?:\/\/[^\s/]+/.test(r.url)) return { enabled: false }
-  if (typeof r.pass !== 'string' || !PASS.test(r.pass)) return { enabled: false }
+  // The agent-first test's side rides on every answer, "off" included: Alex's side is never listed.
+  const side: LiveConfig['test'] = r.test === 'agent' || r.test === 'alex' ? r.test : undefined
+  const test = side ? { test: side } : {}
+  if (r.later === true) return { enabled: false, later: true, ...test }
+  if (r.enabled !== true || typeof r.url !== 'string' || !/^https?:\/\/[^\s/]+/.test(r.url)) return { enabled: false, ...test }
+  if (typeof r.pass !== 'string' || !PASS.test(r.pass)) return { enabled: false, ...test }
   const n = (v: unknown, d: number) => (typeof v === 'number' && v >= 1 && v <= 600 ? v : d)
   return { enabled: true, url: r.url.replace(/\/+$/, ''), after_s: n(r.after_s, AFTER_S), beat_s: n(r.beat_s, BEAT_S),
-    hello: r.hello === true, pass: r.pass }
+    hello: r.hello === true, pass: r.pass, ...test }
 }
 
 /** A kept pass worth showing the API again: the shape only (the API checks the rest). */
@@ -114,6 +121,8 @@ export function beatBody(o: {
   /** The page's kind and the visitor's steps, as the site told the widget (siteSignals.ts); bbc-live checks them
    *  again, step by step. */
   pageType?: string | null; activity?: string
+  /** The agent-first test: when Alex's card may come (agentTest.ts alexAt), unix seconds. */
+  alexAt?: number | null
 }): Beat {
   const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
   const t = o.trip
@@ -135,6 +144,7 @@ export function beatBody(o: {
   }
   if (o.pageType && BEAT_PAGE_TYPES.includes(o.pageType)) b.page_type = o.pageType
   if (o.activity && o.activity.length <= 300) b.activity = o.activity
+  if (typeof o.alexAt === 'number' && Number.isInteger(o.alexAt) && o.alexAt > 0) b.alex_at = o.alexAt
   return b
 }
 

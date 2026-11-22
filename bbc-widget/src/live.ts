@@ -10,11 +10,13 @@
  */
 
 import { useEffect, useRef, useState } from 'preact/hooks'
+import { alexAt, alexShown, noteSide } from './agentTest'
 import { apiFetch, ensureVisitorId } from './api'
 import {
   afterRefusedPass, beatBody, failedAsk, keptPass, nextPollDelay, readConfig, readHello, renewalOf, type LiveConfig,
   type LiveHello, type Renewal,
 } from './liveRead'
+import { posthog } from './posthog'
 import { activityLine, siteEvents, sitePage } from './siteSignals'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
@@ -58,6 +60,8 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
     body: JSON.stringify({ visitor_id: visitorId, live_pass: storedPass() }),
   })
   const cfg = res.ok ? readConfig(await res.json()) : failedAsk(res.status)
+  // The owner's agent-first test: an answer names this visitor's side (Alex's side gets no pass, never listed).
+  if (res.ok) noteSide(cfg.test)
   // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
   // inherit the last one's pass, which would only be refused (CodeRabbit #273).
   if (cfg.enabled && cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
@@ -118,7 +122,9 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         // kind of page and the steps on the site, as the site told the widget; never what they typed.
         const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
           phone: isPhone(), site, chatOpen: chatOpenRef.current, hasChat: false,
-          pageType: sitePage()?.pageType ?? null, activity: activityLine(siteEvents()) })
+          pageType: sitePage()?.pageType ?? null, activity: activityLine(siteEvents()),
+          // The agent-first test: when Alex's card may come, so the agent sees how long they have.
+          alexAt: alexAt() })
         liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body) })
           .then(res => { if (res.status === 401) void renew() })
@@ -140,7 +146,13 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         status = res.status
         if (res.status === 200) {
           const h = readHello(await res.json(), Date.now())
-          if (h && !stopped) { setHello(h); return }
+          if (h && !stopped) {
+            setHello(h)
+            // The agent-first test's first step for the agent's words, as proactive_shown is for Alex's; after_alex:
+            // Alex's card showed on this visit first, so this hello is a second word.
+            posthog?.capture('live_hello_shown', { site, after_alex: alexShown() })
+            return
+          }
         }
         if (res.status === 401) {
           // Renewed since this poll began (by the beat): wait with the new pass. A renewal that failed for now

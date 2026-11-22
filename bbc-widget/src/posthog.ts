@@ -1,4 +1,5 @@
 import posthogSdk from 'posthog-js'
+import { agentTestProps } from './agentTest'
 import { choosePostHog, sitePostHogOf, watchSitePostHog, type PostHogLike } from './posthogChoice'
 
 // The public project token (phc_…): PostHog meant it for the browser, so its
@@ -81,7 +82,9 @@ function active(): PostHogLike | undefined {
  */
 export const posthog = {
   capture(event: string, properties?: Record<string, unknown>): void {
-    try { active()?.capture(event, properties) } catch { /* tracking never breaks the chat */ }
+    // The side of the owner's agent-first test rides on every event while the visit has one (agentTest.ts):
+    // the comparison reads per side, the card's moments, the hellos and the leads alike.
+    try { active()?.capture(event, { ...agentTestProps(), ...properties }) } catch { /* tracking never breaks the chat */ }
   },
   identify(distinctId: string): void {
     try { active()?.identify?.(distinctId) } catch { /* tracking never breaks the chat */ }

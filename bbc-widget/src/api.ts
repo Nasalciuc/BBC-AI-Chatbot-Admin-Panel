@@ -5,6 +5,7 @@
  * missing token for 7 days, then refuses it).
  */
 
+import type { AgentTestSide } from './agentTest'
 import type { ButtonKind, ChannelKind, ChatButton } from './channel'
 
 const BUTTON_KINDS: readonly ButtonKind[] = ['sms', 'email', 'wait', 'change']
@@ -86,6 +87,16 @@ export interface ProactiveOffer {
   /** ADR A3: the phone card's title (the trip) and its one question; the chat opens with `message`. */
   headline?: string
   card_text?: string
+  /** The owner's agent-first test (agentTest.ts): the visitor's side, on every answer while the test runs. */
+  test?: AgentTestSide
+  /** arm "agent_first": Alex waits for an agent; ask again after this many seconds (the moment is given back). */
+  retry_after_s?: number
+  /** ...and when he comes by the server's clock (unix seconds), for the beat. */
+  alex_at?: number
+  /** arm "agent_first" without a wait: why the card doesn't come ("greeted", "declined"). */
+  reason?: string
+  /** The card comes because Alex's wait ran out with no hello. */
+  after_hold?: boolean
 }
 
 /** The longest card title the server sends (app/services/proactive.py, TITLE_MAX): the same number. */
@@ -106,6 +117,12 @@ export function offerVariant(v: unknown): string | undefined {
 export type OfferFail = 'timeout' | 'network' | 'http' | 'shape'
 
 /** How an offer request went, for the measurements: how long it took, and why no answer came (null: one did). */
+/** The seconds an agent-first "wait" answer gives (agentTest.ts waitSeconds; the server's cap, 600): this file
+ *  imports nothing but types, so the tests run it in node. */
+export function offerWait(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 600 ? Math.ceil(v) : null
+}
+
 export interface OfferTiming {
   ms: number
   fail: OfferFail | null
@@ -177,6 +194,11 @@ export async function fetchProactiveOffer(
       ...(buttons.length ? { buttons } : {}),
       ...(data.lang === 'es' || data.lang === 'fr' ? { lang: data.lang } : {}),
       ...(headline && cardText ? { headline, card_text: cardText } : {}),
+      ...(data.test === 'agent' || data.test === 'alex' ? { test: data.test as AgentTestSide } : {}),
+      ...(offerWait(data.retry_after_s) !== null ? { retry_after_s: offerWait(data.retry_after_s) as number } : {}),
+      ...(Number.isInteger(data.alex_at) && data.alex_at > 0 ? { alex_at: data.alex_at as number } : {}),
+      ...(data.reason === 'greeted' || data.reason === 'declined' || data.reason === 'waiting' ? { reason: data.reason } : {}),
+      ...(data.after_hold === true ? { after_hold: true } : {}),
     })
   } catch (e) {
     // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON (a
