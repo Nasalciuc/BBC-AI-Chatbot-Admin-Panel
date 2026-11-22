@@ -289,6 +289,8 @@ async def list_conversations(
             blind_viewer=(user.get("id") or "") if user.get("role") in db._OPERATOR_ROLES else None,
             filters=filters,
             search_route_ids=await _route_ids_for(search),
+            # The rows below are masked for a supervisor: what they hide is then found only whole.
+            masked_search=user.get("role") == "supervisor",
         )
         if handled_by == "human":
             rows = [c for c in rows if c.get("agent_state") == "active"]

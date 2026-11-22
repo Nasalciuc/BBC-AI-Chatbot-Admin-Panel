@@ -934,8 +934,9 @@ def _readable_inner(readable: str) -> str:
 
 
 def _apply_search(q, search: str, readable: Optional[str], with_supervisor_cols: bool,
-                  route_ids: Optional[list[str]]):
-    """The search box (app.services.chat_search): one condition, every value quoted."""
+                  route_ids: Optional[list[str]], *, masked: bool = False):
+    """The search box (app.services.chat_search): one condition, every value quoted. `masked`: the reader's
+    rows mask the name and the contact (a supervisor); those are then found only whole (chat_search)."""
     from app.services import chat_search as cs
 
     parsed = cs.parse(search)
@@ -944,13 +945,21 @@ def _apply_search(q, search: str, readable: Optional[str], with_supervisor_cols:
     if parsed.kind == "number" and with_supervisor_cols:
         return q.or_(f"chat_number.eq.{int(parsed.value)}")
     if parsed.kind == "email":
-        return q.or_(cs.guarded(cs.contains("visitor_email", parsed.value), readable))
+        email = cs.email_whole(parsed.value) if masked else cs.contains("visitor_email", parsed.value)
+        return q.or_(cs.guarded(email, readable))
     if parsed.kind == "phone":
-        return q.or_(cs.guarded(cs.phone_condition(parsed.value, digits_column=_phone_digits_column_available()),
-                                readable))
+        digits_column = _phone_digits_column_available()
+        phone = (cs.phone_whole_condition(parsed.value, digits_column=digits_column) if masked
+                 else cs.phone_condition(parsed.value, digits_column=digits_column))
+        return q.or_(cs.guarded(phone, readable))
     if parsed.kind == "airport":
         q = q.or_(cs.airport_condition(parsed.value), reference_table="leads")
         return q.or_(_readable_inner(readable)) if readable else q
+    if masked:
+        # A whole word of the name, or a city in the route; never part of a contact (found only whole above).
+        by_route = cs.ids_condition(route_ids or [])
+        parts = [p for p in (cs.name_words_condition(parsed.value), by_route and cs.guarded(by_route, readable)) if p]
+        return q.or_(",".join(parts) if parts else "id.is.null")  # nothing to look for: no chat
     # A name; and, as before this change, an e-mail or a phone that contains the text; or a city in the route.
     text = parsed.value
     contact = f"{cs.contains('visitor_email', text)},{cs.contains('visitor_phone', text)}"
@@ -1131,6 +1140,7 @@ async def get_conversations(
     blind_viewer: Optional[str] = None,
     filters: Optional[dict] = None,
     search_route_ids: Optional[list[str]] = None,
+    masked_search: bool = False,
 ) -> tuple[list, int]:
     """List conversations with filters. Returns (rows, total_count).
 
@@ -1150,6 +1160,11 @@ async def get_conversations(
     still finds any chat by name, but by e-mail or phone only the chats they
     may read — never a waiting chat they haven't taken (blind take). Rows
     would hide the contact anyway; the match itself would give it away.
+
+    masked_search: the reader's rows mask the name, the e-mail and the phone
+    (a supervisor, app.security.pii). Those then match only whole: the whole
+    address, the whole number, whole words of the name (chat_search), so the
+    search can't read back letter by letter what the rows hide.
 
     team_ids (Phase 2): when a non-empty list is passed, restrict to
     conversations whose frozen team_id is in that set. PostgREST ANDs
@@ -1201,7 +1216,8 @@ async def get_conversations(
                 if blind_viewer is not None else None
             )
             if search:
-                q = _apply_search(q, search, readable, with_supervisor_cols, search_route_ids)
+                q = _apply_search(q, search, readable, with_supervisor_cols, search_route_ids,
+                                  masked=masked_search)
             q = _apply_filters(q, f, readable)
             if quiet_before and with_supervisor_cols:
                 # Pre-filter for the Abandoned chip: customer silence older

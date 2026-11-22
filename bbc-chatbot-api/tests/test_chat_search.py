@@ -125,7 +125,7 @@ class _Recorder:
         return res
 
 
-def _built(viewer, term, *, route_ids=None):
+def _built(viewer, term, *, route_ids=None, masked=False):
     q = _Recorder()
     client = MagicMock()
     client.table.return_value = q
@@ -133,7 +133,8 @@ def _built(viewer, term, *, route_ids=None):
             patch.object(db, "_supervisor_columns_available", return_value=True), \
             patch.object(db, "_get_lead_completeness_inputs", new=AsyncMock(return_value={})), \
             patch.object(db, "enrich_conversations_agent_info", new=AsyncMock(side_effect=lambda r: r)):
-        asyncio.run(db.get_conversations(search=term, blind_viewer=viewer, search_route_ids=route_ids))
+        asyncio.run(db.get_conversations(search=term, blind_viewer=viewer, search_route_ids=route_ids,
+                                         masked_search=masked))
     return q.calls
 
 
@@ -228,6 +229,121 @@ def test_an_airport_is_a_condition_on_the_lead_and_guarded_for_an_agent():
 def test_a_chat_number_is_the_number_for_everyone():
     (expr,) = _search_or(_built(ME, "#3403"))
     assert holds(expr, dict(WAITING, chat_number=3403)) and not holds(expr, dict(WAITING, chat_number=34030))
+
+
+# ── a supervisor's search: what their rows hide is found only whole (the owner's choice, 22 Nov) ──────
+
+
+# The name shares no word with the contact, so a match on the contact can't pass for one on the name.
+HIDDEN = {"id": "c-sup", "status": "closed", "mode": "human", "visitor_name": "Dana Rivers",
+          "visitor_email": "Grace.Miller@gmail.com", "visitor_phone": "+1 (214) 208-5185",
+          "visitor_phone_digits": "12142085185", "metadata": {}}
+EMAIL = "grace.miller@gmail.com"
+
+
+def _sup_finds(term, row=HIDDEN, *, route_ids=None):
+    (expr,) = _search_or(_built(None, term, route_ids=route_ids, masked=True))
+    return holds(expr, row)
+
+
+@pytest.mark.parametrize("typed", [EMAIL, EMAIL.upper(), "  Grace.Miller@gmail.com "])
+def test_a_supervisor_finds_a_chat_by_the_whole_email(typed):
+    assert _sup_finds(typed)
+
+
+def test_a_supervisor_reads_no_email_back_letter_by_letter():
+    """The search the owner closed: a part of the address, at either end or before the domain, finds nothing;
+    only the whole address does. Typed without "@" a part is a text, and a text never reads a contact."""
+    parts = ({EMAIL[:k] for k in range(1, len(EMAIL))} | {EMAIL[k:] for k in range(1, len(EMAIL))}
+             | {EMAIL[:k] + "@gmail.com" for k in range(1, EMAIL.index("@"))})
+    for part in parts:
+        assert not _sup_finds(part), part
+
+
+@pytest.mark.parametrize("typed", [
+    "gr*ce.miller@gmail.com", "*race.miller@gmail.com", "grace.miller@gmail.co*", "%@gmail.com",
+    "_race.miller@gmail.com", "grace.mill%@gmail.com", ".*@gmail.com", "grace.miller@gmail.com|x",
+    "(grace).miller@gmail.com", "[g]race.miller@gmail.com",
+])
+def test_a_wildcard_or_a_regex_typed_reads_no_letter(typed):
+    """One wildcard a position would read the address back letter by letter all the same."""
+    assert not _sup_finds(typed)
+
+
+@pytest.mark.parametrize("typed", ["+1 (214) 208-5185", "12142085185", "2142085185", "(214) 208 5185", "214.208.5185"])
+def test_a_supervisor_finds_a_chat_by_the_whole_number_with_or_without_its_code(typed):
+    assert _sup_finds(typed)
+
+
+def test_a_number_kept_without_its_code_is_found_with_it():
+    row = dict(HIDDEN, visitor_phone="214-208-5185", visitor_phone_digits="2142085185")
+    assert _sup_finds("+1 214 208 5185", row) and _sup_finds("2142085185", row)
+    assert not _sup_finds("+1 214 208 518", row)
+
+
+def test_a_supervisor_reads_no_number_back_a_few_digits_at_a_time():
+    """The row shows •••5185. No part of the number finds the chat: its hidden digits can't be guessed three
+    at a time (a 7-digit guess with a "code" in front would be the four shown and three more)."""
+    digits = "12142085185"
+    parts = {digits[k:] for k in range(2, len(digits))} | {digits[:k] for k in range(1, len(digits))}
+    for part in parts:
+        assert not _sup_finds(part), part
+    assert not _sup_finds("+9 214 208 5185"), "another country's code is another number"
+
+
+def test_without_054_the_whole_number_gives_the_same_answers():
+    phones = ["+1 (214) 208-5185", "2142085185", "214-208-5185", "+44 20 7946 0958", "12142085185 ext 2",
+              "1 2142085185", "214 208 518", "+1 214 208 51850", None]
+    for typed in ("12142085185", "2142085185", "2085185", "442079460958", "2079460958", "92142085185"):
+        regex = cs.phone_whole_condition(typed, digits_column=False)
+        field = cs.phone_whole_condition(typed, digits_column=True)
+        for phone in phones:
+            row = {"visitor_phone": phone,
+                   "visitor_phone_digits": "".join(ch for ch in phone if ch.isdigit()) if phone else None}
+            assert holds(f"or({regex})", row) == holds(f"or({field})", row), (typed, phone)
+
+
+@pytest.mark.parametrize("typed, found", [
+    ("Grace", True), ("grace miller", True), ("MILLER", True), ("Miller Grace", True),
+    ("Gra", False), ("race", False), ("Grace Mill", False), ("Grace Smith", False), ("G", False), ("ce", False),
+])
+def test_a_supervisor_finds_a_name_by_whole_words(typed, found):
+    assert _sup_finds(typed, dict(HIDDEN, visitor_name="Grace Miller")) is found
+
+
+def test_a_name_with_an_apostrophe_or_a_hyphen_is_still_whole_words():
+    row = dict(HIDDEN, visitor_name="Aoife O'Neil-Brady")
+    assert _sup_finds("o'neil-brady", row) and _sup_finds("Brady", row) and _sup_finds("Aoife", row)
+    assert not _sup_finds("O'Ne", row)
+
+
+@pytest.mark.parametrize("typed", ["gmail", "grace.miller", "miller", "208", "214 208", "miller@", "gmail.com"])
+def test_a_supervisors_text_never_matches_the_contact(typed):
+    assert not _sup_finds(typed)
+
+
+def test_a_city_still_finds_its_chats_for_a_supervisor():
+    routed = "aaaaaaaa-0000-4000-8000-0000000000aa"
+    assert _sup_finds("Istanbul", dict(HIDDEN, id=routed), route_ids=[routed])
+    assert not _sup_finds("Istanbul", route_ids=[routed])
+
+
+def test_a_supervisors_text_without_a_word_finds_no_chat():
+    assert not _sup_finds("!!!")
+
+
+@pytest.mark.parametrize("term", NASTY)
+def test_a_supervisors_search_is_one_value_whatever_is_typed(term):
+    (expr,) = _search_or(_built(None, term, masked=True))
+    assert len(split_top(expr[3:-1])) == 1, expr
+    assert not holds(expr, HIDDEN)
+
+
+def test_a_managers_search_still_finds_part_of_a_contact():
+    """Rule 5: a reader whose rows are not masked searches as before."""
+    for typed in ("grace.mill", "gmail", "@gmail.com", "2085185"):
+        (expr,) = _search_or(_built(None, typed))
+        assert holds(expr, HIDDEN), typed
 
 
 # ── where the client came from: three chips, every chat in exactly one ──────

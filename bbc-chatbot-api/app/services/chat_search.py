@@ -114,6 +114,65 @@ def ids_condition(ids: list[str]) -> Optional[str]:
     return f"id.in.({','.join(clean)})" if clean else None
 
 
+# ── a reader whose rows are masked (a supervisor, app.security.pii): what is hidden is found only whole ──
+#
+# Their rows show •••ce, gr•••@example.com and •••0185. A search that matched part of what is hidden would
+# give it back a letter at a time (type "gr", "gra", "grac" and watch which chats stay). For them the
+# e-mail matches only whole, the number only whole (with or without a country code) and the name by whole
+# words: a complaint's e-mail, number or name still finds its chat (the owner's choice, 22 Nov 2026).
+# Regexes, never LIKE: PostgREST turns a typed * into a wildcard, and one wildcard per position would read
+# the address back letter by letter all the same. Every regex here reads the same in Postgres (ARE) and
+# Python's re, so tests/postgrest_eval.py holds them to rows.
+
+MIN_WHOLE_PHONE_CORE = 10   # a country code is told apart only from a number this long
+_CC_MAX = 3                 # a country code's digits
+_WORD = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+_SPACES = r"\s*"
+_WORD_START, _WORD_END = r"(^|\W)", r"(\W|$)"
+
+
+def rx_literal(text: str) -> str:
+    """`text` as a regex that matches only itself: every character but a letter or a digit escaped."""
+    return "".join(ch if ch.isalnum() else "\\" + ch for ch in text)
+
+
+def email_whole(value: str) -> str:
+    """The whole address, in any case, spaces around it allowed."""
+    return f"visitor_email.imatch.{quoted('^' + _SPACES + rx_literal(value) + _SPACES + '$')}"
+
+
+def phone_whole_condition(digits: str, *, digits_column: bool) -> str:
+    """The number by all its digits: as kept, or one of the two with a country code (1 to 3 digits) the other
+    lacks, the rest being 10 digits or more. Around a shorter number "a code" would be any three digits: a
+    7-digit guess and the four digits the row shows would find a 10-digit number three digits at a time."""
+    forms = [digits] + [digits[k:] for k in range(1, _CC_MAX + 1) if len(digits) - k >= MIN_WHOLE_PHONE_CORE]
+    with_code = len(digits) >= MIN_WHOLE_PHONE_CORE  # kept with a code the typed number lacks
+    if digits_column:
+        parts = [f"visitor_phone_digits.eq.{quoted(f)}" for f in forms]
+        if with_code:
+            parts.append(f"visitor_phone_digits.match.{quoted('^[0-9]{1,3}' + digits + '$')}")
+        return ",".join(parts)
+    # Without 054: the kept text, the separators between and around its digits skipped.
+    def whole(d: str, code: bool) -> str:
+        lead = "([0-9][^0-9]*){1,3}" if code else ""
+        return f"visitor_phone.match.{quoted('^[^0-9]*' + lead + phone_regex(d) + '[^0-9]*$')}"
+
+    parts = [whole(f, False) for f in forms]
+    if with_code:
+        parts.append(whole(digits, True))
+    return ",".join(parts)
+
+
+def name_words_condition(text: str) -> Optional[str]:
+    """Every word typed is a whole word of the name, in any case: "grace" finds Grace Example, "gra" does not.
+    None when nothing typed is a word."""
+    words = _WORD.findall(text)
+    if not words:
+        return None
+    parts = [f"visitor_name.imatch.{quoted(_WORD_START + rx_literal(w) + _WORD_END)}" for w in words]
+    return parts[0] if len(parts) == 1 else f"and({','.join(parts)})"
+
+
 # ── where the client came from: the three chips of the filter row ──────────
 #
 # The same reading as the pipeline's (entity_extractor.is_comparison_origin, infer_paid_source), on the

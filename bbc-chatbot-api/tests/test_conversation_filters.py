@@ -109,6 +109,17 @@ def test_a_value_outside_the_row_is_a_422(query):
     assert _list("owner", query)[0].status_code == 422
 
 
+@pytest.mark.parametrize("role, masked", [
+    ("supervisor", True), ("owner", False), ("admin", False), ("qa", False), ("project_manager", False),
+    ("sales", False),
+])
+def test_the_search_finds_only_whole_where_the_rows_are_masked(role, masked):
+    """A supervisor's rows are masked (app.security.pii): their search matches the name and the contact only
+    whole (chat_search). Every other role searches as before."""
+    r, lister, _ = _list(role, "search=grace")
+    assert r.status_code == 200 and lister.await_args.kwargs["masked_search"] is masked
+
+
 def test_a_city_search_reads_the_routes_once_per_half_minute():
     r, lister, routes = _list("sales", "search=Istanbul", route_ids=["aaaaaaaa-0000-4000-8000-0000000000aa"])
     assert r.status_code == 200
