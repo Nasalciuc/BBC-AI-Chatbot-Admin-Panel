@@ -5,8 +5,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  HELLO_RESTRICTED, activityText, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine, rowState, sourceLabel,
-  stepText, suggestedHello, tripLine,
+  HELLO_RESTRICTED, activityText, alexLine, alexWaiting, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine,
+  rowState, sourceLabel, stepText, suggestedHello, testLine, tripLine,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -160,4 +160,34 @@ test('the live pass is the session’s: cleared when it ends, never stored by a 
     beat.indexOf('// Heartbeat failure is non-fatal'))
   const guard = fallback.indexOf('if (!active.current) return')
   assert.ok(guard >= 0 && guard < fallback.indexOf('processResponse(res)'), 'the fallback drops an answer after cleanup')
+})
+
+test('the agent-first test: Alex’s countdown, the visitors he waits on first, the page’s line (the owner, 22 Nov)', () => {
+  const now = 1_900_000_000
+  assert.equal(alexLine(v({ alex_at: now + 80 }), now), 'Alex in 1:20')
+  assert.equal(alexLine(v({ alex_at: now + 5 }), now), 'Alex in 0:05')
+  assert.equal(alexLine(v({ alex_at: now }), now), '', 'his time came: no countdown')
+  assert.equal(alexLine(v(), now), '')
+  assert.equal(alexWaiting(v({ alex_at: now + 1 }), now), true)
+  const rows = [
+    v({ visitor_id: 'long', seconds_on_site: 900 }),
+    v({ visitor_id: 'later', seconds_on_site: 30, alex_at: now + 100 }),
+    v({ visitor_id: 'soon', seconds_on_site: 20, alex_at: now + 10 }),
+    v({ visitor_id: 'past', seconds_on_site: 600, alex_at: now - 10 }),
+    v({ visitor_id: 'mine', claimed_by: ME, seconds_on_site: 5 }),
+  ]
+  assert.deepEqual(ordered(rows, ME, now).map((r) => r.visitor_id), ['mine', 'soon', 'later', 'long', 'past'])
+  // Rule 5: with nobody waited on, the order is as before.
+  assert.deepEqual(ordered(rows.map((r) => ({ ...r, alex_at: undefined })), ME, now).map((r) => r.visitor_id),
+    ['mine', 'long', 'past', 'later', 'soon'])
+  assert.equal(testLine({ percent: 50, hold_s: 120 }),
+    'Test running: 50% of visitors are listed here, the rest are Alex’s and aren’t. Alex waits 2 minutes for each before his card: say hello before he does.')
+  assert.match(testLine({ percent: 50, hold_s: 90 }), /Alex waits 1 minute 30 s for each/)
+  assert.match(testLine({ percent: 50, hold_s: 0 }), /Alex doesn’t wait for them\.$/)
+  for (const off of [undefined, null, { percent: 0, hold_s: 120 }]) assert.equal(testLine(off), '')
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /const rows = ordered\(list\.data\?\.data \?\? \[\], meId, nowS\)/)
+  assert.match(page, /\{test && <p className='rounded-\[14px\] bg-k-fff3e0/)
+  assert.match(page, /Test · \{alexLine\(v, nowS\)\}/)
+  assert.match(page, /if \(!anyWaiting\) return\n\s+const t = setInterval\(\(\) => setNowS\(Math\.floor\(Date\.now\(\) \/ 1000\)\), 1000\)/)
 })

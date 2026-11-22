@@ -119,10 +119,47 @@ export function heldBy(rows: LiveVisitor[], me: string | undefined): number {
   return me ? rows.filter((v) => v.claimed_by === me && !v.has_chat).length : 0
 }
 
-/** Longest on the site first; within that, the ones nobody holds before the rest. */
-export function ordered(rows: LiveVisitor[], me: string | undefined): LiveVisitor[] {
+/** Mine first, then the ones nobody holds; within each, a visitor Alex is waiting on before the rest (the one he
+ *  comes to soonest first), then the longest on the site. */
+export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): LiveVisitor[] {
   const rank: Record<RowState, number> = { mine: 0, free: 1, taken: 2, declined: 3, in_chat: 4 }
-  return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)] || b.seconds_on_site - a.seconds_on_site)
+  const due = (v: LiveVisitor) => (alexWaiting(v, nowS) ? (v.alex_at as number) : Number.POSITIVE_INFINITY)
+  return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)]
+    || (due(a) === due(b) ? 0 : due(a) < due(b) ? -1 : 1)
+    || b.seconds_on_site - a.seconds_on_site)
+}
+
+// ── The owner's agent-first test (22 Nov 2026; bbc-chatbot-api app/services/agent_first_test.py) ─────────────
+// Half the visitors are listed here and Alex's card waits for an agent to say hello first; the other half are
+// Alex's, as before, and not listed.
+
+/** Alex is still waiting for this visitor's hello. */
+export function alexWaiting(v: Pick<LiveVisitor, 'alex_at'>, nowS: number): boolean {
+  return typeof v.alex_at === 'number' && v.alex_at > nowS
+}
+
+/** "Alex in 1:20" while he waits; '' when he doesn't (or no longer does). */
+export function alexLine(v: Pick<LiveVisitor, 'alex_at'>, nowS: number): string {
+  if (!alexWaiting(v, nowS)) return ''
+  const left = Math.max(0, Math.ceil((v.alex_at as number) - nowS))
+  return `Alex in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+}
+
+function waitWords(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  const m = Math.floor(s / 60)
+  const rest = s % 60
+  const mins = m ? `${m} minute${m === 1 ? '' : 's'}` : ''
+  return [mins, rest ? `${rest} s` : ''].filter(Boolean).join(' ') || '0 s'
+}
+
+/** The page's line while the test runs, or '' when it doesn't. */
+export function testLine(test: { percent: number; hold_s: number } | undefined | null): string {
+  if (!test || !(test.percent > 0)) return ''
+  const wait = test.hold_s > 0
+    ? `Alex waits ${waitWords(test.hold_s)} for each before his card: say hello before he does.`
+    : 'Alex doesn’t wait for them.'
+  return `Test running: ${test.percent}% of visitors are listed here, the rest are Alex’s and aren’t. ${wait}`
 }
 
 /** The answer to a claim, in words; null when it worked. */

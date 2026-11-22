@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Laptop, Lock, Smartphone } from 'lucide-react'
 import { toast } from 'sonner'
@@ -13,8 +13,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine,
-  rowState, sourceLabel, suggestedHello, tripLine,
+  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexLine, alexWaiting, claimProblem, heldBy, helloProblem, onSite,
+  ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine, tripLine,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -35,6 +35,8 @@ export function LiveVisitors() {
   const qc = useQueryClient()
   const [writing, setWriting] = useState<LiveVisitor | null>(null)
   const [text, setText] = useState('')
+  // The agent-first test: Alex's countdown on a row ticks each second while he waits for anyone listed.
+  const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000))
 
   const list = useQuery({
     queryKey: ['live-visitors'],
@@ -42,7 +44,14 @@ export function LiveVisitors() {
     enabled: !!pass,
     refetchInterval: 5_000,
   })
-  const rows = ordered(list.data?.data ?? [], meId)
+  const rows = ordered(list.data?.data ?? [], meId, nowS)
+  const anyWaiting = rows.some((v) => alexWaiting(v, nowS))
+  useEffect(() => {
+    if (!anyWaiting) return
+    const t = setInterval(() => setNowS(Math.floor(Date.now() / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [anyWaiting])
+  const test = testLine(pass?.test)
   const held = heldBy(rows, meId)
   const maxClaims = list.data?.max_claims ?? 3
   const firstName = (me?.name || '').split(/\s+/)[0] || ''
@@ -98,6 +107,7 @@ export function LiveVisitors() {
         <p className='text-sm text-k-6b6b6b'>Nobody on the site right now without a chat.</p>
       ) : (
         <>
+          {test && <p className='rounded-[14px] bg-k-fff3e0 px-3.5 py-2.5 text-sm text-k-8a4b00'>{test}</p>}
           {pass.can_say_hello && (
             <p className='text-sm text-k-555555'>
               You hold {held} of {maxClaims}. A visitor you hold is yours for 10 minutes; one hello each.
@@ -116,6 +126,11 @@ export function LiveVisitors() {
                       <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{sourceLabel(v.source)}</span>
                       <Device aria-label={v.device === 'phone' ? 'On a phone' : 'On a computer'} className='size-4 text-k-6b6b6b' />
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATE_CLS[state])}>{ROW_LABEL[state]}</span>
+                      {alexLine(v, nowS) && (
+                        <span className='rounded-full bg-k-fff3e0 px-2 py-0.5 text-xs font-medium tabular-nums text-k-8a4b00'>
+                          Test · {alexLine(v, nowS)}
+                        </span>
+                      )}
                     </div>
                     <span className='truncate text-sm text-k-202020'>{trip || 'No trip on the page'}</span>
                     {activityText(v) && (

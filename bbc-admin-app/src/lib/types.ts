@@ -1180,6 +1180,9 @@ export interface LivePass {
   token: string
   expires_at: string
   can_say_hello: boolean
+  /** The owner's agent-first test, while it runs: the share of visitors on the agent's side, and how long Alex
+   *  waits for an agent before his card (bbc-chatbot-api app/services/agent_first_test.py). */
+  test?: { percent: number; hold_s: number }
 }
 
 /** A visitor on the site now, anonymous: the page, the page's trip, where they came from. */
@@ -1204,6 +1207,8 @@ export interface LiveVisitor {
   /** Their last steps on the site, oldest first ("search:JFK-LHR:2026-12-14", "quote_opened", …): kinds, codes and
    *  dates, never what they typed (contracts/live.md). */
   activity?: string[]
+  /** The agent-first test: when Alex's card may come (unix seconds), while he waits for an agent to say hello. */
+  alex_at?: number
 }
 
 export interface LiveListResponse {
