@@ -28,6 +28,8 @@ import { useReadState, useToRead } from './to-read-state'
 import { unreadCount } from './to-read-view'
 import {
   avatarClasses,
+  CARD_NO_CONTACT_TITLE,
+  cardNoContact,
   closedByLine,
   focusKey,
   initials,
@@ -242,8 +244,8 @@ export function Chats() {
   // duplicate request.
   const reading = activeTab === 'to_read'
   const { data: convResponse, isLoading, isError } = useQuery({
-    // eslint-disable-next-line @tanstack/query/exhaustive-deps
     // The filter row's part only when a filter is on: with none, the key stays the heartbeat's (ATTENTION_QUERY_KEY).
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
     queryKey: filtersPart ? [...listKey, filtersPart] : listKey,
     queryFn: () => getConversations(listParams),
     enabled: !reading,
@@ -388,6 +390,8 @@ export function Chats() {
     const preview = previewText(conv) || routeText(conv) || (conv.message_count ? `${conv.message_count} messages` : 'No messages yet')
     // B3 (ADR-6c): a client who left, and whether a message here can still reach them.
     const gone = owner !== 'closed' && p.state === 'left' ? presenceLine(p, conv.has_contact) : null
+    // A card chat with no contact (22 Nov): said once, the "Left … · no contact" line saying it already when shown.
+    const cardOnly = gone ? null : cardNoContact(conv)
     return (
       <button
         key={conv.id}
@@ -419,7 +423,7 @@ export function Chats() {
             <span className='flex-none text-xs text-k-6b6b6b'>{rowTime(conv.updated_at, new Date(nowMs))}</span>
           </span>
           <span className='truncate text-[13px] text-k-555555'>{preview}</span>
-          {(ownerTxt || sig || gone || (idle !== null && idle >= IDLE_BADGE_MIN) || staleIds.has(conv.id) || (seesBothTunnels && conv.tunnel === 'support') || conv.tag) && (
+          {(ownerTxt || sig || gone || cardOnly || (idle !== null && idle >= IDLE_BADGE_MIN) || staleIds.has(conv.id) || (seesBothTunnels && conv.tunnel === 'support') || conv.tag) && (
             <span className='flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-bold'>
               {ownerTxt && <span className={ownerTxt.cls}>{ownerTxt.text}</span>}
               {ownerTxt && sig && <span className='font-normal text-k-9a9a9a'>·</span>}
@@ -434,6 +438,11 @@ export function Chats() {
                   {(ownerTxt || sig) && <span className='font-normal text-k-9a9a9a'>·</span>}
                   <span className='font-normal text-k-6b6b6b'>{gone}</span>
                 </>
+              )}
+              {cardOnly && (
+                <span title={CARD_NO_CONTACT_TITLE} className='rounded-full bg-k-f0f0f0 px-1.5 py-px font-normal text-k-555555'>
+                  {cardOnly}
+                </span>
               )}
               {/* Both sides silent: only worth a chip when nothing louder is shown. */}
               {!sig && idle !== null && idle >= IDLE_BADGE_MIN && (

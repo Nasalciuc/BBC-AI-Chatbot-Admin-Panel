@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openedByText, pageTripText, replayUrl } from '../src/features/chats/view.ts'
+import { CARD_NO_CONTACT, cardNoContact, openedByText, pageTripText, replayUrl } from '../src/features/chats/view.ts'
 import { unownedNote } from '../src/features/tasks/view.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -102,4 +102,21 @@ test('the departure task: its source and its Unowned reason', () => {
     unownedNote({ unowned_reason: 'no_ready_agent', unowned_from_name: null, unowned_at: null }, 'UTC'),
     'Nobody was Ready when the client left',
   )
+})
+
+test('a card chat with no contact says so on its row, once (owner, 22 Nov)', () => {
+  assert.equal(CARD_NO_CONTACT, 'Card · no contact')
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: 'kayak' }, has_contact: false }), CARD_NO_CONTACT)
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: 'note' }, has_contact: false }), CARD_NO_CONTACT)
+  // A contact left, an older server that can't say, a chat the card didn't open, a blind row: nothing.
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: 'kayak' }, has_contact: true }), null)
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: 'kayak' } }), null)
+  assert.equal(cardNoContact({ metadata: {}, has_contact: false }), null)
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: '  ' }, has_contact: false }), null)
+  assert.equal(cardNoContact({ metadata: { widget_presence: 'left' }, has_contact: false }), null)
+  assert.equal(cardNoContact({ has_contact: false }), null)
+  // Said once: not beside the "Left … · no contact" line, and with what it means on hover.
+  const list = readFileSync(join(root, 'src/features/chats/index.tsx'), 'utf-8')
+  assert.match(list, /const cardOnly = gone \? null : cardNoContact\(conv\)/)
+  assert.match(list, /title=\{CARD_NO_CONTACT_TITLE\}/)
 })

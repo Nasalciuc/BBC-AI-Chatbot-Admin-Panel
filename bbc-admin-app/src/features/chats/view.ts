@@ -184,6 +184,22 @@ export function presenceLine(p: Pick<PresenceView, 'state' | 'label'>, hasContac
   return `${p.label} · ${hasContact ? 'contact saved' : 'no contact'}`
 }
 
+/**
+ * A chat Alex's card opened where the client left no email or phone (owner, 22 Nov 2026): on 19-22 Nov most were
+ * one tap on the card's yes, and the visitor was gone at the contact step ("Where should they write"). The row
+ * says it so the chat isn't read as a client who asked for fares and got none. Null for any other chat, while the
+ * server can't say (`has_contact` absent), and on a blind row (its metadata has only presence).
+ */
+export const CARD_NO_CONTACT = 'Card · no contact'
+export const CARD_NO_CONTACT_TITLE =
+  'Opened from Alex’s card (or the note beside the button), and the client left no email or phone: a message here reaches them only while they’re on the site.'
+
+export function cardNoContact(c: Pick<Conversation, 'metadata' | 'has_contact'>): string | null {
+  const trigger = (c.metadata as Record<string, unknown> | undefined)?.proactive_trigger
+  if (typeof trigger !== 'string' || !trigger.trim() || c.has_contact !== false) return null
+  return CARD_NO_CONTACT
+}
+
 /** Clients still on the site first, then the ones we hear nothing from, then the ones who left (ADR-6c:
  *  the chats where someone can still read the answer come first). "Left just now" is still here: a page
  *  change looks like that for the first 2 minutes. */
