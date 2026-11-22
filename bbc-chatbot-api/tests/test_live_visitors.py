@@ -92,6 +92,9 @@ def configured(monkeypatch):
     monkeypatch.setattr(settings, "live_service_url", "https://live.example.test/")
     monkeypatch.setenv("LIVE_VISITORS", "true")
     monkeypatch.setenv("AGENT_FIRST_MESSAGE", "true")
+    # The live list as it works with the owner's agent-first test off (0): every visitor listed, Alex never
+    # waits. The test itself is tests/test_agent_first_test.py.
+    monkeypatch.setenv("AGENT_FIRST_TEST_PERCENT", "0")
     for k in live_visitors.LIVE_HEALTH:
         live_visitors.LIVE_HEALTH[k] = 0
 

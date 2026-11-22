@@ -87,8 +87,11 @@ def heartbeat_live(user: Optional[dict]) -> Optional[dict]:
         return None
     LIVE_HEALTH["tokens"] += 1
     expires = datetime.now(timezone.utc) + timedelta(seconds=live_tokens.AGENT_TTL)
+    from app.services import agent_first_test
+
+    test = agent_first_test.panel_info()  # the owner's test, while it runs: the panel says so
     return {"url": _url(), "token": token, "expires_at": expires.isoformat(),
-            "can_say_hello": hello_enabled() and may_say_hello(user)}
+            "can_say_hello": hello_enabled() and may_say_hello(user), **({"test": test} if test else {})}
 
 
 def widget_config() -> dict:
@@ -228,6 +231,8 @@ async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text:
         status, code, detail = refusals.get(int(result), (409, "refused", "The hello wasn't sent."))
         raise SendRefused(status, code, detail)
     LIVE_HEALTH["sent"] += 1
+    from app.services import agent_first_test
+    await agent_first_test.note_hello(visitor_id)  # the owner's test: before Alex's card or after its wait
     from app.db import supabase as db
     await db.log_audit(agent_id, user.get("email"), "live_hello_sent", "live_visitors", visitor_id,
                        {"hello_id": hello_id, "text": words, "length": len(words)})

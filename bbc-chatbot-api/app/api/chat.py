@@ -193,6 +193,9 @@ async def chat_init(
         _meta.setdefault("origin_country_hint", _cf_country)
     if payload.visitor_id:
         _meta.setdefault("visitor_id", payload.visitor_id)
+    # The owner's test: the chat's side, server-made (app.services.agent_first_test).
+    from app.services import agent_first_test as _agent_first_test
+    _agent_first_test.tag(_meta, payload.visitor_id)
 
     from app.services import proactive as _proactive
     # The moments follow the experiment's switches; the tapped note has its
@@ -273,11 +276,18 @@ async def chat_live(payload: LivePassRequest, request: Request):
     rate limit: a page read costs the visitor nothing of their chat; new visitor ids are limited per address
     (live_visitors.widget_pass). Never cached: the pass is this visitor's."""
     from fastapi.responses import JSONResponse
+    from app.services import agent_first_test
     from app.services.live_visitors import widget_pass
 
+    # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it.
+    side = agent_first_test.side(payload.visitor_id)
+    if side == agent_first_test.ALEX:
+        return JSONResponse({"enabled": False, "test": side}, headers={"Cache-Control": "no-store"})
     # The address as the rate limiter reads it (X-Forwarded-For, then the peer): a cf-connecting-ip header is the
     # client's to write unless the edge is Cloudflare, and the limit on new ids would not hold.
     out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False))
+    if side == agent_first_test.AGENT:
+        out = {**out, "test": side, "hold_s": agent_first_test.hold_seconds()}
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
@@ -355,9 +365,16 @@ async def proactive_offer(
 
     Writes nothing: a visitor who sees the card and never answers leaves no
     conversation, no lead and no row. The control arm is told show=False, so
-    the widget counts the moment without showing anything."""
-    from app.services import note_bandit, proactive
+    the widget counts the moment without showing anything.
+
+    The owner's test (app.services.agent_first_test): on the agent's side, while an agent who may say hello is
+    at the desk, the card waits (show=False with retry_after_s; only a Redis key, no row), and after a hello or
+    a "Not now" it doesn't come. Every answer names the side while the test runs ("test")."""
+    from app.services import agent_first_test, note_bandit, proactive
     from app.services.closing import is_within_team_hours
+    held = await agent_first_test.offer_hold(payload.visitor_id, payload.trigger)
+    if held.answer is not None:
+        return held.answer
     if payload.trigger == proactive.NOTE:
         # The note's bandit reads its counts in the background, at most every few
         # minutes: this answer never waits for the database.
@@ -374,6 +391,9 @@ async def proactive_offer(
     )
     if out.get("show") and payload.trigger == "kayak" and payload.c4:
         await proactive.c4_count(payload.c4)
+    side = agent_first_test.side(payload.visitor_id)
+    if side:
+        out = {**out, "test": side, **({"after_hold": True} if held.after_hold else {})}
     return out
 
 
@@ -413,6 +433,8 @@ def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id:
         _meta.setdefault("origin_country_hint", _cf_country)
     if visitor_id:
         _meta.setdefault("visitor_id", visitor_id)
+    from app.services import agent_first_test
+    agent_first_test.tag(_meta, visitor_id)
     return _meta
 
 
@@ -1050,6 +1072,8 @@ async def chat(
         _meta.setdefault("origin_country_hint", _cf_country)
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
+    from app.services import agent_first_test as _agent_first_test
+    _agent_first_test.tag(_meta, req.visitor_id)
 
     # A button after the card (yes, SMS, email, "I'll wait here"): answered at
     # once, without the model (app.pipeline.card_buttons). None: answered as typed.

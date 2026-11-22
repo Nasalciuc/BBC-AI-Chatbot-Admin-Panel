@@ -404,6 +404,12 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
             _got = await lead_lottery.newest(user_id)
             if _got:
                 _followup_newest, _followup_newest_at = _got
+    _live = _live_for(user, user_db)
+    if _live and _live.get("can_say_hello"):
+        # The owner's test (app.services.agent_first_test): an agent who may say hello is at the desk, so Alex
+        # waits for them on the agent's side.
+        from app.services import agent_first_test
+        await agent_first_test.greeter_beat(user_id)
     _now = time.monotonic()
     HEARTBEAT_HEALTH["latency_ms"].append((_now, (_now - _t0) * 1000.0))
     HEARTBEAT_HEALTH["calls"] += 1
@@ -426,7 +432,7 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "followup_newest_at": _followup_newest_at,
         # "On the site now": the address of bbc-live and a 60 s pass to it, for the roles that see the
         # list, while LIVE_VISITORS is on (app.services.live_visitors). None otherwise.
-        "live": _live_for(user, user_db),
+        "live": _live,
     }
 
 
