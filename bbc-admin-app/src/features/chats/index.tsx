@@ -701,7 +701,7 @@ export function Chats() {
 
       {search.trim() && (
         <div className={cn('flex items-center justify-between gap-2 pb-1.5 text-xs text-k-6b6b6b', layout === 'narrow' ? 'px-0' : 'px-3.5')}>
-          <span>Looking for: {searchHint(search)}</span>
+          <span>Looking for: {searchHint(search, role === 'supervisor')}</span>
           {messagesSearchable(search) && (
             <button type='button' aria-pressed={inMessages} onClick={() => setInMessages((v) => !v)}
               className={cn('rounded-full px-2.5 py-1 font-bold', inMessages ? 'bg-kb-202020 text-on-btn' : 'bg-k-ffffff text-k-444444 ring-1 ring-k-e3e2e2')}>

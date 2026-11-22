@@ -16,6 +16,21 @@ test('the box says what it will look for, as the server reads it', () => {
   assert.equal(searchHint('   '), '')
 })
 
+test('for a supervisor, whose rows are masked, the box says the name and the contact match only whole', () => {
+  assert.equal(searchHint('dana@', true), 'An e-mail, the whole address')
+  assert.equal(searchHint('+1 (214) 208-5185', true), 'A phone, the whole number')
+  assert.equal(searchHint('Grace', true), 'Whole words of a name, or a city in the route')
+  // What the mask doesn't touch reads the same for everyone.
+  assert.equal(searchHint('#3403', true), 'The chat number')
+  assert.equal(searchHint('IST', true), 'An airport, departure or arrival')
+  assert.equal(searchHint('   ', true), '')
+})
+
+test('the chats page tells the box when its rows are masked: a supervisor only', () => {
+  const src = readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8')
+  assert.match(src, /searchHint\(search, role === 'supervisor'\)/)
+})
+
 test('no filter is no parameter and no key part', () => {
   assert.deepEqual(filterParams(EMPTY_FILTERS), {})
   assert.equal(filterKey(EMPTY_FILTERS), '')

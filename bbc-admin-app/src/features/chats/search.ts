@@ -46,17 +46,18 @@ export function filterKey(f: ListFilters): string {
   return Object.keys(p).sort().map((k) => `${k}=${p[k]}`).join('&')
 }
 
-/** What the box looks for, as the server reads it (chat_search.parse). */
-export function searchHint(text: string): string {
+/** What the box looks for, as the server reads it (chat_search.parse). `masked`: the reader's rows mask the
+ *  client's name and contact (a supervisor), so the server finds those only whole (chat_search, 22 Nov). */
+export function searchHint(text: string, masked = false): string {
   const raw = text.trim()
   if (!raw) return ''
   const number = raw.startsWith('#') ? raw.slice(1) : raw
   if (/^[0-9]{1,6}$/.test(number)) return 'The chat number'
-  if (raw.includes('@')) return 'An e-mail'
+  if (raw.includes('@')) return masked ? 'An e-mail, the whole address' : 'An e-mail'
   const digits = raw.replace(/[\s+\-.()/]/g, '')
-  if (/^[0-9]{7,}$/.test(digits)) return 'A phone, by its digits'
+  if (/^[0-9]{7,}$/.test(digits)) return masked ? 'A phone, the whole number' : 'A phone, by its digits'
   if (/^[A-Z]{3}$/.test(raw)) return 'An airport, departure or arrival'
-  return 'A name, an e-mail, a phone, or a city in the route'
+  return masked ? 'Whole words of a name, or a city in the route' : 'A name, an e-mail, a phone, or a city in the route'
 }
 
 /** The words of the chats can be searched from three characters on. */
