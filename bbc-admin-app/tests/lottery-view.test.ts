@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { followupText, mineOnly } from '../src/features/tasks/offers.ts'
-import { type LeadBeat, leadHref, leadToAnnounce, newLeadText, tasksBadge } from '../src/lib/new-leads.ts'
+import { type LeadBeat, leadHref, leadToAnnounce, newLeadText, nextSeen, tasksBadge } from '../src/lib/new-leads.ts'
 import { MELODY_NOTES } from '../src/lib/alert-prefs.ts'
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
@@ -48,22 +48,47 @@ test('the badge of leads given to me is server data: the query cache, not a stor
 
 // ── A lead given to me: the alert (the owner, 22 Nov 2026) ──────────────────────────────────────────────
 
-const beat = (b: Partial<LeadBeat>): LeadBeat => ({ before: 1, count: 2, newest: 'c2', announced: new Set(['c1']), viewing: null, ...b })
+// The beats as the heartbeat hook reads them, one after another: what each one announces.
+type Beat = { count: number | null; newest?: string; at?: number; viewing?: string }
+function announced(beats: Beat[]): string[] {
+  let seen: number | null = null
+  const out: string[] = []
+  for (const b of beats) {
+    const newest = b.newest ?? null
+    const newestAt = b.at ?? null
+    const lead = leadToAnnounce({ seen, newest, newestAt, viewing: b.viewing ?? null } satisfies LeadBeat)
+    seen = nextSeen(seen, b.count, newestAt)
+    if (lead) out.push(lead)
+  }
+  return out
+}
 
-test('a lead given since the last beat is announced, once', () => {
-  assert.equal(leadToAnnounce(beat({})), 'c2')
-  assert.equal(leadToAnnounce(beat({ announced: new Set(['c1', 'c2']) })), null, 'never twice')
-  assert.equal(leadToAnnounce(beat({ before: 0, count: 1, newest: 'c9', announced: new Set() })), 'c9')
+test('a lead given since the last one seen is announced, once', () => {
+  assert.deepEqual(announced([{ count: 0 }, { count: 1, newest: 'a', at: 10 }, { count: 1, newest: 'a', at: 10 }]), ['a'])
+  assert.deepEqual(announced([{ count: 2, newest: 'a', at: 10 }, { count: 3, newest: 'b', at: 20 }]), ['b'],
+    'the first beat is the baseline: what was there at sign-in is not news')
+  assert.deepEqual(announced([{ count: 0 }, { count: 2, newest: 'b', at: 20 }]), ['b'], 'two at once: one alert, for the last')
+})
+
+test('opening A while B arrives: the count stays, and B is news (CodeRabbit #273)', () => {
+  assert.deepEqual(announced([{ count: 1, newest: 'a', at: 10 }, { count: 1, newest: 'b', at: 20 }]), ['b'])
+})
+
+test('a newest that could not be read is announced when the read comes back (CodeRabbit #273)', () => {
+  assert.deepEqual(announced([{ count: 0 }, { count: 1 }, { count: 1, newest: 'a', at: 10 }]), ['a'])
+  assert.deepEqual(announced([{ count: null }, { count: 0 }, { count: 1, newest: 'a', at: 5 }]), ['a'],
+    'no number at sign-in: the baseline waits for one')
 })
 
 test('rule 5: the beats that announce nothing', () => {
-  assert.equal(leadToAnnounce(beat({ before: null })), null, 'the first beat is the baseline: what was there at sign-in')
-  assert.equal(leadToAnnounce(beat({ count: 1 })), null, 'the same count: nothing new')
-  assert.equal(leadToAnnounce(beat({ before: 2, count: 1, newest: 'c1', announced: new Set() })), null,
+  assert.deepEqual(announced([{ count: 2, newest: 'y', at: 20 }, { count: 1, newest: 'x', at: 10 }]), [],
     'opening the newest leaves an older one newest: not news')
-  assert.equal(leadToAnnounce(beat({ count: null })), null, 'the server can not say')
-  assert.equal(leadToAnnounce(beat({ newest: null })), null)
-  assert.equal(leadToAnnounce(beat({ viewing: 'c2' })), null, 'the chat on screen')
+  assert.deepEqual(announced([{ count: 0 }, { count: 1, newest: 'b', at: 10, viewing: 'b' }, { count: 1, newest: 'b', at: 10 }]), [],
+    'the chat on screen, and not later either')
+  assert.deepEqual(announced([{ count: null }, { count: null }]), [])
+  assert.equal(nextSeen(30, 0, null), 30, 'nothing left to open keeps what was seen')
+  assert.equal(nextSeen(null, 0, null), 0, 'none at sign-in: the next lead is news')
+  assert.equal(nextSeen(null, 2, null), null, 'leads without their newest: no baseline yet')
 })
 
 test('the toast and the notification say what came, and Open goes to the chat', () => {
@@ -92,7 +117,9 @@ test('a new lead plays my sound once (the gentle melody unless I chose another):
 
 test('the beat announces a new lead, and the menu shows the badge with its label on hover', () => {
   const hook = read('src/hooks/use-heartbeat.ts')
-  assert.match(hook, /const lead = leadToAnnounce\(\{ before, count, newest, announced: leadsAnnounced\.current, viewing: viewingRef\.current \}\)/)
+  assert.match(hook, /const lead = leadToAnnounce\(\{ seen: leadSeen\.current, newest, newestAt, viewing: viewingRef\.current \}\)/)
+  assert.match(hook, /leadSeen\.current = nextSeen\(leadSeen\.current, count, newestAt\)/)
+  assert.match(hook, /const newestAt = typeof res\?\.followup_newest_at === 'number' \? res\.followup_newest_at : null/)
   assert.match(hook, /notifyNewLead\(text\.title, text\.body, leadHref\(lead\)\)/)
   assert.match(hook, /action: \{ label: 'Open', onClick: \(\) => window\.location\.assign\(leadHref\(lead\)\) \}/)
   const menu = read('src/components/layout/app-sidebar.tsx')

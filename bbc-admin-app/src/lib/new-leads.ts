@@ -6,25 +6,33 @@
  */
 
 export interface LeadBeat {
-  /** The count on the last beat that had one; null before the first (the baseline). */
-  before: number | null
-  /** This beat's count; null when the server can't say. */
-  count: number | null
-  /** The lead given to me last that I haven't opened; null when there is none or the server can't say. */
+  /** When the last lead I've seen was given (unix seconds); null until the first beat that could say (the
+   *  baseline: what was there at sign-in is not news). See nextSeen. */
+  seen: number | null
+  /** The lead given to me last that I haven't opened, and when it was given; null when there is none or the
+   *  server can't say. */
   newest: string | null
-  /** Leads announced already, and those there at the first count: never announced (again). */
-  announced: ReadonlySet<string>
+  newestAt: number | null
   /** The chat on screen: the lead I'm looking at needs no alert. */
   viewing: string | null
 }
 
-/** The lead to announce on this beat, or null. Only when the count grew since a beat that had one (the first
- *  is the baseline: what was there at sign-in is not news) and the newest lead is one not announced yet. The
- *  same lead never twice, and opening one (the count drops) announces nothing. */
+/** The lead to announce on this beat, or null: the newest, when it was given after the last one seen. By when
+ *  it was given, not by the count (CodeRabbit #273): opening A while B arrives leaves the count as it was, and
+ *  B is news; opening the newest makes an older one newest, and that is not. Once seen, never again. */
 export function leadToAnnounce(b: LeadBeat): string | null {
-  if (b.before === null || b.count === null || b.newest === null) return null
-  if (b.count <= b.before || b.announced.has(b.newest) || b.newest === b.viewing) return null
+  if (b.seen === null || b.newest === null || b.newestAt === null) return null
+  if (b.newestAt <= b.seen || b.newest === b.viewing) return null
   return b.newest
+}
+
+/** What has been seen after this beat. The newest's time when the server says it; none given (a count of 0)
+ *  sets the baseline at 0, so the next lead is news; a count without its newest (the read failed) keeps what
+ *  was seen, so the lead is announced when the read comes back (CodeRabbit #273). */
+export function nextSeen(seen: number | null, count: number | null, newestAt: number | null): number | null {
+  if (newestAt !== null) return Math.max(seen ?? newestAt, newestAt)
+  if (count === 0) return seen ?? 0
+  return seen
 }
 
 /** What the toast and the browser notification say; `n` is how many came since the last beat. */

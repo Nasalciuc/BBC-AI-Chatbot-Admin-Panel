@@ -9,7 +9,7 @@ import {
   stopAssignmentAlerts,
   playQueueChime,
 } from '@/lib/notify-assignment'
-import { leadHref, leadToAnnounce, newLeadText } from '@/lib/new-leads'
+import { leadHref, leadToAnnounce, newLeadText, nextSeen } from '@/lib/new-leads'
 import { useAttentionStore } from '@/stores/attention-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
@@ -60,8 +60,10 @@ type HeartbeatResponse = {
   viewing_grace_seconds?: number
   /** Leads the follow-up lottery gave this agent, not opened yet; null when the server can't say. */
   followups_new?: number | null
-  /** The one given last, while there is one: what the new-lead alert opens. */
+  /** The one given last, while there is one, and when (unix seconds): what the new-lead alert opens, and
+   *  announces only when it was given after the last one seen. */
   followup_newest?: string | null
+  followup_newest_at?: number | null
   /** "On the site now": the pass to bbc-live, for the roles that see the list while it is on. */
   live?: LivePass | null
 }
@@ -93,10 +95,10 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
   const baselineTaken = useRef(false)
   /** Queue conversations already chimed about — one sound each, not one per 5s poll. */
   const announcedQueue = useRef<Set<string>>(new Set())
-  /** The new-lead alert: the count on the last beat that had one (null until the first, the baseline), and the
-   *  leads announced or already there then (src/lib/new-leads.ts). */
+  /** The new-lead alert (src/lib/new-leads.ts): when the last lead seen was given (null until the baseline),
+   *  and the count on the last beat that had one, for "2 new leads". */
+  const leadSeen = useRef<number | null>(null)
   const leadCount = useRef<number | null>(null)
-  const leadsAnnounced = useRef<Set<string>>(new Set())
   /** Kept in a ref so the polling loop always reads the current selection. */
   const viewingRef = useRef<string | null>(viewingConversationId ?? null)
   // The dormant effect reconfigures the RUNNING worker; it must not be in the
@@ -126,12 +128,14 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       try {
         const count = typeof res?.followups_new === 'number' ? res.followups_new : null
         const newest = typeof res?.followup_newest === 'string' ? res.followup_newest : null
+        const newestAt = typeof res?.followup_newest_at === 'number' ? res.followup_newest_at : null
         const before = leadCount.current
-        const lead = leadToAnnounce({ before, count, newest, announced: leadsAnnounced.current, viewing: viewingRef.current })
+        const lead = leadToAnnounce({ seen: leadSeen.current, newest, newestAt, viewing: viewingRef.current })
+        leadSeen.current = nextSeen(leadSeen.current, count, newestAt)
         if (count !== null) leadCount.current = count
-        if (newest) leadsAnnounced.current.add(newest)
-        if (lead && count !== null && before !== null) {
-          const text = newLeadText(count - before)
+        if (lead) {
+          // Opening one while another arrives leaves the count as it was: one new lead, not none.
+          const text = newLeadText(count !== null && before !== null ? Math.max(1, count - before) : 1)
           notifyNewLead(text.title, text.body, leadHref(lead))
           toast(text.title, {
             description: text.body,
