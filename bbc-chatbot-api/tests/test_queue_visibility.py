@@ -102,7 +102,7 @@ class TestStallAlert:
             with patch.object(cron.db, "get_queue_stats", _stats(0, 0)):
                 await run_queue_stall_alert()
         assert email.await_args_list[0].kwargs == {"waiting": 2, "oldest_seconds": 249}
-        assert email.await_args_list[1].kwargs == {"recovered": True}
+        assert email.await_args_list[1].kwargs == {"waiting": 0, "oldest_seconds": 0, "recovered": True}
 
     @pytest.mark.asyncio
     async def test_an_email_that_did_not_go_is_not_an_alert(self):
@@ -142,7 +142,7 @@ class TestStallAlert:
         assert failed == {"state": "recovered", "emailed": False}
         assert again == {"state": "recovered", "emailed": True}
         assert after["state"] == "ok" and email.await_count == 3
-        assert [k.kwargs for k in email.await_args_list[1:]] == [{"recovered": True}] * 2
+        assert [k.kwargs for k in email.await_args_list[1:]] == [{"waiting": 0, "oldest_seconds": 0, "recovered": True}] * 2
         delta = {k: cron.QUEUE_ALERT_HEALTH[k] - before[k] for k in before}
         assert delta == {"alerts_sent": 1, "alerts_failed": 0, "recoveries_sent": 1, "recoveries_failed": 1}
 
@@ -199,8 +199,34 @@ class TestQueueEmail:
         with patch.object(mail, "_send_super_inbox_email", send):
             await mail.send_queue_alert_email(recovered=True)
         kw = send.await_args.kwargs
-        assert kw["subject"] == "Queue moving again — nobody is waiting for a person"
-        assert "waiting" not in kw["subject"].split("—")[0] and "highlight" not in kw["text_body"]
+        assert kw["subject"] == "Queue no longer stalled"
+        assert "nobody is waiting for a person" in kw["text_body"] and "highlight" not in kw["text_body"]
+
+    @pytest.mark.asyncio
+    async def test_a_recovery_with_clients_still_waiting_never_says_nobody_waits(self):
+        """CodeRabbit #274: over is nobody past the threshold; two clients waiting a minute are said as such."""
+        from app.services import email as mail
+
+        send = AsyncMock(return_value=True)
+        with patch.object(mail, "_send_super_inbox_email", send):
+            await mail.send_queue_alert_email(waiting=2, oldest_seconds=60, recovered=True)
+        kw = send.await_args.kwargs
+        assert kw["subject"] == "Queue no longer stalled"
+        for body in (kw["html_body"], kw["text_body"]):
+            assert "2 clients are waiting, the oldest 1 min" in body
+            assert "nobody" not in body
+
+    @pytest.mark.asyncio
+    async def test_the_cron_tells_the_recovery_who_still_waits(self):
+        _reset()
+        email = AsyncMock(return_value=True)
+        with patch("app.services.email.send_queue_alert_email", email):
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
+                await run_queue_stall_alert()
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 60)):
+                rec = await run_queue_stall_alert()
+        assert rec == {"state": "recovered", "emailed": True}
+        assert email.await_args.kwargs == {"waiting": 2, "oldest_seconds": 60, "recovered": True}
 
     @pytest.mark.asyncio
     async def test_a_chat_waiting_still_links_to_its_chat(self):

@@ -937,7 +937,7 @@ async def run_queue_stall_alert() -> dict:
                 try:
                     # The queue's own e-mail: it names no chat and links to the chats list.
                     from app.services.email import send_queue_alert_email
-                    sent = await send_queue_alert_email(recovered=True)
+                    sent = await send_queue_alert_email(waiting=waiting, oldest_seconds=oldest, recovered=True)
                 except Exception as e:
                     logger.warning(f"[queue-alert] recovery email failed: {e}")
                 if not sent:

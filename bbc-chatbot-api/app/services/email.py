@@ -320,8 +320,14 @@ async def send_queue_alert_email(*, waiting: int = 0, oldest_seconds: int = 0, r
     Fire-and-forget safe: False on any failure, never raises."""
     link = f"{settings.admin_panel_url.rstrip('/')}/chats"
     if recovered:
-        subject = "Queue moving again — nobody is waiting for a person"
-        lead = "The queue is moving again: nobody is waiting for a person."
+        # Over is "nobody waits past the alert's threshold", not an empty queue: clients may still wait, for less
+        # (cron.run_queue_stall_alert). The e-mail says which (CodeRabbit #274).
+        subject = "Queue no longer stalled"
+        if waiting > 0:
+            people = "1 client is" if waiting == 1 else f"{waiting} clients are"
+            lead = f"The queue is no longer stalled: {people} waiting, the oldest {_minutes(oldest_seconds)}."
+        else:
+            lead = "The queue is no longer stalled: nobody is waiting for a person."
         detail = ""
     else:
         people = "1 client" if waiting == 1 else f"{waiting} clients"
