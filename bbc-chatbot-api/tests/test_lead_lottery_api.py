@@ -238,6 +238,7 @@ async def test_the_heartbeat_carries_the_lottery_badge(monkeypatch):
         out = await agent_api.heartbeat(agent_api.HeartbeatBody(), user={"id": ME})
     assert out["followups_new"] == 2
     assert out["followup_newest"] == "c2", "the lead given last, which the panel's alert opens"
+    assert out["followup_newest_at"] == 2.0, "and when: the panel announces only a lead given after the last it saw"
 
 
 @pytest.mark.asyncio
@@ -262,7 +263,7 @@ async def test_no_lead_to_open_no_id_and_one_read(monkeypatch):
             patch.object(agent_api.db, "get_queue_for_operator", new=AsyncMock(return_value=[])), \
             patch("app.services.presence.record_presence_tick", new=AsyncMock()):
         out = await agent_api.heartbeat(agent_api.HeartbeatBody(), user={"id": ME})
-    assert out["followups_new"] == 0 and out["followup_newest"] is None
+    assert out["followups_new"] == 0 and out["followup_newest"] is None and out["followup_newest_at"] is None
     assert reads == []
 
 
@@ -274,7 +275,7 @@ async def test_no_badge_for_someone_who_is_not_an_operator():
     with patch.object(agent_api.db, "update_user_last_seen", new=AsyncMock(return_value=row)), \
             patch("app.services.presence.record_presence_tick", new=AsyncMock()):
         out = await agent_api.heartbeat(agent_api.HeartbeatBody(), user={"id": ME})
-    assert out["followups_new"] is None and out["followup_newest"] is None
+    assert out["followups_new"] is None and out["followup_newest"] is None and out["followup_newest_at"] is None
 
 
 @pytest.mark.parametrize("role", ["sales", "support", "qa", "project_manager"])

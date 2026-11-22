@@ -177,10 +177,10 @@ class FakeRedis:
         out = await self.zrangebyscore(key, lo, hi, withscores=withscores)
         return list(reversed(out))
 
-    async def zrevrange(self, key: str, start: int, end: int) -> list:
+    async def zrevrange(self, key: str, start: int, end: int, withscores: bool = False) -> list:
         """By rank, highest score first (ties: the greater member first), `end` inclusive as in Redis."""
         self._check("zrevrange")
-        items = list(reversed(await self.zrangebyscore(key, "-inf", "+inf")))
+        items = list(reversed(await self.zrangebyscore(key, "-inf", "+inf", withscores=withscores)))
         return items[start:] if end == -1 else items[start:end + 1]
 
     async def zcount(self, key: str, lo: Any, hi: Any) -> int:

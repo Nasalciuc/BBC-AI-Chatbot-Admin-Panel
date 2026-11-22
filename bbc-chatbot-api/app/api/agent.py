@@ -394,13 +394,16 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # database (app.services.lead_lottery). None when Redis can't say: the panel shows no number.
     _followups_new = None
     _followup_newest = None
+    _followup_newest_at = None
     if _qa_ok_for_followups(user_db, role_db):
         from app.services import lead_lottery
         _followups_new = await lead_lottery.new_count(user_id)
         if _followups_new:
-            # The last one given: the panel's alert opens it in one click (opening confirms it). A second read
-            # only while there is something to open.
-            _followup_newest = await lead_lottery.newest(user_id)
+            # The last one given, and when: the panel's alert opens it in one click (opening confirms it) and
+            # announces only a lead given after the last it saw. A second read only while there is one to open.
+            _got = await lead_lottery.newest(user_id)
+            if _got:
+                _followup_newest, _followup_newest_at = _got
     _now = time.monotonic()
     HEARTBEAT_HEALTH["latency_ms"].append((_now, (_now - _t0) * 1000.0))
     HEARTBEAT_HEALTH["calls"] += 1
@@ -420,6 +423,7 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
         "followups_new": _followups_new,
         "followup_newest": _followup_newest,
+        "followup_newest_at": _followup_newest_at,
         # "On the site now": the address of bbc-live and a 60 s pass to it, for the roles that see the
         # list, while LIVE_VISITORS is on (app.services.live_visitors). None otherwise.
         "live": _live_for(user, user_db),

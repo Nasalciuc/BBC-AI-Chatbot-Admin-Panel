@@ -455,14 +455,60 @@ async def test_no_redis_no_badge_number():
 
 @pytest.mark.asyncio
 async def test_the_newest_lead_is_the_one_given_last(world):
-    """What the panel's alert opens: the lead given last that the agent hasn't opened."""
+    """What the panel's alert opens: the lead given last that the agent hasn't opened, and when."""
     _, _, r = world
     assert await lot.newest(A) is None
     await r.zadd(f"followup:new:{A}", {"c1": 100, "c2": 300, "c3": 200})
-    assert await lot.newest(A) == "c2"
+    assert await lot.newest(A) == ("c2", 300.0)
     await r.zrem(f"followup:new:{A}", "c2")
-    assert await lot.newest(A) == "c3"
+    assert await lot.newest(A) == ("c3", 200.0)
     assert await lot.newest(B) is None, "another agent's badge is theirs"
+
+
+@pytest.mark.asyncio
+async def test_two_leads_given_in_one_second_keep_their_order(world, monkeypatch):
+    """CodeRabbit #273: whole seconds tied them, and Redis broke the tie by the greater id, not the later give."""
+    first, second = "ffffffff-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"
+    clock = iter([1_763_805_600.25, 1_763_805_600.75])
+    monkeypatch.setattr(lot.time, "time", lambda: next(clock))
+    await lot._badge(A, add=first)
+    await lot._badge(A, add=second)
+    assert await lot.newest(A) == (second, 1_763_805_600.75)
+
+
+@pytest.mark.asyncio
+async def test_a_hand_give_moves_the_badges_under_the_lock_an_open_takes_it_off_in(world, monkeypatch):
+    """CodeRabbit #273: the give added the badge after the lock, so an open that read "manual" in between took
+    nothing off, and the badge it then added stayed. Both sides now touch the badge under the same lock."""
+    _, m, _ = world
+    m["conv"].return_value = {"id": "c1", "status": "closed", "assigned_agent_id": A, "metadata": {}}
+    events: list[str] = []
+    real_lock, real_badge = lot.conversation_lock, lot._badge
+
+    class _Seen:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __aenter__(self):
+            events.append("lock")
+            return await self.inner.__aenter__()
+
+        async def __aexit__(self, *exc):
+            events.append("unlock")
+            return await self.inner.__aexit__(*exc)
+
+    async def badge(agent, *, add=None, remove=None):
+        events.append(f"badge {'+' if add else '-'}{agent}")
+        await real_badge(agent, add=add, remove=remove)
+
+    monkeypatch.setattr(lot, "conversation_lock", lambda *a, **k: _Seen(real_lock(*a, **k)))
+    monkeypatch.setattr(lot, "_badge", badge)
+    f = await lot.give_by_hand("c1", _agent(B), {"id": "mgr", "role": "admin"})
+    assert events == ["lock", f"badge -{A}", f"badge +{B}", "unlock"]
+    events.clear()
+    assert not await lot.confirm("c1", {"id": B}, f, "opened")
+    assert events == ["lock", f"badge -{B}", "unlock"]
+    assert await lot.new_count(B) == 0
 
 
 # ── what agents see in Offers to send, with the lottery on ──────
