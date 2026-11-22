@@ -59,7 +59,8 @@ they can carry an e-mail), `from`, `to` (`[A-Z]{3}`), `depart`, `return` (`YYYY-
 computer), `site` (bbc, bct), `chat_open`, `has_chat`, `page_type` (the site's word for the page:
 home, route, destination, origin, airline, deals, search, flight, quote, thank_you, blog, about, legal,
 other), `activity` (the visitor's last steps on the site, oldest first, joined by `;`). Nothing the
-visitor typed is in it.
+visitor typed is in it. `alex_at` (the owner's agent-first test, below): when Alex's card may come, unix seconds
+by the API's clock, kept only as a whole number within 900 s of bbc-live's now.
 
 A step is one of: `search[:FROM-TO][:YYYY-MM-DD]` (a code is `[A-Z]{3}` or `?`), `quote_opened`,
 `quote_step[:N]`, `quote_invalid[:kind|kind…]` (the kinds of the fields the form flagged: name, email,
@@ -72,7 +73,7 @@ last 12 of them.
 
 A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`, `page_type`, `trip`,
 `activity` (a list of steps, oldest first), `source`, `device`, `site`, `chat_open`, `has_chat`,
-`claimed_by` (an agent id), `dismissed`. The panel shows the last four steps in words on the row and
+`claimed_by` (an agent id), `dismissed`, `alex_at` (left out when there is none). The panel shows the last four steps in words on the row and
 starts the hello from the last one: a quote form that stuck or failed is offered a hand, a sent one a
 thank-you. A visitor who wrote is in a chat already, not in this list.
 
@@ -94,6 +95,27 @@ thank-you. A visitor who wrote is in a chat already, not in this list.
   and the chat starts as the agent's (assigned, human mode, the hello as its first message). A tap that
   doesn't hold (expired, taken, the switch off) is counted and the chat starts as any other.
 
+## The owner's agent-first test (22 Nov 2026)
+
+Does a person who writes first get more answers than Alex's card (5.7 % on 15-22 Nov)? The API decides
+(`app/services/agent_first_test.py`); bbc-live only carries `alex_at`.
+
+- Two sides, by visitor id (sha256 buckets, experiment `agent_first`), `AGENT_FIRST_TEST_PERCENT` (50, the
+  owner's) on the agent's side. The test runs while the hello runs (`LIVE_VISITORS` and `AGENT_FIRST_MESSAGE`
+  on); 0 ends it without a deploy.
+- Alex's side: `POST /chat/live` answers `{"enabled": false, "test": "alex"}`, so it is never listed and no agent
+  greets it. Its cards come as before.
+- The agent's side: `POST /chat/live` answers as usual plus `"test": "agent", "hold_s"`. While an agent who may
+  say hello is at the desk (`live:greeters`, the heartbeat), `POST /chat/proactive/offer` answers
+  `{"show": false, "arm": "agent_first", "reason": "waiting", "retry_after_s", "alex_at"}` for
+  `AGENT_FIRST_HOLD_S` (120, the owner's) from the visitor's first moment (`live:hold:<vid>`): the widget gives the
+  moment back, asks again after the wait and beats `alex_at`, and the panel shows the countdown. A hello in that
+  time (`live:said`) or a "Not now" (`live:dismissed`) answers `"reason": "greeted"` / `"declined"`: no card that
+  visit. Nobody said hello: the card as usual, with `"after_hold": true`. The tapped note is never held.
+- Every answer names the side (`"test"`) while the test runs; the widget puts it on its PostHog events
+  (`agent_test`), the API on the chat's metadata (`agent_test`), and the heartbeat's live block carries
+  `"test": {"percent", "hold_s"}`. `/health` counts it under `agent_first_test`. Redis failing holds nobody.
+
 ## Redis keys
 
 | Key | Type | Value | Life | Written by |
@@ -107,6 +129,8 @@ thank-you. A visitor who wrote is in a chat already, not in this list.
 | `live:hello:<hello id>` | string | the hello for `/chat/init` (JSON) | 900 s | the API |
 | `live:said:<vid>` | string | the agent who said hello | 900 s | the API |
 | `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 25 h after the last pass: its 24 h and the hour it still renews | the API (`pass.lua`) |
+| `live:hold:<vid>` | string | unix seconds when Alex's wait began (the agent-first test) | 900 s | the API |
+| `live:greeters` | sorted set | user id, score = unix seconds of the last heartbeat of an agent who may say hello | trimmed at a day | the API |
 | `rl:livepass:<address>:<hour>` | string | new ids that address got passes for this hour; `<address>` a keyed hash, never the address | 1 h | the API (`pass.lua`) |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
