@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -175,6 +176,8 @@ type beatIn struct {
 	HasChat  bool   `json:"has_chat"`
 	PageType string `json:"page_type"`
 	Activity string `json:"activity"`
+	// The owner's agent-first test: when Alex's card may come (unix seconds), while he waits for an agent.
+	AlexAt float64 `json:"alex_at"`
 }
 
 var (
@@ -266,6 +269,22 @@ func cleanBeat(vid string, in beatIn) Visit {
 	}
 }
 
+// AlexAtSlack is how far from now a beat's alex_at may be: the API's longest wait (agent_first_test.MAX_HOLD_S,
+// 600 s) and some clock between the visitor and here.
+const AlexAtSlack = 900
+
+// cleanAlexAt keeps the time Alex's card may come when it is a whole number of seconds near now; 0 otherwise.
+func cleanAlexAt(at float64, now time.Time) int64 {
+	if at <= 0 || at != math.Trunc(at) {
+		return 0
+	}
+	n := now.Unix()
+	if at < float64(n-AlexAtSlack) || at > float64(n+AlexAtSlack) {
+		return 0
+	}
+	return int64(at)
+}
+
 // takeBeatTurn says whether this visitor's beat at now counts, and if so records it, in one step: of two beats
 // at once, only one passes the gap.
 func (s *Server) takeBeatTurn(vid string, now time.Time) bool {
@@ -303,7 +322,9 @@ func (s *Server) beat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "counted": false})
 		return
 	}
-	if err := s.Store.Beat(r.Context(), cleanBeat(vid, in)); err != nil {
+	visit := cleanBeat(vid, in)
+	visit.AlexAt = cleanAlexAt(in.AlexAt, s.now())
+	if err := s.Store.Beat(r.Context(), visit); err != nil {
 		s.redisFailed(w, "beat", err)
 		return
 	}

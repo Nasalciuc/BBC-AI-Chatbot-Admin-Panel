@@ -185,6 +185,41 @@ func TestABeatCarriesThePageKindAndTheStepsTakenNeverWhatWasTyped(t *testing.T) 
 	}
 }
 
+// The owner's agent-first test (the API's app/services/agent_first_test.py): a beat says when Alex's card may
+// come, and the panel shows the agent how long they have. Only a whole number of seconds near now passes.
+func TestABeatSaysWhenAlexComesOnlyNearNow(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	now := c.now().Unix()
+	beat := map[string]any{"page": "/", "source": "site", "alex_at": now + 120}
+	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, beat); w.Code != http.StatusOK {
+		t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+	}
+	w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	v := decode(t, w)["data"].([]any)[0].(map[string]any)
+	if v["alex_at"] != float64(now+120) {
+		t.Errorf("listed alex_at=%v, want %d", v["alex_at"], now+120)
+	}
+	at := time.Unix(now, 0)
+	for _, bad := range []float64{0, -5, float64(now) + 120.5, float64(now + AlexAtSlack + 1), float64(now - AlexAtSlack - 1)} {
+		if got := cleanAlexAt(bad, at); got != 0 {
+			t.Errorf("kept alex_at %v as %d", bad, got)
+		}
+	}
+	if got := cleanAlexAt(float64(now+600), at); got != now+600 {
+		t.Errorf("the API's longest wait dropped: %d", got)
+	}
+	// Rule 5: a beat without it lists without it (the field is left out, never 0).
+	c.add(10)
+	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, map[string]any{"page": "/"}); w.Code != http.StatusOK {
+		t.Fatalf("beat: %d", w.Code)
+	}
+	w = do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	if _, has := decode(t, w)["data"].([]any)[0].(map[string]any)["alex_at"]; has {
+		t.Errorf("alex_at listed for a beat without it: %s", w.Body.String())
+	}
+}
+
 func TestOnlyKnownPageKindsAndTheLastStepsAreKept(t *testing.T) {
 	if got := cleanBeat(vid1, beatIn{PageType: "checkout"}).PageType; got != "" {
 		t.Errorf("page_type %q", got)

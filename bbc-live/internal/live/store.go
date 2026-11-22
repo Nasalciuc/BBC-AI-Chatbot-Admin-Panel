@@ -108,6 +108,8 @@ type Visit struct {
 	// What the site says the page is, and the steps the visitor took there (";" between them).
 	PageType string
 	Activity string
+	// The owner's agent-first test: when Alex's card may come (unix seconds), 0 when he waits for nobody.
+	AlexAt int64
 }
 
 func flag(b bool) string {
@@ -123,11 +125,15 @@ func (s *Store) Beat(ctx context.Context, v Visit) error {
 	if v.Trip.Pax > 0 {
 		pax = strconv.Itoa(v.Trip.Pax)
 	}
+	alexAt := ""
+	if v.AlexAt > 0 {
+		alexAt = strconv.FormatInt(v.AlexAt, 10)
+	}
 	fields := []string{
 		"page", v.Page, "from", v.Trip.From, "to", v.Trip.To, "depart", v.Trip.Depart,
 		"return", v.Trip.Return, "cabin", v.Trip.Cabin, "pax", pax, "source", v.Source,
 		"device", v.Device, "site", v.Site, "chat_open", flag(v.ChatOpen), "has_chat", flag(v.HasChat),
-		"page_type", v.PageType, "activity", v.Activity,
+		"page_type", v.PageType, "activity", v.Activity, "alex_at", alexAt,
 	}
 	args := append([]string{v.ID, strconv.FormatInt(s.now().Unix(), 10), strconv.Itoa(VisitTTL)}, fields...)
 	_, err := s.eval(ctx, beatLua, []string{visitKey(v.ID), VisitorsKey}, args...)
@@ -152,6 +158,8 @@ type Listed struct {
 	// The kind of page (home, search, quote, ...) and the visitor's last steps on the site, oldest first.
 	PageType string   `json:"page_type,omitempty"`
 	Activity []string `json:"activity,omitempty"`
+	// The agent-first test: when Alex's card may come (unix seconds), while he waits for an agent.
+	AlexAt int64 `json:"alex_at,omitempty"`
 }
 
 // Live lists who beat in the last Window seconds, longest on the site first.
@@ -181,6 +189,9 @@ func (s *Store) Live(ctx context.Context) ([]Listed, error) {
 		}
 		if h["activity"] != "" {
 			l.Activity = strings.Split(h["activity"], ";")
+		}
+		if at, err := strconv.ParseInt(h["alex_at"], 10, 64); err == nil && at > 0 {
+			l.AlexAt = at
 		}
 		if first > 0 {
 			l.OnSite = now - first
