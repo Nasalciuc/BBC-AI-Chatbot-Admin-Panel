@@ -905,6 +905,10 @@ async def run_db_saturation_alert() -> dict:
 
 # Anti-spam state for the queue alert. Per-instance, like the other counters.
 _QUEUE_ALERT: dict = {"last_sent_at": None, "last_count": 0, "active": False}
+# In /health (`queue_alert`), per instance: the e-mails that went and those that didn't. A stall nobody was told
+# about is one the waiting client discovers (rule 2).
+QUEUE_ALERT_HEALTH: dict[str, int] = {"alerts_sent": 0, "alerts_failed": 0, "recoveries_sent": 0,
+                                      "recoveries_failed": 0}
 QUEUE_ALERT_COOLDOWN_MINUTES = 15
 QUEUE_ALERT_AFTER_SECONDS = 120
 
@@ -918,7 +922,8 @@ async def run_queue_stall_alert() -> dict:
     owner emails super@ and raises a banner. At most one alert per fifteen
     minutes however many are waiting; a second only if the number grew. When the
     queue empties after an alert, ONE recovery email — otherwise nobody knows it
-    is over.
+    is over. An e-mail that didn't go is tried again the next minute, the alert's
+    and the recovery's alike.
     """
     from datetime import datetime, timezone, timedelta
     try:
@@ -928,8 +933,6 @@ async def run_queue_stall_alert() -> dict:
         now = datetime.now(timezone.utc)
         if waiting == 0 or oldest < QUEUE_ALERT_AFTER_SECONDS:
             if _QUEUE_ALERT["active"]:
-                _QUEUE_ALERT["active"] = False
-                _QUEUE_ALERT["last_count"] = 0
                 sent = False
                 try:
                     # The queue's own e-mail: it names no chat and links to the chats list.
@@ -938,8 +941,14 @@ async def run_queue_stall_alert() -> dict:
                 except Exception as e:
                     logger.warning(f"[queue-alert] recovery email failed: {e}")
                 if not sent:
-                    logger.warning("[queue-alert] the queue recovered, and its e-mail did not go")
-                return {"state": "recovered", "emailed": sent}
+                    # The alert stays open, so the next minute tells them again that it's over.
+                    QUEUE_ALERT_HEALTH["recoveries_failed"] += 1
+                    logger.warning("[queue-alert] the queue recovered, and its e-mail did not go: again next minute")
+                    return {"state": "recovered", "emailed": False}
+                _QUEUE_ALERT["active"] = False
+                _QUEUE_ALERT["last_count"] = 0
+                QUEUE_ALERT_HEALTH["recoveries_sent"] += 1
+                return {"state": "recovered", "emailed": True}
             return {"state": "ok", "waiting": waiting}
         _last = _QUEUE_ALERT["last_sent_at"]
         _cooled = (
@@ -957,8 +966,10 @@ async def run_queue_stall_alert() -> dict:
             logger.warning(f"[queue-alert] email failed: {e}")
         if not sent:
             # Not sent is not alerted (rule 7): the next minute tries again instead of cooling down for 15.
+            QUEUE_ALERT_HEALTH["alerts_failed"] += 1
             logger.warning(f"[queue-alert] {waiting} waiting, and the e-mail did not go")
             return {"state": "email_failed", "waiting": waiting}
+        QUEUE_ALERT_HEALTH["alerts_sent"] += 1
         _QUEUE_ALERT["last_sent_at"] = now
         _QUEUE_ALERT["last_count"] = waiting
         _QUEUE_ALERT["active"] = True

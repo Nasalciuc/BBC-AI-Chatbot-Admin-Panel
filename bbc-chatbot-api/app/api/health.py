@@ -116,6 +116,8 @@ async def health_detail(full: bool = False) -> dict:
     # answer a question nobody asked.
     from app.pipeline.orchestrator import PIPELINE_HEALTH, BG_HEALTH
     from app.api.cron import _DB_ALERT
+    # The queue alert's e-mails to super@: sent, and not sent (tried again the next minute).
+    from app.api.cron import QUEUE_ALERT_HEALTH
     # The owner's Dashboard: one paged read a minute, shared; failures 502.
     from app.api.dashboard import OWNER_DASHBOARD_HEALTH
     # The Leads page's shared read: how often it reads, and how many rows.
@@ -186,6 +188,7 @@ async def health_detail(full: bool = False) -> dict:
             "behavior": dict(BEHAVIOR_HEALTH),
             "learning_outcomes": dict(OUTCOMES_HEALTH),
             "learning": dict(LEARNING_HEALTH),
+            "queue_alert": dict(QUEUE_ALERT_HEALTH),
             "token_version": dict(TOKEN_VERSION_HEALTH),
             "scheduler": scheduler,
             "supervisor_columns": supervisor_columns,
@@ -285,6 +288,7 @@ async def health_detail(full: bool = False) -> dict:
         "behavior": dict(BEHAVIOR_HEALTH),
         "learning_outcomes": dict(OUTCOMES_HEALTH),
         "learning": dict(LEARNING_HEALTH),
+        "queue_alert": dict(QUEUE_ALERT_HEALTH),
         "token_version": dict(TOKEN_VERSION_HEALTH),
         "scheduler": scheduler,
         "supervisor_columns": supervisor_columns,

@@ -126,6 +126,46 @@ class TestStallAlert:
                 out = await run_queue_stall_alert()
         assert out["state"] == "ok" and email.await_count == 1, "nothing was alerted, nothing to recover"
 
+    @pytest.mark.asyncio
+    async def test_a_recovery_that_did_not_go_is_told_again_the_next_minute(self):
+        """Otherwise nobody knows the stall is over. Once it went, silence (rule 5: the queue stays empty)."""
+        _reset()
+        before = dict(cron.QUEUE_ALERT_HEALTH)
+        email = AsyncMock(side_effect=[True, False, True])
+        with patch("app.services.email.send_queue_alert_email", email):
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
+                await run_queue_stall_alert()
+            with patch.object(cron.db, "get_queue_stats", _stats(0, 0)):
+                failed = await run_queue_stall_alert()
+                again = await run_queue_stall_alert()
+                after = await run_queue_stall_alert()
+        assert failed == {"state": "recovered", "emailed": False}
+        assert again == {"state": "recovered", "emailed": True}
+        assert after["state"] == "ok" and email.await_count == 3
+        assert [k.kwargs for k in email.await_args_list[1:]] == [{"recovered": True}] * 2
+        delta = {k: cron.QUEUE_ALERT_HEALTH[k] - before[k] for k in before}
+        assert delta == {"alerts_sent": 1, "alerts_failed": 0, "recoveries_sent": 1, "recoveries_failed": 1}
+
+    @pytest.mark.asyncio
+    async def test_an_alert_that_did_not_go_is_counted(self):
+        """Rule 2: a stall nobody was told about is counted in /health, not only logged."""
+        _reset()
+        before = dict(cron.QUEUE_ALERT_HEALTH)
+        with patch("app.services.email.send_queue_alert_email", AsyncMock(side_effect=RuntimeError("smtp"))), \
+             patch.object(cron.db, "get_queue_stats", _stats(3, 300)):
+            out = await run_queue_stall_alert()
+        assert out == {"state": "email_failed", "waiting": 3}
+        assert cron.QUEUE_ALERT_HEALTH["alerts_failed"] - before["alerts_failed"] == 1
+        assert cron.QUEUE_ALERT_HEALTH["alerts_sent"] == before["alerts_sent"]
+
+    def test_the_counts_are_in_health(self):
+        import inspect
+
+        from app.api import health
+
+        src = inspect.getsource(health.health_detail)
+        assert src.count('"queue_alert": dict(QUEUE_ALERT_HEALTH)') == 2, "both answers, short and full"
+
 
 class TestQueueEmail:
     @pytest.mark.asyncio
