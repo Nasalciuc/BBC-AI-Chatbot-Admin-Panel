@@ -35,6 +35,9 @@ export function SignIn() {
   const [mfa, setMfa] = useState<{ mode: 'required' | 'enroll'; token: string } | null>(null)
 
   function finishLogin(token: string, user: LoginUser) {
+    // The new session's token first, as the CRM's sign-in does: the user change empties the query cache and asks
+    // again for what is on screen (main.tsx), and that ask must carry this account's token (CodeRabbit #273).
+    auth.setAccessToken(token)
     auth.setUser({
       accountNo: user.id,
       email: user.email,
@@ -45,7 +48,6 @@ export function SignIn() {
       avatar_url: user.avatar_url ?? null,
       phone: user.phone ?? '',
     })
-    auth.setAccessToken(token)
     sso.done()
     // Back where you were, search included (/chats?highlight=… reopens the
     // chat). Only a place on this site; anything else goes home.

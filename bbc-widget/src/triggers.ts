@@ -53,6 +53,13 @@
  * against 5 s) is retired: both sides came at ~7 s, so it measured nothing. Ads at 4 s, not 3: on a computer the
  * ads card is the open panel, over a page not read yet.
  *
+ * The 2.5 s stays (owner, 22 Nov). The card now reaches about 3 in 4 Kayak visits, against about 1 in 3 on 17-18
+ * Nov, with the same ~800 visits a day. Its yes grew from 8 taps (19 Nov) to 29 (21 Nov), and the contacts from it
+ * from 5 to 17. The chats with no contact grew too, from 3 to 12: visitors who leave in seconds tap yes and go at
+ * the contact step. The site's own quote form did not lose any: 2.4-2.9% of Kayak visits sent it on 17-21 Nov.
+ * What follows the yes is the owner's contact test (bbc-chatbot-api app/services/contact_field_test.py), not this
+ * moment.
+ *
  * Pure: proactive.ts measures the page and asks; this decides (node-testable).
  */
 

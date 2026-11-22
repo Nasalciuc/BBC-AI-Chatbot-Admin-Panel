@@ -159,11 +159,12 @@ async def test_engaged_agent_id_is_reshaped_so_agent_state_still_works():
     assert row["metadata"]["engaged_agent_id"] == ENGAGED_ID
     # agent_assigned_at joined them with the reply countdown on the list row,
     # and the v2 presence signals with the rule that reads them (Nov 2026).
+    # And the moment that opened the chat, for the row's "Card · no contact" (22 Nov).
     assert set(row["metadata"]) == {
         "engaged_agent_id", "widget_presence",
         "widget_last_event_at", "widget_pings", "agent_assigned_at",
         "pres_v", "pres_seen_at", "pres_active_at", "pres_chat_open",
-        "pres_mobile", "pres_hidden_at", "pres_leaving_at",
+        "pres_mobile", "pres_hidden_at", "pres_leaving_at", "proactive_trigger",
     }
     # The lifted alias is not left lying around at the top level
     assert "engaged_agent_id" not in {k for k in row if k != "metadata"}
@@ -278,6 +279,25 @@ async def test_get_conversation_returns_none_for_empty_result_even_when_strict()
 
     with patch.object(db, "get_client", return_value=fake_db):
         assert await db.get_conversation(CONV_ID, raise_on_error=True) is None
+
+
+@pytest.mark.asyncio
+async def test_a_card_chats_row_names_the_moment_that_opened_it():
+    """The row's "Card · no contact" reads metadata.proactive_trigger: the list lifts that one key, never the
+    whole metadata (CodeRabbit #273: it was dropped, so the label never showed)."""
+    rows = [{"id": CONV_ID, "mode": "ai", "assigned_agent_id": None, "proactive_trigger": "kayak"},
+            {"id": CONV_ID, "mode": "ai", "assigned_agent_id": None}]
+    fq = _FakeQuery(rows=rows, count=2)
+    fake_db = MagicMock()
+    fake_db.table.return_value = fq
+    with (
+        patch.object(db, "get_client", return_value=fake_db),
+        patch.object(db, "enrich_conversations_agent_info", new_callable=AsyncMock, side_effect=lambda rows: rows),
+    ):
+        out, _ = await db.get_conversations()
+    assert "proactive_trigger:metadata->>proactive_trigger" in fq.select_arg
+    assert [r["metadata"]["proactive_trigger"] for r in out] == ["kayak", None]
+    assert all("proactive_trigger" not in {k for k in r if k != "metadata"} for r in out)
 
 
 # ── 10. An id that is not a uuid names no chat (the queue e-mail's "-", 20-21 Nov 2026) ──

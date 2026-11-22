@@ -1,0 +1,83 @@
+{
+  "_": "Test vectors for contracts/live.md: the API (Python) issues, bbc-live (Go) reads. Both suites check every line. Each token sits under value, not under a key named for it: gitleaks reads such a key with a long string after it as a leaked secret, and the merged commit is one no fingerprint in .gitleaksignore can name.",
+  "pass": {
+    "secret": "live-test-secret",
+    "now": 1763700000,
+    "valid": [
+      {
+        "value": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca2",
+        "visitor_id": "3f1c2a7e-8b4d-4c1e-9a2f-6d5e4c3b2a10",
+        "exp": 1763786300
+      }
+    ],
+    "invalid": [
+      {
+        "value": "b1.eyJleHAiOjE3NjM2OTk5OTksImlhdCI6MTc2MzYxMzU5OSwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.9260034fb0ad7574eeb29bf46edafd1f2544e3680335a2a8bc1ce8faf5d98be0",
+        "reason": "expired"
+      },
+      {
+        "value": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDk5OSJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca2",
+        "reason": "invalid"
+      },
+      {
+        "value": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca0",
+        "reason": "invalid"
+      },
+      {
+        "value": "l1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9.03216a455357eabfbdae8ae412206a4bab53bd61420705964e364c67e6efeca2",
+        "reason": "invalid"
+      },
+      {
+        "value": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.9c029340a2cabe3fb9c59b929bbff5d4c6478ba71e731e7cdd11ce778fe98e74",
+        "reason": "invalid"
+      },
+      {
+        "value": "b1.eyJleHAiOjE3NjM3ODYzMDAsImlhdCI6MTc2MzY5OTkwMCwidiI6IjNmMWMyYTdlLThiNGQtNGMxZS05YTJmLTZkNWU0YzNiMmExMCJ9",
+        "reason": "invalid"
+      },
+      {
+        "value": "",
+        "reason": "missing"
+      }
+    ]
+  },
+  "agent": {
+    "secret": "live-test-secret",
+    "now": 1763700000,
+    "valid": [
+      {
+        "value": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.9c029340a2cabe3fb9c59b929bbff5d4c6478ba71e731e7cdd11ce778fe98e74",
+        "user": "aaaaaaaa-0000-4000-8000-000000000001",
+        "role": "sales",
+        "tunnel": "sales",
+        "exp": 1763700050
+      }
+    ],
+    "invalid": [
+      {
+        "value": "l1.eyJleHAiOjE3NjM2OTk5OTksImlhdCI6MTc2MzY5OTkzMCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.49c84df41aad826b190e5aab28faaf1ee1fafc8b2eb0314371804a39f8abdb70",
+        "reason": "expired"
+      },
+      {
+        "value": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6Im93bmVyIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.9c029340a2cabe3fb9c59b929bbff5d4c6478ba71e731e7cdd11ce778fe98e74",
+        "reason": "invalid"
+      },
+      {
+        "value": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.f91a1ac07557d53e41af524fcaa7a91c5ed78809b1561aab24d44fe460c0e043",
+        "reason": "invalid"
+      },
+      {
+        "value": "t1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9.1573d5ab7668d481285d43f64b7eeb5deb0fda9915d9267a94acd6fa00abace1",
+        "reason": "invalid"
+      },
+      {
+        "value": "l1.eyJleHAiOjE3NjM3MDAwNTAsImlhdCI6MTc2MzY5OTk5MCwiciI6InNhbGVzIiwidCI6InNhbGVzIiwidSI6ImFhYWFhYWFhLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9",
+        "reason": "invalid"
+      },
+      {
+        "value": "",
+        "reason": "missing"
+      }
+    ]
+  }
+}

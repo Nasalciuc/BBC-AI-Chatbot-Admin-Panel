@@ -22,7 +22,10 @@ from pydantic import BaseModel, Field
 from app.api.conversations import _blind_guard, _enforce_tunnel, _taken_blind
 from app.db import supabase as db
 from app.security.auth import get_current_user
-from app.services.offers_view import DEFAULT_DAYS, MARK_KEYS, WINDOWS, build_offers, candidates, mark_patch
+from app.services import lead_lottery
+from app.services.offers_view import (
+    DEFAULT_DAYS, MARK_KEYS, WINDOWS, build_offers, candidates, mark_patch, owner_of,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -84,16 +87,52 @@ async def list_offers(
             logger.error(f"[offers] blind state read failed ({type(e).__name__}): every row blind")
             fresh = None
 
+    # With the follow-up lottery on, the leads are shared out, not picked: an agent sees their own whole,
+    # another agent's by route and owner only (never how to reach the client), and one nobody has yet as
+    # who and since when, until the lottery gives it (PLAN 5.2, the owner's decisions of 21 Nov).
+    lottery = lead_lottery.enabled() and role in db._OPERATOR_ROLES
+    me = user.get("id")
+
+    def owner_now(row: dict) -> tuple[bool, Optional[str]]:
+        """(known, whose the lead is NOW) from the fresh read: the universe can be 20 s old, and a lead given,
+        moved or taken back since must be shown as it is now. Unknown when the fresh read can't speak for it."""
+        state = fresh.get(row.get("conversation_id")) if fresh is not None else None
+        if state is None:
+            return False, None
+        # Who closed it names the owner only while it is still closed: a chat reopened since is the agent who
+        # took it now, never the earlier closer (CodeRabbit #273). All three read fresh.
+        closed_now = state.get("status") in ("closed", "completed")
+        return True, (state.get("assigned_agent_id") or (state.get("closed_by_agent_id") if closed_now else None)
+                      or state.get("engaged_agent_id"))
+
+    def shown_owner(row: dict) -> Optional[str]:
+        """The agent the row names: the same reading as the visibility rules when the fresh read speaks for the
+        lead, the universe's otherwise (a role that reads no fresh state, or a read that failed)."""
+        known, owner = owner_now(row)
+        return owner if known else owner_of(row)
+
     def blind(row: dict) -> bool:
         if role not in db._OPERATOR_ROLES:
             return False
-        state = fresh.get(row.get("conversation_id")) if fresh is not None else None
-        return True if state is None else _taken_blind(user, state)
+        known, owner = owner_now(row)
+        if not known:
+            return True
+        if lottery and owner is None:
+            return True
+        return _taken_blind(user, fresh[row.get("conversation_id")])
 
-    built = build_offers(rows, now=now, days=days, names=names, masked=role == "supervisor", blind=blind)
+    def hidden(row: dict) -> bool:
+        """Another agent's lead: route and owner only; a lead whose owner now can't be read, the same."""
+        if not lottery:
+            return False
+        known, owner = owner_now(row)
+        return not known or (owner is not None and owner != me)
+
+    built = build_offers(rows, now=now, days=days, names=names, masked=role == "supervisor", blind=blind,
+                         hidden=hidden, owner=shown_owner)
     return {
         "success": True,
-        "data": {**built, "days": days, "can": {"mark": role in MARKERS}},
+        "data": {**built, "days": days, "can": {"mark": role in MARKERS}, "lottery": lead_lottery.enabled()},
         "count": len(built["waiting"]),
     }
 
@@ -138,7 +177,10 @@ async def mark_offer(conversation_id: str, body: OfferMark, user: dict = Depends
         except ValueError:
             raise HTTPException(400, "Unknown chat")
     team_ids = set(await db.get_team_ids_for_supervisor(user.get("id", "")) or []) if role == "supervisor" else None
+    # With the follow-up lottery on, an agent marks their own leads only (the list hides the others').
+    only_own = lead_lottery.enabled() and role in db._OPERATOR_ROLES
     before: dict[str, dict] = {}
+    followups: dict[str, dict] = {}
     for cid in ids:
         conv = await db.get_conversation_simple(cid)
         if not conv:
@@ -149,7 +191,14 @@ async def mark_offer(conversation_id: str, body: OfferMark, user: dict = Depends
         if await _blind_guard(user, cid):
             raise HTTPException(403, "Take the chat first: it's waiting for a person.")
         meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+        if only_own:
+            owner = conv.get("assigned_agent_id") or meta.get("closed_by_agent_id") or meta.get("engaged_agent_id")
+            if owner != user.get("id"):
+                raise HTTPException(403, "This lead is another agent's." if owner else
+                                    "This lead is waiting for the lottery to give it to someone.")
         before[cid] = {k: meta.get(k) for k in MARK_KEYS}
+        if isinstance(meta.get("followup"), dict):
+            followups[cid] = meta["followup"]
     now = datetime.now(timezone.utc)
     patch = mark_patch(body.state, user.get("id") or "", now)
     done: list[str] = []
@@ -172,5 +221,9 @@ async def mark_offer(conversation_id: str, body: OfferMark, user: dict = Depends
         if tried:
             db.invalidate_leads_universe()
     OFFERS_HEALTH["marks"] += 1
+    # A mark by the agent the lottery gave the lead to confirms it (as opening it would).
+    if body.state != "open":
+        for cid, followup in followups.items():
+            await lead_lottery.confirm(cid, user, followup, "marked")
     logger.info(f"[offers] {body.state} role={role} chats={len(ids)}")
     return {"success": True, "data": {"state": body.state, "at": now.isoformat(), "chats": ids}, "count": len(ids)}

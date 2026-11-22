@@ -5,6 +5,7 @@
  * missing token for 7 days, then refuses it).
  */
 
+import type { AgentTestSide } from './agentTest'
 import type { ButtonKind, ChannelKind, ChatButton } from './channel'
 
 const BUTTON_KINDS: readonly ButtonKind[] = ['sms', 'email', 'wait', 'change']
@@ -57,11 +58,17 @@ export function ensureVisitorId(): string {
 }
 
 /** What the card's yes is answered with at once, when the card knew the whole trip (A2): the server's
- *  words and the buttons under them (app/services/card_words.py, confirm). */
+ *  words and the buttons under them (app/services/card_words.py, confirm). On the field side of the owner's
+ *  contact test (22 Nov, app/services/contact_field_test.py) also the field the chat opens with them, and
+ *  "Get a fare quote" on a card that knew no whole trip gets one too, contact first. */
 export interface OfferConfirm {
   message: string
   buttons: ChatButton[]
+  field?: ChannelKind
 }
+
+/** The owner's contact test: the contact field at once after the yes ("field"), or the choice first ("choice"). */
+export type ContactTestSide = 'field' | 'choice'
 
 /** The server's answer to "open the chat now?" (bbc-chatbot-api app/services/proactive.py, offer). */
 export interface ProactiveOffer {
@@ -86,6 +93,18 @@ export interface ProactiveOffer {
   /** ADR A3: the phone card's title (the trip) and its one question; the chat opens with `message`. */
   headline?: string
   card_text?: string
+  /** The owner's agent-first test (agentTest.ts): the visitor's side, on every answer while the test runs. */
+  test?: AgentTestSide
+  /** arm "agent_first": Alex waits for an agent; ask again after this many seconds (the moment is given back). */
+  retry_after_s?: number
+  /** ...and when he comes by the server's clock (unix seconds), for the beat. */
+  alex_at?: number
+  /** arm "agent_first" without a wait: why the card doesn't come ("greeted", "declined"). */
+  reason?: string
+  /** The card comes because Alex's wait ran out with no hello. */
+  after_hold?: boolean
+  /** The owner's contact test: this visitor's side, on the cards it changes (sent back at /chat/init). */
+  contact_test?: ContactTestSide
 }
 
 /** The longest card title the server sends (app/services/proactive.py, TITLE_MAX): the same number. */
@@ -104,6 +123,12 @@ export function offerVariant(v: unknown): string | undefined {
 /** Why an offer brought no answer: our time ran out, the request failed on the way, the server said no
  *  with a status, or its reply was not an offer. */
 export type OfferFail = 'timeout' | 'network' | 'http' | 'shape'
+
+/** The seconds an agent-first "wait" answer gives (agentTest.ts waitSeconds; the server's cap, 600): this file
+ *  imports nothing but types, so the tests run it in node. */
+export function offerWait(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 600 ? Math.ceil(v) : null
+}
 
 /** How an offer request went, for the measurements: how long it took, and why no answer came (null: one did). */
 export interface OfferTiming {
@@ -131,6 +156,8 @@ export async function fetchProactiveOffer(
     visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[]
     /** The browser's language, the screen, and a row beside the refused form (proactive.ts). */
     lang?: string; device?: 'phone' | 'computer'; place?: 'form'
+    /** This widget opens the contact field with the yes's answer: it takes part in the owner's contact test. */
+    opens_field?: boolean
   },
   timeoutMs: number,
   onTiming?: (t: OfferTiming) => void,
@@ -160,6 +187,8 @@ export async function fetchProactiveOffer(
     const confirmMessage = typeof data.confirm?.message === 'string' && data.confirm.message.trim()
       ? data.confirm.message : null
     const confirmButtons = readButtons(data.confirm?.buttons)
+    const confirmField: ChannelKind | null = data.confirm?.field === 'sms' || data.confirm?.field === 'email'
+      ? data.confirm.field : null
     const channel = readChannel(data.channel)
     const buttons = readButtons(data.buttons)
     // ADR A3: both or neither — a title without its question (or the reverse) would be half a card. The title's
@@ -172,11 +201,20 @@ export async function fetchProactiveOffer(
       message: typeof data.message === 'string' && data.message.trim() ? data.message : null,
       quick_replies: replies,
       ...(variant ? { variant } : {}),
-      ...(confirmMessage && confirmButtons.length ? { confirm: { message: confirmMessage, buttons: confirmButtons } } : {}),
+      ...(confirmMessage && confirmButtons.length ? {
+        confirm: { message: confirmMessage, buttons: confirmButtons, ...(confirmField ? { field: confirmField } : {}) },
+      } : {}),
       ...(channel ? { channel } : {}),
       ...(buttons.length ? { buttons } : {}),
       ...(data.lang === 'es' || data.lang === 'fr' ? { lang: data.lang } : {}),
       ...(headline && cardText ? { headline, card_text: cardText } : {}),
+      ...(data.test === 'agent' || data.test === 'alex' ? { test: data.test as AgentTestSide } : {}),
+      ...(offerWait(data.retry_after_s) !== null ? { retry_after_s: offerWait(data.retry_after_s) as number } : {}),
+      ...(Number.isInteger(data.alex_at) && data.alex_at > 0 ? { alex_at: data.alex_at as number } : {}),
+      ...(data.reason === 'greeted' || data.reason === 'declined' || data.reason === 'waiting' ? { reason: data.reason } : {}),
+      ...(data.after_hold === true ? { after_hold: true } : {}),
+      ...(data.contact_test === 'field' || data.contact_test === 'choice'
+        ? { contact_test: data.contact_test as ContactTestSide } : {}),
     })
   } catch (e) {
     // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON (a

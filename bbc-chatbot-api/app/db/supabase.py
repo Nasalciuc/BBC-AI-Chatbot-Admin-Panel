@@ -668,7 +668,10 @@ _LIST_COLUMNS_BASE = (
     "phone_to_check:metadata->>phone_to_check,"
     # The e-mail and the phone, under their own names, for the same answer when the list falls back to
     # this projection (no visitor_email / visitor_phone in it): dropped once read (CodeRabbit #270).
-    "contact_email:visitor_email,contact_phone:visitor_phone"
+    "contact_email:visitor_email,contact_phone:visitor_phone,"
+    # The moment that opened the chat by itself (proactive.init_metadata): the row says "Card · no contact" for
+    # a card chat with no way to reach the client (owner, 22 Nov; CodeRabbit #273: the list had dropped it).
+    "proactive_trigger:metadata->>proactive_trigger"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -680,6 +683,15 @@ _LIST_COLUMNS_SUPERVISOR = (
     "visitor_phone,visitor_email,queued_at"
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
+
+
+def _list_columns(full: bool, with_queue: bool) -> str:
+    """The chat list's projection: the legacy one, or the supervisor one with queued_at only while the column
+    is there (034). Without queued_at the rest of the supervisor columns stay: a missing queued_at must not
+    cost the list its chat numbers and its tags (CodeRabbit #273)."""
+    if not full:
+        return _LIST_COLUMNS_BASE
+    return _LIST_COLUMNS if with_queue else _LIST_COLUMNS.replace(",queued_at", "")
 
 # None = not probed yet, True = migrations applied, False = temporarily
 # downgraded after a real missing-column error. Transient network/HTTP errors
@@ -830,17 +842,24 @@ _decoy_ok: dict[str, bool] = {}
 _decoy_downgraded_at: dict[str, float] = {}
 
 
-def _decoy_filterable(table: str) -> bool:
-    from app.flags import flag
-
-    if not flag("DECOYS_ENABLED", True):
-        return False
+def _decoy_column_readable(table: str) -> bool:
+    """True unless a real missing-column error for <table>.is_decoy is in TTL, whatever DECOYS_ENABLED says:
+    a reader that must never act on a decoy (the follow-up lottery, the QA sample) reads the marker whenever
+    the column is there. A decoy stored while the switch was on stays one after it is turned off."""
     if _decoy_ok.get(table) is not False:
         return True
     at = _decoy_downgraded_at.get(table)
     if at is None:
         return True
     return time.time() - at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _decoy_filterable(table: str) -> bool:
+    from app.flags import flag
+
+    if not flag("DECOYS_ENABLED", True):
+        return False
+    return _decoy_column_readable(table)
 
 
 def _downgrade_decoy(table: str, err: Exception) -> None:
@@ -898,6 +917,236 @@ def _readable_to_agent(viewer_id: str, with_queue: bool) -> str:
     )
 
 
+def _search_kind(search: str) -> Optional[str]:
+    from app.services.chat_search import parse
+
+    parsed = parse(search)
+    return parsed.kind if parsed else None
+
+
+_phone_digits_ok: bool | None = None
+_phone_digits_downgraded_at: float | None = None
+
+
+def _phone_digits_column_available() -> bool:
+    """visitor_phone_digits (054, a computed field PostgREST resolves like a column) usable, unless a
+    missing-column error is in its TTL."""
+    if _phone_digits_ok is not False or _phone_digits_downgraded_at is None:
+        return True
+    return time.time() - _phone_digits_downgraded_at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _downgrade_phone_digits(err: Exception) -> bool:
+    """True when the error was the missing 054 column (then the phone search falls back)."""
+    global _phone_digits_ok, _phone_digits_downgraded_at
+    if not _is_missing_column_error(err) or "visitor_phone_digits" not in str(err):
+        return False
+    if _phone_digits_ok is not False:
+        logger.warning(
+            "conversations.visitor_phone_digits is missing — apply migrations/054_conversations_phone_digits.sql. "
+            "The phone search reads the digits with a regex instead (row by row, same answers); re-probing in 60s."
+        )
+    _phone_digits_ok = False
+    _phone_digits_downgraded_at = time.time()
+    return True
+
+
+def _readable_inner(readable: str) -> str:
+    """`or(a,b,...)` as the inside, for a top-level or= that ANDs with the rest of the query."""
+    return readable[3:-1] if readable.startswith("or(") and readable.endswith(")") else readable
+
+
+def _apply_search(q, search: str, readable: Optional[str], with_supervisor_cols: bool,
+                  route_ids: Optional[list[str]], *, masked: bool = False):
+    """The search box (app.services.chat_search): one condition, every value quoted. `masked`: the reader's
+    rows mask the name and the contact (a supervisor); those are then found only whole (chat_search)."""
+    from app.services import chat_search as cs
+
+    parsed = cs.parse(search)
+    if parsed is None:
+        return q
+    if parsed.kind == "number" and with_supervisor_cols:
+        return q.or_(f"chat_number.eq.{int(parsed.value)}")
+    if parsed.kind == "email":
+        email = cs.email_whole(parsed.value) if masked else cs.contains("visitor_email", parsed.value)
+        return q.or_(cs.guarded(email, readable))
+    if parsed.kind == "phone":
+        digits_column = _phone_digits_column_available()
+        phone = (cs.phone_whole_condition(parsed.value, digits_column=digits_column) if masked
+                 else cs.phone_condition(parsed.value, digits_column=digits_column))
+        return q.or_(cs.guarded(phone, readable))
+    if parsed.kind == "airport":
+        q = q.or_(cs.airport_condition(parsed.value), reference_table="leads")
+        return q.or_(_readable_inner(readable)) if readable else q
+    if masked:
+        # A whole word of the name, or a city in the route; never part of a contact (found only whole above).
+        by_route = cs.ids_condition(route_ids or [])
+        parts = [p for p in (cs.name_words_condition(parsed.value), by_route and cs.guarded(by_route, readable)) if p]
+        return q.or_(",".join(parts) if parts else "id.is.null")  # nothing to look for: no chat
+    # A name; and, as before this change, an e-mail or a phone that contains the text; or a city in the route.
+    text = parsed.value
+    contact = f"{cs.contains('visitor_email', text)},{cs.contains('visitor_phone', text)}"
+    parts = [cs.contains("visitor_name", text), cs.guarded(contact, readable)]
+    by_route = cs.ids_condition(route_ids or [])
+    if by_route:
+        parts.append(cs.guarded(by_route, readable))
+    return q.or_(",".join(parts))
+
+
+# Absent, empty or only spaces: no contact, as the row's has_contact reads it (a value with .strip()). The
+# regex goes quoted, its backslash escaped for PostgREST (chat_search.quoted).
+_BLANK = '"^\\\\s*$"'
+_NO_CONTACT = (
+    f"or(visitor_email.is.null,visitor_email.match.{_BLANK})",
+    f"or(visitor_phone.is.null,visitor_phone.match.{_BLANK})",
+    f"or(metadata->>phone_to_check.is.null,metadata->>phone_to_check.match.{_BLANK})",
+)
+
+
+def _apply_filters(q, f: dict, readable: Optional[str]):
+    """The filter row (see get_conversations). Values come typed from the endpoint; inside an or=()
+    they go quoted all the same. For an agent, where the client came from and the trip are what the
+    blind take keeps back: those filters only keep chats the agent may read."""
+    from app.services import chat_search as cs
+
+    if f.get("created_from"):
+        q = q.gte("created_at", f["created_from"])
+    if f.get("created_to"):
+        q = q.lt("created_at", f["created_to"])
+    agent = f.get("agent")
+    if agent:
+        who = cs.quoted(agent)
+        q = q.or_(f"assigned_agent_id.eq.{who},metadata->>closed_by_agent_id.eq.{who},"
+                  f"metadata->>engaged_agent_id.eq.{who}")
+    # The list row's has_contact: an e-mail, a phone, or a local number kept to check (ADR-6f).
+    if f.get("has_contact") is True:
+        q = q.or_(",".join(f"not.{c}" for c in _NO_CONTACT))
+    elif f.get("has_contact") is False:
+        for c in _NO_CONTACT:
+            q = q.or_(c[3:-1])
+    hidden_from_blind = False
+    if f.get("source"):
+        for condition in cs.source_conditions(f["source"]):
+            q = q.or_(condition)
+        hidden_from_blind = True
+    if f.get("route_from"):
+        q = q.eq("leads.origin_code", f["route_from"])
+        hidden_from_blind = True
+    if f.get("route_to"):
+        q = q.eq("leads.destination_code", f["route_to"])
+        hidden_from_blind = True
+    if f.get("crm") in ("in", "out"):
+        q = q.eq("leads.created_in_crm", f["crm"] == "in")
+        hidden_from_blind = True
+    if hidden_from_blind and readable:
+        q = q.or_(_readable_inner(readable))
+    return q
+
+
+async def get_route_conversation_ids(text: str, limit: int = 200) -> list[str]:
+    """The chats whose lead's route names `text` ("Istanbul" in "New York → Istanbul"), newest first:
+    the city part of the search box, read before the list and matched there by id. A top-level ilike
+    takes its value unquoted (PostgREST), LIKE's wildcards escaped. RAISES on a failed read."""
+    from app.services.chat_search import contains_pattern
+
+    def _q():
+        return (
+            get_client().table("leads").select("conversation_id")
+            .ilike("route_display", contains_pattern(text))
+            .order("created_at", desc=True).limit(limit).execute()
+        )
+
+    res = await _run_sync(_q, label="search")
+    return [r["conversation_id"] for r in (res.data or []) if r.get("conversation_id")]
+
+
+SEARCHED_ROLES = ("user", "ai", "agent")  # what was said in the chat; system lines are the app's own
+
+
+async def search_messages(text: str, *, since_iso: str, limit: int = 60, tunnel: Optional[str] = None,
+                          blind_viewer: Optional[str] = None) -> list[dict]:
+    """Messages that contain `text` (case-insensitive, LIKE's wildcards literal) since `since_iso`, newest
+    first: id, conversation_id, role, content, created_at. Without 055 this reads the window's rows one by
+    one (37k messages in all on 21 Nov, about 5k a month). RAISES on a failed read.
+
+    `tunnel` and `blind_viewer` (an agent's id) narrow the chats in the query itself, through an inner embed of
+    the conversation, so the limit counts only messages the asker may read: filtered after it, newer matches in
+    other chats would push their own out (the route checks every row again)."""
+    from app.services.chat_search import contains_pattern
+
+    def _q(with_queue: bool):
+        narrowed = bool(tunnel or blind_viewer)
+        q = (get_client().table("messages")
+             .select("id,conversation_id,role,content,created_at" + (",conversations!inner(id)" if narrowed else ""))
+             .in_("role", list(SEARCHED_ROLES))
+             .gte("created_at", since_iso)
+             .ilike("content", contains_pattern(text)))
+        if tunnel:
+            q = q.eq("conversations.tunnel", tunnel)
+        if blind_viewer:
+            q = q.or_(_readable_inner(_readable_to_agent(blind_viewer, with_queue=with_queue)),
+                      reference_table="conversations")
+        return q.order("created_at", desc=True).limit(limit).execute()
+
+    use_queue = _queued_at_column_available()
+    try:
+        res = await _run_sync(lambda: _q(use_queue), label="search")
+    except Exception as e:
+        if not (blind_viewer and use_queue and _is_missing_column_error(e) and "queued_at" in str(e)):
+            raise
+        _downgrade_queued_at(e)
+        res = await _run_sync(lambda: _q(False), label="search")
+    rows = res.data or []
+    for row in rows:
+        row.pop("conversations", None)
+    return rows
+
+
+_BRIEF_COLUMNS = ("id,tunnel,team_id,status,mode,assigned_agent_id,visitor_name,updated_at,"
+                  "engaged_agent_id:metadata->>engaged_agent_id")
+
+
+async def get_conversations_brief(conv_ids: list[str]) -> dict[str, dict]:
+    """{id: the few fields a search result or the recent list shows, and the blind take reads}, one read
+    per 100 ids. chat_number and queued_at (023/024) when they exist. A chat that no longer exists is
+    absent. RAISES on a failed read: the caller shows nothing rather than guess who may read what."""
+    ids = list(dict.fromkeys(i for i in conv_ids if i))
+    out: dict[str, dict] = {}
+    with_number = _supervisor_columns_available()
+    # queued_at decides the blind take: read whenever the column exists (its own tracker), never dropped
+    # with the optional display field.
+    with_queue = _queued_at_column_available()
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+
+        def _q(number: bool, queue: bool, chunk=chunk):
+            cols = _BRIEF_COLUMNS + (",chat_number" if number else "") + (",queued_at" if queue else "")
+            return get_client().table("conversations").select(cols).in_("id", chunk).execute()
+
+        res = None
+        for attempt in range(3):
+            try:
+                res = await _run_sync(lambda: _q(with_number, with_queue), label="search")
+                break
+            except Exception as e:
+                if attempt == 2 or not _is_missing_column_error(e):
+                    logger.error(f"get_conversations_brief({len(chunk)} chats) failed: {type(e).__name__}")
+                    raise
+                if with_queue and "queued_at" in str(e):
+                    _downgrade_queued_at(e)
+                    with_queue = False
+                elif with_number:
+                    _downgrade_supervisor_columns(e)
+                    with_number = False
+                else:
+                    logger.error(f"get_conversations_brief({len(chunk)} chats) failed: {type(e).__name__}")
+                    raise
+        for row in res.data or []:
+            if row.get("id"):
+                out[row["id"]] = row
+    return out
+
+
 async def get_conversations(
     tunnel: Optional[str] = None,
     status: Optional[str] = None,
@@ -912,13 +1161,33 @@ async def get_conversations(
     limit: int = 50,
     offset: int = 0,
     blind_viewer: Optional[str] = None,
+    filters: Optional[dict] = None,
+    search_route_ids: Optional[list[str]] = None,
+    masked_search: bool = False,
 ) -> tuple[list, int]:
     """List conversations with filters. Returns (rows, total_count).
+
+    search: what the panel's box holds, read by app.services.chat_search (the
+    chat number, an e-mail, a phone by its digits, an airport, else a name or a
+    city in the route: search_route_ids, read beforehand from the leads). Every
+    value goes in quoted (hole A, 21 Nov): nothing typed can add a condition.
+
+    filters (the panel's filter row, every one optional): created_from and
+    created_to (ISO times), has_contact (bool), agent (an id, managers only),
+    source (kayak | ads | site), route_from and route_to (airport codes) and
+    crm (in | out), the last three on the chat's lead (an inner join: a chat
+    without a lead does not match them). For an agent, a filter on the trip
+    keeps only chats they may read, like the search.
 
     blind_viewer: the id of an agent (sales/support) searching. Their search
     still finds any chat by name, but by e-mail or phone only the chats they
     may read — never a waiting chat they haven't taken (blind take). Rows
     would hide the contact anyway; the match itself would give it away.
+
+    masked_search: the reader's rows mask the name, the e-mail and the phone
+    (a supervisor, app.security.pii). Those then match only whole: the whole
+    address, the whole number, whole words of the name (chat_search), so the
+    search can't read back letter by letter what the rows hide.
 
     team_ids (Phase 2): when a non-empty list is passed, restrict to
     conversations whose frozen team_id is in that set. PostgREST ANDs
@@ -937,7 +1206,14 @@ async def get_conversations(
     """
     try:
         db = get_client()
+        f = filters or {}
+        lead_filtered = bool(f.get("route_from") or f.get("route_to") or f.get("crm")) or (
+            bool(search) and _search_kind(search) == "airport"
+        )
+
         def _query(columns: str, with_supervisor_cols: bool):
+            if lead_filtered:
+                columns = columns + ", leads!inner(id)"
             q = db.table("conversations").select(columns, count=list_count_mode()).order("updated_at", desc=True)  # type: ignore[arg-type]
             if tunnel:  q = q.eq("tunnel", tunnel)
             if team_ids:
@@ -956,25 +1232,16 @@ async def get_conversations(
                 )
             elif agent_id_is_null:
                 q = q.is_("assigned_agent_id", "null")
+            # The blind guard names queued_at whenever the column exists (its own tracker, 034), whatever the
+            # projection: a retry on the legacy columns must not read a chat waiting by queued_at as readable.
+            readable = (
+                _readable_to_agent(blind_viewer, with_queue=use_queue)
+                if blind_viewer is not None else None
+            )
             if search:
-                stripped = search.strip()
-                # "#1042" / "1042" → exact chat_number match in addition to
-                # the usual visitor fields (supervisors search by number).
-                num_part = stripped[1:] if stripped.startswith("#") else stripped
-                contact_match = (
-                    f"visitor_email.ilike.%{stripped}%,"
-                    f"visitor_phone.ilike.%{stripped}%"
-                )
-                if blind_viewer is not None:
-                    contact_match = (
-                        f"and(or({contact_match}),"
-                        f"{_readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)})"
-                    )
-                visitor_match = f"visitor_name.ilike.%{stripped}%,{contact_match}"
-                if num_part.isdigit() and with_supervisor_cols:
-                    q = q.or_(f"chat_number.eq.{int(num_part)},{visitor_match}")
-                else:
-                    q = q.or_(visitor_match)
+                q = _apply_search(q, search, readable, with_supervisor_cols, search_route_ids,
+                                  masked=masked_search)
+            q = _apply_filters(q, f, readable)
             if quiet_before and with_supervisor_cols:
                 # Pre-filter for the Abandoned chip: customer silence older
                 # than the cutoff. Final tag still comes from derive_*.
@@ -1005,32 +1272,46 @@ async def get_conversations(
         _rng = (0, _TAG_SCAN_CAP - 1) if _tag_scan else (offset, offset + limit - 1)
 
         use_supervisor_cols = _supervisor_columns_available()
-        try:
-            res = await _run_sync(
-                lambda: _query(
-                    _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
-                    use_supervisor_cols,
-                ),
-                label="list",
-            )
-        except Exception as e:
-            if not use_supervisor_cols:
-                raise
-            # Only a real missing-column error flips the flag. Transient
-            # network/HTTP failures fall through to the legacy retry without
-            # freezing activity clocks process-wide.
-            if _is_missing_column_error(e):
-                _downgrade_supervisor_columns(e)
-            else:
-                logger.error(
-                    "get_conversations: supervisor-columns query failed "
-                    f"(not a missing-column error — not downgrading): {e}"
+        use_queue = _queued_at_column_available()
+        full = use_supervisor_cols
+        res = None
+        # Each optional piece falls back on its own, on either projection: 054's digits (a phone search asks
+        # for the digits in order instead), 034's queued_at (without the column no chat waits by it), then the
+        # supervisor columns (the legacy projection). Four tries at most; anything else raises.
+        for attempt in range(4):
+            try:
+                res = await _run_sync(
+                    lambda columns=_list_columns(full, use_queue), with_sup=full: _query(columns, with_sup),
+                    label="list",
                 )
-            res = await _run_sync(lambda: _query(_LIST_COLUMNS_BASE, False), label="list")
+                break
+            except Exception as e:
+                if attempt == 3:
+                    raise
+                if _downgrade_phone_digits(e):
+                    continue
+                if use_queue and _is_missing_column_error(e) and "queued_at" in str(e):
+                    _downgrade_queued_at(e)
+                    use_queue = False
+                    continue
+                if not full:
+                    raise
+                # Only a real missing-column error flips the flag. Transient
+                # network/HTTP failures fall through to the legacy retry without
+                # freezing activity clocks process-wide.
+                if _is_missing_column_error(e):
+                    _downgrade_supervisor_columns(e)
+                else:
+                    logger.error(
+                        "get_conversations: supervisor-columns query failed "
+                        f"(not a missing-column error — not downgrading): {e}"
+                    )
+                full = False
         rows = res.data or []
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
         for row in rows:
+            row.pop("leads", None)  # the inner join of a filter on the lead, not a field
             _to_check = row.pop("phone_to_check", None)
             _email, _phone = row.pop("contact_email", None), row.pop("contact_phone", None)
             row["has_contact"] = any(
@@ -1045,6 +1326,7 @@ async def get_conversations(
                 # needs truthiness, but None must stay falsy.
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
                 "agent_assigned_at": row.pop("agent_assigned_at", None),
+                "proactive_trigger": row.pop("proactive_trigger", None),
                 **{k: row.pop(k, None) for k in PRESENCE_V2_KEYS},
             }
         rows = await enrich_conversations_agent_info(rows)
@@ -1197,7 +1479,9 @@ async def get_blind_inputs_many(conv_ids: list[str]) -> dict[str, dict]:
     the blind state here, fresh, rather than from the leads universe it may have cached for 20 s: a chat
     that entered the shared line a moment ago is blind already (CodeRabbit #270). A chat that no longer
     exists is simply absent. A failed read RAISES: the caller fails closed."""
-    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+    # closed_by_agent_id too: the offers queue names a closed lead's owner from it, fresh, and only while closed.
+    cols = ("id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id, "
+            "closed_by_agent_id:metadata->>closed_by_agent_id")
     ids = list(dict.fromkeys(i for i in conv_ids if i))
     out: dict[str, dict] = {}
     use_queued_at = _queued_at_column_available()
@@ -1250,9 +1534,11 @@ async def get_last_agent_for_visitor(
                 .limit(1)
             )
             if email_clean and phone_clean:
+                # Quoted: a phone like "+1 (214) 208-5185" broke the or=() parse (hole A, 21 Nov).
+                from app.services.chat_search import quoted
                 q = q.or_(
-                    f"visitor_email.eq.{email_clean},"
-                    f"visitor_phone.eq.{phone_clean}"
+                    f"visitor_email.eq.{quoted(email_clean)},"
+                    f"visitor_phone.eq.{quoted(phone_clean)}"
                 )
             elif email_clean:
                 q = q.eq("visitor_email", email_clean)
@@ -1807,58 +2093,71 @@ async def get_existing_lead_by_contact(
     email: Optional[str] = None,
     phone: Optional[str] = None,
 ) -> Optional[dict]:
-    """Check if a lead exists by email or phone (CRM duplicate check).
-    Returns the lead with conversation contact info and assigned agent if found.
-    Used for: Routing returning visitors to same agent, CRM integration checks."""
+    """The newest lead whose chat has this e-mail or this phone, with the chat's contact and agent; None when
+    there is none. Raises when it cannot read, so the caller tells "none" from "couldn't look" (rule 7).
+
+    The chat is an inner embed (a filter on it narrows the leads, not only the embed), and e-mail OR phone is one
+    condition on the embed: a top-level or() cannot name an embedded column in PostgREST v12. Values inside it
+    are quoted (chat_search.quoted): a comma in what was typed adds no condition."""
     if not email and not phone:
         return None
+    from app.services.chat_search import quoted
+
     email_clean = email.lower().strip() if email else None
     phone_clean = phone.strip() if phone else None
+    db_client = get_client()
+
+    def _q():
+        q = (
+            db_client.table("leads")
+            .select("*, conversations!inner(id, visitor_name, visitor_email, visitor_phone, assigned_agent_id, tunnel)")
+            .order("created_at", desc=True)
+            .limit(1)
+        )
+        if email_clean and phone_clean:
+            q = q.or_(f"visitor_email.eq.{quoted(email_clean)},visitor_phone.eq.{quoted(phone_clean)}",
+                      reference_table="conversations")
+        elif email_clean:
+            q = q.eq("conversations.visitor_email", email_clean)
+        else:
+            q = q.eq("conversations.visitor_phone", phone_clean)
+        return q.execute()
+
     try:
-        db_client = get_client()
-        def _q():
-            q = (
-                db_client.table("leads")
-                .select("*, conversations(id, visitor_name, visitor_email, visitor_phone, assigned_agent_id, tunnel)")
-                .order("created_at", desc=True)
-                .limit(1)
-            )
-            # Search by email OR phone in conversations
-            if email_clean and phone_clean:
-                q = q.or_(
-                    f"conversations.visitor_email.eq.{email_clean},"
-                    f"conversations.visitor_phone.eq.{phone_clean}"
-                )
-            elif email_clean:
-                q = q.eq("conversations.visitor_email", email_clean)
-            else:
-                q = q.eq("conversations.visitor_phone", phone_clean)
-            return q.execute()
         res = await _run_sync(_q)
-        if res and res.data:
-            lead = dict(res.data[0])
-            conv = lead.pop("conversations", {}) or {}
-            lead["visitor_name"] = conv.get("visitor_name")
-            lead["visitor_email"] = conv.get("visitor_email")
-            lead["visitor_phone"] = conv.get("visitor_phone")
-            lead["assigned_agent_id"] = conv.get("assigned_agent_id")
-            lead["conversation_id"] = conv.get("id")
-            lead["tunnel"] = conv.get("tunnel")
-            return lead
-        return None
     except Exception as e:
-        logger.error(f"get_existing_lead_by_contact error: {e}")
+        logger.error(f"get_existing_lead_by_contact failed: {type(e).__name__}: {e}")
+        raise
+    if not (res and res.data):
         return None
+    lead = dict(res.data[0])
+    conv = lead.pop("conversations", {}) or {}
+    lead["visitor_name"] = conv.get("visitor_name")
+    lead["visitor_email"] = conv.get("visitor_email")
+    lead["visitor_phone"] = conv.get("visitor_phone")
+    lead["assigned_agent_id"] = conv.get("assigned_agent_id")
+    lead["conversation_id"] = conv.get("id")
+    lead["tunnel"] = conv.get("tunnel")
+    return lead
 
 
 async def mark_lead_created_in_crm(
-    lead_id: str, crm_lead_id: Optional[str] = None
+    lead_id: str, crm_lead_id: Optional[str] = None, *,
+    source: str = "push", set_by: Optional[str] = None, shape: Optional[str] = None,
 ) -> Optional[dict]:
     """Mark a lead as successfully created in the CRM system.
     Updates: created_in_crm=true, created_in_crm_at=NOW(), and — when the
     caller has the CRM's id (the proof) — crm_lead_id, clearing any gate
     refusal. Falls back without the 030 columns if the migration isn't
-    applied yet."""
+    applied yet.
+
+    Then says how the lead got there, on its conversation (metadata.crm, merged
+    server-side, no migration): source push (the system sent it, the panel's
+    button included), cron (a scheduled job sent it) or manual (an agent pasted
+    the id), who, when, and for a pasted id whether it looks like the CRM's own
+    (shape). Until 21 Nov nothing told a pushed id from a pasted one. That note
+    never fails the mark: a note that is not saved is counted
+    (CRM_SOURCE_HEALTH) and logged."""
     try:
         db_client = get_client()
         from datetime import datetime
@@ -1899,10 +2198,42 @@ async def mark_lead_created_in_crm(
                 "exists but our flag does not. This lead WILL be re-pushed."
             )
             return None
-        return res.data[0]
+        row = res.data[0]
+        await _note_crm_source(row, source=source, set_by=set_by, shape=shape)
+        return row
     except Exception as e:
         logger.error(f"mark_lead_created_in_crm error: {e}")
         return None
+
+
+CRM_SOURCE_HEALTH: dict[str, int] = {"push": 0, "cron": 0, "manual": 0, "odd_shape": 0, "not_noted": 0}
+
+
+async def _note_crm_source(lead_row: dict, *, source: str, set_by: Optional[str], shape: Optional[str]) -> None:
+    """metadata.crm on the lead's conversation: {source, set_by, set_at, shape}. Never raises."""
+    from app.flags import flag
+
+    if not flag("CRM_SOURCE_RECORD", True):
+        return
+    conv_id = lead_row.get("conversation_id") if isinstance(lead_row, dict) else None
+    if not conv_id:
+        return
+    note = {"source": source if source in ("push", "cron", "manual") else "push",
+            "set_by": set_by, "set_at": datetime.now(timezone.utc).isoformat()}
+    if shape:
+        note["shape"] = shape
+    CRM_SOURCE_HEALTH[note["source"]] += 1
+    if shape == "odd":
+        CRM_SOURCE_HEALTH["odd_shape"] += 1
+    saved = False
+    try:
+        saved = await patch_conversation_presence(conv_id, {"crm": note})
+    except Exception as e:
+        saved = False
+        logger.warning(f"[crm-source] {conv_id}: note not saved ({type(e).__name__}: {e})")
+    if not saved:
+        CRM_SOURCE_HEALTH["not_noted"] += 1
+        logger.warning(f"[crm-source] {conv_id}: how the lead reached the CRM was not noted ({note['source']})")
 
 
 async def update_lead_crm_push_state(
@@ -2100,10 +2431,9 @@ async def get_users(
             else:
                 q = q.in_("team_id", team_ids)
         if search:
-            q = q.or_(
-                f"name.ilike.%{search}%,"
-                f"email.ilike.%{search}%"
-            )
+            # Quoted, LIKE wildcards literal (hole A, 21 Nov): "Smith, John" is one search, not two filters.
+            from app.services.chat_search import contains
+            q = q.or_(f"{contains('name', search)},{contains('email', search)}")
         q = _hide_decoys(q, "users")
         return q.range(offset, offset + limit - 1).execute()
     try:
@@ -2468,6 +2798,9 @@ async def update_user(user_id: str, payload: dict) -> Optional[dict]:
     try:
         db = get_client()
         res = await _run_sync(lambda: db.table("users").update(payload).eq("id", user_id).execute())
+        # Ready, a role, a scope: the heartbeat must not answer from the row it wrote before.
+        from app.services import agent_presence
+        agent_presence.forget(user_id)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"update_user error: {e}")
@@ -2694,6 +3027,9 @@ async def set_user_team(user_id: str, team_id: Optional[str]) -> Optional[dict]:
             .eq("id", user_id)
             .execute()
         )
+        # The heartbeat reads the queue for the team in the row it last wrote.
+        from app.services import agent_presence
+        agent_presence.forget(user_id)
         return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"set_user_team error: {e}")
@@ -5290,30 +5626,49 @@ _UNIVERSE_CONV_COLUMNS = (
     # The offers queue: the blind rule's last input, a number to check, and the marks.
     "engaged_agent_id:metadata->>engaged_agent_id, phone_to_check:metadata->>phone_to_check, "
     "offer_sent_at:metadata->>offer_sent_at, offer_sent_by:metadata->>offer_sent_by, "
-    "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by"
+    "offer_skipped_at:metadata->>offer_skipped_at, offer_skipped_by:metadata->>offer_skipped_by, "
+    # The follow-up lottery (app/services/lead_lottery.py): who was given the lead, how, when; and the
+    # decoys, which nobody is ever given.
+    "followup:metadata->followup, is_decoy, "
+    # The QA sample (app/services/qa_sample.py): how the lead reached the CRM, and the client's last word.
+    "crm:metadata->crm, last_user_message_at"
 )
 
 
-def _universe_conv_columns(with_queued_at: bool) -> str:
-    return _UNIVERSE_CONV_COLUMNS if with_queued_at else _UNIVERSE_CONV_COLUMNS.replace("closed_at, queued_at, ", "closed_at, ")
+def _universe_conv_columns(with_queued_at: bool, with_decoy: bool = True) -> str:
+    cols = _UNIVERSE_CONV_COLUMNS if with_queued_at else _UNIVERSE_CONV_COLUMNS.replace("closed_at, queued_at, ", "closed_at, ")
+    return cols if with_decoy else cols.replace("followup:metadata->followup, is_decoy, ", "followup:metadata->followup, ")
 
 
 async def _universe_convs(db_client) -> list[dict]:
-    """The conversations half of the universe. Without conversations.queued_at (034 not applied) it is
-    read without that column, as the chat list and get_blind_inputs do; any other failure raises."""
+    """The conversations half of the universe. Without conversations.queued_at (034 not applied) or
+    is_decoy (038) it is read without that column, as the chat list, get_blind_inputs and the decoy helpers
+    do (a row without is_decoy reads as no decoy); any other failure raises."""
     use_queued_at = _queued_at_column_available()
+    # The marker whenever the column exists, not only while DECOYS_ENABLED is on: the lottery and the QA sample
+    # skip every row it marks (CodeRabbit #273).
+    use_decoy = _decoy_column_readable("conversations")
 
-    def read(with_queued_at: bool):
-        return _select_pages(lambda: db_client.table("conversations").select(_universe_conv_columns(with_queued_at))
+    def read(with_queued_at: bool, with_decoy: bool):
+        return _select_pages(lambda: db_client.table("conversations")
+                             .select(_universe_conv_columns(with_queued_at, with_decoy))
                              .order("created_at"), label="leads_universe", max_pages=50)
 
-    try:
-        return await read(use_queued_at)
-    except Exception as e:
-        if not use_queued_at or not _is_missing_column_error(e):
-            raise
-        _downgrade_queued_at(e)
-        return await read(False)
+    for _ in range(3):
+        try:
+            return await read(use_queued_at, use_decoy)
+        except Exception as e:
+            if not _is_missing_column_error(e):
+                raise
+            if use_decoy and "is_decoy" in str(e):
+                _downgrade_decoy("conversations", e)
+                use_decoy = False
+            elif use_queued_at and "queued_at" in str(e):
+                _downgrade_queued_at(e)
+                use_queued_at = False
+            else:
+                raise
+    return await read(use_queued_at, use_decoy)
 
 
 def invalidate_leads_universe() -> None:
@@ -5363,6 +5718,10 @@ async def get_leads_universe() -> list[dict]:
                 "offer_sent_by": c.get("offer_sent_by"),
                 "offer_skipped_at": c.get("offer_skipped_at"),
                 "offer_skipped_by": c.get("offer_skipped_by"),
+                "followup": c.get("followup") if isinstance(c.get("followup"), dict) else None,
+                "is_decoy": bool(c.get("is_decoy")),
+                "crm": c.get("crm") if isinstance(c.get("crm"), dict) else None,
+                "last_user_message_at": c.get("last_user_message_at"),
             })
             rows.append(row)
         _LEADS_UNIVERSE.update({"at": time.monotonic(), "rows": rows})
@@ -5555,6 +5914,8 @@ async def reset_stale_ready_users(timeout_seconds: int = 600) -> list[dict]:
                 )
 
             await _run_sync(_reset)
+            from app.services import agent_presence
+            agent_presence.forget(uid)
             try:
 
                 def _audit(user_id=uid):
@@ -5852,6 +6213,20 @@ async def blocklist_list(limit: int = 200) -> list[dict]:
     except Exception as e:
         logger.error(f"blocklist_list error: {e}")
         return []
+
+
+async def insert_audit_rows_strict(rows: list[dict]) -> None:
+    """audit_log rows that ARE the record (the QA sample's picks and verdicts), not a trace of an action:
+    one insert, so all of them land or none, never retried (idempotent=False), and a failure RAISES. Each row:
+    action, target_table, details, and user_id / user_email / target_id when known."""
+    if not rows:
+        return
+    db_client = get_client()
+    clean = [{k: v for k, v in r.items() if v is not None} for r in rows]
+    res = await _run_sync(lambda: db_client.table("audit_log").insert(clean).execute(), idempotent=False,
+                          label="audit")
+    if len(res.data or []) != len(clean):
+        raise RuntimeError(f"audit_log took {len(res.data or [])} of {len(clean)} rows")
 
 
 async def log_audit(
@@ -6299,3 +6674,261 @@ async def get_operator_load(timeout_seconds: int = 90) -> dict:
     except Exception as e:
         logger.warning(f"get_operator_load error: {e}")
         return out
+
+
+# ════════════════════════════════════════════════════════════════
+# FOLLOW-UP LOTTERY — closed leads with a trip and a contact, nobody on them
+# (app/services/lead_lottery.py)
+# ════════════════════════════════════════════════════════════════
+
+# What the lottery could not write or read, for /health (`lottery`): every one
+# of these is a lead that waits a minute longer, never one that is lost.
+LOTTERY_DB_HEALTH: dict[str, int] = {
+    "assign_errors": 0, "won_after_check": 0, "release_errors": 0, "operator_read_errors": 0,
+    "task_read_errors": 0,
+}
+
+_LOTTERY_OWNABLE = ("closed", "completed")
+
+
+async def assign_closed_if_unowned(conversation_id: str, agent_id: str) -> bool:
+    """Give a closed chat to an agent ONLY if nobody holds it.
+
+    The lottery's compare-and-swap, the closed-chat twin of
+    claim_conversation_if_unassigned: one UPDATE, matched only while
+    assigned_agent_id is NULL and the chat is still closed or completed, so two
+    runs (or a manager and a run) never both win. status, mode and queued_at
+    are left alone: the chat stays closed, it does not re-enter the shared line.
+    After an error the owner is read: the write may have landed before the
+    connection broke (#2678, #3245), and if it is this agent, this call won."""
+    db_client = get_client()
+    try:
+        # Not retried (idempotent=False): a retry after a commit whose answer was lost finds the chat owned
+        # and reads as a lost swap; the error has to reach the owner read below instead.
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"assigned_agent_id": agent_id})
+            .eq("id", conversation_id)
+            .is_("assigned_agent_id", "null")
+            .in_("status", list(_LOTTERY_OWNABLE))
+            .execute(),
+            idempotent=False,
+            label="lottery",
+        )
+        return bool(res.data)
+    except Exception as e:
+        LOTTERY_DB_HEALTH["assign_errors"] += 1
+        logger.warning(f"[lottery] assign {conversation_id} answered with an error, reading the owner: {e}")
+    try:
+        cur = await _run_sync(
+            lambda: db_client.table("conversations").select("assigned_agent_id")
+            .eq("id", conversation_id).limit(1).execute(),
+            label="lottery",
+        )
+        rows = cur.data or []
+        if rows and rows[0].get("assigned_agent_id") == agent_id:
+            LOTTERY_DB_HEALTH["won_after_check"] += 1
+            return True
+    except Exception as e:
+        logger.warning(f"[lottery] owner of {conversation_id} not read after the error: {e}")
+    return False
+
+
+async def assign_closed_to(conversation_id: str, agent_id: str) -> bool:
+    """A manager gives a chat to an agent (lead_lottery.give_by_hand), only while it is still closed or
+    completed: a chat reopened meanwhile is transferred, not given. False when it no longer is; raises on a
+    failed write."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .update({"assigned_agent_id": agent_id})
+        .eq("id", conversation_id)
+        .in_("status", list(_LOTTERY_OWNABLE))
+        .execute(),
+        label="lottery",
+    )
+    return bool(res.data)
+
+
+async def release_live_claim(conversation_id: str, agent_id: str) -> bool:
+    """Give back a chat a tapped hello claimed when the hello could not be stored as its first message:
+    unassigned and in AI mode again, only while it is still that agent's (live_visitors.start_with_the_agent).
+    False when it was not given back (no longer theirs, or the write failed: logged)."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .update({"assigned_agent_id": None, "mode": "ai"})
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", agent_id)
+            .execute(),
+            label="live",
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"[live] giving back {conversation_id} failed: {type(e).__name__}: {e}")
+        return False
+
+
+async def release_closed_if_agent(conversation_id: str, agent_id: str, assigned_at: Optional[str] = None, *,
+                                  no_followup: bool = False) -> bool:
+    """Take a closed chat back from an agent, only while it is still theirs, and, with `assigned_at`, only that
+    assignment (metadata.followup.assigned_at), never a newer one to the same agent; with `no_followup`, only
+    while no follow-up names a time (a give whose clock was never saved). Not retried: after a lost answer the
+    lottery's next run repairs what is left (lead_lottery._take_back_unconfirmed, _unwind_kept)."""
+    try:
+        db_client = get_client()
+
+        def _q():
+            q = (db_client.table("conversations")
+                 .update({"assigned_agent_id": None})
+                 .eq("id", conversation_id)
+                 .eq("assigned_agent_id", agent_id)
+                 .in_("status", list(_LOTTERY_OWNABLE)))
+            if assigned_at:
+                q = q.eq("metadata->followup->>assigned_at", assigned_at)
+            elif no_followup:
+                q = q.is_("metadata->followup->>assigned_at", "null")
+            return q.execute()
+
+        res = await _run_sync(_q, idempotent=False, label="lottery")
+        return bool(res.data)
+    except Exception as e:
+        LOTTERY_DB_HEALTH["release_errors"] += 1
+        logger.warning(f"[lottery] release of {conversation_id} failed: {e}")
+        return False
+
+
+async def get_operator_rows(
+    user_ids: Optional[list[str]] = None, *, seen_within_seconds: Optional[int] = None,
+) -> Optional[list[dict]]:
+    """The operators the lottery may give a lead to, with what decides it.
+
+    By id (who Redis says is at the desk), or by last_seen_at when Redis cannot
+    say. None when the read failed: "nobody" and "could not ask" are different
+    answers (rule 7). Without chat_enabled (033 not applied) every row reads as
+    chat on, as the heartbeat does."""
+    if user_ids is not None and not user_ids:
+        return []
+    db_client = get_client()
+
+    def _q(cols: str):
+        q = db_client.table("users").select(cols).in_("role", list(_OPERATOR_ROLES))
+        if user_ids is not None:
+            q = q.in_("id", list(dict.fromkeys(user_ids)))
+        if seen_within_seconds is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=seen_within_seconds)).isoformat()
+            q = q.gte("last_seen_at", cutoff)
+        return q.execute()
+
+    base = "id, name, role, is_active, tunnel_scope, last_seen_at, created_at, team_id"
+    try:
+        try:
+            res = await _run_sync(lambda: _q(base + ", chat_enabled"), label="lottery")
+        except Exception as col_err:
+            if not _is_missing_column_error(col_err):
+                raise
+            logger.warning(f"[lottery] users.chat_enabled missing, every operator reads as chat on: {col_err}")
+            res = await _run_sync(lambda: _q(base), label="lottery")
+        return [r for r in (res.data or []) if isinstance(r, dict) and r.get("id")]
+    except Exception as e:
+        LOTTERY_DB_HEALTH["operator_read_errors"] += 1
+        logger.warning(f"[lottery] operators not read: {e}")
+        return None
+
+
+async def get_open_task_owners(conversation_ids: list[str]) -> Optional[dict[str, str]]:
+    """conversation id -> the person an open task on it belongs to.
+
+    A chat with an open task already has someone on the follow-up (a departure
+    task, a promise caught in the chat): one client, one agent. None when the
+    tasks could not be read; the lottery then gives nothing out this run."""
+    ids = [c for c in dict.fromkeys(conversation_ids) if c]
+    if not ids:
+        return {}
+    try:
+        db_client = get_client()
+        # Every page: PostgREST cuts a long answer at max-rows without an error, and a chat whose open task
+        # fell off would read as nobody's. After the last id seen, not at an offset: a task done between two
+        # pages would shift the next one and the task at the seam would never be read (CodeRabbit #273).
+        rows = await _select_after(
+            lambda: db_client.table("tasks").select("id, conversation_id, assignee_id")
+            .in_("conversation_id", ids)
+            .is_("done_at", "null")
+            .is_("dismissed_at", "null")
+            .not_.is_("assignee_id", "null")
+            .order("id"),
+            key="id",
+            label="lottery",
+        )
+        return {r["conversation_id"]: r["assignee_id"] for r in rows if r.get("conversation_id")}
+    except Exception as e:
+        LOTTERY_DB_HEALTH["task_read_errors"] += 1
+        logger.warning(f"[lottery] open tasks not read: {e}")
+        return None
+
+
+# ════════════════════════════════════════════════════════════════
+# CRM ids and the QA sample (app/api/leads.py, app/services/qa_sample.py)
+# ════════════════════════════════════════════════════════════════
+
+
+async def get_leads_by_crm_id(crm_lead_id: str) -> list[dict]:
+    """The leads that carry this CRM id. Raises: a duplicate check that cannot run must not pass."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("leads").select("id, conversation_id")
+        .eq("crm_lead_id", crm_lead_id).limit(20).execute(),
+        label="crm_id",
+    )
+    return [r for r in (res.data or []) if isinstance(r, dict)]
+
+
+async def get_audit_rows(actions: list[str], since_iso: str, *, until_iso: Optional[str] = None,
+                         limit: int = 5000) -> list[dict]:
+    """audit_log rows of these actions in [since, until), oldest first. Raises."""
+    db_client = get_client()
+
+    def _q():
+        q = (db_client.table("audit_log")
+             .select("action, user_id, target_table, target_id, details, created_at")
+             .in_("action", list(actions)).gte("created_at", since_iso))
+        if until_iso:
+            q = q.lt("created_at", until_iso)
+        return q.order("created_at").limit(limit).execute()
+
+    res = await _run_sync(_q, label="audit_read")
+    return [r for r in (res.data or []) if isinstance(r, dict)]
+
+
+async def get_agent_messages(conversation_ids: list[str], since_iso: str, until_iso: str) -> list[dict]:
+    """What agents wrote in these chats in [since, until): conversation_id and content. Raises.
+
+    The content holds what the client and the agent said: read in memory, never logged."""
+    ids = [c for c in dict.fromkeys(conversation_ids) if c]
+    if not ids:
+        return []
+    db_client = get_client()
+    out: list[dict] = []
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+        # Every page: one answer stops at PostgREST's max-rows (1000) without an error.
+        rows = await _select_pages(
+            lambda chunk=chunk: db_client.table("messages").select("conversation_id, content")
+            .in_("conversation_id", chunk).eq("role", "agent")
+            .gte("created_at", since_iso).lt("created_at", until_iso).order("id"),
+            label="qa_messages",
+        )
+        out.extend(r for r in rows if isinstance(r, dict))
+    return out
+
+
+async def get_active_emails_for_role(role: str) -> list[str]:
+    """The e-mails of the active people with this role (the QA sample's recipients). Raises."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("users").select("email, is_active").eq("role", role).execute(),
+        label="role_emails",
+    )
+    return [r["email"] for r in (res.data or [])
+            if isinstance(r, dict) and r.get("email") and r.get("is_active", True)]

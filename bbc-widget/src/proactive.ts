@@ -20,7 +20,10 @@
  * form we recognise (the site's HTML changed: the quote moment would otherwise die silently).
  */
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { ensureVisitorId, fetchProactiveOffer, offerMeasures, type OfferConfirm, type OfferTiming } from './api'
+import { alexWaitLeftMs, holdAlex, noteAlexShown, noteSide } from './agentTest'
+import {
+  ensureVisitorId, fetchProactiveOffer, offerMeasures, type ContactTestSide, type OfferConfirm, type OfferTiming,
+} from './api'
 import type { ChannelKind, ChatButton } from './channel'
 import brand from './config'
 import { browserLanguage, timeZone } from './i18n'
@@ -72,7 +75,18 @@ export interface ProactiveOpening {
   /** The channel the client picked before the chat opened (the card's channel button, the pill, the row):
    *  the chat opens on its field, and the conversation starts with what they leave there. */
   firstChannel?: ChannelKind
+  /** The owner's contact test (22 Nov): this visitor's side as the server named it, sent back at /chat/init and
+   *  on the card's events. On the field side `confirm.field` is the field the yes opens at once. */
+  contactTest?: ContactTestSide
 }
+
+/** The contact test's side on a PostHog event, when the card named one. */
+export function contactTestProps(o: Pick<ProactiveOpening, 'contactTest'> | null | undefined): { contact_test?: ContactTestSide } {
+  return o?.contactTest ? { contact_test: o.contactTest } : {}
+}
+
+// The arm an offer answer names while the owner's agent-first test keeps Alex quiet (agent_first_test.HELD_ARM).
+const AGENT_FIRST_ARM = 'agent_first'
 
 // sessionStorage: this visit's moment was used ('asked', 'shown', or 'chat' when the visitor opened the
 // chat themselves first).
@@ -202,7 +216,7 @@ function pageTrips(): (TripPayload | null)[] {
 }
 
 /** The trip the card and the note start from (tripContext.pickTrip): the newest of the page's trips. */
-function currentTrip(): TripPayload | null {
+export function currentTrip(): TripPayload | null {
   return pickTrip(...pageTrips())
 }
 
@@ -594,7 +608,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(lang ? { lang } : {}),
         device,
         ...(rowAt ? { place: 'form' as const } : {}),
+        // This widget opens the contact field with the yes's answer (the owner's contact test, ChatWindow).
+        opens_field: true,
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
+      // The owner's agent-first test: the side this answer names is the visit's, on every event from here on.
+      if (res) noteSide(res.test)
       let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, askedAds) : null
       // E1: a popup of the site opened while the answer was on its way — the card waits for it to close. The
       // quote card too, looking past the quote form's own modal as its moment did (CodeRabbit #270).
@@ -638,6 +656,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         fired = false
         return
       }
+      if (res && !res.show && res.arm === AGENT_FIRST_ARM && res.retry_after_s) {
+        // The owner's agent-first test (agentTest.ts): Alex waits for an agent, who sees the visitor in "On the
+        // site now" with the time he comes. The moment goes back; evaluate asks again once the wait is over.
+        // A "no" from this arm (an agent said hello, or the visitor said not now) keeps the moment used.
+        holdAlex(res.retry_after_s, res.alex_at)
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
       if (disposed || !res || !res.show || !res.message || passed) return
       // D1: the server gave the row's words, and the form is still there to stand beside.
       const row = res.variant === 'row' && !!res.buttons?.length && !!rowAt?.isConnected
@@ -656,6 +683,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.buttons ? { buttons: res.buttons } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
         ...(res.headline && res.card_text ? { headline: res.headline, cardText: res.card_text } : {}),
+        ...(res.contact_test ? { contactTest: res.contact_test } : {}),
       }
       if (row) setRowForm(rowAt)
       ssSet(DONE_KEY, 'shown')
@@ -663,11 +691,15 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       shownRef.current = opening
       setQuiet(true)
       setOffer(opening)
+      noteAlexShown()
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
+        // The agent-first test: the card came because Alex's wait ran out with no hello.
+        ...(res.after_hold ? { after_hold: true } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
         // The phone card led with the trip (ADR A3): measured against the cards that did not.
         ...(surface === 'card' && opening.headline ? { titled: true } : {}),
+        ...contactTestProps(opening),
       })
     }
 
@@ -721,6 +753,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         off: offMoments(),
         siteSignals: !!sitePage(),
       }
+      // The agent-first test: while Alex waits for an agent, no moment is asked (agentTest.ts).
+      if (alexWaitLeftMs(now) > 0) return
       const trigger = pickTrigger(state)
       if (!trigger) return
       // E1: no card over a popup of the site; it comes once the popup closes (the quote moment looks past the
@@ -822,6 +856,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
         site: brand.id,
         ...(o.variant ? { variant: o.variant } : {}),
+        ...contactTestProps(o),
       })
     },
     noteOpening: async (stillWanted, door = 'note') => {
@@ -831,10 +866,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const res = await fetchProactiveOffer(
         apiUrl, {
           visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id, ...(lang ? { lang } : {}),
-          device: matches(PHONE) ? 'phone' : 'computer',
+          device: matches(PHONE) ? 'phone' : 'computer', opens_field: true,
         }, OFFER_TIMEOUT_MS,
         (t) => took.push(t),
       )
+      // The owner's agent-first test: the note's answer names the visit's side too, before its proactive_shown
+      // (CodeRabbit #273: a note tapped before any other answer was shown with no side).
+      if (res) noteSide(res.test)
       // The visitor did something else while the answer was on its way (Widget's note turn): nothing of it
       // happens, so nothing says it did — no proactive_shown, no proactive_note_unanswered (Widget opens no
       // form either), and the cards of this visit stay possible (CodeRabbit #269).
@@ -854,6 +892,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.variant ? { variant: res.variant } : {}),
         ...(res.confirm ? { confirm: res.confirm } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
+        ...(res.contact_test ? { contactTest: res.contact_test } : {}),
       }
       // The visitor opened the chat: no card follows in this visit (the moments' guard reads this).
       ssSet(DONE_KEY, 'chat')
@@ -863,7 +902,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // chats that started (the server counts those).
       posthog?.capture('proactive_shown', {
         trigger: 'note', surface: 'panel', door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
-        ...(res.variant ? { variant: res.variant } : {}), ...offerMeasures(took[0]),
+        ...(res.variant ? { variant: res.variant } : {}), ...offerMeasures(took[0]), ...contactTestProps(opening),
       })
       return opening
     },

@@ -3,11 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Copy, Lock, Mail, MessageCircle, MessageSquareText, Phone, Send } from 'lucide-react'
 import { toast } from 'sonner'
-import { type ApiError, getOffers, markOffer } from '@/lib/api'
+import { type ApiError, assignFollowup, getOffers, getUsers, markOffer } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 import type { OfferChannel, OfferDone, OfferMark, OfferRow } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { TONE_TEXT } from '@/features/leads/view'
 import {
+  GIVEN_TEXT,
+  GIVE_RESTRICTED,
   MARK_RESTRICTED,
   QUEUE_NOTE,
   WINDOWS,
@@ -19,6 +22,8 @@ import {
   crmNote,
   doneLine,
   emptyText,
+  followupText,
+  mineOnly,
   markedText,
   otherChats,
   refusedLine,
@@ -98,15 +103,15 @@ function Contacts({ row }: { row: OfferRow }) {
   )
 }
 
-/** A mark this reader may not make: shown, disabled, with a lock and the reason (the panel's rule for
- *  restricted actions), never hidden — a reader who can't mark sees why (CodeRabbit #270). */
-function LockedMark({ label, className }: { label: string; className: string }) {
+/** An action this reader may not take: shown, disabled, with a lock and the reason (the panel's rule for
+ *  restricted actions), never hidden — a reader who can't mark (or give) sees why (CodeRabbit #270, #273). */
+function LockedMark({ label, className, reason = MARK_RESTRICTED }: { label: string; className: string; reason?: string }) {
   return (
     <button
       type='button'
       disabled
-      title={MARK_RESTRICTED}
-      aria-label={`${label} (${MARK_RESTRICTED.toLowerCase()})`}
+      title={reason}
+      aria-label={`${label} (${reason.toLowerCase()})`}
       className={cn('inline-flex cursor-not-allowed items-center gap-1 opacity-60', className)}
     >
       <Lock aria-hidden='true' className='size-3' />
@@ -122,6 +127,7 @@ function OfferItem({
   busy,
   onMark,
   onOpenChat,
+  footer,
 }: {
   row: OfferRow
   nowMs: number
@@ -129,6 +135,8 @@ function OfferItem({
   busy: boolean
   onMark: (state: OfferMark) => void
   onOpenChat: () => void
+  /** Under the row, inside its item: a manager's "Give to an agent" (the follow-up lottery). */
+  footer?: React.ReactNode
 }) {
   const channel = channelLine(row)
   const icon = CHANNEL_ICON[channel.kind]
@@ -138,7 +146,7 @@ function OfferItem({
   const chats = chatsNote(row)
   const name = clientName(row)
   return (
-    <li className='flex flex-col gap-3 border-t border-k-ececec px-4 py-3.5 first:border-t-0 sm:flex-row sm:items-start sm:px-[18px]'>
+    <li className='flex flex-col gap-3 border-t border-k-ececec px-4 py-3.5 first:border-t-0 sm:flex-row sm:flex-wrap sm:items-start sm:px-[18px]'>
       <div className='flex min-w-0 flex-1 items-start gap-3'>
         <span aria-hidden='true' title={icon.label} className={cn('flex size-8 flex-none items-center justify-center rounded-[10px]', icon.cls)}>
           <Icon className='size-4' />
@@ -157,6 +165,9 @@ function OfferItem({
               {refused && <span className='rounded-md bg-k-fdecea px-1.5 py-px text-xs font-bold text-k-b3261e'>{refused}</span>}
               {row.price_seen && <span className='rounded-md bg-k-fff3e0 px-1.5 py-px text-xs font-bold text-k-8a4b00'>Saw {row.price_seen}</span>}
             </span>
+          )}
+          {followupText(row.followup) && (
+            <span className='text-xs font-medium text-k-4a36c4'>{followupText(row.followup)}</span>
           )}
           <span className='text-xs text-k-6b6b6b'>
             {whoLine(row)}
@@ -209,6 +220,7 @@ function OfferItem({
           </button>
         </span>
       </div>
+      {footer}
     </li>
   )
 }
@@ -257,6 +269,29 @@ export function OffersList({ tz }: { tz: string }) {
   })
   const data = list.data
   const canMark = !!data?.can.mark
+  // The follow-up lottery: an agent sees their own leads first; a manager can give one by hand.
+  const meId = useAuthStore((s) => s.auth.user?.accountNo)
+  const role = useAuthStore((s) => s.auth.user?.role) ?? ''
+  const canGive = ['owner', 'admin', 'dev', 'supervisor'].includes(role)
+  const [mine, setMine] = useState(false)
+  const [giving, setGiving] = useState<string | null>(null)
+  const agents = useQuery({
+    queryKey: ['offer-agents'],
+    queryFn: () => getUsers({ role: 'sales' }),
+    select: (r) => (r.data ?? []).filter((u) => u.is_active !== false).map((u) => ({ id: String(u.id), name: String(u.name ?? u.email ?? '') })),
+    enabled: !!data?.lottery && canGive,
+    staleTime: 5 * 60_000,
+  })
+  const give = useMutation({
+    mutationFn: ({ cid, agent }: { cid: string; agent: string }) => assignFollowup(cid, agent),
+    onSuccess: () => {
+      setGiving(null)
+      qc.invalidateQueries({ queryKey: ['offers'] })
+      toast.success(GIVEN_TEXT)
+    },
+    onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t give the lead. Try again.'),
+  })
+  const waiting = data ? (mine ? mineOnly(data.waiting, meId) : data.waiting) : []
 
   const mark = useMutation({
     mutationFn: ({ row, state }: { row: OfferRow | OfferDone; state: OfferMark }) =>
@@ -285,6 +320,12 @@ export function OffersList({ tz }: { tz: string }) {
       <div className='flex flex-wrap items-center gap-2.5'>
         <p className='m-0 min-w-0 flex-1 basis-[320px] text-[13px] leading-[1.45] text-k-555555'>{QUEUE_NOTE}</p>
         {data && <p className='m-0 text-[13px] font-bold text-k-202020'>{summaryText(data.counts)}</p>}
+        {data?.lottery && (
+          <button type='button' aria-pressed={mine} onClick={() => setMine((v) => !v)}
+            className={cn('h-9 rounded-[10px] px-3 text-sm font-bold', mine ? 'bg-kb-202020 text-on-btn' : 'bg-k-ffffff text-k-202020 ring-1 ring-k-e3e2e2')}>
+            Mine
+          </button>
+        )}
         <label className='flex items-center gap-2 text-[13px] text-k-555555'>
           <span className='sr-only'>Which leads</span>
           <select
@@ -315,21 +356,52 @@ export function OffersList({ tz }: { tz: string }) {
           <section aria-labelledby='offers-waiting'>
             <h2 id='offers-waiting' className='m-0 flex items-center gap-2 px-4 pt-4 pb-2 text-[13px] font-bold tracking-[0.04em] text-k-202020 uppercase sm:px-[18px]'>
               Waiting for an offer
-              <span className='rounded-full bg-k-f2f2f2 px-1.5 text-xs text-k-555555'>{data.waiting.length}</span>
+              <span className='rounded-full bg-k-f2f2f2 px-1.5 text-xs text-k-555555'>{waiting.length}</span>
             </h2>
-            {data.waiting.length === 0 ? (
-              <p className='m-0 px-5 py-10 text-center text-sm text-k-555555'>{emptyText(windowOf(data.days))}</p>
+            {waiting.length === 0 ? (
+              <p className='m-0 px-5 py-10 text-center text-sm text-k-555555'>
+                {mine ? 'No lead of yours waits for an offer.' : emptyText(windowOf(data.days))}
+              </p>
             ) : (
               <ul className='m-0 list-none p-0'>
-                {data.waiting.map((r) => (
+                {waiting.map((r) => (
                   <OfferItem
                     key={r.conversation_id}
                     row={r}
                     nowMs={nowMs}
-                    canMark={canMark}
+                    canMark={canMark && !r.hidden}
                     busy={mark.isPending}
                     onMark={(state) => mark.mutate({ row: r, state })}
                     onOpenChat={() => openChat(r.conversation_id)}
+                    footer={data.lottery && !r.blind && !canGive ? (
+                      <LockedMark label='Give to an agent' reason={GIVE_RESTRICTED}
+                        className='text-sm font-bold text-k-555555' />
+                    ) : data.lottery && canGive && !r.blind ? (
+                      <div className='flex w-full items-center gap-2 sm:basis-full'>
+                        {giving === r.conversation_id ? (
+                          <label className='flex items-center gap-2 text-[13px] text-k-555555'>
+                            Give to
+                            <select
+                              autoFocus
+                              defaultValue=''
+                              disabled={give.isPending}
+                              onChange={(e) => e.target.value && give.mutate({ cid: r.conversation_id, agent: e.target.value })}
+                              className='h-9 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2.5 text-sm text-k-202020'
+                            >
+                              <option value='' disabled>Pick an agent</option>
+                              {(agents.data ?? []).map((a) => (
+                                <option key={a.id} value={a.id}>{a.name}</option>
+                              ))}
+                            </select>
+                            <button type='button' onClick={() => setGiving(null)} className='text-sm text-k-5b45e0 hover:underline'>Cancel</button>
+                          </label>
+                        ) : (
+                          <button type='button' onClick={() => setGiving(r.conversation_id)} className='text-sm font-bold text-k-5b45e0 hover:underline'>
+                            Give to an agent
+                          </button>
+                        )}
+                      </div>
+                    ) : null}
                   />
                 ))}
               </ul>

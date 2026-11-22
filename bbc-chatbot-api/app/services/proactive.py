@@ -62,6 +62,10 @@ TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader", "exit")
 DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
+# The cards whose yes is "Get a fare quote" with no whole trip known: on the field side of the owner's contact test
+# (contact_field_test, 22 Nov) that tap is answered at once, contact first, instead of the model asking the trip.
+# The note only where its bandit asks nothing (a destination named): its own first question stays the bandit's.
+CONTACT_FIRST_TRIGGERS: tuple[str, ...] = ("ads", "reader", NOTE)
 # The answer for a moment switched off on its own (PROACTIVE_TRIGGERS) while the feature is on: the widget keeps
 # the visit's one moment for the others and does not ask with this one again (bbc-widget triggers.ts,
 # TRIGGER_OFF_ARM). "off" stays the answer for the feature switched off: that one ends the visit's moments.
@@ -622,6 +626,7 @@ def offer(
     visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
     refused: Optional[list[str]] = None, lang: Optional[str] = None, device: Optional[str] = None,
     place: Optional[str] = None, c4: Optional[str] = None, c4_open: bool = True, team_online: bool = False,
+    opens_field: bool = False,
 ) -> dict:
     """Should this visitor see the card now, and what does it say.
 
@@ -639,11 +644,17 @@ def offer(
     On a card that says the whole trip back the answer carries `confirm` (the
     instant answer to its yes, A2: card_words.confirm) and `channel` (the
     card's own channel button, C1/C2); the row carries `buttons`.
+
+    `opens_field`: the widget can open the contact field with the yes's answer, so the visitor takes part in
+    the owner's contact test (contact_field_test). The answer then names the side (`contact_test`); on the
+    field side `confirm` carries the field it opens (`field`), and "Get a fare quote" on a card that knows no
+    whole trip gets a `confirm` of its own, contact first (CONTACT_FIRST_TRIGGERS).
     """
-    from app.services import card_words
+    from app.services import card_words, contact_field_test
 
     PROACTIVE_HEALTH["offers"] += 1
     lang = proactive_i18n.card_lang(lang)
+    contact_side = contact_field_test.side(visitor_id) if opens_field else None
     if trigger == NOTE:
         # The visitor tapped the note: the words, whatever the experiment's
         # switches say; its own switch off → "no", and the widget shows the form.
@@ -657,7 +668,7 @@ def offer(
         out = {"show": True, "arm": NOTE, "trigger": trigger, "message": text, "quick_replies": replies}
         if variant:
             out["variant"] = variant
-        return _with_after_words(out, trigger, trip, lang, device, variant, team_online)
+        return _with_after_words(out, trigger, trip, lang, device, variant, team_online, contact_side)
     if not enabled():
         return {"show": False, "arm": "off", "trigger": trigger, "message": None, "quick_replies": []}
     if trigger not in active_triggers():
@@ -696,30 +707,54 @@ def offer(
         if lang:
             out["lang"] = lang
         return out
-    return _with_after_words(out, trigger, trip, lang, device, variant, team_online)
+    return _with_after_words(out, trigger, trip, lang, device, variant, team_online, contact_side)
 
 
 def _with_after_words(
     out: dict, trigger: str, trip: Optional[TripContext], lang: Optional[str], device: Optional[str],
-    variant: Optional[str], team_online: bool,
+    variant: Optional[str], team_online: bool, contact_side: Optional[str] = None,
 ) -> dict:
     """The card's answer with what comes after its yes (A2) and its own channel button (C1), when it says
-    the whole trip back. The quote card that offered the chat instead of the form keeps its own way."""
-    from app.services import card_words
+    the whole trip back. The quote card that offered the chat instead of the form keeps its own way.
+
+    The owner's contact test (contact_field_test) is named on the cards it changes: a yes answered at once, and
+    "Get a fare quote" with no whole trip (CONTACT_FIRST_TRIGGERS). On its field side the yes opens the field of
+    the visitor's screen (`confirm.field`: SMS on a phone, email on a computer), and "Get a fare quote" gets an
+    instant answer too, contact first."""
+    from app.services import card_words, contact_field_test
 
     if lang:
         out["lang"] = lang
+    whole = full_trip(trip) and variant != CONTACT
+    # Only where "Get a fare quote" is the card's first button: the note's bandit asks its own first question (a
+    # region to tap, or where and when typed) and learns from the visitor's second message, so it is left as it is.
+    first = not full_trip(trip) and trigger in CONTACT_FIRST_TRIGGERS and applied_variant(trigger, trip, variant) is None
+    side = contact_side if (whole or first) else None
+    field = card_words.device_channel(device) if side == contact_field_test.FIELD else None
+    if side:
+        out["contact_test"] = side
+        contact_field_test.count(side)
+    if first and field:
+        out["confirm"] = {
+            "message": card_words.contact_first(lang, field),
+            "buttons": card_words.contact_first_buttons(lang, team_online),
+            "field": field,
+        }
     if trigger == "ads" and not full_trip(trip) and _names_a_destination(with_keyword(trip)):
-        # ADR A7 (20 Nov): the ads card names a place but no dates, so no instant answer to its yes; its own
-        # channel button still lets the visitor leave one contact in one tap (and stays as the pill).
+        # ADR A7 (20 Nov): the ads card names a place but no dates, so no instant answer to its yes (but on the
+        # contact test's field side, above); its own channel button still lets the visitor leave one contact in
+        # one tap (and stays as the pill).
         out["channel"] = card_words.card_channel(card_words.device_channel(device), lang)
         return out
-    if not full_trip(trip) or variant == CONTACT:
+    if not whole:
         return out
     line = _trip_line(trip, lang) or ""
     out["confirm"] = {
-        "message": card_words.confirm(line, lang, beat=applied_variant(trigger, trip, variant) == BEAT),
+        "message": card_words.confirm(
+            line, lang, beat=applied_variant(trigger, trip, variant) == BEAT, field=field,
+        ),
         "buttons": card_words.confirm_buttons(lang, team_online),
+        **({"field": field} if field else {}),
     }
     if trigger != NOTE:
         out["channel"] = card_words.card_channel(card_words.device_channel(device), lang)
@@ -821,7 +856,7 @@ async def _stored_opening(conversation_id: str, tries: int = 3) -> Optional[dict
 
 async def open_conversation(
     conversation_id: str, trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
-    variant: Optional[str] = None, lang: Optional[str] = None,
+    variant: Optional[str] = None, lang: Optional[str] = None, contact: Optional[dict] = None,
 ) -> Optional[dict]:
     """The visitor answered the card: write the card's words as the bot's
     first message and start the lead with the trip from the page.
@@ -833,7 +868,10 @@ async def open_conversation(
     stored one. Returns {"content", "created_at"} of the stored opening (after
     the output guard), or None when nothing was written. The widget already
     shows the card's words: it takes the stored text and moves its poll cursor
-    past `created_at`, so the opening is not shown twice."""
+    past `created_at`, so the opening is not shown twice.
+
+    `contact`: the owner's contact test on this chat (contact_field_test.tag: its side and the field the yes
+    opened at once), written with the label, so it too lands only on a chat the card opened."""
     from app.db import supabase as db
     from app.services import conversation_service
 
@@ -865,7 +903,7 @@ async def open_conversation(
     # The label for the panel and the prompt (email first). Written here and
     # not at creation: /chat/init may hand back the visitor's open chat, and
     # the first-touch merge would label a chat the card never opened.
-    await db._merge_conv_metadata(conversation_id, init_metadata(trigger, trip, variant, lang))
+    await db._merge_conv_metadata(conversation_id, {**init_metadata(trigger, trip, variant, lang), **(contact or {})})
     if trip and not trip.is_empty():
         await seed_lead(conversation_id, trip)
     content = row.get("content")

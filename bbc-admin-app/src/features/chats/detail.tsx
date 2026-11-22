@@ -38,6 +38,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { draftId, readDraft, withSuggestedQuestion, writeDraft } from '@/lib/chat-drafts'
+import { isOddCrmIdRefusal } from '@/features/leads/view'
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
 import { DetailsPanel } from './components/details-panel'
@@ -570,14 +571,19 @@ export default function ConversationDetail({
     }
   }
 
-  const handleSaveManual = async (crmId: string): Promise<boolean> => {
+  const handleSaveManual = async (crmId: string, confirmOdd = false): Promise<boolean> => {
     if (!lead?.id) return false
     try {
-      await setLeadCrmId(lead.id, crmId)
+      await setLeadCrmId(lead.id, crmId, confirmOdd)
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
       toast.success(`Saved: CRM lead ${crmId}.`)
       return true
     } catch (err) {
+      if (isOddCrmIdRefusal(err as ApiError)) {
+        // Asked once (part 3): kept, marked for QA, when the agent says so.
+        toast.warning((err as ApiError).message, { action: { label: 'Keep it', onClick: () => { void handleSaveManual(crmId, true) } } })
+        return false
+      }
       toast.error((err as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.')
       return false
     }

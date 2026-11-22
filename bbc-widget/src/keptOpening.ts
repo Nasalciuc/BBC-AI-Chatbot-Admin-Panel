@@ -26,6 +26,7 @@ export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstR
     ...(o.channel ? { channel: o.channel } : {}),
     ...(o.buttons ? { buttons: o.buttons } : {}),
     ...(o.lang ? { lang: o.lang } : {}),
+    ...(o.contactTest ? { contactTest: o.contactTest } : {}),
   }
 }
 
@@ -67,11 +68,14 @@ export function readKeptOpening(v: unknown): ProactiveOpening | null {
 
 function keptAfter(o: Record<string, unknown>): Partial<ProactiveOpening> {
   const out: Partial<ProactiveOpening> = {}
-  const confirm = o.confirm as { message?: unknown; buttons?: unknown } | undefined
+  const confirm = o.confirm as { message?: unknown; buttons?: unknown; field?: unknown } | undefined
   const confirmButtons = keptButtons(confirm?.buttons)
   if (confirm && typeof confirm.message === 'string' && confirm.message.trim() && confirmButtons.length) {
-    out.confirm = { message: confirm.message, buttons: confirmButtons }
+    // The field the yes opens at once (the owner's contact test's field side) stays with its words.
+    const field = confirm.field === 'sms' || confirm.field === 'email' ? confirm.field : null
+    out.confirm = { message: confirm.message, buttons: confirmButtons, ...(field ? { field } : {}) }
   }
+  if (o.contactTest === 'field' || o.contactTest === 'choice') out.contactTest = o.contactTest
   const [channel] = keptButtons([o.channel])
   if (channel && (channel.kind === 'sms' || channel.kind === 'email')) {
     out.channel = channel as ChatButton & { kind: ChannelKind }

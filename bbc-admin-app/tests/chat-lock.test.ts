@@ -38,7 +38,7 @@ test('a locked push asks first, and a click is never the confirmation', () => {
   const l = read('src/features/leads/components/lead-panel.tsx')
   assert.doesNotMatch(d, /(onClick|onPush)=\{handleMarkLeadCreated\}/)
   assert.match(d, /onPush=\{\(\) => \{ void handleMarkLeadCreated\(\) \}\}/)
-  assert.match(l, /onClick=\{\(\) => push\.mutate\(\{ leadId: id \}\)\}/)
+  assert.match(l, /onClick=\{\(\) => push\.mutate\(\{ leadId: id, conversationId: row\.conversation_id \}\)\}/)
   for (const src of [d, l]) {
     assert.match(src, /isLockedPushRefusal\((e|err)\)/)
     assert.match(src, /label: 'Push anyway'/)

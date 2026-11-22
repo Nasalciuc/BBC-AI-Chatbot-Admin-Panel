@@ -17,10 +17,12 @@ const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 test('the attention key has the same shape as the list key, at its defaults', () => {
   const hb = read('src/hooks/use-heartbeat.ts')
   const list = read('src/features/chats/index.tsx')
-  const keyLine = list.match(/queryKey: \['conversations', ([^\]]+)\]/)
+  const keyLine = list.match(/const listKey = \['conversations', ([^\]]+)\]/)
   assert.ok(keyLine, 'list queryKey not found')
   const parts = keyLine[1].split(',').map((s) => s.trim())
   assert.deepEqual(parts, ['activeTab', 'debouncedSearch', 'tunnelFilter', 'handledByFilter', 'tagFilter'])
+  // Part 4's filter row adds a part only while a filter is on: at the defaults the key is the six above.
+  assert.match(list, /queryKey: filtersPart \? \[\.\.\.listKey, filtersPart\] : listKey,/)
 
   const att = hb.match(/ATTENTION_QUERY_KEY = \[([^\]]+)\]/)
   assert.ok(att)

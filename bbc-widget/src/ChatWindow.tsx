@@ -22,7 +22,7 @@ import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
 import { posthog, posthogSessionId } from './posthog'
-import { markProactiveConversation, type ProactiveOpening } from './proactive'
+import { contactTestProps, markProactiveConversation, type ProactiveOpening } from './proactive'
 import { siteMetadata } from './siteSignals'
 import { isNotNow } from './triggers'
 import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
@@ -194,8 +194,15 @@ export function ChatWindow({
   const w = words(widgetLang())
   // The opening's tested sentence (C5, "beat"): the channel field offers the price they saw, optional.
   const beatRef = useRef(openingRef.current?.variant === 'beat')
+  // The owner's contact test (22 Nov): this chat's side, on the field's events (the opening is gone after the first send).
+  const fieldTestRef = useRef(contactTestProps(openingRef.current))
   // The field where the client leaves the contact the agent writes to (channel.ts): SMS or email.
   const [channelForm, setChannelForm] = useState<ChannelKind | null>(() => openingRef.current?.firstChannel ?? null)
+  // The field opened by itself with the yes's answer (the contact test's field side): the other channel is offered in it.
+  const [autoField, setAutoField] = useState(false)
+  // The send whose answer opened that field: only that send takes it away again, and only while it is still the one it
+  // opened (CodeRabbit #273: a field the visitor opened since, and what they typed in it, stays).
+  const autoFieldOwnerRef = useRef<string | null>(null)
   const [channelValue, setChannelValue] = useState('')
   const [channelPrice, setChannelPrice] = useState('')
   const [channelError, setChannelError] = useState('')
@@ -1003,7 +1010,9 @@ export function ChatWindow({
       role: 'user',
       content: text,
       created_at: new Date().toISOString(),
-      ...(opts?.button ? { sendOpts: { button: opts.button, ...(opts.priceSeen ? { priceSeen: opts.priceSeen } : {}) } } : {}),
+      // Retry sends it as it was: the button, the price, and the answer shown at once with the field it opens
+      // (CodeRabbit #273: a retried yes on the field side came back without its field).
+      ...(opts?.button ? { sendOpts: { button: opts.button, ...(opts.priceSeen ? { priceSeen: opts.priceSeen } : {}), ...(opts.local ? { local: opts.local } : {}) } } : {}),
     }
     // A2: the answer already known goes on screen with the client's tap, with its buttons; the server stores
     // the same words and the stored row takes its place (reconcile.ts).
@@ -1015,6 +1024,10 @@ export function ChatWindow({
       setMessages(prev => [...prev, optimisticMsg, local])
       setQuickReplies(opts.local.buttons.map(b => ({ label: b.label, kind: b.kind })))
       setLocalPending(true)
+      // The field side of the owner's contact test: the field opens with the words that ask for it; its buttons
+      // (the other channel, "I'll wait here", "Change details") are one Back away. Not over a field already open: a
+      // retried yes leaves the one the visitor opened, and what they typed in it, as it is (CodeRabbit #273).
+      if (opts.local.field && !channelForm) openChannel(opts.local.field, true, localId)
     } else {
       setMessages(prev => [...prev, optimisticMsg])
     }
@@ -1052,6 +1065,9 @@ export function ChatWindow({
                 proactive: {
                   trigger: opening.trigger, ...(opening.variant ? { variant: opening.variant } : {}),
                   ...(opening.lang ? { lang: opening.lang } : {}),
+                  // The owner's contact test: the side /offer named, and the field the yes opens at once.
+                  ...(opening.contactTest ? { contact_test: opening.contactTest } : {}),
+                  ...(opening.confirm?.field ? { field: opening.confirm.field } : {}),
                 },
               } : {}),
             }),
@@ -1170,10 +1186,12 @@ export function ChatWindow({
         const lastSysTs = data.system_messages[data.system_messages.length - 1]?.created_at
         if (lastSysTs) lastMsgTime.current = lastSysTs
       } else if (data.streaming) {
-        // The answer shown at once was not the server's after all (the model answers this one): it goes.
+        // The answer shown at once was not the server's after all (the model answers this one): it goes, and the
+        // field it opened with it.
         if (localId) {
           setMessages(prev => prev.filter(m => m.id !== localId))
           setQuickReplies(null)
+          if (opts?.local?.field) closeAutoField(localId)
         }
         // Only while this send's reply is still on its way. When its
         // stream_end came in first, marking it streaming here left the typing
@@ -1218,10 +1236,12 @@ export function ChatWindow({
       posthog?.capture('chat_message_send_failed', { tunnel })
       posthog?.logger.warn('chat_message_delivery_failed', { tunnel })
       turns.over(seq)
-      // The answer shown at once was never stored: it goes with the failed send (Retry brings both back).
+      // The answer shown at once was never stored: it goes with the failed send (Retry brings both back), and the
+      // field it opened with it.
       if (localId) {
         setMessages(prev => prev.filter(m => m.id !== localId))
         setQuickReplies(null)
+        if (opts?.local?.field) closeAutoField(localId)
       }
       // A later send may already be streaming its own reply: leave it be.
       if (turns.isLatest(seq)) {
@@ -1320,11 +1340,17 @@ export function ChatWindow({
   }
 
   // ── Where the agent writes (channel.ts): the client's mobile number (SMS) or email ─────────────────
-  const openChannel = (kind: ChannelKind) => {
+  /** `auto`: opened by itself with the yes's answer (the owner's contact test's field side), not by a tap on a
+   *  channel; the field then offers the other channel itself. `owner`: the send whose answer opened it (the switch
+   *  to the other channel keeps it); a channel tapped by the visitor belongs to no send. */
+  const openChannel = (kind: ChannelKind, auto = false, owner?: string | null) => {
     setChannelForm(kind)
     setChannelValue('')
     setChannelError('')
-    posthog?.capture('chat_channel_opened', { channel: kind, tunnel })
+    setAutoField(auto)
+    if (!auto) autoFieldOwnerRef.current = null
+    else if (owner !== undefined) autoFieldOwnerRef.current = owner
+    posthog?.capture('chat_channel_opened', { channel: kind, tunnel, ...(auto ? { auto: true } : {}), ...fieldTestRef.current })
     // The field takes the chips' place and more: the question it answers stays in view above it.
     requestAnimationFrame(() => {
       scrollToEnd(false)
@@ -1334,11 +1360,23 @@ export function ChatWindow({
   const closeChannel = () => {
     setChannelForm(null)
     setChannelError('')
-    // Back to the choice: the channels again (the answer they were offered under).
-    setQuickReplies([
+    setAutoField(false)
+    autoFieldOwnerRef.current = null
+    // Back to the choice: the buttons the field opened over when it opened by itself (the contact test's field
+    // side keeps the answer's buttons under it), else the channels again (the answer they were offered under).
+    setQuickReplies(q => (q && q.length ? q : [
       { label: w.sentSms, kind: 'sms' },
       { label: w.sentEmail, kind: 'email' },
-    ])
+    ]))
+  }
+  /** The field opened by itself goes, with no choice put back: the answer it came with was not the server's. Only
+   *  while it is still the field `owner`'s answer opened; Back, or a channel the visitor tapped since, made it theirs. */
+  const closeAutoField = (owner: string | null) => {
+    if (!owner || autoFieldOwnerRef.current !== owner) return
+    autoFieldOwnerRef.current = null
+    setChannelForm(null)
+    setChannelError('')
+    setAutoField(false)
   }
   const submitChannel = (e: Event) => {
     e.preventDefault()
@@ -1359,9 +1397,11 @@ export function ChatWindow({
     setChannelValue('')
     setChannelPrice('')
     setChannelError('')
+    setAutoField(false)
+    autoFieldOwnerRef.current = null
     if (openingRef.current) onProactiveEngaged?.(text)
     // Only the kind goes to PostHog, never the contact.
-    posthog?.capture('chat_channel_given', { channel: kind, tunnel, price: Boolean(beatRef.current && price) })
+    posthog?.capture('chat_channel_given', { channel: kind, tunnel, price: Boolean(beatRef.current && price), ...(autoField ? { auto: true } : {}), ...fieldTestRef.current })
     sendOrQueue(text, { button: kind, ...(beatRef.current && price ? { priceSeen: price } : {}) })
   }
 
@@ -1599,6 +1639,16 @@ export function ChatWindow({
             ? <div class="bw-channel__error" id="bw-channel-hint" role="alert">{channelError}</div>
             : <div class="bw-channel__hint" id="bw-channel-hint">{channelForm === 'sms' ? w.phoneHint : w.emailHint}</div>}
           <div class="bw-channel__actions">
+            {/* The field opened by itself (the contact test's field side): the other channel in one tap. */}
+            {autoField && (
+              <button
+                type="button"
+                class="bw-channel__other"
+                onClick={() => openChannel(channelForm === 'sms' ? 'email' : 'sms', true)}
+              >
+                {channelForm === 'sms' ? w.otherEmail : w.otherSms}
+              </button>
+            )}
             <button type="button" class="bw-channel__back" onClick={closeChannel}>{w.back}</button>
             <button type="submit" class="bw-channel__send">{w.send}</button>
           </div>

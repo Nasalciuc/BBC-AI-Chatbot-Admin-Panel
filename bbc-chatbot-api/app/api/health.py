@@ -168,6 +168,44 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.chat import CHAT_OWNER_HEALTH, POST_SALE_HEALTH
     from app.services.note_bandit import NOTE_BANDIT_HEALTH
     from app.pipeline.operator_contact import OPERATOR_CONTACT_HEALTH
+    # The shared Redis client, the conversation locks on it, and the heartbeat's presence writes.
+    from app.infra.redis_client import REDIS_HEALTH
+    from app.services.conversation_lock import LOCK_HEALTH
+    from app.services.agent_presence import AGENT_PRESENCE_HEALTH
+    # The follow-up lottery: what it gave, what came back unconfirmed, what waits, what it could not write.
+    from app.services.lead_lottery import LOTTERY_HEALTH
+    from app.db.supabase import LOTTERY_DB_HEALTH
+    # How each CRM id got there, who may act on a lead, the morning QA sample.
+    from app.db.supabase import CRM_SOURCE_HEALTH
+    from app.services.lead_access import LEAD_ACCESS_HEALTH
+    from app.services.qa_sample import QA_HEALTH
+    from app.services.crm import CRM_LOOKUP_HEALTH
+    # The search box: the route part, the message search, its limit, the recent chats.
+    from app.services.chat_search import SEARCH_HEALTH
+    from app.services.recent_chats import RECENT_HEALTH
+    # "On the site now": tokens handed out, hellos sent or refused, taps honoured or not.
+    from app.services.live_visitors import LIVE_HEALTH
+    # The owner's agent-first test: who waited for an agent, who was greeted first, what Redis missed.
+    from app.services import agent_first_test
+    # The owner's contact test: the card answers on each side (the field at once, or the choice first).
+    from app.services import contact_field_test
+
+    # The six problems' counters (Nov 2026), in both answers under the same keys: an operator who asks for the
+    # full payload while looking into a lock, the lottery or the live list must not lose them.
+    six_problems = {
+        "redis": dict(REDIS_HEALTH),
+        "locks": dict(LOCK_HEALTH),
+        "agent_presence": dict(AGENT_PRESENCE_HEALTH),
+        "lottery": {**LOTTERY_HEALTH, **LOTTERY_DB_HEALTH},
+        "crm_source": dict(CRM_SOURCE_HEALTH),
+        "lead_access": dict(LEAD_ACCESS_HEALTH),
+        "qa_sample": dict(QA_HEALTH),
+        "crm_lookup": dict(CRM_LOOKUP_HEALTH),
+        "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
+        "live": dict(LIVE_HEALTH),
+        "agent_first_test": agent_first_test.health(),
+        "contact_field_test": contact_field_test.health(),
+    }
 
     if not full:
         return {
@@ -200,6 +238,7 @@ async def health_detail(full: bool = False) -> dict:
             "post_sale": dict(POST_SALE_HEALTH),
             "note_bandit": dict(NOTE_BANDIT_HEALTH),
             "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
+            **six_problems,
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
@@ -272,6 +311,7 @@ async def health_detail(full: bool = False) -> dict:
         "status": status,
         "version": "1.0.0",
         "services": services,
+        **six_problems,
         "flags": dict(FLAGS_HEALTH),
         "client_ip": dict(CLIENT_IP_HEALTH),
         "cost": dict(LEDGER_HEALTH),

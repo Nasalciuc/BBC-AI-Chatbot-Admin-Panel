@@ -5,7 +5,10 @@ The widget sends each tap as the client's message with `button` beside it (ChatR
 - ``yes``: the card's yes, on a card that said the whole trip back (proactive.full_trip). Answered at
   once with the trip said back, what happens next and where to write (card_words.confirm, A2/ADR-10a):
   the model came in at 6.4 s with "best email to start?", and 7 of the 25 card chats ended there.
-  Only the conversation's first answer: a yes typed later is the model's.
+  Only the conversation's first answer: a yes typed later is the model's. On the field side of the
+  owner's contact test (22 Nov, app.services.contact_field_test) the words ask for the one contact of
+  the field the widget opened with them, and "Get a fare quote" on a card that knew no whole trip is
+  answered the same way, contact first (card_words.contact_first).
 - ``sms`` / ``email``: the contact the client left on the channel they picked (the owner, 18 Nov:
   the client says where the agent writes; 20 Nov: SMS in place of WhatsApp). It lands where the CRM,
   the panel and the agent read it (the conversation row, through lead_service), with the channel on the
@@ -43,7 +46,7 @@ _PHONE_CHANNEL: dict[str, str] = {"sms": "text", "whatsapp": "whatsapp"}
 MODEL_USED = "template"
 
 CARD_BUTTONS_HEALTH: dict = {
-    "yes": 0, "sms": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
+    "yes": 0, "contact_first": 0, "sms": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
     "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0, "before_you_go_too_long": 0,
     "goodbye_asked": 0, "goodbye_no_contact": 0, "channel_not_noted": 0,
 }
@@ -138,22 +141,42 @@ async def answer(req: ChatRequest, message: str, request_meta: Optional[dict] = 
 
 
 async def _yes(cid: str, message: str, meta: dict) -> Optional[ChatResponse]:
+    """The card's yes, answered at once on a card that said the whole trip back (A2). On the field side of the
+    owner's contact test (contact_field_test.field_of: the field the widget opened with it), the words ask for that
+    one contact, and "Get a fare quote" on a card that knew no whole trip (CONTACT_FIRST_TRIGGERS) is answered too,
+    contact first. Anything else is the model's, as before."""
     from app.db import supabase as db
-    from app.services import card_words, proactive
+    from app.services import card_words, contact_field_test, proactive
 
     trigger = meta.get("proactive_trigger")
     trip = _trip(meta)
-    if not trigger or not proactive.full_trip(trip):
+    field = contact_field_test.field_of(meta)
+    whole = proactive.full_trip(trip)
+    # As the card's answer had it (proactive._with_after_words): never under the note's bandit question.
+    first = (
+        not whole and field is not None and trigger in proactive.CONTACT_FIRST_TRIGGERS
+        and proactive.applied_variant(trigger, trip, meta.get("proactive_variant")) is None
+    )
+    text = ""
+    buttons: list[dict] = []
+    if not trigger or not (whole or first):
         return None
     if await db.count_messages(cid, role="user") > 0:
         return None  # only the conversation's first answer: a later yes is the model's
     lang = _lang(meta)
-    beat = proactive.applied_variant(trigger, trip, meta.get("proactive_variant")) == proactive.BEAT
-    text = card_words.confirm(proactive.trip_line(trip, lang) or "", lang, beat=beat)
-    buttons = card_words.confirm_buttons(lang, _team_online())
-    await _save(cid, "user", message)
+    if whole:
+        beat = proactive.applied_variant(trigger, trip, meta.get("proactive_variant")) == proactive.BEAT
+        text = card_words.confirm(proactive.trip_line(trip, lang) or "", lang, beat=beat, field=field)
+        buttons = card_words.confirm_buttons(lang, _team_online())
+    else:
+        text = card_words.contact_first(lang, field or "")
+        buttons = card_words.contact_first_buttons(lang, _team_online())
+    if await _save(cid, "user", message) is None:
+        # The tap was not kept (counted in save_failures): nothing is answered over a history without it, and the
+        # model's turn saves it and answers instead (CodeRabbit #273).
+        return None
     row = await _save(cid, "ai", text, proactive.MODEL_USED)
-    CARD_BUTTONS_HEALTH["yes"] += 1
+    CARD_BUTTONS_HEALTH["yes" if whole else "contact_first"] += 1
     return _response(cid, row, text, buttons, proactive.MODEL_USED)
 
 

@@ -459,3 +459,80 @@ def test_prices_decimals_and_dates_survive_the_guard(text):
 def test_a_phone_shaped_like_a_bad_date_is_still_removed():
     out, removed = output_guard._scrub("call 12.34.5678 now")
     assert removed == ["12.34.5678"]
+
+
+# ── CodeRabbit #273 round 2: two numbers in one match ──
+
+
+@pytest.mark.parametrize("text", ["442079460958\n12079460958", "442079460958 12079460958", "+44 20 7946 0958 +1 207 946 0958"])
+def test_a_foreign_number_glued_to_the_clients_own_is_still_foreign(text):
+    """The phone pattern joins two numbers a space or a line apart into one match; the client's own number at
+    its end must not exempt the foreign one before it."""
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == ["phone"]
+
+
+@pytest.mark.parametrize("text, own", [
+    ("12079460958", ("12079460958",)),            # the number itself
+    ("call 2079460958", ("12079460958",)),        # without its country code
+    ("call +1 207 946 0958", ("2079460958",)),    # with it, the client kept it without
+])
+def test_the_clients_own_number_alone_is_still_theirs(text, own):
+    assert output_guard.foreign_contact_kinds(text, also_own=own) == []
+
+
+# ── CodeRabbit #273 round 3: the client's own number twice is one match, and still theirs ──
+
+
+@pytest.mark.parametrize("text", [
+    "12079460958\n12079460958",               # the same number on two lines
+    "12079460958 12079460958",                # a space apart
+    "+1 207 946 0958\n207 946 0958",          # with its country code, then without
+])
+def test_the_clients_own_number_repeated_is_still_theirs(text):
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == []
+
+
+@pytest.mark.parametrize("text", ["12079460958\n442079460958", "12079460958 12079460958 442079460958"])
+def test_a_foreign_number_after_the_clients_own_is_still_foreign(text):
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == ["phone"]
+
+
+@pytest.mark.parametrize("text", [
+    "20794609589\n12079460958",          # a foreign number whose last digit could pass for the next copy's code
+    "2079460958912079460958",            # the same, glued without a separator: one group, not a copy
+    "+44 20 7946 0958\n12079460958",     # a foreign number written in groups, then the client's
+])
+def test_a_foreign_number_next_to_the_clients_own_never_lends_it_digits(text):
+    """CodeRabbit #273 round 4: copies are whole groups as written, so no foreign number can be split to fit."""
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == ["phone"]
+
+
+@pytest.mark.parametrize("text", [
+    "207 946 0958 9\n12079460958",       # the trailing 9 of the number before is no country code
+    "207 946 0958 9 12079460958",         # on one line too
+    "2079460958 44 2079460958",           # a code that stands alone mid-match, with no "+"
+])
+def test_a_country_code_is_never_borrowed_from_the_number_before(text):
+    """CodeRabbit #273 round 5: a code standing as its own group counts only first in the match or after a "+"."""
+    own = ("12079460958",) if "1207" in text else ("2079460958",)
+    assert output_guard.foreign_contact_kinds(text, also_own=own) == ["phone"]
+
+
+@pytest.mark.parametrize("text, own", [
+    ("+1 207 946 0958", ("2079460958",)),                     # first in the match
+    ("2079460958 +1 207 946 0958", ("2079460958",)),          # after a "+"
+    ("2079460958\n12079460958", ("2079460958",)),             # glued to the number's digits
+    ("+1 207 946 0958\n207 946 0958", ("12079460958",)),      # twice, with and without it
+])
+def test_a_written_country_code_still_counts(text, own):
+    assert output_guard.foreign_contact_kinds(text, also_own=own) == []
+
+
+def test_the_client_number_with_a_code_in_front_is_still_theirs():
+    assert output_guard.foreign_contact_kinds("+1 207 946 0958", also_own=("2079460958",)) == []
+    assert output_guard.foreign_contact_kinds("(207) 946-0958 and 207.946.0958", also_own=("12079460958",)) == []
+
+
+def test_a_short_kept_number_proves_nothing():
+    """A kept number too short to be a phone can't make any digits the client's (a stray "5")."""
+    assert output_guard.foreign_contact_kinds("call 1235550199", also_own=("5",)) == ["phone"]

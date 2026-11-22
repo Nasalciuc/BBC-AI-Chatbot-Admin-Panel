@@ -19,7 +19,7 @@ import {
   tripRows,
   whereRows,
 } from '@/features/chats/view'
-import { LEVELS, TONE_DOT, TONE_TEXT, agoText, chatWithText, checklist, crmLine, historyOf, missingText, reviewerText } from '../view'
+import { LEVELS, TONE_DOT, TONE_TEXT, agoText, chatWithText, checklist, crmLine, crmSourceLine, historyOf, isOddCrmIdRefusal, missingText, reviewerText } from '../view'
 
 const h3 = 'm-0 text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase'
 const btn = 'h-9 rounded-full px-4 text-[13px] font-bold focus-visible:outline-2 focus-visible:outline-k-6ea8ff disabled:opacity-60'
@@ -99,42 +99,53 @@ export function LeadPanel({
   })
   const earlier = useQuery({ queryKey: ['lead-earlier', id], queryFn: () => getEarlierLeads(id), enabled: open && canLookUp })
 
-  const refresh = (leadId: string) => {
+  const refresh = (leadId: string, conversationId?: string) => {
     qc.invalidateQueries({ queryKey: ['leads-view'] })
     qc.invalidateQueries({ queryKey: ['lead', leadId] })
+    // The chat's metadata carries where the CRM number came from: a CRM write refreshes the chat it was
+    // for (CodeRabbit #273).
+    if (conversationId) qc.invalidateQueries({ queryKey: ['lead-conversation', conversationId] })
   }
-  // Each send, save and review names its lead: if you open another lead before
+  // Each send, save and review names its lead (and a CRM write its chat): if you open another lead before
   // the answer lands, it still goes to the lead it was for, never the open one.
   // A conversation locked for abuse (v2 PR-15) answers 409 until the
   // operator says yes: confirmLocked is only ever that yes, never a click.
   const push = useMutation({
-    mutationFn: (v: { leadId: string; confirmLocked?: boolean }) => pushLeadToCrm(v.leadId, v.confirmLocked ?? false),
-    onSuccess: (r, { leadId }) => {
+    mutationFn: (v: { leadId: string; conversationId: string; confirmLocked?: boolean }) =>
+      pushLeadToCrm(v.leadId, v.confirmLocked ?? false),
+    onSuccess: (r, { leadId, conversationId }) => {
       toast.success(`Sent to the CRM${r.data?.crm_lead_id ? ` · lead ${r.data.crm_lead_id}` : ''}.`)
       onPatched(leadId, { crm_state: 'in_crm', created_in_crm: true, crm_lead_id: r.data?.crm_lead_id ?? null, created_in_crm_at: new Date().toISOString() })
-      refresh(leadId)
+      refresh(leadId, conversationId)
     },
-    onError: (e, { leadId }): void => {
+    onError: (e, { leadId, conversationId }): void => {
       if (isLockedPushRefusal(e)) {
         toast.warning('This conversation was locked for abuse.', {
           duration: 10_000,
-          action: { label: 'Push anyway', onClick: () => push.mutate({ leadId, confirmLocked: true }) },
+          action: { label: 'Push anyway', onClick: () => push.mutate({ leadId, conversationId, confirmLocked: true }) },
         })
         return
       }
       toast.error((e as ApiError)?.message ?? 'The CRM didn’t take it. Try again.')
-      refresh(leadId)
+      refresh(leadId, conversationId)
     },
   })
   const saveManual = useMutation({
-    mutationFn: (v: { leadId: string; crmId: string }) => setLeadCrmId(v.leadId, v.crmId),
+    mutationFn: (v: { leadId: string; conversationId: string; crmId: string; confirmOdd?: boolean }) =>
+      setLeadCrmId(v.leadId, v.crmId, v.confirmOdd),
     onSuccess: (_r, v) => {
       toast.success(`Saved: CRM lead ${v.crmId}.`)
       if (v.leadId === id) setManual('')
       onPatched(v.leadId, { crm_state: 'in_crm', created_in_crm: true, crm_lead_id: v.crmId, created_in_crm_at: new Date().toISOString() })
-      refresh(v.leadId)
+      refresh(v.leadId, v.conversationId)
     },
-    onError: (e) => toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.'),
+    onError: (e, v) => {
+      if (isOddCrmIdRefusal(e as ApiError)) {
+        toast.warning((e as ApiError).message, { action: { label: 'Keep it', onClick: () => saveManual.mutate({ ...v, confirmOdd: true }) } })
+        return
+      }
+      toast.error((e as ApiError)?.message ?? 'Couldn’t save the lead number. Try again.')
+    },
   })
   const review = useMutation({
     mutationFn: (v: { leadId: string; reviewed: boolean; notes?: string; next?: boolean }) => reviewLead(v.leadId, v.reviewed, v.notes),
@@ -418,6 +429,11 @@ export function LeadPanel({
                 <span aria-hidden='true' className={cn('size-2 rounded-full', TONE_DOT[crm.tone])} />
                 {crm.text}
               </p>
+              {crmSourceLine((conv.data?.metadata as Record<string, unknown> | undefined)?.crm, userNames) && (
+                <p className='m-0 text-[13px] text-k-555555'>
+                  {crmSourceLine((conv.data?.metadata as Record<string, unknown> | undefined)?.crm, userNames)}
+                </p>
+              )}
               {row.crm_state !== 'in_crm' && (
                 <p className='m-0 text-[13px] text-k-555555'>
                   {row.crm_state === 'no_phone'
@@ -430,7 +446,7 @@ export function LeadPanel({
                   <button
                     type='button'
                     disabled={sending}
-                    onClick={() => push.mutate({ leadId: id })}
+                    onClick={() => push.mutate({ leadId: id, conversationId: row.conversation_id })}
                     className={cn(btn, 'self-start bg-kb-202020 text-on-btn')}
                   >
                     {sending ? 'Sending…' : 'Send to CRM'}
@@ -439,7 +455,7 @@ export function LeadPanel({
                     className='flex flex-wrap items-center gap-2'
                     onSubmit={(e) => {
                       e.preventDefault()
-                      if (manual.trim()) saveManual.mutate({ leadId: id, crmId: manual.trim() })
+                      if (manual.trim()) saveManual.mutate({ leadId: id, conversationId: row.conversation_id, crmId: manual.trim() })
                     }}
                   >
                     <label htmlFor='lead-crm-id' className='text-[13px] text-k-555555'>

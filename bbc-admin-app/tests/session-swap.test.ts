@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cookieSessionChange, jwtClaims, userFromClaims } from '../src/lib/session-swap.ts'
+import { cacheBelongsToAnother, cookieSessionChange, jwtClaims, userFromClaims } from '../src/lib/session-swap.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -67,4 +67,38 @@ test('a newer token of the same person brings their new photo, name and phone', 
   // The sign-in guard reads a token the same way.
   const guard = readFileSync(join(root, 'src/routes/_authenticated/route.tsx'), 'utf-8')
   assert.match(guard, /auth\.setUser\(userFromClaims\(claims\)\)/)
+})
+
+test('the query cache is one account\'s: emptied as someone signs in, never at a renewal (CodeRabbit #273)', () => {
+  const bob = { accountNo: 'u-bob' }
+  // A sign-in after a session that ended, or after none; the CRM signing in someone else on this page.
+  assert.equal(cacheBelongsToAnother(null, ana), true)
+  assert.equal(cacheBelongsToAnother(undefined, ana), true)
+  assert.equal(cacheBelongsToAnother(ana, bob), true)
+  // A newer token or a saved profile of the same person, and the session ending (its next sign-in empties it).
+  assert.equal(cacheBelongsToAnother(ana, { ...ana }), false)
+  assert.equal(cacheBelongsToAnother(ana, null), false)
+  assert.equal(cacheBelongsToAnother(null, null), false)
+  // Wired where the cache lives: the auth store's every change, before anything of the new account loads.
+  const main = readFileSync(join(root, 'src/main.tsx'), 'utf8')
+  // Reset, so a page on screen drops what it shows and asks again as the new account (CodeRabbit #273).
+  assert.match(main, /useAuthStore\.subscribe\(\(state, prev\) => \{\s+if \(cacheBelongsToAnother\(prev\.auth\.user, state\.auth\.user\)\) void queryClient\.resetQueries\(\)\s+\}\)/)
+})
+
+test('every sign-in sets the new token before the user: the reset asks again with the new session (CodeRabbit #273)', () => {
+  // The password (and MFA) sign-in, the CRM's sign-in and a saved profile: the user change resets the cache and
+  // refetches what is on screen at once, and authHeaders() reads the cookie that setAccessToken writes.
+  const places: Array<[string, string, string]> = [
+    ['src/features/auth/sign-in/index.tsx', 'function finishLogin(', 'auth.setAccessToken(token)'],
+    ['src/lib/crm-embed-auth.ts', 'function applyToken(', 'auth.setAccessToken(token)'],
+    ['src/features/settings/profile/index.tsx', 'auth.setAccessToken(res.token)', 'auth.setAccessToken(res.token)'],
+  ]
+  for (const [file, from, token] of places) {
+    const src = readFileSync(join(root, file), 'utf8')
+    const start = src.indexOf(from)
+    assert.ok(start >= 0, `${file}: ${from} not found`)
+    const t = src.indexOf(token, start)
+    const u = src.indexOf('auth.setUser(', start)
+    assert.ok(t >= 0 && u > t, `${file}: the token must be set before the user`)
+  }
 })

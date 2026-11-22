@@ -247,7 +247,7 @@ async def run_aaa_backfill(days: int = 30) -> dict:
             result = await submit_abandoned_to_crm(conv, lead)
             if result.success and result.request_id:
                 _marked = await db.mark_lead_created_in_crm(
-                    lead["id"], crm_lead_id=result.request_id
+                    lead["id"], crm_lead_id=result.request_id, source="cron"
                 )
                 if _marked is None:
                     logger.error(
@@ -442,7 +442,7 @@ async def run_abandoned_crm() -> dict:
             if crm_result.success:
                 # The returned id is the receipt — stored with the flag.
                 marked = await db.mark_lead_created_in_crm(
-                    lead["id"], crm_lead_id=crm_result.request_id
+                    lead["id"], crm_lead_id=crm_result.request_id, source="cron"
                 )
                 if marked is None:
                     # The CRM row EXISTS but our flag write died. Closing now
@@ -724,6 +724,7 @@ async def run_crm_orphan_backstop() -> dict:
                 lead.get("conversation_id") or lead_id,
                 conv_metadata=conv.get("metadata"),
                 suid=conv.get("visitor_id"),
+                source="cron",
             )
             if result.success:
                 results.append({"id": lead_id, "status": "pushed", "crm_id": result.request_id})

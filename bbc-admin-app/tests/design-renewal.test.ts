@@ -174,6 +174,7 @@ test("the company's logo is drawn wherever the panel names the company, never a 
   // "The notification looks like this" is true: every real one carries the same image.
   const notify = read('lib/notify-assignment.ts')
   assert.match(notify, /import \{ LOGO_SRC \} from '\.\/brand\.ts'/)
-  assert.equal(notify.match(/new Notification\(/g)?.length, 3)
-  assert.equal(notify.match(/icon: LOGO_SRC/g)?.length, 3)
+  // A chat waiting, a task reminder, the Settings test and a new lead given to me (22 Nov 2026).
+  assert.equal(notify.match(/new Notification\(/g)?.length, 4)
+  assert.equal(notify.match(/icon: LOGO_SRC/g)?.length, 4)
 })

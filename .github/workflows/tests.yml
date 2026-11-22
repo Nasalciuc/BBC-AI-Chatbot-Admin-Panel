@@ -140,6 +140,60 @@ jobs:
         working-directory: bbc-widget
         run: npm run build
 
+  # bbc-live (Go, part 5): the standard library only, so nothing to cache. The tests need a real
+  # Redis (Lua and pub/sub): the service container below, and LIVE_TEST_REQUIRE_REDIS makes a
+  # missing one a failure instead of a skip.
+  live:
+    name: live
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      REDIS_TEST_URL: redis://localhost:6379/0
+      LIVE_TEST_REQUIRE_REDIS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bbc-live/go.mod
+          cache: false
+
+      - name: Format
+        working-directory: bbc-live
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+
+      - name: Vet
+        working-directory: bbc-live
+        run: go vet ./...
+
+      - name: Tests (race detector on)
+        working-directory: bbc-live
+        # One package at a time: every package's tests empty the one shared Redis (REDIS_TEST_URL) first.
+        run: go test -race -count=1 -p 1 ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1
+          working-directory: bbc-live
+
+      - name: Known vulnerabilities
+        working-directory: bbc-live
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   security:
     name: security
     runs-on: ubuntu-latest

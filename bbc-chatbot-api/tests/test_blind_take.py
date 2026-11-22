@@ -301,6 +301,23 @@ def test_the_list_keeps_a_waiting_chats_contact_out_too(role):
         assert rows[cid]["visitor_email"] == "grace@example.com" and rows[cid]["visitor_phone"]
 
 
+@pytest.mark.parametrize("role", AGENTS)
+def test_the_list_keeps_where_a_waiting_chat_came_from_out_until_take(role):
+    """The row's "Card · no contact" reads the card's moment: never on a chat taken blind, as its detail
+    (CodeRabbit #273); the agent's own chat and a colleague's, whole as their details, keep it."""
+    rows = _list_rows()
+    for r in rows:
+        r["metadata"] = {"proactive_trigger": "kayak", "widget_presence": "online"}
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(rows, 3))), \
+         patch.object(db, "get_last_message_previews", new=AsyncMock(return_value={})):
+        r = _client(role).get("/api/conversations?status=active")
+    out = {c["id"]: c for c in r.json()["data"]}
+    assert "proactive_trigger" not in out["waiting"]["metadata"]
+    assert out["waiting"]["metadata"]["widget_presence"] == "online", "presence stays: the gate shows it"
+    assert out["mine"]["metadata"]["proactive_trigger"] == "kayak"
+    assert out["theirs"]["metadata"]["proactive_trigger"] == "kayak"
+
+
 def test_a_managers_list_keeps_every_contact():
     with patch.object(db, "get_conversations", new=AsyncMock(return_value=(_list_rows(), 3))), \
          patch.object(db, "get_last_message_previews", new=AsyncMock(return_value={})):
@@ -404,55 +421,12 @@ def test_a_manager_still_closes_a_waiting_chat():
 
 # ── search: a match on what the row hides would tell ──────────────────
 #
-# The list's search runs in PostgREST (an `or=` filter). This tiny evaluator
-# reads the subset of that grammar the filter uses, so the tests can hold the
-# filter to the same answer as _taken_blind, row by row.
+# The list's search runs in PostgREST (an `or=` filter). tests/postgrest_eval
+# reads that grammar the way PostgREST does (quoted values included), so the
+# tests can hold the filter to the same answer as _taken_blind, row by row.
 
 
-def _split_top(s: str) -> list[str]:
-    parts, depth, cur = [], 0, ""
-    for ch in s:
-        if ch == "," and depth == 0:
-            parts.append(cur)
-            cur = ""
-            continue
-        depth += ch == "("
-        depth -= ch == ")"
-        cur += ch
-    return parts + [cur]
-
-
-def _cell(row: dict, col: str):
-    if "->>" in col:
-        base, key = col.split("->>")
-        return (row.get(base) or {}).get(key)
-    return row.get(col)
-
-
-def _holds(expr: str, row: dict) -> bool:
-    for op, join in (("or(", any), ("and(", all)):
-        if expr.startswith(op) and expr.endswith(")"):
-            return join(_holds(p, row) for p in _split_top(expr[len(op):-1]))
-    col, rest = expr.split(".", 1)
-    negated = rest.startswith("not.")
-    op, val = (rest[4:] if negated else rest).split(".", 1)
-    v = _cell(row, col)
-    if op == "is":  # SQL: IS NULL / IS NOT NULL never yields NULL
-        return (v is None) != negated
-    if v is None:   # SQL: anything else against NULL is NULL, so not a match
-        return False
-    if op == "in":
-        hit = str(v) in val.strip("()").split(",")
-    elif op == "eq":
-        hit = str(v) == val
-    elif op == "neq":
-        hit = str(v) != val
-    elif op == "ilike":
-        import re as _re
-        hit = _re.fullmatch(_re.escape(val).replace("%", ".*"), str(v), _re.I) is not None
-    else:
-        raise AssertionError(f"evaluator doesn't know {op!r}")
-    return hit != negated
+from tests.postgrest_eval import holds as _holds  # noqa: E402 — PostgREST's grammar, quotes included
 
 
 def _grid():
@@ -529,10 +503,13 @@ def test_an_agents_search_still_finds_a_waiting_chat_by_name():
 
 
 def test_a_managers_search_matches_every_contact():
+    # Hole A (21 Nov): the value goes in quoted, for managers too. An e-mail is looked for in the e-mails.
     expr = _search_filter(None, "grace@")
     assert _holds(expr, WAITING)
-    assert expr == "or(visitor_name.ilike.%grace@%,visitor_email.ilike.%grace@%,visitor_phone.ilike.%grace@%)", \
-        "the filter managers get is the one they had"
+    assert expr == 'or(visitor_email.ilike."%grace@%")'
+    # Anything else still looks in the name, the e-mail and the phone, unguarded for a manager.
+    for term in ("grace mil", "example.com", "+97150"):
+        assert _holds(_search_filter(None, term), WAITING), term
 
 
 def test_an_agent_without_an_id_finds_no_waiting_chat_by_contact():

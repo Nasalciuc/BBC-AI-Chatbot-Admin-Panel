@@ -161,7 +161,7 @@ class TestButtonUnblocked:
 
         assert out["success"] and out.get("pushed_with_defaults") is True
         push.assert_awaited_once()
-        mark.assert_awaited_once_with("lead-1", crm_lead_id="R-AAA")
+        mark.assert_awaited_once_with("lead-1", crm_lead_id="R-AAA", source="push", set_by=None)
         # The no_engagement flag rides into the payload conv.
         assert push.await_args.args[0].get("_no_engagement") is True
 
@@ -282,7 +282,7 @@ class TestBackfill:
             out = await cron.run_aaa_backfill()
 
         assert out["pushed"] == 1
-        mark.assert_awaited_once_with("lead-1", crm_lead_id="R-BF")
+        mark.assert_awaited_once_with("lead-1", crm_lead_id="R-BF", source="cron")
         # Zero user messages → the "form only" flag rides along.
         assert push.await_args.args[0].get("_no_engagement") is True
 

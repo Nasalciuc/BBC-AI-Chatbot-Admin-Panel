@@ -13,6 +13,7 @@ import { useReadyStore } from '@/stores/ready-store'
 import { installCrmEmbedAuth } from '@/lib/crm-embed-auth'
 import { handleServerError } from '@/lib/handle-server-error'
 import { backTo } from '@/lib/bands'
+import { cacheBelongsToAnother } from '@/lib/session-swap'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -93,6 +94,14 @@ const queryClient = new QueryClient({
       }
     },
   }),
+})
+
+// The query cache is one account's: whoever signs in starts from none of the last account's data, before anything
+// of theirs loads (session-swap.ts, cacheBelongsToAnother). Reset, not only removed: a page still on screen (the CRM
+// signing in someone else on /qa) drops what it shows and asks again as the new account (CodeRabbit #273).
+// Sign-out empties it too (sign-out-dialog.tsx).
+useAuthStore.subscribe((state, prev) => {
+  if (cacheBelongsToAnother(prev.auth.user, state.auth.user)) void queryClient.resetQueries()
 })
 
 // Create a new router instance

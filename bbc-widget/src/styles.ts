@@ -421,6 +421,11 @@ export const WIDGET_CSS = `
 #bbc-widget-root .bw-channel__actions { display: flex; justify-content: flex-end; gap: 8px; }
 #bbc-widget-root .bw-channel__back { min-height: 44px; padding: 0 14px; border-radius: 999px; color: var(--bw-muted); font-size: 14px; font-weight: 600; }
 #bbc-widget-root .bw-channel__back:hover { color: var(--bw-text); }
+#bbc-widget-root .bw-channel__other {
+  min-height: 44px; margin-right: auto; padding: 0 4px; color: var(--bw-primary, var(--bw-ink));
+  font-size: 14px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px;
+}
+#bbc-widget-root .bw-channel__other:hover { color: var(--bw-primary-hover, #203359); }
 #bbc-widget-root .bw-channel__send {
   min-height: 44px; padding: 0 22px; border-radius: 999px;
   background: var(--bw-primary, var(--bw-ink)); color: #FFFFFF; font-size: 15px; font-weight: 600;

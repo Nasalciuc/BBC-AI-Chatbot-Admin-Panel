@@ -103,3 +103,17 @@ def test_ip_echo_shows_the_source_apart_from_the_fallback():
 def test_no_cron_secret_configured_never_matches_an_empty_bearer():
     with patch.object(settings, "cron_secret", ""):
         assert _client().get("/health/ip-echo", headers={"Authorization": "Bearer "}).status_code == 401
+
+
+def test_the_six_problems_counters_are_in_both_answers():
+    """CodeRabbit #273: ?full=true lost the lock, presence, lottery, CRM, QA, search and live counters."""
+    keys = {"redis", "locks", "agent_presence", "lottery", "crm_source", "lead_access", "qa_sample", "crm_lookup",
+            "search", "live"}
+    headers = {"Authorization": f"Bearer {_token('owner')}"}
+    with patch("app.api.health.check_connection", return_value=True), \
+            patch("app.db.supabase.get_queue_stats", return_value={}), \
+            patch("app.db.supabase.get_operator_load", return_value={"per_agent": {}}):
+        short = _client().get("/health/detail", headers=headers).json()
+        full = _client().get("/health/detail?full=true", headers=headers).json()
+    assert keys <= set(short) and keys <= set(full)
+    assert all(short[k].keys() == full[k].keys() for k in keys)

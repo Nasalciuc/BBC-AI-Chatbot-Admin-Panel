@@ -190,6 +190,19 @@ async def _visitor_contact(conversation_id: Optional[str]) -> set[str]:
     return own_contacts(conv.get("visitor_phone"), conv.get("visitor_email"))
 
 
+def foreign_contact_kinds(text: Optional[str], phone: Optional[str] = None, email: Optional[str] = None, *,
+                          also_own: tuple = ()) -> list[str]:
+    """The kinds ("email", "phone", "url") of the contacts in `text` that are neither the brand's nor this
+    client's. Only kinds come back, never the values: the QA sample and the live message check store and
+    log kinds alone (rule 7). `also_own`: more of the client's numbers (a number kept to check)."""
+    _, removed = _scrub(text or "")
+    own = own_contacts(phone, email) | {d for d in (_digits(str(x)) for x in also_own if x) if d}
+    return [_kind(r) for r in removed if not _is_own(r, own)]
+
+
+_CC_MAX = 3  # the longest country calling code
+
+
 def _is_own(snippet: str, own: set[str]) -> bool:
     if not own:
         return False
@@ -199,8 +212,50 @@ def _is_own(snippet: str, own: set[str]) -> bool:
     # client's phone ending in 9 must not let that link through as theirs.
     if _kind(snippet) != "phone":
         return False
-    d = _digits(snippet)
-    return bool(d) and any(d == o or o.endswith(d) or d.endswith(o) for o in own if o.isdigit())
+    found = list(re.finditer(r"\d+", snippet))
+    groups = [m.group() for m in found]
+    # Where a country code may stand on its own: the match's first group, or one written after a "+".
+    marked = [i == 0 or snippet[m.start() - 1] == "+" for i, m in enumerate(found)]
+    nums = [o for o in own if o.isdigit() and len(o) >= 7]
+    return bool(groups) and bool(nums) and _own_number_run(groups, marked, nums)
+
+
+def _own_number_run(groups: list[str], marked: list[bool], own: list[str]) -> bool:
+    """The digit groups of one phone match (as written: "+1 207 946 0958" is four) are the client's own number,
+    once or more. The phone pattern joins numbers a space or a line apart into one match: the same number
+    twice is still theirs, a foreign number next to it is not (CodeRabbit #273). A copy is whole groups, never
+    part of one, so a foreign number can't lend its last digits to the copy after it (round 4); and a country
+    code standing as a group of its own counts only where one is written, first or after a "+" (round 5)."""
+    longest = max(len(o) for o in own) + _CC_MAX
+    reach = [False] * (len(groups) + 1)
+    reach[0] = True
+    for i in range(len(groups)):
+        if not reach[i]:
+            continue
+        digits = ""
+        for j in range(i, len(groups)):
+            digits += groups[j]
+            if len(digits) > longest:
+                break
+            if _one_copy(digits, own, first=len(groups[i]), marked=marked[i]):
+                reach[j + 1] = True
+    return reach[len(groups)]
+
+
+def _one_copy(d: str, own: list[str], *, first: int, marked: bool) -> bool:
+    """One copy of a kept number, a phone's 7 digits at least: as kept, or without its country code (1 to
+    _CC_MAX digits), or with one the kept copy lacks. That code is glued to the number's first digits in one
+    group ("12079460958"), or a group of its own where a code is written ("+1 …", or first in the match): a
+    trailing group of the number before it ("… 0958 9\n1207…") is never one."""
+    if len(d) < 7:
+        return False
+    for o in own:
+        if d == o or (o.endswith(d) and len(o) - len(d) <= _CC_MAX):
+            return True
+        extra = len(d) - len(o)
+        if 1 <= extra <= _CC_MAX and d.endswith(o) and (marked or first > extra):
+            return True
+    return False
 
 
 def _alert_later(mode: str, kinds: dict) -> None:

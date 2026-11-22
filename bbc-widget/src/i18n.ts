@@ -45,6 +45,9 @@ const WORDS = {
     sentEmail: 'Email',
     sentPrice: 'Price seen',
     hide: 'Hide',
+    // The field opened by itself (the owner's contact test): the other channel, one tap away.
+    otherSms: 'Text me instead',
+    otherEmail: 'Email me instead',
   },
   es: {
     phoneLabel: 'Su número de móvil',
@@ -61,6 +64,8 @@ const WORDS = {
     sentEmail: 'Correo',
     sentPrice: 'Precio visto',
     hide: 'Ocultar',
+    otherSms: 'Mejor por SMS',
+    otherEmail: 'Mejor por correo',
   },
   fr: {
     phoneLabel: 'Votre numéro de mobile',
@@ -77,6 +82,8 @@ const WORDS = {
     sentEmail: 'E-mail',
     sentPrice: 'Prix vu',
     hide: 'Masquer',
+    otherSms: 'Plutôt par SMS',
+    otherEmail: 'Plutôt par e-mail',
   },
 } as const
 

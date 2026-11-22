@@ -23,6 +23,7 @@ from app.pipeline.orchestrator import process_message, _fire_and_forget
 from app.db import supabase as db
 from app.realtime.manager import manager
 from app.services import conversation_service, lead_service
+from app.services.conversation_lock import ConversationLock, conversation_lock, local_locks
 from app.services.routing import route_conversation
 from app.services.handoff import perform_handoff_to_agent
 
@@ -65,6 +66,9 @@ class ChatInitRequest(BaseModel):
     # server composes the card's words from it again (app/services/proactive).
     trip: Optional[TripContext] = None
     proactive: Optional["ProactiveInit"] = None
+    # "On the site now" (contracts/live.md): the visitor tapped an agent's hello; the tap token inside
+    # it makes this chat the agent's (app.services.live_visitors). One that doesn't hold is ignored.
+    live_tap: Optional[str] = Field(default=None, max_length=2048)
 
     # Neither may cost the visitor the chat: a trip that is not an object, or
     # a trigger this server does not know yet (a newer widget), is dropped and
@@ -99,12 +103,29 @@ class ProactiveInit(BaseModel):
     # The language the card spoke ("es", "fr"; proactive_i18n): the opening is written in it, and the
     # chat keeps it. Anything else is English.
     lang: Optional[str] = None
+    # The owner's contact test (app.services.contact_field_test): the side /offer named, and on the field
+    # side the field the yes opened at once. Written on the chat only when it is this visitor's side;
+    # anything else is dropped, never a 422.
+    contact_test: Optional[str] = None
+    field: Optional[str] = None
 
     @field_validator("variant", mode="before")
     @classmethod
     def _known_variant_or_none(cls, v):
         from app.services.proactive import known_variant
         return known_variant(v)
+
+    @field_validator("contact_test", mode="before")
+    @classmethod
+    def _known_side_or_none(cls, v):
+        from app.services.contact_field_test import SIDES
+        return v if v in SIDES else None
+
+    @field_validator("field", mode="before")
+    @classmethod
+    def _known_field_or_none(cls, v):
+        from app.services.contact_field_test import CHANNELS
+        return v if v in CHANNELS else None
 
     @field_validator("lang", mode="before")
     @classmethod
@@ -124,6 +145,10 @@ class ChatInitResponse(BaseModel):
     # and reads messages after `opening_at` so the opening is not shown twice.
     opening: Optional[str] = None
     opening_at: Optional[str] = None
+    # The agent whose hello the visitor tapped, when the chat started as theirs: their first name
+    # and their hello's words, which are the chat's first message.
+    live_agent: Optional[str] = None
+    live_hello: Optional[str] = None
 
 
 async def _widget_gate(request: Request, turnstile_token: Optional[str], form_check: Optional[dict], meta: dict) -> None:
@@ -185,6 +210,9 @@ async def chat_init(
         _meta.setdefault("origin_country_hint", _cf_country)
     if payload.visitor_id:
         _meta.setdefault("visitor_id", payload.visitor_id)
+    # The owner's test: the chat's side, server-made (app.services.agent_first_test).
+    from app.services import agent_first_test as _agent_first_test
+    _agent_first_test.tag(_meta, payload.visitor_id)
 
     from app.services import proactive as _proactive
     # The moments follow the experiment's switches; the tapped note has its
@@ -228,23 +256,65 @@ async def chat_init(
         # with the page's search. A failure here must not cost the visitor
         # the chat: it is counted and logged, and the chat goes on.
         try:
+            # The owner's contact test: the side /offer named this card, server-checked, written with the
+            # opening's label (app.services.contact_field_test).
+            from app.services import contact_field_test as _contact_field_test
+            _contact: dict = {}
+            if payload.proactive:
+                _contact_field_test.tag(
+                    _contact, payload.visitor_id, payload.proactive.contact_test, payload.proactive.field,
+                )
             # `site` as the metadata allowlist validated it (bbc | bct): the
             # same brand the card named at /offer.
             _opening = await _proactive.open_conversation(
                 conv_id, _proactive_trigger, payload.trip, _meta.get("site"),
                 payload.proactive.variant if payload.proactive else None,
                 payload.proactive.lang if payload.proactive else None,
+                contact=_contact or None,
             ) or {}
         except Exception as e:
             _proactive.PROACTIVE_HEALTH["open_failures"] += 1
             logger.error(f"[init] proactive opening failed (conv={conv_id}): {type(e).__name__}")
+    _live: dict = {}
+    if payload.live_tap and payload.tunnel == "sales" and not _opening:
+        from app.services.live_visitors import start_with_the_agent
+        _live = await start_with_the_agent(conv_id, payload.visitor_id, payload.live_tap)
     from app.security.visitor_token import issue as _issue_token
     return ChatInitResponse(
         conversation_id=conv_id,
         visitor_token=_issue_token(payload.visitor_id) if payload.visitor_id else None,
         opening=_opening.get("content"),
         opening_at=_opening.get("created_at"),
+        live_agent=_live.get("agent"),
+        live_hello=_live.get("text"),
     )
+
+
+class LivePassRequest(BaseModel):
+    visitor_id: str = Field(..., min_length=8, max_length=64)
+    # The pass this visitor was handed before (the widget keeps it): with it, a new one.
+    live_pass: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.post("/chat/live")
+async def chat_live(payload: LivePassRequest, request: Request):
+    """Whether the widget beats to bbc-live, where, and the visitor's pass to it (contracts/live.md). No chat
+    rate limit: a page read costs the visitor nothing of their chat; new visitor ids are limited per address
+    (live_visitors.widget_pass). Never cached: the pass is this visitor's."""
+    from fastapi.responses import JSONResponse
+    from app.services import agent_first_test
+    from app.services.live_visitors import widget_pass
+
+    # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it.
+    side = agent_first_test.side(payload.visitor_id)
+    if side == agent_first_test.ALEX:
+        return JSONResponse({"enabled": False, "test": side}, headers={"Cache-Control": "no-store"})
+    # The address as the rate limiter reads it (X-Forwarded-For, then the peer): a cf-connecting-ip header is the
+    # client's to write unless the edge is Cloudflare, and the limit on new ids would not hold.
+    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False))
+    if side == agent_first_test.AGENT:
+        out = {**out, "test": side, "hold_s": agent_first_test.hold_seconds()}
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 class ProactiveOfferRequest(BaseModel):
@@ -266,11 +336,19 @@ class ProactiveOfferRequest(BaseModel):
     device: Optional[Literal["phone", "computer"]] = None
     place: Optional[Literal["form"]] = None
     c4: Optional[Literal["early", "now"]] = None
+    # The widget opens the contact field with the yes's answer (the owner's contact test, 22 Nov:
+    # app.services.contact_field_test): only such a widget takes part. Anything but true is false.
+    opens_field: bool = False
 
     @field_validator("trip", mode="before")
     @classmethod
     def _trip_or_none(cls, v):
         return v if isinstance(v, (dict, TripContext)) else None
+
+    @field_validator("opens_field", mode="before")
+    @classmethod
+    def _true_or_false(cls, v):
+        return v is True
 
     @field_validator("lang", mode="before")
     @classmethod
@@ -321,9 +399,16 @@ async def proactive_offer(
 
     Writes nothing: a visitor who sees the card and never answers leaves no
     conversation, no lead and no row. The control arm is told show=False, so
-    the widget counts the moment without showing anything."""
-    from app.services import note_bandit, proactive
+    the widget counts the moment without showing anything.
+
+    The owner's test (app.services.agent_first_test): on the agent's side, while an agent who may say hello has
+    "On the site now" open, the card waits (show=False with retry_after_s; only a Redis key, no row), and after a
+    hello or a "Not now" it doesn't come. Every answer names the side while the test runs ("test")."""
+    from app.services import agent_first_test, note_bandit, proactive
     from app.services.closing import is_within_team_hours
+    held = await agent_first_test.offer_hold(payload.visitor_id, payload.trigger)
+    if held.answer is not None:
+        return held.answer
     if payload.trigger == proactive.NOTE:
         # The note's bandit reads its counts in the background, at most every few
         # minutes: this answer never waits for the database.
@@ -336,10 +421,13 @@ async def proactive_offer(
     out = proactive.offer(
         payload.visitor_id, payload.trigger, payload.trip, payload.site, payload.refused,
         lang=payload.lang, device=payload.device, place=payload.place, c4=payload.c4,
-        c4_open=_c4_open, team_online=is_within_team_hours(),
+        c4_open=_c4_open, team_online=is_within_team_hours(), opens_field=payload.opens_field,
     )
     if out.get("show") and payload.trigger == "kayak" and payload.c4:
         await proactive.c4_count(payload.c4)
+    side = agent_first_test.side(payload.visitor_id)
+    if side:
+        out = {**out, "test": side, **({"after_hold": True} if held.after_hold else {})}
     return out
 
 
@@ -379,6 +467,8 @@ def _widget_request_meta(request: Request, metadata: Optional[dict], visitor_id:
         _meta.setdefault("origin_country_hint", _cf_country)
     if visitor_id:
         _meta.setdefault("visitor_id", visitor_id)
+    from app.services import agent_first_test
+    agent_first_test.tag(_meta, visitor_id)
     return _meta
 
 
@@ -567,15 +657,12 @@ POST_SALE_HEALTH: dict = {"kept": 0, "resends": 0, "unsaved": 0}
 # The same send arriving again this soon is the widget's retry (a turn that outlived its wait), not new words.
 _RESEND_WINDOW_S = 120
 # One post-sale send at a time per conversation: the read that spots a resend and the writes after it run as
-# one. The API is one process (Dockerfile: --workers 1), as for lead_service._lead_lock.
-_POST_SALE_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+# one, in this process and across processes (app.services.conversation_lock, as for lead_service._lead_lock).
+_POST_SALE_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = local_locks("post_sale")
 
 
-def _post_sale_lock(conversation_id: str) -> asyncio.Lock:
-    lock = _POST_SALE_LOCKS.get(conversation_id)
-    if lock is None:
-        lock = _POST_SALE_LOCKS[conversation_id] = asyncio.Lock()
-    return lock
+def _post_sale_lock(conversation_id: str) -> ConversationLock:
+    return conversation_lock("post_sale", conversation_id)
 
 
 def _resent(row: dict, text: str) -> bool:
@@ -1019,6 +1106,8 @@ async def chat(
         _meta.setdefault("origin_country_hint", _cf_country)
     if req.visitor_id:
         _meta.setdefault("visitor_id", req.visitor_id)
+    from app.services import agent_first_test as _agent_first_test
+    _agent_first_test.tag(_meta, req.visitor_id)
 
     # A button after the card (yes, SMS, email, "I'll wait here"): answered at
     # once, without the model (app.pipeline.card_buttons). None: answered as typed.
