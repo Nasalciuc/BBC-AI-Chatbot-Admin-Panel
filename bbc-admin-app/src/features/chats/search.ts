@@ -65,6 +65,15 @@ export function messagesSearchable(text: string): boolean {
   return text.trim().length >= 3
 }
 
+/** Who may search what was said (the server's MESSAGE_READERS, app/api/search.py). Supervisors and project
+ *  managers don't: their rows mask the contact the client's words carry. */
+export const MESSAGE_READERS: readonly string[] = ['owner', 'admin', 'dev', 'qa', 'sales', 'support']
+export const MESSAGES_RESTRICTED = "Searching what was said isn't open to your role"
+
+export function canSearchMessages(role: string): boolean {
+  return MESSAGE_READERS.includes(role)
+}
+
 /** How long the typing pauses before the list and the message search ask the server: one request per word,
  *  not one per keystroke (the message search allows 20 a minute, CodeRabbit #273). */
 export const SEARCH_DEBOUNCE_MS = 400

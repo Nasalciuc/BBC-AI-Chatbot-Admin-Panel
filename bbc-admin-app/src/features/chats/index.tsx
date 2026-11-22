@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Clock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, Clock, Lock, MessageCircle, Search, SlidersHorizontal } from 'lucide-react'
 import type { Conversation, ConversationTag } from '@/lib/types'
 import { getConversations, getNotifications, getRecentChats, searchMessages, apiFetch } from '@/lib/api'
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
-import { EMPTY_FILTERS, SEARCH_DEBOUNCE_MS, type ListFilters, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
+import { EMPTY_FILTERS, MESSAGES_RESTRICTED, SEARCH_DEBOUNCE_MS, type ListFilters, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
 import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
@@ -344,7 +344,9 @@ export function Chats() {
   const recent = useQuery({
     queryKey: ['recent-chats'], queryFn: getRecentChats, enabled: searchFocused && !search, staleTime: 10_000,
   })
-  const wantMessages = inMessages && messagesSearchable(debouncedSearch)
+  // Only for the roles the server answers (search.ts MESSAGE_READERS): for the others the toggle shows locked.
+  const messagesAllowed = canSearchMessages(role)
+  const wantMessages = messagesAllowed && inMessages && messagesSearchable(debouncedSearch)
   const hits = useQuery({
     queryKey: ['message-hits', debouncedSearch.trim()], queryFn: () => searchMessages(debouncedSearch.trim()),
     enabled: wantMessages, staleTime: 30_000, retry: false,
@@ -702,12 +704,20 @@ export function Chats() {
       {search.trim() && (
         <div className={cn('flex items-center justify-between gap-2 pb-1.5 text-xs text-k-6b6b6b', layout === 'narrow' ? 'px-0' : 'px-3.5')}>
           <span>Looking for: {searchHint(search, role === 'supervisor')}</span>
-          {messagesSearchable(search) && (
+          {messagesSearchable(search) && (messagesAllowed ? (
             <button type='button' aria-pressed={inMessages} onClick={() => setInMessages((v) => !v)}
               className={cn('rounded-full px-2.5 py-1 font-bold', inMessages ? 'bg-kb-202020 text-on-btn' : 'bg-k-ffffff text-k-444444 ring-1 ring-k-e3e2e2')}>
               In what was said
             </button>
-          )}
+          ) : (
+            // The panel's rule for restricted actions: shown, disabled, a lock and the server's reason.
+            <button type='button' disabled title={MESSAGES_RESTRICTED}
+              aria-label={`In what was said (${MESSAGES_RESTRICTED.toLowerCase()})`}
+              className='inline-flex cursor-not-allowed items-center gap-1 rounded-full bg-k-ffffff px-2.5 py-1 font-bold text-k-444444 opacity-60 ring-1 ring-k-e3e2e2'>
+              <Lock aria-hidden='true' className='size-3' />
+              In what was said
+            </button>
+          ))}
         </div>
       )}
       {wantMessages && (

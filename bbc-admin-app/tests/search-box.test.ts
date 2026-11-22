@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { EMPTY_FILTERS, SEARCH_DEBOUNCE_MS, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
+import { EMPTY_FILTERS, MESSAGES_RESTRICTED, MESSAGE_READERS, SEARCH_DEBOUNCE_MS, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
 
 test('the box says what it will look for, as the server reads it', () => {
   assert.equal(searchHint('#3403'), 'The chat number')
@@ -29,6 +29,25 @@ test('for a supervisor, whose rows are masked, the box says the name and the con
 test('the chats page tells the box when its rows are masked: a supervisor only', () => {
   const src = readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8')
   assert.match(src, /searchHint\(search, role === 'supervisor'\)/)
+})
+
+test('who may search what was said is the server’s list, word for word', () => {
+  const api = readFileSync(new URL('../../bbc-chatbot-api/app/api/search.py', import.meta.url), 'utf8')
+  const m = api.match(/MESSAGE_READERS = \{([^}]*)\}/)
+  assert.ok(m, 'MESSAGE_READERS in app/api/search.py')
+  const server = [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]).sort()
+  assert.deepEqual([...MESSAGE_READERS].sort(), server)
+  for (const role of ['owner', 'admin', 'dev', 'qa', 'sales', 'support']) assert.equal(canSearchMessages(role), true, role)
+  for (const role of ['supervisor', 'project_manager', '']) assert.equal(canSearchMessages(role), false, role)
+})
+
+test('a role the server refuses sees "In what was said" locked with the reason, and asks nothing', () => {
+  const src = readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8')
+  assert.match(src, /const wantMessages = messagesAllowed && inMessages && messagesSearchable\(debouncedSearch\)/)
+  const locked = src.slice(src.indexOf('title={MESSAGES_RESTRICTED}') - 200, src.indexOf('title={MESSAGES_RESTRICTED}') + 400)
+  assert.match(locked, /disabled title=\{MESSAGES_RESTRICTED\}/)
+  assert.match(locked, /<Lock aria-hidden='true'/)
+  assert.ok(MESSAGES_RESTRICTED.length > 0)
 })
 
 test('no filter is no parameter and no key part', () => {
