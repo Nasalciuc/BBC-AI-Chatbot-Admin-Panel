@@ -41,7 +41,7 @@ def _row(cid="c1", **kw):
 
 def _agent(uid, **kw):
     return {"id": uid, "name": uid[:4], "role": "sales", "is_active": True, "chat_enabled": True,
-            "tunnel_scope": "sales", **kw}
+            "is_ready": True, "tunnel_scope": "sales", **kw}
 
 
 # ── who is a candidate ──────────────────────────────────────────
@@ -233,6 +233,107 @@ async def test_nobody_at_the_desk_means_the_lead_waits(world):
     assert out["waiting"] == 1 and out["assigned"] == 0
     m["assign"].assert_not_awaited()
     assert lot.LOTTERY_HEALTH["waiting_now"] == 1 and lot.LOTTERY_HEALTH["no_one_present"] == 1
+
+
+# ── on ready (the owner's rule, 22 Nov 2026: ten panels open on a Sunday evening, one agent on ready) ──
+
+
+@pytest.mark.asyncio
+async def test_an_open_panel_off_ready_is_given_nothing(world):
+    state, m, _ = world
+    state["agents"] = [_agent(A, is_ready=False), _agent(B)]
+    out = await lot.run_lead_lottery()
+    m["assign"].assert_awaited_once_with("c1", B)
+    assert out["present"] == 1 and out["not_ready"] == 1
+    assert lot.LOTTERY_HEALTH["present_not_ready"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ready", [False, None])  # off, and a row that does not say
+async def test_at_the_desk_and_nobody_on_ready_the_lead_waits(world, ready):
+    state, m, _ = world
+    state["agents"] = [_agent(A, is_ready=ready), _agent(B, is_ready=ready)]
+    out = await lot.run_lead_lottery()
+    m["assign"].assert_not_awaited()
+    assert out["waiting"] == 1 and out["assigned"] == 0 and out["not_ready"] == 2
+    assert lot.LOTTERY_HEALTH["no_one_present"] == 1 and lot.LOTTERY_HEALTH["present_not_ready"] == 2
+
+
+@pytest.mark.asyncio
+async def test_on_ready_but_the_panel_closed_is_given_nothing(world):
+    state, m, _ = world
+    state["present"] = {B}  # A pressed ready and closed the panel: the button alone lies
+    state["agents"] = [_agent(A), _agent(B, is_ready=False)]
+    out = await lot.run_lead_lottery()
+    m["assign"].assert_not_awaited()
+    assert out["waiting"] == 1 and out["not_ready"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_returning_clients_agent_off_ready_the_lead_goes_to_the_one_on_ready(world):
+    state, m, _ = world
+    state["rows"] = [_row("c1", visitor_email="back@example.com"),
+                     _row("old", visitor_email="back@example.com", closed_by_agent_id=B,
+                          conversation_status="closed", offer_sent_at=NOW.isoformat())]
+    state["agents"] = [_agent(A), _agent(B, is_ready=False)]
+    out = await lot.run_lead_lottery()
+    m["assign"].assert_awaited_once_with("c1", A)
+    assert out["sticky"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ready_only_off_the_open_panel_decides_as_before(world, monkeypatch):
+    state, m, _ = world
+    monkeypatch.setenv("FOLLOWUP_READY_ONLY", "false")
+    state["agents"] = [_agent(A, is_ready=False)]
+    state["present"] = {A}
+    out = await lot.run_lead_lottery()
+    m["assign"].assert_awaited_once_with("c1", A)
+    assert out["not_ready"] == 0 and lot.LOTTERY_HEALTH["present_not_ready"] == 0
+
+
+def test_ready_only_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("FOLLOWUP_READY_ONLY", raising=False)
+    assert lot.ready_only() is True
+    assert lot.on_ready({"is_ready": True}) and not lot.on_ready({"is_ready": False}) and not lot.on_ready({})
+
+
+def test_a_manager_gives_by_hand_to_an_agent_off_ready():
+    """The manager decides who: a give by hand never asks the ready button."""
+    assert lot.may_be_given(_agent(A, is_ready=False))
+
+
+@pytest.mark.asyncio
+async def test_the_operator_rows_carry_the_ready_button():
+    from app.db import supabase as db
+
+    asked: list[str] = []
+
+    class _Q:
+        data = [{"id": A, "is_ready": True}]
+
+        def select(self, cols):
+            asked.append(cols)
+            return self
+
+        def in_(self, *a):
+            return self
+
+        def gte(self, *a):
+            return self
+
+        def execute(self):
+            return self
+
+    class _Client:
+        def table(self, name):
+            assert name == "users"
+            return _Q()
+
+    with patch.object(db, "get_client", return_value=_Client()):
+        rows = await db.get_operator_rows([A])
+    assert rows == [{"id": A, "is_ready": True}]
+    assert "is_ready" in [c.strip() for c in asked[0].split(",")]
 
 
 @pytest.mark.asyncio

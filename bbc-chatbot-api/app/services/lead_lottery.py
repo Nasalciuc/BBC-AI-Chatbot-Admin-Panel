@@ -7,10 +7,13 @@ and someone shared them out by hand the next day (22 chats on 20-21 Nov).
 What March-May taught (routing.py, #212):
   - kept: chance from `secrets`, the least loaded first, the same agent for a returning client, one
     database write deciding the winner;
-  - avoided: is_ready ("a button left on overnight lies"); present means the panel beat in the last
-    90 s (queue_presence_window_seconds), the rule that ended the June phantoms; and the shared line
-    of open chats is not touched: the first to Take still wins there (D1). This changes D4 for closed
-    leads only, and says so on every row ("given by the lottery to Charlie at 09:12").
+  - is_ready alone ("a button left on overnight lies") and an open panel alone both lie: on 22 Nov 2026,
+    a Sunday evening, ten panels beat and one agent was on ready. So an agent is given leads only on
+    ready AND present (the panel beat in the last 90 s, queue_presence_window_seconds, the rule that
+    ended the June phantoms): the owner's rule, FOLLOWUP_READY_ONLY (on); off, the panel alone decides,
+    as before. The shared line of open chats is not touched: the first to Take still wins there (D1).
+    This changes D4 for closed leads only, and says so on every row ("given by the lottery to Charlie
+    at 09:12").
 
 A candidate (from the leads universe, the rows the Offers page is made of):
   - the Offers rule (offers_view.candidates): sales, a contact, a route, made in the last 3 days, not
@@ -62,6 +65,9 @@ LOTTERY_HEALTH: dict[str, Any] = {
     # A give whose follow-up state was not saved and whose chat could not be given back either: kept in
     # UNWIND_KEY and given back at the start of a later run (unwound), or not even kept (unwind_lost).
     "release_failed": 0, "unwound": 0, "unwind_lost": 0,
+    # When leads last waited for someone: the agents at the desk who were not on ready (FOLLOWUP_READY_ONLY).
+    # "Nobody at the desk" and "at the desk, nobody on ready" are different answers.
+    "present_not_ready": 0,
 }
 
 # "<conversation id> <agent id> <given at>": gives to undo. The chat was assigned but its follow-up state (the
@@ -143,6 +149,17 @@ def serves_sales(user: dict) -> bool:
 
 def may_be_given(user: dict) -> bool:
     return bool(user.get("is_active", True)) and bool(user.get("chat_enabled", True)) and serves_sales(user)
+
+
+def ready_only() -> bool:
+    """The lottery gives only to an agent on ready (the owner's rule, 22 Nov 2026). Off: the open panel alone.
+    A manager's give by hand never asks it (give_by_hand): the manager decides who."""
+    return bool(flag("FOLLOWUP_READY_ONLY", True))
+
+
+def on_ready(user: dict) -> bool:
+    """The agent's own ready button (users.is_ready). A row that does not say is not on ready."""
+    return user.get("is_ready") is True
 
 
 # ── how ─────────────────────────────────────────────────────────
@@ -242,7 +259,7 @@ def pick(
 
 
 async def present_operators() -> Optional[list[dict]]:
-    """The operators at the desk who may be given a lead; None when nobody can say."""
+    """The operators at the desk who may be given a lead, on ready (ready_only); None when nobody can say."""
     from app.db import supabase as db
     from app.services.agent_presence import present_operator_ids
     from config.settings import settings
@@ -254,7 +271,13 @@ async def present_operators() -> Optional[list[dict]]:
         rows = await db.get_operator_rows(sorted(ids))
     if rows is None:
         return None
-    return [u for u in rows if may_be_given(u)]
+    given = [u for u in rows if may_be_given(u)]
+    if not ready_only():
+        LOTTERY_HEALTH["present_not_ready"] = 0
+        return given
+    ready = [u for u in given if on_ready(u)]
+    LOTTERY_HEALTH["present_not_ready"] = len(given) - len(ready)
+    return ready
 
 
 async def run_lead_lottery() -> dict:
@@ -338,7 +361,7 @@ async def _run_once(now: datetime) -> dict:
     LOTTERY_HEALTH["assigned"] += assigned
     LOTTERY_HEALTH["sticky"] += sticky_n
     return {"state": "ok", "assigned": assigned, "sticky": sticky_n, "missed": missed, "waiting": len(left),
-            "present": len(eligible)}
+            "present": len(eligible), "not_ready": LOTTERY_HEALTH["present_not_ready"]}
 
 
 def _waiting_gauge(rows: list[dict], now: datetime) -> None:
