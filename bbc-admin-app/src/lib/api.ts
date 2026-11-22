@@ -244,11 +244,13 @@ export async function apiFetch<T>(
     const text = await res.text().catch(() => '')
     // FastAPI answers {"detail": "..."} — throwing the raw body meant
     // every error toast (and the set-password page) showed JSON to a
-    // human. Unwrap it once, here, for every caller.
+    // human. Unwrap it once, here, for every caller. A route that answers
+    // its refusals in the admin envelope ({success: false, error}) reads the same.
     let message = text || `HTTP ${res.status}`
     try {
-      const body = JSON.parse(text) as { detail?: unknown }
+      const body = JSON.parse(text) as { detail?: unknown; error?: unknown }
       if (typeof body?.detail === 'string' && body.detail) message = body.detail
+      else if (typeof body?.error === 'string' && body.error) message = body.error
     } catch {
       /* not JSON — keep the raw text */
     }
