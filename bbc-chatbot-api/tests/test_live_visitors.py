@@ -52,22 +52,22 @@ def test_the_agent_tokens_in_the_contract_read_back():
     v = _vectors()["agent"]
     secret = v["secret"].encode()
     for c in v["valid"]:
-        payload, reason = live_tokens.decode(c["token"], "l1", secret, now=v["now"])
+        payload, reason = live_tokens.decode(c["value"], "l1", secret, now=v["now"])
         assert reason == "ok" and payload["u"] == c["user"] and payload["r"] == c["role"] and payload["exp"] == c["exp"]
-        assert live_tokens.encode("l1", payload, secret) == c["token"], "the same bytes as the API issued"
+        assert live_tokens.encode("l1", payload, secret) == c["value"], "the same bytes as the API issued"
     for c in v["invalid"]:
-        assert live_tokens.decode(c["token"], "l1", secret, now=v["now"])[1] == c["reason"], c
+        assert live_tokens.decode(c["value"], "l1", secret, now=v["now"])[1] == c["reason"], c
 
 
 def test_the_passes_in_the_contract_read_back():
     v = _vectors()["pass"]
     secret = v["secret"].encode()
     for c in v["valid"]:
-        payload, reason = live_tokens.decode(c["token"], "b1", secret, now=v["now"])
+        payload, reason = live_tokens.decode(c["value"], "b1", secret, now=v["now"])
         assert reason == "ok" and payload["v"] == c["visitor_id"] and payload["exp"] == c["exp"]
-        assert live_tokens.encode("b1", payload, secret) == c["token"], "the same bytes as the API issued"
+        assert live_tokens.encode("b1", payload, secret) == c["value"], "the same bytes as the API issued"
     for c in v["invalid"]:
-        assert live_tokens.decode(c["token"], "b1", secret, now=v["now"])[1] == c["reason"], c
+        assert live_tokens.decode(c["value"], "b1", secret, now=v["now"])[1] == c["reason"], c
 
 
 def test_the_vectors_are_what_this_module_issues(monkeypatch):
@@ -77,11 +77,11 @@ def test_the_vectors_are_what_this_module_issues(monkeypatch):
     v = _vectors()
     monkeypatch.setattr(settings, "live_token_secret", v["pass"]["secret"])
     first = v["pass"]["valid"][0]
-    assert live_tokens.beat_pass(first["visitor_id"], now=first["exp"] - live_tokens.PASS_TTL) == first["token"]
+    assert live_tokens.beat_pass(first["visitor_id"], now=first["exp"] - live_tokens.PASS_TTL) == first["value"]
     a = v["agent"]["valid"][0]
     user = {"id": a["user"], "role": a["role"], "tunnel_scope": a["tunnel"]}
     monkeypatch.setattr(settings, "live_token_secret", v["agent"]["secret"])
-    assert live_tokens.agent_token(user, now=a["exp"] - live_tokens.AGENT_TTL) == a["token"]
+    assert live_tokens.agent_token(user, now=a["exp"] - live_tokens.AGENT_TTL) == a["value"]
 
 
 @pytest.fixture
