@@ -58,11 +58,17 @@ export function ensureVisitorId(): string {
 }
 
 /** What the card's yes is answered with at once, when the card knew the whole trip (A2): the server's
- *  words and the buttons under them (app/services/card_words.py, confirm). */
+ *  words and the buttons under them (app/services/card_words.py, confirm). On the field side of the owner's
+ *  contact test (22 Nov, app/services/contact_field_test.py) also the field the chat opens with them, and
+ *  "Get a fare quote" on a card that knew no whole trip gets one too, contact first. */
 export interface OfferConfirm {
   message: string
   buttons: ChatButton[]
+  field?: ChannelKind
 }
+
+/** The owner's contact test: the contact field at once after the yes ("field"), or the choice first ("choice"). */
+export type ContactTestSide = 'field' | 'choice'
 
 /** The server's answer to "open the chat now?" (bbc-chatbot-api app/services/proactive.py, offer). */
 export interface ProactiveOffer {
@@ -97,6 +103,8 @@ export interface ProactiveOffer {
   reason?: string
   /** The card comes because Alex's wait ran out with no hello. */
   after_hold?: boolean
+  /** The owner's contact test: this visitor's side, on the cards it changes (sent back at /chat/init). */
+  contact_test?: ContactTestSide
 }
 
 /** The longest card title the server sends (app/services/proactive.py, TITLE_MAX): the same number. */
@@ -148,6 +156,8 @@ export async function fetchProactiveOffer(
     visitor_id: string; trigger: string; trip: unknown; site: string; refused?: string[]
     /** The browser's language, the screen, and a row beside the refused form (proactive.ts). */
     lang?: string; device?: 'phone' | 'computer'; place?: 'form'
+    /** This widget opens the contact field with the yes's answer: it takes part in the owner's contact test. */
+    opens_field?: boolean
   },
   timeoutMs: number,
   onTiming?: (t: OfferTiming) => void,
@@ -177,6 +187,8 @@ export async function fetchProactiveOffer(
     const confirmMessage = typeof data.confirm?.message === 'string' && data.confirm.message.trim()
       ? data.confirm.message : null
     const confirmButtons = readButtons(data.confirm?.buttons)
+    const confirmField: ChannelKind | null = data.confirm?.field === 'sms' || data.confirm?.field === 'email'
+      ? data.confirm.field : null
     const channel = readChannel(data.channel)
     const buttons = readButtons(data.buttons)
     // ADR A3: both or neither — a title without its question (or the reverse) would be half a card. The title's
@@ -189,7 +201,9 @@ export async function fetchProactiveOffer(
       message: typeof data.message === 'string' && data.message.trim() ? data.message : null,
       quick_replies: replies,
       ...(variant ? { variant } : {}),
-      ...(confirmMessage && confirmButtons.length ? { confirm: { message: confirmMessage, buttons: confirmButtons } } : {}),
+      ...(confirmMessage && confirmButtons.length ? {
+        confirm: { message: confirmMessage, buttons: confirmButtons, ...(confirmField ? { field: confirmField } : {}) },
+      } : {}),
       ...(channel ? { channel } : {}),
       ...(buttons.length ? { buttons } : {}),
       ...(data.lang === 'es' || data.lang === 'fr' ? { lang: data.lang } : {}),
@@ -199,6 +213,8 @@ export async function fetchProactiveOffer(
       ...(Number.isInteger(data.alex_at) && data.alex_at > 0 ? { alex_at: data.alex_at as number } : {}),
       ...(data.reason === 'greeted' || data.reason === 'declined' || data.reason === 'waiting' ? { reason: data.reason } : {}),
       ...(data.after_hold === true ? { after_hold: true } : {}),
+      ...(data.contact_test === 'field' || data.contact_test === 'choice'
+        ? { contact_test: data.contact_test as ContactTestSide } : {}),
     })
   } catch (e) {
     // A timeout or a network error is a "no": the visitor sees nothing. So is a reply that is not JSON (a

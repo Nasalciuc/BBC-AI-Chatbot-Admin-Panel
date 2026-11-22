@@ -416,3 +416,89 @@ test('SMS in place of WhatsApp everywhere: the field, its words and the channel 
     assert.doesNotMatch(code, /whatsapp/i, f)
   }
 })
+
+// ── The owner's contact test (22 Nov 2026): the field at once after the yes, or the choice first ────────────────
+
+test('contact test: the offer brings the side and the field its yes opens; anything else is dropped', async () => {
+  const realFetch = globalThis.fetch
+  let sent = null
+  const answer = (extra) => async (url, init) => {
+    sent = JSON.parse(init.body)
+    return new Response(JSON.stringify({
+      show: true, arm: 'proactive', message: 'Hi', quick_replies: ['Yes, send me fares', 'Not now'], ...extra,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  const ask = () => fetchProactiveOffer('https://api.test', {
+    visitor_id: 'visitor-0123456789', trigger: 'kayak', trip: null, site: 'bbc', device: 'phone', opens_field: true,
+  }, 3500)
+  const confirm = (field) => ({ message: 'Got it', buttons: [{ kind: 'sms', label: 'Text message' }], ...(field ? { field } : {}) })
+  try {
+    globalThis.fetch = answer({ confirm: confirm('sms'), contact_test: 'field' })
+    const field = await ask()
+    assert.equal(sent.opens_field, true, 'the widget says it opens the field, so it takes part')
+    assert.equal(field.confirm.field, 'sms')
+    assert.equal(field.contact_test, 'field')
+    // The choice side: the side named, no field.
+    globalThis.fetch = answer({ confirm: confirm(null), contact_test: 'choice' })
+    const choice = await ask()
+    assert.equal(choice.confirm.field, undefined)
+    assert.equal(choice.contact_test, 'choice')
+    // Neither a field nor a side the widget doesn't know.
+    globalThis.fetch = answer({ confirm: confirm('whatsapp'), contact_test: 'agent' })
+    const odd = await ask()
+    assert.equal(odd.confirm.field, undefined)
+    assert.equal(odd.contact_test, undefined)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('contact test: the opening keeps its side and its field across pages; anything else is dropped', () => {
+  const o = {
+    trigger: 'reader', message: 'Hi', quickReplies: ['Get a fare quote', 'Not now'], trip: null, surface: 'panel', shownAt: 5,
+    confirm: { message: 'Sure.', buttons: [{ kind: 'sms', label: 'Text message' }], field: 'email' }, contactTest: 'field',
+  }
+  const back = readKeptOpening(JSON.parse(JSON.stringify(keepOpening(o))))
+  assert.deepEqual(back.confirm, o.confirm)
+  assert.equal(back.contactTest, 'field')
+  const odd = readKeptOpening({ ...keepOpening(o), confirm: { ...o.confirm, field: 'fax' }, contactTest: 'agent' })
+  assert.equal(odd.confirm.field, undefined)
+  assert.equal(odd.contactTest, undefined)
+})
+
+test('contact test: on the field side the yes opens the field at once, the other channel one tap away', () => {
+  const send = chat.slice(chat.indexOf('const sendMessage = async'), chat.indexOf('const handleSend'))
+  // The field opens with the words that ask for it, after the answer and its buttons are on screen.
+  const opened = send.indexOf('if (opts.local.field) openChannel(opts.local.field, true)')
+  assert.ok(opened > send.indexOf('setQuickReplies(opts.local.buttons.map('), 'the buttons stay under the field')
+  assert.ok(opened < send.indexOf('await getTurnstileToken()'), 'on screen before the conversation is created')
+  // An answer that was not the server's after all takes its field with it: the model's turn, a failed send.
+  assert.equal(send.split('if (opts?.local?.field) closeAutoField()').length, 3)
+  // The side and the field go back at /chat/init.
+  assert.match(send, /\.\.\.\(opening\.contactTest \? \{ contact_test: opening\.contactTest \} : \{\}\),/)
+  assert.match(send, /\.\.\.\(opening\.confirm\?\.field \? \{ field: opening\.confirm\.field \} : \{\}\),/)
+  // Back from a field that opened by itself shows the answer's buttons; from a tapped channel, the two channels.
+  assert.match(chat, /setQuickReplies\(q => \(q && q\.length \? q : \[/)
+  // In a field that opened by itself, the other channel: the same field side.
+  assert.match(chat, /\{autoField && \(\s+<button\s+type="button"\s+class="bw-channel__other"\s+onClick=\{\(\) => openChannel\(channelForm === 'sms' \? 'email' : 'sms', true\)\}/)
+  assert.match(chat, /\{channelForm === 'sms' \? w\.otherEmail : w\.otherSms\}/)
+  // PostHog hears whether the field opened by itself and the side, never the contact.
+  assert.match(chat, /posthog\?\.capture\('chat_channel_opened', \{ channel: kind, tunnel, \.\.\.\(auto \? \{ auto: true \} : \{\}\), \.\.\.fieldTestRef\.current \}\)/)
+  assert.match(chat, /\.\.\.\(autoField \? \{ auto: true \} : \{\}\), \.\.\.fieldTestRef\.current \}\)/)
+  // The offer says this widget opens the field, from every door that asks for a card.
+  assert.equal(hook.split('opens_field: true').length, 3)
+  for (const ev of ["capture('proactive_shown', {", "capture('proactive_engaged', {"]) {
+    const at = hook.indexOf(ev)
+    assert.ok(at > 0 && hook.slice(at, at + 900).includes('contactTestProps('), ev)
+  }
+})
+
+test('contact test: the other channel is named in every language the widget speaks', () => {
+  assert.equal(words('en').otherSms, 'Text me instead')
+  assert.equal(words('en').otherEmail, 'Email me instead')
+  for (const lang of ['es', 'fr']) {
+    assert.ok(words(lang).otherSms && words(lang).otherEmail, lang)
+    assert.notEqual(words(lang).otherSms, words('en').otherSms, lang)
+  }
+  assert.match(WIDGET_CSS, /\.bw-channel__other \{/)
+})

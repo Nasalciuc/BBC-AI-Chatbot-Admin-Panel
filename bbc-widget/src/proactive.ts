@@ -21,7 +21,9 @@
  */
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexWaitLeftMs, holdAlex, noteAlexShown, noteSide } from './agentTest'
-import { ensureVisitorId, fetchProactiveOffer, offerMeasures, type OfferConfirm, type OfferTiming } from './api'
+import {
+  ensureVisitorId, fetchProactiveOffer, offerMeasures, type ContactTestSide, type OfferConfirm, type OfferTiming,
+} from './api'
 import type { ChannelKind, ChatButton } from './channel'
 import brand from './config'
 import { browserLanguage, timeZone } from './i18n'
@@ -73,6 +75,14 @@ export interface ProactiveOpening {
   /** The channel the client picked before the chat opened (the card's channel button, the pill, the row):
    *  the chat opens on its field, and the conversation starts with what they leave there. */
   firstChannel?: ChannelKind
+  /** The owner's contact test (22 Nov): this visitor's side as the server named it, sent back at /chat/init and
+   *  on the card's events. On the field side `confirm.field` is the field the yes opens at once. */
+  contactTest?: ContactTestSide
+}
+
+/** The contact test's side on a PostHog event, when the card named one. */
+export function contactTestProps(o: Pick<ProactiveOpening, 'contactTest'> | null | undefined): { contact_test?: ContactTestSide } {
+  return o?.contactTest ? { contact_test: o.contactTest } : {}
 }
 
 // The arm an offer answer names while the owner's agent-first test keeps Alex quiet (agent_first_test.HELD_ARM).
@@ -598,6 +608,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(lang ? { lang } : {}),
         device,
         ...(rowAt ? { place: 'form' as const } : {}),
+        // This widget opens the contact field with the yes's answer (the owner's contact test, ChatWindow).
+        opens_field: true,
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
       // The owner's agent-first test: the side this answer names is the visit's, on every event from here on.
       if (res) noteSide(res.test)
@@ -671,6 +683,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.buttons ? { buttons: res.buttons } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
         ...(res.headline && res.card_text ? { headline: res.headline, cardText: res.card_text } : {}),
+        ...(res.contact_test ? { contactTest: res.contact_test } : {}),
       }
       if (row) setRowForm(rowAt)
       ssSet(DONE_KEY, 'shown')
@@ -686,6 +699,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.lang ? { lang: res.lang } : {}),
         // The phone card led with the trip (ADR A3): measured against the cards that did not.
         ...(surface === 'card' && opening.headline ? { titled: true } : {}),
+        ...contactTestProps(opening),
       })
     }
 
@@ -842,6 +856,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
         site: brand.id,
         ...(o.variant ? { variant: o.variant } : {}),
+        ...contactTestProps(o),
       })
     },
     noteOpening: async (stillWanted, door = 'note') => {
@@ -851,7 +866,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const res = await fetchProactiveOffer(
         apiUrl, {
           visitor_id: ensureVisitorId(), trigger: 'note', trip, site: brand.id, ...(lang ? { lang } : {}),
-          device: matches(PHONE) ? 'phone' : 'computer',
+          device: matches(PHONE) ? 'phone' : 'computer', opens_field: true,
         }, OFFER_TIMEOUT_MS,
         (t) => took.push(t),
       )
@@ -877,6 +892,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.variant ? { variant: res.variant } : {}),
         ...(res.confirm ? { confirm: res.confirm } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
+        ...(res.contact_test ? { contactTest: res.contact_test } : {}),
       }
       // The visitor opened the chat: no card follows in this visit (the moments' guard reads this).
       ssSet(DONE_KEY, 'chat')
@@ -886,7 +902,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // chats that started (the server counts those).
       posthog?.capture('proactive_shown', {
         trigger: 'note', surface: 'panel', door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
-        ...(res.variant ? { variant: res.variant } : {}), ...offerMeasures(took[0]),
+        ...(res.variant ? { variant: res.variant } : {}), ...offerMeasures(took[0]), ...contactTestProps(opening),
       })
       return opening
     },

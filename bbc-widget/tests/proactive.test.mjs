@@ -517,8 +517,9 @@ test('the note\'s variant goes out with the answer and with its measurements, an
     assert.equal(offerVariant(bad), undefined, String(bad))
   }
   assert.match(api, /const variant = offerVariant\(data\.variant\)/)
-  assert.match(hook, /trigger: 'note', message: res\.message[^}]*shownAt: Date\.now\(\),\s*\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\),\s*\.\.\.\(res\.confirm \? \{ confirm: res\.confirm \} : \{\}\),\s*\.\.\.\(res\.lang \? \{ lang: res\.lang \} : \{\}\),\s*\}/)
-  assert.match(chat, /proactive: \{\s+trigger: opening\.trigger, \.\.\.\(opening\.variant \? \{ variant: opening\.variant \} : \{\}\),\s+\.\.\.\(opening\.lang \? \{ lang: opening\.lang \} : \{\}\),\s+\}/)
+  assert.match(hook, /trigger: 'note', message: res\.message[^}]*shownAt: Date\.now\(\),\s*\.\.\.\(res\.variant \? \{ variant: res\.variant \} : \{\}\),\s*\.\.\.\(res\.confirm \? \{ confirm: res\.confirm \} : \{\}\),\s*\.\.\.\(res\.lang \? \{ lang: res\.lang \} : \{\}\),\s*\.\.\.\(res\.contact_test \? \{ contactTest: res\.contact_test \} : \{\}\),\s*\}/)
+  // The owner's contact test (22 Nov): the side the offer named, and the field its yes opens, go back with the answer.
+  assert.match(chat, /proactive: \{\s+trigger: opening\.trigger, \.\.\.\(opening\.variant \? \{ variant: opening\.variant \} : \{\}\),\s+\.\.\.\(opening\.lang \? \{ lang: opening\.lang \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+\.\.\.\(opening\.contactTest \? \{ contact_test: opening\.contactTest \} : \{\}\),\s+\.\.\.\(opening\.confirm\?\.field \? \{ field: opening\.confirm\.field \} : \{\}\),\s+\}/)
   for (const ev of ['proactive_dismissed', 'proactive_engaged']) {
     const all = payloads(ev)
     assert.equal(all.length, 1, ev)
@@ -586,7 +587,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })
@@ -938,7 +939,7 @@ test('a tap on the 10 s note opens the chat with no form; without an answer in t
 
 test('the note asks the server for its words with trigger "note", the brand and the page, and gives up in time', () => {
   const body = hook.slice(hook.indexOf("noteOpening: async (stillWanted, door = 'note') =>"))
-  assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id, \.\.\.\(lang \? \{ lang \} : \{\}\),\s+device: matches\(PHONE\) \? 'phone' : 'computer',\s+\}, OFFER_TIMEOUT_MS,\s+\(t\) => took\.push\(t\),\s+\)/)
+  assert.match(body, /fetchProactiveOffer\(\s+apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger: 'note', trip, site: brand\.id, \.\.\.\(lang \? \{ lang \} : \{\}\),\s+device: matches\(PHONE\) \? 'phone' : 'computer', opens_field: true,\s+\}, OFFER_TIMEOUT_MS,\s+\(t\) => took\.push\(t\),\s+\)/)
   // No answer in time: counted with how long it waited and why (the visitor gets the form); switched off: no word.
   assert.match(body, /if \(!res\) \{[\s\S]*?posthog\?\.capture\('proactive_note_unanswered', \{\s+door, device: [^\n]+, site: brand\.id, \.\.\.offerMeasures\(took\[0\]\),\s+\}\)\s+return null\s+\}\s+if \(!res\.show \|\| !res\.message\) return null/)
   // A turn the visitor took back meanwhile records nothing, not even the missing answer (CodeRabbit #269): Widget
