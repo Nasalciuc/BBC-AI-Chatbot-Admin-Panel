@@ -138,6 +138,9 @@ async def beat(user_id: str, viewing_conversation_id: Optional[str] = None) -> O
         # ... and nothing changed elsewhere: the row (v, renewed by forget() in any process) and the viewing id
         # Supabase holds (another process may have written another one since).
         and shared is not None and shared[0] == last[3] and shared[1] == viewing
+        # ... nor here while Redis was read: a forget() during that await (a role changed) dropped this row,
+        # even if Redis answered with the version from before it (CodeRabbit #273).
+        and _GEN.get(user_id, 0) == gen
     )
     wrote = False
     if reusable:

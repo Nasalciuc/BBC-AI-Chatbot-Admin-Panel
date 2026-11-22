@@ -1,6 +1,6 @@
 """An in-memory stand-in for redis.asyncio, enough for the code that coordinates through Redis.
 
-Strings with NX/PX/EX and expiry, sorted sets, hashes, lists, counters, pipelines and the
+Strings with NX/PX/EX and expiry, sets, sorted sets, hashes, lists, counters, pipelines and the
 Lua scripts the app sends (matched by text, never run). `down = True` makes every call
 raise ConnectionError, as a Redis that does not answer would. A test whose code sends a
 script the fake does not know fails loudly instead of passing on a guess.
@@ -106,6 +106,32 @@ class FakeRedis:
     async def keys(self, pattern: str = "*") -> list[str]:
         self._check("keys")
         return [k for k in list(self.kv) if self._alive(k) and fnmatch.fnmatchcase(k, pattern)]
+
+    # ── sets ─────────────────────────────────────────────────
+    def _set(self, key: str) -> set:
+        if not self._alive(key):
+            self.kv[key] = set()
+        return self.kv[key]
+
+    async def sadd(self, key: str, *members: Any) -> int:
+        self._check("sadd")
+        s = self._set(key)
+        added = sum(1 for m in members if str(m) not in s)
+        s.update(str(m) for m in members)
+        return added
+
+    async def smembers(self, key: str) -> set:
+        self._check("smembers")
+        return set(self.kv[key]) if self._alive(key) else set()
+
+    async def srem(self, key: str, *members: Any) -> int:
+        self._check("srem")
+        if not self._alive(key):
+            return 0
+        s = self.kv[key]
+        n = sum(1 for m in members if str(m) in s)
+        s.difference_update(str(m) for m in members)
+        return n
 
     # ── sorted sets ──────────────────────────────────────────
     def _zset(self, key: str) -> dict[str, float]:

@@ -459,3 +459,22 @@ def test_prices_decimals_and_dates_survive_the_guard(text):
 def test_a_phone_shaped_like_a_bad_date_is_still_removed():
     out, removed = output_guard._scrub("call 12.34.5678 now")
     assert removed == ["12.34.5678"]
+
+
+# ── CodeRabbit #273 round 2: two numbers in one match ──
+
+
+@pytest.mark.parametrize("text", ["442079460958\n12079460958", "442079460958 12079460958", "+44 20 7946 0958 +1 207 946 0958"])
+def test_a_foreign_number_glued_to_the_clients_own_is_still_foreign(text):
+    """The phone pattern joins two numbers a space or a line apart into one match; the client's own number at
+    its end must not exempt the foreign one before it."""
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == ["phone"]
+
+
+@pytest.mark.parametrize("text, own", [
+    ("12079460958", ("12079460958",)),            # the number itself
+    ("call 2079460958", ("12079460958",)),        # without its country code
+    ("call +1 207 946 0958", ("2079460958",)),    # with it, the client kept it without
+])
+def test_the_clients_own_number_alone_is_still_theirs(text, own):
+    assert output_guard.foreign_contact_kinds(text, also_own=own) == []

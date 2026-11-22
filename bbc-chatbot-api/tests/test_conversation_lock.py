@@ -268,3 +268,22 @@ def test_a_redis_url_redis_py_cannot_read_is_no_crash():
             assert "client" in (redis_client.REDIS_HEALTH["last_error"] or "")
     finally:
         redis_client.set_client_for_tests(None)
+
+
+def test_a_client_that_cannot_be_made_is_not_made_again_before_the_cooldown():
+    """Each heartbeat asked for the client again, and logged again (CodeRabbit #273): after one failure the
+    construction waits out COOLDOWN_S like an unreachable Redis, counted as a client error, not a command."""
+    from app.infra import redis_client
+
+    redis_client.set_client_for_tests(None)
+    before = dict(redis_client.REDIS_HEALTH)
+    try:
+        with patch("config.settings.settings.redis_url", "redis://localhost:6379/0?socket_timeout=soon"), \
+                patch("redis.asyncio.from_url", side_effect=ValueError("bad option")) as made:
+            assert redis_client.get_redis() is None
+            assert redis_client.get_redis() is None
+            assert made.call_count == 1, "the second caller is turned away by the cooldown"
+            assert redis_client.REDIS_HEALTH["client_errors"] == before["client_errors"] + 1
+            assert redis_client.REDIS_HEALTH["command_errors"] == before["command_errors"]
+    finally:
+        redis_client.set_client_for_tests(None)

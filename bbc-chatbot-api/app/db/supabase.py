@@ -681,6 +681,15 @@ _LIST_COLUMNS_SUPERVISOR = (
 )
 _LIST_COLUMNS = _LIST_COLUMNS_BASE + _LIST_COLUMNS_SUPERVISOR
 
+
+def _list_columns(full: bool, with_queue: bool) -> str:
+    """The chat list's projection: the legacy one, or the supervisor one with queued_at only while the column
+    is there (034). Without queued_at the rest of the supervisor columns stay: a missing queued_at must not
+    cost the list its chat numbers and its tags (CodeRabbit #273)."""
+    if not full:
+        return _LIST_COLUMNS_BASE
+    return _LIST_COLUMNS if with_queue else _LIST_COLUMNS.replace(",queued_at", "")
+
 # None = not probed yet, True = migrations applied, False = temporarily
 # downgraded after a real missing-column error. Transient network/HTTP errors
 # must NEVER flip this — that froze activity clocks process-wide and tagged
@@ -810,17 +819,24 @@ _decoy_ok: dict[str, bool] = {}
 _decoy_downgraded_at: dict[str, float] = {}
 
 
-def _decoy_filterable(table: str) -> bool:
-    from app.flags import flag
-
-    if not flag("DECOYS_ENABLED", True):
-        return False
+def _decoy_column_readable(table: str) -> bool:
+    """True unless a real missing-column error for <table>.is_decoy is in TTL, whatever DECOYS_ENABLED says:
+    a reader that must never act on a decoy (the follow-up lottery, the QA sample) reads the marker whenever
+    the column is there. A decoy stored while the switch was on stays one after it is turned off."""
     if _decoy_ok.get(table) is not False:
         return True
     at = _decoy_downgraded_at.get(table)
     if at is None:
         return True
     return time.time() - at >= OPTIONAL_COLUMNS_RETRY_SECONDS
+
+
+def _decoy_filterable(table: str) -> bool:
+    from app.flags import flag
+
+    if not flag("DECOYS_ENABLED", True):
+        return False
+    return _decoy_column_readable(table)
 
 
 def _downgrade_decoy(table: str, err: Exception) -> None:
@@ -1226,7 +1242,7 @@ async def get_conversations(
         for attempt in range(4):
             try:
                 res = await _run_sync(
-                    lambda: _query(_LIST_COLUMNS if full else _LIST_COLUMNS_BASE, full),
+                    lambda columns=_list_columns(full, use_queue), with_sup=full: _query(columns, with_sup),
                     label="list",
                 )
                 break
@@ -1423,7 +1439,9 @@ async def get_blind_inputs_many(conv_ids: list[str]) -> dict[str, dict]:
     the blind state here, fresh, rather than from the leads universe it may have cached for 20 s: a chat
     that entered the shared line a moment ago is blind already (CodeRabbit #270). A chat that no longer
     exists is simply absent. A failed read RAISES: the caller fails closed."""
-    cols = "id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id"
+    # closed_by_agent_id too: the offers queue names a closed lead's owner from it, fresh, and only while closed.
+    cols = ("id, status, mode, assigned_agent_id, engaged_agent_id:metadata->>engaged_agent_id, "
+            "closed_by_agent_id:metadata->>closed_by_agent_id")
     ids = list(dict.fromkeys(i for i in conv_ids if i))
     out: dict[str, dict] = {}
     use_queued_at = _queued_at_column_available()
@@ -5582,7 +5600,9 @@ async def _universe_convs(db_client) -> list[dict]:
     is_decoy (038) it is read without that column, as the chat list, get_blind_inputs and the decoy helpers
     do (a row without is_decoy reads as no decoy); any other failure raises."""
     use_queued_at = _queued_at_column_available()
-    use_decoy = _decoy_filterable("conversations")
+    # The marker whenever the column exists, not only while DECOYS_ENABLED is on: the lottery and the QA sample
+    # skip every row it marks (CodeRabbit #273).
+    use_decoy = _decoy_column_readable("conversations")
 
     def read(with_queued_at: bool, with_decoy: bool):
         return _select_pages(lambda: db_client.table("conversations")
@@ -6780,14 +6800,16 @@ async def get_open_task_owners(conversation_ids: list[str]) -> Optional[dict[str
     try:
         db_client = get_client()
         # Every page: PostgREST cuts a long answer at max-rows without an error, and a chat whose open task
-        # fell off would read as nobody's.
-        rows = await _select_pages(
-            lambda: db_client.table("tasks").select("conversation_id, assignee_id")
+        # fell off would read as nobody's. After the last id seen, not at an offset: a task done between two
+        # pages would shift the next one and the task at the seam would never be read (CodeRabbit #273).
+        rows = await _select_after(
+            lambda: db_client.table("tasks").select("id, conversation_id, assignee_id")
             .in_("conversation_id", ids)
             .is_("done_at", "null")
             .is_("dismissed_at", "null")
             .not_.is_("assignee_id", "null")
             .order("id"),
+            key="id",
             label="lottery",
         )
         return {r["conversation_id"]: r["assignee_id"] for r in rows if r.get("conversation_id")}

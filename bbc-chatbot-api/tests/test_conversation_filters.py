@@ -309,3 +309,58 @@ def test_on_the_legacy_columns_a_chat_waiting_by_queued_at_stays_blind():
             patch.object(db, "enrich_conversations_agent_info", new=AsyncMock(side_effect=lambda r: r)):
         asyncio.run(db.get_conversations(filters={"source": "kayak"}, blind_viewer=ME))
     assert query_keeps(q.calls, waiting) is False
+
+
+# ── CodeRabbit #273 round 2: a missing queued_at costs the list only queued_at ──
+
+
+class _FailsOnceOnQueuedAt(_Recorder):
+    """The first execute answers as PostgREST does when 034 is not applied; the next ones answer."""
+
+    def __init__(self):
+        super().__init__()
+        self.executes = 0
+
+    def execute(self):
+        self.executes += 1
+        if self.executes == 1:
+            raise Exception("{'code': '42703', 'message': 'column conversations.queued_at does not exist'}")
+        return super().execute()
+
+
+def _list_selects(q, *, queue_known: bool):
+    client = MagicMock()
+    client.table.return_value = q
+    with patch.object(db, "get_client", return_value=client), \
+            patch.object(db, "_supervisor_columns_available", return_value=True), \
+            patch.object(db, "_queued_at_column_available", return_value=queue_known), \
+            patch.object(db, "_downgrade_queued_at") as queue_down, \
+            patch.object(db, "_downgrade_supervisor_columns") as sup_down, \
+            patch.object(db, "_get_lead_completeness_inputs", new=AsyncMock(return_value={})), \
+            patch.object(db, "enrich_conversations_agent_info", new=AsyncMock(side_effect=lambda r: r)):
+        asyncio.run(db.get_conversations())
+    return [a[0] for n, a, _ in q.calls if n == "select"], queue_down, sup_down
+
+
+def test_without_queued_at_the_list_keeps_its_supervisor_columns():
+    """034 known to be missing: queued_at is not asked for, the chat numbers and the clocks still are."""
+    selects, _, sup_down = _list_selects(_Recorder(), queue_known=False)
+    assert len(selects) == 1
+    assert "queued_at" not in selects[0] and "chat_number" in selects[0] and "last_user_message_at" in selects[0]
+    sup_down.assert_not_called()
+
+
+def test_a_queued_at_error_retries_without_it_and_never_drops_the_supervisor_columns():
+    """The first read finds 034 missing: the retry leaves out queued_at alone, and the supervisor columns stay
+    (before, the retry asked for queued_at again and the second failure downgraded them all)."""
+    q = _FailsOnceOnQueuedAt()
+    selects, queue_down, sup_down = _list_selects(q, queue_known=True)
+    assert len(selects) == 2 and "queued_at" in selects[0]
+    assert "queued_at" not in selects[1] and "chat_number" in selects[1]
+    queue_down.assert_called_once()
+    sup_down.assert_not_called()
+
+
+def test_the_list_still_asks_for_queued_at_while_it_is_there():
+    selects, _, _ = _list_selects(_Recorder(), queue_known=True)
+    assert len(selects) == 1 and "queued_at" in selects[0], "rule 5: the projection with the column, unchanged"

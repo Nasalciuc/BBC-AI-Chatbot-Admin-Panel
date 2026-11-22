@@ -472,3 +472,156 @@ def test_without_the_callbacks_nothing_changes():
     rows = [_row("theirs", assigned_agent_id=B, visitor_email="theirs@example.com")]
     row = build_offers(rows, now=NOW)["waiting"][0]
     assert row["email"] == "theirs@example.com" and not row["hidden"] and not row["blind"]
+
+
+# ── CodeRabbit #273 round 2: a give that cannot be undone, decoys, open tasks ──
+
+
+@pytest.mark.asyncio
+async def test_a_give_neither_clocked_nor_given_back_is_kept_and_undone_next_run(world):
+    """The swap landed, the 15-minute clock was not saved, and giving the chat back failed too: nothing else
+    would ever find it (assigned: no candidate; no pending clock: never taken back). It is kept in Redis, and
+    the next run gives it back."""
+    state, m, r = world
+    m["patch_meta"].return_value = False
+    m["release"].return_value = False
+    out = await lot.run_lead_lottery()
+    agent = m["assign"].await_args.args[1]
+    assert out["assigned"] == 0 and lot.LOTTERY_HEALTH["release_failed"] == 1
+    assert await r.smembers(lot.UNWIND_KEY) == {f"c1 {agent}"}
+
+    # The next run: the database answers again; the chat is still that agent's, with no clock.
+    m["patch_meta"].return_value = True
+    m["release"].reset_mock(return_value=True)
+    m["release"].return_value = True
+    m["conv"].return_value = {"id": "c1", "assigned_agent_id": agent, "metadata": {"followup": None}}
+    state["rows"] = []
+    await lot.run_lead_lottery()
+    m["release"].assert_awaited_once_with("c1", agent)
+    assert lot.LOTTERY_HEALTH["unwound"] == 1 and await r.smembers(lot.UNWIND_KEY) == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conv", [
+    {"id": "c1", "assigned_agent_id": A, "metadata": {"followup": {"state": "pending", "agent_id": A}}},
+    {"id": "c1", "assigned_agent_id": B, "metadata": {}},
+    {"id": "c1", "assigned_agent_id": None, "metadata": {}},
+])
+async def test_a_kept_give_with_nothing_left_to_undo_is_dropped_untouched(world, conv):
+    """The clock was saved after all, a manager moved the chat, or it is nobody's: nothing is given back."""
+    state, m, r = world
+    await r.sadd(lot.UNWIND_KEY, f"c1 {A}")
+    m["conv"].return_value = conv
+    state["rows"] = []
+    await lot.run_lead_lottery()
+    m["release"].assert_not_awaited()
+    assert await r.smembers(lot.UNWIND_KEY) == set() and lot.LOTTERY_HEALTH["unwound"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conv, released", [(None, True), ({"id": "c1", "assigned_agent_id": A, "metadata": {}}, False)])
+async def test_a_kept_give_stays_kept_while_it_cannot_be_read_or_undone(world, conv, released):
+    state, m, r = world
+    await r.sadd(lot.UNWIND_KEY, f"c1 {A}")
+    m["conv"].return_value = conv
+    m["release"].return_value = released
+    state["rows"] = []
+    await lot.run_lead_lottery()
+    assert await r.smembers(lot.UNWIND_KEY) == {f"c1 {A}"}, "the next run tries again"
+
+
+def test_the_universe_reads_the_decoy_marker_with_decoys_switched_off(monkeypatch):
+    """A decoy stored while DECOYS_ENABLED was on is still never given (nor sampled) after it is turned off."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    selects = []
+
+    class _Q:
+        def select(self, cols, *a, **k):
+            selects.append(cols)
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def range(self, *a, **k):
+            return self
+
+        def execute(self):
+            res = MagicMock()
+            res.data = []
+            return res
+
+    client = MagicMock()
+    client.table.return_value = _Q()
+    monkeypatch.setenv("DECOYS_ENABLED", "false")
+    with patch.object(db, "_queued_at_column_available", return_value=True):
+        asyncio.run(db._universe_convs(client))
+    assert selects and "is_decoy" in selects[0]
+
+
+def test_open_tasks_are_read_after_the_last_id_so_a_task_done_between_pages_hides_nobody(monkeypatch):
+    """Five open tasks, pages of two; the first task is done while the first page is read. At an offset the
+    third task would fall into the seam and its chat would read as nobody's."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    store = [{"id": i, "conversation_id": f"c{i}", "assignee_id": A} for i in range(1, 6)]
+
+    class _Tasks:
+        def __init__(self):
+            self.after = self.lo = self.hi = self.n = None
+
+        def select(self, *a, **k):
+            return self
+
+        def in_(self, *a, **k):
+            return self
+
+        def is_(self, *a, **k):
+            return self
+
+        @property
+        def not_(self):
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def gt(self, key, value):
+            self.after = value
+            return self
+
+        def limit(self, n):
+            self.n = n
+            return self
+
+        def range(self, lo, hi):
+            self.lo, self.hi = lo, hi
+            return self
+
+        def execute(self):
+            rows = sorted(store, key=lambda r: r["id"])
+            if self.after is not None:
+                rows = [r for r in rows if r["id"] > self.after]
+            if self.lo is not None:
+                rows = rows[self.lo:self.hi + 1]
+            if self.n is not None:
+                rows = rows[:self.n]
+            res = MagicMock()
+            res.data = [dict(r) for r in rows]
+            if store and store[0]["id"] == 1:
+                store.pop(0)  # task 1 is done right after the first page
+            return res
+
+    client = MagicMock()
+    client.table.side_effect = lambda name: _Tasks()
+    monkeypatch.setattr(db, "_PAGE", 2)
+    with patch.object(db, "get_client", return_value=client):
+        owners = asyncio.run(db.get_open_task_owners([f"c{i}" for i in range(1, 6)]))
+    assert {"c2", "c3", "c4", "c5"} <= set(owners), owners

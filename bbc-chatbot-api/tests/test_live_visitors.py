@@ -453,7 +453,7 @@ def _request():
     return req
 
 
-def _init_patches(claim_won=True, agent_row=None, stored=True):
+def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
     row = {**SALES_DB, "avatar_url": None} if agent_row is None else agent_row
     return [
         patch("app.api.chat.is_blocked", new=AsyncMock(return_value=False)),
@@ -463,21 +463,22 @@ def _init_patches(claim_won=True, agent_row=None, stored=True):
         patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=row)),
         patch("app.services.conversation_service.db.add_message",
               new=AsyncMock(return_value={"id": "m1"} if stored else None)),
-        patch("app.db.supabase.release_live_claim", new=AsyncMock(return_value=True)),
+        patch("app.db.supabase.release_live_claim", new=AsyncMock(return_value=given_back)),
+        patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=reread)),
     ]
 
 
-async def _init(payload, claim_won=True, agent_row=None, stored=True):
+async def _init(payload, claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
     from app.api.chat import chat_init
 
-    ps = _init_patches(claim_won, agent_row, stored)
+    ps = _init_patches(claim_won, agent_row, stored, given_back, reread)
     mocks = [p.start() for p in ps]
     try:
         res = await chat_init(payload, _request(), None)
     finally:
         for p in ps:
             p.stop()
-    return res, dict(zip(["blocked", "conv", "claim", "meta", "user", "add", "give_back"], mocks))
+    return res, dict(zip(["blocked", "conv", "claim", "meta", "user", "add", "give_back", "reread"], mocks))
 
 
 @pytest.mark.asyncio
@@ -591,3 +592,47 @@ async def test_a_chat_the_agent_cannot_take_stays_the_visitors_and_is_counted(re
     assert res.conversation_id == "c1" and res.live_agent is None
     m["add"].assert_not_awaited()
     assert live_visitors.LIVE_HEALTH["tap_failed"] == 1
+
+
+# ── CodeRabbit #273 round 2: the pass's binding, a give-back that fails ──
+
+
+def test_the_id_stays_bound_while_its_own_pass_still_renews(passes):
+    """The binding lasts the pass's life and its grace: an id is never free to a stranger while the pass it was
+    handed can still renew it (bound for PASS_TTL alone, two browsers could hold passes for one id)."""
+    import time as _time
+
+    _ask()
+    left = passes.expires[f"live:passed:{VID}"] - _time.monotonic()
+    assert live_tokens.PASS_TTL < left <= live_tokens.PASS_TTL + live_tokens.PASS_GRACE
+    assert live_visitors.PASS_BINDING_S == live_tokens.PASS_TTL + live_tokens.PASS_GRACE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reread", [{"id": "c1", "assigned_agent_id": AGENT}, None])
+async def test_a_chat_that_cannot_be_given_back_stays_the_agents(redis, reread):
+    """The hello was not stored and the give-back failed: the chat is still the agent's (or can't be read), so
+    the visitor is told it is theirs, never handed an ordinary chat an agent holds in human mode."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), stored=False, given_back=False,
+                         reread=reread)
+    assert res.live_agent == "Ana" and res.live_hello
+    m["meta"].assert_awaited_once()
+    assert live_visitors.LIVE_HEALTH["release_failed"] == 1 and live_visitors.LIVE_HEALTH["tap_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_chat_that_is_no_longer_the_agents_starts_ordinary(redis):
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), stored=False, given_back=False,
+                         reread={"id": "c1", "assigned_agent_id": "someone-else"})
+    assert res.live_agent is None and res.live_hello is None
+    m["meta"].assert_not_awaited()

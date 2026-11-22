@@ -52,6 +52,10 @@ def _lua(name: str) -> str:
 
 
 PASS_LUA = _lua("pass.lua")
+# How long a visitor id stays bound to the pass it was handed: the pass's life and the grace in which it still
+# proves a renewal. Bound for less, an id would be free to anyone for the last PASS_GRACE of a pass that still
+# renews, and two browsers could hold passes for one id (CodeRabbit #273).
+PASS_BINDING_S = live_tokens.PASS_TTL + live_tokens.PASS_GRACE
 SEND_LUA = _lua("send.lua")
 TAKE_HELLO_LUA = _lua("take_hello.lua")
 RELEASE_LUA = _lua("release.lua")
@@ -124,7 +128,7 @@ async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Op
     result = 0
     try:
         result = int(await r.eval(PASS_LUA, len(keys), *keys, "1" if proven else "0",
-                                  str(live_tokens.PASS_TTL), str(PASS_NEW_PER_ADDRESS)))
+                                  str(PASS_BINDING_S), str(PASS_NEW_PER_ADDRESS)))
     except Exception as e:
         redis_failed("live pass", e)
         LIVE_HEALTH["pass_failed"] += 1
@@ -277,7 +281,8 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
     agent can't take the chat: the chat then stays an ordinary one, counted, never a failure for the visitor.
 
     Order: the agent may still take chats; the claim; the hello stored; then the presence fields. A hello that
-    cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary."""
+    cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary; a
+    chat that cannot be given back stays the agent's, and the answer says so."""
     from app.db import supabase as db
     from app.services.agent_presence import _may_take_chats
     from app.services.conversation_service import add_message
@@ -312,9 +317,19 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
         logger.error(f"[live] conv {conv_id}: the hello was not stored: {type(e).__name__}: {e}")
     if not row:
         LIVE_HEALTH["tap_failed"] += 1
-        given_back = await db.release_live_claim(conv_id, agent_id)
-        logger.error(f"[live] conv {conv_id}: the hello was not stored; the chat given back: {given_back}")
-        return {}
+        if await db.release_live_claim(conv_id, agent_id):
+            logger.error(f"[live] conv {conv_id}: the hello was not stored; the chat given back")
+            return {}
+        # Not given back: the write failed (the chat is still the agent's, in human mode) or it is no longer
+        # theirs. Only a chat that is not the agent's starts as an ordinary one; theirs, or one that can't be read,
+        # stays theirs, so the visitor and the panel agree on who answers (CodeRabbit #273).
+        LIVE_HEALTH["release_failed"] += 1
+        now_conv = await db.get_conversation_simple(conv_id)
+        if now_conv is not None and now_conv.get("assigned_agent_id") != agent_id:
+            logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat is no longer the agent's")
+            return {}
+        logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat could not be given back: "
+                     "it stays the agent's")
     now = datetime.now(timezone.utc).isoformat()
     await db.patch_conversation_presence(conv_id, {
         "engaged_agent_id": agent_id, "agent_assigned_at": now,

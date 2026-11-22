@@ -50,11 +50,19 @@ def test_management_gets_the_lead(role):
 
 def test_none_found_and_could_not_look_are_two_answers():
     r, _ = _ask("owner", found=None)
-    assert r.json() == {"success": True, "exists": False}
+    assert r.json() == {"success": True, "data": None, "count": 0, "exists": False}
     r, _ = _ask("owner", error=RuntimeError("connection to db-internal.example.test:5432 refused"))
     out = r.json()
-    assert out["success"] is False and out["exists"] is False
+    assert out["success"] is False and out["exists"] is False and out["data"] is None and out["count"] == 0
     assert "db-internal" not in out["error"], "no database text reaches the caller"
+
+
+def test_every_answer_carries_the_admin_envelope():
+    """{success, data, count, error?} on each answer (the repository's admin contract), the flat keys kept."""
+    r, _ = _ask("owner")
+    out = r.json()
+    assert out["success"] is True and out["count"] == 1 and out["data"]["visitor_name"] == "Dana Example"
+    assert out["exists"] is True and out["visitor_name"] == "Dana Example", "what the CRM side reads stays"
 
 
 # ── the query, held to rows the way PostgREST reads it ───────────

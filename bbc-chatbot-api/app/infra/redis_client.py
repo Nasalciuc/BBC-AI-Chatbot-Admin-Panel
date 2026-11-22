@@ -33,6 +33,7 @@ REDIS_HEALTH: dict[str, Any] = {
     "configured": False,
     "errors": 0,
     "command_errors": 0,
+    "client_errors": 0,       # the client could not be made from REDIS_URL: tried again after COOLDOWN_S
     "skipped_cooling_down": 0,
     "last_error": None,
 }
@@ -69,11 +70,22 @@ def get_redis(*, even_cooling_down: bool = False) -> Any:
             )
         except Exception as e:
             # A REDIS_URL redis-py cannot read (an option of the wrong type): every caller goes on without Redis,
-            # as when it is down. The URL is not logged: it can carry the password.
+            # as when it is down, and the client is not made again before COOLDOWN_S (each heartbeat would try,
+            # and log, again: CodeRabbit #273). The URL is not logged: it can carry the password.
             logger.error(f"[redis] the client could not be made from REDIS_URL: {type(e).__name__}")
-            redis_failed("client", e)
+            _client_failed(e)
             return None
     return _client
+
+
+def _client_failed(err: BaseException) -> None:
+    """The client could not be made: counted apart from the commands, and the cooldown starts, as when Redis
+    is away."""
+    global _down_until
+    REDIS_HEALTH["errors"] += 1
+    REDIS_HEALTH["client_errors"] += 1
+    REDIS_HEALTH["last_error"] = f"client: {type(err).__name__}"
+    _down_until = time.monotonic() + COOLDOWN_S
 
 
 def _unreachable(err: BaseException) -> bool:

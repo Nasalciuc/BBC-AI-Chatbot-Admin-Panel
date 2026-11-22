@@ -238,14 +238,18 @@ def build_offers(
     masked: bool = False,
     blind: Optional[Callable[[dict], bool]] = None,
     hidden: Optional[Callable[[dict], bool]] = None,
+    owner: Optional[Callable[[dict], Optional[str]]] = None,
 ) -> dict:
     """The queue: {"waiting": oldest first, "done": newest first, "counts"}.
 
     A lead waits when its chat is not support's, it has a contact and a route, it was made in the last
-    `days` days, the CRM's check did not take it for a test, and nobody marked it."""
+    `days` days, the CRM's check did not take it for a test, and nobody marked it. `owner`: whose a row is,
+    read as the caller's visibility rules read it (the offers API reads it fresh); owner_of the row itself
+    otherwise."""
     names = names or {}
     blind = blind or (lambda _row: False)
     hidden = hidden or (lambda _row: False)
+    owner = owner or owner_of
     waiting_rows: list[dict] = []
     done_rows: list[dict] = []
     for row in candidates(rows, now=now, days=days):
@@ -258,7 +262,7 @@ def build_offers(
         oldest = min(_at(r.get("created_at")) for r in group)
         wished = next((r for r in group if channels(r) or refusals(r)), main)
         state = crm_state(main)
-        agent = owner_of(main)  # given, closed by, or the one who took the chat: the rule that hides it
+        agent = owner(main)  # given, closed by, or the one who took the chat: the rule that hides it
         is_hidden = any(hidden(r) for r in group)
         row = _client_row(group, masked=masked, blind=any(blind(r) for r in group), hidden=is_hidden)
         row.update({

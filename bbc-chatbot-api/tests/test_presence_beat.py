@@ -238,3 +238,21 @@ async def test_without_redis_to_ask_every_beat_writes(fake, clock):
         clock[0] += 5
         await ap.beat("u1")
     assert w.await_count == 2, "what other processes did can't be known: as before this change"
+
+
+@pytest.mark.asyncio
+async def test_a_row_forgotten_while_redis_was_read_is_not_reused(fake, clock):
+    """forget() (a role changed) lands while the beat awaits Redis, which still answers the version from before
+    it: the row captured before the await is not reused (CodeRabbit #273)."""
+    with _writes() as w:
+        await ap.beat("u1")
+        before = await ap._shared("u1")
+        clock[0] += 5
+
+        async def read_then_forget(user_id):
+            ap.forget(user_id)
+            return before
+
+        with patch.object(ap, "_shared", new=AsyncMock(side_effect=read_then_forget)):
+            await ap.beat("u1")
+    assert w.await_count == 2, "the row from before the change is read again"

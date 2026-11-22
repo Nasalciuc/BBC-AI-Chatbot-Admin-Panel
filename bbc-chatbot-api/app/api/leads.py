@@ -295,20 +295,21 @@ async def check_existing_lead(
 
     if (user.get("role") or "") not in MANAGEMENT:
         raise HTTPException(403, "The contact check is for management")
+    # The admin envelope (success, data, count, error) on every answer; the flat keys the CRM side already reads
+    # (exists and the lead's fields) stay beside it.
     if not email and not phone:
-        return {"success": False, "error": "Must provide email or phone", "exists": False}
+        return {"success": False, "data": None, "count": 0, "error": "Must provide email or phone", "exists": False}
     existing = None
     try:
         existing = await db.get_existing_lead_by_contact(email=email, phone=phone)
     except Exception as e:
         # Logged with its cause in get_existing_lead_by_contact; the caller gets no database text.
         logger.error(f"[leads] the contact check could not run: {type(e).__name__}")
-        return {"success": False, "error": "The check could not run. Try again.", "exists": False}
+        return {"success": False, "data": None, "count": 0, "error": "The check could not run. Try again.",
+                "exists": False}
     if not existing:
-        return {"success": True, "exists": False}
-    return {
-        "success": True,
-        "exists": True,
+        return {"success": True, "data": None, "count": 0, "exists": False}
+    found = {
         "lead_id": existing.get("id"),
         "conversation_id": existing.get("conversation_id"),
         "visitor_name": existing.get("visitor_name"),
@@ -319,6 +320,7 @@ async def check_existing_lead(
         "lead_status": existing.get("status"),
         "tunnel": existing.get("tunnel"),
     }
+    return {"success": True, "data": found, "count": 1, "exists": True, **found}
 
 
 @router.patch("/leads/{lead_id}/mark-crm-created")

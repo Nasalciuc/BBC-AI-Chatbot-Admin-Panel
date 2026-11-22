@@ -99,7 +99,17 @@ async def list_offers(
         state = fresh.get(row.get("conversation_id")) if fresh is not None else None
         if state is None:
             return False, None
-        return True, state.get("assigned_agent_id") or row.get("closed_by_agent_id") or state.get("engaged_agent_id")
+        # Who closed it names the owner only while it is still closed: a chat reopened since is the agent who
+        # took it now, never the earlier closer (CodeRabbit #273). All three read fresh.
+        closed_now = state.get("status") in ("closed", "completed")
+        return True, (state.get("assigned_agent_id") or (state.get("closed_by_agent_id") if closed_now else None)
+                      or state.get("engaged_agent_id"))
+
+    def shown_owner(row: dict) -> Optional[str]:
+        """The agent the row names: the same reading as the visibility rules when the fresh read speaks for the
+        lead, the universe's otherwise (a role that reads no fresh state, or a read that failed)."""
+        known, owner = owner_now(row)
+        return owner if known else owner_of(row)
 
     def blind(row: dict) -> bool:
         if role not in db._OPERATOR_ROLES:
@@ -119,7 +129,7 @@ async def list_offers(
         return not known or (owner is not None and owner != me)
 
     built = build_offers(rows, now=now, days=days, names=names, masked=role == "supervisor", blind=blind,
-                         hidden=hidden)
+                         hidden=hidden, owner=shown_owner)
     return {
         "success": True,
         "data": {**built, "days": days, "can": {"mark": role in MARKERS}, "lottery": lead_lottery.enabled()},

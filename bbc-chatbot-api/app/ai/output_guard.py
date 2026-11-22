@@ -200,6 +200,9 @@ def foreign_contact_kinds(text: Optional[str], phone: Optional[str] = None, emai
     return [_kind(r) for r in removed if not _is_own(r, own)]
 
 
+_CC_MAX = 3  # the longest country calling code
+
+
 def _is_own(snippet: str, own: set[str]) -> bool:
     if not own:
         return False
@@ -210,7 +213,13 @@ def _is_own(snippet: str, own: set[str]) -> bool:
     if _kind(snippet) != "phone":
         return False
     d = _digits(snippet)
-    return bool(d) and any(d == o or o.endswith(d) or d.endswith(o) for o in own if o.isdigit())
+    # The same number with or without its country code (1 to 3 digits more), never more: the phone pattern
+    # joins two numbers a space or a line apart into one match, and a foreign number glued before the
+    # client's own must not pass as theirs (CodeRabbit #273).
+    return bool(d) and any(
+        d == o or (o.endswith(d) and len(o) - len(d) <= _CC_MAX) or (d.endswith(o) and len(d) - len(o) <= _CC_MAX)
+        for o in own if o.isdigit()
+    )
 
 
 def _alert_later(mode: str, kinds: dict) -> None:

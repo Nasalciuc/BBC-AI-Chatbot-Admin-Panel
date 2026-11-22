@@ -59,7 +59,17 @@ LOTTERY_HEALTH: dict[str, Any] = {
     "runs": 0, "candidates": 0, "assigned": 0, "sticky": 0, "acked": 0, "missed": 0, "manual": 0,
     "lost_race": 0, "no_one_present": 0, "skipped_unreadable": 0, "skipped_held_elsewhere": 0,
     "patch_failed": 0, "badge_failed": 0, "repaired": 0, "waiting_now": 0, "oldest_waiting_s": 0,
+    # A give whose follow-up state was not saved and whose chat could not be given back either: kept in
+    # UNWIND_KEY and given back at the start of a later run (unwound), or not even kept (unwind_lost).
+    "release_failed": 0, "unwound": 0, "unwind_lost": 0,
 }
+
+# "<conversation id> <agent id>": gives to undo. The chat was assigned but its follow-up state (the 15-minute clock)
+# was not saved, and giving it back failed too: nothing else would ever find it, an assigned chat being nobody's
+# candidate and a chat without a pending follow-up never taken back. The run holds Redis (try_job_lock skips
+# without it), so the set is there when it is needed.
+UNWIND_KEY = "lottery:unwind"
+_UNWIND_KEEP_S = 7 * 24 * 3600
 
 _rng = secrets.SystemRandom()
 
@@ -270,6 +280,8 @@ async def _run_once(now: datetime) -> dict:
     from app.services.offers_view import candidates as offer_candidates, group_by_client
 
     LOTTERY_HEALTH["runs"] += 1
+    if await _unwind_kept():
+        db.invalidate_leads_universe()
     rows = await db.get_leads_universe()
     missed = await _take_back_unconfirmed(rows, now)
 
@@ -359,13 +371,74 @@ async def _give(row: dict, agent: str, how: str, now: datetime) -> bool:
             # The swap landed but the follow-up state did not: an assignment without its 15-minute clock would
             # never come back. It is given back at once; the next run tries again.
             LOTTERY_HEALTH["patch_failed"] += 1
-            back = await db.release_closed_if_agent(cid, agent)
-            logger.error(f"[lottery] {cid}: its follow-up state was not saved, the chat given back: {back}")
+            if await db.release_closed_if_agent(cid, agent):
+                logger.error(f"[lottery] {cid}: its follow-up state was not saved, the chat given back")
+                return False
+            # Not given back either: kept, so that a later run gives it back (CodeRabbit #273).
+            LOTTERY_HEALTH["release_failed"] += 1
+            kept = await _keep_unwind(cid, agent)
+            logger.error(f"[lottery] {cid}: its follow-up state was not saved and the chat could not be given back; "
+                         + ("a later run gives it back" if kept else "NOT kept to give back: check it by hand"))
             return False
     await db.log_audit(None, None, "followup_assigned", "conversations", cid, {"by": how, "agent_id": agent})
     await _badge(agent, add=cid)
     logger.info(f"[lottery] {cid} -> {agent} ({how})")
     return True
+
+
+async def _keep_unwind(cid: str, agent: str) -> bool:
+    """Keep a give to undo in UNWIND_KEY. False when Redis would not keep it (counted, the caller logs)."""
+    r = get_redis()
+    if r is not None:
+        try:
+            await r.sadd(UNWIND_KEY, f"{cid} {agent}")
+            await r.expire(UNWIND_KEY, _UNWIND_KEEP_S)
+            return True
+        except Exception as e:
+            redis_failed("lottery unwind", e)
+            logger.error(f"[lottery] {cid}: the give to undo was not kept ({type(e).__name__}: {e})")
+    LOTTERY_HEALTH["unwind_lost"] += 1
+    return False
+
+
+async def _unwind_kept() -> int:
+    """Give back the chats kept in UNWIND_KEY, each only while it is still that agent's and still has no
+    pending follow-up (the clock may have been saved after all, or a manager moved the chat: then there is
+    nothing to undo). A read or a write that fails leaves the entry for the next run. How many were given back."""
+    from app.db import supabase as db
+
+    r = get_redis()
+    if r is None:
+        return 0
+    try:
+        kept = await r.smembers(UNWIND_KEY) or set()
+    except Exception as e:
+        redis_failed("lottery unwind read", e)
+        logger.warning(f"[lottery] the gives to undo were not read ({type(e).__name__}: {e}); next run")
+        return 0
+    n = 0
+    for entry in sorted(kept):
+        cid, _, agent = str(entry).partition(" ")
+        if cid and agent:
+            async with conversation_lock("followup", cid):
+                conv = await db.get_conversation_simple(cid)
+                if conv is None:
+                    continue  # not read (or gone): kept for the next run
+                meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+                f = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
+                clocked = f.get("state") == "pending" and f.get("agent_id") == agent
+                if conv.get("assigned_agent_id") == agent and not clocked:
+                    if not await db.release_closed_if_agent(cid, agent):
+                        continue  # still not given back: the next run tries again
+                    LOTTERY_HEALTH["unwound"] += 1
+                    n += 1
+                    logger.warning(f"[lottery] {cid}: the give whose clock was not saved is undone")
+        try:
+            await r.srem(UNWIND_KEY, entry)
+        except Exception as e:
+            redis_failed("lottery unwind done", e)
+            logger.warning(f"[lottery] {cid}: undone, but still kept ({type(e).__name__}): next run reads it again")
+    return n
 
 
 async def _take_back_unconfirmed(rows: list[dict], now: datetime) -> int:

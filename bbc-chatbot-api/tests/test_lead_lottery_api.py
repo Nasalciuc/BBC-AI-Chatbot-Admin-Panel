@@ -57,6 +57,7 @@ def _universe(rows, now=None):
             r = by_id.get(i, {})
             out[i] = {"id": i, "status": r.get("conversation_status", "closed"), "mode": r.get("conversation_mode"),
                       "assigned_agent_id": r.get("assigned_agent_id"), "engaged_agent_id": r.get("engaged_agent_id"),
+                      "closed_by_agent_id": r.get("closed_by_agent_id"),
                       **((now or {}).get(i) or {})}
         return out
 
@@ -85,6 +86,28 @@ def test_a_lead_whose_owner_now_cannot_be_read_keeps_its_contact(lottery_on):
             patch.object(db, "get_blind_inputs_many", new=AsyncMock(side_effect=RuntimeError("down"))):
         row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
     assert row["email"] is None
+
+
+def test_a_chat_reopened_since_it_was_closed_is_the_agent_on_it_now(lottery_on):
+    """Closed by another agent, reopened and taken by me: who closed it no longer names the owner, the fresh
+    status says it is not closed (CodeRabbit #273)."""
+    with _universe([_lead(closed_by_agent_id=OTHER)],
+                   now={C1: {"status": "active", "mode": "human", "engaged_agent_id": ME}}):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert not row["hidden"] and row["agent_name"] == "Me Agent"
+
+
+def test_a_closed_chat_is_still_its_closers(lottery_on):
+    with _universe([_lead(closed_by_agent_id=OTHER)]):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert row["hidden"] and row["agent_name"] == "Other Agent"
+
+
+def test_the_row_names_the_owner_the_rules_read_now_not_the_cached_one(lottery_on):
+    """Cached as mine, moved to another agent since: hidden from me, and named as theirs (CodeRabbit #273)."""
+    with _universe([_lead(assigned_agent_id=ME)], now={C1: {"assigned_agent_id": OTHER}}):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert row["hidden"] and row["agent_id"] == OTHER and row["agent_name"] == "Other Agent"
 
 
 def test_an_engaged_agent_is_named_as_the_owner(lottery_on):
