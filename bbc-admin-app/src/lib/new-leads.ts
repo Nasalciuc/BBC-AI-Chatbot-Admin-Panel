@@ -26,9 +26,11 @@ export function leadToAnnounce(b: LeadBeat): string | null {
   return b.newest
 }
 
-/** What has been seen after this beat. The newest's time when the server says it; none given (a count of 0)
- *  sets the baseline at 0, so the next lead is news; a count without its newest (the read failed) keeps what
- *  was seen, so the lead is announced when the read comes back (CodeRabbit #273). */
+/** What has been seen after this beat. The newest's time when the server says it. None given (a count of 0)
+ *  keeps what was seen, 0 at sign-in: the next lead is news all the same, because the server scores every lead
+ *  after the last one given to this agent, empty badge or not (bbc-chatbot-api lead_lottery.BADGE_ADD_LUA, its
+ *  floor). A count without its newest (the read failed) keeps what was seen too, so the lead is announced when
+ *  the read comes back (CodeRabbit #273). */
 export function nextSeen(seen: number | null, count: number | null, newestAt: number | null): number | null {
   if (newestAt !== null) return Math.max(seen ?? newestAt, newestAt)
   if (count === 0) return seen ?? 0
