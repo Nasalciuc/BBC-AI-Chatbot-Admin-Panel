@@ -304,3 +304,13 @@ def compare_and_delete(fake: FakeRedis, keys: list[str], args: list[str]) -> int
         fake.expires.pop(key, None)
         return 1
     return 0
+
+
+def badge_add(fake: FakeRedis, keys: list[str], args: list[str]) -> str:
+    """What lead_lottery.BADGE_ADD_LUA does: the lead scored strictly after the badge's newest."""
+    z = fake._zset(keys[0])
+    score = float(args[1])
+    if z and max(z.values()) >= score:
+        score = max(z.values()) + 0.001
+    z[str(args[0])] = score
+    return repr(score)

@@ -9,7 +9,7 @@ import pytest
 from app.infra import redis_client
 from app.services import conversation_lock as cl
 from app.services import lead_lottery as lot
-from tests.fake_redis import FakeRedis, compare_and_delete
+from tests.fake_redis import FakeRedis, badge_add, compare_and_delete
 
 # A fixed instant, 13:00 in New York: "today" for the counts never depends on when the suite runs (in the
 # first New York hour, an hour ago was yesterday). The module's clock is set to it in `world`.
@@ -150,6 +150,7 @@ def world(monkeypatch):
     monkeypatch.setattr(lot, "datetime", _Clock)
     r = FakeRedis()
     r.register(cl.RELEASE_LUA, compare_and_delete)
+    r.register(lot.BADGE_ADD_LUA, badge_add)
     monkeypatch.setattr(settings, "redis_url", "redis://fake")
     redis_client.set_client_for_tests(r)
     for k in lot.LOTTERY_HEALTH:
@@ -509,6 +510,74 @@ async def test_a_hand_give_moves_the_badges_under_the_lock_an_open_takes_it_off_
     assert not await lot.confirm("c1", {"id": B}, f, "opened")
     assert events == ["lock", f"badge -{B}", "unlock"]
     assert await lot.new_count(B) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_later_lead_scores_after_the_newest_whatever_the_clock_says(world, monkeypatch):
+    """CodeRabbit #273: the score was this process's time.time(); a clock a step back (or another process behind)
+    gave a later lead a score at or below the newest, and the panel, which announces only a lead given after the
+    last it saw, kept it quiet. Now a new lead is always scored after the badge's newest."""
+    _, _, r = world
+    clock = iter([1000.5, 999.0, 1000.5, 2000.25])
+    monkeypatch.setattr(lot.time, "time", lambda: next(clock))
+    for cid in ("c1", "c2", "c3", "c4"):
+        await lot._badge(B, add=cid)
+    scores = [await r.zscore(f"followup:new:{B}", c) for c in ("c1", "c2", "c3", "c4")]
+    assert scores == [1000.5, 1000.501, 1000.502, 2000.25], scores
+    assert (await lot.newest(B))[0] == "c4"
+    # Rule 5: a clock that moves on gives the time itself, as before.
+    assert scores[3] == 2000.25
+
+
+@pytest.mark.asyncio
+async def test_a_hand_give_after_a_confirmation_keeps_its_badge(world):
+    """CodeRabbit #273: the confirmation took the lead off the badge after its lock and its audit; a manager's
+    give in that gap put it back under the lock, and the late removal took it off again."""
+    _, m, r = world
+    pending = {"state": "pending", "agent_id": A, "by": "lottery", "misses": []}
+    m["conv"].return_value = {"id": "c1", "status": "closed", "assigned_agent_id": A, "metadata": {"followup": pending}}
+    await r.zadd(f"followup:new:{A}", {"c1": 1})
+
+    async def audit(actor, email, action, *rest):
+        if action == "followup_acked":
+            # The manager gives the same chat to the same agent while the confirmation writes its audit.
+            await lot.give_by_hand("c1", _agent(A), {"id": "mgr", "role": "admin"})
+
+    m["audit"].side_effect = audit
+    assert await lot.confirm("c1", {"id": A}, pending, "opened")
+    assert await r.zscore(f"followup:new:{A}", "c1") is not None, "the give that came after keeps its badge"
+
+
+@pytest.mark.asyncio
+async def test_two_managers_giving_one_chat_move_the_badge_from_the_owner_under_the_lock(world):
+    """CodeRabbit #273: the owner was read before the lock; two gives at once both read A, and the second, to C,
+    took A off (already off) and left B's badge for a lead that was C's."""
+    state, m, r = world
+    state["agents"].append(_agent("cccccccc-0000-4000-8000-000000000003"))
+    C = "cccccccc-0000-4000-8000-000000000003"
+    owner = {"now": A, "second": False, "stale_given": False}
+
+    def read(cid):
+        # The second manager's first read happened before the first manager's give landed: it still says A.
+        if owner["second"] and not owner["stale_given"]:
+            owner["stale_given"] = True
+            return {"id": cid, "status": "closed", "assigned_agent_id": A, "metadata": {}}
+        return {"id": cid, "status": "closed", "assigned_agent_id": owner["now"], "metadata": {}}
+
+    async def assigned(cid, agent_id):
+        owner["now"] = agent_id
+        return True
+
+    m["conv"].side_effect = read
+    m["assign_to"].side_effect = assigned
+    await r.zadd(f"followup:new:{A}", {"c1": 1})
+    await lot.give_by_hand("c1", _agent(B), {"id": "m1", "role": "admin"})
+    owner["second"] = True
+    await lot.give_by_hand("c1", _agent(C), {"id": "m2", "role": "admin"})
+    assert await lot.new_count(A) == 0 and await lot.new_count(B) == 0, "B's badge goes with the lead"
+    assert await lot.new_count(C) == 1
+    # The second give names the owner it moved the lead from: B, read under the lock.
+    assert m["audit"].await_args.args[5]["previous"] == B
 
 
 # ── what agents see in Offers to send, with the lottery on ──────

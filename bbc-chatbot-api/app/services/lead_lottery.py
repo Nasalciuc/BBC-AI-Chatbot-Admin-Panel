@@ -517,6 +517,7 @@ async def confirm(conversation_id: str, user: dict, followup: Optional[dict], ho
     if not isinstance(followup, dict) or followup.get("state") != "pending" or followup.get("agent_id") != uid:
         return False
     now = datetime.now(timezone.utc)
+    ok = False
     async with conversation_lock("followup", conversation_id):
         # What the caller read may be stale (a manager gave the chat to someone else meanwhile): the chat is
         # read again under the lock, and only a still-pending follow-up of this agent, still theirs, confirms.
@@ -529,12 +530,15 @@ async def confirm(conversation_id: str, user: dict, followup: Optional[dict], ho
         ok = await db.patch_conversation_presence(
             conversation_id, {"followup": {**fresh, "state": "acked", "acked_at": now.isoformat(), "acked_how": how}}
         )
+        if ok:
+            # Off the badge under the lock a hand-give puts it on with: a give after this confirmation keeps its
+            # badge, where a removal after the lock (and the audit's wait) took it off again (CodeRabbit #273).
+            await _badge(uid, remove=conversation_id)
     if not ok:
         LOTTERY_HEALTH["patch_failed"] += 1
         logger.error(f"[lottery] {conversation_id}: confirmation by {uid} not saved")
         return False
     await db.log_audit(uid, user.get("email"), "followup_acked", "conversations", conversation_id, {"how": how})
-    await _badge(uid, remove=conversation_id)
     db.invalidate_leads_universe()
     LOTTERY_HEALTH["acked"] += 1
     return True
@@ -552,13 +556,20 @@ async def give_by_hand(conversation_id: str, agent: dict, manager: dict) -> dict
         raise ValueError("Only a closed chat is given here; an open one is transferred.")
     if not may_be_given(agent):
         raise ValueError("This person can't take sales chats.")
-    meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
-    before = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
-    previous = conv.get("assigned_agent_id")
     now = datetime.now(timezone.utc)
-    f = _followup(agent["id"], "manual", now, state="manual", misses=list(before.get("misses") or []),
-                  given_by=manager.get("id"))
+    previous: Optional[str] = None
+    f: dict = {}
     async with conversation_lock("followup", conversation_id):
+        # Who holds it, and its follow-up, read under the lock: two managers giving the chat at once each move
+        # the badge from the owner the other one left, never from one both read before (CodeRabbit #273).
+        locked = await db.get_conversation_simple(conversation_id)
+        if not locked:
+            raise LookupError("Chat not found")
+        meta = locked.get("metadata") if isinstance(locked.get("metadata"), dict) else {}
+        before = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
+        previous = locked.get("assigned_agent_id")
+        f = _followup(agent["id"], "manual", now, state="manual", misses=list(before.get("misses") or []),
+                      given_by=manager.get("id"))
         try:
             given = await db.assign_closed_to(conversation_id, agent["id"])
         except Exception as e:
@@ -586,6 +597,19 @@ def _badge_key(agent: str) -> str:
     return f"followup:new:{agent}"
 
 
+# A lead put on an agent's badge, scored strictly after every lead already there: the time it was given, or a
+# millisecond after the badge's newest when this process's clock says otherwise (a step back, another process
+# behind it). The panel announces a lead given after the last one it saw; an equal or earlier score would keep
+# a later lead quiet (CodeRabbit #273). One script: two gives at once can't both read the same newest.
+BADGE_ADD_LUA = """
+local top = redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+local s = tonumber(ARGV[2])
+if top[2] ~= nil and tonumber(top[2]) >= s then s = tonumber(top[2]) + 0.001 end
+redis.call('ZADD', KEYS[1], s, ARGV[1])
+return tostring(s)
+"""
+
+
 async def _badge(agent: str, *, add: Optional[str] = None, remove: Optional[str] = None) -> None:
     r = get_redis()
     if r is None or not agent:
@@ -593,7 +617,7 @@ async def _badge(agent: str, *, add: Optional[str] = None, remove: Optional[str]
     try:
         if add:
             # To the microsecond: two leads given in one second keep their order for newest() (CodeRabbit #273).
-            await r.zadd(_badge_key(agent), {add: time.time()})
+            await r.eval(BADGE_ADD_LUA, 1, _badge_key(agent), add, f"{time.time():.6f}")
         if remove:
             await r.zrem(_badge_key(agent), remove)
     except Exception as e:
