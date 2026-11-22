@@ -17,12 +17,12 @@ type vectors struct {
 		Secret string `json:"secret"`
 		Now    int64  `json:"now"`
 		Valid  []struct {
-			Token     string `json:"token"`
+			Token     string `json:"value"`
 			VisitorID string `json:"visitor_id"`
 			Exp       int64  `json:"exp"`
 		} `json:"valid"`
 		Invalid []struct {
-			Token  string `json:"token"`
+			Token  string `json:"value"`
 			Reason string `json:"reason"`
 		} `json:"invalid"`
 	} `json:"pass"`
@@ -30,14 +30,14 @@ type vectors struct {
 		Secret string `json:"secret"`
 		Now    int64  `json:"now"`
 		Valid  []struct {
-			Token  string `json:"token"`
+			Token  string `json:"value"`
 			User   string `json:"user"`
 			Role   string `json:"role"`
 			Tunnel string `json:"tunnel"`
 			Exp    int64  `json:"exp"`
 		} `json:"valid"`
 		Invalid []struct {
-			Token  string `json:"token"`
+			Token  string `json:"value"`
 			Reason string `json:"reason"`
 		} `json:"invalid"`
 	} `json:"agent"`

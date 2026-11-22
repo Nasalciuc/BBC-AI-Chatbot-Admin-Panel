@@ -240,7 +240,9 @@ func TestOnlyPanelRolesSeeTheListAndOnlySalesHoldsAVisitor(t *testing.T) {
 			t.Errorf("%s/%s list: %d", k.role, k.tunnel, w.Code)
 		}
 		w := do(t, h, "POST", "/v1/claim", auth, map[string]string{"visitor_id": vid1})
-		if w.Code != k.claim && !(k.claim == 200 && w.Code == http.StatusConflict) {
+		// An allowed claim on a visitor an earlier case already took answers 409: allowed, too.
+		allowed := w.Code == k.claim || (k.claim == 200 && w.Code == http.StatusConflict)
+		if !allowed {
 			t.Errorf("%s/%s claim: %d %s", k.role, k.tunnel, w.Code, w.Body.String())
 		}
 	}
