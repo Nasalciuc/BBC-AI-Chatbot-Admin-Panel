@@ -181,7 +181,8 @@ jobs:
 
       - name: Tests (race detector on)
         working-directory: bbc-live
-        run: go test -race -count=1 ./...
+        # One package at a time: every package's tests empty the one shared Redis (REDIS_TEST_URL) first.
+        run: go test -race -count=1 -p 1 ./...
 
       - name: Lint
         uses: golangci/golangci-lint-action@v8
