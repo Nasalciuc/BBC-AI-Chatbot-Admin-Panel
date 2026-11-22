@@ -945,10 +945,13 @@ def _apply_search(q, search: str, readable: Optional[str], with_supervisor_cols:
     return q.or_(",".join(parts))
 
 
+# Absent, empty or only spaces: no contact, as the row's has_contact reads it (a value with .strip()). The
+# regex goes quoted, its backslash escaped for PostgREST (chat_search.quoted).
+_BLANK = '"^\\\\s*$"'
 _NO_CONTACT = (
-    'or(visitor_email.is.null,visitor_email.eq."")',
-    'or(visitor_phone.is.null,visitor_phone.eq."")',
-    'or(metadata->>phone_to_check.is.null,metadata->>phone_to_check.eq."")',
+    f"or(visitor_email.is.null,visitor_email.match.{_BLANK})",
+    f"or(visitor_phone.is.null,visitor_phone.match.{_BLANK})",
+    f"or(metadata->>phone_to_check.is.null,metadata->>phone_to_check.match.{_BLANK})",
 )
 
 
@@ -1012,24 +1015,43 @@ async def get_route_conversation_ids(text: str, limit: int = 200) -> list[str]:
 SEARCHED_ROLES = ("user", "ai", "agent")  # what was said in the chat; system lines are the app's own
 
 
-async def search_messages(text: str, *, since_iso: str, limit: int = 60) -> list[dict]:
+async def search_messages(text: str, *, since_iso: str, limit: int = 60, tunnel: Optional[str] = None,
+                          blind_viewer: Optional[str] = None) -> list[dict]:
     """Messages that contain `text` (case-insensitive, LIKE's wildcards literal) since `since_iso`, newest
     first: id, conversation_id, role, content, created_at. Without 055 this reads the window's rows one by
-    one (37k messages in all on 21 Nov, about 5k a month). RAISES on a failed read."""
+    one (37k messages in all on 21 Nov, about 5k a month). RAISES on a failed read.
+
+    `tunnel` and `blind_viewer` (an agent's id) narrow the chats in the query itself, through an inner embed of
+    the conversation, so the limit counts only messages the asker may read: filtered after it, newer matches in
+    other chats would push their own out (the route checks every row again)."""
     from app.services.chat_search import contains_pattern
 
-    def _q():
-        return (
-            get_client().table("messages")
-            .select("id,conversation_id,role,content,created_at")
-            .in_("role", list(SEARCHED_ROLES))
-            .gte("created_at", since_iso)
-            .ilike("content", contains_pattern(text))
-            .order("created_at", desc=True).limit(limit).execute()
-        )
+    def _q(with_queue: bool):
+        narrowed = bool(tunnel or blind_viewer)
+        q = (get_client().table("messages")
+             .select("id,conversation_id,role,content,created_at" + (",conversations!inner(id)" if narrowed else ""))
+             .in_("role", list(SEARCHED_ROLES))
+             .gte("created_at", since_iso)
+             .ilike("content", contains_pattern(text)))
+        if tunnel:
+            q = q.eq("conversations.tunnel", tunnel)
+        if blind_viewer:
+            q = q.or_(_readable_inner(_readable_to_agent(blind_viewer, with_queue=with_queue)),
+                      reference_table="conversations")
+        return q.order("created_at", desc=True).limit(limit).execute()
 
-    res = await _run_sync(_q, label="search")
-    return res.data or []
+    use_queue = _queued_at_column_available()
+    try:
+        res = await _run_sync(lambda: _q(use_queue), label="search")
+    except Exception as e:
+        if not (blind_viewer and use_queue and _is_missing_column_error(e) and "queued_at" in str(e)):
+            raise
+        _downgrade_queued_at(e)
+        res = await _run_sync(lambda: _q(False), label="search")
+    rows = res.data or []
+    for row in rows:
+        row.pop("conversations", None)
+    return rows
 
 
 _BRIEF_COLUMNS = ("id,tunnel,team_id,status,mode,assigned_agent_id,visitor_name,updated_at,"
@@ -1042,23 +1064,35 @@ async def get_conversations_brief(conv_ids: list[str]) -> dict[str, dict]:
     absent. RAISES on a failed read: the caller shows nothing rather than guess who may read what."""
     ids = list(dict.fromkeys(i for i in conv_ids if i))
     out: dict[str, dict] = {}
-    with_supervisor_cols = _supervisor_columns_available()
+    with_number = _supervisor_columns_available()
+    # queued_at decides the blind take: read whenever the column exists (its own tracker), never dropped
+    # with the optional display field.
+    with_queue = _queued_at_column_available()
     for start in range(0, len(ids), 100):
         chunk = ids[start:start + 100]
 
-        def _q(extra: bool, chunk=chunk):
-            cols = _BRIEF_COLUMNS + (",chat_number,queued_at" if extra else "")
+        def _q(number: bool, queue: bool, chunk=chunk):
+            cols = _BRIEF_COLUMNS + (",chat_number" if number else "") + (",queued_at" if queue else "")
             return get_client().table("conversations").select(cols).in_("id", chunk).execute()
 
-        try:
-            res = await _run_sync(lambda: _q(with_supervisor_cols), label="search")
-        except Exception as e:
-            if not with_supervisor_cols or not _is_missing_column_error(e):
-                logger.error(f"get_conversations_brief({len(chunk)} chats) failed: {type(e).__name__}")
-                raise
-            _downgrade_supervisor_columns(e)
-            with_supervisor_cols = False
-            res = await _run_sync(lambda: _q(False), label="search")
+        res = None
+        for attempt in range(3):
+            try:
+                res = await _run_sync(lambda: _q(with_number, with_queue), label="search")
+                break
+            except Exception as e:
+                if attempt == 2 or not _is_missing_column_error(e):
+                    logger.error(f"get_conversations_brief({len(chunk)} chats) failed: {type(e).__name__}")
+                    raise
+                if with_queue and "queued_at" in str(e):
+                    _downgrade_queued_at(e)
+                    with_queue = False
+                elif with_number:
+                    _downgrade_supervisor_columns(e)
+                    with_number = False
+                else:
+                    logger.error(f"get_conversations_brief({len(chunk)} chats) failed: {type(e).__name__}")
+                    raise
         for row in res.data or []:
             if row.get("id"):
                 out[row["id"]] = row
@@ -1144,8 +1178,10 @@ async def get_conversations(
                 )
             elif agent_id_is_null:
                 q = q.is_("assigned_agent_id", "null")
+            # The blind guard names queued_at whenever the column exists (its own tracker, 034), whatever the
+            # projection: a retry on the legacy columns must not read a chat waiting by queued_at as readable.
             readable = (
-                _readable_to_agent(blind_viewer, with_queue=with_supervisor_cols)
+                _readable_to_agent(blind_viewer, with_queue=use_queue)
                 if blind_viewer is not None else None
             )
             if search:
@@ -1181,40 +1217,41 @@ async def get_conversations(
         _rng = (0, _TAG_SCAN_CAP - 1) if _tag_scan else (offset, offset + limit - 1)
 
         use_supervisor_cols = _supervisor_columns_available()
-        try:
+        use_queue = _queued_at_column_available()
+        full = use_supervisor_cols
+        res = None
+        # Each optional piece falls back on its own, on either projection: 054's digits (a phone search asks
+        # for the digits in order instead), 034's queued_at (without the column no chat waits by it), then the
+        # supervisor columns (the legacy projection). Four tries at most; anything else raises.
+        for attempt in range(4):
             try:
                 res = await _run_sync(
-                    lambda: _query(
-                        _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
-                        use_supervisor_cols,
-                    ),
+                    lambda: _query(_LIST_COLUMNS if full else _LIST_COLUMNS_BASE, full),
                     label="list",
                 )
-            except Exception as digits_err:
-                # 054 not applied: a phone search asks for the digits in order instead.
-                if not _downgrade_phone_digits(digits_err):
+                break
+            except Exception as e:
+                if attempt == 3:
                     raise
-                res = await _run_sync(
-                    lambda: _query(
-                        _LIST_COLUMNS if use_supervisor_cols else _LIST_COLUMNS_BASE,
-                        use_supervisor_cols,
-                    ),
-                    label="list",
-                )
-        except Exception as e:
-            if not use_supervisor_cols:
-                raise
-            # Only a real missing-column error flips the flag. Transient
-            # network/HTTP failures fall through to the legacy retry without
-            # freezing activity clocks process-wide.
-            if _is_missing_column_error(e):
-                _downgrade_supervisor_columns(e)
-            else:
-                logger.error(
-                    "get_conversations: supervisor-columns query failed "
-                    f"(not a missing-column error — not downgrading): {e}"
-                )
-            res = await _run_sync(lambda: _query(_LIST_COLUMNS_BASE, False), label="list")
+                if _downgrade_phone_digits(e):
+                    continue
+                if use_queue and _is_missing_column_error(e) and "queued_at" in str(e):
+                    _downgrade_queued_at(e)
+                    use_queue = False
+                    continue
+                if not full:
+                    raise
+                # Only a real missing-column error flips the flag. Transient
+                # network/HTTP failures fall through to the legacy retry without
+                # freezing activity clocks process-wide.
+                if _is_missing_column_error(e):
+                    _downgrade_supervisor_columns(e)
+                else:
+                    logger.error(
+                        "get_conversations: supervisor-columns query failed "
+                        f"(not a missing-column error — not downgrading): {e}"
+                    )
+                full = False
         rows = res.data or []
         # Put the lifted key back under `metadata` so the agent-info enrichment
         # and the panel keep the row shape they already expect.
@@ -5535,26 +5572,38 @@ _UNIVERSE_CONV_COLUMNS = (
 )
 
 
-def _universe_conv_columns(with_queued_at: bool) -> str:
-    return _UNIVERSE_CONV_COLUMNS if with_queued_at else _UNIVERSE_CONV_COLUMNS.replace("closed_at, queued_at, ", "closed_at, ")
+def _universe_conv_columns(with_queued_at: bool, with_decoy: bool = True) -> str:
+    cols = _UNIVERSE_CONV_COLUMNS if with_queued_at else _UNIVERSE_CONV_COLUMNS.replace("closed_at, queued_at, ", "closed_at, ")
+    return cols if with_decoy else cols.replace("followup:metadata->followup, is_decoy, ", "followup:metadata->followup, ")
 
 
 async def _universe_convs(db_client) -> list[dict]:
-    """The conversations half of the universe. Without conversations.queued_at (034 not applied) it is
-    read without that column, as the chat list and get_blind_inputs do; any other failure raises."""
+    """The conversations half of the universe. Without conversations.queued_at (034 not applied) or
+    is_decoy (038) it is read without that column, as the chat list, get_blind_inputs and the decoy helpers
+    do (a row without is_decoy reads as no decoy); any other failure raises."""
     use_queued_at = _queued_at_column_available()
+    use_decoy = _decoy_filterable("conversations")
 
-    def read(with_queued_at: bool):
-        return _select_pages(lambda: db_client.table("conversations").select(_universe_conv_columns(with_queued_at))
+    def read(with_queued_at: bool, with_decoy: bool):
+        return _select_pages(lambda: db_client.table("conversations")
+                             .select(_universe_conv_columns(with_queued_at, with_decoy))
                              .order("created_at"), label="leads_universe", max_pages=50)
 
-    try:
-        return await read(use_queued_at)
-    except Exception as e:
-        if not use_queued_at or not _is_missing_column_error(e):
-            raise
-        _downgrade_queued_at(e)
-        return await read(False)
+    for _ in range(3):
+        try:
+            return await read(use_queued_at, use_decoy)
+        except Exception as e:
+            if not _is_missing_column_error(e):
+                raise
+            if use_decoy and "is_decoy" in str(e):
+                _downgrade_decoy("conversations", e)
+                use_decoy = False
+            elif use_queued_at and "queued_at" in str(e):
+                _downgrade_queued_at(e)
+                use_queued_at = False
+            else:
+                raise
+    return await read(use_queued_at, use_decoy)
 
 
 def invalidate_leads_universe() -> None:
@@ -6101,6 +6150,20 @@ async def blocklist_list(limit: int = 200) -> list[dict]:
         return []
 
 
+async def insert_audit_rows_strict(rows: list[dict]) -> None:
+    """audit_log rows that ARE the record (the QA sample's picks and verdicts), not a trace of an action:
+    one insert, so all of them land or none, never retried (idempotent=False), and a failure RAISES. Each row:
+    action, target_table, details, and user_id / user_email / target_id when known."""
+    if not rows:
+        return
+    db_client = get_client()
+    clean = [{k: v for k, v in r.items() if v is not None} for r in rows]
+    res = await _run_sync(lambda: db_client.table("audit_log").insert(clean).execute(), idempotent=False,
+                          label="audit")
+    if len(res.data or []) != len(clean):
+        raise RuntimeError(f"audit_log took {len(res.data or [])} of {len(clean)} rows")
+
+
 async def log_audit(
     user_id: str | None,
     user_email: str | None,
@@ -6575,6 +6638,8 @@ async def assign_closed_if_unowned(conversation_id: str, agent_id: str) -> bool:
     connection broke (#2678, #3245), and if it is this agent, this call won."""
     db_client = get_client()
     try:
+        # Not retried (idempotent=False): a retry after a commit whose answer was lost finds the chat owned
+        # and reads as a lost swap; the error has to reach the owner read below instead.
         res = await _run_sync(
             lambda: db_client.table("conversations")
             .update({"assigned_agent_id": agent_id})
@@ -6582,6 +6647,7 @@ async def assign_closed_if_unowned(conversation_id: str, agent_id: str) -> bool:
             .is_("assigned_agent_id", "null")
             .in_("status", list(_LOTTERY_OWNABLE))
             .execute(),
+            idempotent=False,
             label="lottery",
         )
         return bool(res.data)
@@ -6603,19 +6669,60 @@ async def assign_closed_if_unowned(conversation_id: str, agent_id: str) -> bool:
     return False
 
 
-async def release_closed_if_agent(conversation_id: str, agent_id: str) -> bool:
-    """Take a closed chat back from an agent who did not confirm it, only while it is still theirs."""
+async def assign_closed_to(conversation_id: str, agent_id: str) -> bool:
+    """A manager gives a chat to an agent (lead_lottery.give_by_hand), only while it is still closed or
+    completed: a chat reopened meanwhile is transferred, not given. False when it no longer is; raises on a
+    failed write."""
+    db_client = get_client()
+    res = await _run_sync(
+        lambda: db_client.table("conversations")
+        .update({"assigned_agent_id": agent_id})
+        .eq("id", conversation_id)
+        .in_("status", list(_LOTTERY_OWNABLE))
+        .execute(),
+        label="lottery",
+    )
+    return bool(res.data)
+
+
+async def release_live_claim(conversation_id: str, agent_id: str) -> bool:
+    """Give back a chat a tapped hello claimed when the hello could not be stored as its first message:
+    unassigned and in AI mode again, only while it is still that agent's (live_visitors.start_with_the_agent).
+    False when it was not given back (no longer theirs, or the write failed: logged)."""
     try:
         db_client = get_client()
         res = await _run_sync(
             lambda: db_client.table("conversations")
-            .update({"assigned_agent_id": None})
+            .update({"assigned_agent_id": None, "mode": "ai"})
             .eq("id", conversation_id)
             .eq("assigned_agent_id", agent_id)
-            .in_("status", list(_LOTTERY_OWNABLE))
             .execute(),
-            label="lottery",
+            label="live",
         )
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"[live] giving back {conversation_id} failed: {type(e).__name__}: {e}")
+        return False
+
+
+async def release_closed_if_agent(conversation_id: str, agent_id: str, assigned_at: Optional[str] = None) -> bool:
+    """Take a closed chat back from an agent, only while it is still theirs, and, with `assigned_at`, only that
+    assignment (metadata.followup.assigned_at), never a newer one to the same agent. Not retried: after a lost
+    answer the lottery's next run repairs what is left (lead_lottery._take_back_unconfirmed)."""
+    try:
+        db_client = get_client()
+
+        def _q():
+            q = (db_client.table("conversations")
+                 .update({"assigned_agent_id": None})
+                 .eq("id", conversation_id)
+                 .eq("assigned_agent_id", agent_id)
+                 .in_("status", list(_LOTTERY_OWNABLE)))
+            if assigned_at:
+                q = q.eq("metadata->followup->>assigned_at", assigned_at)
+            return q.execute()
+
+        res = await _run_sync(_q, idempotent=False, label="lottery")
         return bool(res.data)
     except Exception as e:
         LOTTERY_DB_HEALTH["release_errors"] += 1
@@ -6645,7 +6752,7 @@ async def get_operator_rows(
             q = q.gte("last_seen_at", cutoff)
         return q.execute()
 
-    base = "id, name, role, is_active, tunnel_scope, last_seen_at, created_at"
+    base = "id, name, role, is_active, tunnel_scope, last_seen_at, created_at, team_id"
     try:
         try:
             res = await _run_sync(lambda: _q(base + ", chat_enabled"), label="lottery")
@@ -6672,16 +6779,18 @@ async def get_open_task_owners(conversation_ids: list[str]) -> Optional[dict[str
         return {}
     try:
         db_client = get_client()
-        res = await _run_sync(
+        # Every page: PostgREST cuts a long answer at max-rows without an error, and a chat whose open task
+        # fell off would read as nobody's.
+        rows = await _select_pages(
             lambda: db_client.table("tasks").select("conversation_id, assignee_id")
             .in_("conversation_id", ids)
             .is_("done_at", "null")
             .is_("dismissed_at", "null")
             .not_.is_("assignee_id", "null")
-            .execute(),
+            .order("id"),
             label="lottery",
         )
-        return {r["conversation_id"]: r["assignee_id"] for r in (res.data or []) if r.get("conversation_id")}
+        return {r["conversation_id"]: r["assignee_id"] for r in rows if r.get("conversation_id")}
     except Exception as e:
         LOTTERY_DB_HEALTH["task_read_errors"] += 1
         logger.warning(f"[lottery] open tasks not read: {e}")
@@ -6732,13 +6841,14 @@ async def get_agent_messages(conversation_ids: list[str], since_iso: str, until_
     out: list[dict] = []
     for start in range(0, len(ids), 100):
         chunk = ids[start:start + 100]
-        res = await _run_sync(
+        # Every page: one answer stops at PostgREST's max-rows (1000) without an error.
+        rows = await _select_pages(
             lambda chunk=chunk: db_client.table("messages").select("conversation_id, content")
             .in_("conversation_id", chunk).eq("role", "agent")
-            .gte("created_at", since_iso).lt("created_at", until_iso).limit(5000).execute(),
+            .gte("created_at", since_iso).lt("created_at", until_iso).order("id"),
             label="qa_messages",
         )
-        out.extend(r for r in (res.data or []) if isinstance(r, dict))
+        out.extend(r for r in rows if isinstance(r, dict))
     return out
 
 

@@ -4,7 +4,8 @@ contracts/live.md). The list, the claims and the delivery are bbc-live's; the wo
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.db import supabase as db
@@ -28,5 +29,8 @@ async def send(body: SendBody, user: dict = Depends(get_current_user)):
     try:
         out = await live_visitors.send_hello(who, user_db, body.visitor_id, body.text)
     except live_visitors.SendRefused as e:
-        raise HTTPException(status_code=e.status, detail=e.detail) from e
+        # The admin envelope, with the refusal's status (rule 4); `code` lets the panel tell the reasons apart.
+        logger.info(f"[live] hello refused: {e.code}")
+        return JSONResponse(status_code=e.status, content={"success": False, "data": None, "count": 0,
+                                                           "error": e.detail, "code": e.code})
     return {"success": True, "data": out, "count": 1}

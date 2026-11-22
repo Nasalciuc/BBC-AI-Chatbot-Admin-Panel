@@ -182,6 +182,21 @@ async def health_detail(full: bool = False) -> dict:
     # "On the site now": tokens handed out, hellos sent or refused, taps honoured or not.
     from app.services.live_visitors import LIVE_HEALTH
 
+    # The six problems' counters (Nov 2026), in both answers under the same keys: an operator who asks for the
+    # full payload while looking into a lock, the lottery or the live list must not lose them.
+    six_problems = {
+        "redis": dict(REDIS_HEALTH),
+        "locks": dict(LOCK_HEALTH),
+        "agent_presence": dict(AGENT_PRESENCE_HEALTH),
+        "lottery": {**LOTTERY_HEALTH, **LOTTERY_DB_HEALTH},
+        "crm_source": dict(CRM_SOURCE_HEALTH),
+        "lead_access": dict(LEAD_ACCESS_HEALTH),
+        "qa_sample": dict(QA_HEALTH),
+        "crm_lookup": dict(CRM_LOOKUP_HEALTH),
+        "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
+        "live": dict(LIVE_HEALTH),
+    }
+
     if not full:
         return {
             "status": "ok",
@@ -211,16 +226,7 @@ async def health_detail(full: bool = False) -> dict:
             "post_sale": dict(POST_SALE_HEALTH),
             "note_bandit": dict(NOTE_BANDIT_HEALTH),
             "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
-            "redis": dict(REDIS_HEALTH),
-            "locks": dict(LOCK_HEALTH),
-            "agent_presence": dict(AGENT_PRESENCE_HEALTH),
-            "lottery": {**LOTTERY_HEALTH, **LOTTERY_DB_HEALTH},
-            "crm_source": dict(CRM_SOURCE_HEALTH),
-            "lead_access": dict(LEAD_ACCESS_HEALTH),
-            "qa_sample": dict(QA_HEALTH),
-            "crm_lookup": dict(CRM_LOOKUP_HEALTH),
-            "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
-            "live": dict(LIVE_HEALTH),
+            **six_problems,
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
@@ -293,6 +299,7 @@ async def health_detail(full: bool = False) -> dict:
         "status": status,
         "version": "1.0.0",
         "services": services,
+        **six_problems,
         "flags": dict(FLAGS_HEALTH),
         "client_ip": dict(CLIENT_IP_HEALTH),
         "cost": dict(LEDGER_HEALTH),

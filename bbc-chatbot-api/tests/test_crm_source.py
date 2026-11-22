@@ -104,7 +104,7 @@ async def test_an_odd_id_asks_once_and_is_kept_marked_when_confirmed():
 async def test_a_crm_shaped_id_goes_straight_in():
     run, mark, _ = _paste("64f1a2b3c4d5e6f708192a3b")
     out = await run()
-    assert out["shape"] == "ok"
+    assert out["shape"] == "ok" and out["success"] is True and out["count"] == 1, "the admin envelope"
     assert mark.await_args.kwargs == {"crm_lead_id": "64f1a2b3c4d5e6f708192a3b", "source": "manual",
                                       "set_by": "adm", "shape": "ok"}
 
@@ -128,6 +128,25 @@ async def test_the_same_client_in_another_chat_may_share_the_id():
                           convs={"c1": _MINE, "c9": again})
     assert (await run())["success"]
     mark.assert_awaited_once()
+
+
+@pytest.mark.parametrize("mine, theirs, same", [
+    ("+1 207 946 0958", "+44 20 7946 0958", False),   # the same ten last digits, two countries
+    ("+1 207 946 0958", "+1 (207) 946-0958", True),   # one number, written two ways
+])
+@pytest.mark.asyncio
+async def test_a_placed_number_is_the_same_client_by_all_its_digits(mine, theirs, same):
+    me = {"id": "c1", "visitor_phone": mine, "chat_number": 100, "metadata": {}}
+    other = {"id": "c9", "visitor_phone": theirs, "chat_number": 4242, "metadata": {}}
+    run, mark, _ = _paste("64f1a2b3c4d5e6f708192a3b", others=[{"id": "L9", "conversation_id": "c9"}],
+                          convs={"c1": me, "c9": other})
+    if same:
+        assert (await run())["success"]
+    else:
+        with pytest.raises(HTTPException) as e:
+            await run()
+        assert e.value.status_code == 409
+        mark.assert_not_awaited()
 
 
 @pytest.mark.asyncio

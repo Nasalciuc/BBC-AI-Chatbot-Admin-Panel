@@ -62,6 +62,24 @@ async def test_a_chat_that_cannot_be_read_refuses_with_503():
     assert e.value.status_code == 503
 
 
+@pytest.mark.parametrize("lead", [{"id": "L1", "conversation_id": "c1"}, {"id": "L1", "conversation_id": None}])
+@pytest.mark.asyncio
+async def test_a_chat_read_that_answers_nothing_refuses_too(lead):
+    """get_conversation_simple answers None when its read fails: an unknown owner is not "nobody's"."""
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=None)), \
+            patch("app.services.lead_lottery.enabled", return_value=False):
+        with pytest.raises(HTTPException) as e:
+            await lead_access.check({"role": "sales", "id": ME}, lead, "crm id")
+    assert e.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_a_chat_read_as_nobodys_stays_open_with_the_lottery_off():
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch("app.services.lead_lottery.enabled", return_value=False):
+        await lead_access.check({"role": "sales", "id": ME}, {"id": "L1", "conversation_id": "c1"}, "crm id")
+
+
 # ── the routes, the way hole B was opened ──────────────────────
 
 

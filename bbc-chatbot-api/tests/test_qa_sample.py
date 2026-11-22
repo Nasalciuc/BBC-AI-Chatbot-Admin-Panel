@@ -98,6 +98,8 @@ def test_a_new_agents_chats_are_sampled_half_the_time():
 @pytest.fixture
 def run_world(monkeypatch):
     qa._done_days.clear()
+    qa._emailed_days.clear()
+    qa._email_tries.clear()
     rows = [_row("ok1"), _row("odd", crm={"shape": "odd"})]
     m = {
         "universe": patch("app.db.supabase.get_leads_universe", new=AsyncMock(return_value=rows)),
@@ -107,6 +109,7 @@ def run_world(monkeypatch):
         "operators": patch("app.db.supabase.get_operator_rows", new=AsyncMock(return_value=[
             {"id": A, "created_at": "2026-01-01T00:00:00+00:00"}])),
         "audit": patch("app.db.supabase.log_audit", new=AsyncMock()),
+        "strict": patch("app.db.supabase.insert_audit_rows_strict", new=AsyncMock()),
         "emails": patch("app.db.supabase.get_active_emails_for_role", new=AsyncMock(return_value=["qa@example.com"])),
         "names": patch("app.db.supabase.get_user_names", new=AsyncMock(return_value={A: "Ana Agent"})),
         "send": patch("app.services.email.send_qa_sample_email", new=AsyncMock(return_value=True)),
@@ -116,14 +119,20 @@ def run_world(monkeypatch):
     for p in m.values():
         p.stop()
     qa._done_days.clear()
+    qa._emailed_days.clear()
+    qa._email_tries.clear()
 
 
 @pytest.mark.asyncio
 async def test_the_run_picks_writes_and_mails_once(run_world):
     out = await qa.run_qa_sample(NOW)
     assert out == {"state": "sampled", "day": DAY, "chats": 2, "picked": 2, "suspicious": 2}
-    picks = {c.args[4]: c.args[5]["reasons"] for c in run_world["audit"].await_args_list}
+    run_world["strict"].assert_awaited_once()
+    records = run_world["strict"].await_args.args[0]
+    picks = {r["target_id"]: r["details"]["reasons"] for r in records if r["action"] == "qa_sample_picked"}
     assert picks == {"ok1": ["foreign_contact"], "odd": ["odd_crm_id"]}
+    assert records[-1]["action"] == "qa_sample_done", "the picks and the day's done in one insert"
+    assert run_world["audit"].await_args.args[2] == "qa_sample_emailed"
     to, day, lines = run_world["send"].await_args.args
     assert to == ["qa@example.com"] and day == DAY
     assert all("example.com" not in str(line) for line in lines), "no client contact in the e-mail"
@@ -134,9 +143,54 @@ async def test_the_run_picks_writes_and_mails_once(run_world):
 
 @pytest.mark.asyncio
 async def test_a_day_already_sampled_in_another_process_is_not_sampled_again(run_world):
-    run_world["audit_rows"].return_value = [{"action": "qa_sample_picked", "details": {"day": DAY}}]
+    run_world["audit_rows"].return_value = [{"action": "qa_sample_done", "details": {"day": DAY}},
+                                            {"action": "qa_sample_emailed", "details": {"day": DAY}}]
     assert await qa.run_qa_sample(NOW) == {"state": "done", "day": DAY}
-    run_world["audit"].assert_not_awaited()
+    run_world["strict"].assert_not_awaited()
+    run_world["send"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_half_a_day_is_never_marked_sampled(run_world):
+    """The picks and the done go in one insert: a failed save leaves the day whole for the next tick."""
+    run_world["strict"].side_effect = RuntimeError("insert failed")
+    assert (await qa.run_qa_sample(NOW))["state"] == "save_failed"
+    run_world["send"].assert_not_awaited()
+    run_world["strict"].side_effect = None
+    assert (await qa.run_qa_sample(NOW))["state"] == "sampled"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_email_is_sent_again_from_the_saved_sample(run_world):
+    run_world["send"].return_value = False
+    assert (await qa.run_qa_sample(NOW))["state"] == "sampled"
+    assert all(c.args[2] != "qa_sample_emailed" for c in run_world["audit"].await_args_list)
+    saved = [{"action": "qa_sample_done", "details": {"day": DAY}},
+             {"action": "qa_sample_picked", "target_id": "ok1", "details": {"day": DAY, "reasons": ["random"],
+                                                                           "agent_id": A, "chat_number": 101}}]
+    run_world["audit_rows"].return_value = saved
+    run_world["send"].return_value = True
+    out = await qa.run_qa_sample(NOW)
+    assert out == {"state": "done", "day": DAY, "emailed": True}
+    assert run_world["universe"].await_count == 1, "not sampled again: e-mailed from what was saved"
+    assert run_world["audit"].await_args.args[2] == "qa_sample_emailed"
+
+
+@pytest.mark.asyncio
+async def test_a_team_that_cannot_be_read_samples_nothing_yet(run_world):
+    run_world["operators"].return_value = None
+    assert (await qa.run_qa_sample(NOW))["state"] == "unreadable"
+    run_world["strict"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_clients_number_to_check_is_their_own(run_world, monkeypatch):
+    rows = [_row("ok1", phone_to_check="0722 000 111")]
+    run_world["universe"].return_value = rows
+    run_world["messages"].return_value = [{"conversation_id": "ok1", "content": "I will call you on 0722 000 111"}]
+    monkeypatch.setenv("QA_SAMPLE_PERCENT", "0")
+    out = await qa.run_qa_sample(NOW)
+    assert out["picked"] == 0, "repeating the client's own number is no foreign contact"
 
 
 @pytest.mark.asyncio
@@ -199,7 +253,7 @@ def test_a_verdict_only_on_a_chat_of_that_days_sample():
     sample = {"day": DAY, "items": [{"conversation_id": "aaaaaaaa-0000-4000-8000-000000000001"}], "counts": {}}
     audit = AsyncMock()
     with patch("app.services.qa_sample.sample_of", new=AsyncMock(return_value=sample)), \
-            patch("app.db.supabase.log_audit", new=audit):
+            patch("app.db.supabase.insert_audit_rows_strict", new=audit):
         c = _client("qa")
         ok = c.patch("/api/qa/sample/aaaaaaaa-0000-4000-8000-000000000001", json={"day": DAY, "verdict": "problem",
                                                                                 "note": "price quoted early"})
@@ -208,9 +262,37 @@ def test_a_verdict_only_on_a_chat_of_that_days_sample():
         assert no.status_code == 400
         assert c.patch("/api/qa/sample/aaaaaaaa-0000-4000-8000-000000000001",
                        json={"day": DAY, "verdict": "maybe"}).status_code == 422
-    assert audit.await_count == 1 and audit.await_args.args[2] == "qa_verdict"
+    assert audit.await_count == 1 and audit.await_args.args[0][0]["action"] == "qa_verdict"
+
+
+def test_a_verdict_that_is_not_saved_is_not_a_success():
+    sample = {"day": DAY, "items": [{"conversation_id": "aaaaaaaa-0000-4000-8000-000000000001"}], "counts": {}}
+    with patch("app.services.qa_sample.sample_of", new=AsyncMock(return_value=sample)), \
+            patch("app.db.supabase.insert_audit_rows_strict", new=AsyncMock(side_effect=RuntimeError("down"))):
+        r = _client("qa").patch("/api/qa/sample/aaaaaaaa-0000-4000-8000-000000000001",
+                                json={"day": DAY, "verdict": "ok"})
+    assert r.status_code == 503
 
 
 def test_a_sample_that_cannot_be_read_is_a_502():
     with patch("app.services.qa_sample.sample_of", new=AsyncMock(side_effect=RuntimeError("down"))):
         assert _client("qa").get(f"/api/qa/sample?day={DAY}").status_code == 502
+
+
+
+@pytest.mark.asyncio
+async def test_the_stats_count_the_sampled_days_asked_for_not_one_more():
+    """days=1 at NOW is DAY alone: the day before was written yesterday morning, inside the read window, but is
+    another sampled day."""
+    rows = [
+        {"action": "qa_sample_picked", "target_id": "c1", "details": {"day": DAY, "agent_id": A}},
+        {"action": "qa_sample_picked", "target_id": "c0", "details": {"day": "2026-11-19", "agent_id": A}},
+        {"action": "qa_verdict", "target_id": "c1", "details": {"day": DAY, "verdict": "problem"}},
+        {"action": "qa_verdict", "target_id": "c0", "details": {"day": "2026-11-19", "verdict": "ok"}},
+    ]
+    with patch("app.db.supabase.get_audit_rows", new=AsyncMock(return_value=rows)), \
+            patch("app.db.supabase.get_user_names", new=AsyncMock(return_value={A: "Ana"})):
+        one = await qa.stats(1, NOW)
+        two = await qa.stats(2, NOW)
+    assert one == [{"agent_id": A, "agent_name": "Ana", "picked": 1, "ok": 0, "problem": 1, "discuss": 0, "open": 0}]
+    assert two[0]["picked"] == 2 and two[0]["ok"] == 1

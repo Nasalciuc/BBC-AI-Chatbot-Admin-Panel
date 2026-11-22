@@ -68,12 +68,19 @@ async def check(user: dict, lead: dict, what: str) -> None:
     if (user.get("role") or "") != "sales":
         return
     conv_id = lead.get("conversation_id")
+    conv = None
     try:
         conv = await db.get_conversation_simple(conv_id) if conv_id else None
     except Exception as e:
         LEAD_ACCESS_HEALTH["read_failed"] += 1
         logger.error(f"[lead-access] {what} lead={lead.get('id')}: chat not read, refused ({type(e).__name__}: {e})")
         raise HTTPException(503, "Couldn't check who this lead belongs to. Try again.") from e
+    if conv is None:
+        # get_conversation_simple answers None for a failed read as well as for no row: either way the owner is
+        # unknown, and an unknown owner is not "nobody's" (with the lottery off that would let anyone act).
+        LEAD_ACCESS_HEALTH["read_failed"] += 1
+        logger.error(f"[lead-access] {what} lead={lead.get('id')}: its chat could not be read, refused")
+        raise HTTPException(503, "Couldn't check who this lead belongs to. Try again.")
     why = refusal(user, conv)
     if why:
         logger.warning(f"[lead-access] {what} refused: lead={lead.get('id')} user={user.get('id')}")

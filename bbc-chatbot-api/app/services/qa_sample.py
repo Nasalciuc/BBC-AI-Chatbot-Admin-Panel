@@ -17,7 +17,8 @@ an agent and a contact:
 Each pick is an audit_log row (qa_sample_picked), and so is each verdict (qa_verdict: ok, problem, discuss).
 audit_log is read by management only: an agent cannot find out whether a chat of theirs is in the sample.
 The QA people (role qa, active) get one e-mail with the chat numbers, the agents and the reasons, never a
-client's name or contact. A day is sampled once (a qa_sample_empty row marks a day with nothing to check).
+client's name or contact. A day is sampled once: its picks and a qa_sample_done row go in one insert (all or
+none), and a qa_sample_emailed row marks its e-mail, tried again by the next ticks when it did not go.
 """
 
 from __future__ import annotations
@@ -54,10 +55,14 @@ VERDICTS = ("ok", "problem", "discuss")
 
 QA_HEALTH: dict[str, Any] = {
     "runs": 0, "days_sampled": 0, "picked": 0, "suspicious": 0, "emailed": 0, "email_failed": 0,
-    "no_recipients": 0, "last_day": None, "verdicts": 0,
+    "no_recipients": 0, "last_day": None, "verdicts": 0, "save_failed": 0, "operators_unreadable": 0,
+    "email_retries": 0,
 }
+EMAIL_TRIES = 12   # one a scheduler tick (5 min): an hour of retries for the day's e-mail, per process
 
 _done_days: set[str] = set()
+_emailed_days: set[str] = set()
+_email_tries: dict[str, int] = {}
 _rng = secrets.SystemRandom()
 
 
@@ -224,15 +229,34 @@ async def run_qa_sample(now: Optional[datetime] = None) -> dict:
     day = day_to_sample(now)
     if not day:
         return {"state": "not_yet"}
-    if day in _done_days:
+    if day in _done_days and day in _emailed_days:
         return {"state": "done", "day": day}
     QA_HEALTH["runs"] += 1
     start, _end = day_bounds(day)
-    earlier = await db.get_audit_rows(["qa_sample_picked", "qa_sample_empty"], start.isoformat())
-    if any((r.get("details") or {}).get("day") == day for r in earlier):
+    earlier = await db.get_audit_rows(["qa_sample_done", "qa_sample_empty", "qa_sample_emailed"], start.isoformat())
+    marks = {r.get("action") for r in earlier if (r.get("details") or {}).get("day") == day}
+    if "qa_sample_emailed" in marks:
+        _emailed_days.add(day)
+    if marks & {"qa_sample_done", "qa_sample_empty"}:
         _done_days.add(day)
+        if day not in _emailed_days:
+            return await _email_again(day)
         return {"state": "done", "day": day}
     return await _sample(day, now)
+
+
+async def _email_again(day: str) -> dict:
+    """The day's sample is saved but its e-mail did not go: try again, a few times, from what was saved."""
+    tries = _email_tries.get(day, 0)
+    if tries >= EMAIL_TRIES:
+        return {"state": "done", "day": day, "emailed": False}
+    _email_tries[day] = tries + 1
+    QA_HEALTH["email_retries"] += 1
+    items = (await sample_of(day))["items"]
+    picked = [{"chat_number": i["chat_number"], "agent_id": i["agent_id"], "reasons": [r["code"] for r in i["reasons"]]}
+              for i in items]
+    await _email_and_mark(day, picked)
+    return {"state": "done", "day": day, "emailed": day in _emailed_days}
 
 
 async def _sample(day: str, now: datetime) -> dict:
@@ -244,33 +268,59 @@ async def _sample(day: str, now: datetime) -> dict:
     start, end = day_bounds(day)
     foreign: set[str] = set()
     if chats:
-        contact = {r["conversation_id"]: (r.get("visitor_phone"), r.get("visitor_email")) for r in chats}
+        # The client's own: the placed phone, the e-mail, and a number kept to check (their words, not a leak).
+        contact = {r["conversation_id"]: (r.get("visitor_phone"), r.get("visitor_email"), r.get("phone_to_check"))
+                   for r in chats}
         for m in await db.get_agent_messages(list(contact), start.isoformat(), end.isoformat()):
-            phone, email = contact.get(m.get("conversation_id"), (None, None))
-            if foreign_contact_kinds(m.get("content"), phone, email):
+            phone, email, to_check = contact.get(m.get("conversation_id"), (None, None, None))
+            if foreign_contact_kinds(m.get("content"), phone, email, also_own=(to_check,)):
                 foreign.add(m["conversation_id"])
-    agents = await db.get_operator_rows() or []
+    agents = await db.get_operator_rows()
+    if agents is None:
+        # "Nobody" and "could not read" differ (rule 7): without the team, the new agents' half can't be
+        # drawn. Nothing is saved; the next tick tries again.
+        QA_HEALTH["operators_unreadable"] += 1
+        logger.error(f"[qa-sample] {day}: the team could not be read, sampled later")
+        return {"state": "unreadable", "day": day}
     new_agents = {a["id"] for a in agents if (_at(a.get("created_at")) or now) > now - timedelta(days=NEW_AGENT_DAYS)}
     picked = pick(chats, now=now, foreign_in=foreign, low_rate=low_rate_agents(rows, now),
                   new_agents=new_agents, percent=max(0, min(100, int(flag("QA_SAMPLE_PERCENT", 15)))))
-    for p in picked:
-        await db.log_audit(None, None, "qa_sample_picked", "conversations", p["conversation_id"],
-                           {"day": day, "reasons": p["reasons"], "agent_id": p["agent_id"],
-                            "lead_id": p["lead_id"], "chat_number": p["chat_number"]})
-    if not picked:
-        await db.log_audit(None, None, "qa_sample_empty", "conversations", None, {"day": day, "chats": len(chats)})
+    # The picks and the day's "done" go in ONE insert: all of them or none, so a day is never marked sampled
+    # with half its picks; a failed save leaves the day to the next tick, whole.
+    records = [{"action": "qa_sample_picked", "target_table": "conversations", "target_id": p["conversation_id"],
+                "details": {"day": day, "reasons": p["reasons"], "agent_id": p["agent_id"], "lead_id": p["lead_id"],
+                            "chat_number": p["chat_number"]}} for p in picked]
+    records.append({"action": "qa_sample_done", "target_table": "conversations",
+                    "details": {"day": day, "chats": len(chats), "picked": len(picked)}})
+    try:
+        await db.insert_audit_rows_strict(records)
+    except Exception as e:
+        QA_HEALTH["save_failed"] += 1
+        logger.error(f"[qa-sample] {day}: the sample was not saved, sampled again later ({type(e).__name__}: {e})")
+        return {"state": "save_failed", "day": day}
     _done_days.add(day)
     suspicious = sum(1 for p in picked if p["reasons"] != ["random"])
     QA_HEALTH.update({"days_sampled": QA_HEALTH["days_sampled"] + 1, "last_day": day})
     QA_HEALTH["picked"] += len(picked)
     QA_HEALTH["suspicious"] += suspicious
-    if picked:
-        await _email(day, picked)
+    await _email_and_mark(day, picked)
     logger.info(f"[qa-sample] {day}: {len(picked)} of {len(chats)} chats ({suspicious} that look wrong)")
     return {"state": "sampled", "day": day, "chats": len(chats), "picked": len(picked), "suspicious": suspicious}
 
 
-async def _email(day: str, picked: list[dict]) -> None:
+async def _email_and_mark(day: str, picked: list[dict]) -> None:
+    """The day's e-mail, and a qa_sample_emailed row once it is done with (sent, or nothing to send or nobody to
+    send it to): a day whose e-mail failed is tried again by the next ticks (_email_again)."""
+    from app.db import supabase as db
+
+    if picked and not await _email(day, picked):
+        return
+    _emailed_days.add(day)
+    await db.log_audit(None, None, "qa_sample_emailed", "conversations", None, {"day": day, "picked": len(picked)})
+
+
+async def _email(day: str, picked: list[dict]) -> bool:
+    """True when the e-mail went, or there is nobody with the qa role to send it to; False to try again."""
     from app.db import supabase as db
     from app.services.email import send_qa_sample_email
 
@@ -279,18 +329,19 @@ async def _email(day: str, picked: list[dict]) -> None:
         names = await db.get_user_names()
     except Exception as e:
         QA_HEALTH["email_failed"] += 1
-        logger.error(f"[qa-sample] {day}: recipients not read, no e-mail ({type(e).__name__}: {e})")
-        return
+        logger.error(f"[qa-sample] {day}: recipients not read, no e-mail yet ({type(e).__name__}: {e})")
+        return False
     if not to:
         QA_HEALTH["no_recipients"] += 1
         logger.warning(f"[qa-sample] {day}: nobody has the qa role, no e-mail")
-        return
+        return True
     lines = [{"chat_number": p["chat_number"], "agent": names.get(p["agent_id"] or "", ""),
               "reasons": [REASONS.get(r, r) for r in p["reasons"]]} for p in picked]
     if await send_qa_sample_email(to, day, lines):
         QA_HEALTH["emailed"] += 1
-    else:
-        QA_HEALTH["email_failed"] += 1
+        return True
+    QA_HEALTH["email_failed"] += 1
+    return False
 
 
 # ── the page ────────────────────────────────────────────────────
@@ -332,8 +383,12 @@ async def give_verdict(day: str, conversation_id: str, verdict: str, note: Optio
     sample = await sample_of(day)
     if not any(i["conversation_id"] == conversation_id for i in sample["items"]):
         raise ValueError("This chat is not in that day's sample")
-    await db.log_audit(user.get("id"), user.get("email"), "qa_verdict", "conversations", conversation_id,
-                       {"day": day, "verdict": verdict, "note": (note or "").strip()[:1000] or None})
+    # The verdict IS the record: a write that fails raises (the route answers 503), never a silent success.
+    await db.insert_audit_rows_strict([{
+        "action": "qa_verdict", "target_table": "conversations", "target_id": conversation_id,
+        "user_id": user.get("id"), "user_email": user.get("email"),
+        "details": {"day": day, "verdict": verdict, "note": (note or "").strip()[:1000] or None},
+    }])
     QA_HEALTH["verdicts"] += 1
 
 
@@ -342,12 +397,19 @@ async def stats(days: int, now: Optional[datetime] = None) -> list[dict]:
     from app.db import supabase as db
 
     now = now or datetime.now(timezone.utc)
-    rows = await db.get_audit_rows(["qa_sample_picked", "qa_verdict"], (now - timedelta(days=days + 1)).isoformat())
+    # The last `days` sampled days, by the day each pick names (yesterday in New York and back): a pick is
+    # written the morning after its day, so reading by write time alone took in one day too many.
+    last = now.astimezone(_ny()).date() - timedelta(days=1)
+    wanted = {(last - timedelta(days=i)).isoformat() for i in range(days)}
+    first_start, _ = day_bounds(min(wanted))
+    rows = await db.get_audit_rows(["qa_sample_picked", "qa_verdict"], first_start.isoformat())
     names = await db.get_user_names()
     agent_of: dict[tuple, str] = {}
     verdict_of: dict[tuple, str] = {}
     for r in rows:
         d = r.get("details") or {}
+        if d.get("day") not in wanted:
+            continue
         key = (d.get("day"), r.get("target_id"))
         if r.get("action") == "qa_sample_picked" and d.get("agent_id"):
             agent_of[key] = d["agent_id"]

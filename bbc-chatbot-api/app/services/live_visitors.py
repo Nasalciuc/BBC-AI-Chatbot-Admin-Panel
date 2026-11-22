@@ -41,7 +41,8 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 PASS_NEW_PER_ADDRESS = 20   # new visitor ids one address gets passes for in an hour (pass.lua ARGV[3])
 
 LIVE_HEALTH: dict = {"tokens": 0, "sent": 0, "refused": 0, "send_failed": 0, "taps": 0, "taps_refused": 0,
-                     "tap_failed": 0, "redis_failed": 0, "passes": 0, "passes_refused": 0, "pass_failed": 0}
+                     "tap_failed": 0, "release_failed": 0, "redis_failed": 0, "passes": 0, "passes_refused": 0,
+                     "pass_failed": 0}
 
 _LUA_DIR = Path(__file__).with_name("live_lua")
 
@@ -242,15 +243,21 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
     raw = None
     try:
         raw = await r.eval(TAKE_HELLO_LUA, 1, f"live:hello:{payload['h']}")
-        if raw:
-            # The claim's place goes back to the agent at once; a release that fails runs out in 10 min.
-            await r.eval(RELEASE_LUA, 2, f"live:claim:{visitor_id}", f"live:claims:{payload['a']}",
-                         payload["a"], visitor_id)
     except Exception as e:
         redis_failed("live tap", e)
         LIVE_HEALTH["tap_failed"] += 1
         logger.error(f"[live] tap of {visitor_id} not read: {type(e).__name__}: {e}")
         return None
+    if raw:
+        # The claim's place goes back to the agent at once. The hello is taken already: a release that fails
+        # must not lose it (the claim runs out in 10 min by itself).
+        try:
+            await r.eval(RELEASE_LUA, 2, f"live:claim:{visitor_id}", f"live:claims:{payload['a']}",
+                         payload["a"], visitor_id)
+        except Exception as e:
+            redis_failed("live release", e)
+            LIVE_HEALTH["release_failed"] += 1
+            logger.warning(f"[live] the claim on {visitor_id} not released, it runs out: {type(e).__name__}: {e}")
     hello = None
     if raw:
         try:
@@ -267,11 +274,13 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
 async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str) -> dict:
     """/chat/init with live_tap: the visitor tapped an agent's hello, so the chat becomes the agent's, with the
     hello as its first message. {"agent": first name, "text": the hello}, or {} when the tap doesn't hold or the
-    agent can't take the chat: the chat then stays an ordinary one, counted, never a failure for the visitor."""
-    from app.db import supabase as db
-    from app.services.conversation_service import add_message
+    agent can't take the chat: the chat then stays an ordinary one, counted, never a failure for the visitor.
 
+    Order: the agent may still take chats; the claim; the hello stored; then the presence fields. A hello that
+    cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary."""
+    from app.db import supabase as db
     from app.services.agent_presence import _may_take_chats
+    from app.services.conversation_service import add_message
 
     hello = await take_tap(visitor_id, tap)
     if not hello:
@@ -287,20 +296,29 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
             logger.warning(f"[live] conv {conv_id}: the tapped hello's agent no longer takes chats")
             return {}
         won = (await db.claim_conversation_if_unassigned(conv_id, agent_id)).get("won")
-        if not won:
-            LIVE_HEALTH["tap_failed"] += 1
-            logger.warning(f"[live] conv {conv_id}: the tapped hello's agent could not take it")
-            return {}
-        now = datetime.now(timezone.utc).isoformat()
-        await db.patch_conversation_presence(conv_id, {
-            "engaged_agent_id": agent_id, "agent_assigned_at": now,
-            "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
-                           "tapped_at": now},
-        })
-        await add_message(conv_id, "agent", hello["text"], live_extra={
-            "agent_name": agent.get("name") or "Consultant", "agent_avatar_url": agent.get("avatar_url")})
     except Exception as e:
         LIVE_HEALTH["tap_failed"] += 1
         logger.error(f"[live] conv {conv_id}: starting with the agent failed: {type(e).__name__}: {e}")
         return {}
+    if not won:
+        LIVE_HEALTH["tap_failed"] += 1
+        logger.warning(f"[live] conv {conv_id}: the tapped hello's agent could not take it")
+        return {}
+    row = None
+    try:
+        row = await add_message(conv_id, "agent", hello["text"], live_extra={
+            "agent_name": agent.get("name") or "Consultant", "agent_avatar_url": agent.get("avatar_url")})
+    except Exception as e:
+        logger.error(f"[live] conv {conv_id}: the hello was not stored: {type(e).__name__}: {e}")
+    if not row:
+        LIVE_HEALTH["tap_failed"] += 1
+        given_back = await db.release_live_claim(conv_id, agent_id)
+        logger.error(f"[live] conv {conv_id}: the hello was not stored; the chat given back: {given_back}")
+        return {}
+    now = datetime.now(timezone.utc).isoformat()
+    await db.patch_conversation_presence(conv_id, {
+        "engaged_agent_id": agent_id, "agent_assigned_at": now,
+        "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
+                       "tapped_at": now},
+    })
     return {"agent": first_name(agent.get("name")), "text": hello["text"]}

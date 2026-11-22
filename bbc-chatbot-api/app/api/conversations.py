@@ -357,9 +357,10 @@ def _ny_midnight(day: str, *, plus_days: int = 0) -> str:
 
     try:
         d = _date.fromisoformat(day) + _td(days=plus_days)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="Dates are YYYY-MM-DD") from e
-    return _dt.combine(d, _time(0), tzinfo=ZoneInfo(_NEW_YORK)).astimezone(_tz.utc).isoformat()
+        # The instant itself can overflow too (9999-12-31 has no next day, and its New York midnight no UTC one).
+        return _dt.combine(d, _time(0), tzinfo=ZoneInfo(_NEW_YORK)).astimezone(_tz.utc).isoformat()
+    except (ValueError, OverflowError) as e:
+        raise HTTPException(status_code=400, detail="Dates are YYYY-MM-DD, in a year the calendar has") from e
 
 
 def _list_filters(user: dict, *, date_from: Optional[str], date_to: Optional[str], has_contact: Optional[bool],

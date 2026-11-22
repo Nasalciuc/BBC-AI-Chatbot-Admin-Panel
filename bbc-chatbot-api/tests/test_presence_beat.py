@@ -174,3 +174,67 @@ async def test_the_heartbeat_endpoint_writes_through_the_presence_beat(fake, clo
     assert out["success"] and out["role"] == "sales" and out["is_ready"] is True
     assert w.await_count == 1 and read.await_count == 0
     assert await ap.present_operator_ids() == {"u1"}
+
+
+
+# ── more than one process (CodeRabbit #273) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_row_changed_in_another_process_is_read_again_on_the_next_beat(fake, clock):
+    with _writes() as w:
+        await ap.beat("u1")
+        await fake.hset(ap.SHARED_KEY + "u1", "v", "renewed-by-another-process")
+        clock[0] += 5
+        await ap.beat("u1")
+    assert w.await_count == 2, "another process's forget() renewed v: this one's cached row is stale"
+
+
+@pytest.mark.asyncio
+async def test_another_viewing_id_written_elsewhere_is_written_again(fake, clock):
+    with _writes() as w:
+        await ap.beat("u1", "conv-c")
+        await fake.hset(ap.SHARED_KEY + "u1", "view", "conv-d")   # another process wrote D since
+        clock[0] += 5
+        await ap.beat("u1", "conv-c")
+    assert w.await_count == 2, "Supabase holds D: C is written again, not taken as written"
+    assert (await fake.hget(ap.SHARED_KEY + "u1", "view")) == "conv-c"
+
+
+@pytest.mark.asyncio
+async def test_forget_renews_the_version_every_process_checks(fake, clock):
+    import asyncio
+
+    with _writes() as w:
+        await ap.beat("u1")
+        before = await fake.hget(ap.SHARED_KEY + "u1", "v")
+        ap.forget("u1")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert (await fake.hget(ap.SHARED_KEY + "u1", "v")) != before
+        clock[0] += 5
+        await ap.beat("u1")
+    assert w.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_row_forgotten_while_its_write_was_out_is_not_cached(fake, clock):
+    async def write_then_forget(user_id, viewing_conversation_id=None):
+        ap.forget(user_id)   # a role change lands while this UPDATE is out
+        return dict(_OP)
+
+    with patch("app.db.supabase.update_user_last_seen", new=AsyncMock(side_effect=write_then_forget)) as w:
+        await ap.beat("u1")
+        clock[0] += 5
+        await ap.beat("u1")
+    assert w.await_count == 2, "the row from before the change is not reused"
+
+
+@pytest.mark.asyncio
+async def test_without_redis_to_ask_every_beat_writes(fake, clock):
+    fake.down = True
+    with _writes() as w:
+        await ap.beat("u1")
+        clock[0] += 5
+        await ap.beat("u1")
+    assert w.await_count == 2, "what other processes did can't be known: as before this change"

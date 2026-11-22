@@ -93,17 +93,30 @@ async def list_offers(
     lottery = lead_lottery.enabled() and role in db._OPERATOR_ROLES
     me = user.get("id")
 
+    def owner_now(row: dict) -> tuple[bool, Optional[str]]:
+        """(known, whose the lead is NOW) from the fresh read: the universe can be 20 s old, and a lead given,
+        moved or taken back since must be shown as it is now. Unknown when the fresh read can't speak for it."""
+        state = fresh.get(row.get("conversation_id")) if fresh is not None else None
+        if state is None:
+            return False, None
+        return True, state.get("assigned_agent_id") or row.get("closed_by_agent_id") or state.get("engaged_agent_id")
+
     def blind(row: dict) -> bool:
         if role not in db._OPERATOR_ROLES:
             return False
-        if lottery and owner_of(row) is None:
+        known, owner = owner_now(row)
+        if not known:
             return True
-        state = fresh.get(row.get("conversation_id")) if fresh is not None else None
-        return True if state is None else _taken_blind(user, state)
+        if lottery and owner is None:
+            return True
+        return _taken_blind(user, fresh[row.get("conversation_id")])
 
     def hidden(row: dict) -> bool:
-        owner = owner_of(row)
-        return lottery and owner is not None and owner != me
+        """Another agent's lead: route and owner only; a lead whose owner now can't be read, the same."""
+        if not lottery:
+            return False
+        known, owner = owner_now(row)
+        return not known or (owner is not None and owner != me)
 
     built = build_offers(rows, now=now, days=days, names=names, masked=role == "supervisor", blind=blind,
                          hidden=hidden)

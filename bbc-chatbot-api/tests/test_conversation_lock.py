@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -232,3 +233,38 @@ async def test_the_release_script_on_a_real_redis(real_redis):
         assert await other.get("lock:lead:c-real") == "theirs"
     finally:
         await other.aclose()
+
+
+# ── what turns Redis off for everyone (CodeRabbit #273) ─────────
+
+
+def test_a_refused_command_does_not_turn_redis_off_for_the_locks():
+    from redis.exceptions import ResponseError
+
+    from app.infra import redis_client
+
+    fake = object()
+    redis_client.set_client_for_tests(fake)
+    try:
+        with patch("config.settings.settings.redis_url", "redis://fake"):
+            before = redis_client.REDIS_HEALTH["command_errors"]
+            redis_client.redis_failed("recent", ResponseError("WRONGTYPE Operation against a key"))
+            assert redis_client.get_redis() is fake, "one refused command is no outage"
+            assert redis_client.REDIS_HEALTH["command_errors"] == before + 1
+            redis_client.redis_failed("lock", ConnectionError("connection refused"))
+            assert redis_client.get_redis() is None, "an unreachable Redis cools down for everyone"
+    finally:
+        redis_client.set_client_for_tests(None)
+
+
+def test_a_redis_url_redis_py_cannot_read_is_no_crash():
+    from app.infra import redis_client
+
+    redis_client.set_client_for_tests(None)
+    try:
+        with patch("config.settings.settings.redis_url", "redis://localhost:6379/0?socket_timeout=soon"), \
+                patch("redis.asyncio.from_url", side_effect=ValueError("bad option")):
+            assert redis_client.get_redis() is None
+            assert "client" in (redis_client.REDIS_HEALTH["last_error"] or "")
+    finally:
+        redis_client.set_client_for_tests(None)

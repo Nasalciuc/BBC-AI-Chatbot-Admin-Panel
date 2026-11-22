@@ -11,7 +11,15 @@ from app.services import conversation_lock as cl
 from app.services import lead_lottery as lot
 from tests.fake_redis import FakeRedis, compare_and_delete
 
-NOW = datetime.now(timezone.utc)
+# A fixed instant, 13:00 in New York: "today" for the counts never depends on when the suite runs (in the
+# first New York hour, an hour ago was yesterday). The module's clock is set to it in `world`.
+NOW = datetime(2026, 11, 20, 18, 0, tzinfo=timezone.utc)
+
+
+class _Clock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz else NOW.replace(tzinfo=None)
 A, B, C = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", \
     "33333333-3333-4333-8333-333333333333"
 
@@ -139,6 +147,7 @@ def world(monkeypatch):
     from config.settings import settings
 
     monkeypatch.setenv("FOLLOWUP_LOTTERY", "true")
+    monkeypatch.setattr(lot, "datetime", _Clock)
     r = FakeRedis()
     r.register(cl.RELEASE_LUA, compare_and_delete)
     monkeypatch.setattr(settings, "redis_url", "redis://fake")
@@ -161,6 +170,7 @@ def world(monkeypatch):
         "conv": patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=None)),
         "invalidate": patch("app.db.supabase.invalidate_leads_universe"),
         "update": patch("app.db.supabase.update_conversation", new=AsyncMock(return_value={"id": "c1"})),
+        "assign_to": patch("app.db.supabase.assign_closed_to", new=AsyncMock(return_value=True)),
     }
     mocks = {k: p.start() for k, p in patches.items()}
     yield state, mocks, r
@@ -260,6 +270,25 @@ async def test_a_run_held_by_another_process_is_skipped(world):
 
 
 @pytest.mark.asyncio
+async def test_a_redis_that_cannot_say_who_runs_skips_the_run(world):
+    _, m, r = world
+    r.down = True
+    assert await lot.run_lead_lottery() == {"state": "held_elsewhere"}
+    m["universe"].assert_not_awaited()
+    assert cl.LOCK_HEALTH["job_skipped_unknown"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_without_redis_configured_the_one_process_runs(world, monkeypatch):
+    from config.settings import settings
+
+    _, m, _ = world
+    monkeypatch.setattr(settings, "redis_url", "")
+    redis_client.set_client_for_tests(None)
+    assert (await lot.run_lead_lottery())["state"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_an_unconfirmed_lead_goes_back_and_the_miss_is_counted(world):
     state, m, r = world
     due = (NOW - timedelta(minutes=1)).isoformat()
@@ -270,7 +299,7 @@ async def test_an_unconfirmed_lead_goes_back_and_the_miss_is_counted(world):
     await r.zadd(f"followup:new:{A}", {"c1": 1})
     out = await lot.run_lead_lottery()
     assert out["missed"] == 1
-    m["release"].assert_awaited_once_with("c1", A)
+    m["release"].assert_awaited_once_with("c1", A, f["assigned_at"])
     written = m["patch_meta"].await_args.args[1]["followup"]
     assert written["state"] == "missed" and written["agent_id"] is None and written["misses"][0][0] == A
     assert m["audit"].await_args.args[2] == "followup_missed"
@@ -299,6 +328,7 @@ async def test_opening_a_lead_confirms_it_for_its_agent_only(world):
     assert not await lot.confirm("c1", {"id": B}, pending, "opened")
     assert not await lot.confirm("c1", {"id": A}, {**pending, "state": "acked"}, "opened")
     m["patch_meta"].assert_not_awaited()
+    m["conv"].return_value = {"id": "c1", "assigned_agent_id": A, "metadata": {"followup": pending}}
     assert await lot.confirm("c1", {"id": A}, pending, "opened")
     written = m["patch_meta"].await_args.args[1]["followup"]
     assert written["state"] == "acked" and written["acked_how"] == "opened"
@@ -312,7 +342,7 @@ async def test_a_manager_gives_a_closed_lead_without_a_timer(world):
     m["conv"].return_value = {"id": "c1", "status": "closed", "assigned_agent_id": A, "metadata": {}}
     f = await lot.give_by_hand("c1", _agent(B), {"id": "mgr", "role": "admin"})
     assert f["state"] == "manual" and f["agent_id"] == B and "ack_by" not in f
-    m["update"].assert_awaited_once_with("c1", {"assigned_agent_id": B})
+    m["assign_to"].assert_awaited_once_with("c1", B)
     assert await r.zscore(f"followup:new:{B}", "c1") is not None
 
 
@@ -325,7 +355,79 @@ async def test_an_open_chat_is_not_given_here(world):
     with pytest.raises(ValueError):
         m["conv"].return_value = {"id": "c1", "status": "closed", "metadata": {}}
         await lot.give_by_hand("c1", _agent(B, chat_enabled=False), {"id": "mgr"})
-    m["update"].assert_not_awaited()
+    m["assign_to"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reopened_before_the_hand_give_is_not_given(world):
+    """The write itself holds only while the chat is closed: a status read before it does not close the race."""
+    _, m, r = world
+    m["conv"].return_value = {"id": "c1", "status": "closed", "metadata": {}}
+    m["assign_to"].return_value = False
+    with pytest.raises(ValueError):
+        await lot.give_by_hand("c1", _agent(B), {"id": "mgr"})
+    m["patch_meta"].assert_not_awaited()
+    assert await r.zscore(f"followup:new:{B}", "c1") is None
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_read_before_a_manager_moved_the_chat_does_nothing(world):
+    _, m, _ = world
+    pending = {"state": "pending", "agent_id": A, "by": "lottery", "misses": []}
+    m["conv"].return_value = {"id": "c1", "assigned_agent_id": B,
+                              "metadata": {"followup": {"state": "manual", "agent_id": B}}}
+    assert not await lot.confirm("c1", {"id": A}, pending, "opened")
+    m["patch_meta"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_assignment_whose_clock_was_not_saved_is_given_back(world):
+    state, m, r = world
+    m["patch_meta"].return_value = False
+    out = await lot.run_lead_lottery()
+    assert out["assigned"] == 0
+    m["release"].assert_awaited_once()
+    assert m["release"].await_args.args[:2] == ("c1", m["assign"].await_args.args[1])
+    assert all(c.args[2] != "followup_assigned" for c in m["audit"].await_args_list)
+    assert lot.LOTTERY_HEALTH["patch_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_release_that_landed_without_its_miss_is_repaired(world):
+    """An earlier run released the chat but could not write the miss: still "pending", nobody's. This run writes
+    the miss without releasing anything, and the lead is a candidate again."""
+    state, m, _ = world
+    f = {"state": "pending", "agent_id": A, "by": "lottery", "assigned_at": (NOW - timedelta(minutes=16)).isoformat(),
+         "ack_by": (NOW - timedelta(minutes=1)).isoformat(), "misses": []}
+    state["rows"] = [_row(followup=f)]
+    m["conv"].return_value = {"id": "c1", "assigned_agent_id": None, "metadata": {"followup": f}}
+    out = await lot.run_lead_lottery()
+    assert out["missed"] == 1 and lot.LOTTERY_HEALTH["repaired"] == 1
+    m["release"].assert_not_awaited()
+    written = m["patch_meta"].await_args_list[0].args[1]["followup"]
+    assert written["state"] == "missed" and written["agent_id"] is None
+    assert lot.is_candidate({**state["rows"][0], "followup": written})
+
+
+@pytest.mark.asyncio
+async def test_the_burst_counts_chats_within_a_run_as_across_runs(world, monkeypatch):
+    """Burst 3. A client with two chats, then two clients with one: A, the least loaded, takes the first two
+    clients (three chats) and is then full; the third client goes to B. Counted per client, A would have taken
+    all three."""
+    state, m, _ = world
+    monkeypatch.setenv("FOLLOWUP_BURST", "3")
+    busy_b = [_row(f"b{i}", followup={"by": "lottery", "agent_id": B, "assigned_at": (NOW - timedelta(hours=3)).isoformat()},
+                   assigned_agent_id=B, visitor_email=f"b{i}@example.com") for i in range(5)]
+    state["rows"] = [
+        _row("c1", visitor_email="first@example.com", created_at=(NOW - timedelta(hours=3)).isoformat()),
+        _row("c2", visitor_email="first@example.com", created_at=(NOW - timedelta(hours=3)).isoformat()),
+        _row("c3", visitor_email="second@example.com", created_at=(NOW - timedelta(minutes=150)).isoformat()),
+        _row("c4", visitor_email="third@example.com", created_at=(NOW - timedelta(minutes=140)).isoformat()),
+        *busy_b,
+    ]
+    await lot.run_lead_lottery()
+    given = {c.args[0]: c.args[1] for c in m["assign"].await_args_list}
+    assert given == {"c1": A, "c2": A, "c3": A, "c4": B}
 
 
 @pytest.mark.asyncio

@@ -412,7 +412,9 @@ def test_the_route_answers_in_the_admin_shape(redis):
         ok = c.post("/api/live/send", json={"visitor_id": VID, "text": "Hi there, can I help?"})
         again = c.post("/api/live/send", json={"visitor_id": VID, "text": "Hi there, can I help?"})
     assert ok.status_code == 200 and ok.json()["success"] is True and ok.json()["data"]["hello_id"]
-    assert again.status_code == 409 and "already" in again.json()["detail"]
+    refused = again.json()
+    assert again.status_code == 409 and refused["success"] is False and refused["count"] == 0
+    assert refused["code"] == "already" and "already" in refused["error"] and refused["data"] is None
 
 
 # ── the tap ─────────────────────────────────────────────────────────
@@ -451,7 +453,7 @@ def _request():
     return req
 
 
-def _init_patches(claim_won=True, agent_row=None):
+def _init_patches(claim_won=True, agent_row=None, stored=True):
     row = {**SALES_DB, "avatar_url": None} if agent_row is None else agent_row
     return [
         patch("app.api.chat.is_blocked", new=AsyncMock(return_value=False)),
@@ -459,21 +461,23 @@ def _init_patches(claim_won=True, agent_row=None):
         patch("app.db.supabase.claim_conversation_if_unassigned", new=AsyncMock(return_value={"won": claim_won})),
         patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)),
         patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=row)),
-        patch("app.services.conversation_service.db.add_message", new=AsyncMock(return_value={"id": "m1"})),
+        patch("app.services.conversation_service.db.add_message",
+              new=AsyncMock(return_value={"id": "m1"} if stored else None)),
+        patch("app.db.supabase.release_live_claim", new=AsyncMock(return_value=True)),
     ]
 
 
-async def _init(payload, claim_won=True, agent_row=None):
+async def _init(payload, claim_won=True, agent_row=None, stored=True):
     from app.api.chat import chat_init
 
-    ps = _init_patches(claim_won, agent_row)
+    ps = _init_patches(claim_won, agent_row, stored)
     mocks = [p.start() for p in ps]
     try:
         res = await chat_init(payload, _request(), None)
     finally:
         for p in ps:
             p.stop()
-    return res, dict(zip(["blocked", "conv", "claim", "meta", "user", "add"], mocks))
+    return res, dict(zip(["blocked", "conv", "claim", "meta", "user", "add", "give_back"], mocks))
 
 
 @pytest.mark.asyncio
@@ -518,6 +522,62 @@ async def test_a_hello_from_an_agent_who_no_longer_takes_chats_starts_an_ordinar
     m["claim"].assert_not_awaited()
     m["add"].assert_not_awaited()
     assert live_visitors.LIVE_HEALTH["taps_refused"] == 1 and live_visitors.LIVE_HEALTH["tap_failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_hello_that_cannot_be_stored_gives_the_chat_back(redis):
+    """After the claim the hello is the chat's first message; when it can't be stored the chat goes back to the
+    line (unassigned, AI), so the visitor's ordinary opening is what the database says too."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), stored=False)
+    assert res.conversation_id == "c1" and res.live_agent is None and res.live_hello is None
+    m["claim"].assert_awaited_once_with("c1", AGENT)
+    m["give_back"].assert_awaited_once_with("c1", AGENT)
+    m["meta"].assert_not_awaited()
+    assert live_visitors.LIVE_HEALTH["tap_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stored_hello_never_gives_the_chat_back(redis):
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
+    assert res.live_agent == "Ana"
+    m["give_back"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_keeps_the_hello_it_took(redis):
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+
+    def release_fails(fake, keys, args):
+        raise ConnectionError("redis went away mid-tap")
+
+    redis.register(live_visitors.RELEASE_LUA, release_fails)
+    hello = await live_visitors.take_tap(VID, tap)
+    assert hello and hello["agent_id"] == AGENT, "the hello taken is the visitor's, release or not"
+    assert live_visitors.LIVE_HEALTH["release_failed"] == 1 and live_visitors.LIVE_HEALTH["tap_failed"] == 0
+
+
+@pytest.mark.parametrize("row, gets", [
+    (None, False), ({"role": ""}, False), ({"role": "sales", "is_active": False}, False),
+    ({"role": "support"}, False), ({"role": "sales", "tunnel_scope": "sales", "is_active": True}, True),
+    ({"role": "supervisor"}, True),
+])
+def test_the_list_pass_follows_the_database_row_not_the_session(configured, row, gets):
+    from app.api.agent import _live_for
+
+    session = {"id": AGENT, "role": "sales", "tunnel_scope": "sales"}
+    assert (_live_for(session, row) is not None) is gets
 
 
 @pytest.mark.asyncio

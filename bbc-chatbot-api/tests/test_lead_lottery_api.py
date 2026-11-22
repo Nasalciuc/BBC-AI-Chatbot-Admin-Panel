@@ -47,13 +47,50 @@ def lottery_on(monkeypatch):
     monkeypatch.setenv("FOLLOWUP_LOTTERY", "true")
 
 
-def _universe(rows):
+def _universe(rows, now=None):
+    """The universe as cached, and the chats as they are now (`now`: {cid: overrides}, else as cached)."""
+    by_id = {r["conversation_id"]: r for r in rows}
+
+    def fresh(ids):
+        out = {}
+        for i in ids:
+            r = by_id.get(i, {})
+            out[i] = {"id": i, "status": r.get("conversation_status", "closed"), "mode": r.get("conversation_mode"),
+                      "assigned_agent_id": r.get("assigned_agent_id"), "engaged_agent_id": r.get("engaged_agent_id"),
+                      **((now or {}).get(i) or {})}
+        return out
+
     return patch.multiple(
         db,
         get_leads_universe=AsyncMock(return_value=rows),
         get_user_names=AsyncMock(return_value={ME: "Me Agent", OTHER: "Other Agent"}),
-        get_blind_inputs_many=AsyncMock(side_effect=lambda ids: {i: {"id": i, "status": "closed"} for i in ids}),
+        get_blind_inputs_many=AsyncMock(side_effect=fresh),
     )
+
+
+def test_a_lead_moved_to_another_agent_hides_its_contact_before_the_cache_knows(lottery_on):
+    with _universe([_lead(assigned_agent_id=ME)], now={C1: {"assigned_agent_id": OTHER}}):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert row["hidden"] and row["email"] is None
+
+
+def test_a_lead_taken_back_is_nobodys_before_the_cache_knows(lottery_on):
+    with _universe([_lead(assigned_agent_id=ME)], now={C1: {"assigned_agent_id": None}}):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert row["blind"] and row["email"] is None
+
+
+def test_a_lead_whose_owner_now_cannot_be_read_keeps_its_contact(lottery_on):
+    with _universe([_lead(assigned_agent_id=ME)]), \
+            patch.object(db, "get_blind_inputs_many", new=AsyncMock(side_effect=RuntimeError("down"))):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert row["email"] is None
+
+
+def test_an_engaged_agent_is_named_as_the_owner(lottery_on):
+    with _universe([_lead(engaged_agent_id=OTHER)]):
+        row = _client(offers.router).get("/api/offers").json()["data"]["waiting"][0]
+    assert row["hidden"] and row["agent_name"] == "Other Agent"
 
 
 def test_with_the_lottery_on_another_agents_lead_shows_route_and_owner_only(lottery_on):
@@ -199,3 +236,19 @@ def test_an_open_chat_is_refused_with_the_reason():
             patch("app.services.lead_lottery.give_by_hand", new=AsyncMock(side_effect=ValueError("Only a closed chat"))):
         resp = _client(followups.router, role="admin").post(f"/api/followups/{C1}/assign", json={"agent_id": OTHER})
     assert resp.status_code == 400 and "closed" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("agent_team, status", [("team-1", 200), ("team-2", 403), (None, 403)])
+def test_a_supervisor_gives_only_to_an_agent_of_their_teams(agent_team, status):
+    """The chat's team was checked; the agent's was not, so a team's lead could go to any team's agent."""
+    agent = {"id": OTHER, "role": "sales", "is_active": True, "chat_enabled": True, "tunnel_scope": "sales",
+             "team_id": agent_team}
+    given = AsyncMock(return_value={"state": "manual", "agent_id": OTHER, "by": "manual"})
+    with patch.object(db, "get_conversation_simple", new=AsyncMock(return_value={"id": C1, "team_id": "team-1"})), \
+            patch.object(db, "get_team_ids_for_supervisor", new=AsyncMock(return_value=["team-1"])), \
+            patch.object(db, "get_operator_rows", new=AsyncMock(return_value=[agent])), \
+            patch("app.services.lead_lottery.give_by_hand", new=given):
+        resp = _client(followups.router, role="supervisor").post(f"/api/followups/{C1}/assign",
+                                                                  json={"agent_id": OTHER})
+    assert resp.status_code == status
+    assert given.await_count == (1 if status == 200 else 0)

@@ -421,9 +421,14 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
 
 
 def _live_for(user: dict, user_db: Optional[dict]) -> Optional[dict]:
+    """The live-list pass, for the role the database gives now: no row, no role or an inactive row, no pass
+    (a session signed hours ago does not decide it)."""
     from app.services import live_visitors
 
-    who = {**user, **{k: user_db[k] for k in ("role", "tunnel_scope") if user_db and user_db.get(k)}}
+    role = (user_db or {}).get("role")
+    if not role or (user_db or {}).get("is_active") is False:
+        return None
+    who = {**user, "role": role, "tunnel_scope": (user_db or {}).get("tunnel_scope") or role}
     return live_visitors.heartbeat_live(who)
 
 

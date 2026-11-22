@@ -32,6 +32,7 @@ SOCKET_TIMEOUT_S = 1.0
 REDIS_HEALTH: dict[str, Any] = {
     "configured": False,
     "errors": 0,
+    "command_errors": 0,
     "skipped_cooling_down": 0,
     "last_error": None,
 }
@@ -58,22 +59,41 @@ def get_redis(*, even_cooling_down: bool = False) -> Any:
     if _client is None:
         import redis.asyncio as aioredis
 
-        _client = aioredis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_timeout=SOCKET_TIMEOUT_S,
-            socket_connect_timeout=SOCKET_TIMEOUT_S,
-            health_check_interval=30,
-        )
+        try:
+            _client = aioredis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_timeout=SOCKET_TIMEOUT_S,
+                socket_connect_timeout=SOCKET_TIMEOUT_S,
+                health_check_interval=30,
+            )
+        except Exception as e:
+            # A REDIS_URL redis-py cannot read (an option of the wrong type): every caller goes on without Redis,
+            # as when it is down. The URL is not logged: it can carry the password.
+            logger.error(f"[redis] the client could not be made from REDIS_URL: {type(e).__name__}")
+            redis_failed("client", e)
+            return None
     return _client
 
 
+def _unreachable(err: BaseException) -> bool:
+    """A failure of the connection (Redis away or slow), not of one command."""
+    from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
+
+    return isinstance(err, (RedisConnectionError, RedisTimeoutError, OSError, TimeoutError))
+
+
 def redis_failed(where: str, err: BaseException) -> None:
-    """A Redis call failed: every caller skips Redis for COOLDOWN_S. The caller logs."""
+    """A Redis call failed. When Redis is unreachable every caller skips it for COOLDOWN_S; a command Redis
+    refused (a wrong type, a script error) is counted without turning Redis off for the other callers, the
+    locks above all. The caller logs."""
     global _down_until
-    _down_until = time.monotonic() + COOLDOWN_S
     REDIS_HEALTH["errors"] += 1
     REDIS_HEALTH["last_error"] = f"{where}: {type(err).__name__}"
+    if _unreachable(err):
+        _down_until = time.monotonic() + COOLDOWN_S
+    else:
+        REDIS_HEALTH["command_errors"] += 1
 
 
 def set_client_for_tests(client: Any) -> None:

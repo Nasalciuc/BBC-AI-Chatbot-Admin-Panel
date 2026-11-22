@@ -50,6 +50,7 @@ def test_a_day_across_the_clock_change_is_still_a_new_york_day():
 @pytest.mark.parametrize("kw, status", [
     ({"date_from": "2026-11-21", "date_to": "2026-11-20"}, 400),
     ({"date_from": "2026-02-30"}, 400),
+    ({"date_to": "9999-12-31"}, 400),
     ({"agent": "not-a-uuid"}, 400),
 ])
 def test_a_wrong_filter_is_refused(kw, status):
@@ -181,10 +182,16 @@ def _chat(**kw):
     (_chat(), False),
     (_chat(visitor_email="", visitor_phone="", metadata={"phone_to_check": ""}), False),
     (_chat(metadata=None), False),
+    (_chat(metadata={"phone_to_check": "   "}), False),
+    (_chat(visitor_email=" \t ", visitor_phone="  "), False),
+    (_chat(visitor_email="  dana@example.com  "), True),
 ])
 def test_has_contact_is_the_rows_own_has_contact(row, has):
     assert _keeps({"has_contact": True}, row)[0] is has
     assert _keeps({"has_contact": False}, row)[0] is (not has)
+    from app.api.conversations import _has_contact
+
+    assert _has_contact(row) is has, "the filter and the row's own answer agree"
 
 
 def test_the_days_bound_the_creation_time():
@@ -245,3 +252,60 @@ def test_the_source_chip_reaches_the_query(source, meta):
     row = _chat(metadata=meta)
     for chip in chat_search.SOURCES:
         assert _keeps({"source": chip}, row)[0] is (chip == source), (chip, meta)
+
+
+# ── CodeRabbit #273: the guard and the narrowed message search, held to rows ──
+
+
+class _MsgRecorder(_Recorder):
+    pass
+
+
+def _message_calls(**kw):
+    q = _MsgRecorder()
+    client = MagicMock()
+    client.table.return_value = q
+    with patch.object(db, "get_client", return_value=client), \
+            patch.object(db, "_queued_at_column_available", return_value=True):
+        asyncio.run(db.search_messages("Lisbon", since_iso="2026-11-01T00:00:00+00:00", **kw))
+    return q.calls
+
+
+@pytest.mark.parametrize("conv, kept", [
+    ({"tunnel": "sales", "status": "closed", "assigned_agent_id": OTHER}, True),
+    ({"tunnel": "support", "status": "closed", "assigned_agent_id": OTHER}, False),
+    ({"tunnel": "sales", "status": "needs_agent", "mode": "ai", "assigned_agent_id": None}, False),
+    ({"tunnel": "sales", "status": "active", "mode": "ai", "assigned_agent_id": None,
+      "queued_at": "2026-11-20T09:00:00+00:00"}, False),
+    ({"tunnel": "sales", "status": "active", "mode": "human", "assigned_agent_id": None,
+      "metadata": {"engaged_agent_id": ME}}, True),
+])
+def test_the_message_search_keeps_only_what_the_agent_may_read_before_its_limit(conv, kept):
+    calls = _message_calls(tunnel="sales", blind_viewer=ME)
+    select = next(a[0] for n, a, _ in calls if n == "select")
+    assert "conversations!inner(" in select
+    row = {"role": "user", "content": "to Lisbon", "created_at": "2026-11-20T10:00:00+00:00",
+           "conversations": [{"queued_at": None, "metadata": {}, "mode": "ai", **conv}]}
+    assert query_keeps(calls, row, embed="conversations") is kept
+
+
+def test_a_manager_s_message_search_is_not_narrowed():
+    calls = _message_calls()
+    select = next(a[0] for n, a, _ in calls if n == "select")
+    assert "conversations" not in select and not any(n == "or_" for n, _, _ in calls)
+
+
+def test_on_the_legacy_columns_a_chat_waiting_by_queued_at_stays_blind():
+    """The legacy projection (the supervisor columns gone, 034's queued_at still there) keeps the queue."""
+    waiting = _chat(status="active", assigned_agent_id=None, queued_at="2026-11-20T09:00:00+00:00",
+                    metadata={"utm_source": "kayak"}, leads=[{"origin_code": "JFK", "destination_code": "IST"}])
+    q = _Recorder()
+    client = MagicMock()
+    client.table.return_value = q
+    with patch.object(db, "get_client", return_value=client), \
+            patch.object(db, "_supervisor_columns_available", return_value=False), \
+            patch.object(db, "_queued_at_column_available", return_value=True), \
+            patch.object(db, "_get_lead_completeness_inputs", new=AsyncMock(return_value={})), \
+            patch.object(db, "enrich_conversations_agent_info", new=AsyncMock(side_effect=lambda r: r)):
+        asyncio.run(db.get_conversations(filters={"source": "kayak"}, blind_viewer=ME))
+    assert query_keeps(q.calls, waiting) is False

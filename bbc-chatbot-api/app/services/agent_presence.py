@@ -23,13 +23,18 @@ Now a beat:
     the heartbeat reads role, readiness and scope from it. forget(user_id) drops it
     (db.update_user calls it), so Ready or a role change shows on the next beat.
 
-HEARTBEAT_DB_EVERY_S=0 writes every beat, as before this change.
+With more than one process, what one process cached must not outlive a change another made: Redis
+holds, per user, presence:u:<id> {v: a token forget() renews, view: the viewing id last written to
+Supabase}. A beat reuses its row only while both still match what it cached; when Redis can't say, it
+writes, as before this change. HEARTBEAT_DB_EVERY_S=0 writes every beat, as before this change.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+import uuid
 from typing import Optional
 
 from app.flags import flag
@@ -38,7 +43,9 @@ from app.infra.redis_client import get_redis, redis_failed
 logger = logging.getLogger(__name__)
 
 PRESENCE_KEY = "presence:operators"
+SHARED_KEY = "presence:u:"   # + user id: {v, view}, what every process's cached row is checked against
 _KEEP_S = 24 * 3600  # scores older than a day are dropped as beats come in
+_UNCHANGED = object()  # _to_redis: no write to Supabase this beat, the shared view stays
 
 AGENT_PRESENCE_HEALTH: dict[str, int] = {
     "beats": 0,
@@ -47,15 +54,56 @@ AGENT_PRESENCE_HEALTH: dict[str, int] = {
     "db_write_failed": 0,
     "redis_written": 0,
     "redis_failed": 0,
+    "shared_unknown": 0,    # Redis couldn't say what other processes did: written, not reused
 }
 
-# user id -> (the row the last write returned, monotonic time of the write, viewing id written)
-_LAST_WRITE: dict[str, tuple[dict, float, Optional[str]]] = {}
+# user id -> (the row the last write returned, monotonic time of the write, viewing id written, the shared v)
+_LAST_WRITE: dict[str, tuple[dict, float, Optional[str], str]] = {}
+# user id -> how many times forget() ran here: a write that started before one is not cached after it
+_GEN: dict[str, int] = {}
+_BUMPS: set = set()
 
 
 def forget(user_id: str) -> None:
-    """The user's row changed: the next beat writes and reads it again."""
+    """The user's row changed: the next beat, in this process and in every other, writes and reads it again."""
     _LAST_WRITE.pop(user_id, None)
+    _GEN[user_id] = _GEN.get(user_id, 0) + 1
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError as e:
+        logger.warning(f"[presence] {user_id}: no loop to tell the other processes ({e}); they see it within the window")
+        return
+    task = loop.create_task(_renew_version(r, user_id))
+    _BUMPS.add(task)
+    task.add_done_callback(_BUMPS.discard)
+
+
+async def _renew_version(r, user_id: str) -> None:
+    try:
+        await r.hset(SHARED_KEY + user_id, "v", uuid.uuid4().hex)
+        await r.expire(SHARED_KEY + user_id, _KEEP_S)
+    except Exception as e:
+        redis_failed("presence version", e)
+        AGENT_PRESENCE_HEALTH["redis_failed"] += 1
+        logger.warning(f"[presence] {user_id}: the other processes not told of the change ({type(e).__name__}: {e})")
+
+
+async def _shared(user_id: str) -> Optional[tuple[str, Optional[str]]]:
+    """(v, view) as Redis holds them for this user, or None when Redis can't say."""
+    r = get_redis()
+    if r is None:
+        return None
+    try:
+        h = await r.hgetall(SHARED_KEY + user_id) or {}
+    except Exception as e:
+        redis_failed("presence shared read", e)
+        AGENT_PRESENCE_HEALTH["redis_failed"] += 1
+        logger.warning(f"[presence] {user_id}: what the other processes wrote not read ({type(e).__name__}: {e})")
+        return None
+    return str(h.get("v") or ""), (h.get("view") or None)
 
 
 def _may_take_chats(row: Optional[dict]) -> bool:
@@ -79,28 +127,44 @@ async def beat(user_id: str, viewing_conversation_id: Optional[str] = None) -> O
     viewing = viewing_conversation_id or None
     every_s = max(0, int(flag("HEARTBEAT_DB_EVERY_S", 15)))
     now = time.monotonic()
+    gen = _GEN.get(user_id, 0)
     last = _LAST_WRITE.get(user_id)
     row: Optional[dict] = None
-    if last and every_s and now - last[1] < every_s and last[2] == viewing:
+    shared = await _shared(user_id) if every_s else None
+    if shared is None and every_s:
+        AGENT_PRESENCE_HEALTH["shared_unknown"] += 1
+    reusable = (
+        last is not None and every_s and now - last[1] < every_s and last[2] == viewing
+        # ... and nothing changed elsewhere: the row (v, renewed by forget() in any process) and the viewing id
+        # Supabase holds (another process may have written another one since).
+        and shared is not None and shared[0] == last[3] and shared[1] == viewing
+    )
+    wrote = False
+    if reusable:
         row = last[0]
         AGENT_PRESENCE_HEALTH["db_skipped"] += 1
     else:
         written = await db.update_user_last_seen(user_id, viewing_conversation_id=viewing)
         if isinstance(written, dict) and written.get("id") == user_id:
             row = written
-            _LAST_WRITE[user_id] = (written, now, viewing)
+            wrote = True
+            # Cached only if no forget() ran while the write was out: a role changed meanwhile must show next beat.
+            if _GEN.get(user_id, 0) == gen:
+                _LAST_WRITE[user_id] = (written, now, viewing, shared[0] if shared else "")
             AGENT_PRESENCE_HEALTH["db_writes"] += 1
         else:
             # The write failed or matched nobody (the writer logged why). The next beat writes again;
             # meanwhile the panel is beating, so Redis still hears it, judged on the last row known.
             AGENT_PRESENCE_HEALTH["db_write_failed"] += 1
             if last:
-                _LAST_WRITE[user_id] = (last[0], float("-inf"), last[2])
-    await _to_redis(user_id, row if row is not None else (last[0] if last else None))
+                _LAST_WRITE[user_id] = (last[0], float("-inf"), last[2], last[3])
+    await _to_redis(user_id, row if row is not None else (last[0] if last else None),
+                    view=viewing if wrote else _UNCHANGED)
     return row
 
 
-async def _to_redis(user_id: str, row: Optional[dict]) -> None:
+async def _to_redis(user_id: str, row: Optional[dict], view=_UNCHANGED) -> None:
+    """The beat in presence:operators; after a write to Supabase (view given), the viewing id it holds now."""
     if row is None:
         return  # nothing known about the person yet: Redis keeps what it had
     r = get_redis()
@@ -114,6 +178,9 @@ async def _to_redis(user_id: str, row: Optional[dict]) -> None:
         else:
             pipe.zrem(PRESENCE_KEY, user_id)
         pipe.zremrangebyscore(PRESENCE_KEY, "-inf", stamp - _KEEP_S)
+        if view is not _UNCHANGED:
+            pipe.hset(SHARED_KEY + user_id, "view", view or "")
+            pipe.expire(SHARED_KEY + user_id, _KEEP_S)
         await pipe.execute()
         AGENT_PRESENCE_HEALTH["redis_written"] += 1
     except Exception as e:

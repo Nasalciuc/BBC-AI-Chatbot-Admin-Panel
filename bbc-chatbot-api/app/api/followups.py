@@ -38,6 +38,7 @@ async def give_lead(conversation_id: str, body: GiveBody, user: dict = Depends(g
             uuid.UUID(value)
         except ValueError:
             raise HTTPException(400, "Unknown chat or person")
+    team_ids: set = set()
     if role == "supervisor":
         conv = await db.get_conversation_simple(conversation_id)
         if not conv:
@@ -50,6 +51,9 @@ async def give_lead(conversation_id: str, body: GiveBody, user: dict = Depends(g
         raise HTTPException(502, "Couldn't read the team. Try again.")
     if not agents:
         raise HTTPException(404, "No agent with that id takes chats")
+    if role == "supervisor" and agents[0].get("team_id") not in team_ids:
+        # A supervisor gives within their teams only: the chat's team and the agent's.
+        raise HTTPException(403, "That agent is outside your team")
     try:
         followup = await lead_lottery.give_by_hand(conversation_id, agents[0], user)
     except LookupError as e:

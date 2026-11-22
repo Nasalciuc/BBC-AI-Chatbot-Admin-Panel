@@ -58,7 +58,7 @@ _NOT_A_PLACE = {"", "AAA"}
 LOTTERY_HEALTH: dict[str, Any] = {
     "runs": 0, "candidates": 0, "assigned": 0, "sticky": 0, "acked": 0, "missed": 0, "manual": 0,
     "lost_race": 0, "no_one_present": 0, "skipped_unreadable": 0, "skipped_held_elsewhere": 0,
-    "patch_failed": 0, "badge_failed": 0, "waiting_now": 0, "oldest_waiting_s": 0,
+    "patch_failed": 0, "badge_failed": 0, "repaired": 0, "waiting_now": 0, "oldest_waiting_s": 0,
 }
 
 _rng = secrets.SystemRandom()
@@ -250,7 +250,9 @@ async def run_lead_lottery() -> dict:
     """One run (every minute, app/services/scheduler.py). Its answer is the job's line in /health."""
     if not enabled():
         return {"state": "off"}
-    held, token = await try_job_lock("lead_lottery", ttl_ms=55_000)
+    # Skipped when Redis is configured but can't say who holds the run: two runs in two processes would both
+    # give leads out (each give is a swap, but the burst counts would be each run's own). Next minute tries again.
+    held, token = await try_job_lock("lead_lottery", ttl_ms=55_000, skip_if_unreachable=True)
     if not held:
         LOTTERY_HEALTH["skipped_held_elsewhere"] += 1
         return {"state": "held_elsewhere"}
@@ -307,15 +309,16 @@ async def _run_once(now: datetime) -> dict:
                 LOTTERY_HEALTH["no_one_present"] += 1
             left.extend(group)
             continue
-        won_any = False
+        won = 0
         for row in group:
             if await _give(row, agent, how, now):
-                won_any = True
+                won += 1
                 assigned += 1
                 sticky_n += how == "sticky"
-        if won_any:
-            today[agent] = today.get(agent, 0) + 1
-            recent[agent] = recent.get(agent, 0) + 1
+        # Counted per chat, as given_counts counts them on the next run: one unit both ways. An agent under the
+        # burst takes a client whole, however many chats it has.
+        today[agent] = today.get(agent, 0) + won
+        recent[agent] = recent.get(agent, 0) + won
     if assigned:
         db.invalidate_leads_universe()
     _waiting_gauge(left, now)
@@ -353,10 +356,12 @@ async def _give(row: dict, agent: str, how: str, now: datetime) -> bool:
         misses = list(followup_of(row).get("misses") or [])
         if not await db.patch_conversation_presence(cid, {"followup": _followup(agent, how, now, state="pending",
                                                                                  misses=misses)}):
-            # The chat is theirs (the swap landed) but says nothing about how: it reads as a manual
-            # assignment, without the 15-minute confirmation. Counted, never silent.
+            # The swap landed but the follow-up state did not: an assignment without its 15-minute clock would
+            # never come back. It is given back at once; the next run tries again.
             LOTTERY_HEALTH["patch_failed"] += 1
-            logger.error(f"[lottery] {cid} given to {agent} but its follow-up state was not saved")
+            back = await db.release_closed_if_agent(cid, agent)
+            logger.error(f"[lottery] {cid}: its follow-up state was not saved, the chat given back: {back}")
+            return False
     await db.log_audit(None, None, "followup_assigned", "conversations", cid, {"by": how, "agent_id": agent})
     await _badge(agent, add=cid)
     logger.info(f"[lottery] {cid} -> {agent} ({how})")
@@ -381,10 +386,18 @@ async def _take_back_unconfirmed(rows: list[dict], now: datetime) -> int:
             conv = await db.get_conversation_simple(cid)
             meta = (conv or {}).get("metadata") if isinstance((conv or {}).get("metadata"), dict) else {}
             fresh = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
-            if fresh.get("state") != "pending" or fresh.get("agent_id") != agent:
+            if not conv or fresh.get("state") != "pending" or fresh.get("agent_id") != agent:
                 continue  # confirmed, or changed by someone, since the universe was read
-            if (conv or {}).get("assigned_agent_id") != agent or not await db.release_closed_if_agent(cid, agent):
-                continue  # not theirs any more: a manager moved it
+            owner = conv.get("assigned_agent_id")
+            if owner == agent:
+                if not await db.release_closed_if_agent(cid, agent, fresh.get("assigned_at")):
+                    continue  # not that assignment any more, or the write failed: the next run sees again
+            elif owner:
+                continue  # someone else's now: a manager moved it
+            else:
+                # Released by an earlier run whose miss was not saved: still "pending", nobody's, never a
+                # candidate. The miss is written now, and the lead goes back to the lottery.
+                LOTTERY_HEALTH["repaired"] += 1
             misses = [*(fresh.get("misses") or []), [agent, now.isoformat()]]
             ok = await db.patch_conversation_presence(cid, {"followup": {**fresh, "state": "missed",
                                                                          "agent_id": None, "misses": misses}})
@@ -416,8 +429,16 @@ async def confirm(conversation_id: str, user: dict, followup: Optional[dict], ho
         return False
     now = datetime.now(timezone.utc)
     async with conversation_lock("followup", conversation_id):
+        # What the caller read may be stale (a manager gave the chat to someone else meanwhile): the chat is
+        # read again under the lock, and only a still-pending follow-up of this agent, still theirs, confirms.
+        conv = await db.get_conversation_simple(conversation_id)
+        meta = (conv or {}).get("metadata") if isinstance((conv or {}).get("metadata"), dict) else {}
+        fresh = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
+        if (not conv or conv.get("assigned_agent_id") != uid or fresh.get("state") != "pending"
+                or fresh.get("agent_id") != uid):
+            return False
         ok = await db.patch_conversation_presence(
-            conversation_id, {"followup": {**followup, "state": "acked", "acked_at": now.isoformat(), "acked_how": how}}
+            conversation_id, {"followup": {**fresh, "state": "acked", "acked_at": now.isoformat(), "acked_how": how}}
         )
     if not ok:
         LOTTERY_HEALTH["patch_failed"] += 1
@@ -449,8 +470,14 @@ async def give_by_hand(conversation_id: str, agent: dict, manager: dict) -> dict
     f = _followup(agent["id"], "manual", now, state="manual", misses=list(before.get("misses") or []),
                   given_by=manager.get("id"))
     async with conversation_lock("followup", conversation_id):
-        if not await db.update_conversation(conversation_id, {"assigned_agent_id": agent["id"]}):
-            raise RuntimeError("The chat could not be given. Try again.")
+        try:
+            given = await db.assign_closed_to(conversation_id, agent["id"])
+        except Exception as e:
+            logger.error(f"[lottery] {conversation_id}: giving by hand failed: {type(e).__name__}: {e}")
+            raise RuntimeError("The chat could not be given. Try again.") from e
+        if not given:
+            # Reopened since it was read: the write is conditional on the status, so it did not land.
+            raise ValueError("Only a closed chat is given here; an open one is transferred.")
         if not await db.patch_conversation_presence(conversation_id, {"followup": f}):
             LOTTERY_HEALTH["patch_failed"] += 1
             logger.error(f"[lottery] {conversation_id} given by hand but its follow-up state was not saved")

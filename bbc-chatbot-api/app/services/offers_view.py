@@ -258,7 +258,7 @@ def build_offers(
         oldest = min(_at(r.get("created_at")) for r in group)
         wished = next((r for r in group if channels(r) or refusals(r)), main)
         state = crm_state(main)
-        agent = main.get("assigned_agent_id") or main.get("closed_by_agent_id")
+        agent = owner_of(main)  # given, closed by, or the one who took the chat: the rule that hides it
         is_hidden = any(hidden(r) for r in group)
         row = _client_row(group, masked=masked, blind=any(blind(r) for r in group), hidden=is_hidden)
         row.update({

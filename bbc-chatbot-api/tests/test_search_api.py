@@ -93,6 +93,14 @@ def test_an_agent_never_finds_a_chat_waiting_blind_and_stays_in_their_tunnel():
     assert [d["conversation_id"] for d in r.json()["data"]] == ["open", "theirs", "engaged"]
 
 
+@pytest.mark.parametrize("role, tunnel, blind", [("sales", "sales", True), ("support", "support", True),
+                                                 ("owner", None, False), ("qa", None, False)])
+def test_the_tunnel_and_the_blind_take_narrow_the_query_itself(role, tunnel, blind):
+    _, found = _search(role, "Lisbon", [], [], tunnel_scope=tunnel or "all")
+    kw = found.await_args.kwargs
+    assert kw["tunnel"] == tunnel and (kw["blind_viewer"] == ME) is blind
+
+
 @pytest.mark.parametrize("role", ["supervisor", "project_manager", "viewer", ""])
 def test_who_does_not_search_the_words(role):
     r, found = _search(role, "Lisbon", [_hit("c1")], [_chat("c1")])
@@ -127,7 +135,23 @@ def test_a_failed_read_is_a_502_and_counted():
     assert r.status_code == 502 and SEARCH_HEALTH["messages_failed"] == before + 1
 
 
-def test_a_few_searches_a_minute_on_redis(redis, monkeypatch):
+@pytest.fixture
+def one_minute(monkeypatch):
+    """The limiter's clock held inside one minute: a test that crosses into the next would see the count reset."""
+    monkeypatch.setattr(search_api.time, "time", lambda: 1_795_300_000.0)
+
+
+def test_a_new_minute_starts_a_new_count(monkeypatch):
+    monkeypatch.setenv("SEARCH_MESSAGES_PER_MINUTE", "1")
+    redis_client.set_client_for_tests(None)
+    clock = {"t": 1_795_300_000.0}
+    monkeypatch.setattr(search_api.time, "time", lambda: clock["t"])
+    assert [_search("owner", "Lisbon", [], [])[0].status_code for _ in range(2)] == [200, 429]
+    clock["t"] += 60
+    assert _search("owner", "Lisbon", [], [])[0].status_code == 200
+
+
+def test_a_few_searches_a_minute_on_redis(redis, monkeypatch, one_minute):
     monkeypatch.setenv("SEARCH_MESSAGES_PER_MINUTE", "3")
     codes = [_search("owner", "Lisbon", [], [])[0].status_code for _ in range(4)]
     assert codes == [200, 200, 200, 429]
@@ -135,14 +159,14 @@ def test_a_few_searches_a_minute_on_redis(redis, monkeypatch):
     assert other.status_code == 200, "the limit is each user's own"
 
 
-def test_without_redis_the_limit_counts_in_the_process(monkeypatch):
+def test_without_redis_the_limit_counts_in_the_process(monkeypatch, one_minute):
     monkeypatch.setenv("SEARCH_MESSAGES_PER_MINUTE", "2")
     redis_client.set_client_for_tests(None)
     codes = [_search("sales", "Lisbon", [], [])[0].status_code for _ in range(3)]
     assert codes == [200, 200, 429]
 
 
-def test_a_redis_that_fails_falls_back_to_the_process(redis, monkeypatch):
+def test_a_redis_that_fails_falls_back_to_the_process(redis, monkeypatch, one_minute):
     monkeypatch.setenv("SEARCH_MESSAGES_PER_MINUTE", "1")
     redis.down = True
     codes = [_search("owner", "Lisbon", [], [])[0].status_code for _ in range(2)]

@@ -84,8 +84,12 @@ async def search_messages(q: str = Query(..., min_length=3, max_length=100), use
     since = (datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)).isoformat()
     hits: list[dict] = []
     chats: dict[str, dict] = {}
+    # An agent's tunnel and blind take narrow the query itself (before its limit); the loop below checks
+    # every row again all the same.
+    blind_viewer = user.get("id") if (user.get("role") or "") in db._OPERATOR_ROLES else None
     try:
-        hits = await db.search_messages(needle, since_iso=since, limit=MAX_HITS * 2)
+        hits = await db.search_messages(needle, since_iso=since, limit=MAX_HITS * 2, tunnel=tunnel,
+                                        blind_viewer=blind_viewer)
         chats = await db.get_conversations_brief([h.get("conversation_id") for h in hits])
     except Exception as e:
         SEARCH_HEALTH["messages_failed"] += 1

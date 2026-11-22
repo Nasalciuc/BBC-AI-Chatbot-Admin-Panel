@@ -430,17 +430,15 @@ def crm_id_shape(crm_id: str) -> str:
 
 
 def _client_keys(conv: Optional[dict]) -> set[str]:
+    """What makes two chats one client, by the Offers view's own rule (offers_view._keys): the e-mail, a
+    placed number by ALL its digits (+1 207 946 0958 and +44 20 7946 0958 are two clients), a number to
+    check only against the same number to check."""
+    from app.services.offers_view import _keys
+
     conv = conv or {}
     meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
-    keys = set()
-    email = (conv.get("visitor_email") or "").strip().lower()
-    if email:
-        keys.add(f"e:{email}")
-    for raw in (conv.get("visitor_phone"), meta.get("phone_to_check")):
-        digits = re.sub(r"\D", "", raw or "")
-        if len(digits) >= 7:
-            keys.add(f"p:{digits[-10:]}")
-    return keys
+    return set(_keys({"conversation_id": None, "visitor_email": conv.get("visitor_email"),
+                      "visitor_phone": conv.get("visitor_phone"), "phone_to_check": meta.get("phone_to_check")})[1:])
 
 
 async def _crm_id_on_another_client(crm_id: str, lead: dict) -> Optional[str]:
@@ -508,7 +506,7 @@ async def set_manual_crm_id(
         await db.log_audit(user.get("id"), user.get("email"), "crm_id_set", "leads", lead_id,
                            {"shape": shape, "conversation_id": lead.get("conversation_id")})
         db.invalidate_leads_universe()
-        return {"success": True, "data": result, "shape": shape}
+        return {"success": True, "data": result, "count": 1, "shape": shape}
     except HTTPException:
         raise
     except Exception as e:
