@@ -478,3 +478,25 @@ def test_a_foreign_number_glued_to_the_clients_own_is_still_foreign(text):
 ])
 def test_the_clients_own_number_alone_is_still_theirs(text, own):
     assert output_guard.foreign_contact_kinds(text, also_own=own) == []
+
+
+# ── CodeRabbit #273 round 3: the client's own number twice is one match, and still theirs ──
+
+
+@pytest.mark.parametrize("text", [
+    "12079460958\n12079460958",               # the same number on two lines
+    "12079460958 12079460958",                # a space apart
+    "+1 207 946 0958\n207 946 0958",          # with its country code, then without
+])
+def test_the_clients_own_number_repeated_is_still_theirs(text):
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == []
+
+
+@pytest.mark.parametrize("text", ["12079460958\n442079460958", "12079460958 12079460958 442079460958"])
+def test_a_foreign_number_after_the_clients_own_is_still_foreign(text):
+    assert output_guard.foreign_contact_kinds(text, also_own=("12079460958",)) == ["phone"]
+
+
+def test_a_short_kept_number_proves_nothing():
+    """A kept number too short to be a phone can't make any digits the client's (a stray "5")."""
+    assert output_guard.foreign_contact_kinds("call 1235550199", also_own=("5",)) == ["phone"]

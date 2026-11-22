@@ -6725,10 +6725,12 @@ async def release_live_claim(conversation_id: str, agent_id: str) -> bool:
         return False
 
 
-async def release_closed_if_agent(conversation_id: str, agent_id: str, assigned_at: Optional[str] = None) -> bool:
+async def release_closed_if_agent(conversation_id: str, agent_id: str, assigned_at: Optional[str] = None, *,
+                                  no_followup: bool = False) -> bool:
     """Take a closed chat back from an agent, only while it is still theirs, and, with `assigned_at`, only that
-    assignment (metadata.followup.assigned_at), never a newer one to the same agent. Not retried: after a lost
-    answer the lottery's next run repairs what is left (lead_lottery._take_back_unconfirmed)."""
+    assignment (metadata.followup.assigned_at), never a newer one to the same agent; with `no_followup`, only
+    while no follow-up names a time (a give whose clock was never saved). Not retried: after a lost answer the
+    lottery's next run repairs what is left (lead_lottery._take_back_unconfirmed, _unwind_kept)."""
     try:
         db_client = get_client()
 
@@ -6740,6 +6742,8 @@ async def release_closed_if_agent(conversation_id: str, agent_id: str, assigned_
                  .in_("status", list(_LOTTERY_OWNABLE)))
             if assigned_at:
                 q = q.eq("metadata->followup->>assigned_at", assigned_at)
+            elif no_followup:
+                q = q.is_("metadata->followup->>assigned_at", "null")
             return q.execute()
 
         res = await _run_sync(_q, idempotent=False, label="lottery")

@@ -213,13 +213,29 @@ def _is_own(snippet: str, own: set[str]) -> bool:
     if _kind(snippet) != "phone":
         return False
     d = _digits(snippet)
-    # The same number with or without its country code (1 to 3 digits more), never more: the phone pattern
-    # joins two numbers a space or a line apart into one match, and a foreign number glued before the
-    # client's own must not pass as theirs (CodeRabbit #273).
-    return bool(d) and any(
-        d == o or (o.endswith(d) and len(o) - len(d) <= _CC_MAX) or (d.endswith(o) and len(d) - len(o) <= _CC_MAX)
-        for o in own if o.isdigit()
-    )
+    nums = [o for o in own if o.isdigit() and len(o) >= 7]
+    return bool(d) and bool(nums) and _own_number_run(d, nums)
+
+
+def _own_number_run(d: str, own: list[str]) -> bool:
+    """`d` (one phone match's digits) is the client's own number, once or more. The phone pattern joins numbers
+    a space or a line apart into one match: the same number twice is still theirs, a foreign number glued to
+    it is not (CodeRabbit #273). Each copy is the number as kept, without its country code, or with one the
+    kept copy lacks: 1 to _CC_MAX digits, never more."""
+    reach = [False] * (len(d) + 1)
+    reach[0] = True
+    for i in range(len(d)):
+        if not reach[i]:
+            continue
+        for o in own:
+            for cut in range(_CC_MAX + 1):  # as kept, or without its country code
+                piece = o[cut:]
+                if len(piece) >= 7 and d.startswith(piece, i):
+                    reach[i + len(piece)] = True
+            for cc in range(1, _CC_MAX + 1):  # with a country code the kept copy lacks
+                if d.startswith(o, i + cc):
+                    reach[i + cc + len(o)] = True
+    return reach[len(d)]
 
 
 def _alert_later(mode: str, kinds: dict) -> None:

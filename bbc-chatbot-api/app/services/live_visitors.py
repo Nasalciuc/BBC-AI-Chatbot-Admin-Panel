@@ -107,11 +107,14 @@ async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Op
 
     A visitor id gets a pass without proof once (pass.lua); after that only by showing its own pass, which
     the widget keeps and shows on every page. {"enabled": False} whenever no pass is handed: the widget then
-    beats nowhere. Every refusal and failure is counted in LIVE_HEALTH."""
+    beats nowhere. {"enabled": False, "later": True} when Redis can't bind the id for now: the widget asks again
+    later instead of ending the page's live work (CodeRabbit #273). Every refusal and failure is counted in
+    LIVE_HEALTH."""
     config = widget_config()
     if not config["enabled"]:
         return config
     off = {"enabled": False}
+    for_now = {"enabled": False, "later": True}
     if not VISITOR_ID.fullmatch(visitor_id or ""):
         LIVE_HEALTH["passes_refused"] += 1
         return off
@@ -119,10 +122,20 @@ async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Op
     if old_pass:
         proof, reason = live_tokens.read_pass(old_pass, grace=live_tokens.PASS_GRACE)
     proven = proof is not None and proof.get("v") == visitor_id
+    # The pass is made before the id is bound to it, so the binding (PASS_BINDING_S from the eval) outlasts the
+    # pass's last renewing instant; a binding refused or failed drops it unseen (CodeRabbit #273).
+    token = live_tokens.beat_pass(visitor_id)
+    if not token:
+        LIVE_HEALTH["pass_failed"] += 1
+        logger.error("[live] no pass handed: the token could not be made")
+        return off
     r = get_redis()
     if r is None:
+        from config.settings import settings
+
         LIVE_HEALTH["pass_failed"] += 1
-        return off
+        # Cooling down after a failure: for now. Not configured at all: no pass on this deploy.
+        return for_now if settings.redis_url else off
     hour = datetime.now(timezone.utc).strftime("%Y%m%d%H")
     keys = [f"live:passed:{visitor_id}", f"rl:livepass:{live_tokens.address_key(ip)}:{hour}"]
     result = 0
@@ -132,16 +145,11 @@ async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Op
     except Exception as e:
         redis_failed("live pass", e)
         LIVE_HEALTH["pass_failed"] += 1
-        logger.error(f"[live] no pass handed: {type(e).__name__}: {e}")
-        return off
+        logger.error(f"[live] no pass handed for now: {type(e).__name__}: {e}")
+        return for_now
     if result != 1:
         LIVE_HEALTH["passes_refused"] += 1
         logger.info(f"[live] pass refused: {_PASS_REFUSALS.get(result, 'refused')} (shown pass: {reason})")
-        return off
-    token = live_tokens.beat_pass(visitor_id)
-    if not token:
-        LIVE_HEALTH["pass_failed"] += 1
-        logger.error("[live] no pass handed: the token could not be made")
         return off
     LIVE_HEALTH["passes"] += 1
     expires = datetime.now(timezone.utc) + timedelta(seconds=live_tokens.PASS_TTL)

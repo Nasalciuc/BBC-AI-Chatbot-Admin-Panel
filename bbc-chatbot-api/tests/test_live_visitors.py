@@ -237,13 +237,41 @@ def test_off_or_redis_down_hands_no_pass_and_off_asks_no_redis(passes, monkeypat
         assert _ask().json() == {"enabled": False}
     ev.assert_not_called()
     monkeypatch.setenv("LIVE_VISITORS", "true")
+    # Redis failing is for now: the widget asks again later instead of ending the page's live work
+    # (CodeRabbit #273); not configured at all is off.
     with patch.object(passes, "eval", new=AsyncMock(side_effect=ConnectionError("down"))):
-        assert _ask().json() == {"enabled": False}
+        assert _ask().json() == {"enabled": False, "later": True}
     assert live_visitors.LIVE_HEALTH["pass_failed"] == 1
+    with patch("app.services.live_visitors.get_redis", return_value=None):
+        assert _ask().json() == {"enabled": False, "later": True}, "cooling down after a failure"
     redis_client.set_client_for_tests(None)
     with patch("config.settings.settings.redis_url", ""):
         assert _ask().json() == {"enabled": False}
-    assert live_visitors.LIVE_HEALTH["pass_failed"] == 2
+    assert live_visitors.LIVE_HEALTH["pass_failed"] == 3
+
+
+def test_the_pass_is_made_before_the_id_is_bound_and_dropped_when_the_binding_says_no(passes):
+    """The binding counts PASS_BINDING_S from the eval: made first, the pass can't outlive it (CodeRabbit #273).
+    A refused binding hands nothing; a pass that can't be made binds nothing."""
+    order = []
+    real_beat, real_eval = live_tokens.beat_pass, passes.eval
+
+    def beat(vid):
+        order.append("pass")
+        return real_beat(vid)
+
+    async def bind(*a, **k):
+        order.append("bind")
+        return await real_eval(*a, **k)
+
+    with patch("app.services.live_tokens.beat_pass", side_effect=beat), patch.object(passes, "eval", side_effect=bind):
+        assert _ask().json()["enabled"] is True
+        assert order == ["pass", "bind"]
+        assert _ask().json() == {"enabled": False}, "the id is bound: the pass made for this request is dropped"
+    with patch("app.services.live_tokens.beat_pass", return_value=None), \
+            patch.object(passes, "eval", new=AsyncMock()) as ev:
+        assert _ask(OTHER_VID).json() == {"enabled": False}
+    ev.assert_not_called()
 
 
 # ── the hello ───────────────────────────────────────────────────────

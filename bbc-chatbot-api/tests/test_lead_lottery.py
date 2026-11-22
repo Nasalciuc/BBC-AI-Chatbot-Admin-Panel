@@ -488,7 +488,7 @@ async def test_a_give_neither_clocked_nor_given_back_is_kept_and_undone_next_run
     out = await lot.run_lead_lottery()
     agent = m["assign"].await_args.args[1]
     assert out["assigned"] == 0 and lot.LOTTERY_HEALTH["release_failed"] == 1
-    assert await r.smembers(lot.UNWIND_KEY) == {f"c1 {agent}"}
+    assert await r.smembers(lot.UNWIND_KEY) == {f"c1 {agent} {NOW.isoformat()}"}, "the give, named by its time"
 
     # The next run: the database answers again; the chat is still that agent's, with no clock.
     m["patch_meta"].return_value = True
@@ -497,20 +497,30 @@ async def test_a_give_neither_clocked_nor_given_back_is_kept_and_undone_next_run
     m["conv"].return_value = {"id": "c1", "assigned_agent_id": agent, "metadata": {"followup": None}}
     state["rows"] = []
     await lot.run_lead_lottery()
-    m["release"].assert_awaited_once_with("c1", agent)
+    # Only while no follow-up names a time, as read: a clock saved in between keeps the chat with its agent.
+    m["release"].assert_awaited_once_with("c1", agent, None, no_followup=True)
     assert lot.LOTTERY_HEALTH["unwound"] == 1 and await r.smembers(lot.UNWIND_KEY) == set()
+
+
+def _kept_conv(state: str, at: datetime, owner: str = A) -> dict:
+    return {"id": "c1", "assigned_agent_id": owner,
+            "metadata": {"followup": {"state": state, "agent_id": A, "assigned_at": at.isoformat()}}}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("conv", [
-    {"id": "c1", "assigned_agent_id": A, "metadata": {"followup": {"state": "pending", "agent_id": A}}},
+    _kept_conv("pending", NOW),                          # the give's own clock was saved after all (a lost answer)
+    _kept_conv("acked", NOW),                            # ... and the agent confirmed it
+    _kept_conv("manual", NOW + timedelta(minutes=5)),    # a manager gave it to the same agent by hand since
+    _kept_conv("pending", NOW + timedelta(hours=1)),     # a later run gave it again, with its clock
     {"id": "c1", "assigned_agent_id": B, "metadata": {}},
     {"id": "c1", "assigned_agent_id": None, "metadata": {}},
 ])
 async def test_a_kept_give_with_nothing_left_to_undo_is_dropped_untouched(world, conv):
-    """The clock was saved after all, a manager moved the chat, or it is nobody's: nothing is given back."""
+    """A follow-up saved at or after the failed give is newer than it, a manager moved the chat, or it is
+    nobody's: nothing is given back (CodeRabbit #273: a confirmed or hand-given chat stays with its agent)."""
     state, m, r = world
-    await r.sadd(lot.UNWIND_KEY, f"c1 {A}")
+    await r.sadd(lot.UNWIND_KEY, f"c1 {A} {NOW.isoformat()}")
     m["conv"].return_value = conv
     state["rows"] = []
     await lot.run_lead_lottery()
@@ -522,12 +532,39 @@ async def test_a_kept_give_with_nothing_left_to_undo_is_dropped_untouched(world,
 @pytest.mark.parametrize("conv, released", [(None, True), ({"id": "c1", "assigned_agent_id": A, "metadata": {}}, False)])
 async def test_a_kept_give_stays_kept_while_it_cannot_be_read_or_undone(world, conv, released):
     state, m, r = world
-    await r.sadd(lot.UNWIND_KEY, f"c1 {A}")
+    await r.sadd(lot.UNWIND_KEY, f"c1 {A} {NOW.isoformat()}")
     m["conv"].return_value = conv
     m["release"].return_value = released
     state["rows"] = []
     await lot.run_lead_lottery()
-    assert await r.smembers(lot.UNWIND_KEY) == {f"c1 {A}"}, "the next run tries again"
+    assert await r.smembers(lot.UNWIND_KEY) == {f"c1 {A} {NOW.isoformat()}"}, "the next run tries again"
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_older_than_the_failed_give_is_its_leftover_and_the_give_is_undone(world):
+    """The agent confirmed this client's chat two days ago; today's give to them failed before its clock. The
+    old record is what the failed give left: the give is undone, and only while that record is still there."""
+    state, m, r = world
+    old = NOW - timedelta(days=2)
+    await r.sadd(lot.UNWIND_KEY, f"c1 {A} {NOW.isoformat()}")
+    m["conv"].return_value = _kept_conv("acked", old)
+    state["rows"] = []
+    await lot.run_lead_lottery()
+    m["release"].assert_awaited_once_with("c1", A, old.isoformat(), no_followup=False)
+    assert lot.LOTTERY_HEALTH["unwound"] == 1 and await r.smembers(lot.UNWIND_KEY) == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", [f"c1 {A}", f"c1 {A} not-a-time", "c1"])
+async def test_a_kept_entry_that_cannot_be_read_is_dropped_and_said(world, entry, caplog):
+    state, m, r = world
+    await r.sadd(lot.UNWIND_KEY, entry)
+    state["rows"] = []
+    with caplog.at_level("ERROR"):
+        await lot.run_lead_lottery()
+    m["release"].assert_not_awaited()
+    assert await r.smembers(lot.UNWIND_KEY) == set()
+    assert any("could not be read" in rec.getMessage() for rec in caplog.records)
 
 
 def test_the_universe_reads_the_decoy_marker_with_decoys_switched_off(monkeypatch):

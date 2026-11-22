@@ -64,10 +64,11 @@ LOTTERY_HEALTH: dict[str, Any] = {
     "release_failed": 0, "unwound": 0, "unwind_lost": 0,
 }
 
-# "<conversation id> <agent id>": gives to undo. The chat was assigned but its follow-up state (the 15-minute clock)
-# was not saved, and giving it back failed too: nothing else would ever find it, an assigned chat being nobody's
-# candidate and a chat without a pending follow-up never taken back. The run holds Redis (try_job_lock skips
-# without it), so the set is there when it is needed.
+# "<conversation id> <agent id> <given at>": gives to undo. The chat was assigned but its follow-up state (the
+# 15-minute clock) was not saved, and giving it back failed too: nothing else would ever find it, an assigned chat
+# being nobody's candidate and a chat without a pending follow-up never taken back. The time names that give, so
+# a later run undoes it and nothing newer (CodeRabbit #273). The run holds Redis (try_job_lock skips without it),
+# so the set is there when it is needed.
 UNWIND_KEY = "lottery:unwind"
 _UNWIND_KEEP_S = 7 * 24 * 3600
 
@@ -376,7 +377,7 @@ async def _give(row: dict, agent: str, how: str, now: datetime) -> bool:
                 return False
             # Not given back either: kept, so that a later run gives it back (CodeRabbit #273).
             LOTTERY_HEALTH["release_failed"] += 1
-            kept = await _keep_unwind(cid, agent)
+            kept = await _keep_unwind(cid, agent, now)
             logger.error(f"[lottery] {cid}: its follow-up state was not saved and the chat could not be given back; "
                          + ("a later run gives it back" if kept else "NOT kept to give back: check it by hand"))
             return False
@@ -386,12 +387,12 @@ async def _give(row: dict, agent: str, how: str, now: datetime) -> bool:
     return True
 
 
-async def _keep_unwind(cid: str, agent: str) -> bool:
+async def _keep_unwind(cid: str, agent: str, given_at: datetime) -> bool:
     """Keep a give to undo in UNWIND_KEY. False when Redis would not keep it (counted, the caller logs)."""
     r = get_redis()
     if r is not None:
         try:
-            await r.sadd(UNWIND_KEY, f"{cid} {agent}")
+            await r.sadd(UNWIND_KEY, f"{cid} {agent} {given_at.isoformat()}")
             await r.expire(UNWIND_KEY, _UNWIND_KEEP_S)
             return True
         except Exception as e:
@@ -402,9 +403,11 @@ async def _keep_unwind(cid: str, agent: str) -> bool:
 
 
 async def _unwind_kept() -> int:
-    """Give back the chats kept in UNWIND_KEY, each only while it is still that agent's and still has no
-    pending follow-up (the clock may have been saved after all, or a manager moved the chat: then there is
-    nothing to undo). A read or a write that fails leaves the entry for the next run. How many were given back."""
+    """Give back the chats kept in UNWIND_KEY, each only while it is still that agent's and its follow-up is
+    still the one the failed give found. A follow-up saved at or after the give is newer than it: the give's own
+    clock after all (a lost answer), then maybe confirmed, a give by hand, a later run's give; none of them is
+    undone (CodeRabbit #273). A read or a write that fails leaves the entry for the next run. How many were given
+    back."""
     from app.db import supabase as db
 
     r = get_redis()
@@ -418,17 +421,23 @@ async def _unwind_kept() -> int:
         return 0
     n = 0
     for entry in sorted(kept):
-        cid, _, agent = str(entry).partition(" ")
-        if cid and agent:
+        cid, agent, given_at = (str(entry).split(" ") + ["", ""])[:3]
+        given = _at(given_at)
+        if not (cid and agent and given):
+            logger.error(f"[lottery] a kept give to undo could not be read: {str(entry)[:120]!r}; dropped")
+        else:
             async with conversation_lock("followup", cid):
                 conv = await db.get_conversation_simple(cid)
                 if conv is None:
                     continue  # not read (or gone): kept for the next run
                 meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
                 f = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
-                clocked = f.get("state") == "pending" and f.get("agent_id") == agent
-                if conv.get("assigned_agent_id") == agent and not clocked:
-                    if not await db.release_closed_if_agent(cid, agent):
+                seen_at = f.get("assigned_at") or None
+                seen = _at(seen_at) if seen_at else None
+                newer = bool(seen_at) and (seen is None or seen >= given)  # unreadable: not ours to undo
+                if conv.get("assigned_agent_id") == agent and not newer:
+                    # Only while the follow-up is still the one read here: a write in between keeps the chat.
+                    if not await db.release_closed_if_agent(cid, agent, seen_at, no_followup=not seen_at):
                         continue  # still not given back: the next run tries again
                     LOTTERY_HEALTH["unwound"] += 1
                     n += 1
