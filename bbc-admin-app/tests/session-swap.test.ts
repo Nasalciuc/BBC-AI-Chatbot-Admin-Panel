@@ -84,3 +84,21 @@ test('the query cache is one account\'s: emptied as someone signs in, never at a
   // Reset, so a page on screen drops what it shows and asks again as the new account (CodeRabbit #273).
   assert.match(main, /useAuthStore\.subscribe\(\(state, prev\) => \{\s+if \(cacheBelongsToAnother\(prev\.auth\.user, state\.auth\.user\)\) void queryClient\.resetQueries\(\)\s+\}\)/)
 })
+
+test('every sign-in sets the new token before the user: the reset asks again with the new session (CodeRabbit #273)', () => {
+  // The password (and MFA) sign-in, the CRM's sign-in and a saved profile: the user change resets the cache and
+  // refetches what is on screen at once, and authHeaders() reads the cookie that setAccessToken writes.
+  const places: Array<[string, string, string]> = [
+    ['src/features/auth/sign-in/index.tsx', 'function finishLogin(', 'auth.setAccessToken(token)'],
+    ['src/lib/crm-embed-auth.ts', 'function applyToken(', 'auth.setAccessToken(token)'],
+    ['src/features/settings/profile/index.tsx', 'auth.setAccessToken(res.token)', 'auth.setAccessToken(res.token)'],
+  ]
+  for (const [file, from, token] of places) {
+    const src = readFileSync(join(root, file), 'utf8')
+    const start = src.indexOf(from)
+    assert.ok(start >= 0, `${file}: ${from} not found`)
+    const t = src.indexOf(token, start)
+    const u = src.indexOf('auth.setUser(', start)
+    assert.ok(t >= 0 && u > t, `${file}: the token must be set before the user`)
+  }
+})
