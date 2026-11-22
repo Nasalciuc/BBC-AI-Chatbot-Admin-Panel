@@ -68,8 +68,11 @@ A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`
 - `POST /chat/live` `{"visitor_id", "live_pass"?}` (the widget, public, never cached), from 20 s on the
   page: `{"enabled": false}`, or `{"enabled": true, "url", "after_s": 20, "beat_s": 15, "hello", "pass",
   "pass_expires_at"}`. The widget keeps the pass and shows it at the next page (`live_pass`): that renews
-  it. A refused pass (the id has one and none was shown, too many new ids from the address, Redis down)
-  answers `{"enabled": false}`, counted in `/health`.
+  it. A refused pass (the id has one and none was shown, too many new ids from the address) answers
+  `{"enabled": false}`: the widget stops for the page. Redis failing or cooling down answers
+  `{"enabled": false, "later": true}`, and so does a 5xx or 429 from the route: the widget asks again
+  after 5 minutes and keeps the config it holds. Both counted in `/health`. The pass is made before
+  `pass.lua` binds the id, so the binding outlasts the pass's last renewing instant.
 - `POST /api/live/send` `{"visitor_id", "text"}` (an agent holding that visitor): 1 to 300 characters,
   no e-mail, phone or link in it (`output_guard.foreign_contact_kinds`); runs `send.lua`.
 - `POST /chat/init` with `live_tap`: a valid tap for this visitor takes the hello (`take_hello.lua`),
