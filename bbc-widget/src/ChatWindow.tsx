@@ -1025,8 +1025,9 @@ export function ChatWindow({
       setQuickReplies(opts.local.buttons.map(b => ({ label: b.label, kind: b.kind })))
       setLocalPending(true)
       // The field side of the owner's contact test: the field opens with the words that ask for it; its buttons
-      // (the other channel, "I'll wait here", "Change details") are one Back away.
-      if (opts.local.field) openChannel(opts.local.field, true, localId)
+      // (the other channel, "I'll wait here", "Change details") are one Back away. Not over a field already open: a
+      // retried yes leaves the one the visitor opened, and what they typed in it, as it is (CodeRabbit #273).
+      if (opts.local.field && !channelForm) openChannel(opts.local.field, true, localId)
     } else {
       setMessages(prev => [...prev, optimisticMsg])
     }

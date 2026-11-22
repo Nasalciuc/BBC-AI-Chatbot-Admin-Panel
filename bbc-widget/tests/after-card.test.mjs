@@ -469,13 +469,14 @@ test('contact test: the opening keeps its side and its field across pages; anyth
 test('contact test: on the field side the yes opens the field at once, the other channel one tap away', () => {
   const send = chat.slice(chat.indexOf('const sendMessage = async'), chat.indexOf('const handleSend'))
   // The field opens with the words that ask for it, after the answer and its buttons are on screen.
-  const opened = send.indexOf('if (opts.local.field) openChannel(opts.local.field, true, localId)')
+  const opened = send.indexOf('if (opts.local.field && !channelForm) openChannel(opts.local.field, true, localId)')
   assert.ok(opened > send.indexOf('setQuickReplies(opts.local.buttons.map('), 'the buttons stay under the field')
   assert.ok(opened < send.indexOf('await getTurnstileToken()'), 'on screen before the conversation is created')
   // An answer that was not the server's after all takes its field with it: the model's turn, a failed send. Only that
   // send's field, while it still is (CodeRabbit #273): Back, or a channel the visitor tapped since, keeps theirs.
   assert.equal(send.split('if (opts?.local?.field) closeAutoField(localId)').length, 3)
-  assert.match(send, /if \(opts\.local\.field\) openChannel\(opts\.local\.field, true, localId\)/)
+  // Never over a field already open: a retried yes leaves the visitor's own field and its address (CodeRabbit #273).
+  assert.match(send, /if \(opts\.local\.field && !channelForm\) openChannel\(opts\.local\.field, true, localId\)/)
   assert.match(chat, /const closeAutoField = \(owner: string \| null\) => \{\s+if \(!owner \|\| autoFieldOwnerRef\.current !== owner\) return/)
   assert.match(chat, /if \(!auto\) autoFieldOwnerRef\.current = null\s+else if \(owner !== undefined\) autoFieldOwnerRef\.current = owner/)
   const back = chat.slice(chat.indexOf('const closeChannel = () => {'), chat.indexOf('const closeAutoField'))
