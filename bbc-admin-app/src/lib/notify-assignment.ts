@@ -221,6 +221,9 @@ export function notifyAssignment(info?: { name?: string | null; kind?: 'new' | '
       const volume = prefs.volume / 100
       _ringMelody = _playMade(sound, volume)
       _ringTimer = setInterval(() => {
+        // The phrase before goes quiet first: with the audio context suspended each phrase waits at the frozen
+        // clock, and one no longer tracked would play when it resumes, after the chat opened (CodeRabbit #273).
+        _silence(_ringMelody)
         _ringMelody = _playMade(sound, volume)
       }, ringRepeatMs(sound))
     }

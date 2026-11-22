@@ -91,6 +91,9 @@ test('the melody everywhere: the ring repeats it until the chat is opened and st
   const ring = src.slice(src.indexOf('export function notifyAssignment'), src.indexOf('export function playQueueChime'))
   assert.match(ring, /_ringMelody = _playMade\(sound, volume\)/)
   assert.match(ring, /\}, ringRepeatMs\(sound\)\)/)
+  // Each repeat quiets the phrase before it (CodeRabbit #273): with the audio context suspended, phrases wait at
+  // its frozen clock, and one no longer tracked played when it resumed, after the chat was opened.
+  assert.match(ring, /setInterval\(\(\) => \{[\s\S]*?_silence\(_ringMelody\)\n\s+_ringMelody = _playMade\(sound, volume\)\n\s+\}, ringRepeatMs\(sound\)\)/)
   const stop = src.slice(src.indexOf('export function stopAssignmentAlerts'), src.indexOf('// ── Settings › Alerts'))
   assert.match(stop, /_silence\(_ringMelody\)/)
   const chime = src.slice(src.indexOf('export function playQueueChime'), src.indexOf('export function notifyTaskReminder'))
