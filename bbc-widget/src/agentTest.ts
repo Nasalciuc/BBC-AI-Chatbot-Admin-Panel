@@ -33,12 +33,22 @@ export function readSide(v: unknown): AgentTestSide | null {
   return v === 'agent' || v === 'alex' ? v : null
 }
 
-/** A server answer came: its `test` is this visit's side; an answer without one means the test is off. */
+/** A server answer came: its `test` is this visit's side; an answer without one means the test is off. Only the
+ *  agent's side waits for an agent: any other answer ends Alex's wait and the time the beat says he comes
+ *  (CodeRabbit #273: the test switched off mid-wait kept every moment back until the wait ran out). */
 export function noteSide(v: unknown): void {
   const s = readSide(v)
   sideInPage = s
   if (s) ssSet(SIDE_KEY, s)
   else ssRemove(SIDE_KEY)
+  if (s !== 'agent') endAlexWait()
+}
+
+function endAlexWait(): void {
+  waitUntilInPage = null
+  alexAtInPage = null
+  ssRemove(WAIT_UNTIL_KEY)
+  ssRemove(ALEX_AT_KEY)
 }
 
 /** The visit's side, or null (no test, or no answer yet on this visit). */

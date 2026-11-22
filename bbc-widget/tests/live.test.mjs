@@ -299,6 +299,24 @@ test('Alex\'s wait: the server\'s seconds, held to its cap, and the time he come
   assert.equal(at.alexShown(), true)
 })
 
+test('an answer off the agent\'s side ends Alex\'s wait; the agent\'s side keeps it (CodeRabbit #273)', async () => {
+  const at = await import('../src/agentTest.ts')
+  for (const off of [undefined, 'alex']) {
+    at.resetAgentTestForTests()
+    at.noteSide('agent')
+    at.holdAlex(120, null, NOW)
+    // Rule 5: an answer that names the agent's side again leaves the wait as it was.
+    at.noteSide('agent')
+    assert.equal(at.alexWaitLeftMs(NOW), 120_000)
+    assert.ok(at.alexAt() > 0)
+    // The test switched off (no side), or this visitor now Alex's: the moments come again at once, the beat
+    // stops saying when he comes.
+    at.noteSide(off)
+    assert.equal(at.alexWaitLeftMs(NOW), 0, String(off))
+    assert.equal(at.alexAt(), null, String(off))
+  }
+})
+
 test('the live answer carries the side, Alex\'s side without a pass', () => {
   const pass = `b1.${'a'.repeat(20)}.${'0'.repeat(64)}`
   assert.deepEqual(readConfig({ enabled: false, test: 'alex' }), { enabled: false, test: 'alex' })
@@ -355,7 +373,11 @@ test('an offer answer\'s wait and side are read, anything else dropped', async (
 
 test('while Alex waits no moment is asked, and the wait gives the moment back', () => {
   const src = readFileSync(join(here, '..', 'src', 'proactive.ts'), 'utf8')
-  assert.match(src, /if \(res\) noteSide\(res\.test\)/)
+  // Both doors record the side their answer names: the moment's ask and the tapped note (CodeRabbit #273).
+  assert.equal(src.split('if (res) noteSide(res.test)').length - 1, 2)
+  const note = src.slice(src.indexOf('noteOpening: async'))
+  assert.ok(note.indexOf('if (res) noteSide(res.test)') >= 0
+    && note.indexOf('if (res) noteSide(res.test)') < note.indexOf("posthog?.capture('proactive_shown'"))
   const held = src.slice(src.indexOf("if (res && !res.show && res.arm === AGENT_FIRST_ARM && res.retry_after_s) {"))
   assert.ok(held.length > 0, 'the wait has its branch')
   const branch = held.slice(0, held.indexOf('return'))
@@ -364,7 +386,10 @@ test('while Alex waits no moment is asked, and the wait gives the moment back', 
   assert.match(branch, /fired = false/)
   // The wait sits before the moment is picked: nothing is asked again until it is over.
   const ev = src.slice(src.indexOf('const evaluate = () => {'))
-  assert.ok(ev.indexOf('if (alexWaitLeftMs(now) > 0) return') < ev.indexOf('const trigger = pickTrigger(state)'))
+  const guard = ev.indexOf('if (alexWaitLeftMs(now) > 0) return')
+  const pick = ev.indexOf('const trigger = pickTrigger(state)')
+  // Both must be there (an index of -1 would pass the order alone: CodeRabbit #273).
+  assert.ok(guard >= 0 && pick >= 0 && guard < pick)
   assert.match(src, /noteAlexShown\(\)\n\s+posthog\?\.capture\('proactive_shown'/)
   assert.match(src, /\.\.\.\(res\.after_hold \? \{ after_hold: true \} : \{\}\)/)
 })

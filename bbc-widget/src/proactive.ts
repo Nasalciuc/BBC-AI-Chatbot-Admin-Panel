@@ -855,6 +855,9 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         }, OFFER_TIMEOUT_MS,
         (t) => took.push(t),
       )
+      // The owner's agent-first test: the note's answer names the visit's side too, before its proactive_shown
+      // (CodeRabbit #273: a note tapped before any other answer was shown with no side).
+      if (res) noteSide(res.test)
       // The visitor did something else while the answer was on its way (Widget's note turn): nothing of it
       // happens, so nothing says it did — no proactive_shown, no proactive_note_unanswered (Widget opens no
       // form either), and the cards of this visit stay possible (CodeRabbit #269).
