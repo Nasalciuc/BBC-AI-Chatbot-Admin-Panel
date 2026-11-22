@@ -6807,7 +6807,8 @@ async def get_operator_rows(
     By id (who Redis says is at the desk), or by last_seen_at when Redis cannot
     say. None when the read failed: "nobody" and "could not ask" are different
     answers (rule 7). Without chat_enabled (033 not applied) every row reads as
-    chat on, as the heartbeat does."""
+    chat on, as the heartbeat does. is_ready (011) is the agent's ready button:
+    the lottery gives only to an agent on ready (lead_lottery.ready_only)."""
     if user_ids is not None and not user_ids:
         return []
     db_client = get_client()
@@ -6821,7 +6822,7 @@ async def get_operator_rows(
             q = q.gte("last_seen_at", cutoff)
         return q.execute()
 
-    base = "id, name, role, is_active, tunnel_scope, last_seen_at, created_at, team_id"
+    base = "id, name, role, is_active, is_ready, tunnel_scope, last_seen_at, created_at, team_id"
     try:
         try:
             res = await _run_sync(lambda: _q(base + ", chat_enabled"), label="lottery")
