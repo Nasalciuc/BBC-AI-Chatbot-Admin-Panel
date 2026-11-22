@@ -301,6 +301,23 @@ def test_the_list_keeps_a_waiting_chats_contact_out_too(role):
         assert rows[cid]["visitor_email"] == "grace@example.com" and rows[cid]["visitor_phone"]
 
 
+@pytest.mark.parametrize("role", AGENTS)
+def test_the_list_keeps_where_a_waiting_chat_came_from_out_until_take(role):
+    """The row's "Card · no contact" reads the card's moment: never on a chat taken blind, as its detail
+    (CodeRabbit #273); the agent's own chat and a colleague's, whole as their details, keep it."""
+    rows = _list_rows()
+    for r in rows:
+        r["metadata"] = {"proactive_trigger": "kayak", "widget_presence": "online"}
+    with patch.object(db, "get_conversations", new=AsyncMock(return_value=(rows, 3))), \
+         patch.object(db, "get_last_message_previews", new=AsyncMock(return_value={})):
+        r = _client(role).get("/api/conversations?status=active")
+    out = {c["id"]: c for c in r.json()["data"]}
+    assert "proactive_trigger" not in out["waiting"]["metadata"]
+    assert out["waiting"]["metadata"]["widget_presence"] == "online", "presence stays: the gate shows it"
+    assert out["mine"]["metadata"]["proactive_trigger"] == "kayak"
+    assert out["theirs"]["metadata"]["proactive_trigger"] == "kayak"
+
+
 def test_a_managers_list_keeps_every_contact():
     with patch.object(db, "get_conversations", new=AsyncMock(return_value=(_list_rows(), 3))), \
          patch.object(db, "get_last_message_previews", new=AsyncMock(return_value={})):

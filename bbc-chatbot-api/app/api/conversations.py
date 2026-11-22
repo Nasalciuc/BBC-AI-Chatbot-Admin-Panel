@@ -323,6 +323,10 @@ async def list_conversations(
                         for k in _BLIND_FIELDS:
                             if k in c:
                                 c[k] = None
+                        # Nor where the client came from (the card's moment) until Take, as its detail
+                        # (_blind_view) keeps only presence (CodeRabbit #273).
+                        if isinstance(c.get("metadata"), dict):
+                            c["metadata"].pop("proactive_trigger", None)
             wanted = [c["id"] for c in rows if not blind or _known_to(c, user.get("id"))]
             try:
                 previews = await db.get_last_message_previews(wanted) if wanted else {}
