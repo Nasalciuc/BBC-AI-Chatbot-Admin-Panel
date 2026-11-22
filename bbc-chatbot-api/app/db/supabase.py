@@ -692,11 +692,24 @@ _supervisor_columns_downgraded_at: Optional[float] = None  # time.time()
 _MISSING_COLUMN_RE = re.compile(r"column\s+.+\s+does\s+not\s+exist", re.I)
 
 
+_NOT_A_UUID_RE = re.compile(r"invalid input syntax for type uuid\b", re.I)
+
+
 def _is_not_a_uuid_error(err: BaseException) -> bool:
     """Postgres refused a value as a uuid (22P02, invalid_text_representation): the id asked for names no
-    row. Only for a read by id, where the id is the one uuid the query carries."""
+    row. Only for a read by id, where the id is the one uuid the query carries.
+
+    The type is read where Postgres names it, at the start of the primary message (PostgREST's
+    APIError.message), never anywhere in the error: 'invalid input syntax for type integer: "uuid"' is a
+    refused integer whose value says uuid, a failure, not a missing chat (CodeRabbit #274)."""
     code = getattr(err, "code", None) or getattr(err, "pgcode", None)
-    return str(code) == "22P02" and "uuid" in str(err)
+    if str(code) != "22P02":
+        return False
+    message = getattr(err, "message", None)
+    if not isinstance(message, str):
+        first = (getattr(err, "args", ()) or (None,))[0]
+        message = first.get("message") if isinstance(first, dict) else None
+    return isinstance(message, str) and bool(_NOT_A_UUID_RE.match(message.strip()))
 
 
 def _is_missing_column_error(err: BaseException) -> bool:

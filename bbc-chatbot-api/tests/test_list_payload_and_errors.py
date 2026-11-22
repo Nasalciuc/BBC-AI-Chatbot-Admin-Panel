@@ -321,6 +321,8 @@ def test_the_panel_asking_for_chat_dash_gets_404_not_502():
 @pytest.mark.parametrize("code, message", [
     ("57014", "canceling statement due to statement timeout"),
     ("22P02", "invalid input syntax for type integer: \"x\""),   # 22P02, but not about the id's uuid
+    # 22P02 for an integer whose rejected value reads "uuid": the type is integer (CodeRabbit #274).
+    ("22P02", "invalid input syntax for type integer: \"uuid\""),
 ])
 async def test_any_other_refusal_is_still_a_failed_fetch(code, message):
     """Rule 5: only the uuid refusal reads as no chat; a timeout or another bad value still raises."""
