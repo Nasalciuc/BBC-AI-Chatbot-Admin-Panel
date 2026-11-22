@@ -298,3 +298,56 @@ async def test_a_card_chats_row_names_the_moment_that_opened_it():
     assert "proactive_trigger:metadata->>proactive_trigger" in fq.select_arg
     assert [r["metadata"]["proactive_trigger"] for r in out] == ["kayak", None]
     assert all("proactive_trigger" not in {k for k in r if k != "metadata"} for r in out)
+
+
+# ── 10. An id that is not a uuid names no chat (the queue e-mail's "-", 20-21 Nov 2026) ──
+
+
+class _RefusingQuery(_FakeQuery):
+    """The conversations read as PostgREST answers it for an id Postgres can't read as a uuid."""
+
+    def __init__(self, err):
+        super().__init__()
+        self._err = err
+
+    def execute(self):
+        raise self._err
+
+
+def _refused(code, message):
+    from postgrest.exceptions import APIError
+
+    return APIError({"code": code, "details": None, "hint": None, "message": message})
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_is_not_a_uuid_is_no_chat_and_no_error(caplog):
+    fake_db = MagicMock()
+    fake_db.table.return_value = _RefusingQuery(_refused("22P02", 'invalid input syntax for type uuid: "-"'))
+    with patch.object(db, "get_client", return_value=fake_db), caplog.at_level("INFO"):
+        assert await db.get_conversation("-", raise_on_error=True) is None
+    assert not [r for r in caplog.records if r.levelname in ("ERROR", "CRITICAL")]
+
+
+def test_the_panel_asking_for_chat_dash_gets_404_not_502():
+    fake_db = MagicMock()
+    fake_db.table.return_value = _RefusingQuery(_refused("22P02", 'invalid input syntax for type uuid: "-"'))
+    with patch.object(db, "get_client", return_value=fake_db):
+        resp = _client(role="supervisor", tunnel_scope="all").get("/api/conversations/-")
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, message", [
+    ("57014", "canceling statement due to statement timeout"),
+    ("22P02", "invalid input syntax for type integer: \"x\""),   # 22P02, but not about the id's uuid
+    # 22P02 for an integer whose rejected value reads "uuid": the type is integer (CodeRabbit #274).
+    ("22P02", "invalid input syntax for type integer: \"uuid\""),
+])
+async def test_any_other_refusal_is_still_a_failed_fetch(code, message):
+    """Rule 5: only the uuid refusal reads as no chat; a timeout or another bad value still raises."""
+    fake_db = MagicMock()
+    fake_db.table.return_value = _RefusingQuery(_refused(code, message))
+    with patch.object(db, "get_client", return_value=fake_db):
+        with pytest.raises(Exception):
+            await db.get_conversation(CONV_ID, raise_on_error=True)
