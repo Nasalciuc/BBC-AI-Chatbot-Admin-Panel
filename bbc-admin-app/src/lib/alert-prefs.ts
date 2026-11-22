@@ -77,6 +77,19 @@ export const SOUND_NOTES: Record<Exclude<RingSound, 'classic'>, [number, number,
   ],
 }
 
+/** A lead given to me: a gentle phrase, played once, never the phone ring (the owner, 22 Nov 2026: "pleasant,
+ *  like an elevator"). A rising A-minor-seventh on a soft vibraphone that settles on a third, about 3.5 s.
+ *  [frequency Hz, start s, length s]. */
+export const LEAD_MELODY: readonly [number, number, number][] = [
+  [440, 0, 1.6], // A4
+  [523.25, 0.25, 1.6], // C5
+  [659.25, 0.5, 1.6], // E5
+  [783.99, 0.75, 1.8], // G5
+  [698.46, 1.2, 1.4], // F5
+  [523.25, 1.45, 2], // C5 …
+  [659.25, 1.45, 2], // … and E5 together, to end
+]
+
 /** How often a made sound repeats while the chat waits. */
 export const RING_REPEAT_MS = 1800
 

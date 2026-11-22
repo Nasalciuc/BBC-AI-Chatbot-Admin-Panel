@@ -8,6 +8,7 @@
  */
 // Relative import with extension on purpose — the pure rules are node-tested.
 import {
+  LEAD_MELODY,
   RING_REPEAT_MS,
   SOUND_NOTES,
   notificationText,
@@ -213,6 +214,67 @@ export function notifyTaskReminder(title: string, body: string, tag: string): vo
       n.onclick = () => {
         window.focus()
         n.close()
+      }
+    } catch {
+      /* notifications blocked in this context */
+    }
+  }
+}
+
+/** A soft vibraphone: each note a sine with its octave fading first, under a slow tremolo. Once, never looped. */
+function _playMelody(notes: readonly [number, number, number][], volume: number): void {
+  const ctx = _audioCtx()
+  if (!ctx || volume <= 0) return
+  try {
+    const t0 = ctx.currentTime + 0.03
+    const master = ctx.createGain()
+    master.gain.value = 0.55 * volume
+    // The vibraphone's slow wobble: ±0.12 around the level, five times a second.
+    const lfo = ctx.createOscillator()
+    const depth = ctx.createGain()
+    lfo.frequency.value = 5.2
+    depth.gain.value = 0.12 * volume
+    lfo.connect(depth).connect(master.gain)
+    master.connect(ctx.destination)
+    let end = t0
+    for (const [freq, start, len] of notes) {
+      const partials: [number, number, number][] = [[1, 0.32, len], [2, 0.07, Math.min(len, 0.45)]]
+      for (const [mult, level, decay] of partials) {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = freq * mult
+        gain.gain.setValueAtTime(0.0001, t0 + start)
+        gain.gain.exponentialRampToValueAtTime(level, t0 + start + 0.012)
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + start + decay)
+        osc.connect(gain).connect(master)
+        osc.start(t0 + start)
+        osc.stop(t0 + start + decay + 0.05)
+      }
+      end = Math.max(end, t0 + start + len + 0.1)
+    }
+    lfo.start(t0)
+    lfo.stop(end)
+  } catch {
+    // AudioContext not available: the toast and the menu count still show it
+  }
+}
+
+/**
+ * A lead given to me (the follow-up lottery, or a manager by hand): the gentle phrase once, at the volume set in
+ * Settings → Alerts, and one browser notification whose click opens the chat (`href`; opening it confirms the
+ * lead). Never the phone ring, never a loop, never a flashing tab: nobody is typing to me right now.
+ */
+export function notifyNewLead(title: string, body: string, href: string): void {
+  const prefs = readAlertPrefs()
+  if ((prefs.ring || prefs.beep) && prefs.volume > 0) _playMelody(LEAD_MELODY, prefs.volume / 100)
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification(title, { body, icon: LOGO_SRC, tag: 'bbc-lead' })
+      n.onclick = () => {
+        window.focus()
+        n.close()
+        window.location.assign(href)
       }
     } catch {
       /* notifications blocked in this context */
