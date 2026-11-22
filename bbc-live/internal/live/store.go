@@ -19,13 +19,17 @@ import (
 const (
 	VisitorsKey  = "live:visitors"
 	InboxChannel = "live:inbox"
+	// The owner's agent-first test: the agents who may hold a visitor, by their last read of the list (user id ->
+	// unix seconds). The API's Alex waits for a visitor only while one of them is looking (agent_first_test.py).
+	GreetersKey = "live:greeters"
 
-	VisitTTL   = 60   // a visit lives this long after its last beat
-	Window     = 45   // on the site now: a beat in the last 45 s
-	ClaimTTL   = 600  // an agent holds a visitor this long to say hello
-	MaxClaims  = 3    // visitors an agent holds at a time
-	DismissTTL = 3600 // after "not now", nobody says hello for an hour
-	ListLimit  = 500
+	VisitTTL     = 60   // a visit lives this long after its last beat
+	Window       = 45   // on the site now: a beat in the last 45 s
+	ClaimTTL     = 600  // an agent holds a visitor this long to say hello
+	MaxClaims    = 3    // visitors an agent holds at a time
+	DismissTTL   = 3600 // after "not now", nobody says hello for an hour
+	ListLimit    = 500
+	GreetersKeep = 86400 // live:greeters forgets an agent a day after their last read
 )
 
 func visitKey(vid string) string     { return "live:v:" + vid }
@@ -255,6 +259,17 @@ func (s *Store) Dismiss(ctx context.Context, vid string) (string, error) {
 // TakeInbox takes what waits for the visitor (the API's messages, JSON), once.
 func (s *Store) TakeInbox(ctx context.Context, vid string) ([]string, error) {
 	return resp.Strings(s.eval(ctx, takeInboxLua, []string{inboxKey(vid)}))
+}
+
+// Greeter notes that an agent who may say hello is reading the list now (the agent-first test), and forgets the
+// ones who haven't for a day.
+func (s *Store) Greeter(ctx context.Context, agent string) error {
+	now := s.now().Unix()
+	if _, err := s.R.Do(ctx, "ZADD", GreetersKey, strconv.FormatInt(now, 10), agent); err != nil {
+		return err
+	}
+	_, err := s.R.Do(ctx, "ZREMRANGEBYSCORE", GreetersKey, "-inf", strconv.FormatInt(now-GreetersKeep, 10))
+	return err
 }
 
 // InboxLen says how much waits, without taking it.

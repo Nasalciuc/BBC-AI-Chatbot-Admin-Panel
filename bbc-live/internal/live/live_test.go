@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -355,6 +356,44 @@ func TestOnlyPanelRolesSeeTheListAndOnlySalesHoldsAVisitor(t *testing.T) {
 	}
 	if w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer nope"}, nil); w.Code != http.StatusUnauthorized {
 		t.Errorf("a bad token: %d", w.Code)
+	}
+}
+
+func TestAListReadNotesOnlyWhoMayHoldAVisitor(t *testing.T) {
+	// The owner's agent-first test: Alex's card waits only while someone who may say hello is looking at the list
+	// (the API reads live:greeters); a role that may only look, or another line, is not someone to wait for.
+	s, c, rc := setup(t)
+	h := s.Handler()
+	ctx := context.Background()
+	if _, err := rc.Do(ctx, "ZADD", GreetersKey, strconv.FormatInt(c.now().Unix()-GreetersKeep-1, 10), agentB); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		role, tunnel string
+		noted        bool
+	}{
+		{"sales", "sales", true}, {"sales", "all", true}, {"owner", "all", false}, {"supervisor", "sales", false},
+		{"sales", "support", false},
+	}
+	for i, k := range cases {
+		user := "aaaaaaaa-0000-4000-8000-00000000020" + strconv.Itoa(i)
+		auth := map[string]string{"Authorization": "Bearer " + agentToken(c, user, k.role, k.tunnel)}
+		if w := do(t, h, "GET", "/v1/live", auth, nil); w.Code != http.StatusOK {
+			t.Fatalf("%s/%s list: %d", k.role, k.tunnel, w.Code)
+		}
+		score, err := resp.Str(rc.Do(ctx, "ZSCORE", GreetersKey, user))
+		switch {
+		case k.noted && (err != nil || score != strconv.FormatInt(c.now().Unix(), 10)):
+			t.Errorf("%s/%s: not noted at now (%q, %v)", k.role, k.tunnel, score, err)
+		case !k.noted && !errors.Is(err, resp.ErrNil):
+			t.Errorf("%s/%s: noted, though they may not say hello (%q, %v)", k.role, k.tunnel, score, err)
+		}
+	}
+	if _, err := resp.Str(rc.Do(ctx, "ZSCORE", GreetersKey, agentB)); !errors.Is(err, resp.ErrNil) {
+		t.Errorf("a reader from over a day ago is kept: %v", err)
+	}
+	if s.Counters.GreetersFailed.Load() != 0 {
+		t.Errorf("greeters failed: %d", s.Counters.GreetersFailed.Load())
 	}
 }
 
@@ -815,5 +854,8 @@ func TestHealthSaysWhatItKnows(t *testing.T) {
 	out := decode(t, w)
 	if w.Code != http.StatusOK || out["redis"] != true || out["configured"].(map[string]any)["live_token"] != true {
 		t.Fatalf("%d %v", w.Code, out)
+	}
+	if _, ok := out["counters"].(map[string]any)["greeters_failed"]; !ok {
+		t.Errorf("rule 2: a read of the list not noted for the agent-first test is counted: %v", out["counters"])
 	}
 }

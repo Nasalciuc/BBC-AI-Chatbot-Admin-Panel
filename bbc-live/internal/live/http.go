@@ -51,6 +51,8 @@ type Counters struct {
 	Dismissed                           atomic.Int64
 	Lists, Claims, ClaimsRefused        atomic.Int64
 	Releases, AgentsRefused, RedisFails atomic.Int64
+	// The agent-first test: a read of the list by someone who may say hello, not noted (Alex doesn't wait for them).
+	GreetersFailed atomic.Int64
 }
 
 // Roles that see the list, and the ones that may hold a visitor to say hello (the sales line).
@@ -59,6 +61,9 @@ var (
 	claimRoles = map[string]bool{"sales": true}
 	claimLines = map[string]bool{"sales": true, "all": true}
 )
+
+// mayHold says whether the agent may hold a visitor to say hello.
+func mayHold(a token.Agent) bool { return claimRoles[a.Role] && claimLines[a.Tunnel] }
 
 func (s *Server) now() time.Time {
 	if s.Now != nil {
@@ -434,7 +439,8 @@ func (s *Server) dismiss(w http.ResponseWriter, r *http.Request) {
 // ── the panel ───────────────────────────────────────────────────────
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.agent(w, r); !ok {
+	a, ok := s.agent(w, r)
+	if !ok {
 		return
 	}
 	visitors, err := s.Store.Live(r.Context())
@@ -443,6 +449,14 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Counters.Lists.Add(1)
+	if mayHold(a) {
+		// The owner's agent-first test: someone who may say hello is looking at the list, so Alex's card may wait
+		// for them (the API reads live:greeters). Not noted, Alex doesn't wait; the list answers all the same.
+		if err := s.Store.Greeter(r.Context(), a.User); err != nil {
+			s.Counters.GreetersFailed.Add(1)
+			s.Log.Warn("greeter not noted", "where", "list", "error", err.Error())
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": visitors, "count": len(visitors),
 		"max_claims": MaxClaims, "claim_seconds": ClaimTTL})
 }
@@ -472,7 +486,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !claimRoles[a.Role] || !claimLines[a.Tunnel] {
+	if !mayHold(a) {
 		s.Counters.ClaimsRefused.Add(1)
 		fail(w, http.StatusForbidden, "saying hello first is for the sales line")
 		return
@@ -533,6 +547,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 			"claims_refused": c.ClaimsRefused.Load(), "releases": c.Releases.Load(),
 			"agents_refused": c.AgentsRefused.Load(), "redis_failures": c.RedisFails.Load(),
 			"subscription_restarts": s.Hub.Reconnects.Load(), "wakes": s.Hub.Wakes.Load(),
+			"greeters_failed": c.GreetersFailed.Load(),
 		},
 	})
 }
