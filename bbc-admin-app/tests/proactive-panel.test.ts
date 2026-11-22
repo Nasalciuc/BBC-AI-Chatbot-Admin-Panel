@@ -120,5 +120,8 @@ test('a card chat with no contact says so on its row, once (owner, 22 Nov)', () 
   assert.equal(cardNoContact({ metadata: { proactive_trigger: 'kayak' }, has_contact: true }, true), null)
   const list = readFileSync(join(root, 'src/features/chats/index.tsx'), 'utf-8')
   assert.match(list, /const cardOnly = cardNoContact\(conv, Boolean\(gone\)\)/)
+  // A screen reader hears it too: the row's name says it (CodeRabbit #273).
+  const named = list.split('\n').find((l) => l.includes('aria-label={`Conversation ')) ?? ''
+  assert.ok(named.includes("${cardOnly ? `, ${cardOnly}` : ''}"), named)
   assert.match(list, /title=\{CARD_NO_CONTACT_TITLE\}/)
 })

@@ -399,7 +399,7 @@ export function Chats() {
         type='button'
         data-chat-id={conv.id}
         aria-pressed={on}
-        aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}${sig ? `, ${sig.text}` : ''}`}
+        aria-label={`Conversation ${conv.chat_number != null ? `#${conv.chat_number}` : ''} ${conv.visitor_name ?? 'anonymous visitor'}${sig ? `, ${sig.text}` : ''}${cardOnly ? `, ${cardOnly}` : ''}`}
         onClick={() => pick(conv.id)}
         className={cn(
           'flex gap-2.5 rounded-[14px] p-2.5 text-start text-k-202020 transition-colors focus-visible:outline-2 focus-visible:outline-k-6ea8ff',

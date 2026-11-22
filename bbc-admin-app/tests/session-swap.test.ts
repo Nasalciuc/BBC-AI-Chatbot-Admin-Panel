@@ -81,5 +81,6 @@ test('the query cache is one account\'s: emptied as someone signs in, never at a
   assert.equal(cacheBelongsToAnother(null, null), false)
   // Wired where the cache lives: the auth store's every change, before anything of the new account loads.
   const main = readFileSync(join(root, 'src/main.tsx'), 'utf8')
-  assert.match(main, /useAuthStore\.subscribe\(\(state, prev\) => \{\s+if \(cacheBelongsToAnother\(prev\.auth\.user, state\.auth\.user\)\) queryClient\.clear\(\)\s+\}\)/)
+  // Reset, so a page on screen drops what it shows and asks again as the new account (CodeRabbit #273).
+  assert.match(main, /useAuthStore\.subscribe\(\(state, prev\) => \{\s+if \(cacheBelongsToAnother\(prev\.auth\.user, state\.auth\.user\)\) void queryClient\.resetQueries\(\)\s+\}\)/)
 })
