@@ -123,7 +123,7 @@ test('a beat says what the page is and what the visitor did there, for the agent
   assert.match(hook, /pageType: sitePage\(\)\?\.pageType \?\? null, activity: activityLine\(siteEvents\(\)\)/)
 })
 
-test('every step the widget can make passes bbc-live’s filter, and a typed word does not', async () => {
+test('every step the widget can make passes bbc-live’s filter and the API’s, and a typed word does not', async () => {
   const { activityToken, readSiteEvent, FIELD_KINDS } = await import('../src/siteSignals.ts')
   // The pattern as bbc-live compiles it (internal/live/http.go activityStep): the Go raw strings, joined.
   const go = readFileSync(join(here, '..', '..', 'bbc-live', 'internal', 'live', 'http.go'), 'utf8')
@@ -131,6 +131,17 @@ test('every step the widget can make passes bbc-live’s filter, and a typed wor
   assert.ok(start >= 0, 'bbc-live still names its step pattern activityStep')
   const src = go.slice(start, go.indexOf('\n)', start))
   const step = new RegExp([...src.matchAll(/`([^`]*)`/g)].map((m) => m[1]).join(''))
+  // The API's (app/security/metadata.py _ACTIVITY_TOKEN, read with fullmatch): its raw strings, the f-string's
+  // _FIELD_KIND put in. The two services keep the same shapes: a step one keeps, the other keeps too.
+  const py = readFileSync(join(here, '..', '..', 'bbc-chatbot-api', 'app', 'security', 'metadata.py'), 'utf8')
+  const strings = (name) => {
+    const at = py.indexOf(`\n${name} = `)
+    assert.ok(at >= 0, `the API still names ${name}`)
+    return [...py.slice(at, py.indexOf('\n)', at)).matchAll(/\b(rf|fr|r)"([^"]*)"/g)].map(([, p, s]) => ({ f: p.includes('f'), s }))
+  }
+  const kind = strings('_FIELD_KIND').map((x) => x.s).join('')
+  const api = new RegExp('^(?:' + strings('_ACTIVITY_TOKEN').map(({ f, s }) =>
+    (f ? s.replaceAll('{_FIELD_KIND}', kind).replaceAll('{{', '{').replaceAll('}}', '}') : s)).join('') + ')$')
   const ev = (name, detail = {}) => readSiteEvent(name, detail, 1_000, 10_000)
   const made = [
     ev('search_submitted', { origin_code: 'jfk', destination_code: 'LHR', depart_date: '2026-12-14' }),
@@ -143,10 +154,17 @@ test('every step the widget can make passes bbc-live’s filter, and a typed wor
     ...['phone', 'whatsapp', 'email', 'fax'].map((channel) => ev('contact_clicked', { channel })),
   ].filter(Boolean).map(activityToken)
   assert.equal(made.length, 23, 'every sample is a site event the widget keeps')
-  for (const t of made) assert.match(t, step, t)
-  for (const typed of ['search:dana@example.com', 'quote_invalid:call me', 'contact:sms', 'quote_step:555']) {
-    assert.doesNotMatch(typed, step, typed)
+  for (const t of made) {
+    assert.match(t, step, `bbc-live: ${t}`)
+    assert.match(t, api, `the API: ${t}`)
   }
+  const typed = ['search:dana@example.com', 'quote_invalid:call me', 'contact:sms', 'quote_step:555', 'search:jfk-lhr']
+  for (const t of typed) assert.doesNotMatch(t, step, t)
+  // The edges where two copies of a pattern drift: both answer the same.
+  const edges = [...typed, 'search:?-?', 'search:?-IST', 'search:JFK-?:2026-12-14', 'search:2026-12-14', 'quote_step:0',
+    'quote_step:20', 'quote_step:21', 'quote_step:05', `quote_invalid:${FIELD_KINDS.slice(0, 6).join('|')}`,
+    `quote_invalid:${FIELD_KINDS.slice(0, 7).join('|')}`, 'quote_failed', 'quote_failed:teapot', 'contact', 'contact:fax']
+  for (const e of edges) assert.equal(step.test(e), api.test(e), e)
 })
 
 test('an ad, as the moments read it (triggers.adVisit), is an ad here too', async () => {
