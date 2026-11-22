@@ -11,7 +11,10 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { apiFetch, ensureVisitorId } from './api'
-import { afterRefusedPass, beatBody, keptPass, nextPollDelay, readConfig, readHello, type LiveConfig, type LiveHello, type Renewal } from './liveRead'
+import {
+  afterRefusedPass, beatBody, failedAsk, keptPass, nextPollDelay, readConfig, readHello, renewalOf, type LiveConfig,
+  type LiveHello, type Renewal,
+} from './liveRead'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
 
@@ -52,7 +55,7 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ visitor_id: ensureVisitorId(), live_pass: storedPass() }),
   })
-  const cfg = readConfig(res.ok ? await res.json() : null)
+  const cfg = res.ok ? readConfig(await res.json()) : failedAsk(res.status)
   if (cfg.enabled && cfg.pass) keepPass(cfg.pass)
   return cfg
 }
@@ -90,8 +93,11 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       renewing = askConfig(apiUrl)
         .then((cfg): Renewal => {
           if (stopped) return 'later'
+          // Not for now: the config in hand stays, so the beats go on and the next renewal can bring a pass
+          // (CodeRabbit #273). Off or a new pass replaces it.
+          if (cfg.later) return 'later'
           configRef.current = cfg
-          return cfg.enabled ? 'ok' : 'off'
+          return renewalOf(cfg)
         })
         .catch((): Renewal => 'later')
         .finally(() => { renewing = null })
@@ -147,19 +153,22 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (!stopped) later(poll, nextPollDelay(status, failures))
     }
 
-    later(() => {
+    // The first config, from AFTER_S on the page; asked again after RENEW_MS while the API can't say for now.
+    const start = () => {
       if (stopped) return
       askConfig(apiUrl)
         .then(cfg => {
           // An answer for an effect cleaned up meanwhile is not this page's config any more (CodeRabbit #273).
           if (stopped) return
+          if (cfg.later) { later(start, RENEW_MS); return }
           configRef.current = cfg
           if (!cfg.enabled) return
           beat()
           void poll()
         })
-        .catch(() => { /* the API can't say: no live visitor this page */ })
-    }, AFTER_S * 1000)
+        .catch(() => { if (!stopped) later(start, RENEW_MS) })
+    }
+    later(start, AFTER_S * 1000)
 
     return () => {
       stopped = true

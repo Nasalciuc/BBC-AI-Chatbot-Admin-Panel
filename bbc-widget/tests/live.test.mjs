@@ -147,7 +147,38 @@ test('a refused pass: a new one polls at once, a refusal stops, a renewal that f
 
 test('the first config is published only by the effect that is still running', () => {
   const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
-  const first = src.slice(src.indexOf('later(() => {'), src.indexOf('}, AFTER_S * 1000)'))
-  assert.ok(first.indexOf('if (stopped) return') >= 0 && first.indexOf('if (stopped) return') < first.indexOf('configRef.current = cfg'),
+  const start = src.slice(src.indexOf('const start = () => {'), src.indexOf('later(start, AFTER_S * 1000)'))
+  // The guard that counts is the one inside the answer's callback, after the request (CodeRabbit #273, round 3).
+  const answer = start.slice(start.indexOf('.then(cfg => {'), start.indexOf('.catch('))
+  const guard = answer.indexOf('if (stopped) return')
+  assert.ok(guard >= 0 && guard < answer.indexOf('configRef.current = cfg'),
     'a stale answer must not overwrite the running effect’s config')
+})
+
+test('no pass for now is kept apart from off: the API says later, or fails as busy or down (CodeRabbit #273)', async () => {
+  const { failedAsk, renewalOf } = await import('../src/liveRead.ts')
+  assert.deepEqual(readConfig({ enabled: false, later: true }), { enabled: false, later: true })
+  assert.deepEqual(readConfig({ enabled: false }), { enabled: false })
+  assert.deepEqual(readConfig({ enabled: true, url: 'https://live.example.test', pass: PASS, later: true }),
+    { enabled: false, later: true }, 'later wins: no pass is used with it')
+  for (const status of [500, 502, 503, 429]) assert.deepEqual(failedAsk(status), { enabled: false, later: true }, String(status))
+  for (const status of [400, 401, 403, 404]) assert.deepEqual(failedAsk(status), { enabled: false }, String(status))
+  assert.equal(renewalOf({ enabled: false, later: true }), 'later')
+  assert.equal(renewalOf({ enabled: false }), 'off')
+  assert.equal(renewalOf(readConfig({ enabled: true, url: 'https://live.example.test', pass: PASS })), 'ok')
+  const { afterRefusedPass } = await import('../src/liveRead.ts')
+  assert.equal(afterRefusedPass(false, renewalOf(failedAsk(503))), 'wait', 'the API down is no reason to end the page')
+  assert.equal(afterRefusedPass(false, renewalOf({ enabled: false })), 'stop', 'switched off or refused still stops')
+})
+
+test('a renewal for now keeps the config in hand, and the first ask tries again later', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  const renew = src.slice(src.indexOf('const renew = (): Promise<Renewal> => {'), src.indexOf('const beat = () => {'))
+  assert.ok(renew.indexOf('if (cfg.later) return \'later\'') >= 0
+    && renew.indexOf('if (cfg.later) return \'later\'') < renew.indexOf('configRef.current = cfg'),
+    'the beats go on with the config in hand until a renewal brings a pass')
+  const start = src.slice(src.indexOf('const start = () => {'), src.indexOf('later(start, AFTER_S * 1000)'))
+  assert.match(start, /if \(cfg\.later\) \{ later\(start, RENEW_MS\); return \}/)
+  assert.match(start, /\.catch\(\(\) => \{ if \(!stopped\) later\(start, RENEW_MS\) \}\)/)
+  assert.match(src, /const cfg = res\.ok \? readConfig\(await res\.json\(\)\) : failedAsk\(res\.status\)/)
 })

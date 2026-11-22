@@ -14,6 +14,8 @@ export interface LiveConfig {
   hello?: boolean
   /** The visitor's pass to bbc-live (b1…), sent as X-Live-Pass; kept to renew it on the next page. */
   pass?: string
+  /** No pass for now (the API's store unreachable, the API down or busy): ask again later, don't stop. */
+  later?: boolean
 }
 
 export interface LiveHello {
@@ -47,10 +49,12 @@ const COMPARISON = new Set(['kayak', 'skyscanner', 'momondo', 'kiwi', 'cheapflig
 const CABINS = new Set(['economy', 'premium', 'business', 'first'])
 const PASS = /^b1\.[A-Za-z0-9_-]{1,400}\.[0-9a-f]{64}$/
 
-/** The config the API answered (POST /chat/live), or "off" for anything else: on means a place and a pass. */
+/** The config the API answered (POST /chat/live), or "off" for anything else: on means a place and a pass.
+ *  `later: true` is the API saying it can't hand a pass for now: kept apart from off (CodeRabbit #273). */
 export function readConfig(raw: unknown): LiveConfig {
   if (!raw || typeof raw !== 'object') return { enabled: false }
   const r = raw as Record<string, unknown>
+  if (r.later === true) return { enabled: false, later: true }
   if (r.enabled !== true || typeof r.url !== 'string' || !/^https?:\/\/[^\s/]+/.test(r.url)) return { enabled: false }
   if (typeof r.pass !== 'string' || !PASS.test(r.pass)) return { enabled: false }
   const n = (v: unknown, d: number) => (typeof v === 'number' && v >= 1 && v <= 600 ? v : d)
@@ -122,6 +126,17 @@ export function beatBody(o: {
 /** What a renewal of the pass came to: a new pass (`ok`), the feature or the pass refused for this visitor (`off`),
  *  or nothing known yet (`later`: asked too recently, or the API did not answer). */
 export type Renewal = 'ok' | 'off' | 'later'
+
+/** What a renewal's answer means: a pass, off for the page (switched off, refused), or not for now. */
+export function renewalOf(cfg: LiveConfig): Renewal {
+  if (cfg.later) return 'later'
+  return cfg.enabled ? 'ok' : 'off'
+}
+
+/** The answer to POST /chat/live that isn't 2xx: the API down or busy (5xx, 429) is for now, anything else off. */
+export function failedAsk(status: number): LiveConfig {
+  return status >= 500 || status === 429 ? { enabled: false, later: true } : { enabled: false }
+}
 
 /** After bbc-live refused the poll's pass: poll again now (a new pass, from this renewal or the beat's), stop for
  *  the page (no pass will come), or wait and try again (a renewal that failed for now must not end the page's
