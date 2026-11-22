@@ -307,6 +307,46 @@ async def send_super_alert_email(
     )
 
 
+def _minutes(seconds: int) -> str:
+    m = max(1, round((seconds or 0) / 60))
+    return f"{m} min" if m < 60 else f"{m // 60} h {m % 60:02d} min"
+
+
+async def send_queue_alert_email(*, waiting: int = 0, oldest_seconds: int = 0, recovered: bool = False) -> bool:
+    """The queue's own e-mail to super@ (cron.run_queue_stall_alert): how many wait for a person and since
+    when, or that the line moves again. It names no chat and links to the chats list, where the queue is: it
+    used to borrow the chat-waiting e-mail with "-" for a chat id, so its subject read "Chat (-) waiting" and
+    its link opened a chat that doesn't exist (GET /api/conversations/- → 502, 20-21 Nov 2026).
+    Fire-and-forget safe: False on any failure, never raises."""
+    link = f"{settings.admin_panel_url.rstrip('/')}/chats"
+    if recovered:
+        # Over is "nobody waits past the alert's threshold", not an empty queue: clients may still wait, for less
+        # (cron.run_queue_stall_alert). The e-mail says which (CodeRabbit #274).
+        subject = "Queue no longer stalled"
+        if waiting > 0:
+            people = "1 client is" if waiting == 1 else f"{waiting} clients are"
+            lead = f"The queue is no longer stalled: {people} waiting, the oldest {_minutes(oldest_seconds)}."
+        else:
+            lead = "The queue is no longer stalled: nobody is waiting for a person."
+        detail = ""
+    else:
+        people = "1 client" if waiting == 1 else f"{waiting} clients"
+        subject = f"Queue stalled — {people} waiting, the oldest {_minutes(oldest_seconds)}"
+        lead = ("1 client is waiting for a person and nobody has taken the chat." if waiting == 1
+                else f"{waiting} clients are waiting for a person and nobody has taken their chats.")
+        detail = f"The oldest has waited {_minutes(oldest_seconds)}."
+    return await _send_super_inbox_email(
+        subject=subject,
+        html_body=(
+            f"<h2>{lead}</h2>"
+            + (f"<p>{detail}</p>" if detail else "")
+            + f'<p><a href="{link}">Open the chats</a></p>'
+        ),
+        text_body=f"{lead}\n" + (f"{detail}\n" if detail else "") + f"\nOpen the chats: {link}",
+        what="queue recovered email" if recovered else "queue stalled email",
+    )
+
+
 async def send_ops_alert_email(subject: str, body: str, *, cc_super: bool = False) -> bool:
     """Infrastructure alerts (saturation, stalls) — NOT a customer event.
 
