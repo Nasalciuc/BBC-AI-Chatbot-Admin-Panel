@@ -13,8 +13,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, claimProblem, heldBy, helloProblem, onSite, ordered, rowState, sourceLabel,
-  suggestedHello, tripLine,
+  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine,
+  rowState, sourceLabel, suggestedHello, tripLine,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -83,7 +83,7 @@ export function LiveVisitors() {
     <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
       <PageHeader
         title='On the site now'
-        subtitle='Visitors on the site this minute, without a chat: the page they read and the trip it names. Hold one and say hello first; a tap on Reply opens the chat, already yours.'
+        subtitle='Visitors on the site this minute, without a chat: the page they read, the trip it names and what they did there. Hold one and say hello first; a tap on Reply opens the chat, already yours.'
         actions={<HeaderActions className='ms-0' />}
       />
       {!pass ? (
@@ -118,7 +118,10 @@ export function LiveVisitors() {
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATE_CLS[state])}>{ROW_LABEL[state]}</span>
                     </div>
                     <span className='truncate text-sm text-k-202020'>{trip || 'No trip on the page'}</span>
-                    <span className='truncate text-xs text-k-6b6b6b'>{v.page}</span>
+                    {activityText(v) && (
+                      <span className='text-xs leading-[1.45] text-k-4a36c4'>{activityText(v)}</span>
+                    )}
+                    <span className='truncate text-xs text-k-6b6b6b'>{pageLine(v)}</span>
                   </div>
                   <div className='flex flex-none gap-2'>
                     {state === 'free' && (pass.can_say_hello ? (
@@ -159,8 +162,8 @@ export function LiveVisitors() {
           <DialogHeader>
             <DialogTitle>Your hello</DialogTitle>
             <DialogDescription>
-              {writing ? tripLine(writing) || writing.page : ''}. The visitor sees your first name and these words; no
-              phone, e-mail or link: the chat carries them.
+              {writing ? [tripLine(writing) || pageLine(writing), activityText(writing, 2)].filter(Boolean).join(' · ') : ''}. The
+              visitor sees your first name and these words; no phone, e-mail or link: the chat carries them.
             </DialogDescription>
           </DialogHeader>
           <label className='flex flex-col gap-1 text-xs text-k-555555'>

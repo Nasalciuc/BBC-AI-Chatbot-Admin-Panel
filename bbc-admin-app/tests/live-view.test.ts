@@ -5,7 +5,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  HELLO_RESTRICTED, claimProblem, heldBy, helloProblem, onSite, ordered, rowState, sourceLabel, suggestedHello, tripLine,
+  HELLO_RESTRICTED, activityText, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine, rowState, sourceLabel,
+  stepText, suggestedHello, tripLine,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -72,6 +73,44 @@ test('a phone is a run of digits as the server reads it: dates and short numbers
   assert.match(helloProblem('my number: (214) 208-5185'), /phone/)
   assert.match(helloProblem('code 12.34.5678'), /phone/)
   assert.match(helloProblem('2026-12-14 - 214 208 5185'), /phone/)
+})
+
+test('what the visitor did on the site, in words (the owner, 22 Nov: the agent knows what to say)', () => {
+  assert.equal(stepText('search:JFK-LHR:2026-12-14'), 'Searched JFK → LHR, Dec 14')
+  assert.equal(stepText('search:?-IST'), 'Searched ? → IST')
+  assert.equal(stepText('search'), 'Searched flights')
+  assert.equal(stepText('quote_opened'), 'Opened the quote form')
+  assert.equal(stepText('quote_step:2'), 'Quote form, step 2')
+  assert.equal(stepText('quote_invalid:phone|dates'), 'The quote form flagged phone, dates')
+  assert.equal(stepText('quote_failed:network'), 'The quote form didn’t go through (connection)')
+  assert.equal(stepText('quote_failed:other'), 'The quote form didn’t go through')
+  assert.equal(stepText('quote_submitted'), 'Sent the quote form')
+  assert.equal(stepText('contact:phone'), 'Clicked the phone number')
+  assert.equal(stepText('teleport'), '', 'a step it does not know says nothing')
+  const many = ['search:JFK-LHR', 'quote_opened', 'teleport', 'quote_step:1', 'quote_step:2', 'quote_invalid:email']
+  assert.equal(activityText(v({ activity: many })),
+    'Opened the quote form · Quote form, step 1 · Quote form, step 2 · The quote form flagged e-mail', 'the last four, oldest first')
+  assert.equal(activityText(v()), '')
+  assert.equal(pageLine(v({ page: '/search', page_type: 'search' })), 'Search results · /search')
+  assert.equal(pageLine(v({ page: '/x', page_type: 'checkout' })), '/x', 'a kind it does not know: the path alone')
+})
+
+test('the first line meets what the visitor just did: a form that stuck or failed, a request sent', () => {
+  assert.match(suggestedHello(v({ activity: ['quote_opened', 'quote_failed:server'], trip: { to: 'IST' } }), 'Ana'),
+    /^Hi, I'm Ana from the travel team\. Did the quote form give you trouble\? I can take your request right here\.$/)
+  assert.match(suggestedHello(v({ activity: ['quote_invalid:phone'] }), 'Ana'), /Need a hand with the quote form\?/)
+  assert.match(suggestedHello(v({ activity: ['quote_submitted'] }), 'Ana'), /Thanks for your request\./)
+  assert.match(suggestedHello(v({ page_type: 'thank_you' }), 'Ana'), /Thanks for your request\./)
+  // Rule 5: steps that need no special words leave the line as the trip makes it.
+  assert.match(suggestedHello(v({ activity: ['search:JFK-IST', 'quote_opened'], trip: { to: 'IST' } }), 'Ana'),
+    /Looking at flights to IST\?/)
+  assert.match(suggestedHello(v({ activity: ['teleport'] }), 'Ana'), /Can I help you find a business class fare\?$/)
+})
+
+test('the row shows the steps and the kind of page', () => {
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /\{activityText\(v\) && \(/)
+  assert.match(page, /<span className='truncate text-xs text-k-6b6b6b'>\{pageLine\(v\)\}<\/span>/)
 })
 
 test('the first line names the place the page is about', () => {

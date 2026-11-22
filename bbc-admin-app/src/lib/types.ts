@@ -1199,6 +1199,11 @@ export interface LiveVisitor {
   claimed_by?: string
   /** They said "not now" to a hello lately: nobody says hello for an hour. */
   dismissed: boolean
+  /** What the site says the page is (home, search, quote, …), when it says. */
+  page_type?: string
+  /** Their last steps on the site, oldest first ("search:JFK-LHR:2026-12-14", "quote_opened", …): kinds, codes and
+   *  dates, never what they typed (contracts/live.md). */
+  activity?: string[]
 }
 
 export interface LiveListResponse {

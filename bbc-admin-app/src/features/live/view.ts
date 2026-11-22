@@ -35,6 +35,61 @@ export function tripLine(v: Pick<LiveVisitor, 'trip'>): string {
   return [route, dates, t.cabin || '', pax].filter(Boolean).join(' · ')
 }
 
+/** What the site says the page is (contracts/live.md `page_type`), in words. */
+export const PAGE_LABEL: Record<string, string> = {
+  home: 'Home page', route: 'Route page', destination: 'Destination page', origin: 'Departure city page',
+  airline: 'Airline page', deals: 'Deals', search: 'Search results', flight: 'Flight page', quote: 'Quote form page',
+  thank_you: 'Thank-you page', blog: 'Blog', about: 'About us', legal: 'Legal page', other: 'Other page',
+}
+
+/** "Search results · /search", or the path alone when the site said nothing about the page. */
+export function pageLine(v: Pick<LiveVisitor, 'page' | 'page_type'>): string {
+  const label = v.page_type ? PAGE_LABEL[v.page_type] : undefined
+  return label ? `${label} · ${v.page}` : v.page
+}
+
+const FIELD_WORD: Record<string, string> = {
+  name: 'name', email: 'e-mail', phone: 'phone', origin: 'from', destination: 'to', dates: 'dates',
+  passengers: 'travellers', cabin: 'cabin', trip_type: 'trip type', message: 'message', consent: 'consent',
+  captcha: 'captcha', other: 'a field',
+}
+const CHANNEL_WORD: Record<string, string> = { phone: 'the phone number', whatsapp: 'WhatsApp', email: 'the e-mail address' }
+const FAIL_WORD: Record<string, string> = { server: 'our side', network: 'connection', captcha: 'captcha', other: '' }
+
+/** One step the visitor took on the site (contracts/live.md `activity`), in words; '' for a step it doesn't know. */
+export function stepText(step: string): string {
+  const [kind, ...rest] = step.split(':')
+  switch (kind) {
+    case 'search': {
+      const route = rest.find((p) => p.includes('-') && !/^\d{4}-/.test(p))
+      const when = day(rest.find((p) => /^\d{4}-\d{2}-\d{2}$/.test(p)))
+      const [from, to] = route ? route.split('-').map((c) => (c === '?' ? '' : c)) : ['', '']
+      const where = from || to ? ` ${from || '?'} → ${to || '?'}` : ' flights'
+      return `Searched${where}${when ? `, ${when}` : ''}`
+    }
+    case 'quote_opened': return 'Opened the quote form'
+    case 'quote_step': return rest[0] ? `Quote form, step ${rest[0]}` : 'Moved on in the quote form'
+    case 'quote_invalid': {
+      const fields = (rest[0] ?? '').split('|').map((f) => FIELD_WORD[f]).filter(Boolean)
+      return fields.length ? `The quote form flagged ${fields.join(', ')}` : 'The quote form flagged a field'
+    }
+    case 'quote_submitting': return 'Sending the quote form'
+    case 'quote_failed': {
+      const why = FAIL_WORD[rest[0] ?? 'other']
+      return why ? `The quote form didn’t go through (${why})` : 'The quote form didn’t go through'
+    }
+    case 'quote_submitted': return 'Sent the quote form'
+    case 'contact': return rest[0] && CHANNEL_WORD[rest[0]] ? `Clicked ${CHANNEL_WORD[rest[0]]}` : 'Clicked a contact link'
+    default: return ''
+  }
+}
+
+/** The visitor's last steps on the site, oldest first: "Searched JFK → LHR, 14 Dec · Opened the quote form". '' for
+ *  none. What they did, never what they typed (the widget sends kinds, codes and dates; bbc-live checks them). */
+export function activityText(v: Pick<LiveVisitor, 'activity'>, last = 4): string {
+  return (v.activity ?? []).map(stepText).filter(Boolean).slice(-last).join(' · ')
+}
+
 export const SOURCE_LABEL: Record<string, string> = { kayak: 'Kayak', ads: 'Ad', site: 'Site' }
 
 export function sourceLabel(source: string): string {
@@ -137,9 +192,17 @@ export function helloProblem(text: string): string | null {
   return null
 }
 
-/** A first line to start from, built from what the page says (the agent edits it). */
+/** A first line to start from, built from what the page says and what the visitor just did (the agent edits it):
+ *  a quote form that stuck or failed is offered a hand, a sent one a thank-you, a trip its destination. */
 export function suggestedHello(v: LiveVisitor, agentFirstName: string): string {
   const who = agentFirstName ? `Hi, I'm ${agentFirstName} from the travel team.` : 'Hi, I am from the travel team.'
+  const known = (v.activity ?? []).filter((s) => stepText(s))
+  const last = known.length ? known[known.length - 1].split(':')[0] : ''
+  if (last === 'quote_failed') return `${who} Did the quote form give you trouble? I can take your request right here.`
+  if (last === 'quote_invalid') return `${who} Need a hand with the quote form? I can take your trip details right here.`
+  if (last === 'quote_submitted' || v.page_type === 'thank_you') {
+    return `${who} Thanks for your request. Anything you'd like me to know while I prepare your options?`
+  }
   const t = v.trip
   if (t?.to) return `${who} Looking at flights to ${t.to}? I can check business class fares for your dates.`
   return `${who} Can I help you find a business class fare?`
