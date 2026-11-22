@@ -191,13 +191,16 @@ async def offer_hold(visitor_id: Optional[str], trigger: str) -> Hold:
             AGENT_FIRST_HEALTH["redis_failed"] += 1
             logger.warning(f"[agent-first] the wait not started ({type(e).__name__}: {e}): nobody held")
             return Hold(None)
-    left = started + hold_s - now
+    # The clock read again after the awaits; and the wait never longer than the hold itself, though the start a
+    # tab or a process wrote first may be a second after this one's clock (CodeRabbit #273: at the 600 s cap,
+    # 601 is refused by the widget, and that visitor got neither the wait nor the card).
+    left = started + hold_s - time.time()
     if left <= 0:
         AGENT_FIRST_HEALTH["after_hold"] += 1
         return Hold(None, after_hold=True)
     AGENT_FIRST_HEALTH["held"] += 1
     answer = _quiet(trigger, "waiting")
-    answer["retry_after_s"] = max(1, math.ceil(left))
+    answer["retry_after_s"] = max(1, min(hold_s, math.ceil(left)))
     # When Alex comes by this clock: the widget beats it to bbc-live (checked against its own), so the agent's
     # countdown doesn't depend on the visitor's clock.
     answer["alex_at"] = int(math.ceil(started + hold_s))

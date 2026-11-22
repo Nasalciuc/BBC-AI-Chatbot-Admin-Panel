@@ -597,16 +597,30 @@ def _badge_key(agent: str) -> str:
     return f"followup:new:{agent}"
 
 
-# A lead put on an agent's badge, scored strictly after every lead already there: the time it was given, or a
-# millisecond after the badge's newest when this process's clock says otherwise (a step back, another process
-# behind it). The panel announces a lead given after the last one it saw; an equal or earlier score would keep
-# a later lead quiet (CodeRabbit #273). One script: two gives at once can't both read the same newest.
+def _badge_floor_key(agent: str) -> str:
+    """The score of the last lead given to the agent: it outlives an empty badge (contracts/redis-keys.md)."""
+    return f"followup:last:{agent}"
+
+
+# How long the floor outlives the agent's last give: longer than any panel session keeps the score it saw.
+BADGE_FLOOR_TTL_S = 30 * 24 * 3600
+
+# A lead put on an agent's badge, scored strictly after every lead given to that agent before: the time it was
+# given, or a millisecond after the last one given (the floor, KEYS[2]) or the badge's newest when this process's
+# clock says otherwise (a step back, another process behind it). The panel announces a lead given after the last
+# one it saw, and keeps that score while the badge is empty: without the floor, the first lead after an emptied
+# badge took this process's clock alone, and one behind kept it quiet (CodeRabbit #273). One script: two gives at
+# once can't both read the same floor. %.17g: the stored floor is the score itself, not a rounded one.
 BADGE_ADD_LUA = """
-local top = redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')
 local s = tonumber(ARGV[2])
+local top = redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')
 if top[2] ~= nil and tonumber(top[2]) >= s then s = tonumber(top[2]) + 0.001 end
-redis.call('ZADD', KEYS[1], s, ARGV[1])
-return tostring(s)
+local floor = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if floor >= s then s = floor + 0.001 end
+local kept = string.format('%.17g', s)
+redis.call('ZADD', KEYS[1], kept, ARGV[1])
+redis.call('SET', KEYS[2], kept, 'EX', ARGV[3])
+return kept
 """
 
 
@@ -617,7 +631,8 @@ async def _badge(agent: str, *, add: Optional[str] = None, remove: Optional[str]
     try:
         if add:
             # To the microsecond: two leads given in one second keep their order for newest() (CodeRabbit #273).
-            await r.eval(BADGE_ADD_LUA, 1, _badge_key(agent), add, f"{time.time():.6f}")
+            await r.eval(BADGE_ADD_LUA, 2, _badge_key(agent), _badge_floor_key(agent), add, f"{time.time():.6f}",
+                         str(BADGE_FLOOR_TTL_S))
         if remove:
             await r.zrem(_badge_key(agent), remove)
     except Exception as e:

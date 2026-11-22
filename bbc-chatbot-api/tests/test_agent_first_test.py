@@ -156,6 +156,22 @@ async def test_alex_waits_two_minutes_for_an_agent_looking_at_the_list(on, redis
 
 
 @pytest.mark.asyncio
+async def test_the_wait_is_never_longer_than_the_hold_though_its_start_is_a_second_ahead(on, redis, clock, monkeypatch):
+    """CodeRabbit #273: another tab or process wrote the start in the next second; at the 600 s cap the answer said
+    601, which the widget refuses (its cap is 600), and that visitor got neither the wait nor the card."""
+    monkeypatch.setenv("AGENT_FIRST_HOLD_S", "600")
+    await _agent_looking(redis)
+    clock.t = T0 + 0.875
+    await redis.set(aft.HOLD_KEY + AGENT_VID, str(int(T0) + 1), ex=900)
+    out = await aft.offer_hold(AGENT_VID, "kayak")
+    assert out.answer["retry_after_s"] == 600 and out.answer["alex_at"] == int(T0) + 601
+    # Rule 5: a start in this second, as usual, gives the hold less what has gone.
+    await redis.set(aft.HOLD_KEY + AGENT_VID, str(int(T0)), ex=900)
+    clock.t = T0 + 30.5
+    assert (await aft.offer_hold(AGENT_VID, "kayak")).answer["retry_after_s"] == 570
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("key, reason, counter", [
     (aft.SAID_KEY, "greeted", "quiet_greeted"), (aft.DISMISSED_KEY, "declined", "quiet_declined")])
 async def test_a_hello_or_a_not_now_keeps_alex_quiet(on, redis, clock, key, reason, counter):

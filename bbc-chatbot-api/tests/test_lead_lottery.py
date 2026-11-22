@@ -530,6 +530,25 @@ async def test_a_later_lead_scores_after_the_newest_whatever_the_clock_says(worl
 
 
 @pytest.mark.asyncio
+async def test_a_lead_after_an_emptied_badge_scores_after_the_last_one_given(world, monkeypatch):
+    """CodeRabbit #273: the panel keeps the last score it announced while the badge is empty; the first lead after
+    the agent opened the last one took this process's clock alone, and a clock behind kept it quiet. The floor
+    (followup:last:<agent>) outlives the empty badge."""
+    _, _, r = world
+    clock = iter([1000.5, 999.0, 2000.25])
+    monkeypatch.setattr(lot.time, "time", lambda: next(clock))
+    await lot._badge(B, add="c1")
+    await lot._badge(B, remove="c1")
+    assert await r.zcard(f"followup:new:{B}") == 0, "the agent opened the only lead"
+    await lot._badge(B, add="c2")  # given by a process whose clock is behind
+    assert await r.zscore(f"followup:new:{B}", "c2") == pytest.approx(1000.501)
+    # Rule 5: a clock that moved on gives the time itself.
+    await lot._badge(B, add="c3")
+    assert await r.zscore(f"followup:new:{B}", "c3") == pytest.approx(2000.25)
+    assert r.expires.get(f"followup:last:{B}"), "the floor expires"
+
+
+@pytest.mark.asyncio
 async def test_a_hand_give_after_a_confirmation_keeps_its_badge(world):
     """CodeRabbit #273: the confirmation took the lead off the badge after its lock and its audit; a manager's
     give in that gap put it back under the lock, and the late removal took it off again."""
