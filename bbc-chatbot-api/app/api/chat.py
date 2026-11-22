@@ -103,12 +103,29 @@ class ProactiveInit(BaseModel):
     # The language the card spoke ("es", "fr"; proactive_i18n): the opening is written in it, and the
     # chat keeps it. Anything else is English.
     lang: Optional[str] = None
+    # The owner's contact test (app.services.contact_field_test): the side /offer named, and on the field
+    # side the field the yes opened at once. Written on the chat only when it is this visitor's side;
+    # anything else is dropped, never a 422.
+    contact_test: Optional[str] = None
+    field: Optional[str] = None
 
     @field_validator("variant", mode="before")
     @classmethod
     def _known_variant_or_none(cls, v):
         from app.services.proactive import known_variant
         return known_variant(v)
+
+    @field_validator("contact_test", mode="before")
+    @classmethod
+    def _known_side_or_none(cls, v):
+        from app.services.contact_field_test import SIDES
+        return v if v in SIDES else None
+
+    @field_validator("field", mode="before")
+    @classmethod
+    def _known_field_or_none(cls, v):
+        from app.services.contact_field_test import CHANNELS
+        return v if v in CHANNELS else None
 
     @field_validator("lang", mode="before")
     @classmethod
@@ -239,12 +256,21 @@ async def chat_init(
         # with the page's search. A failure here must not cost the visitor
         # the chat: it is counted and logged, and the chat goes on.
         try:
+            # The owner's contact test: the side /offer named this card, server-checked, written with the
+            # opening's label (app.services.contact_field_test).
+            from app.services import contact_field_test as _contact_field_test
+            _contact: dict = {}
+            if payload.proactive:
+                _contact_field_test.tag(
+                    _contact, payload.visitor_id, payload.proactive.contact_test, payload.proactive.field,
+                )
             # `site` as the metadata allowlist validated it (bbc | bct): the
             # same brand the card named at /offer.
             _opening = await _proactive.open_conversation(
                 conv_id, _proactive_trigger, payload.trip, _meta.get("site"),
                 payload.proactive.variant if payload.proactive else None,
                 payload.proactive.lang if payload.proactive else None,
+                contact=_contact or None,
             ) or {}
         except Exception as e:
             _proactive.PROACTIVE_HEALTH["open_failures"] += 1
@@ -310,11 +336,19 @@ class ProactiveOfferRequest(BaseModel):
     device: Optional[Literal["phone", "computer"]] = None
     place: Optional[Literal["form"]] = None
     c4: Optional[Literal["early", "now"]] = None
+    # The widget opens the contact field with the yes's answer (the owner's contact test, 22 Nov:
+    # app.services.contact_field_test): only such a widget takes part. Anything but true is false.
+    opens_field: bool = False
 
     @field_validator("trip", mode="before")
     @classmethod
     def _trip_or_none(cls, v):
         return v if isinstance(v, (dict, TripContext)) else None
+
+    @field_validator("opens_field", mode="before")
+    @classmethod
+    def _true_or_false(cls, v):
+        return v is True
 
     @field_validator("lang", mode="before")
     @classmethod
@@ -387,7 +421,7 @@ async def proactive_offer(
     out = proactive.offer(
         payload.visitor_id, payload.trigger, payload.trip, payload.site, payload.refused,
         lang=payload.lang, device=payload.device, place=payload.place, c4=payload.c4,
-        c4_open=_c4_open, team_online=is_within_team_hours(),
+        c4_open=_c4_open, team_online=is_within_team_hours(), opens_field=payload.opens_field,
     )
     if out.get("show") and payload.trigger == "kayak" and payload.c4:
         await proactive.c4_count(payload.c4)

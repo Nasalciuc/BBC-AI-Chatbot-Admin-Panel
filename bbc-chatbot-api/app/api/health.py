@@ -183,6 +183,8 @@ async def health_detail(full: bool = False) -> dict:
     from app.services.live_visitors import LIVE_HEALTH
     # The owner's agent-first test: who waited for an agent, who was greeted first, what Redis missed.
     from app.services import agent_first_test
+    # The owner's contact test: the card answers on each side (the field at once, or the choice first).
+    from app.services import contact_field_test
 
     # The six problems' counters (Nov 2026), in both answers under the same keys: an operator who asks for the
     # full payload while looking into a lock, the lottery or the live list must not lose them.
@@ -198,6 +200,7 @@ async def health_detail(full: bool = False) -> dict:
         "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
         "live": dict(LIVE_HEALTH),
         "agent_first_test": agent_first_test.health(),
+        "contact_field_test": contact_field_test.health(),
     }
 
     if not full:

@@ -18,6 +18,9 @@ still answered as WhatsApp: that client typed a number into a field that said Wh
 - B1 (ADR-6d): one message as a client with no contact leaves, the buttons with it.
 - D1 (ADR-4a): the row beside the site's quote form after it refused a send (proactive_i18n: "row").
 - C1/C2 (ADR-3a/3b): the card's own channel button, and the pill that stays after "Not now".
+- The field side of the owner's contact test (22 Nov 2026, contact_field_test): the yes names one channel and asks
+  for its contact, with the field open under it; "Get a fare quote" on a card that knows no whole trip is
+  answered at once, contact first, and the trip is asked after it.
 
 English, Spanish and French, like the card (ADR-9b). No amount anywhere (owner, 18 Nov): the price the
 client says is kept for the agent, never repeated. No long dash either (owner, 20 Nov: it reads as a machine's;
@@ -63,6 +66,66 @@ _CONFIRM: dict[str, dict[str, str]] = {
                   "Où doit-il vous écrire : SMS ou e-mail ?"),
         "beat": ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
                  "et vous écrira. Où doit-il vous écrire : SMS ou e-mail ?"),
+    },
+}
+
+# The field side of the owner's contact test (contact_field_test, 22 Nov 2026): the yes opens the field at once,
+# so the words say where the fares go and ask for that one contact. The other channel stays one tap away (the
+# buttons, shown when the client goes back from the field).
+_CONFIRM_FIELD: dict[str, dict[tuple[str, str], str]] = {
+    "en": {
+        ("fares", "sms"): ("Got it, {line}. An agent will check live fares for exactly this trip and text them to you. "
+                           "What's your mobile number?"),
+        ("fares", "email"): ("Got it, {line}. An agent will check live fares for exactly this trip and email them to "
+                             "you. What's your email address?"),
+        ("beat", "sms"): ("Got it, {line}. An agent will check if they can beat the price you saw, and text you. "
+                          "What's your mobile number?"),
+        ("beat", "email"): ("Got it, {line}. An agent will check if they can beat the price you saw, and email you. "
+                            "What's your email address?"),
+    },
+    "es": {
+        ("fares", "sms"): ("Perfecto: {line}. Un agente consultará tarifas reales para exactamente este viaje y se las "
+                           "enviará por SMS. ¿Cuál es su número de móvil?"),
+        ("fares", "email"): ("Perfecto: {line}. Un agente consultará tarifas reales para exactamente este viaje y se "
+                             "las enviará por correo. ¿Cuál es su correo?"),
+        ("beat", "sms"): ("Perfecto: {line}. Un agente revisará si puede mejorar el precio que vio y le escribirá por "
+                          "SMS. ¿Cuál es su número de móvil?"),
+        ("beat", "email"): ("Perfecto: {line}. Un agente revisará si puede mejorar el precio que vio y le escribirá "
+                            "por correo. ¿Cuál es su correo?"),
+    },
+    "fr": {
+        ("fares", "sms"): ("Parfait : {line}. Un agent vérifiera les tarifs réels pour exactement ce voyage et vous "
+                           "les enverra par SMS. Quel est votre numéro de mobile ?"),
+        ("fares", "email"): ("Parfait : {line}. Un agent vérifiera les tarifs réels pour exactement ce voyage et vous "
+                             "les enverra par e-mail. Quelle est votre adresse e-mail ?"),
+        ("beat", "sms"): ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
+                          "et vous écrira par SMS. Quel est votre numéro de mobile ?"),
+        ("beat", "email"): ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
+                            "et vous écrira par e-mail. Quelle est votre adresse e-mail ?"),
+    },
+}
+
+# The field side on a card that knows no whole trip (the ads card, the reader's, the tapped note): "Get a fare
+# quote" answered at once, contact first. The trip is asked once the contact is in (channel_done, trip_known=False):
+# on 19-22 Nov these cards asked the route, the dates and the channel one after another, and 7 of 65 answers left a
+# contact.
+_CONTACT_FIRST: dict[str, dict[str, str]] = {
+    "en": {
+        "sms": "Sure. An agent will check live fares for your trip and text them to you. What's your mobile number?",
+        "email": ("Sure. An agent will check live fares for your trip and email them to you. "
+                  "What's your email address?"),
+    },
+    "es": {
+        "sms": ("Claro. Un agente consultará tarifas reales para su viaje y se las enviará por SMS. "
+                "¿Cuál es su número de móvil?"),
+        "email": ("Claro. Un agente consultará tarifas reales para su viaje y se las enviará por correo. "
+                  "¿Cuál es su correo?"),
+    },
+    "fr": {
+        "sms": ("Bien sûr. Un agent vérifiera les tarifs réels pour votre voyage et vous les enverra par SMS. "
+                "Quel est votre numéro de mobile ?"),
+        "email": ("Bien sûr. Un agent vérifiera les tarifs réels pour votre voyage et vous les enverra par e-mail. "
+                  "Quelle est votre adresse e-mail ?"),
     },
 }
 
@@ -137,15 +200,33 @@ def device_channel(device: Optional[str]) -> str:
     return "sms" if device == "phone" else "email"
 
 
-def confirm(line: str, lang: Optional[str] = None, beat: bool = False) -> str:
-    """A2: the yes answered at once — the trip said back, what happens next, where to write."""
-    return _CONFIRM[_lang(lang)]["beat" if beat else "fares"].format(line=line)
+def confirm(line: str, lang: Optional[str] = None, beat: bool = False, field: Optional[str] = None) -> str:
+    """A2: the yes answered at once — the trip said back, what happens next, where to write. On the field side of
+    the owner's contact test (`field`: the field the widget opens with these words, contact_field_test), the one
+    channel is named and its contact asked for."""
+    kind = "beat" if beat else "fares"
+    if field in CHANNELS:
+        return _CONFIRM_FIELD[_lang(lang)][(kind, field)].format(line=line)
+    return _CONFIRM[_lang(lang)][kind].format(line=line)
 
 
 def confirm_buttons(lang: Optional[str], team_online: bool) -> list[dict]:
     """SMS, Email, "I'll wait here" while the team is at work (ADR-5b), and "Change details" (a wrong
     trip is mended in one tap)."""
     kinds = ["sms", "email", *(["wait"] if team_online else []), "change"]
+    return [button(k, lang) for k in kinds]
+
+
+def contact_first(lang: Optional[str], field: str) -> str:
+    """The field side's answer to "Get a fare quote" on a card that knows no whole trip: where the fares go, and
+    that one contact asked for (contact_field_test). Email for a field that is not one of CHANNELS."""
+    return _CONTACT_FIRST[_lang(lang)][field if field in CHANNELS else "email"]
+
+
+def contact_first_buttons(lang: Optional[str], team_online: bool) -> list[dict]:
+    """Under the contact-first answer, shown when the client goes back from the field: both channels, and "I'll
+    wait here" while the team is at work. No "Change details": there is no trip to change yet."""
+    kinds = ["sms", "email", *(["wait"] if team_online else [])]
     return [button(k, lang) for k in kinds]
 
 
