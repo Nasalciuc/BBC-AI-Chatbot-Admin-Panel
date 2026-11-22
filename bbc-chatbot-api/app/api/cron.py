@@ -930,18 +930,16 @@ async def run_queue_stall_alert() -> dict:
             if _QUEUE_ALERT["active"]:
                 _QUEUE_ALERT["active"] = False
                 _QUEUE_ALERT["last_count"] = 0
+                sent = False
                 try:
-                    from app.services.email import send_super_alert_email
-                    await send_super_alert_email(
-                        conversation_id="-",
-                        visitor_name=None, visitor_phone=None, visitor_email=None,
-                        tunnel="sales",
-                        last_message="(queue recovered: nobody is waiting any more)",
-                        chat_number=None,
-                    )
+                    # The queue's own e-mail: it names no chat and links to the chats list.
+                    from app.services.email import send_queue_alert_email
+                    sent = await send_queue_alert_email(recovered=True)
                 except Exception as e:
                     logger.warning(f"[queue-alert] recovery email failed: {e}")
-                return {"state": "recovered"}
+                if not sent:
+                    logger.warning("[queue-alert] the queue recovered, and its e-mail did not go")
+                return {"state": "recovered", "emailed": sent}
             return {"state": "ok", "waiting": waiting}
         _last = _QUEUE_ALERT["last_sent_at"]
         _cooled = (
@@ -951,20 +949,15 @@ async def run_queue_stall_alert() -> dict:
         _grew = waiting > _QUEUE_ALERT["last_count"]
         if not (_cooled or _grew):
             return {"state": "suppressed", "waiting": waiting}
+        sent = False
         try:
-            from app.services.email import send_super_alert_email
-            await send_super_alert_email(
-                conversation_id="-",
-                visitor_name=None, visitor_phone=None, visitor_email=None,
-                tunnel="sales",
-                last_message=(
-                    f"(queue stalled: {waiting} waiting, oldest {oldest}s, "
-                    "nobody has taken it)"
-                ),
-                chat_number=None,
-            )
+            from app.services.email import send_queue_alert_email
+            sent = await send_queue_alert_email(waiting=waiting, oldest_seconds=oldest)
         except Exception as e:
             logger.warning(f"[queue-alert] email failed: {e}")
+        if not sent:
+            # Not sent is not alerted (rule 7): the next minute tries again instead of cooling down for 15.
+            logger.warning(f"[queue-alert] {waiting} waiting, and the e-mail did not go")
             return {"state": "email_failed", "waiting": waiting}
         _QUEUE_ALERT["last_sent_at"] = now
         _QUEUE_ALERT["last_count"] = waiting

@@ -584,6 +584,8 @@ async def get_conversation(
     # conversation had been deleted. Now: absent row → 404, fetch failure → 502,
     # so the panel's retry path recovers instead of lying. See Bug 5 forensic
     # (17.04.2026) for the earlier half of this fix.
+    # An id that is not a uuid comes back as no row (db.get_conversation), so 404: the queue e-mail's "-"
+    # (20-21 Nov 2026) was a 502 and two ERROR lines on every click.
     try:
         conv = await db.get_conversation(conversation_id, raise_on_error=True)
     except Exception as e:

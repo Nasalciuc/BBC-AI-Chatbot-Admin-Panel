@@ -692,6 +692,13 @@ _supervisor_columns_downgraded_at: Optional[float] = None  # time.time()
 _MISSING_COLUMN_RE = re.compile(r"column\s+.+\s+does\s+not\s+exist", re.I)
 
 
+def _is_not_a_uuid_error(err: BaseException) -> bool:
+    """Postgres refused a value as a uuid (22P02, invalid_text_representation): the id asked for names no
+    row. Only for a read by id, where the id is the one uuid the query carries."""
+    code = getattr(err, "code", None) or getattr(err, "pgcode", None)
+    return str(code) == "22P02" and "uuid" in str(err)
+
+
 def _is_missing_column_error(err: BaseException) -> bool:
     """True only for a genuine Postgres/PostgREST missing-column failure.
 
@@ -1312,6 +1319,11 @@ async def get_conversation(
         attach_effective_presence(result)
         return result
     except Exception as e:
+        if _is_not_a_uuid_error(e):
+            # An id that is not a uuid names no chat: an ordinary absence (None), not a failed fetch. The queue
+            # e-mail's "-" (20-21 Nov 2026) read as one: a 502 and an ERROR line on every click.
+            logger.info("get_conversation: an id that is not a uuid, read as no chat")
+            return None
         logger.error(f"get_conversation error: {e}")
         if raise_on_error:
             raise
