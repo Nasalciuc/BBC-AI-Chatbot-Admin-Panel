@@ -37,9 +37,9 @@ class TestStallAlert:
     @pytest.mark.asyncio
     async def test_one_alert_then_suppressed_inside_the_cooldown(self):
         _reset()
-        email = AsyncMock()
+        email = AsyncMock(return_value=True)
         with patch.object(cron.db, "get_queue_stats", _stats(2, 200)), \
-             patch("app.services.email.send_super_alert_email", email):
+             patch("app.services.email.send_queue_alert_email", email):
             first = await run_queue_stall_alert()
             second = await run_queue_stall_alert()
         assert first["state"] == "alerted"
@@ -49,8 +49,8 @@ class TestStallAlert:
     @pytest.mark.asyncio
     async def test_growth_breaks_through_the_cooldown(self):
         _reset()
-        email = AsyncMock()
-        with patch("app.services.email.send_super_alert_email", email):
+        email = AsyncMock(return_value=True)
+        with patch("app.services.email.send_queue_alert_email", email):
             with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
                 await run_queue_stall_alert()
             with patch.object(cron.db, "get_queue_stats", _stats(5, 260)):
@@ -61,8 +61,8 @@ class TestStallAlert:
     @pytest.mark.asyncio
     async def test_recovery_sends_exactly_one_email_then_silence(self):
         _reset()
-        email = AsyncMock()
-        with patch("app.services.email.send_super_alert_email", email):
+        email = AsyncMock(return_value=True)
+        with patch("app.services.email.send_queue_alert_email", email):
             with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
                 await run_queue_stall_alert()
             with patch.object(cron.db, "get_queue_stats", _stats(0, 0)):
@@ -75,9 +75,9 @@ class TestStallAlert:
     @pytest.mark.asyncio
     async def test_a_young_queue_is_not_a_stalled_queue(self):
         _reset()
-        email = AsyncMock()
+        email = AsyncMock(return_value=True)
         with patch.object(cron.db, "get_queue_stats", _stats(4, 60)), \
-             patch("app.services.email.send_super_alert_email", email):
+             patch("app.services.email.send_queue_alert_email", email):
             out = await run_queue_stall_alert()
         assert out["state"] == "ok"
         email.assert_not_awaited(), "waiting 60s is a queue, not a stall"
@@ -89,6 +89,159 @@ class TestStallAlert:
 
         src = inspect.getsource(scheduler)
         assert '("queue_stall_alert", run_queue_stall_alert, 60),' in src
+
+    @pytest.mark.asyncio
+    async def test_the_alert_and_the_recovery_are_the_queues_own_email(self):
+        """20-21 Nov 2026: the alert borrowed the chat-waiting e-mail with "-" for a chat id, so its button
+        opened /chats?highlight=- and the panel asked for chat "-" (a 502, twice a click)."""
+        _reset()
+        email = AsyncMock(return_value=True)
+        with patch("app.services.email.send_queue_alert_email", email):
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 249)):
+                await run_queue_stall_alert()
+            with patch.object(cron.db, "get_queue_stats", _stats(0, 0)):
+                await run_queue_stall_alert()
+        assert email.await_args_list[0].kwargs == {"waiting": 2, "oldest_seconds": 249}
+        assert email.await_args_list[1].kwargs == {"waiting": 0, "oldest_seconds": 0, "recovered": True}
+
+    @pytest.mark.asyncio
+    async def test_an_email_that_did_not_go_is_not_an_alert(self):
+        """Rule 7: the sender answers False without raising. Not sent, the next minute tries again instead of
+        cooling down for fifteen, and no recovery e-mail follows an alert nobody got."""
+        _reset()
+        email = AsyncMock(side_effect=[False, True])
+        with patch("app.services.email.send_queue_alert_email", email), \
+             patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
+            failed = await run_queue_stall_alert()
+            again = await run_queue_stall_alert()
+        assert failed["state"] == "email_failed" and again["state"] == "alerted"
+        assert email.await_count == 2
+
+        _reset()
+        email = AsyncMock(return_value=False)
+        with patch("app.services.email.send_queue_alert_email", email):
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
+                await run_queue_stall_alert()
+            with patch.object(cron.db, "get_queue_stats", _stats(0, 0)):
+                out = await run_queue_stall_alert()
+        assert out["state"] == "ok" and email.await_count == 1, "nothing was alerted, nothing to recover"
+
+    @pytest.mark.asyncio
+    async def test_a_recovery_that_did_not_go_is_told_again_the_next_minute(self):
+        """Otherwise nobody knows the stall is over. Once it went, silence (rule 5: the queue stays empty)."""
+        _reset()
+        before = dict(cron.QUEUE_ALERT_HEALTH)
+        email = AsyncMock(side_effect=[True, False, True])
+        with patch("app.services.email.send_queue_alert_email", email):
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
+                await run_queue_stall_alert()
+            with patch.object(cron.db, "get_queue_stats", _stats(0, 0)):
+                failed = await run_queue_stall_alert()
+                again = await run_queue_stall_alert()
+                after = await run_queue_stall_alert()
+        assert failed == {"state": "recovered", "emailed": False}
+        assert again == {"state": "recovered", "emailed": True}
+        assert after["state"] == "ok" and email.await_count == 3
+        assert [k.kwargs for k in email.await_args_list[1:]] == [{"waiting": 0, "oldest_seconds": 0, "recovered": True}] * 2
+        delta = {k: cron.QUEUE_ALERT_HEALTH[k] - before[k] for k in before}
+        assert delta == {"alerts_sent": 1, "alerts_failed": 0, "recoveries_sent": 1, "recoveries_failed": 1}
+
+    @pytest.mark.asyncio
+    async def test_an_alert_that_did_not_go_is_counted(self):
+        """Rule 2: a stall nobody was told about is counted in /health, not only logged."""
+        _reset()
+        before = dict(cron.QUEUE_ALERT_HEALTH)
+        with patch("app.services.email.send_queue_alert_email", AsyncMock(side_effect=RuntimeError("smtp"))), \
+             patch.object(cron.db, "get_queue_stats", _stats(3, 300)):
+            out = await run_queue_stall_alert()
+        assert out == {"state": "email_failed", "waiting": 3}
+        assert cron.QUEUE_ALERT_HEALTH["alerts_failed"] - before["alerts_failed"] == 1
+        assert cron.QUEUE_ALERT_HEALTH["alerts_sent"] == before["alerts_sent"]
+
+    def test_the_counts_are_in_health(self):
+        import inspect
+
+        from app.api import health
+
+        src = inspect.getsource(health.health_detail)
+        assert src.count('"queue_alert": dict(QUEUE_ALERT_HEALTH)') == 2, "both answers, short and full"
+
+
+class TestQueueEmail:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("waiting, oldest, subject, lead", [
+        (2, 249, "Queue stalled — 2 clients waiting, the oldest 4 min",
+         "2 clients are waiting for a person and nobody has taken their chats."),
+        (1, 130, "Queue stalled — 1 client waiting, the oldest 2 min",
+         "1 client is waiting for a person and nobody has taken the chat."),
+        (3, 4000, "Queue stalled — 3 clients waiting, the oldest 1 h 07 min",
+         "3 clients are waiting for a person and nobody has taken their chats."),
+    ])
+    async def test_the_alert_says_how_many_and_since_when_and_links_to_the_chats(self, waiting, oldest, subject,
+                                                                                 lead):
+        from app.services import email as mail
+
+        send = AsyncMock(return_value=True)
+        with patch.object(mail, "_send_super_inbox_email", send), \
+             patch.object(mail.settings, "admin_panel_url", "https://panel.example.test/"):
+            assert await mail.send_queue_alert_email(waiting=waiting, oldest_seconds=oldest) is True
+        kw = send.await_args.kwargs
+        assert kw["subject"] == subject and lead in kw["html_body"] and lead in kw["text_body"]
+        for body in (kw["html_body"], kw["text_body"]):
+            assert "https://panel.example.test/chats" in body
+            assert "highlight" not in body and "(-)" not in body
+
+    @pytest.mark.asyncio
+    async def test_the_recovery_says_the_queue_moves(self):
+        from app.services import email as mail
+
+        send = AsyncMock(return_value=True)
+        with patch.object(mail, "_send_super_inbox_email", send):
+            await mail.send_queue_alert_email(recovered=True)
+        kw = send.await_args.kwargs
+        assert kw["subject"] == "Queue no longer stalled"
+        assert "nobody is waiting for a person" in kw["text_body"] and "highlight" not in kw["text_body"]
+
+    @pytest.mark.asyncio
+    async def test_a_recovery_with_clients_still_waiting_never_says_nobody_waits(self):
+        """CodeRabbit #274: over is nobody past the threshold; two clients waiting a minute are said as such."""
+        from app.services import email as mail
+
+        send = AsyncMock(return_value=True)
+        with patch.object(mail, "_send_super_inbox_email", send):
+            await mail.send_queue_alert_email(waiting=2, oldest_seconds=60, recovered=True)
+        kw = send.await_args.kwargs
+        assert kw["subject"] == "Queue no longer stalled"
+        for body in (kw["html_body"], kw["text_body"]):
+            assert "2 clients are waiting, the oldest 1 min" in body
+            assert "nobody" not in body
+
+    @pytest.mark.asyncio
+    async def test_the_cron_tells_the_recovery_who_still_waits(self):
+        _reset()
+        email = AsyncMock(return_value=True)
+        with patch("app.services.email.send_queue_alert_email", email):
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 200)):
+                await run_queue_stall_alert()
+            with patch.object(cron.db, "get_queue_stats", _stats(2, 60)):
+                rec = await run_queue_stall_alert()
+        assert rec == {"state": "recovered", "emailed": True}
+        assert email.await_args.kwargs == {"waiting": 2, "oldest_seconds": 60, "recovered": True}
+
+    @pytest.mark.asyncio
+    async def test_a_chat_waiting_still_links_to_its_chat(self):
+        """Rule 5: the e-mail for one real chat is unchanged."""
+        from app.services import email as mail
+
+        send = AsyncMock(return_value=True)
+        with patch.object(mail, "_send_super_inbox_email", send), \
+             patch.object(mail.settings, "admin_panel_url", "https://panel.example.test"):
+            await mail.send_super_alert_email(conversation_id="c0000000-0000-4000-8000-000000000001",
+                                              visitor_name=None, visitor_phone=None, visitor_email=None,
+                                              tunnel="sales", last_message="hi", chat_number=3403)
+        kw = send.await_args.kwargs
+        assert kw["subject"].startswith("Chat #3403 waiting")
+        assert "/chats?highlight=c0000000-0000-4000-8000-000000000001" in kw["text_body"]
 
 
 # ══════════════════════════════════════════════════════════════

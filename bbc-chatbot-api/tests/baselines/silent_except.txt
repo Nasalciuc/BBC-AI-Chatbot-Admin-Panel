@@ -28,7 +28,6 @@
 #
 # Address format: path::function::kind — deliberately WITHOUT a line number,
 # so reformatting a file can never break the build.
-app/ai/claude.py::_call_model::log-without-exception
 app/ai/claude.py::_call_model_with_tools::log-without-exception
 app/ai/claude.py::_stream_model::log-without-exception
 app/ai/claude.py::_stream_model::pass

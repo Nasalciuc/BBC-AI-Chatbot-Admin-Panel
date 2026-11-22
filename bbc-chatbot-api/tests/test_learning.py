@@ -325,6 +325,82 @@ class TestRun:
         assert result["status"] == "partial_json"
         assert result["new_lessons"] == 0
 
+    async def test_a_timeout_marks_partial_timeout_and_asks_no_second_time(self):
+        """17-21 Nov 2026: every call ran out at the chat's 15 s and read as invalid JSON, five days without a
+        lesson. A timeout is named now, counted, and not asked again (a second call would wait as long)."""
+        from app.ai.claude import ModelTimeout
+
+        calls = {"n": 0}
+
+        def llm(*_a, **_k):
+            calls["n"] += 1
+            raise ModelTimeout("no answer in 120s, twice")
+
+        cards = [{"chat": i, "tag": "abandoned", "segment": "sales/direct"} for i in range(40)]  # two chunks
+        save = AsyncMock()
+        before = dict(learning.LEARNING_HEALTH)
+        patches = _run_patches(cards, llm, _save_run=save)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = await learning.run_learning()
+
+        assert result["status"] == "partial_timeout"
+        assert save.await_args.args[0]["status"] == "partial_timeout"
+        assert calls["n"] == 2, "one call a chunk: no JSON retry after a timeout"
+        assert learning.LEARNING_HEALTH["timeouts"] - before["timeouts"] == 2
+        assert learning.LEARNING_HEALTH["invalid_json"] == before["invalid_json"]
+
+    async def test_no_answer_marks_partial_error_without_a_retry(self):
+        calls = {"n": 0}
+
+        def llm(*_a, **_k):
+            calls["n"] += 1
+            return None, 0.0   # an API error or a refusal, logged by the model call
+
+        cards = [{"chat": 1, "tag": "abandoned", "segment": "sales/direct"}]
+        before = dict(learning.LEARNING_HEALTH)
+        patches = _run_patches(cards, llm)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = await learning.run_learning()
+
+        assert result["status"] == "partial_error" and calls["n"] == 1
+        assert learning.LEARNING_HEALTH["no_answer"] - before["no_answer"] == 1
+
+    async def test_a_timeout_on_the_json_retry_is_a_timeout(self):
+        from app.ai.claude import ModelTimeout
+
+        calls = {"n": 0}
+
+        def llm(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "not json at all", 0.01
+            raise ModelTimeout("no answer in 120s, twice")
+
+        cards = [{"chat": 1, "tag": "abandoned", "segment": "sales/direct"}]
+        patches = _run_patches(cards, llm)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = await learning.run_learning()
+
+        assert result["status"] == "partial_timeout" and result["cost"] == 0.01
+
+    async def test_no_answer_on_the_json_retry_is_no_answer(self):
+        """Rule 7: asked again for the JSON, an error or a refusal is named as one, not as bad JSON."""
+        calls = {"n": 0}
+
+        def llm(*_a, **_k):
+            calls["n"] += 1
+            return ("not json at all", 0.01) if calls["n"] == 1 else (None, 0.0)
+
+        cards = [{"chat": 1, "tag": "abandoned", "segment": "sales/direct"}]
+        before = dict(learning.LEARNING_HEALTH)
+        patches = _run_patches(cards, llm)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = await learning.run_learning()
+
+        assert result["status"] == "partial_error" and calls["n"] == 2 and result["cost"] == 0.01
+        assert learning.LEARNING_HEALTH["no_answer"] - before["no_answer"] == 1
+        assert learning.LEARNING_HEALTH["invalid_json"] == before["invalid_json"]
+
     async def test_json_retry_recovers(self):
         calls = {"n": 0}
 
@@ -734,3 +810,68 @@ class TestSanitizeLesson:
         assert row["needs_scrutiny"] is True
         assert len(row["title"]) <= learning.LESSON_TITLE_MAX
         assert len(row["content"]) <= learning.LESSON_CONTENT_MAX
+
+
+# ── the synthesis call's own wait (17-21 Nov 2026: the chat's 15 s, five days without a lesson) ──────
+
+
+class _Timeouts:
+    """A client whose every create runs out of time; with_options records the retries it was given."""
+
+    def __init__(self):
+        import anthropic
+        import httpx as _httpx
+
+        self.kwargs, self.retries = [], []
+        self._err = anthropic.APITimeoutError(request=_httpx.Request("POST", "https://api.invalid/v1/messages"))
+        self.messages = self
+
+    def with_options(self, **kw):
+        self.retries.append(kw.get("max_retries"))
+        return self
+
+    def create(self, **kw):
+        self.kwargs.append(kw)
+        raise self._err
+
+
+class TestTheLearningCall:
+    def test_it_waits_its_own_time_without_sdk_retries_and_says_when_time_ran_out(self):
+        from app.ai import claude
+
+        with patch.object(claude, "_call_model", return_value=("{}", 0.0)) as m:
+            claude.call_sonnet_learning("sys", "msg")
+        kw = m.call_args.kwargs
+        assert kw["timeout"] == settings.learning_timeout_seconds > settings.claude_timeout
+        assert kw["sdk_retries"] == 0 and kw["raise_on_timeout"] is True
+
+    def test_two_tries_out_of_time_raise_model_timeout(self):
+        from app.ai import claude
+
+        fake = _Timeouts()
+        with patch.object(claude, "_get_client", return_value=fake):
+            with pytest.raises(claude.ModelTimeout):
+                claude._call_model(model=settings.claude_sonnet_model, system_prompt="s", user_message="m",
+                                   max_tokens=100, temperature=0.2, task="learn_map", timeout=120,
+                                   sdk_retries=0, raise_on_timeout=True)
+        assert [k["timeout"] for k in fake.kwargs] == [120, 120] and fake.retries == [0]
+
+    def test_every_other_call_keeps_its_none_and_the_chats_wait(self):
+        """Rule 5: a call that asks for nothing new waits claude_timeout, with the client's own retries, and
+        a timeout is still (None, 0.0)."""
+        from app.ai import claude
+
+        fake = _Timeouts()
+        with patch.object(claude, "_get_client", return_value=fake):
+            out = claude._call_model(model=settings.claude_sonnet_model, system_prompt="s", user_message="m",
+                                     max_tokens=100, temperature=0.2, task="other")
+        assert out == (None, 0.0)
+        assert [k["timeout"] for k in fake.kwargs] == [settings.claude_timeout] * 2 and fake.retries == []
+
+    def test_the_counts_are_in_health(self):
+        import inspect
+
+        from app.api import health
+
+        src = inspect.getsource(health.health_detail)
+        assert src.count('"learning": dict(LEARNING_HEALTH)') == 2, "both answers, short and full"

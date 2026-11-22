@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     lesson_staleness_days: int = 30         # approved but unreinforced → out of the prompt
     lesson_injection_limit: int = 8
     learning_runs_retention_days: int = 90
+    # One synthesis call's wait (the chat's claude_timeout is 15 s): a day of 13 to 51 chats needs longer, and
+    # from 17 Nov 2026 every call ran out at 15 s, five days without a lesson. No SDK retry on top of it.
+    learning_timeout_seconds: int = 120
 
     # Rate Limiting
     rate_burst: int = 15
