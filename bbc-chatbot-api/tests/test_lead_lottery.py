@@ -450,6 +450,19 @@ async def test_the_burst_counts_chats_within_a_run_as_across_runs(world, monkeyp
 @pytest.mark.asyncio
 async def test_no_redis_no_badge_number():
     assert await lot.new_count(A) is None
+    assert await lot.newest(A) is None
+
+
+@pytest.mark.asyncio
+async def test_the_newest_lead_is_the_one_given_last(world):
+    """What the panel's alert opens: the lead given last that the agent hasn't opened."""
+    _, _, r = world
+    assert await lot.newest(A) is None
+    await r.zadd(f"followup:new:{A}", {"c1": 100, "c2": 300, "c3": 200})
+    assert await lot.newest(A) == "c2"
+    await r.zrem(f"followup:new:{A}", "c2")
+    assert await lot.newest(A) == "c3"
+    assert await lot.newest(B) is None, "another agent's badge is theirs"
 
 
 # ── what agents see in Offers to send, with the lottery on ──────

@@ -608,3 +608,19 @@ async def new_count(agent: str) -> Optional[int]:
         redis_failed("followup badge read", e)
         logger.warning(f"[lottery] badge for {agent} not read ({type(e).__name__}: {e})")
         return None
+
+
+async def newest(agent: str) -> Optional[str]:
+    """The lead given to this agent last that they have not opened yet: the panel's alert opens it in one click,
+    and opening it confirms it. None when there is none, or when Redis can't say (logged, and counted by
+    redis_failed in /health): the alert then waits for the next beat."""
+    r = get_redis()
+    if r is None or not agent:
+        return None
+    try:
+        got = await r.zrevrange(_badge_key(agent), 0, 0)
+    except Exception as e:
+        redis_failed("followup badge read", e)
+        logger.warning(f"[lottery] newest lead for {agent} not read ({type(e).__name__}: {e})")
+        return None
+    return str(got[0]) if got else None

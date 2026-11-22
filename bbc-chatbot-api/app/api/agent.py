@@ -393,9 +393,14 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
     # Leads the follow-up lottery gave this agent that they have not opened yet: one Redis read, no
     # database (app.services.lead_lottery). None when Redis can't say: the panel shows no number.
     _followups_new = None
+    _followup_newest = None
     if _qa_ok_for_followups(user_db, role_db):
         from app.services import lead_lottery
         _followups_new = await lead_lottery.new_count(user_id)
+        if _followups_new:
+            # The last one given: the panel's alert opens it in one click (opening confirms it). A second read
+            # only while there is something to open.
+            _followup_newest = await lead_lottery.newest(user_id)
     _now = time.monotonic()
     HEARTBEAT_HEALTH["latency_ms"].append((_now, (_now - _t0) * 1000.0))
     HEARTBEAT_HEALTH["calls"] += 1
@@ -414,6 +419,7 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         "response_deadline_seconds": settings.agent_first_response_timeout_seconds,
         "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
         "followups_new": _followups_new,
+        "followup_newest": _followup_newest,
         # "On the site now": the address of bbc-live and a 60 s pass to it, for the roles that see the
         # list, while LIVE_VISITORS is on (app.services.live_visitors). None otherwise.
         "live": _live_for(user, user_db),
