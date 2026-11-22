@@ -4,9 +4,10 @@ On 15-22 Nov 4,122 visitors saw Alex's card and 235 answered it (5.7 %, PostHog)
 (AGENT_FIRST_TEST_PERCENT, the owner's 50) are on the agent's side, bucketed by visitor id like every
 experiment (app.experiments), so a visitor keeps their side across visits:
 
-- the agent's side is listed in "On the site now". While an agent who may say hello is at the desk, Alex's
-  card waits AGENT_FIRST_HOLD_S for them (the owner's 2 minutes, counted from the visitor's first moment,
-  live:hold:<vid>). A hello said meanwhile keeps Alex quiet for the visit (live:said, the hello's 15 minutes),
+- the agent's side is listed in "On the site now". While an agent who may say hello has that page open (bbc-live
+  notes them at each read of the list), Alex's card waits AGENT_FIRST_HOLD_S for them (the owner's 2 minutes,
+  counted from the visitor's first moment, live:hold:<vid>). Nobody looking, nobody to wait for: an agent on
+  another page of the panel would never see the visitor. A hello said meanwhile keeps Alex quiet for the visit (live:said, the hello's 15 minutes),
   and so does the visitor's "Not now" (live:dismissed, an hour, for everyone). Nobody said hello: the card
   comes as it would for anyone, marked after_hold;
 - Alex's side is as before, and never listed: no agent greets them, so it stays the comparison.
@@ -17,9 +18,9 @@ every visitor is listed again. Each side is named on the widget's answers ("test
 chat's metadata (agent_test) and on the widget's PostHog events, so the result reads per side, the whole side
 (leads per 100 visitors), not only the visitors an agent chose to greet.
 
-Redis (contracts/live.md): live:hold:<vid> (when Alex's wait began, 15 min) and live:greeters (the agents who
-may say hello, by their last heartbeat). Redis failing: nobody is held (the card comes as for everyone), and the
-miss is counted, never silent (rules 2 and 7).
+Redis (contracts/live.md): live:hold:<vid> (when Alex's wait began, 15 min, written here) and live:greeters (the
+agents who may hold a visitor, by their last read of the list, written by bbc-live). Redis failing: nobody is held
+(the card comes as for everyone), and the miss is counted, never silent (rules 2 and 7).
 """
 
 from __future__ import annotations
@@ -40,8 +41,9 @@ HELD_ARM = "agent_first"          # the arm an offer answer names while it keeps
 NOTE = "note"                     # proactive.NOTE: the visitor tapped the note, never held
 HOLD_KEY = "live:hold:"           # + visitor id: unix seconds when Alex's wait began
 HOLD_KEY_TTL = 900                # a visit; past it the next visit waits again
-GREETERS_KEY = "live:greeters"    # sorted set: user id -> unix seconds of their last heartbeat
-_GREETERS_KEEP_S = 24 * 3600
+GREETERS_KEY = "live:greeters"    # bbc-live's sorted set: user id -> unix seconds of their last read of the list
+# Looking at the list: a read in the last 30 s. The panel reads it every 5 s while the page is open and visible.
+GREETER_WINDOW_S = 30
 SAID_KEY = "live:said:"           # written by send.lua with the hello (live_visitors.HELLO_TTL)
 DISMISSED_KEY = "live:dismissed:"  # written by bbc-live on "Not now"
 MAX_HOLD_S = 600
@@ -50,13 +52,12 @@ AGENT_FIRST_HEALTH: dict[str, int] = {
     "held": 0,                 # an offer answered "wait": Alex holds back for an agent
     "quiet_greeted": 0,        # an offer answered "no": an agent said hello first
     "quiet_declined": 0,       # an offer answered "no": the visitor said not now to a hello
-    "no_agent": 0,             # the agent's side, nobody who may say hello at the desk: the card as usual
+    "no_agent": 0,             # the agent's side, nobody who may say hello looking at the list: the card as usual
     "after_hold": 0,           # the wait ran out without a hello: the card as usual
     "hellos_in_hold": 0,       # hellos sent while Alex waited
     "hellos_after_hold": 0,    # hellos sent after the wait ran out (Alex's card may have shown)
     "hellos_no_hold": 0,       # hellos to a visitor Alex never waited for
-    "redis_failed": 0,         # the wait or a hello not read: nobody held, counted here
-    "greeter_beat_failed": 0,  # an agent's presence for the test not written
+    "redis_failed": 0,         # the wait, a hello or who is looking not read: nobody held, counted here
 }
 
 
@@ -122,12 +123,9 @@ def _quiet(trigger: str, reason: str) -> dict:
 
 
 async def greeter_online(r) -> Optional[bool]:
-    """Is anyone who may say hello at the desk? None when Redis can't say."""
-    from config.settings import settings
-
-    window = int(settings.queue_presence_window_seconds)
+    """Is anyone who may say hello looking at "On the site now"? None when Redis can't say."""
     try:
-        return int(await r.zcount(GREETERS_KEY, int(time.time()) - window, "+inf")) > 0
+        return int(await r.zcount(GREETERS_KEY, int(time.time()) - GREETER_WINDOW_S, "+inf")) > 0
     except Exception as e:
         redis_failed("agent-first greeters", e)
         AGENT_FIRST_HEALTH["redis_failed"] += 1
@@ -204,25 +202,6 @@ async def offer_hold(visitor_id: Optional[str], trigger: str) -> Hold:
     # countdown doesn't depend on the visitor's clock.
     answer["alex_at"] = int(math.ceil(started + hold_s))
     return Hold(answer)
-
-
-async def greeter_beat(user_id: Optional[str]) -> None:
-    """An agent who may say hello beat: they count as at the desk for the test's wait."""
-    if not user_id or not running():
-        return
-    r = get_redis()
-    if r is None:
-        return  # Redis down for everyone: offer_hold holds nobody and counts it
-    stamp = int(time.time())
-    try:
-        pipe = r.pipeline(transaction=False)
-        pipe.zadd(GREETERS_KEY, {user_id: stamp})
-        pipe.zremrangebyscore(GREETERS_KEY, "-inf", stamp - _GREETERS_KEEP_S)
-        await pipe.execute()
-    except Exception as e:
-        redis_failed("agent-first greeter beat", e)
-        AGENT_FIRST_HEALTH["greeter_beat_failed"] += 1
-        logger.warning(f"[agent-first] {user_id}: presence for the test not written ({type(e).__name__}: {e})")
 
 
 async def note_hello(visitor_id: str) -> None:

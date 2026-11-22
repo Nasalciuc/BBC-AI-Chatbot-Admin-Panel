@@ -1,6 +1,6 @@
 """The owner's agent-first test (22 Nov 2026, app.services.agent_first_test): half the visitors are the agent's,
-listed in "On the site now", and Alex's card waits two minutes for an agent who may say hello; the other half is
-Alex's, as before, and never listed. Each side named on every answer, on the chat, in /health."""
+listed in "On the site now", and Alex's card waits two minutes while an agent who may say hello has that page open;
+the other half is Alex's, as before, and never listed. Each side named on every answer, on the chat, in /health."""
 
 from __future__ import annotations
 
@@ -89,7 +89,8 @@ def redis():
     redis_client.set_client_for_tests(None)
 
 
-async def _agent_at_desk(fake: FakeRedis, at: float = T0) -> None:
+async def _agent_looking(fake: FakeRedis, at: float = T0) -> None:
+    """bbc-live notes an agent who may say hello at each read of the list (internal/live http.go list)."""
     await fake.zadd(aft.GREETERS_KEY, {AGENT_ID: at})
 
 
@@ -138,8 +139,8 @@ def test_a_visitor_keeps_their_side_and_the_sides_are_halves(on):
 
 
 @pytest.mark.asyncio
-async def test_alex_waits_two_minutes_for_an_agent_at_the_desk(on, redis, clock):
-    await _agent_at_desk(redis)
+async def test_alex_waits_two_minutes_for_an_agent_looking_at_the_list(on, redis, clock):
+    await _agent_looking(redis)
     first = await aft.offer_hold(AGENT_VID, "kayak")
     assert first.answer == {"show": False, "arm": "agent_first", "trigger": "kayak", "message": None,
                             "quick_replies": [], "reason": "waiting", "test": "agent", "retry_after_s": 120,
@@ -158,7 +159,7 @@ async def test_alex_waits_two_minutes_for_an_agent_at_the_desk(on, redis, clock)
 @pytest.mark.parametrize("key, reason, counter", [
     (aft.SAID_KEY, "greeted", "quiet_greeted"), (aft.DISMISSED_KEY, "declined", "quiet_declined")])
 async def test_a_hello_or_a_not_now_keeps_alex_quiet(on, redis, clock, key, reason, counter):
-    await _agent_at_desk(redis)
+    await _agent_looking(redis)
     await redis.set(key + AGENT_VID, "1", ex=900)
     clock.t = T0 + 500  # long after any wait
     out = await aft.offer_hold(AGENT_VID, "kayak")
@@ -167,15 +168,23 @@ async def test_a_hello_or_a_not_now_keeps_alex_quiet(on, redis, clock, key, reas
 
 
 @pytest.mark.asyncio
-async def test_nobody_at_the_desk_alex_comes_as_usual(on, redis, clock):
-    await _agent_at_desk(redis, at=T0 - 600)  # beat ten minutes ago: gone
+@pytest.mark.parametrize("ago", [aft.GREETER_WINDOW_S + 1, 600])
+async def test_nobody_looking_at_the_list_alex_comes_as_usual(on, redis, clock, ago):
+    """Rule 5: an agent who left the page (or the panel) is nobody to wait for, though the panel may still be open."""
+    await _agent_looking(redis, at=T0 - ago)
     assert await aft.offer_hold(AGENT_VID, "kayak") == aft.Hold(None)
     assert aft.HOLD_KEY + AGENT_VID not in redis.kv and aft.AGENT_FIRST_HEALTH["no_agent"] == 1
 
 
 @pytest.mark.asyncio
+async def test_a_read_of_the_list_inside_the_window_still_counts(on, redis, clock):
+    await _agent_looking(redis, at=T0 - (aft.GREETER_WINDOW_S - 1))
+    assert (await aft.offer_hold(AGENT_VID, "kayak")).answer["reason"] == "waiting"
+
+
+@pytest.mark.asyncio
 async def test_rule_5_the_note_and_alexs_side_are_never_held(on, redis, clock):
-    await _agent_at_desk(redis)
+    await _agent_looking(redis)
     assert await aft.offer_hold(AGENT_VID, "note") == aft.Hold(None), "the visitor tapped: their choice"
     assert await aft.offer_hold(ALEX_VID, "kayak") == aft.Hold(None)
     assert not [k for k in redis.kv if k.startswith(aft.HOLD_KEY)], "no wait started for either"
@@ -188,7 +197,7 @@ async def test_rule_5_the_note_and_alexs_side_are_never_held(on, redis, clock):
     ({"PROACTIVE_PERCENT": "0"}, "kayak"),        # PROACTIVE_PERCENT's control arm
 ])
 async def test_rule_5_a_moment_with_no_card_waits_for_nothing(on, redis, clock, monkeypatch, env, trigger):
-    await _agent_at_desk(redis)
+    await _agent_looking(redis)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     assert await aft.offer_hold(AGENT_VID, trigger) == aft.Hold(None)
@@ -198,13 +207,13 @@ async def test_rule_5_a_moment_with_no_card_waits_for_nothing(on, redis, clock, 
 @pytest.mark.asyncio
 async def test_a_zero_wait_lists_the_side_and_holds_nobody(on, redis, clock, monkeypatch):
     monkeypatch.setenv("AGENT_FIRST_HOLD_S", "0")
-    await _agent_at_desk(redis)
+    await _agent_looking(redis)
     assert await aft.offer_hold(AGENT_VID, "kayak") == aft.Hold(None)
 
 
 @pytest.mark.asyncio
 async def test_redis_failing_holds_nobody_and_says_so(on, redis, clock):
-    await _agent_at_desk(redis)
+    await _agent_looking(redis)
     redis.down = True
     assert await aft.offer_hold(AGENT_VID, "kayak") == aft.Hold(None)
     assert aft.AGENT_FIRST_HEALTH["redis_failed"] == 1, "rule 7: a miss is told from 'not the case'"
@@ -244,7 +253,7 @@ def cards(monkeypatch):
 def test_the_offer_route_holds_the_agents_side_and_names_alexs(on, redis, clock, cards):
     import asyncio
 
-    asyncio.run(_agent_at_desk(redis))
+    asyncio.run(_agent_looking(redis))
     held = _offer(AGENT_VID)
     assert held["show"] is False and held["retry_after_s"] == 120 and held["test"] == "agent"
     card = _offer(ALEX_VID)
@@ -307,25 +316,26 @@ def test_the_chat_routes_tag_their_side():
     assert src.count("agent_first_test.tag(_meta, req.visitor_id)") == 1
 
 
-def test_the_panel_hears_of_the_test_and_an_agent_at_the_desk_is_counted(on, redis, clock):
-    import asyncio
-
+def test_the_panel_hears_of_the_test(on):
     live = live_visitors.heartbeat_live(SALES)
     assert live["can_say_hello"] is True and live["test"] == {"percent": 50, "hold_s": 120}
-    asyncio.run(aft.greeter_beat(AGENT_ID))
-    assert redis.kv[aft.GREETERS_KEY][AGENT_ID] == float(int(T0))
     sup = live_visitors.heartbeat_live({"id": "s1", "role": "supervisor", "tunnel_scope": "all"})
     assert sup["can_say_hello"] is False and sup["test"]["percent"] == 50, "a supervisor sees the test too"
 
 
-def test_the_heartbeat_marks_only_who_may_say_hello():
+def test_who_is_looking_is_bbc_lives_to_write_and_the_heartbeat_marks_nobody():
+    """The heartbeat runs on every page of the panel, in a worker even in a hidden tab: it is no sign that someone
+    sees the list. bbc-live notes the readers of the list under the key this side reads."""
     import inspect
+    import re
+    from pathlib import Path
 
     from app.api import agent
 
-    src = inspect.getsource(agent.heartbeat)
-    assert 'if _live and _live.get("can_say_hello"):' in src and "agent_first_test.greeter_beat(user_id)" in src
-    assert '"live": _live,' in src
+    assert "agent_first_test" not in inspect.getsource(agent.heartbeat)
+    assert "zadd" not in inspect.getsource(aft), "the API only reads live:greeters"
+    store = (Path(__file__).resolve().parents[2] / "bbc-live" / "internal" / "live" / "store.go").read_text()
+    assert re.search(r'GreetersKey\s*=\s*"' + re.escape(aft.GREETERS_KEY) + '"', store)
 
 
 @pytest.mark.asyncio

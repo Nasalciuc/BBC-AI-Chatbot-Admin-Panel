@@ -367,9 +367,9 @@ async def proactive_offer(
     conversation, no lead and no row. The control arm is told show=False, so
     the widget counts the moment without showing anything.
 
-    The owner's test (app.services.agent_first_test): on the agent's side, while an agent who may say hello is
-    at the desk, the card waits (show=False with retry_after_s; only a Redis key, no row), and after a hello or
-    a "Not now" it doesn't come. Every answer names the side while the test runs ("test")."""
+    The owner's test (app.services.agent_first_test): on the agent's side, while an agent who may say hello has
+    "On the site now" open, the card waits (show=False with retry_after_s; only a Redis key, no row), and after a
+    hello or a "Not now" it doesn't come. Every answer names the side while the test runs ("test")."""
     from app.services import agent_first_test, note_bandit, proactive
     from app.services.closing import is_within_team_hours
     held = await agent_first_test.offer_hold(payload.visitor_id, payload.trigger)
