@@ -48,7 +48,7 @@ one kind from passing for another. `contracts/live_tokens.json` holds vectors th
 | `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted; 400 not JSON; 401; 503 not configured or Redis down |
 | `GET /v1/inbox` | widget, `X-Live-Pass` | 200 `{"messages":[…]}` at once or the moment a hello lands; 204 after 25 s with nothing; 429 a fourth tab waiting |
 | `POST /v1/dismiss` | widget, `X-Live-Pass` | 200: "not now", nobody says hello for an hour, the claim and the inbox go |
-| `GET /v1/live` | panel, `Bearer l1…`, roles sales, owner, admin, dev, supervisor | 200 `{"data":[visitor…],"max_claims":3,"claim_seconds":600}` |
+| `GET /v1/live` | panel, `Bearer l1…`, roles sales, owner, admin, dev, supervisor | 200 `{"data":[visitor…],"max_claims":3,"claim_seconds":600}`; a reader who may hold a visitor is noted in `live:greeters` (the agent-first test) |
 | `POST /v1/claim` `{"visitor_id"}` | panel, role sales, line sales or all | 200 `claimed`/`mine`; 409 `taken`, `full`, `declined`, `in_a_chat`; 410 `gone` |
 | `POST /v1/release` `{"visitor_id"}` | panel | 200 `{"released": bool}` |
 | `GET /health` | anyone | Redis, the secrets present, counters |
@@ -106,7 +106,9 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 - Alex's side: `POST /chat/live` answers `{"enabled": false, "test": "alex"}`, so it is never listed and no agent
   greets it. Its cards come as before.
 - The agent's side: `POST /chat/live` answers as usual plus `"test": "agent", "hold_s"`. While an agent who may
-  say hello is at the desk (`live:greeters`, the heartbeat), `POST /chat/proactive/offer` answers
+  say hello has "On the site now" open (`live:greeters`: bbc-live notes the sales line at each read of the list,
+  every 5 s while the page is open and visible; the API counts a read in the last 30 s; the heartbeat, on every
+  page of the panel and in a hidden tab, is no sign of it), `POST /chat/proactive/offer` answers
   `{"show": false, "arm": "agent_first", "reason": "waiting", "retry_after_s", "alex_at"}` for
   `AGENT_FIRST_HOLD_S` (120, the owner's) from the visitor's first moment (`live:hold:<vid>`): the widget gives the
   moment back, asks again after the wait and beats `alex_at`, and the panel shows the countdown. A hello in that
@@ -130,7 +132,7 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 | `live:said:<vid>` | string | the agent who said hello | 900 s | the API |
 | `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 25 h after the last pass: its 24 h and the hour it still renews | the API (`pass.lua`) |
 | `live:hold:<vid>` | string | unix seconds when Alex's wait began (the agent-first test) | 900 s | the API |
-| `live:greeters` | sorted set | user id, score = unix seconds of the last heartbeat of an agent who may say hello | trimmed at a day | the API |
+| `live:greeters` | sorted set | user id, score = unix seconds of the last read of the list by an agent who may hold a visitor (the agent-first test) | a day after the last read, trimmed at each read | bbc-live |
 | `rl:livepass:<address>:<hour>` | string | new ids that address got passes for this hour; `<address>` a keyed hash, never the address | 1 h | the API (`pass.lua`) |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
