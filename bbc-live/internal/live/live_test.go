@@ -197,6 +197,18 @@ func TestOnlyKnownPageKindsAndTheLastStepsAreKept(t *testing.T) {
 	if len(got) != ActivitySteps || got[0] != "quote_step:4" || got[ActivitySteps-1] != "quote_step:15" {
 		t.Errorf("kept %v", got)
 	}
+	// The API's bounds (app/security/metadata.py): steps 1 to 20, six kinds at most, a route with one known end.
+	for _, ok := range []string{"quote_step:20", "quote_invalid:name|email|phone|origin|destination|dates"} {
+		if cleanActivity(ok) != ok {
+			t.Errorf("dropped %q", ok)
+		}
+	}
+	for _, bad := range []string{"quote_step:0", "quote_step:21", "quote_step:05", "search:?-?",
+		"quote_invalid:name|email|phone|origin|destination|dates|cabin"} {
+		if cleanActivity(bad) != "" {
+			t.Errorf("kept %q", bad)
+		}
+	}
 	if cleanActivity(strings.Repeat("quote_opened;", 60)) != "" {
 		t.Error("a line over 600 characters is dropped whole")
 	}

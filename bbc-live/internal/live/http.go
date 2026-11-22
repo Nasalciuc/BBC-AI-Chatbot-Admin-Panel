@@ -190,11 +190,13 @@ var (
 		"deals": true, "search": true, "flight": true, "quote": true, "thank_you": true, "blog": true, "about": true,
 		"legal": true, "other": true}
 	// One step of what the visitor did on the site (the widget's siteSignals.ts activityToken): codes, dates, a
-	// step number, kinds of fields and channels from fixed lists. Never what they typed.
-	activityStep = regexp.MustCompile(`^(?:search(?::(?:[A-Z]{3}|\?)-(?:[A-Z]{3}|\?))?(?::\d{4}-\d{2}-\d{2})?` +
-		`|quote_opened|quote_step(?::\d{1,2})?` +
+	// step number, kinds of fields and channels from fixed lists. Never what they typed. The same shapes as the
+	// API's app/security/metadata.py _ACTIVITY_TOKEN (a route with one known end at least, steps 1 to 20, six
+	// kinds at most); the widget's tests check its steps against both.
+	activityStep = regexp.MustCompile(`^(?:search(?::(?:[A-Z]{3}-(?:[A-Z]{3}|\?)|\?-[A-Z]{3}))?(?::[0-9]{4}-[0-9]{2}-[0-9]{2})?` +
+		`|quote_opened|quote_step(?::(?:[1-9]|1[0-9]|20))?` +
 		`|quote_invalid(?::(?:name|email|phone|origin|destination|dates|passengers|cabin|trip_type|message|consent|captcha|other)` +
-		`(?:\|(?:name|email|phone|origin|destination|dates|passengers|cabin|trip_type|message|consent|captcha|other))*)?` +
+		`(?:\|(?:name|email|phone|origin|destination|dates|passengers|cabin|trip_type|message|consent|captcha|other)){0,5})?` +
 		`|quote_submitting|quote_failed:(?:server|network|captcha|other)|quote_submitted` +
 		`|contact(?::(?:phone|whatsapp|email))?)$`)
 )
