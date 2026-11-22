@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { beatBody, keptPass, nextPollDelay, readConfig, readHello, sourceOf } from '../src/liveRead.ts'
+import { BEAT_PAGE_TYPES, beatBody, keptPass, nextPollDelay, readConfig, readHello, sourceOf } from '../src/liveRead.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const contract = JSON.parse(readFileSync(join(here, '..', '..', 'contracts', 'live_inbox_message.json'), 'utf8'))
@@ -101,6 +101,52 @@ test('a beat carries the path, codes and dates, never the query', () => {
 test('a page without a trip beats the path alone', () => {
   const b = beatBody({ path: '', trip: null, utm: {}, phone: false, site: 'bct', chatOpen: true, hasChat: false })
   assert.deepEqual(b, { page: '/', source: 'site', device: 'computer', site: 'bct', chat_open: true, has_chat: false })
+})
+
+test('a beat says what the page is and what the visitor did there, for the agent who says hello (the owner, 22 Nov)', async () => {
+  const { activityLine, PAGE_TYPES } = await import('../src/siteSignals.ts')
+  const events = [
+    { name: 'search_submitted', detail: { origin_code: 'JFK', destination_code: 'LHR', depart_date: '2026-12-14' }, at: 1 },
+    { name: 'quote_form_opened', detail: {}, at: 2 },
+    { name: 'quote_form_invalid', detail: { fields: ['phone'] }, at: 3 },
+  ]
+  const b = beatBody({ path: '/search', trip: null, utm: {}, phone: false, site: 'bbc', chatOpen: false, hasChat: false,
+    pageType: 'search', activity: activityLine(events) })
+  assert.equal(b.page_type, 'search')
+  assert.equal(b.activity, 'search:JFK-LHR:2026-12-14;quote_opened;quote_invalid:phone')
+  // Only a kind the site knows, and the line as the site's steps make it (bbc-live checks each step again).
+  assert.equal(beatBody({ path: '/', trip: null, utm: {}, phone: false, site: 'bbc', chatOpen: false, hasChat: false,
+    pageType: 'checkout', activity: 'x'.repeat(301) }).page_type, undefined)
+  assert.deepEqual([...BEAT_PAGE_TYPES], [...PAGE_TYPES], 'the same list as the site signals')
+  // The hook sends them on every beat.
+  const hook = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  assert.match(hook, /pageType: sitePage\(\)\?\.pageType \?\? null, activity: activityLine\(siteEvents\(\)\)/)
+})
+
+test('every step the widget can make passes bbc-live’s filter, and a typed word does not', async () => {
+  const { activityToken, readSiteEvent, FIELD_KINDS } = await import('../src/siteSignals.ts')
+  // The pattern as bbc-live compiles it (internal/live/http.go activityStep): the Go raw strings, joined.
+  const go = readFileSync(join(here, '..', '..', 'bbc-live', 'internal', 'live', 'http.go'), 'utf8')
+  const start = go.indexOf('activityStep = regexp.MustCompile(')
+  assert.ok(start >= 0, 'bbc-live still names its step pattern activityStep')
+  const src = go.slice(start, go.indexOf('\n)', start))
+  const step = new RegExp([...src.matchAll(/`([^`]*)`/g)].map((m) => m[1]).join(''))
+  const ev = (name, detail = {}) => readSiteEvent(name, detail, 1_000, 10_000)
+  const made = [
+    ev('search_submitted', { origin_code: 'jfk', destination_code: 'LHR', depart_date: '2026-12-14' }),
+    ev('search_submitted', { destination_code: 'IST' }), ev('search_submitted', { depart_date: '2026-12-14' }),
+    ev('search_submitted', {}), ev('quote_form_opened'), ev('quote_form_step', { step: 1 }),
+    ev('quote_form_step', { step: 20 }), ev('quote_form_step', {}), ev('quote_form_invalid', { fields: [...FIELD_KINDS] }),
+    ev('quote_form_invalid', { fields: ['phone_number', 'departure date'] }), ev('quote_form_invalid', {}),
+    ev('quote_form_submitting'), ev('quote_form_submitted'), ev('contact_clicked', {}),
+    ...['server', 'network', 'captcha', 'other', 'teapot'].map((reason) => ev('quote_form_failed', { reason })),
+    ...['phone', 'whatsapp', 'email', 'fax'].map((channel) => ev('contact_clicked', { channel })),
+  ].filter(Boolean).map(activityToken)
+  assert.equal(made.length, 23, 'every sample is a site event the widget keeps')
+  for (const t of made) assert.match(t, step, t)
+  for (const typed of ['search:dana@example.com', 'quote_invalid:call me', 'contact:sms', 'quote_step:555']) {
+    assert.doesNotMatch(typed, step, typed)
+  }
 })
 
 test('an ad, as the moments read it (triggers.adVisit), is an ad here too', async () => {

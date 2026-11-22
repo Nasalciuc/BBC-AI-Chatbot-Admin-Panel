@@ -40,7 +40,17 @@ export interface Beat {
   site: string
   chat_open: boolean
   has_chat: boolean
+  /** What the site says the page is (siteSignals.ts PAGE_TYPES), when it says. */
+  page_type?: string
+  /** The visitor's last steps on the site (siteSignals.ts activityLine): codes, dates, steps, kinds. */
+  activity?: string
 }
+
+/** siteSignals.ts PAGE_TYPES, here because this file imports nothing but types (tests/live.test.mjs pins them). */
+export const BEAT_PAGE_TYPES: readonly string[] = [
+  'home', 'route', 'destination', 'origin', 'airline', 'deals', 'search',
+  'flight', 'quote', 'thank_you', 'blog', 'about', 'legal', 'other',
+]
 
 const AFTER_S = 20
 const BEAT_S = 15
@@ -101,6 +111,9 @@ export function sourceOf(utm: Record<string, string | undefined>): Beat['source'
 export function beatBody(o: {
   path: string; trip: TripPayload | null; utm: Record<string, string | undefined>; phone: boolean; site: string;
   chatOpen: boolean; hasChat: boolean
+  /** The page's kind and the visitor's steps, as the site told the widget (siteSignals.ts); bbc-live checks them
+   *  again, step by step. */
+  pageType?: string | null; activity?: string
 }): Beat {
   const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
   const t = o.trip
@@ -120,6 +133,8 @@ export function beatBody(o: {
     if (t.cabin && CABINS.has(t.cabin)) b.cabin = t.cabin
     if (pax >= 1 && pax <= 9) b.pax = pax
   }
+  if (o.pageType && BEAT_PAGE_TYPES.includes(o.pageType)) b.page_type = o.pageType
+  if (o.activity && o.activity.length <= 300) b.activity = o.activity
   return b
 }
 

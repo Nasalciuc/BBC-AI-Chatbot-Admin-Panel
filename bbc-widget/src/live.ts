@@ -15,6 +15,7 @@ import {
   afterRefusedPass, beatBody, failedAsk, keptPass, nextPollDelay, readConfig, readHello, renewalOf, type LiveConfig,
   type LiveHello, type Renewal,
 } from './liveRead'
+import { activityLine, siteEvents, sitePage } from './siteSignals'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
 
@@ -113,8 +114,11 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (visible()) {
         let path = '/'
         try { path = location.pathname } catch { /* keep "/" */ }
+        // What the visitor is doing right now, for the agent who says hello first (the owner, 22 Nov 2026): the
+        // kind of page and the steps on the site, as the site told the widget; never what they typed.
         const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
-          phone: isPhone(), site, chatOpen: chatOpenRef.current, hasChat: false })
+          phone: isPhone(), site, chatOpen: chatOpenRef.current, hasChat: false,
+          pageType: sitePage()?.pageType ?? null, activity: activityLine(siteEvents()) })
         liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body) })
           .then(res => { if (res.status === 401) void renew() })
