@@ -58,13 +58,16 @@ API's alone; their table, scripts and lives are in [`live.md`](live.md#redis-key
 
 | Key | Type | Member | Score |
 |---|---|---|---|
-| `followup:new:<agent id>` | sorted set | conversation id | unix seconds it was given |
+| `followup:new:<agent id>` | sorted set | conversation id | unix seconds it was given, with the fraction (two leads given in one second keep their order) |
 
 - A member is added when a lead is given to the agent (by the lottery or by a manager) and removed
-  when they open it or mark its offer, or when it goes back unconfirmed.
+  when they open it or mark its offer, or when it goes back unconfirmed. A manager's give and an open
+  of that lead touch the set under the same conversation lock (`followup`).
 - The heartbeat answers `followups_new = ZCARD`; no answer from Redis means no number, not zero.
-  While it is above zero it also answers `followup_newest = ZREVRANGE … 0 0`, the lead given last, which
-  the panel's alert opens (opening it confirms it); `null` otherwise.
+  While it is above zero it also answers `followup_newest` and `followup_newest_at`
+  (`ZREVRANGE … 0 0 WITHSCORES`): the lead given last and its score. The panel's alert opens that lead
+  (opening it confirms it), and announces one only when its score is above the last it saw, whatever
+  the count did meanwhile. Both `null` otherwise.
 - The truth is `conversations.assigned_agent_id` and `metadata.followup`; this is only the count.
 
 ## The API's own keys (listed so no other service takes the prefix)
