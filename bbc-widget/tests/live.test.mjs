@@ -136,3 +136,18 @@ test('the card shows the hello as text, never as markup', () => {
   assert.match(card, /\{hello\.text\}/)
   assert.doesNotMatch(card, /dangerouslySetInnerHTML|innerHTML/)
 })
+
+test('a refused pass: a new one polls at once, a refusal stops, a renewal that failed for now waits', async () => {
+  const { afterRefusedPass } = await import('../src/liveRead.ts')
+  assert.equal(afterRefusedPass(true, 'later'), 'poll', 'the beat renewed it meanwhile')
+  assert.equal(afterRefusedPass(false, 'ok'), 'poll')
+  assert.equal(afterRefusedPass(false, 'off'), 'stop', 'no pass will come on this page')
+  assert.equal(afterRefusedPass(false, 'later'), 'wait', 'offline once is not the end of the page (CodeRabbit #273)')
+})
+
+test('the first config is published only by the effect that is still running', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  const first = src.slice(src.indexOf('later(() => {'), src.indexOf('}, AFTER_S * 1000)'))
+  assert.ok(first.indexOf('if (stopped) return') >= 0 && first.indexOf('if (stopped) return') < first.indexOf('configRef.current = cfg'),
+    'a stale answer must not overwrite the running effect’s config')
+})

@@ -119,6 +119,18 @@ export function beatBody(o: {
   return b
 }
 
+/** What a renewal of the pass came to: a new pass (`ok`), the feature or the pass refused for this visitor (`off`),
+ *  or nothing known yet (`later`: asked too recently, or the API did not answer). */
+export type Renewal = 'ok' | 'off' | 'later'
+
+/** After bbc-live refused the poll's pass: poll again now (a new pass, from this renewal or the beat's), stop for
+ *  the page (no pass will come), or wait and try again (a renewal that failed for now must not end the page's
+ *  live work: CodeRabbit #273). */
+export function afterRefusedPass(passChanged: boolean, renewal: Renewal): 'poll' | 'stop' | 'wait' {
+  if (passChanged || renewal === 'ok') return 'poll'
+  return renewal === 'off' ? 'stop' : 'wait'
+}
+
 /** How long to wait before the next poll after an answer: at once after a 204, longer after errors. */
 export function nextPollDelay(status: number | 'error', failures: number): number {
   if (status === 204 || status === 200) return 0

@@ -11,7 +11,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { apiFetch, ensureVisitorId } from './api'
-import { beatBody, keptPass, nextPollDelay, readConfig, readHello, type LiveConfig, type LiveHello } from './liveRead'
+import { afterRefusedPass, beatBody, keptPass, nextPollDelay, readConfig, readHello, type LiveConfig, type LiveHello, type Renewal } from './liveRead'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
 
@@ -82,18 +82,18 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
     // A pass bbc-live refuses (run out, the secret changed) is asked for again, at most every RENEW_MS; the beat
     // and the poll refused together share one renewal.
     let renewedAt = 0
-    let renewing: Promise<boolean> | null = null
-    const renew = (): Promise<boolean> => {
+    let renewing: Promise<Renewal> | null = null
+    const renew = (): Promise<Renewal> => {
       if (renewing) return renewing
-      if (Date.now() - renewedAt < RENEW_MS) return Promise.resolve(false)
+      if (Date.now() - renewedAt < RENEW_MS) return Promise.resolve('later')
       renewedAt = Date.now()
       renewing = askConfig(apiUrl)
-        .then(cfg => {
-          if (stopped) return false
+        .then((cfg): Renewal => {
+          if (stopped) return 'later'
           configRef.current = cfg
-          return cfg.enabled
+          return cfg.enabled ? 'ok' : 'off'
         })
-        .catch(() => false)
+        .catch((): Renewal => 'later')
         .finally(() => { renewing = null })
       return renewing
     }
@@ -130,9 +130,12 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
           if (h && !stopped) { setHello(h); return }
         }
         if (res.status === 401) {
-          // Renewed since this poll began (by the beat): wait with the new pass.
+          // Renewed since this poll began (by the beat): wait with the new pass. A renewal that failed for now
+          // (offline, the API down, asked too recently) tries again after RENEW_MS; only a refusal stops.
           const fresh = configRef.current?.pass !== cfg.pass
-          if (fresh || await renew()) later(poll, 0)
+          const next = afterRefusedPass(fresh, fresh ? 'later' : await renew())
+          if (next === 'poll') later(poll, 0)
+          else if (next === 'wait') later(poll, RENEW_MS)
           else stopped = true
           return
         }
@@ -148,8 +151,10 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (stopped) return
       askConfig(apiUrl)
         .then(cfg => {
+          // An answer for an effect cleaned up meanwhile is not this page's config any more (CodeRabbit #273).
+          if (stopped) return
           configRef.current = cfg
-          if (stopped || !cfg.enabled) return
+          if (!cfg.enabled) return
           beat()
           void poll()
         })
