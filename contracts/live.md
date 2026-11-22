@@ -56,10 +56,25 @@ one kind from passing for another. `contracts/live_tokens.json` holds vectors th
 A beat (all optional; anything else is dropped): `page` (a path: the query and the fragment are cut,
 they can carry an e-mail), `from`, `to` (`[A-Z]{3}`), `depart`, `return` (`YYYY-MM-DD`), `cabin`
 (economy, premium, business, first), `pax` (1–9), `source` (kayak, ads, site), `device` (phone,
-computer), `site` (bbc, bct), `chat_open`, `has_chat`. Nothing the visitor typed is in it.
+computer), `site` (bbc, bct), `chat_open`, `has_chat`, `page_type` (the site's word for the page:
+home, route, destination, origin, airline, deals, search, flight, quote, thank_you, blog, about, legal,
+other), `activity` (the visitor's last steps on the site, oldest first, joined by `;`). Nothing the
+visitor typed is in it.
 
-A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`, `trip`, `source`,
-`device`, `site`, `chat_open`, `has_chat`, `claimed_by` (an agent id), `dismissed`.
+A step is one of: `search[:FROM-TO][:YYYY-MM-DD]` (a code is `[A-Z]{3}` or `?`), `quote_opened`,
+`quote_step[:N]`, `quote_invalid[:kind|kind…]` (the kinds of the fields the form flagged: name, email,
+phone, origin, destination, dates, passengers, cabin, trip_type, message, consent, captcha, other),
+`quote_submitting`, `quote_failed:server|network|captcha|other`, `quote_submitted`,
+`contact[:phone|whatsapp|email]` (the kind of link clicked, never the number or the address). The widget
+builds them from the site's events (`siteSignals.ts`, `activityLine`) and sends a line of 300 characters
+at most; bbc-live drops a line over 600, keeps the steps that match one of these shapes exactly and the
+last 12 of them.
+
+A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`, `page_type`, `trip`,
+`activity` (a list of steps, oldest first), `source`, `device`, `site`, `chat_open`, `has_chat`,
+`claimed_by` (an agent id), `dismissed`. The panel shows the last four steps in words on the row and
+starts the hello from the last one: a quote form that stuck or failed is offered a hand, a sent one a
+thank-you. A visitor who wrote is in a chat already, not in this list.
 
 ## The API's routes
 
