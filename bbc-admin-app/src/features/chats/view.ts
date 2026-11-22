@@ -191,13 +191,15 @@ export function presenceLine(p: Pick<PresenceView, 'state' | 'label'>, hasContac
  * server can't say (`has_contact` absent), and on a blind row (its metadata has only presence).
  */
 export const CARD_NO_CONTACT = 'Card · no contact'
+/** The same chat while "Left … · no contact" shows: the card named, "no contact" not said twice. */
+export const CARD_ONLY = 'Card'
 export const CARD_NO_CONTACT_TITLE =
   'Opened from Alex’s card (or the note beside the button), and the client left no email or phone: a message here reaches them only while they’re on the site.'
 
-export function cardNoContact(c: Pick<Conversation, 'metadata' | 'has_contact'>): string | null {
+export function cardNoContact(c: Pick<Conversation, 'metadata' | 'has_contact'>, leftLineShown = false): string | null {
   const trigger = (c.metadata as Record<string, unknown> | undefined)?.proactive_trigger
   if (typeof trigger !== 'string' || !trigger.trim() || c.has_contact !== false) return null
-  return CARD_NO_CONTACT
+  return leftLineShown ? CARD_ONLY : CARD_NO_CONTACT
 }
 
 /** Clients still on the site first, then the ones we hear nothing from, then the ones who left (ADR-6c:

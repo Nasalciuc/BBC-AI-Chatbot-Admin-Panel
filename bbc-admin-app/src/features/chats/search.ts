@@ -60,9 +60,15 @@ export function searchHint(text: string, masked = false): string {
   return masked ? 'Whole words of a name, or a city in the route' : 'A name, an e-mail, a phone, or a city in the route'
 }
 
-/** The words of the chats can be searched from three characters on. */
+/** The longest search the server takes, for the chats and for what was said (GET /api/conversations `search`,
+ *  GET /api/search/messages `q`: max_length 100). The box holds no more (CodeRabbit #273: a longer one was sent and
+ *  came back refused). */
+export const SEARCH_MAX = 100
+
+/** The words of the chats can be searched from three characters on, up to the server's limit. */
 export function messagesSearchable(text: string): boolean {
-  return text.trim().length >= 3
+  const t = text.trim()
+  return t.length >= 3 && t.length <= SEARCH_MAX
 }
 
 /** Who may search what was said (the server's MESSAGE_READERS, app/api/search.py). Supervisors and project

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CARD_NO_CONTACT, cardNoContact, openedByText, pageTripText, replayUrl } from '../src/features/chats/view.ts'
+import { CARD_NO_CONTACT, CARD_ONLY, cardNoContact, openedByText, pageTripText, replayUrl } from '../src/features/chats/view.ts'
 import { unownedNote } from '../src/features/tasks/view.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -115,8 +115,10 @@ test('a card chat with no contact says so on its row, once (owner, 22 Nov)', () 
   assert.equal(cardNoContact({ metadata: { proactive_trigger: '  ' }, has_contact: false }), null)
   assert.equal(cardNoContact({ metadata: { widget_presence: 'left' }, has_contact: false }), null)
   assert.equal(cardNoContact({ has_contact: false }), null)
-  // Said once: not beside the "Left … · no contact" line, and with what it means on hover.
+  // "No contact" said once: beside the "Left … · no contact" line the row names the card alone (CodeRabbit #273).
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: 'kayak' }, has_contact: false }, true), CARD_ONLY)
+  assert.equal(cardNoContact({ metadata: { proactive_trigger: 'kayak' }, has_contact: true }, true), null)
   const list = readFileSync(join(root, 'src/features/chats/index.tsx'), 'utf-8')
-  assert.match(list, /const cardOnly = gone \? null : cardNoContact\(conv\)/)
+  assert.match(list, /const cardOnly = cardNoContact\(conv, Boolean\(gone\)\)/)
   assert.match(list, /title=\{CARD_NO_CONTACT_TITLE\}/)
 })

@@ -45,6 +45,20 @@ export function userFromClaims(claims: Record<string, unknown>): SessionUser {
 }
 
 /**
+ * Whether the query cache must be emptied as `next` becomes the signed-in user: someone signs in after a session
+ * that ended (or after none), or the CRM signs in someone else on this page. Never when the session ends (nothing
+ * of the next account loads before its sign-in, which empties it) or for a newer token of the same person.
+ * CodeRabbit #273: the recent chats and the message search of the agent before were served to the next one on
+ * the same page, and everything else cached with them.
+ */
+export function cacheBelongsToAnother(
+  prev: { accountNo: string } | null | undefined,
+  next: { accountNo: string } | null | undefined,
+): boolean {
+  return !!next && next.accountNo !== (prev?.accountNo ?? null)
+}
+
+/**
  *  - 'none':   the cookie holds this tab's token, or none;
  *  - 'token':  the same person in the same role with a newer token (a
  *              renewal), or no user loaded yet: take the token;

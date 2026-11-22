@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cookieSessionChange, jwtClaims, userFromClaims } from '../src/lib/session-swap.ts'
+import { cacheBelongsToAnother, cookieSessionChange, jwtClaims, userFromClaims } from '../src/lib/session-swap.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -67,4 +67,19 @@ test('a newer token of the same person brings their new photo, name and phone', 
   // The sign-in guard reads a token the same way.
   const guard = readFileSync(join(root, 'src/routes/_authenticated/route.tsx'), 'utf-8')
   assert.match(guard, /auth\.setUser\(userFromClaims\(claims\)\)/)
+})
+
+test('the query cache is one account\'s: emptied as someone signs in, never at a renewal (CodeRabbit #273)', () => {
+  const bob = { accountNo: 'u-bob' }
+  // A sign-in after a session that ended, or after none; the CRM signing in someone else on this page.
+  assert.equal(cacheBelongsToAnother(null, ana), true)
+  assert.equal(cacheBelongsToAnother(undefined, ana), true)
+  assert.equal(cacheBelongsToAnother(ana, bob), true)
+  // A newer token or a saved profile of the same person, and the session ending (its next sign-in empties it).
+  assert.equal(cacheBelongsToAnother(ana, { ...ana }), false)
+  assert.equal(cacheBelongsToAnother(ana, null), false)
+  assert.equal(cacheBelongsToAnother(null, null), false)
+  // Wired where the cache lives: the auth store's every change, before anything of the new account loads.
+  const main = readFileSync(join(root, 'src/main.tsx'), 'utf8')
+  assert.match(main, /useAuthStore\.subscribe\(\(state, prev\) => \{\s+if \(cacheBelongsToAnother\(prev\.auth\.user, state\.auth\.user\)\) queryClient\.clear\(\)\s+\}\)/)
 })

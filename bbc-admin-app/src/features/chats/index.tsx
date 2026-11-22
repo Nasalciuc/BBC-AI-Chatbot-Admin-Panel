@@ -6,7 +6,7 @@ import { getConversations, getNotifications, getRecentChats, searchMessages, api
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
-import { EMPTY_FILTERS, MESSAGES_RESTRICTED, SEARCH_DEBOUNCE_MS, type ListFilters, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
+import { EMPTY_FILTERS, MESSAGES_RESTRICTED, SEARCH_DEBOUNCE_MS, SEARCH_MAX, type ListFilters, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
 import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
@@ -390,8 +390,9 @@ export function Chats() {
     const preview = previewText(conv) || routeText(conv) || (conv.message_count ? `${conv.message_count} messages` : 'No messages yet')
     // B3 (ADR-6c): a client who left, and whether a message here can still reach them.
     const gone = owner !== 'closed' && p.state === 'left' ? presenceLine(p, conv.has_contact) : null
-    // A card chat with no contact (22 Nov): said once, the "Left … · no contact" line saying it already when shown.
-    const cardOnly = gone ? null : cardNoContact(conv)
+    // A card chat with no contact (22 Nov): "no contact" said once, by the "Left … · no contact" line when it shows,
+    // and the card named either way (CodeRabbit #273).
+    const cardOnly = cardNoContact(conv, Boolean(gone))
     return (
       <button
         key={conv.id}
@@ -572,6 +573,7 @@ export function Chats() {
               id='chat-search'
               type='search'
               placeholder='A name, #4810, an e-mail, a phone, IST'
+              maxLength={SEARCH_MAX}
               value={search}
               onChange={e => setSearch(e.target.value)}
               className='h-10 w-full rounded-xl border-none bg-k-ffffff ps-9 pe-3 text-sm text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)] placeholder:text-k-8a8a8a focus-visible:outline-2 focus-visible:outline-k-6ea8ff'

@@ -13,6 +13,7 @@ import { useReadyStore } from '@/stores/ready-store'
 import { installCrmEmbedAuth } from '@/lib/crm-embed-auth'
 import { handleServerError } from '@/lib/handle-server-error'
 import { backTo } from '@/lib/bands'
+import { cacheBelongsToAnother } from '@/lib/session-swap'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -93,6 +94,12 @@ const queryClient = new QueryClient({
       }
     },
   }),
+})
+
+// The query cache is one account's: whoever signs in starts from an empty one, before anything of theirs loads
+// (session-swap.ts, cacheBelongsToAnother). Sign-out empties it too (sign-out-dialog.tsx).
+useAuthStore.subscribe((state, prev) => {
+  if (cacheBelongsToAnother(prev.auth.user, state.auth.user)) queryClient.clear()
 })
 
 // Create a new router instance

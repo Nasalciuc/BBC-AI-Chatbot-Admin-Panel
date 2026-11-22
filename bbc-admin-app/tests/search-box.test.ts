@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { EMPTY_FILTERS, MESSAGES_RESTRICTED, MESSAGE_READERS, SEARCH_DEBOUNCE_MS, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
+import { EMPTY_FILTERS, MESSAGES_RESTRICTED, MESSAGE_READERS, SEARCH_DEBOUNCE_MS, SEARCH_MAX, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
 
 test('the box says what it will look for, as the server reads it', () => {
   assert.equal(searchHint('#3403'), 'The chat number')
@@ -72,6 +72,13 @@ test('half-typed values are not sent', () => {
 test('what was said is searched from three characters', () => {
   assert.equal(messagesSearchable('ab'), false)
   assert.equal(messagesSearchable(' abc '), true)
+})
+
+test('the box holds no more than the server takes, 100 characters (CodeRabbit #273)', () => {
+  assert.equal(SEARCH_MAX, 100)
+  assert.equal(messagesSearchable('x'.repeat(100)), true)
+  assert.equal(messagesSearchable('x'.repeat(101)), false)
+  assert.match(readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8'), /id='chat-search'[\s\S]{0,200}maxLength=\{SEARCH_MAX\}/)
 })
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
