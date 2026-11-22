@@ -101,3 +101,24 @@ test('every refused claim says why in words', () => {
   assert.equal(claimProblem('claimed'), null)
   assert.equal(claimProblem('mine'), null)
 })
+
+test('the live pass is the session’s: cleared when it ends, never stored by a late beat (CodeRabbit #273)', () => {
+  const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
+  const store = read('src/stores/live-store.ts')
+  assert.match(store, /useAuthStore\.subscribe\(\(now, before\) => \{/)
+  assert.match(store, /const ended = !now\.auth\.user && !now\.auth\.accessToken/)
+  assert.match(store, /const otherAccount = \(now\.auth\.user\?\.accountNo \?\? ''\) !== \(before\.auth\.user\?\.accountNo \?\? ''\)/)
+  assert.match(store, /if \(\(ended \|\| otherAccount\) && useLiveStore\.getState\(\)\.pass\) useLiveStore\.getState\(\)\.setFromBeat\(null\)/)
+  // Sign-out, the 401 handler and an expired session all end it through the auth store's reset.
+  for (const f of ['src/components/sign-out-dialog.tsx', 'src/main.tsx', 'src/routes/_authenticated/route.tsx']) {
+    assert.match(read(f), /auth\.reset\(\)/, f)
+  }
+  const beat = read('src/hooks/use-heartbeat.ts')
+  const process = beat.slice(beat.indexOf('const processResponse = (res: HeartbeatResponse) => {'),
+    beat.indexOf('useLiveStore.getState().setFromBeat('))
+  assert.match(process, /if \(!hasSession\(\)\) return/, 'a beat answered after the session ended stores nothing')
+  const fallback = beat.slice(beat.indexOf("const res = await apiFetch<HeartbeatResponse>('/api/agent/heartbeat'"),
+    beat.indexOf('// Heartbeat failure is non-fatal'))
+  const guard = fallback.indexOf('if (!active.current) return')
+  assert.ok(guard >= 0 && guard < fallback.indexOf('processResponse(res)'), 'the fallback drops an answer after cleanup')
+})

@@ -13,7 +13,7 @@ import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { reportAttentionCycle, reportPresence, reportQueue } from '@/lib/crm-bridge'
 import { notifyName } from '@/lib/alert-prefs'
-import { syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
+import { hasSession, syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { useLiveStore } from '@/stores/live-store'
 import { FOLLOWUPS_NEW_KEY } from '@/hooks/use-followups-new'
@@ -105,6 +105,9 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
     active.current = true
 
     const processResponse = (res: HeartbeatResponse) => {
+      // A beat answered after the session ended stores nothing: no pass, no count, no state for whoever signs in
+      // next (CodeRabbit #273).
+      if (!hasSession()) return
       useLiveStore.getState().setFromBeat(
         res?.live && typeof res.live.url === 'string' && typeof res.live.token === 'string' ? res.live : null,
       )
@@ -185,6 +188,8 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ viewing_conversation_id: viewingConversationId || null }),
         })
+        // Cleaned up while it went (signed out, the page left): the worker path drops it too (CodeRabbit #273).
+        if (!active.current) return
         processResponse(res)
       } catch {
         // Heartbeat failure is non-fatal
