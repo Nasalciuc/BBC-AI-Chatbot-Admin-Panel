@@ -13,8 +13,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexLine, alexWaiting, claimProblem, heldBy, helloProblem, onSite,
-  ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine, tripLine,
+  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexLine, alexWaiting, claimProblem, clockS, heldBy, helloProblem,
+  onSite, ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine, tripLine,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -36,7 +36,7 @@ export function LiveVisitors() {
   const [writing, setWriting] = useState<LiveVisitor | null>(null)
   const [text, setText] = useState('')
   // The agent-first test: Alex's countdown on a row ticks each second while he waits for anyone listed.
-  const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000))
+  const [tickS, setTickS] = useState(() => Math.floor(Date.now() / 1000))
 
   const list = useQuery({
     queryKey: ['live-visitors'],
@@ -44,11 +44,13 @@ export function LiveVisitors() {
     enabled: !!pass,
     refetchInterval: 5_000,
   })
+  // Between ticks (none while nobody is waited on) the list's own answers keep the clock fresh.
+  const nowS = clockS(tickS, list.dataUpdatedAt)
   const rows = ordered(list.data?.data ?? [], meId, nowS)
   const anyWaiting = rows.some((v) => alexWaiting(v, nowS))
   useEffect(() => {
     if (!anyWaiting) return
-    const t = setInterval(() => setNowS(Math.floor(Date.now() / 1000)), 1000)
+    const t = setInterval(() => setTickS(Math.floor(Date.now() / 1000)), 1000)
     return () => clearInterval(t)
   }, [anyWaiting])
   const test = testLine(pass?.test)

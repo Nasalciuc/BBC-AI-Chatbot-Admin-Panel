@@ -133,6 +133,12 @@ export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: numbe
 // Half the visitors are listed here and Alex's card waits for an agent to say hello first; the other half are
 // Alex's, as before, and not listed.
 
+/** The second the countdowns read: the last tick, or the list's last answer when it is newer. The tick runs only
+ *  while someone is waited on, so a row that starts waiting must not count from the second the last wait ended. */
+export function clockS(tickS: number, listedAtMs: number): number {
+  return Math.max(tickS, Math.floor((listedAtMs || 0) / 1000))
+}
+
 /** Alex is still waiting for this visitor's hello. */
 export function alexWaiting(v: Pick<LiveVisitor, 'alex_at'>, nowS: number): boolean {
   return typeof v.alex_at === 'number' && v.alex_at > nowS
@@ -157,7 +163,7 @@ function waitWords(seconds: number): string {
 export function testLine(test: { percent: number; hold_s: number } | undefined | null): string {
   if (!test || !(test.percent > 0)) return ''
   const wait = test.hold_s > 0
-    ? `Alex waits ${waitWords(test.hold_s)} for each before his card: say hello before he does.`
+    ? `Alex waits ${waitWords(test.hold_s)} for each before his card, while someone who may say hello has this page open: say hello before he does.`
     : 'Alex doesn’t wait for them.'
   return `Test running: ${test.percent}% of visitors are listed here, the rest are Alex’s and aren’t. ${wait}`
 }

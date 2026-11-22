@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   HELLO_RESTRICTED, activityText, alexLine, alexWaiting, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine,
-  rowState, sourceLabel, stepText, suggestedHello, testLine, tripLine,
+  rowState, sourceLabel, stepText, suggestedHello, testLine, tripLine, clockS,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -181,13 +181,24 @@ test('the agent-first test: Alex’s countdown, the visitors he waits on first, 
   assert.deepEqual(ordered(rows.map((r) => ({ ...r, alex_at: undefined })), ME, now).map((r) => r.visitor_id),
     ['mine', 'long', 'past', 'later', 'soon'])
   assert.equal(testLine({ percent: 50, hold_s: 120 }),
-    'Test running: 50% of visitors are listed here, the rest are Alex’s and aren’t. Alex waits 2 minutes for each before his card: say hello before he does.')
+    'Test running: 50% of visitors are listed here, the rest are Alex’s and aren’t. Alex waits 2 minutes for each before his card, while someone who may say hello has this page open: say hello before he does.')
   assert.match(testLine({ percent: 50, hold_s: 90 }), /Alex waits 1 minute 30 s for each/)
   assert.match(testLine({ percent: 50, hold_s: 0 }), /Alex doesn’t wait for them\.$/)
   for (const off of [undefined, null, { percent: 0, hold_s: 120 }]) assert.equal(testLine(off), '')
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /const nowS = clockS\(tickS, list\.dataUpdatedAt\)/)
   assert.match(page, /const rows = ordered\(list\.data\?\.data \?\? \[\], meId, nowS\)/)
   assert.match(page, /\{test && <p className='rounded-\[14px\] bg-k-fff3e0/)
   assert.match(page, /Test · \{alexLine\(v, nowS\)\}/)
-  assert.match(page, /if \(!anyWaiting\) return\n\s+const t = setInterval\(\(\) => setNowS\(Math\.floor\(Date\.now\(\) \/ 1000\)\), 1000\)/)
+  assert.match(page, /if \(!anyWaiting\) return\n\s+const t = setInterval\(\(\) => setTickS\(Math\.floor\(Date\.now\(\) \/ 1000\)\), 1000\)/)
+})
+
+test('the countdowns read the list’s last answer when the tick is older, the tick otherwise', () => {
+  const now = 1_900_000_000
+  // An hour with nobody waited on (no tick), then a row that waits: its countdown counts from the answer's second.
+  assert.equal(clockS(now - 3600, (now + 2) * 1000 + 999), now + 2)
+  assert.equal(alexLine(v({ alex_at: now + 80 }), clockS(now - 3600, now * 1000)), 'Alex in 1:20')
+  // Rule 5: a tick after the answer is the newer second; no answer yet, the tick.
+  assert.equal(clockS(now + 4, (now + 2) * 1000), now + 4)
+  assert.equal(clockS(now, 0), now)
 })
