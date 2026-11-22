@@ -27,7 +27,7 @@ import { Switch } from '@/components/ui/switch'
 import { SettingsCard } from '../components/card'
 import { pillDark, pillLine } from '../components/styles'
 
-const SOUNDS: RingSound[] = ['classic', 'soft', 'two']
+const SOUNDS: RingSound[] = ['melody', 'classic', 'soft', 'two']
 
 function Toggle({ id, label, help, on, onChange }: { id: string; label: string; help: string; on: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -99,7 +99,7 @@ export function SettingsAlerts() {
         title='When a chat is given to you'
         text={`You have ${seconds} seconds to answer before the AI answers for you. These make sure you notice.`}
       >
-        <Toggle id='al-ring' label='Ring until I open it' help='A ring that repeats, like a phone, and stops when you open the chat.' on={prefs.ring} onChange={(v) => set({ ring: v }, v ? 'Ring on' : 'Ring off')} />
+        <Toggle id='al-ring' label='Ring until I open it' help='The sound below repeats, and stops when you open the chat.' on={prefs.ring} onChange={(v) => set({ ring: v }, v ? 'Ring on' : 'Ring off')} />
         <Toggle id='al-flash' label='Flash the tab' help='The tab’s name blinks “New chat”, so you see it from another tab.' on={prefs.flash} onChange={(v) => set({ flash: v }, v ? 'Tab flashing on' : 'Tab flashing off')} />
         {!prefs.ring && (
           <p role='status' className='m-0 rounded-xl bg-k-fff3e0 px-3.5 py-2.5 text-[13px] leading-[1.45] text-k-8a4b00'>
@@ -111,7 +111,7 @@ export function SettingsAlerts() {
           <div className='flex flex-col gap-3 rounded-2xl bg-k-f7f7f7 p-4'>
             <div className='flex flex-wrap items-center gap-3'>
               <span className='w-16 text-sm font-bold text-k-202020'>Sound</span>
-              <div role='radiogroup' aria-label='Ring sound' className='flex rounded-xl bg-k-ececec p-1'>
+              <div role='radiogroup' aria-label='Ring sound' className='flex flex-wrap rounded-xl bg-k-ececec p-1'>
                 {SOUNDS.map((s) => (
                   <button
                     key={s}

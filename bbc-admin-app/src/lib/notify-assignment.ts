@@ -1,18 +1,19 @@
 /**
- * Persistent assignment alerts — rings like a phone until the operator opens
+ * Persistent assignment alerts — the sound repeats until the operator opens
  * the conversation or the first-reply deadline hands it back to the AI.
  *
- * How it rings (sound, volume, flashing tab, the queue chime) is Settings ›
- * Alerts, kept in this browser (alert-prefs.ts). Untouched settings ring
- * exactly as before: the recording, full volume, flashing tab.
+ * How it sounds (sound, volume, flashing tab, the queue chime) is Settings ›
+ * Alerts, kept in this browser (alert-prefs.ts). Untouched settings play the
+ * gentle melody everywhere, at full volume, with the flashing tab (the owner,
+ * 22 Nov 2026; it was the phone ring recording).
  */
 // Relative import with extension on purpose — the pure rules are node-tested.
 import {
-  LEAD_MELODY,
-  RING_REPEAT_MS,
+  MELODY_NOTES,
   SOUND_NOTES,
   notificationText,
   readAlertPrefs,
+  ringRepeatMs,
   type NotifyPermission,
   type RingSound,
 } from './alert-prefs.ts'
@@ -21,8 +22,10 @@ import {
 import { LOGO_SRC } from './brand.ts'
 
 let _ringAudio: HTMLAudioElement | null = null
-/** The made sounds (Soft chime, Two tones) repeat on this timer. */
+/** The made sounds (the melody, Soft chime, Two tones) repeat on this timer. */
 let _ringTimer: ReturnType<typeof setInterval> | null = null
+/** The ring's melody playing now: silenced at once when the ring stops (one-shots are never cut). */
+let _ringMelody: GainNode | null = null
 let _flashInterval: ReturnType<typeof setInterval> | null = null
 let _alertsActive = false
 let _audioUnlocked = false
@@ -59,8 +62,8 @@ function _playFallbackBeep(volume = 1): void {
   }
 }
 
-/** One go of a made sound (soft rise, or high-low), at `volume` 0–1. */
-function _playNotes(sound: Exclude<RingSound, 'classic'>, volume: number): void {
+/** One go of a short made sound (soft rise, or high-low), at `volume` 0–1. */
+function _playNotes(sound: 'soft' | 'two', volume: number): void {
   const ctx = _audioCtx()
   if (!ctx || volume <= 0) return
   try {
@@ -79,6 +82,84 @@ function _playNotes(sound: Exclude<RingSound, 'classic'>, volume: number): void 
     }
   } catch {
     // AudioContext not available
+  }
+}
+
+/** The gentle melody on a soft vibraphone: each note a sine with its octave fading first, under a slow tremolo.
+ *  One go; the node it plays through, so a ring that stops can silence it at once. */
+function _playMelody(notes: readonly [number, number, number][], volume: number): GainNode | null {
+  const ctx = _audioCtx()
+  if (!ctx || volume <= 0) return null
+  try {
+    const t0 = ctx.currentTime + 0.03
+    // At full volume it peaks near -4.5 dBFS: soft in its sound, still heard in a headset next to a call.
+    const master = ctx.createGain()
+    master.gain.value = volume
+    // The vibraphone's slow wobble: ±0.2 around the level, five times a second.
+    const lfo = ctx.createOscillator()
+    const depth = ctx.createGain()
+    lfo.frequency.value = 5.2
+    depth.gain.value = 0.2 * volume
+    lfo.connect(depth).connect(master.gain)
+    master.connect(ctx.destination)
+    let end = t0
+    for (const [freq, start, len] of notes) {
+      const partials: [number, number, number][] = [[1, 0.32, len], [2, 0.07, Math.min(len, 0.45)]]
+      for (const [mult, level, decay] of partials) {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = freq * mult
+        gain.gain.setValueAtTime(0.0001, t0 + start)
+        gain.gain.exponentialRampToValueAtTime(level, t0 + start + 0.012)
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + start + decay)
+        osc.connect(gain).connect(master)
+        osc.start(t0 + start)
+        osc.stop(t0 + start + decay + 0.05)
+      }
+      end = Math.max(end, t0 + start + len + 0.1)
+    }
+    lfo.start(t0)
+    lfo.stop(end)
+    return master
+  } catch {
+    return null // AudioContext not available: the toast and the menu count still show it
+  }
+}
+
+/** A melody cut short: down in 60 ms, then off the speakers. */
+function _silence(node: GainNode | null): void {
+  if (!node) return
+  try {
+    const ctx = node.context
+    node.gain.cancelScheduledValues(ctx.currentTime)
+    node.gain.setTargetAtTime(0, ctx.currentTime, 0.02)
+    setTimeout(() => node.disconnect(), 120)
+  } catch {
+    /* already gone */
+  }
+}
+
+/** One go of a sound made in the browser; the melody's node, to silence it. */
+function _playMade(sound: Exclude<RingSound, 'classic'>, volume: number): GainNode | null {
+  if (sound === 'melody') return _playMelody(MELODY_NOTES, volume)
+  _playNotes(sound, volume)
+  return null
+}
+
+/** Once, whatever the sound: the queue chime, a task reminder, a lead given to me. Never cut by a ring's stop. */
+function _playOnce(sound: RingSound, volume: number): void {
+  if (volume <= 0) return
+  if (sound !== 'classic') {
+    _playMade(sound, volume)
+    return
+  }
+  try {
+    const a = new Audio('/notification.wav')
+    a.volume = volume
+    a.play().catch(() => _playFallbackBeep(volume))
+  } catch {
+    /* no audio */
   }
 }
 
@@ -106,6 +187,8 @@ export function notifyAssignment(info?: { name?: string | null; kind?: 'new' | '
   if ((!audible || prefs.sound === 'classic') && _ringTimer) {
     clearInterval(_ringTimer)
     _ringTimer = null
+    _silence(_ringMelody)
+    _ringMelody = null
   }
   if (!prefs.flash && _flashInterval) {
     clearInterval(_flashInterval)
@@ -136,8 +219,10 @@ export function notifyAssignment(info?: { name?: string | null; kind?: 'new' | '
     } else if (!_ringTimer) {
       const sound = prefs.sound
       const volume = prefs.volume / 100
-      _playNotes(sound, volume)
-      _ringTimer = setInterval(() => _playNotes(sound, volume), RING_REPEAT_MS)
+      _ringMelody = _playMade(sound, volume)
+      _ringTimer = setInterval(() => {
+        _ringMelody = _playMade(sound, volume)
+      }, ringRepeatMs(sound))
     }
   }
 
@@ -172,20 +257,13 @@ export function notifyAssignment(info?: { name?: string | null; kind?: 'new' | '
  * One-shot chime for the shared queue — a conversation ARRIVED in the line.
  * Deliberately not notifyAssignment(): that one LOOPS until attended, which is
  * right for "this is yours and waiting" and wrong for "somebody could take
- * this". One sound per conversation, no flashing title, no notification.
+ * this". One sound per conversation (the person's sound: the melody unless
+ * they chose another), quieter, no flashing title, no notification.
  */
 export function playQueueChime(): void {
   const prefs = readAlertPrefs()
   if (!prefs.beep || prefs.volume <= 0) return
-  try {
-    const a = new Audio('/notification.wav')
-    a.volume = 0.6 * (prefs.volume / 100)
-    a.play().catch(() => {
-      /* autoplay blocked — the badge still shows the queue */
-    })
-  } catch {
-    /* no audio */
-  }
+  _playOnce(prefs.sound, 0.6 * (prefs.volume / 100))
 }
 
 /**
@@ -196,17 +274,8 @@ export function playQueueChime(): void {
 export function notifyTaskReminder(title: string, body: string, tag: string): void {
   const prefs = readAlertPrefs()
   if ((prefs.ring || prefs.beep) && prefs.volume > 0) {
-    try {
-      if (prefs.sound === 'classic') {
-        const a = new Audio('/notification.wav')
-        a.volume = 0.7 * (prefs.volume / 100)
-        a.play().catch(() => _playFallbackBeep(prefs.volume / 100))
-      } else {
-        _playNotes(prefs.sound, prefs.volume / 100)
-      }
-    } catch {
-      /* no audio: the notification and the menu count still show it */
-    }
+    // The recording is loud: it plays at 70%, as it always did. The made sounds at the volume set.
+    _playOnce(prefs.sound, (prefs.sound === 'classic' ? 0.7 : 1) * (prefs.volume / 100))
   }
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
@@ -221,53 +290,14 @@ export function notifyTaskReminder(title: string, body: string, tag: string): vo
   }
 }
 
-/** A soft vibraphone: each note a sine with its octave fading first, under a slow tremolo. Once, never looped. */
-function _playMelody(notes: readonly [number, number, number][], volume: number): void {
-  const ctx = _audioCtx()
-  if (!ctx || volume <= 0) return
-  try {
-    const t0 = ctx.currentTime + 0.03
-    const master = ctx.createGain()
-    master.gain.value = 0.55 * volume
-    // The vibraphone's slow wobble: ±0.12 around the level, five times a second.
-    const lfo = ctx.createOscillator()
-    const depth = ctx.createGain()
-    lfo.frequency.value = 5.2
-    depth.gain.value = 0.12 * volume
-    lfo.connect(depth).connect(master.gain)
-    master.connect(ctx.destination)
-    let end = t0
-    for (const [freq, start, len] of notes) {
-      const partials: [number, number, number][] = [[1, 0.32, len], [2, 0.07, Math.min(len, 0.45)]]
-      for (const [mult, level, decay] of partials) {
-        const osc = ctx.createOscillator()
-        const gain = ctx.createGain()
-        osc.type = 'sine'
-        osc.frequency.value = freq * mult
-        gain.gain.setValueAtTime(0.0001, t0 + start)
-        gain.gain.exponentialRampToValueAtTime(level, t0 + start + 0.012)
-        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + start + decay)
-        osc.connect(gain).connect(master)
-        osc.start(t0 + start)
-        osc.stop(t0 + start + decay + 0.05)
-      }
-      end = Math.max(end, t0 + start + len + 0.1)
-    }
-    lfo.start(t0)
-    lfo.stop(end)
-  } catch {
-    // AudioContext not available: the toast and the menu count still show it
-  }
-}
-
 /**
- * A lead given to me (the follow-up lottery, or a manager by hand): the gentle phrase once, at the volume set in
- * Settings → Alerts, and one browser notification whose click opens the chat (`href`; opening it confirms the
- * lead). Never the phone ring, never a loop, never a flashing tab: nobody is typing to me right now.
+ * A lead given to me (the follow-up lottery, or a manager by hand): my sound once (the gentle melody unless I
+ * chose another), at the volume set in Settings → Alerts, and one browser notification whose click opens the
+ * chat (`href`; opening it confirms the lead). Never a loop, never a flashing tab: nobody is typing to me now.
  */
 export function notifyNewLead(title: string, body: string, href: string): void {
   const prefs = readAlertPrefs()
-  if ((prefs.ring || prefs.beep) && prefs.volume > 0) _playMelody(LEAD_MELODY, prefs.volume / 100)
+  if ((prefs.ring || prefs.beep) && prefs.volume > 0) _playOnce(prefs.sound, prefs.volume / 100)
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
       const n = new Notification(title, { body, icon: LOGO_SRC, tag: 'bbc-lead' })
@@ -292,6 +322,9 @@ export function stopAssignmentAlerts(): void {
     clearInterval(_ringTimer)
     _ringTimer = null
   }
+  // The melody of the ring stops with it, mid-phrase: the chat was opened.
+  _silence(_ringMelody)
+  _ringMelody = null
   if (_flashInterval) {
     clearInterval(_flashInterval)
     _flashInterval = null
@@ -305,7 +338,7 @@ export function stopAssignmentAlerts(): void {
 export function previewRing(sound: RingSound, volume: number): void {
   if (volume <= 0) return
   if (sound !== 'classic') {
-    _playNotes(sound, volume / 100)
+    _playMade(sound, volume / 100)
     return
   }
   try {
@@ -330,6 +363,7 @@ export function testAlert(seconds = 4): { rang: boolean; flashed: boolean; notif
   const prefs = readAlertPrefs()
   let audio: HTMLAudioElement | null = null
   let soundTimer: ReturnType<typeof setInterval> | null = null
+  let melody: GainNode | null = null
   let flash: ReturnType<typeof setInterval> | null = null
   const rang = prefs.ring && prefs.volume > 0
   if (rang) {
@@ -344,8 +378,10 @@ export function testAlert(seconds = 4): { rang: boolean; flashed: boolean; notif
       }
     } else {
       const sound = prefs.sound
-      _playNotes(sound, prefs.volume / 100)
-      soundTimer = setInterval(() => _playNotes(sound, prefs.volume / 100), RING_REPEAT_MS)
+      melody = _playMade(sound, prefs.volume / 100)
+      soundTimer = setInterval(() => {
+        melody = _playMade(sound, prefs.volume / 100)
+      }, ringRepeatMs(sound))
     }
   }
   if (prefs.flash) {
@@ -373,6 +409,7 @@ export function testAlert(seconds = 4): { rang: boolean; flashed: boolean; notif
   const stop = () => {
     if (audio) audio.pause()
     if (soundTimer) clearInterval(soundTimer)
+    _silence(melody)
     if (flash) clearInterval(flash)
     // A real alert that cut the test in owns the title now.
     if (!_alertsActive) document.title = _baseTitle

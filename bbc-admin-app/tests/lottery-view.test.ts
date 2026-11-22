@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { followupText, mineOnly } from '../src/features/tasks/offers.ts'
 import { type LeadBeat, leadHref, leadToAnnounce, newLeadText, tasksBadge } from '../src/lib/new-leads.ts'
-import { LEAD_MELODY } from '../src/lib/alert-prefs.ts'
+import { MELODY_NOTES } from '../src/lib/alert-prefs.ts'
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
@@ -80,14 +80,14 @@ test('the Tasks badge counts the late tasks and the new leads together, and says
   assert.equal(tasksBadge(0, null), null)
 })
 
-test('the melody is gentle: a few soft notes, once, about three seconds, no phone ring', () => {
-  const end = Math.max(...LEAD_MELODY.map(([, start, len]) => start + len))
+test('a new lead plays my sound once (the gentle melody unless I chose another): no loop, no flashing tab', () => {
+  const end = Math.max(...MELODY_NOTES.map(([, start, len]) => start + len))
   assert.ok(end >= 2.5 && end <= 4, String(end))
-  for (const [freq] of LEAD_MELODY) assert.ok(freq >= 300 && freq <= 1000, String(freq))
+  for (const [freq] of MELODY_NOTES) assert.ok(freq >= 300 && freq <= 1000, String(freq))
   const src = read('src/lib/notify-assignment.ts')
   const fn = src.slice(src.indexOf('export function notifyNewLead'), src.indexOf('export function stopAssignmentAlerts'))
-  assert.match(fn, /_playMelody\(LEAD_MELODY, prefs\.volume \/ 100\)/)
-  assert.doesNotMatch(fn, /notification\.wav|setInterval|_flashInterval|requireInteraction/, 'no ring, no loop, no flashing tab')
+  assert.match(fn, /_playOnce\(prefs\.sound, prefs\.volume \/ 100\)/)
+  assert.doesNotMatch(fn, /setInterval|_flashInterval|requireInteraction/, 'no loop, no flashing tab, nothing that stays')
 })
 
 test('the beat announces a new lead, and the menu shows the badge with its label on hover', () => {

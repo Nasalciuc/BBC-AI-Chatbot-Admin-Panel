@@ -2,7 +2,9 @@
 // about this device's speakers and screen, so each computer and phone has
 // its own. Pure apart from read/write — pinned by tests/alert-prefs.test.ts.
 
-export type RingSound = 'classic' | 'soft' | 'two'
+/** 'melody' is the panel's sound everywhere unless someone picks another (the owner, 22 Nov 2026); 'classic' is
+ *  the phone ring recording that was the default before it. */
+export type RingSound = 'melody' | 'classic' | 'soft' | 'two'
 
 export interface AlertPrefs {
   /** Ring until the chat is opened. */
@@ -16,12 +18,17 @@ export interface AlertPrefs {
   beep: boolean
 }
 
-/** Today's behaviour before anyone touches Settings: everything on, full volume. */
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { ring: true, flash: true, sound: 'classic', volume: 100, beep: true }
+/** Before anyone touches Settings: everything on, full volume, the gentle melody (it was the phone ring until
+ *  22 Nov 2026: "pleasant, like an elevator", the owner asked, everywhere). */
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { ring: true, flash: true, sound: 'melody', volume: 100, beep: true }
 
 export const ALERT_PREFS_KEY = 'bbc_alert_prefs'
 
-const SOUNDS: RingSound[] = ['classic', 'soft', 'two']
+/** Written with every save. A set saved before it (no version) that says "Phone ring" only kept the default
+ *  of the day, so it reads as the melody now; a "Phone ring" saved since is a choice and stays. */
+export const ALERT_PREFS_VERSION = 2
+
+const SOUNDS: RingSound[] = ['melody', 'classic', 'soft', 'two']
 
 /** Whatever is stored, a usable set: unknown or broken fields fall back. */
 export function parseAlertPrefs(raw: string | null | undefined): AlertPrefs {
@@ -34,10 +41,11 @@ export function parseAlertPrefs(raw: string | null | undefined): AlertPrefs {
   }
   const d = DEFAULT_ALERT_PREFS
   const vol = typeof o.volume === 'number' && Number.isFinite(o.volume) ? Math.round(o.volume) : d.volume
+  const kept = SOUNDS.includes(o.sound as RingSound) ? (o.sound as RingSound) : d.sound
   return {
     ring: typeof o.ring === 'boolean' ? o.ring : d.ring,
     flash: typeof o.flash === 'boolean' ? o.flash : d.flash,
-    sound: SOUNDS.includes(o.sound as RingSound) ? (o.sound as RingSound) : d.sound,
+    sound: kept === 'classic' && o.v !== ALERT_PREFS_VERSION ? 'melody' : kept,
     volume: Math.min(100, Math.max(0, vol)),
     beep: typeof o.beep === 'boolean' ? o.beep : d.beep,
   }
@@ -55,18 +63,23 @@ export function readAlertPrefs(): AlertPrefs {
 /** False when the browser refused to store it (the change holds until reload). */
 export function writeAlertPrefs(p: AlertPrefs): boolean {
   try {
-    localStorage.setItem(ALERT_PREFS_KEY, JSON.stringify(p))
+    localStorage.setItem(ALERT_PREFS_KEY, JSON.stringify({ ...p, v: ALERT_PREFS_VERSION }))
     return true
   } catch {
     return false
   }
 }
 
-export const SOUND_LABEL: Record<RingSound, string> = { classic: 'Phone ring', soft: 'Soft chime', two: 'Two tones' }
+export const SOUND_LABEL: Record<RingSound, string> = {
+  melody: 'Gentle melody',
+  classic: 'Phone ring',
+  soft: 'Soft chime',
+  two: 'Two tones',
+}
 
-/** The two sounds made in the browser: [frequency Hz, start s, length s].
- *  "Phone ring" is the recording (/notification.wav). */
-export const SOUND_NOTES: Record<Exclude<RingSound, 'classic'>, [number, number, number][]> = {
+/** The two short sounds made in the browser: [frequency Hz, start s, length s]. "Phone ring" is the
+ *  recording (/notification.wav); the melody is MELODY_NOTES. */
+export const SOUND_NOTES: Record<'soft' | 'two', [number, number, number][]> = {
   soft: [
     [659.25, 0, 0.6],
     [880, 0.2, 0.8],
@@ -77,10 +90,9 @@ export const SOUND_NOTES: Record<Exclude<RingSound, 'classic'>, [number, number,
   ],
 }
 
-/** A lead given to me: a gentle phrase, played once, never the phone ring (the owner, 22 Nov 2026: "pleasant,
- *  like an elevator"). A rising A-minor-seventh on a soft vibraphone that settles on a third, about 3.5 s.
- *  [frequency Hz, start s, length s]. */
-export const LEAD_MELODY: readonly [number, number, number][] = [
+/** The gentle melody (the owner, 22 Nov 2026: "pleasant, like an elevator", everywhere): a rising
+ *  A-minor-seventh on a soft vibraphone that settles on a third, about 3.5 s. [frequency Hz, start s, length s]. */
+export const MELODY_NOTES: readonly [number, number, number][] = [
   [440, 0, 1.6], // A4
   [523.25, 0.25, 1.6], // C5
   [659.25, 0.5, 1.6], // E5
@@ -92,6 +104,12 @@ export const LEAD_MELODY: readonly [number, number, number][] = [
 
 /** How often a made sound repeats while the chat waits. */
 export const RING_REPEAT_MS = 1800
+/** The melody lasts about 3.5 s: it comes back every 5, a breath in between. */
+export const MELODY_REPEAT_MS = 5000
+
+export function ringRepeatMs(sound: RingSound): number {
+  return sound === 'melody' ? MELODY_REPEAT_MS : RING_REPEAT_MS
+}
 
 export function volumeLow(p: AlertPrefs): boolean {
   return p.ring && p.volume <= 30
