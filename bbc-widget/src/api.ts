@@ -116,13 +116,13 @@ export function offerVariant(v: unknown): string | undefined {
  *  with a status, or its reply was not an offer. */
 export type OfferFail = 'timeout' | 'network' | 'http' | 'shape'
 
-/** How an offer request went, for the measurements: how long it took, and why no answer came (null: one did). */
 /** The seconds an agent-first "wait" answer gives (agentTest.ts waitSeconds; the server's cap, 600): this file
  *  imports nothing but types, so the tests run it in node. */
 export function offerWait(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 600 ? Math.ceil(v) : null
 }
 
+/** How an offer request went, for the measurements: how long it took, and why no answer came (null: one did). */
 export interface OfferTiming {
   ms: number
   fail: OfferFail | null
