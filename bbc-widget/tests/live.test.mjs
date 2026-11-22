@@ -35,6 +35,20 @@ test('a hello past its time, of another kind, too long, or without a tap is no h
   assert.equal(readHello(null, NOW), null)
 })
 
+test('a hello\u2019s length is counted as the API counts it: 300 emoji are 300 characters', () => {
+  const emoji = '\u{1F600}'
+  assert.ok(readHello({ messages: [{ ...contract, text: emoji.repeat(300) }] }, NOW), 'at the limit')
+  assert.equal(readHello({ messages: [{ ...contract, text: emoji.repeat(301) }] }, NOW), null, 'over it')
+})
+
+test('Reply takes the turn, and a Reply that lost it changes nothing', () => {
+  const src = readFileSync(join(here, '..', 'src', 'Widget.tsx'), 'utf8')
+  const live = src.slice(src.indexOf('const openLive = async'), src.indexOf('// C2: the pill'))
+  assert.match(live, /const run = \+\+noteRunRef\.current/)
+  assert.match(live, /if \(cid && stillMine\(\)\)/)
+  assert.match(live, /if \(!stillMine\(\)\) return\s+setTunnel\('sales'\)/)
+})
+
 test('the first good hello wins, and a long name is cut', () => {
   const h = readHello({ messages: [{ ...contract, kind: 'x' }, { ...contract, id: 'h2', agent: 'A'.repeat(80) }] }, NOW)
   assert.equal(h.id, 'h2')

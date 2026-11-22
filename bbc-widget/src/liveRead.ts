@@ -74,7 +74,8 @@ export function readHello(raw: unknown, nowMs: number): LiveHello | null {
     const s = (k: string) => (typeof r[k] === 'string' ? (r[k] as string) : '')
     const expiresAt = Date.parse(s('expires_at'))
     const text = s('text').trim()
-    if (r.kind !== 'hello' || !s('id') || !s('tap').startsWith('t1.') || !text || text.length > MAX_TEXT) continue
+    // Characters as the API counts them (Python's len: code points), not UTF-16 units: 200 emoji are 200.
+    if (r.kind !== 'hello' || !s('id') || !s('tap').startsWith('t1.') || !text || [...text].length > MAX_TEXT) continue
     if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) continue
     return { id: s('id'), agent: s('agent').trim().slice(0, 40) || 'Your travel agent', text, tap: s('tap'), expiresAt }
   }

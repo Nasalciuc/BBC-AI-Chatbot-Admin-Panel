@@ -413,6 +413,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     const h = live.hello
     if (!h || liveBusyRef.current) return
     liveBusyRef.current = true
+    // Reply takes the turn like every flow that starts; if the visitor opens something else while the chat is
+    // made, that wins: this neither switches their screen nor keeps the agent's chat as theirs.
+    const run = ++noteRunRef.current
+    const stillMine = () => run === noteRunRef.current
     live.taken()
     try {
       const sid = posthogSessionId()
@@ -429,7 +433,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
         const data = await res.json()
         saveVisitorToken(data.visitor_token)
         const cid = typeof data.conversation_id === 'string' ? data.conversation_id : ''
-        if (cid) {
+        if (cid && stillMine()) {
           try {
             localStorage.setItem('bbc_conv_id', cid)
             localStorage.setItem('bbc_conv_ts', Date.now().toString())
@@ -441,6 +445,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       }
     } catch { /* the chat opens as any other */ }
     liveBusyRef.current = false
+    if (!stillMine()) return
     setTunnel('sales')
     setStep('chat')
   }
