@@ -399,3 +399,30 @@ class TestYes:
              patch("app.services.closing.is_within_team_hours", return_value=True):
             out = await card_buttons.answer(req, req.message, {})
         assert out.message.endswith("Where would you like to fly, and roughly when? Write it here.")
+
+
+class _UserNotSaved(_Saved):
+    """The client's tap is not kept: conversation_service.add_message answers None for it."""
+
+    async def __call__(self, cid, role, content, model_used=None, cost=0.0, live_extra=None):
+        if role == "user":
+            return None
+        return await super().__call__(cid, role, content, model_used, cost, live_extra)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conv, message", [(_conv(_FIELD_SMS), "Yes, send me fares"),
+                                           (_reader(_FIELD_SMS), "Get a fare quote")])
+async def test_a_tap_that_was_not_kept_is_never_answered_over_a_history_without_it(conv, message):
+    """Rule 4 (CodeRabbit #273): the client's words are kept first; when they aren't, no answer is stored over a
+    history that lacks them, and the model's turn saves them and answers instead."""
+    saved = _UserNotSaved()
+    req = ChatRequest(message=message, conversation_id=_CID, visitor_id="visitor-0000000001", button="yes")
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)), \
+         patch("app.db.supabase.count_messages", new=AsyncMock(return_value=0)), \
+         patch("app.services.conversation_service.add_message", new=saved), \
+         patch("app.services.closing.is_within_team_hours", return_value=True):
+        out = await card_buttons.answer(req, message, {})
+    assert out is None and saved.rows == []
+    assert card_buttons.CARD_BUTTONS_HEALTH["save_failures"] == 1
+    assert card_buttons.CARD_BUTTONS_HEALTH["fell_through"] == 1

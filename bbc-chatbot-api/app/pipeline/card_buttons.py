@@ -171,7 +171,10 @@ async def _yes(cid: str, message: str, meta: dict) -> Optional[ChatResponse]:
     else:
         text = card_words.contact_first(lang, field or "")
         buttons = card_words.contact_first_buttons(lang, _team_online())
-    await _save(cid, "user", message)
+    if await _save(cid, "user", message) is None:
+        # The tap was not kept (counted in save_failures): nothing is answered over a history without it, and the
+        # model's turn saves it and answers instead (CodeRabbit #273).
+        return None
     row = await _save(cid, "ai", text, proactive.MODEL_USED)
     CARD_BUTTONS_HEALTH["yes" if whole else "contact_first"] += 1
     return _response(cid, row, text, buttons, proactive.MODEL_USED)

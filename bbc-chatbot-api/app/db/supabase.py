@@ -668,7 +668,10 @@ _LIST_COLUMNS_BASE = (
     "phone_to_check:metadata->>phone_to_check,"
     # The e-mail and the phone, under their own names, for the same answer when the list falls back to
     # this projection (no visitor_email / visitor_phone in it): dropped once read (CodeRabbit #270).
-    "contact_email:visitor_email,contact_phone:visitor_phone"
+    "contact_email:visitor_email,contact_phone:visitor_phone,"
+    # The moment that opened the chat by itself (proactive.init_metadata): the row says "Card · no contact" for
+    # a card chat with no way to reach the client (owner, 22 Nov; CodeRabbit #273: the list had dropped it).
+    "proactive_trigger:metadata->>proactive_trigger"
 )
 # Added by migrations 023/024 (chat number + activity clocks). Kept separate
 # because the app can deploy BEFORE the SQL is applied: asking PostgREST for a
@@ -1303,6 +1306,7 @@ async def get_conversations(
                 # needs truthiness, but None must stay falsy.
                 "widget_pings": row.pop("widget_pings", None) in ("true", True),
                 "agent_assigned_at": row.pop("agent_assigned_at", None),
+                "proactive_trigger": row.pop("proactive_trigger", None),
                 **{k: row.pop(k, None) for k in PRESENCE_V2_KEYS},
             }
         rows = await enrich_conversations_agent_info(rows)
