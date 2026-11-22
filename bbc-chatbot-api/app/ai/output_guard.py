@@ -212,30 +212,39 @@ def _is_own(snippet: str, own: set[str]) -> bool:
     # client's phone ending in 9 must not let that link through as theirs.
     if _kind(snippet) != "phone":
         return False
-    d = _digits(snippet)
+    groups = re.findall(r"\d+", snippet)
     nums = [o for o in own if o.isdigit() and len(o) >= 7]
-    return bool(d) and bool(nums) and _own_number_run(d, nums)
+    return bool(groups) and bool(nums) and _own_number_run(groups, nums)
 
 
-def _own_number_run(d: str, own: list[str]) -> bool:
-    """`d` (one phone match's digits) is the client's own number, once or more. The phone pattern joins numbers
-    a space or a line apart into one match: the same number twice is still theirs, a foreign number glued to
-    it is not (CodeRabbit #273). Each copy is the number as kept, without its country code, or with one the
-    kept copy lacks: 1 to _CC_MAX digits, never more."""
-    reach = [False] * (len(d) + 1)
+def _own_number_run(groups: list[str], own: list[str]) -> bool:
+    """The digit groups of one phone match (as written: "+1 207 946 0958" is four) are the client's own number,
+    once or more. The phone pattern joins numbers a space or a line apart into one match: the same number
+    twice is still theirs, a foreign number next to it is not (CodeRabbit #273). A copy is whole groups, never
+    part of one, so a foreign number can't lend its last digits to the copy after it (round 4)."""
+    longest = max(len(o) for o in own) + _CC_MAX
+    reach = [False] * (len(groups) + 1)
     reach[0] = True
-    for i in range(len(d)):
+    for i in range(len(groups)):
         if not reach[i]:
             continue
-        for o in own:
-            for cut in range(_CC_MAX + 1):  # as kept, or without its country code
-                piece = o[cut:]
-                if len(piece) >= 7 and d.startswith(piece, i):
-                    reach[i + len(piece)] = True
-            for cc in range(1, _CC_MAX + 1):  # with a country code the kept copy lacks
-                if d.startswith(o, i + cc):
-                    reach[i + cc + len(o)] = True
-    return reach[len(d)]
+        digits = ""
+        for j in range(i, len(groups)):
+            digits += groups[j]
+            if len(digits) > longest:
+                break
+            if _one_copy(digits, own):
+                reach[j + 1] = True
+    return reach[len(groups)]
+
+
+def _one_copy(d: str, own: list[str]) -> bool:
+    """One copy of a kept number: as kept, without its country code, or with one the kept copy lacks; 1 to
+    _CC_MAX digits either way, never more, and a phone's 7 digits at least."""
+    return len(d) >= 7 and any(
+        d == o or (o.endswith(d) and len(o) - len(d) <= _CC_MAX) or (d.endswith(o) and len(d) - len(o) <= _CC_MAX)
+        for o in own
+    )
 
 
 def _alert_later(mode: str, kinds: dict) -> None:
