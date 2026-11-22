@@ -383,6 +383,24 @@ class TestRun:
 
         assert result["status"] == "partial_timeout" and result["cost"] == 0.01
 
+    async def test_no_answer_on_the_json_retry_is_no_answer(self):
+        """Rule 7: asked again for the JSON, an error or a refusal is named as one, not as bad JSON."""
+        calls = {"n": 0}
+
+        def llm(*_a, **_k):
+            calls["n"] += 1
+            return ("not json at all", 0.01) if calls["n"] == 1 else (None, 0.0)
+
+        cards = [{"chat": 1, "tag": "abandoned", "segment": "sales/direct"}]
+        before = dict(learning.LEARNING_HEALTH)
+        patches = _run_patches(cards, llm)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = await learning.run_learning()
+
+        assert result["status"] == "partial_error" and calls["n"] == 2 and result["cost"] == 0.01
+        assert learning.LEARNING_HEALTH["no_answer"] - before["no_answer"] == 1
+        assert learning.LEARNING_HEALTH["invalid_json"] == before["invalid_json"]
+
     async def test_json_retry_recovers(self):
         calls = {"n": 0}
 

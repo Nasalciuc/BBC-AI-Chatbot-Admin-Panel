@@ -336,7 +336,8 @@ def _parse_json(raw: Optional[str]) -> Optional[dict]:
 def _call_json(system: str, payload: str, task: str = "learn") -> tuple[Optional[dict], float, str]:
     """One LLM call that must return JSON: (the JSON or None, cost, why). `why` says what came back:
     "ok"; "timeout", no answer in time (not asked again: a second call would wait as long); "no_answer", an
-    error or a refusal; "invalid_json", an answer that is not JSON, asked once more and then given up."""
+    error or a refusal, on the first ask or the second; "invalid_json", an answer that is not JSON, asked once
+    more and then given up."""
     LEARNING_HEALTH["calls"] += 1
     text: Optional[str] = None
     retry_text: Optional[str] = None
@@ -357,6 +358,11 @@ def _call_json(system: str, payload: str, task: str = "learn") -> tuple[Optional
         LEARNING_HEALTH["timeouts"] += 1
         logger.warning(f"Learning: chunk skipped — {e} (LEARNING_TIMEOUT_SECONDS)")
         return None, cost, "timeout"
+    if retry_text is None:
+        # Asked again for the JSON, the model errored or refused: that is what kept the chunk, not its JSON.
+        LEARNING_HEALTH["no_answer"] += 1
+        logger.warning("Learning: chunk skipped — asked again for the JSON, the model gave no answer (logged above)")
+        return None, cost + retry_cost, "no_answer"
     parsed = _parse_json(retry_text)
     if parsed is None:
         LEARNING_HEALTH["invalid_json"] += 1
