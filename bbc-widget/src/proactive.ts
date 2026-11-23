@@ -38,7 +38,7 @@ import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type 
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
   adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
-  replyKind, worksOnPressedForm, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  quoteClick, replyKind, worksOnPressedForm, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
@@ -492,18 +492,22 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (!el || inWidget(el)) return
       touchQuoteForm(el)
       const form = quoteForm(el)
-      if (form && isSubmitControl(el)) {
+      const control = el.closest('button, a, [role="button"], input[type="submit"]')
+      const text = control ? (control.textContent || (control as HTMLInputElement).value || '') : ''
+      const kind = quoteClick({
+        knownSubmit: !!form && isSubmitControl(el), works: worksOnPressed(el),
+        quoteControl: !!control && QUOTE_TEXT.test(text), inKnownForm: !!form,
+      })
+      if (kind === 'press' && form) {
         press = { at: Date.now(), form, activityAt: Date.now(), invalid: false }
         refused = []
         return
       }
-      if (press && worksOnPressed(el)) {
+      if (kind === 'work' && press) {
         press.activityAt = Date.now()
         return
       }
-      const control = el.closest('button, a, [role="button"], input[type="submit"]')
-      const text = control ? (control.textContent || (control as HTMLInputElement).value || '') : ''
-      if (control && QUOTE_TEXT.test(text)) {
+      if (kind === 'press_unknown') {
         // The site's button without the form we know: still a press, and the HTML changed — say so.
         press = { at: Date.now(), form: null, activityAt: Date.now(), invalid: false }
         refused = []

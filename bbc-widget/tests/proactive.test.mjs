@@ -24,7 +24,7 @@ const readTrip = (href, h1) => {
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
   SAME_SEND_MS, TRIGGER_OFF_ARM, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs,
-  keysOnSite, offAfter, pauseRunning, pickTrigger, readOff, replyKind, worksOnPressedForm,
+  keysOnSite, offAfter, pauseRunning, pickTrigger, quoteClick, readOff, replyKind, worksOnPressedForm,
 } from '../src/triggers.ts'
 import { fetchProactiveOffer, offerMeasures, offerVariant, preconnect } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -454,8 +454,23 @@ test('a press whose form the widget does not know: any field of the site keeps t
   assert.match(hook, /const worksOnPressed = \(t: EventTarget \| null\) => !!press && worksOnPressedForm\(\{\s+formKnown: !!press\.form, inForm: inPressedForm\(t\), inWidget: inWidget\(t\), field: isField\(t\),/)
   assert.match(hook, /const onType = [\s\S]*?if \(press && worksOnPressed\(e\.target\)\) press\.activityAt = Date\.now\(\)/)
   assert.match(hook, /const onFormTouch = \(e: Event\) => \{\s+touchQuoteForm\(e\.target\)\s+if \(press && worksOnPressed\(e\.target\)\) press\.activityAt = Date\.now\(\)/)
-  assert.match(hook, /if \(press && worksOnPressed\(el\)\) \{\s+press\.activityAt = Date\.now\(\)\s+return/)
+  assert.match(hook, /const kind = quoteClick\(\{\s+knownSubmit: !!form && isSubmitControl\(el\), works: worksOnPressed\(el\),\s+quoteControl: !!control && QUOTE_TEXT\.test\(text\), inKnownForm: !!form,\s+\}\)/)
+  assert.match(hook, /if \(kind === 'work' && press\) \{\s+press\.activityAt = Date\.now\(\)\s+return/)
+  assert.match(hook, /if \(kind === 'press_unknown'\) \{\s+\/\/ The site's button without the form we know: still a press/)
   assert.doesNotMatch(hook, /if \(press && inPressedForm\((e\.target|el)\)\) (press\.activityAt|\{)/)
+})
+
+test('the site\'s quote button pressed again outside a known form is a new press, not work on the form (CodeRabbit #276)', () => {
+  // A submit input is a field too: pressed again while a press runs, it starts a new one (its clock), it is not work.
+  assert.equal(quoteClick({ knownSubmit: false, works: true, quoteControl: true, inKnownForm: false }), 'press_unknown')
+  // Ordinary work on the form stays work: a field, a checkbox, a click inside the known pressed form.
+  assert.equal(quoteClick({ knownSubmit: false, works: true, quoteControl: false, inKnownForm: false }), 'work')
+  assert.equal(quoteClick({ knownSubmit: false, works: true, quoteControl: true, inKnownForm: true }), 'work')
+  // The known form's own submit is its press, whatever else holds; the quote button with no press running, a press.
+  assert.equal(quoteClick({ knownSubmit: true, works: true, quoteControl: true, inKnownForm: true }), 'press')
+  assert.equal(quoteClick({ knownSubmit: false, works: false, quoteControl: true, inKnownForm: false }), 'press_unknown')
+  // Anything else on the page is nothing to the quote moment.
+  assert.equal(quoteClick({ knownSubmit: false, works: false, quoteControl: false, inKnownForm: false }), null)
 })
 
 test('a chat that opens by itself leaves the keys in the field of the site the visitor is typing in (22 Nov)', () => {

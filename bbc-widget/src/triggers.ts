@@ -265,6 +265,18 @@ export function worksOnPressedForm(t: { formKnown: boolean; inForm: boolean; inW
   return t.formKnown ? t.inForm : t.field
 }
 
+/** What a click on the page is to the quote moment: a press of the quote form the widget knows ('press'), work on
+ *  the pressed form ('work'), a press of the site's quote button outside a form it knows ('press_unknown'), or
+ *  nothing. That button pressed again is a new press, never mere work on the form, though an
+ *  <input type="submit"> is a field too (CodeRabbit #276: the second press kept the first one's clock). */
+export function quoteClick(c: { knownSubmit: boolean; works: boolean; quoteControl: boolean; inKnownForm: boolean }):
+  'press' | 'work' | 'press_unknown' | null {
+  if (c.knownSubmit) return 'press'
+  if (c.works && !(c.quoteControl && !c.inKnownForm)) return 'work'
+  if (c.quoteControl) return 'press_unknown'
+  return null
+}
+
 /** The visitor's keyboard is in a field of the site (an input, a text area, a select, an editable block), not
  *  the widget's: a chat that opens by itself then leaves the focus there. */
 export function keysOnSite(active: Element | null): boolean {
