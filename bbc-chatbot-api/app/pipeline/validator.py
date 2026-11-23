@@ -224,3 +224,54 @@ def validate_response(text: str) -> str:
         return EMPTY_FALLBACK
 
     return result
+
+
+# ── A name the client never gave ─────────────────────────────
+# #3341, and again in November 2026: with no name in the chat, the reply called the client by a name
+# read from their e-mail address ("Email is all set, <name>!"). The prompt forbids it ("never one read
+# from their email"); the model did it anyway. So, when the chat holds no name: a word the reply uses
+# to address the client ("Thanks, X!", "Hi X,", "X, I've noted…", "…, X.") that sits in the local part
+# of the e-mail and that the client never typed is taken out. Any other word stays where it is.
+_EMAIL_IN_TEXT_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_GREETING = (
+    r"(?:hi|hello|hey|dear|thanks|thank\s+you(?:\s+so\s+much)?|perfect|great|wonderful|lovely|excellent"
+    r"|got\s+it|of\s+course|absolutely|sure|welcome|no\s+problem|okay|ok|alright|noted|understood"
+    r"|sounds\s+good|all\s+set|happy\s+to\s+help|my\s+pleasure|good\s+(?:morning|afternoon|evening)"
+    r"|speak\s+soon|talk\s+soon|bye|goodbye|cheers|fantastic|brilliant|awesome)"
+)
+# One name, or a first and a last name ("Thank you, X Y!"): capitalised, as the model writes it.
+_NAME = r"(?P<name>[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)"
+# "Thanks, X!", "Hi X, how…", "Perfect X." — the greeting stays, the name goes.
+_AFTER_GREETING_RE = re.compile(r"\b(?P<greet>(?i:" + _GREETING + r"))\s*,?\s+" + _NAME + r"\b(?=\s*[,.!?;:]|\s*$)")
+# "X, I've noted your dates" — at the start of a sentence.
+_LEADING_RE = re.compile(r"(?:^|(?<=[.!?]\s))" + _NAME + r",\s+(?P<next>\w)")
+# "Speak soon, X." / "…for you, X!" — at the end of a sentence.
+_TRAILING_RE = re.compile(r",\s*" + _NAME + r"(?=\s*[.!?](?:\s|$)|\s*$)")
+# Words a sentence opens with, never a name, whatever the e-mail holds.
+_NEVER_A_NAME = {
+    "great", "perfect", "thanks", "thank", "sure", "okay", "absolutely", "noted", "lovely", "wonderful",
+    "excellent", "understood", "certainly", "yes", "sorry", "welcome", "hello", "happy", "also", "just",
+    "please", "got", "alright", "right", "good", "fantastic", "brilliant", "awesome", "cool", "nice",
+    "sounds", "hey", "dear", "and", "but", "now", "then", "first", "business", "economy", "travel",
+}
+
+
+def strip_guessed_name(text: str, email: str | None, client_texts: list[str]) -> tuple[str, bool]:
+    """The reply without a name the client never gave (see above): (text, True when one was taken
+    out). Only for a chat that holds no name — the caller checks that. A word is a guessed name when
+    it is in the e-mail's local part (letters only, 3 or more) and in none of the client's messages
+    (their e-mail addresses left out: typing the address is not typing a name)."""
+    local = re.sub(r"[^a-z]", "", email.split("@", 1)[0].lower()) if isinstance(email, str) and "@" in email else ""
+    if len(local) < 3 or not text:
+        return text, False
+    typed = " ".join(_EMAIL_IN_TEXT_RE.sub(" ", t) for t in client_texts if isinstance(t, str)).lower()
+
+    def guessed(name: str) -> bool:
+        words = name.lower().split()
+        return all(len(w) >= 3 and w not in _NEVER_A_NAME and w in local
+                   and not re.search(r"\b" + re.escape(w) + r"\b", typed) for w in words)
+
+    out = _AFTER_GREETING_RE.sub(lambda m: m.group("greet") if guessed(m.group("name")) else m.group(0), text)
+    out = _LEADING_RE.sub(lambda m: m.group("next").upper() if guessed(m.group("name")) else m.group(0), out)
+    out = _TRAILING_RE.sub(lambda m: "" if guessed(m.group("name")) else m.group(0), out)
+    return out, out != text

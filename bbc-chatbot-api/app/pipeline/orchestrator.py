@@ -14,7 +14,7 @@ from app.services.crm import check_crm_ready, format_phone_international, submit
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response, GeneratedResponse
-from app.pipeline.validator import validate_response
+from app.pipeline.validator import strip_guessed_name, validate_response
 from app.ai.templates import get_template
 from app.pipeline.contact_capture import (
     asks_for_channel,
@@ -1906,6 +1906,16 @@ async def _pipeline(
         validated_text = gen.text
     else:
         validated_text = validate_response(gen.text)
+        # No name in the chat: never one read from the e-mail address (validator.strip_guessed_name).
+        if not (visitor and (visitor.name or "").strip()):
+            validated_text, _name_removed = strip_guessed_name(
+                validated_text,
+                visitor.email if visitor else None,
+                [m.get("content") or "" for m in (history or []) if isinstance(m, dict) and m.get("role") == "user"]
+                + [message],
+            )
+            if _name_removed:
+                logger.info(f"[{cid}] Reply addressed the client by a name read from their e-mail — taken out")
 
     logger.info(f"[{cid}] [PERF] validate: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()
