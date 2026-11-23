@@ -600,6 +600,110 @@
       }
     },
     {
+      "text": "2 adults, 2 kids, a 5-year-old and a 1-year-old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults, 2 kids (a 5 year old and a 1 year old)",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and two kids, a 5-year-old and a 1-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and 2 kids, one 1 year old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults with 2 kids, plus a 1 year old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 5,
+        "children": 2,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults, 1 baby and her 5 year old brother",
+      "legacy": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 1,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults and a child, he is 1 year old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and a baby, she will be 2 years old by then",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      }
+    },
+    {
       "text": "2 adults and a child, he is 9 years old",
       "legacy": {
         "passengers": 2,

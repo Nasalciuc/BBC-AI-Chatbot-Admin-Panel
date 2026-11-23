@@ -268,9 +268,14 @@ ME_AND_MY_MINOR_RE = re.compile(
 )
 # "a 9-year-old", "my 15 year old": the age, not the count, names a minor.
 AGE_RE = re.compile(r'\b(\d{1,2})[\s-]?(?:years?|yrs?)[\s-]?old\b', re.I)
-# The same with its article: "and a 1-year-old" is one more minor beside a kind counted in digits ("2 kids and
-# a 1-year-old"), where "2 kids (5 and 1 years old)" only describes the two already counted.
-ADDED_AGE_RE = re.compile(r'\b(?:a|an|one)\s+(\d{1,2})[\s-]?(?:years?|yrs?)[\s-]?old\b', re.I)
+# The same with the word that makes it a person: "and a 1-year-old", "and her 5 year old" is one more minor
+# beside a kind already counted ("2 kids and a 1-year-old"), where "he is 1 year old" or "2 kids (5 and 1 years
+# old)" only describes one already counted.
+_PERSON_AGE = r'\b(?:a|an|one|my|our|his|her|their)\s+(\d{1,2})[\s-]?(?:years?|yrs?)[\s-]?old\b'
+ADDED_AGE_RE = re.compile(_PERSON_AGE, re.I)
+# Ages set off right after the kids counted name those kids, a baby among them: "2 kids, a 5-year-old and a
+# 1-year-old" is two kids, not two kids and a baby. A baby's age joined by "and"/"plus" is one more.
+KIDS_NAMED_RE = re.compile(r'\s*(?:[,:(\[]|--?|[–—])\s*' + _PERSON_AGE, re.I)
 # "we are a family of four" — FAMILY_RE only knew digits.
 FAMILY_WORD_RE = re.compile(
     r'\b(?:family|group|party)\s+of\s+(one|two|three|four|five|six|seven|eight|nine)\b', re.I
@@ -1784,13 +1789,16 @@ def extract_entities(
         # "2 adults + a 9-year-old": the child is named by an age, not a count.
         # 2–11 is a child fare, under 2 an infant; 12+ is already an adult. A kind counted in words or in digits
         # keeps its count (the age then names that minor); the other kind still comes from the ages: "2 adults
-        # and a child plus a 1-year-old" is a child and an infant (CodeRabbit #279). Beside a kind counted in
-        # digits, only an age with its article is one more minor: "2 kids and a 1-year-old" is two children and
-        # an infant, "2 kids (5 and 1 years old)" two children (CodeRabbit #279, round 2).
-        _ages = [int(a) for a in (ADDED_AGE_RE if child_m or infant_m else AGE_RE).findall(text)]
+        # and a child plus a 1-year-old" is a child and an infant (CodeRabbit #279). Beside a kind counted, only
+        # an age that names a person is one more minor: "2 kids and a 1-year-old" is two children and an infant,
+        # "2 kids (5 and 1 years old)" two children (CodeRabbit #279, round 2), "a baby, she'll be 2 years old"
+        # one infant. Kids may be babies, so a baby's age set off right after them names one of them.
+        _kids = child_m or child_words
+        _counted = _kids or infant_m or infant_words
+        _ages = [int(a) for a in (ADDED_AGE_RE if _counted else AGE_RE).findall(text)]
         if not child_m and not child_words:
             children_count = sum(1 for a in _ages if 2 <= a <= 11)
-        if not infant_m and not infant_words:
+        if not infant_m and not infant_words and not (_kids and KIDS_NAMED_RE.match(text, _kids.end())):
             infant_count = sum(1 for a in _ages if a < 2)
 
     if children_count or infant_count:
