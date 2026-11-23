@@ -47,7 +47,7 @@ one kind from passing for another. `contracts/live_tokens.json` holds vectors th
 
 | Route | Who | Answers |
 |---|---|---|
-| `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted; 400 not JSON; 401; 503 not configured or Redis down |
+| `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted (the widget sends its last beat, `has_chat`, once more after the gap); 400 not JSON; 401; 503 not configured or Redis down |
 | `GET /v1/inbox` | widget, `X-Live-Pass` | 200 `{"messages":[…]}` at once or the moment a hello lands; 204 after 25 s with nothing; 429 a fourth tab waiting |
 | `POST /v1/dismiss` | widget, `X-Live-Pass` | 200: "not now", nobody says hello for an hour, the claim and the inbox go |
 | `GET /v1/live` | panel, `Bearer l1…`, roles sales, owner, admin, dev, supervisor | 200 `{"data":[visitor…],"max_claims":3,"claim_seconds":600}`; a reader who may hold a visitor is noted in `live:greeters` (the agent-first test) |
@@ -69,7 +69,9 @@ it: a reply, a channel, a message); Alex's opening in a chat the visitor opened 
 86 400; bbc-live keeps the time it showed by its own clock (the visitor's may be off). `alex_trigger`: the moment
 that showed it (kayak, ads, quote, reader, exit, note). A state it doesn't know or seconds out of range leave
 all three out; a moment it doesn't know leaves only the moment out. `has_chat` is true on the widget's last
-beat, the one it sends when the visitor's chat starts: the panel stops listing them at once.
+beat, the one it sends when the visitor's chat starts (once more after the 5 s gap if bbc-live answered 202): the
+panel stops listing them at once. Once true, `has_chat` stays true for the visit (`beat.lua`): a beat sent before it
+that lands after it never takes it back.
 
 A step is one of: `search[:FROM-TO][:YYYY-MM-DD]` (a code is `[A-Z]{3}` or `?`), `quote_opened`,
 `quote_step[:N]`, `quote_invalid[:kind|kind…]` (the kinds of the fields the form flagged: name, email,
@@ -120,9 +122,10 @@ failed is offered a hand, a sent one a thank-you. A visitor who wrote is in a ch
 - A phone with the chat closed: the card beside the chat button (Alex's unanswered card makes way for it);
   "Reply" makes the chat with the tap at once and opens it.
 - A computer with the chat closed: the chat opens with the hello, as Alex's opening does.
-- ✕, Escape or "Not now" on it: `POST /v1/dismiss`. The hello is kept for the visit's next pages
-  (sessionStorage) until it runs out, is answered or dismissed; a chat kept open on one that ran out since
-  stays closed on the next page.
+- ✕, Escape or "Not now" on it: `POST /v1/dismiss`, except while a first message carries its tap (that is an
+  answer). The hello is kept for the visit's next pages (sessionStorage, with bbc-live's place) until it runs
+  out, is answered or dismissed, and can be dismissed before the page's config comes; a chat kept open on one
+  that ran out since stays closed on the next page.
 
 ## The owner's agent-first test (22 Nov 2026)
 
