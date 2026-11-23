@@ -28,7 +28,7 @@ import type { ChannelKind, ChatButton } from './channel'
 import brand from './config'
 import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
-import { watchPopups } from './overlay'
+import { cardAsideWatch, watchPopups } from './overlay'
 import { posthog } from './posthog'
 import {
   applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
@@ -354,6 +354,9 @@ export interface Proactive {
   closePill: () => void
   /** The pill was tapped (its chat opens): it goes. */
   pillUsed: () => void
+  /** E1 after the card (overlay.ts cardAsideWatch): a popup of the site covers the page, so the card waits in
+   *  the corner button (a tap on it still opens Alex's chat) and comes back when the popup goes. */
+  aside: boolean
 }
 
 export function useProactive({ apiUrl, step, allowed, restored = null }: {
@@ -367,6 +370,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   const [quiet, setQuiet] = useState(() => ssGet(DONE_KEY) === 'shown')
   const [rowForm, setRowForm] = useState<HTMLFormElement | null>(null)
   const [pill, setPill] = useState<ProactiveOpening | null>(() => readPill())
+  const [aside, setAside] = useState(false)
+  // E1 (overlay.ts): one watch of the site's popups for the page, so a popup's minute is counted once — by the
+  // moments before the card and by the card once it is on screen (two clocks made the card wait a minute more).
+  const [pagePopups] = useState(watchPopups)
   const shownRef = useRef<ProactiveOpening | null>(restored)
   const engagedRef = useRef(false)
   const stepRef = useRef(step)
@@ -403,6 +410,22 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     return onSiteEvent(stopFor)
   }, [])
 
+  // E1 after the card: while the card is on screen, a popup of the site that opens over the page puts it
+  // aside until the popup goes (overlay.ts cardAsideWatch). Only the phone card: the computer's panel has room.
+  useEffect(() => {
+    setAside(false)
+    if (!offer || offer.surface !== 'card' || step !== 'buttons') return
+    const o = offer
+    const look = cardAsideWatch(pagePopups, (on) => {
+      setAside(on)
+      posthog?.capture(on ? 'proactive_card_aside' : 'proactive_card_back', { trigger: o.trigger, site: brand.id })
+    })
+    look()
+    // A quarter of a second: the card makes room while the site's popup is still fading in.
+    const t = setInterval(look, 250)
+    return () => clearInterval(t)
+  }, [offer, step])
+
   useEffect(() => {
     if (!allowed || step !== 'buttons') return
     if (ssGet(DONE_KEY) || ssGet(NOTE_CLOSED_KEY) || pauseRunning(lsGet(PAUSE_KEY), Date.now())) return
@@ -414,7 +437,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let popupHeldOnce = false
     const start = Date.now()
     // E1 (overlay.ts): the site's popups over the page; a card waits while one is open.
-    const popups = watchPopups()
+    const popups = pagePopups
     // The moments count the visitor's seconds, not the widget's (triggers.ts, "in view"): the time the page
     // was in view before this script started counts too. `widgetStartS`: how long after the page showed this
     // script started, for the measurements (null when the browser does not say when the page showed).
@@ -733,6 +756,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         press = null
       }
       if (sentInline) return
+      // E1's minute runs from when a popup of the site appears, not from when a moment first wants to come:
+      // a popup left open through Alex's wait (the agent-first test) held the card one more minute after the
+      // two (secret-site run, 22 Nov: the card at 185 s instead of 125 s). The look only keeps the clock.
+      popups.open()
       const now = Date.now()
       const quote: QuoteState | null = press ? {
         sincePressS: (now - press.at) / 1000,
@@ -820,6 +847,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   return {
     offer,
     quiet,
+    aside,
     opened: () => { setOffer(null); setRowForm(null) },
     dismiss: (how) => {
       lsSet(PAUSE_KEY, String(Date.now() + PAUSE_AFTER_DISMISS_MS))

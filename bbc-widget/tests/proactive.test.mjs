@@ -756,7 +756,8 @@ test('the first send owns the opening: a racing second send goes out plain', () 
 test('a phone gets the card, a computer the panel', () => {
   assert.match(hook, /const surface: Surface = row \? 'row' : phone \? 'card' : 'panel'/)
   assert.match(widget, /if \(proactive\.offer\?\.surface === 'panel'\) openProactive\(proactive\.offer\)/)
-  assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' \? proactive\.offer : null\}/)
+  // The card stands aside while a popup of the site covers the page (after-card.test.mjs, E1 after the card).
+  assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' && !proactive\.aside \? proactive\.offer : null\}/)
 })
 
 // ── CodeRabbit round on #256 ─────────────────────────────────────────────────────────

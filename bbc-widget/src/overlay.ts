@@ -54,6 +54,21 @@ export function coveringNow(): Element[] {
  *  a full-screen menu the site keeps open), not a popup the card should wait for. */
 export const LAYOUT_AFTER_MS = 60_000
 
+/** E1 after the card: a popup of the site that opens over a card already on screen (secret-site's "Save extra
+ *  $100" at 5 s, the Kayak card at 2.5 s: 4 of the 413 recordings, and the sandbox run of 22 Nov) puts the card
+ *  aside, into the corner button, until the popup closes or has covered the page for a minute (then it is the
+ *  page's layout, and the card comes back over it). Each call looks once; `changed` hears each turn, never the
+ *  same state twice. */
+export function cardAsideWatch(popups: { open: () => boolean }, changed: (aside: boolean) => void): () => void {
+  let aside = false
+  return () => {
+    const now = popups.open()
+    if (now === aside) return
+    aside = now
+    changed(now)
+  }
+}
+
 /** A popup watcher for one page. `seen` is when each covering thing was first seen in an unbroken run. */
 export function watchPopups(clock: () => number = Date.now): {
   open: (ignore?: (el: Element) => boolean, covering?: Element[]) => boolean

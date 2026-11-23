@@ -590,7 +590,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           autoFocus={focusLauncher}
           context={pageCtx}
           unread={unread}
-          card={proactive.offer?.surface === 'card' ? proactive.offer : null}
+          card={proactive.offer?.surface === 'card' && !proactive.aside ? proactive.offer : null}
           onCardOpen={(reply) => { if (proactive.offer) openProactive({ ...proactive.offer, firstReply: reply }) }}
           onCardDismiss={() => proactive.dismiss('not_now')}
           onCardChannel={(kind) => { if (proactive.offer) openProactive({ ...proactive.offer, firstChannel: kind }) }}

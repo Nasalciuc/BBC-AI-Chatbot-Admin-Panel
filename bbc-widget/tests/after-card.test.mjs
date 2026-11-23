@@ -23,7 +23,7 @@ import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, WATCHED_FIRST_S, WATCHED_FIRST_SIGNALS_S,
   adKeyword, isNotNow, keywordNamesPlace, pickTrigger,
 } from '../src/triggers.ts'
-import { LAYOUT_AFTER_MS, coveredShare, watchPopups } from '../src/overlay.ts'
+import { LAYOUT_AFTER_MS, cardAsideWatch, coveredShare, watchPopups } from '../src/overlay.ts'
 import { keyboardInset } from '../src/keyboard.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
 import { LOCAL_AI_PREFIX, reconcileBatch } from '../src/reconcile.ts'
@@ -221,6 +221,55 @@ test('E1: something fixed of the site over a third of the screen is a popup — 
   assert.match(hook, /const ignore = trigger === 'quote' \? \(el: Element\) => !!pressed && el\.contains\(pressed\) : undefined/)
   assert.match(hook, /res\.message && popups\.open\(ignore\)\) \{\s+await untilPopupCloses\(ignore\)/)
   assert.doesNotMatch(hook, /trigger !== 'quote' && popups\.open\(\)/)
+})
+
+test('E1 after the card: a popup that opens over the card puts it aside until the popup goes (secret-site, 22 Nov)', () => {
+  let now = 0
+  let covering = []
+  const w = watchPopups(() => now)
+  const heard = []
+  const look = cardAsideWatch({ open: () => w.open(undefined, covering) }, (on) => heard.push([now, on]))
+  look()                                            // nothing over the page: the card stays
+  now = 2500
+  look()
+  const modal = { contains: () => false }
+  now = 5000; covering = [modal]; look()            // the site's "$100" popup at 5 s: the card steps aside
+  now = 6000; look()                                // still open: nothing new
+  now = 8000; covering = []; look()                 // closed: the card comes back
+  now = 9000; covering = [modal]; look()            // open again: aside again
+  now = 9000 + LAYOUT_AFTER_MS; look()              // a minute without a break: the page's layout, the card returns over it
+  assert.deepEqual(heard, [[5000, true], [8000, false], [9000, true], [9000 + LAYOUT_AFTER_MS, false]])
+  // Watched only while the phone card is on screen (the computer's panel has room); while aside the corner button
+  // stands alone and a tap on it still opens Alex's chat with the card's words.
+  assert.match(hook, /if \(!offer \|\| offer\.surface !== 'card' \|\| step !== 'buttons'\) return\s+const o = offer\s+const look = cardAsideWatch\(pagePopups, \(on\) => \{/)
+  // One watch for the page: the minute a popup has covered it is counted once, by the moments before the card
+  // and by the card after (a second watch started its own minute: the card at 184 s in the sandbox, 23 Nov).
+  assert.match(hook, /const \[pagePopups\] = useState\(watchPopups\)/)
+  assert.match(hook, /const popups = pagePopups\n/)
+  assert.doesNotMatch(hook, /watchPopups\(\)/)
+  assert.match(hook, /posthog\?\.capture\(on \? 'proactive_card_aside' : 'proactive_card_back', \{ trigger: o\.trigger, site: brand\.id \}\)/)
+  assert.match(hook, /const t = setInterval\(look, 250\)\s+return \(\) => clearInterval\(t\)\s+\}, \[offer, step\]\)/)
+  assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' && !proactive\.aside \? proactive\.offer : null\}/)
+  assert.match(widget, /onSelect=\{\(t\) => \(proactive\.offer \? openProactive\(proactive\.offer\) : openFromButton\(t\)\)\}/)
+})
+
+test('E1: a popup\'s minute runs from when it appears, through Alex\'s wait too (22 Nov: 185 s, now 125 s)', () => {
+  const start = hook.indexOf('const evaluate = () => {')
+  const evaluate = hook.slice(start, hook.indexOf('const tick = setInterval(evaluate, 1000)', start))
+  const look = evaluate.indexOf('popups.open()\n')
+  assert.ok(look > 0, 'the evaluate loop keeps the popup clock')
+  assert.ok(look < evaluate.indexOf('if (alexWaitLeftMs(now) > 0) return'), 'before Alex\'s wait returns')
+  assert.ok(look < evaluate.indexOf('const trigger = pickTrigger(state)'), 'before a moment is picked')
+  // With the clock kept each second: a popup open since 5 s is the page's layout when the two minutes end, so
+  // the card comes; one that opened during the wait (at 100 s) still holds it at 125 s.
+  const modal = { contains: () => false }
+  let now = 0
+  const early = watchPopups(() => now)
+  for (now = 5000; now <= 125000; now += 1000) early.open(undefined, [modal])
+  assert.equal(early.open(undefined, [modal]), false)
+  const late = watchPopups(() => now)
+  for (now = 100000; now <= 125000; now += 1000) late.open(undefined, [modal])
+  assert.equal(late.open(undefined, [modal]), true)
 })
 
 test('E2: the keyboard\'s height lifts a floating panel; the browser\'s bar does not', () => {
