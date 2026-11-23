@@ -116,7 +116,7 @@ async def test_only_the_held_date_is_kept_a_missing_return_is_still_filled():
 @pytest.mark.parametrize("text", [
     "January 12, 2027", "back on 10 March 2027", "feb 3 to feb 9", "Nov. 8", "12/12/2026", "2027-02-10",
     "on Friday", "the 17th", "a week later", "push it back", "change the dates", "next month", "2 weeks",
-    "in March", "tomorrow", "in two weeks", "a couple of weeks", "for Christmas", "next summer", "asap",
+    "in March", "tomorrow", "in two weeks", "a couple of weeks", "for Christmas", "next summer", "asap", "12.01",
     "on the 20", "what is my return date",
 ])
 def test_these_speak_of_a_date(text):

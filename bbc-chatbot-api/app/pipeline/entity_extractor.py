@@ -472,7 +472,7 @@ def _make_date(month: int, day: int, year: int | None = None) -> str | None:
 
 
 # A client message that speaks of a date: a month with a day ("Feb 10", "10th of March", "Nov. 8"), a
-# month by its full name, a date in digits ("2/10", "2027-02-10"), a weekday, a day of the month ("the
+# month by its full name, a date in digits ("2/10", "12.01", "2027-02-10"), a weekday, a day of the month ("the
 # 17th", "on the 20"), a year, a length ("2 weeks", "a couple of weeks"), a holiday or season ("for
 # Christmas", "next summer"), "asap", or a move ("a week later", "push it back", "change the dates").
 # It errs on the side of a date: a message it takes for one only lets the AI's reading through for that
@@ -484,7 +484,7 @@ _DATE_MENTION_RE = re.compile(
     r"\b(?:" + _MONTH_PAT + r")\.?\s*\d{1,2}(?:st|nd|rd|th)?\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:" + _MONTH_PAT + r")\b"
     r"|\b(?:january|february|march|april|june|july|august|september|october|november|december)\b"
-    r"|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b20\d\d-\d{1,2}-\d{1,2}\b"
+    r"|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|\b20\d\d-\d{1,2}-\d{1,2}\b"
     r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)\b|\bon\s+the\s+\d{1,2}\b|\b20[2-3]\d\b"
     r"|\b(?:today|tomorrow|tonight|weekend|asap|as\s+soon\s+as\s+possible"
