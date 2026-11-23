@@ -6,18 +6,23 @@ Email: they left the site a median 34 s after the tap. Of the 59 who opened the 
 the tapped note brought 7 contacts from 65 answers, with the route, the dates and the channel asked one after
 another.
 
-Half the visitors (CONTACT_FIELD_TEST_PERCENT, the owner's 50) are on the field side, bucketed by visitor id like
-every experiment (app.experiments), so a visitor keeps their side across visits:
+The field side, the base since 23 Nov (CONTACT_FIELD_TEST_PERCENT, 100 by default; bucketed by visitor id like every
+experiment, app.experiments, so a visitor keeps their side across visits):
 
-- the yes on a card that says the whole trip back opens the field at once: SMS on a phone, email on a computer
-  (card_words.device_channel). Its words ask for that one contact (card_words.confirm, `field`), and the other
-  channel is one tap away;
+- the yes on a card that says the whole trip back opens the email field at once, on every device
+  (card_words.field_channel). Its words ask for that one contact (card_words.confirm, `field`), and SMS is one tap
+  away;
 - "Get a fare quote" on a card that knows no whole trip (proactive.CONTACT_FIRST_TRIGGERS: the ads card, the
   reader's card and the tapped note) is answered at once, contact first, with the same field open
   (card_words.contact_first). The trip is asked once the contact is in (card_words.channel_done, trip_known).
 
-The choice side is as before. Only a widget that opens the field at once (the offer's `opens_field`) takes part: a
-widget cached from before is on neither side. 0 in CONTACT_FIELD_TEST_PERCENT ends the test without a deploy.
+What the test showed, 22 Nov 20:05 to 23 Nov 06:30 UTC (the owner's 50, SMS on a phone then): the email field opened
+at once got a contact in 9 of 12 chats (6 of 6 on the Kayak card), the choice in 10 of 18 (and 57 of 95 Kayak chats
+on 19-22 Nov, before the test), the SMS field on a phone in 2 of 7. So the email field is the base for everyone.
+
+The choice side is as before. 0 in CONTACT_FIELD_TEST_PERCENT gives everyone the choice again, and 50 runs the test
+again, without a deploy. Only a widget that opens the field at once (the offer's `opens_field`) takes part: a widget
+cached from before is on neither side.
 
 The side is named on the card's answer (`contact_test`). The widget sends it back at /chat/init, and it is written on
 the chat's metadata only when it is this visitor id's side (contact_test, plus contact_field: the field opened at
@@ -49,9 +54,9 @@ CONTACT_FIELD_HEALTH: dict[str, int] = {
 
 def percent() -> int:
     try:
-        return max(0, min(100, int(flag("CONTACT_FIELD_TEST_PERCENT", 50) or 0)))
+        return max(0, min(100, int(flag("CONTACT_FIELD_TEST_PERCENT", 100) or 0)))
     except (TypeError, ValueError) as e:
-        logger.warning(f"[contact-field] CONTACT_FIELD_TEST_PERCENT unreadable ({e}): the test is off")
+        logger.warning(f"[contact-field] CONTACT_FIELD_TEST_PERCENT unreadable ({e}): the choice for everyone")
         return 0
 
 
