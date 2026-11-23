@@ -42,6 +42,9 @@ SENTENCES: dict[str, dict[str, str]] = {
                       "An agent checks if they can beat it, with real fares by text or email."),
         "dest_date": "{hello} I see you're looking at {line}. Want an agent to check {cabin_fares} fares for these dates?",
         "dest": "{hello} Planning a trip to {dest}? Tell me roughly when, and an agent will check {cabin_fares} fares for you.",
+        # The ads card asks one yes, as the Kayak card does (owner, 23 Nov): the dates and the origin come after
+        # the contact (card_words.contact_first, channel_done).
+        "ads_dest": "{hello} Want an agent to send you today's {cabin_fares} fares to {dest}?",
         "places": ("{hello} Where are you thinking of flying? "
                    "Tap one or type a city, and an agent will check business class fares for you."),
         "open": ("{hello} Planning a business class trip? "
@@ -53,6 +56,7 @@ SENTENCES: dict[str, dict[str, str]] = {
         "ask_full_beat": "Already seen a price? An agent checks if they can beat it, with real fares by text or email.",
         "ask_dest_date": "Want an agent to check {cabin_fares} fares for these dates?",
         "ask_dest": "Tell me roughly when, and an agent will check {cabin_fares} fares for you.",
+        "ask_ads_dest": "Want an agent to send you today's {cabin_fares} fares to {dest}?",
         "row_line": "Faster than the form: an agent can send you the fares for {line} by text or by email.",
         "row": "Faster than the form: an agent can send you the fares by text or by email.",
     },
@@ -74,6 +78,7 @@ SENTENCES: dict[str, dict[str, str]] = {
         "dest_date": "{hello} Veo que busca {line}. ¿Quiere que un agente consulte tarifas {cabin_fares} para esas fechas?",
         "dest": ("{hello} ¿Planea un viaje a {dest}? Dígame más o menos cuándo, "
                  "y un agente consultará tarifas {cabin_fares} para usted."),
+        "ads_dest": "{hello} ¿Quiere que un agente le envíe las tarifas de hoy {cabin_fares} a {dest}?",
         "places": ("{hello} ¿Adónde piensa volar? Toque una opción o escriba una ciudad, "
                    "y un agente consultará tarifas en clase Business para usted."),
         "open": ("{hello} ¿Planea un viaje en clase Business? Dígame adónde y más o menos cuándo, "
@@ -82,6 +87,7 @@ SENTENCES: dict[str, dict[str, str]] = {
         "ask_full_beat": "¿Ya vio un precio? Un agente revisa si puede mejorarlo, con tarifas reales por SMS o correo.",
         "ask_dest_date": "¿Quiere que un agente consulte tarifas {cabin_fares} para esas fechas?",
         "ask_dest": "Dígame más o menos cuándo, y un agente consultará tarifas {cabin_fares} para usted.",
+        "ask_ads_dest": "¿Quiere que un agente le envíe las tarifas de hoy {cabin_fares} a {dest}?",
         "row_line": "Más rápido que el formulario: un agente puede enviarle las tarifas para {line} por SMS o por correo.",
         "row": "Más rápido que el formulario: un agente puede enviarle las tarifas por SMS o por correo.",
     },
@@ -105,6 +111,7 @@ SENTENCES: dict[str, dict[str, str]] = {
                       "Voulez-vous qu'un agent vérifie les tarifs {cabin_fares} pour ces dates ?"),
         "dest": ("{hello} Vous préparez un voyage à {dest} ? Dites-moi à peu près quand, "
                  "et un agent vérifiera les tarifs {cabin_fares} pour vous."),
+        "ads_dest": "{hello} Voulez-vous qu'un agent vous envoie les tarifs du jour {cabin_fares} pour {dest} ?",
         "places": ("{hello} Où pensez-vous partir ? Touchez une option ou écrivez une ville, "
                    "et un agent vérifiera les tarifs en classe Affaires pour vous."),
         "open": ("{hello} Vous préparez un voyage en classe Affaires ? Dites-moi où et à peu près quand, "
@@ -114,6 +121,7 @@ SENTENCES: dict[str, dict[str, str]] = {
                           "avec de vrais tarifs par SMS ou e-mail."),
         "ask_dest_date": "Voulez-vous qu'un agent vérifie les tarifs {cabin_fares} pour ces dates ?",
         "ask_dest": "Dites-moi à peu près quand, et un agent vérifiera les tarifs {cabin_fares} pour vous.",
+        "ask_ads_dest": "Voulez-vous qu'un agent vous envoie les tarifs du jour {cabin_fares} pour {dest} ?",
         "row_line": "Plus rapide que le formulaire : un agent peut vous envoyer les tarifs pour {line} par SMS ou par e-mail.",
         "row": "Plus rapide que le formulaire : un agent peut vous envoyer les tarifs par SMS ou par e-mail.",
     },
@@ -127,7 +135,7 @@ REPLIES: dict[str, dict[str, list[str]]] = {
         "quote": ["Sí, envíenme tarifas", "Tengo una pregunta", "Ahora no"],
         "quote_contact": ["Envíenme las tarifas por correo", "Tengo una pregunta", "Ahora no"],
         "reader": ["Quiero una cotización", "Tengo una pregunta", "Ahora no"],
-        "ads": ["Quiero una cotización", "Tengo una pregunta", "Ahora no"],
+        "ads": ["Sí, envíenme tarifas", "Tengo una pregunta", "Ahora no"],
         "exit": ["Sí, envíenme tarifas", "Tengo una pregunta", "Ahora no"],
         "note": ["Quiero una cotización", "Tengo una pregunta"],
         "places": ["Europa", "Asia", "Otro lugar", "Tengo una pregunta"],
@@ -137,7 +145,7 @@ REPLIES: dict[str, dict[str, list[str]]] = {
         "quote": ["Oui, envoyez-moi les tarifs", "J'ai une question", "Pas maintenant"],
         "quote_contact": ["Envoyez-moi les tarifs par e-mail", "J'ai une question", "Pas maintenant"],
         "reader": ["Obtenir un devis", "J'ai une question", "Pas maintenant"],
-        "ads": ["Obtenir un devis", "J'ai une question", "Pas maintenant"],
+        "ads": ["Oui, envoyez-moi les tarifs", "J'ai une question", "Pas maintenant"],
         "exit": ["Oui, envoyez-moi les tarifs", "J'ai une question", "Pas maintenant"],
         "note": ["Obtenir un devis", "J'ai une question"],
         "places": ["Europe", "Asie", "Ailleurs", "J'ai une question"],

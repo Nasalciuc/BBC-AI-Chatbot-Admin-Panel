@@ -62,8 +62,9 @@ TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader", "exit")
 DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
-# The cards whose yes is "Get a fare quote" with no whole trip known: on the field side of the owner's contact test
-# (contact_field_test, 22 Nov) that tap is answered at once, contact first, instead of the model asking the trip.
+# The cards whose yes comes with no whole trip known ("Yes, send me fares" on the ads card since 23 Nov, "Get a fare
+# quote" on the others): on the field side of the owner's contact test (contact_field_test, 22 Nov) that tap is
+# answered at once, contact first, instead of the model asking the trip.
 # The note only where its bandit asks nothing (a destination named): its own first question stays the bandit's.
 CONTACT_FIRST_TRIGGERS: tuple[str, ...] = ("ads", "reader", NOTE)
 # The answer for a moment switched off on its own (PROACTIVE_TRIGGERS) while the feature is on: the widget keeps
@@ -87,9 +88,11 @@ _REPLIES: dict[str, list[str]] = {
     # The quote form refused a send for its contact fields (CONTACT below): the yes says how the fares come.
     "quote_contact": ["Email me the fares", "I have a question", "Not now"],
     "reader": ["Get a fare quote", "I have a question", "Not now"],
-    # The ad's page named a destination: "Planning a trip to Paris? Tell me roughly when…" — the reader's
-    # words for the same page, and its buttons.
-    "ads": ["Get a fare quote", "I have a question", "Not now"],
+    # The ad's page or search named a destination: "Want an agent to send you today's business class fares to
+    # Paris?" and the Kayak card's yes (owner, 23 Nov). The reader's "Tell me roughly when" and "Get a fare quote"
+    # asked for work: in the two days from 20 Nov 18:00 UTC, 8 of 875 ads cards brought a contact, against 38 of
+    # 1,425 Kayak cards.
+    "ads": ["Yes, send me fares", "I have a question", "Not now"],
     # "Before you go: want an agent to check fares…?" — a yes answers it.
     "exit": ["Yes, send me fares", "I have a question", "Not now"],
     # The visitor asked for the chat: no "Not now" to offer them.
@@ -522,7 +525,8 @@ def compose(
         # never "Where are you flying from?" in the opening (ADR 11).
         text = say("dest_date", hello=hello, line=line, cabin_fares=fares)
     elif dest:
-        text = say("dest", hello=hello, dest=dest, cabin_fares=fares)
+        # The ads card asks one yes, as the Kayak card does; the reader and the note still ask when.
+        text = say("ads_dest" if trigger == "ads" else "dest", hello=hello, dest=dest, cabin_fares=fares)
     elif applied_variant(trigger, trip, variant) == "places":
         # Where to as buttons (note_bandit): a tap instead of typing; anything else is typed.
         text = say("places", hello=hello)
@@ -553,6 +557,8 @@ def card_face(
         ask = say("ask_full_beat" if applied_variant(trigger, trip, variant) == BEAT else "ask_full")
     elif trip.depart_date:
         ask = say("ask_dest_date", cabin_fares=fares)
+    elif trigger == "ads":
+        ask = say("ask_ads_dest", cabin_fares=fares, dest=_place(trip.destination_name, trip.destination_code))
     else:
         ask = say("ask_dest", cabin_fares=fares)
     return {"headline": headline, "card_text": ask}
@@ -721,18 +727,20 @@ def _with_after_words(
     """The card's answer with what comes after its yes (A2) and its own channel button (C1), when it says
     the whole trip back. The quote card that offered the chat instead of the form keeps its own way.
 
-    The owner's contact test (contact_field_test) is named on the cards it changes: a yes answered at once, and
-    "Get a fare quote" with no whole trip (CONTACT_FIRST_TRIGGERS). On its field side, the base since 23 Nov, the yes
-    opens the email field at once (`confirm.field`, card_words.field_channel), and "Get a fare quote" gets an
-    instant answer too, contact first. The card's own channel button stays the screen's (card_words.device_channel):
-    on a phone it still offers the fares by text."""
+    The owner's contact test (contact_field_test) is named on the cards it changes: a yes answered at once, and the
+    first button of a card with no whole trip (CONTACT_FIRST_TRIGGERS: the ads card's "Yes, send me fares", the
+    others' "Get a fare quote"). On its field side, the base since 23 Nov, the yes opens the email field at once
+    (`confirm.field`, card_words.field_channel), and that first button gets an instant answer too, contact first. The
+    card's own channel button stays the screen's (card_words.device_channel): on a phone it still offers the fares by
+    text."""
     from app.services import card_words, contact_field_test
 
     if lang:
         out["lang"] = lang
     whole = full_trip(trip) and variant != CONTACT
-    # Only where "Get a fare quote" is the card's first button: the note's bandit asks its own first question (a
-    # region to tap, or where and when typed) and learns from the visitor's second message, so it is left as it is.
+    # Only where the card's first button asks for nothing more ("Yes, send me fares" on the ads card, "Get a fare
+    # quote" on the others): the note's bandit asks its own first question (a region to tap, or where and when typed)
+    # and learns from the visitor's second message, so it is left as it is.
     first = not full_trip(trip) and trigger in CONTACT_FIRST_TRIGGERS and applied_variant(trigger, trip, variant) is None
     side = contact_side if (whole or first) else None
     field = card_words.field_channel(device) if side == contact_field_test.FIELD else None
