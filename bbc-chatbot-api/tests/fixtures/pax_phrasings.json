@@ -390,6 +390,162 @@
         "children": null,
         "infants": null
       }
+    },
+    {
+      "text": "only one passanger, me",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "we are 2 passangers",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "Only one (me), and I have miles",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "just 1 - me",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "one adult and a child",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and a child",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "my wife and I with a baby",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      }
+    },
+    {
+      "text": "3 passengers with a child",
+      "legacy": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "only one stop please",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "just one more question",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "is there a child discount?",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "we need a child seat",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
     }
   ]
 }

@@ -212,14 +212,39 @@ PAX_WORD_RE = re.compile(
 # PR-0 (PAX_REGEX_V2): the phrasings the 3 Nov reading found lost. "2 seniors"
 # and "3 tickets" carry the count with a unit the old list did not know; "my
 # husband and I" carries it with no number at all. Old patterns stay as they
-# are; the v2 ones are chosen per call while the flag is off by default.
-_PAX_UNITS_V2 = r'passengers?|people|persons?|travell?ers?|pax|of us|adults?|seniors?|elderly|tickets?|seats?'
+# are; the v2 ones are chosen per call. On by default since 23 Nov 2026: of the
+# month's chats whose client said how many travel and the lead kept none, most
+# were these phrasings or "passanger", "one adult and a child", "only one (me)".
+# PAX_REGEX_V2=false brings back exactly the old reading.
+_PAX_UNITS_V2 = r'pass[ae]ngers?|people|persons?|travell?ers?|pax|of us|adults?|seniors?|elderly|tickets?|seats?'
 PAX_RE_V2 = re.compile(r'(\d+)\s*(?:' + _PAX_UNITS_V2 + r')\b', re.I)
 PAX_WORD_RE_V2 = re.compile(
     r'\b(one|two|three|four|five|six|seven|eight|nine)\s*'
-    r'(?:travell?ers?|passengers?|persons?|people|pax|seniors?|elderly|tickets?|seats?)?\b', re.I
+    r'(?:travell?ers?|pass[ae]ngers?|persons?|people|pax|adults?|seniors?|elderly|tickets?|seats?)?\b', re.I
 )
-_PAX_WORD_UNIT_V2 = re.compile(r'travell?er|passenger|person|people|pax|senior|elderly|ticket|seat', re.I)
+_PAX_WORD_UNIT_V2 = re.compile(
+    r'travell?er|pass[ae]nger|person|people|pax|adult|senior|elderly|ticket|seat', re.I
+)
+# "Only one (me)", "just 1 - me", "one (myself)": one traveller, said with the count and "me".
+# Never "only one stop", "just one more question": "me" or "myself" must follow the count.
+SOLO_ONE_ME_RE = re.compile(
+    r"\b(?:(?:only|just)\s+(?:one|1)\b\s*[(\[,:\-–]?\s*|(?:one|1)\s*[(\[]\s*)(?:me|myself)\b",
+    re.I,
+)
+# A minor counted in words after the adults: "one adult and a child", "2 adults with one baby".
+# Only after "and"/"with"/"plus", and never a child seat, fare or discount.
+_WORD_COUNT = {"a": 1, "an": 1, **WORD_NUMBERS}
+_NOT_A_MINOR = r"(?!\s*(?:seats?|fares?|discounts?|prices?|tickets?|polic(?:y|ies)|meals?|menus?|rates?)\b)"
+CHILD_WORD_RE = re.compile(
+    r"(?:\b(?:and|with|plus)\s+|\+\s*)(a|an|one|two|three|four|five|six)\s+(?:child(?:ren)?|kids?|minors?)\b"
+    + _NOT_A_MINOR,
+    re.I,
+)
+INFANT_WORD_RE = re.compile(
+    r"(?:\b(?:and|with|plus)\s+|\+\s*)(a|an|one|two|three)\s+(?:lap\s+)?(?:infants?|bab(?:y|ies))\b"
+    + _NOT_A_MINOR,
+    re.I,
+)
 # "my wife and I", "our son and me": two people, no digit anywhere. Not vetoed
 # by SOLO_VETO_RE — children are added by CHILD_RE below, as for "me and my".
 MY_X_AND_I_RE = re.compile(
@@ -306,10 +331,12 @@ MONTH_NAMES = {
 
 _MONTH_PAT = '|'.join(MONTH_NAMES.keys())
 
-# "March 15", "Mar 15th", "15 March", "15th of March", "March 15, 2026"
+# "March 15", "Mar 15th", "Nov. 8", "15 March", "15th of March", "March 15, 2026".
+# The day is never the start of a year: "Nov 2026" and "January 2027" made the 20th of the month, a
+# day no client wrote (23 Nov 2026), so a day must not run on into another digit.
 _DATE_MONTH_DAY = re.compile(
     r'\b(?:'
-    r'(?P<m1>' + _MONTH_PAT + r')\s+(?P<d1>\d{1,2})(?:st|nd|rd|th)?'
+    r'(?P<m1>' + _MONTH_PAT + r')(?:\.\s*|\s+)(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?'
     r'|(?P<d2>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<m2>' + _MONTH_PAT + r')'
     r')(?:\s*,?\s*(?P<y>\d{4}))?',
     re.I
@@ -331,7 +358,7 @@ def _range_atom(p: str) -> str:
     """One date, written as text ("Dec 23", "Dec23rd") or as slashes ("1/3/27")."""
     return (
         "(?:"
-        "(?:(?P<" + p + "_tm>" + _MONTH_PAT + r")\s*(?P<" + p + r"_td>\d{1,2})(?:st|nd|rd|th)?"
+        "(?:(?P<" + p + "_tm>" + _MONTH_PAT + r")\.?\s*(?P<" + p + r"_td>\d{1,2})(?!\d)(?:st|nd|rd|th)?"
         r"(?:\s*,?\s*(?P<" + p + r"_ty>\d{2,4}))?)"
         "|"
         r"(?:(?P<" + p + r"_nm>\d{1,2})/(?P<" + p + r"_nd>\d{1,2})(?:/(?P<" + p + r"_ny>\d{2,4}))?)"
@@ -366,12 +393,43 @@ def _range_side(m: "re.Match", p: str) -> "tuple[int, int, int | None] | None":
     return month, day, year
 
 
+# What may follow the end of a range that names only the day, and makes it something else: a length
+# ("march 5 - 10 days"), a count ("april 7 to 2 people"), a time ("june 9 to 12:30", "may 6 to 7 pm").
+_NOT_A_DAY_END = (
+    r"(?!\s*(?:days?|nights?|weeks?|months?|years?|yrs?|hours?|hrs?|people|persons?|pax|pass[ae]ngers?"
+    r"|adults?|travell?ers?|kids?|child(?:ren)?|tickets?|seats?|of\s+us|am|pm|%)\b|\s*[:/.]\d)"
+)
 # "March 15-22" (same month range with dash)
 _DATE_RANGE_DASH = re.compile(
-    r'\b(?P<m>' + _MONTH_PAT + r')\s+(?P<d1>\d{1,2})(?:st|nd|rd|th)?'
-    r'\s*[-–]\s*(?P<d2>\d{1,2})(?:st|nd|rd|th)?',
+    r'\b(?P<m>' + _MONTH_PAT + r')(?:\.\s*|\s+)(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?'
+    r'\s*[-–]\s*(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\b' + _NOT_A_DAY_END,
     re.I
 )
+# "april 5 to 26", "december 15 to 27", "january 9 t0 23": the same range written with a word, the end
+# only a day. Chats #3385, #3106 and #3178 (Nov 2026) kept the departure and lost the return.
+_DATE_RANGE_DAY_END = re.compile(
+    r'\b(?P<m>' + _MONTH_PAT + r')(?:\.\s*|\s+)(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?'
+    r'\s*,?\s+(?:to|t0|till?|until|through|thru)\s+(?:the\s+)?(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\b'
+    + _NOT_A_DAY_END,
+    re.I
+)
+
+
+def _day_end(dep_iso: str, day: int) -> str | None:
+    """The return of a range whose end names only the day: the departure's month when the day comes
+    after the departure's ("April 5 to 26"), the next month when it comes before ("March 28-5"), none
+    when it is the same day. Counted from the departure, never from today, so "November 20-28" read on
+    23 Nov is 2027-11-20 → 2027-11-28, not a return a year before the departure."""
+    dep = date.fromisoformat(dep_iso)
+    if day == dep.day:
+        return None
+    year, month = dep.year, dep.month
+    if day < dep.day:
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:  # noqa: silent — a day the month lacks ("Feb 27 to 30") is no return; the departure stands
+        return None
 
 
 def _resolve_year(month: int, day: int) -> int:
@@ -492,15 +550,15 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
             if _dep and _ret:
                 return _dep, _ret
 
-    # 1. Same-month range: "March 15-22"
-    m = _DATE_RANGE_DASH.search(text)
+    # 1. A range whose end is only a day: "March 15-22", "april 5 to 26" (the first one written wins)
+    _day_ranges = [r for r in (_DATE_RANGE_DASH.search(text), _DATE_RANGE_DAY_END.search(text)) if r]
+    m = min(_day_ranges, key=lambda r: r.start()) if _day_ranges else None
     if m:
         month = MONTH_NAMES.get(m.group("m").lower())
         if month:
             dep = _make_date(month, int(m.group("d1")))
-            ret = _make_date(month, int(m.group("d2")))
             if dep:
-                return dep, ret
+                return dep, _day_end(dep, int(m.group("d2")))
 
     # 2. Named dates: "March 15", "15th March", "June 10, 2026"
     matches = list(_DATE_MONTH_DAY.finditer(text))
@@ -1573,7 +1631,7 @@ def extract_entities(
                     entities.destination_code = dest_iata
 
     # 6. Passengers
-    _pax_v2 = flag("PAX_REGEX_V2", False)
+    _pax_v2 = flag("PAX_REGEX_V2", True)
     # True when the count names adults only ("2 adults", "my wife and I"), so a
     # child named by age is added to it rather than already inside it.
     _pax_adults_only = False
@@ -1589,6 +1647,8 @@ def extract_entities(
         elif n > 9:
             entities.passengers = 9
     elif SOLO_PAX_RE.search(text) and not SOLO_VETO_RE.search(text):
+        entities.passengers = 1
+    elif _pax_v2 and SOLO_ONE_ME_RE.search(text) and not SOLO_VETO_RE.search(text):
         entities.passengers = 1
     elif re.search(r'\btwo of us\b|\bme and my\b', text, re.I):
         entities.passengers = 2
@@ -1612,13 +1672,28 @@ def extract_entities(
             _trip_phrase = re.search(r'\bone[\s-]?way\b', text, re.I)
             if _has_unit or (_short_answer and not _trip_phrase):
                 entities.passengers = WORD_NUMBERS[wm.group(1).lower()]
+                # "one adult and a child": the count names the adults, the child is added to it.
+                _pax_adults_only = _pax_v2 and bool(re.search(r'adults?', wm.group(0), re.I))
 
     # Children/infants — add to adult count if both present
     child_m = CHILD_RE.search(text)
     infant_m = INFANT_RE.search(text)
     children_count = int(child_m.group(1)) if child_m else 0
     infant_count = int(infant_m.group(1)) if infant_m else 0
-    if _pax_v2 and not child_m and not infant_m and (not entities.passengers or _pax_adults_only):
+    # v2: a minor counted in words after the adults ("and a child", "with one baby"). Only on top of a
+    # count that names the adults, or of none: "3 passengers with a child" is three, not four.
+    child_words = None
+    infant_words = None
+    if _pax_v2 and (not entities.passengers or _pax_adults_only):
+        child_words = None if child_m else CHILD_WORD_RE.search(text)
+        infant_words = None if infant_m else INFANT_WORD_RE.search(text)
+        if child_words:
+            children_count = _WORD_COUNT[child_words.group(1).lower()]
+        if infant_words:
+            infant_count = _WORD_COUNT[infant_words.group(1).lower()]
+    if _pax_v2 and not (child_m or child_words) and not (infant_m or infant_words) and (
+        not entities.passengers or _pax_adults_only
+    ):
         # "2 adults + a 9-year-old": the child is named by an age, not a count.
         # 2–11 is a child fare, under 2 an infant; 12+ is already an adult.
         _ages = [int(a) for a in AGE_RE.findall(text)]

@@ -225,3 +225,54 @@ class TestDateExtraction:
     def test_invalid_date_ignored(self):
         e = extract_entities("Flying on February 30")
         assert e.departure_date is None
+
+
+@freeze_time("2026-11-23")
+class TestRangeEndsAndMonthYear:
+    """23 Nov 2026: a range whose end is only a day, written with a word ("april 5 to 26"), kept the
+    departure and lost the return; "Nov. 8" (with the period) was no date; a month with its year
+    ("January 2027") became the 20th, a day no client wrote. Phrasings written like the chats', none
+    copied from one."""
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("april 5 to 26", "2027-04-05", "2027-04-26"),
+        ("december 15 to 27", "2026-12-15", "2026-12-27"),
+        ("january 9 t0 23 round trip 2027", "2027-01-09", "2027-01-23"),
+        ("Feb 3rd through the 10th", "2027-02-03", "2027-02-10"),
+        ("March 28-5", "2027-03-28", "2027-04-05"),          # the end before the start: next month
+        ("december 31 to 3", "2026-12-31", "2027-01-03"),
+        ("November 20-28", "2027-11-20", "2027-11-28"),      # never a return a year before the departure
+        ("March 15-22", "2027-03-15", "2027-03-22"),         # as before
+        ("dec 23 to jan 02", "2026-12-23", "2027-01-02"),    # as before
+    ])
+    def test_a_range_with_a_day_for_its_end(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+
+    @pytest.mark.parametrize("text", [
+        "march 5 - 10 days", "april 7 to 2 people", "june 9 to 12:30", "may 6 to 7 pm", "december 28 to 2 weeks",
+    ])
+    def test_a_length_a_count_or_a_time_is_no_return(self, text):
+        e = extract_entities(text)
+        assert e.departure_date is not None
+        assert e.return_date is None
+
+    def test_a_day_the_month_lacks_is_no_return(self):
+        e = extract_entities("feb 27 to 30")
+        assert (e.departure_date, e.return_date) == ("2027-02-27", None)
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("we land on nov. 8 and fly home on nov. 16.", "2027-11-08", "2027-11-16"),
+        ("Nov.14", "2027-11-14", None),
+        ("6 nov. 2027", "2027-11-06", None),
+    ])
+    def test_a_month_with_a_period(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+
+    @pytest.mark.parametrize("text", [
+        "in Nov 2026", "sometime in June 2027", "dec 2026 - jan 2027", "January 2027 for two weeks",
+    ])
+    def test_a_month_with_its_year_is_no_day(self, text):
+        e = extract_entities(text)
+        assert e.departure_date is None and e.return_date is None
