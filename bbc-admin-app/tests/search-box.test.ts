@@ -127,8 +127,27 @@ test('a search that finds nothing on its tab offers the tab one wider, the owner
   assert.match(src, /onClick=\{\(\) => \{ setActiveTab\(searchMoreTab\.key\); setSelectedId\(null\) \}\}>\s+Look in \{searchMoreTab\.label\}/)
   // A keyboard user who presses it keeps the focus: the button names the tab it opens, so when that tab's rows
   // replace it the focus goes to the tab (focusKey, the column's own focus keeper; CodeRabbit #276).
-  assert.match(src, /<button type='button' data-tab=\{searchMoreTab\.key\} className='[^']*' onClick=\{\(\) => \{ setActiveTab\(searchMoreTab\.key\)/)
+  assert.match(src, /<button key=\{activeTab\} type='button' data-tab=\{searchMoreTab\.key\} className='[^']*' onClick=\{\(\) => \{ setActiveTab\(searchMoreTab\.key\)/)
   assert.equal(focusKey({ dataset: { tab: 'all_active' } }), 'tab:all_active')
+})
+
+test('the wider tab empty too, its own button further: the focus still goes to the tab it opened (CodeRabbit #278)', () => {
+  // Mine and All active both empty for the words, both already read (no "Loading…" between them), and Closed
+  // visible: All active draws "Look in Closed" where Mine drew "Look in All active". Without a key React keeps the
+  // same button, which keeps the focus, and the focus keeper (focusKey) does nothing while something holds it:
+  // the keyboard user stays on a button whose words changed under them, not on the tab they asked for. The repo
+  // has no jsdom (node:test only), so the contract is in the page: the button is a new one on each tab.
+  assert.equal(searchElsewhere('my_active', ['my_active', 'all_active', 'all_closed']), 'all_active')
+  assert.equal(searchElsewhere('all_active', ['my_active', 'all_active', 'all_closed']), 'all_closed')
+  const src = readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8')
+  const empty = src.slice(src.indexOf('{searchMoreTab && ('), src.indexOf('Look in {searchMoreTab.label}'))
+  assert.match(empty, /<button key=\{activeTab\} /)
+  // The keeper moves the focus only to a page that lost it, on a new tab: what the remount gives it.
+  assert.match(src, /if \(!key \|\| \(document\.activeElement && document\.activeElement !== document\.body\)\) return/)
+  assert.match(src, /\}, \[rail, activeTab\]\)/)
+  // The pressed button named the tab it opened, so the keeper finds that tab (and not the new button, a tab further).
+  assert.equal(focusKey({ dataset: { tab: 'all_active' } }), 'tab:all_active')
+  assert.notEqual(focusKey({ dataset: { tab: 'all_closed' } }), focusKey({ dataset: { tab: 'all_active' } }))
 })
 
 test('with what was said listed above, the list’s empty line says what it looked in (secret-site run, 22 Nov)', () => {

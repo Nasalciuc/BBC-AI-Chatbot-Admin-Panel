@@ -788,8 +788,9 @@ export function Chats() {
             {emptyText}
             {/* A search that found nothing here: one tap to look a tab wider, the words kept (search.ts). */}
             {/* data-tab: when the wider tab's rows replace this button, the focus goes to that tab (focusKey). */}
+            {/* key: a new button on each tab, also when the wider tab is empty too and offers one further (CodeRabbit #278). */}
             {searchMoreTab && (
-              <button type='button' data-tab={searchMoreTab.key} className='mt-1 block font-bold text-k-5b45e0 hover:underline' onClick={() => { setActiveTab(searchMoreTab.key); setSelectedId(null) }}>
+              <button key={activeTab} type='button' data-tab={searchMoreTab.key} className='mt-1 block font-bold text-k-5b45e0 hover:underline' onClick={() => { setActiveTab(searchMoreTab.key); setSelectedId(null) }}>
                 Look in {searchMoreTab.label}
               </button>
             )}
