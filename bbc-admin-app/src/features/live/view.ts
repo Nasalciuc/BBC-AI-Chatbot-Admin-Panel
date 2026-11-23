@@ -152,10 +152,10 @@ export function alexCouldnt(v: Pick<LiveVisitor, 'alex_card' | 'alex_card_s' | '
   return v.alex_card === 'shown' && typeof v.alex_card_s === 'number' && v.alex_card_s >= ALEX_GAVE_UP_S
 }
 
-/** The page's list: who Alex's card didn't start a chat with; who Alex still waits on (the agent-first test, while
- *  it runs); and the ones I hold, whatever became of them since (in a chat now: let them go). */
+/** The page's list: who Alex's card didn't start a chat with; who Alex still waits on with no chat yet (the
+ *  agent-first test, while it runs); and the ones I hold, whatever became of them since (in a chat now: let them go). */
 export function listed(rows: LiveVisitor[], me: string | undefined, nowS: number): LiveVisitor[] {
-  return rows.filter((v) => alexCouldnt(v) || alexWaiting(v, nowS) || (!!me && v.claimed_by === me))
+  return rows.filter((v) => alexCouldnt(v) || (alexWaiting(v, nowS) && !v.has_chat) || (!!me && v.claimed_by === me))
 }
 
 /** What came of Alex's card, in words: "Alex’s card 45 s ago, no answer", "Said not now to Alex’s card", "Opened the

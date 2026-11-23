@@ -219,6 +219,9 @@ test('listed: who Alex’s card didn’t start a chat with, who Alex waits on, a
     v({ visitor_id: 'mine-now-in-chat', claimed_by: ME, has_chat: true, alex_card: 'engaged', alex_card_s: 90 }),
   ]
   assert.deepEqual(listed(rows, ME, now).map((r) => r.visitor_id), ['ignored', 'not-now', 'waited-on', 'mine-now-in-chat'])
+  // A visitor Alex waits on who opened the chat meanwhile is in it, not waiting (CodeRabbit #278).
+  assert.deepEqual(listed([v({ alex_at: now + 60, has_chat: true })], ME, now), [])
+  assert.equal(listed([v({ alex_at: now + 60, has_chat: true, claimed_by: ME })], ME, now).length, 1, 'mine stays')
   assert.equal(alexCouldnt(v({ alex_card: 'shown', alex_card_s: ALEX_GAVE_UP_S })), true, 'at the second')
   assert.equal(alexCouldnt(v({ alex_card: 'shown' })), false, 'no time, no verdict')
   // Rule 5: no card, nobody waited on, held by someone else or by nobody: not listed.
