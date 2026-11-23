@@ -96,10 +96,11 @@ export function searchElsewhere(active: string, visible: readonly string[]): str
   return (wider[active] ?? []).find((k) => visible.includes(k)) ?? null
 }
 
-/** What the list says when a search finds no chat on this tab. With "In what was said" listing messages above,
- *  it says what it looked in, so it no longer reads as if nothing was found. */
+/** What the list says when a search finds no chat on this tab: always the tab it looked in (the list searches
+ *  only that tab). With "In what was said" listing messages above, it also says what it looked in, so it no
+ *  longer reads as if nothing was found anywhere (CodeRabbit #276). */
 export function searchEmptyText(q: string, tabLabel: string, saidAbove: boolean): string {
   return saidAbove
-    ? `No chat’s name, contact or route matches “${q}”. Where it was said is above.`
+    ? `No chat in ${tabLabel} matches “${q}” by name, contact or route. Where it was said is above.`
     : `No chat in ${tabLabel} matches “${q}”.`
 }
