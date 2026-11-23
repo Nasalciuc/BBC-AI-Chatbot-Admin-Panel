@@ -405,7 +405,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
 
   // "On the site now" (live.ts): an agent may say hello to a visitor Alex's card didn't start a chat with, while
   // they have none: the chat closed, or open on Alex's opening nobody answered. The hello shows as Alex's card does
-  // (the owner, 23 Nov 2026): in the open chat, in its place; else beside the button on a phone, where "Reply"
+  // (the owner's choice, 23 Nov): in the open chat, in its place; else beside the button on a phone, where "Reply"
   // starts the chat at once, already the agent's (the server checks the tap; a tap that doesn't hold opens an
   // ordinary chat); else, on a computer, the chat opens with it, and the visitor's first message makes the chat,
   // already theirs. No form behind it, like the card's.
