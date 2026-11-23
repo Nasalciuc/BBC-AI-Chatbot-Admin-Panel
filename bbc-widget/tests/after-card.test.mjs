@@ -243,8 +243,12 @@ test('D1: the row takes an email or a mobile number, and says one is enough to a
   }
   assert.equal(words('en').rowSend, 'Send me fares')
   assert.match(row, /const one = field === 'email' \? w\.rowOneEmail : field === 'sms' \? w\.rowOneSms : ''/)
-  // The hook gives the row its field from the refused kinds, and measures it.
-  assert.match(hook, /\.\.\.\(row \? \{ rowField: rowField\(refused\) \} : \{\}\),/)
+  // The hook gives the row its field from the refused kinds, and measures it: the kinds the server was asked with,
+  // one copy for the request and the row, whatever the site says of the same send meanwhile (CodeRabbit #279).
+  assert.match(hook, /const refusedAsked = trigger === 'quote' \? \[\.\.\.refused\] : \[\]/)
+  assert.match(hook, /\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),/)
+  assert.match(hook, /\.\.\.\(row \? \{ rowField: rowField\(refusedAsked\) \} : \{\}\),/)
+  assert.doesNotMatch(hook, /rowField\(refused\)/)
   assert.match(hook, /\.\.\.\(opening\.rowField \? \{ row_field: opening\.rowField \} : \{\}\),/)
   // Neither the contact nor the row's field is ever kept with the opening across pages.
   const kept = keepOpening({ trigger: 'quote', message: 'Faster than the form', quickReplies: [], trip: null, surface: 'row',

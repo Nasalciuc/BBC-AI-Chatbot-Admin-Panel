@@ -552,7 +552,9 @@ test('the quote card hears which fields the form refused, by kind only (owner, 1
   assert.ok(hook.indexOf('if (siteRefused) siteSaidFor') > hook.indexOf('press = fx.press'))
   assert.equal(SAME_SEND_MS, 5000)
   // Only the quote moment sends them, and only when there are some.
-  assert.match(hook, /\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\)/)
+  // The kinds the server is asked with are copied once, for the request and the row (CodeRabbit #279).
+  assert.match(hook, /const refusedAsked = trigger === 'quote' \? \[\.\.\.refused\] : \[\]/)
+  assert.match(hook, /\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\)/)
   assert.match(api, /body: \{\s+visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\]\s/)
   // The card's words come back with their variant, and the card's shown event carries it (as engaged/dismissed do).
   const cardShown = payloads('proactive_shown').filter((p) => !p.includes("trigger: 'note'"))
@@ -641,7 +643,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })

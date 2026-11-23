@@ -670,10 +670,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       const took: OfferTiming[] = []
       // D1: the row stands beside the form that was pressed, when the widget can still see it.
       const rowAt = trigger === 'quote' && press?.form?.isConnected ? press.form : null
+      // The refusal this answer is asked for: the site may name the same send's fields again while the answer is
+      // on its way (onSite), and the row asks for what the form had when the server was asked (CodeRabbit #279).
+      const refusedAsked = trigger === 'quote' ? [...refused] : []
       const lang = browserLanguage()
       const res = await fetchProactiveOffer(apiUrl, {
         visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
-        ...(trigger === 'quote' && refused.length ? { refused: [...refused] } : {}),
+        ...(refusedAsked.length ? { refused: refusedAsked } : {}),
         ...(lang ? { lang } : {}),
         device,
         ...(rowAt ? { place: 'form' as const } : {}),
@@ -754,7 +757,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.headline && res.card_text ? { headline: res.headline, cardText: res.card_text } : {}),
         ...(res.contact_test ? { contactTest: res.contact_test } : {}),
         // The row asks for the contact the form already had when it refused the other one ("One is enough").
-        ...(row ? { rowField: rowField(refused) } : {}),
+        ...(row ? { rowField: rowField(refusedAsked) } : {}),
       }
       if (row) setRowForm(rowAt)
       ssSet(DONE_KEY, 'shown')
