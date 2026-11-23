@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
-  helloProblem, listed, onSite, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine, tripLine, clockS,
+  helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
+  tripLine, clockS,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -244,4 +245,12 @@ test('what came of Alex’s card, in words on the row', () => {
   assert.equal(alexCardLine(v()), '')
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
   assert.match(page, /\{alexCardLine\(v\) && \(/)
+})
+
+test('time on the site is never less than the time since Alex’s card (the first beat comes at 20 s)', () => {
+  assert.equal(onSiteSeconds(v({ seconds_on_site: 15, alex_card: 'shown', alex_card_s: 32 })), 32)
+  assert.equal(onSiteSeconds(v({ seconds_on_site: 300, alex_card: 'shown', alex_card_s: 32 })), 300)
+  assert.equal(onSiteSeconds(v({ seconds_on_site: 45 })), 45)
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /\{onSite\(onSiteSeconds\(v\)\)\} on the site/)
 })

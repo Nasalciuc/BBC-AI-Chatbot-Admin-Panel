@@ -10,6 +10,12 @@ export const HELLO_MAX = 300
 /** Why a reader who may not say hello sees it locked: the server's words (app/services/live_visitors.py). */
 export const HELLO_RESTRICTED = 'Saying hello first is for agents of the sales line who take chats'
 
+/** Seconds on the site: from the first beat (20 s in), or from Alex's card when it showed earlier (the Kayak card
+ *  comes at 3 s): a row never says "15 s on the site" beside "Alex's card 32 s ago". */
+export function onSiteSeconds(v: Pick<LiveVisitor, 'seconds_on_site' | 'alex_card_s'>): number {
+  return Math.max(v.seconds_on_site || 0, v.alex_card_s ?? 0)
+}
+
 /** "3 min", "45 s", "1 h 05". */
 export function onSite(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds || 0))
@@ -129,7 +135,7 @@ export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: numbe
   return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)]
     || (due(a) === due(b) ? 0 : due(a) < due(b) ? -1 : 1)
     || (since(a) === since(b) ? 0 : since(a) < since(b) ? -1 : 1)
-    || b.seconds_on_site - a.seconds_on_site)
+    || onSiteSeconds(b) - onSiteSeconds(a))
 }
 
 // ── Who is listed: the visitors Alex's card didn't start a chat with (the owner, 23 Nov 2026) ─────────────────

@@ -14,7 +14,8 @@ import {
 } from '@/components/ui/dialog'
 import {
   ALEX_GAVE_UP_S, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine, alexWaiting, claimProblem,
-  clockS, heldBy, helloProblem, listed, onSite, ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine, tripLine,
+  clockS, heldBy, helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine,
+  tripLine,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -127,7 +128,7 @@ export function LiveVisitors() {
                 <li key={v.visitor_id} className='flex flex-col gap-2 rounded-[20px] bg-k-f7f7f7 p-4 md:flex-row md:items-center md:gap-4'>
                   <div className='flex min-w-0 flex-1 flex-col gap-1'>
                     <div className='flex flex-wrap items-center gap-2 text-sm'>
-                      <b className='text-k-202020'>{onSite(v.seconds_on_site)} on the site</b>
+                      <b className='text-k-202020'>{onSite(onSiteSeconds(v))} on the site</b>
                       <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{sourceLabel(v.source)}</span>
                       <Device aria-label={v.device === 'phone' ? 'On a phone' : 'On a computer'} className='size-4 text-k-6b6b6b' />
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATE_CLS[state])}>{ROW_LABEL[state]}</span>
