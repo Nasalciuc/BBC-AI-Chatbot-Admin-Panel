@@ -406,11 +406,16 @@ test('reading back up while an answer streams is never pulled down again', () =>
 // ── The visitors who decide in seconds (ADR A1–A7, 20 Nov) ─────────────────────────────────────────
 // The places below are made up for the tests.
 
-test('ADR A1: the ads card at 4 s in view, after the Kayak card\'s 2.5 s', () => {
-  assert.equal(ADS_VISIBLE_S, 4)
-  assert.ok(KAYAK_VISIBLE_S < ADS_VISIBLE_S)
-  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 3.9, siteSignals: true })), null)
-  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 4, siteSignals: true })), 'ads')
+test('the ads card at 2.5 s in view, as the Kayak card (owner, 23 Nov; it was 4 s)', () => {
+  assert.equal(ADS_VISIBLE_S, 2.5)
+  assert.equal(ADS_VISIBLE_S, KAYAK_VISIBLE_S)
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.4, siteSignals: true })), null)
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.5, siteSignals: true })), 'ads')
+  // On a computer too (the panel), and still never before the widget watched the page.
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.5, phone: false, siteSignals: true })), 'ads')
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.5, watchedS: 0.4, siteSignals: true })), null)
+  // Kayak still comes first on a visit that is both.
+  assert.equal(pickTrigger(page({ kayak: true, ad: true, destination: true, visibleS: 2.5 })), 'kayak')
 })
 
 test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a place only after "to" or "in"', () => {

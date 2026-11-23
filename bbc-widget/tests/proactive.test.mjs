@@ -200,8 +200,8 @@ test('kayak before reader', () => {
 
 // ── ads: a Google or Bing ad, on a page about one destination (owner, 18 Nov) ─────────────────────────
 
-test('ads: from an ad, on a page that names a destination, still here after 4 s in view', () => {
-  assert.equal(ADS_VISIBLE_S, 4)
+test('ads: from an ad, on a page that names a destination, still here after 2.5 s in view', () => {
+  assert.equal(ADS_VISIBLE_S, 2.5)
   assert.equal(at({ ad: true, destination: true, visibleS: ADS_VISIBLE_S - 0.5 }), null)
   assert.equal(at({ ad: true, destination: true, visibleS: ADS_VISIBLE_S }), 'ads')
   // No destination on the page (the home page, the deals): no ads card; the reader may still come.
