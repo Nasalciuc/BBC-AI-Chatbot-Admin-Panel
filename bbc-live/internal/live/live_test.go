@@ -267,6 +267,44 @@ func TestABeatSaysWhatCameOfAlexsCard(t *testing.T) {
 	}
 }
 
+// The widget's last beat says the chat started, and no beat follows it: one sent before it that lands after it must
+// not take it back, or the visitor is listed and claimable again (CodeRabbit #278).
+func TestAChatOnceStartedStaysForTheVisit(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	beat := func(hasChat bool) {
+		t.Helper()
+		b := map[string]any{"page": "/", "has_chat": hasChat, "alex_card": "shown", "alex_card_s": 40}
+		if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, b); w.Code != http.StatusOK {
+			t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+		}
+	}
+	beat(true)
+	c.add(10)
+	beat(false) // late: sent before the chat started
+	w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	if v := decode(t, w)["data"].([]any)[0].(map[string]any); v["has_chat"] != true {
+		t.Errorf("a late beat took the chat back: %v", v)
+	}
+	w = do(t, h, "POST", "/v1/claim", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")},
+		map[string]any{"visitor_id": vid1})
+	if w.Code != http.StatusConflict || decode(t, w)["state"] != "in_a_chat" {
+		t.Errorf("claimed a visitor in a chat: %d %s", w.Code, w.Body.String())
+	}
+	// Rule 5: a visit with no chat beats has_chat false as before.
+	beatOther := map[string]any{"page": "/", "has_chat": false}
+	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid2)}, beatOther); w.Code != http.StatusOK {
+		t.Fatalf("beat: %d", w.Code)
+	}
+	w = do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	for _, row := range decode(t, w)["data"].([]any) {
+		v := row.(map[string]any)
+		if v["visitor_id"] == vid2 && v["has_chat"] != false {
+			t.Errorf("a visit without a chat listed in one: %v", v)
+		}
+	}
+}
+
 func TestOnlyAKnownStateShownWithinADayIsKept(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	for _, bad := range []struct {
