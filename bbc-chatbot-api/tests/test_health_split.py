@@ -106,7 +106,8 @@ def test_no_cron_secret_configured_never_matches_an_empty_bearer():
 
 
 def test_the_six_problems_counters_are_in_both_answers():
-    """CodeRabbit #273: ?full=true lost the lock, presence, lottery, CRM, QA, search and live counters."""
+    """CodeRabbit #273: ?full=true lost the lock, presence, CRM, QA, search and live counters (and the lottery's,
+    which went with the lottery in #279)."""
     keys = {"redis", "locks", "agent_presence", "crm_source", "lead_access", "qa_sample", "crm_lookup",
             "search", "live"}
     headers = {"Authorization": f"Bearer {_token('owner')}"}
