@@ -440,13 +440,17 @@ def note_variant(trip: Optional[TripContext]) -> Optional[str]:
 
 def beat_variant(visitor_id: Optional[str], trip: Optional[TripContext], now: Optional[datetime] = None) -> Optional[str]:
     """C5: BEAT for half the Kayak visitors (stable per visitor) once the tests started, on a card that says
-    the whole trip back; None (the usual words) otherwise. KAYAK_CARD_BEAT (app.flags, on) stops it."""
+    the whole trip back; None (the usual words) otherwise.
+
+    Off since 23 Nov: from 21 Nov 13:49 UTC the beat sentence was tapped by 36 of the 668 visitors who saw it and the
+    usual words by 35 of 625, and their chats left 20 and 21 contacts; the usual words are the base.
+    KAYAK_CARD_BEAT=true (app.flags) runs the test again."""
     from app.experiments import in_arm
     from app.flags import flag
 
     if not visitor_id or not full_trip(trip) or not tests_started(now):
         return None
-    if not flag("KAYAK_CARD_BEAT", True):
+    if not flag("KAYAK_CARD_BEAT", False):
         return None
     return BEAT if in_arm(BEAT_EXPERIMENT, visitor_id, 50) else None
 
