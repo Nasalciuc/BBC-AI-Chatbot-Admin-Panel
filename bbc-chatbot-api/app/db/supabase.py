@@ -4251,14 +4251,22 @@ async def get_task_events(task_id: str) -> list[dict]:
     return res.data or []
 
 
-async def get_follow_up_context(conversation_ids: list[str]) -> tuple[dict[str, dict], dict[str, dict]]:
-    """The chats and leads behind tasks: ({conversation_id: conv}, {conversation_id: lead})."""
+async def get_follow_up_context(
+    conversation_ids: list[str], *, with_signals: bool = False,
+) -> tuple[dict[str, dict], dict[str, dict]]:
+    """The chats and leads behind tasks: ({conversation_id: conv}, {conversation_id: lead}).
+
+    with_signals: the leads carry intent_signals too (the departure task reads how the client asked
+    to be reached); the task views never need them."""
     ids = sorted({i for i in conversation_ids if i})
     if not ids:
         return {}, {}
     db_client = get_client()
     convs: dict[str, dict] = {}
     leads: dict[str, dict] = {}
+    lead_cols = ("id, conversation_id, route_display, origin_code, destination_code, departure_date, "
+                 "passengers, children_count, infant_count, created_in_crm, crm_lead_id"
+                 + (", intent_signals" if with_signals else ""))
     for i in range(0, len(ids), _IDS_PER_REQUEST):
         chunk = ids[i:i + _IDS_PER_REQUEST]
         conv_res, lead_res = await asyncio.gather(
@@ -4266,8 +4274,7 @@ async def get_follow_up_context(conversation_ids: list[str]) -> tuple[dict[str, 
                       .select("id, chat_number, visitor_name, visitor_email, visitor_phone, status, mode, assigned_agent_id, tunnel")
                       .in_("id", chunk).execute(), label="tasks"),
             _run_sync(lambda chunk=chunk: db_client.table("leads")
-                      .select("id, conversation_id, route_display, origin_code, destination_code, departure_date, "
-                              "passengers, children_count, infant_count, created_in_crm, crm_lead_id")
+                      .select(lead_cols)
                       .in_("conversation_id", chunk).execute(), label="tasks"),
         )
         for c in conv_res.data or []:

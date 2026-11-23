@@ -15,9 +15,12 @@ sales chat gets one task when all of these hold:
 - it is not held by the form trap or the behaviour lock (a bot is no lead).
 
 The task: a call when the chat has a phone (the client left it, in the form
-or in the chat), else an email; due 15 minutes after the client left; given
-to the Ready sales agent with the fewest open tasks (the leave_shift rule),
-or Unowned with the reason "no_ready_agent" when nobody is Ready.
+or in the chat) and the client did not turn calls down; else a text ("Text X
+back", a to-do: the tasks table has no text kind) when they asked for texts or
+there is no e-mail, else an e-mail (departure_kind). No task when the client
+turned down every way the chat holds. Due 15 minutes after the client left;
+given to the Ready sales agent with the fewest open tasks (the leave_shift
+rule), or Unowned with the reason "no_ready_agent" when nobody is Ready.
 
 It never calls, texts or e-mails anyone itself. Off at merge:
 DEPARTURE_TASKS_ENABLED (app_settings.flags, read every 30 s). Needs
@@ -33,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.db import supabase as db
+from app.pipeline.entity_extractor import turns_down_calls
 from app.services.client_presence import client_left
 from app.services.to_read import route_of
 
@@ -64,15 +68,44 @@ def _first_name(name) -> str:
 
 
 def departure_title(kind: str, first_name: Optional[str], route: Optional[str]) -> str:
-    """"Call Maria back about New York → London" / "Email Maria about …"."""
+    """"Call Maria back about New York → London" / "Text Maria back about …" / "Email Maria about …"."""
     who = (first_name or "").strip() or "the client"
     if kind == "call":
         return f"Call {who} back about {route}" if route else f"Call {who} back"
+    if kind == "text":
+        return f"Text {who} back about {route}" if route else f"Text {who} back"
     return f"Email {who} about {route}" if route else f"Email {who} back"
 
 
 def _present(value) -> bool:
     return isinstance(value, str) and value.strip() != ""
+
+
+def departure_kind(conv: dict, lead: Optional[dict]) -> Optional[str]:
+    """"call", "text" or "email": the way the client left open, read from their own words on the lead
+    (intent_signals.contact_channel). Until 23 Nov 2026 the task was a call whenever the chat had a
+    phone, also for a client who had written "no calls" or "text me".
+
+    The way the client asked for comes first: a text ("text me", WhatsApp before SMS replaced it) or an
+    e-mail ("email me"), when the chat holds it. Else a call when there is a phone and calls were not
+    turned down; else a text when texts were not turned down and there is no e-mail to write to; else an
+    e-mail. None when the client turned down every way the chat holds."""
+    signals = (lead or {}).get("intent_signals")
+    channel = signals.get("contact_channel") if isinstance(signals, dict) else None
+    channel = channel if isinstance(channel, str) else None
+    said = {p.strip() for p in (channel or "").split(",")}
+    phone = _present(conv.get("visitor_phone"))
+    texts = phone and "no texts" not in said
+    email = _present(conv.get("visitor_email")) and "no email" not in said
+    if texts and {"text", "whatsapp"} & said:
+        return "text"
+    if email and "email" in said:
+        return "email"
+    if phone and not turns_down_calls(channel):
+        return "call"
+    if texts and not email:
+        return "text"
+    return "email" if email else None
 
 
 def seconds_since_left(
@@ -88,6 +121,8 @@ def seconds_since_left(
         return None  # the client never wrote: no conversation to follow up
     if not (_present(conv.get("visitor_phone")) or _present(conv.get("visitor_email"))):
         return None
+    if departure_kind(conv, lead) is None:
+        return None  # every way the chat holds was turned down: nobody follows up against the client's word
     if conv.get("mode") == "human" or conv.get("assigned_agent_id"):
         return None
     if (lead or {}).get("created_in_crm"):
@@ -149,7 +184,8 @@ async def run_departure_tasks() -> dict:
             return {"candidates": 0, "created": 0}
         ids = [c["id"] for c in convs if c.get("id")]
         tasks = await db.tasks_of_conversations(ids)
-        _, leads = await db.get_follow_up_context(ids)
+        # With the lead's signals: the way the client asked to be reached decides the task (departure_kind).
+        _, leads = await db.get_follow_up_context(ids, with_signals=True)
     except db.TasksNotSetUp:  # noqa: silent — migration 051 not applied: _tasks_call logged it and counted it (tasks.schema_missing); nothing to make tasks in
         return {"tasks_not_set_up": True}
     except Exception as e:
@@ -190,13 +226,14 @@ async def run_departure_tasks() -> dict:
             logger.info(f"[departure] {cid} was taken or closed since the read: no task")
             continue
         lead = leads.get(cid) or {}
-        kind = "call" if _present(conv.get("visitor_phone")) else "email"
+        kind = departure_kind(conv, lead) or "email"  # never None here: seconds_since_left let it through
         owner = assign.pick()
         left_at = now - timedelta(seconds=gone)
         try:
             task = await db.insert_follow_up({
                 "title": departure_title(kind, _first_name(conv.get("visitor_name")), route_of(lead)),
-                "kind": kind,
+                # The tasks table knows call, email and todo (migration 051): a text is a to-do.
+                "kind": "todo" if kind == "text" else kind,
                 "source": SOURCE,
                 "conversation_id": cid,
                 "lead_id": lead.get("id"),
