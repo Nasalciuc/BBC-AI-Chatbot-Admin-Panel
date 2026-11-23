@@ -47,7 +47,7 @@ one kind from passing for another. `contracts/live_tokens.json` holds vectors th
 
 | Route | Who | Answers |
 |---|---|---|
-| `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted (the widget sends its last beat, `has_chat`, once more after the gap); 400 not JSON; 401; 503 not configured or Redis down |
+| `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted; 400 not JSON; 401; 503 not configured or Redis down. The widget's last beat, `has_chat`, goes once more after the gap when it didn't count (202, 5xx, or lost on the way) |
 | `GET /v1/inbox` | widget, `X-Live-Pass` | 200 `{"messages":[…]}` at once or the moment a hello lands; 204 after 25 s with nothing; 429 a fourth tab waiting |
 | `POST /v1/dismiss` | widget, `X-Live-Pass` | 200: "not now", nobody says hello for an hour, the claim and the inbox go |
 | `GET /v1/live` | panel, `Bearer l1…`, roles sales, owner, admin, dev, supervisor | 200 `{"data":[visitor…],"max_claims":3,"claim_seconds":600}`; a reader who may hold a visitor is noted in `live:greeters` (the agent-first test) |
@@ -69,9 +69,9 @@ it: a reply, a channel, a message); Alex's opening in a chat the visitor opened 
 86 400; bbc-live keeps the time it showed by its own clock (the visitor's may be off). `alex_trigger`: the moment
 that showed it (kayak, ads, quote, reader, exit, note). A state it doesn't know or seconds out of range leave
 all three out; a moment it doesn't know leaves only the moment out. `has_chat` is true on the widget's last
-beat, the one it sends when the visitor's chat starts (once more after the 5 s gap if bbc-live answered 202): the
-panel stops listing them at once. Once true, `has_chat` stays true for the visit (`beat.lua`): a beat sent before it
-that lands after it never takes it back.
+beat, the one it sends when the visitor's chat starts (once more after the 5 s gap if it didn't count: 202, 5xx,
+or lost on the way): the panel stops listing them at once. Once true, `has_chat` stays true for the visit
+(`beat.lua`): a beat sent before it that lands after it never takes it back.
 
 A step is one of: `search[:FROM-TO][:YYYY-MM-DD]` (a code is `[A-Z]{3}` or `?`), `quote_opened`,
 `quote_step[:N]`, `quote_invalid[:kind|kind…]` (the kinds of the fields the form flagged: name, email,
