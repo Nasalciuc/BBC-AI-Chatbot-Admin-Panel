@@ -183,6 +183,12 @@ type beatIn struct {
 	Activity string `json:"activity"`
 	// The owner's agent-first test: when Alex's card may come (unix seconds), while he waits for an agent.
 	AlexAt float64 `json:"alex_at"`
+	// What came of Alex's card on this visit (the widget's agentTest.ts): shown, dismissed ("Not now" or its ✕) or
+	// engaged (the visitor answered it); how many seconds ago it showed, by the visitor's clock; the moment that
+	// showed it. The panel lists the visitors Alex's card didn't start a chat with.
+	AlexCard    string  `json:"alex_card"`
+	AlexCardS   float64 `json:"alex_card_s"`
+	AlexTrigger string  `json:"alex_trigger"`
 }
 
 var (
@@ -193,6 +199,9 @@ var (
 	sources = map[string]bool{"kayak": true, "ads": true, "site": true}
 	devices = map[string]bool{"phone": true, "computer": true}
 	sites   = map[string]bool{"bbc": true, "bct": true}
+	// What came of Alex's card, and the moments that show it (the widget's triggers.ts OpeningTrigger).
+	alexCards    = map[string]bool{"shown": true, "dismissed": true, "engaged": true}
+	alexTriggers = map[string]bool{"kayak": true, "ads": true, "quote": true, "reader": true, "exit": true, "note": true}
 	// What the site says the page is (the widget's siteSignals.ts PAGE_TYPES).
 	pageTypes = map[string]bool{"home": true, "route": true, "destination": true, "origin": true, "airline": true,
 		"deals": true, "search": true, "flight": true, "quote": true, "thank_you": true, "blog": true, "about": true,
@@ -290,6 +299,19 @@ func cleanAlexAt(at float64, now time.Time) int64 {
 	return int64(at)
 }
 
+// AlexCardOldest is how long ago Alex's card may have shown for a beat to say so: a visit of a day.
+const AlexCardOldest = 86400
+
+// cleanAlexCard keeps what came of Alex's card when it is a known state, shown a whole number of seconds ago within
+// a day: the time it showed is set by bbc-live's clock (the visitor's may be off; only the time since counts), and
+// the moment only from the known ones. Anything else leaves the visit without it.
+func cleanAlexCard(state string, secondsAgo float64, trigger string, now time.Time) (string, int64, string) {
+	if !alexCards[state] || secondsAgo < 0 || secondsAgo > AlexCardOldest || secondsAgo != math.Trunc(secondsAgo) {
+		return "", 0, ""
+	}
+	return state, now.Unix() - int64(secondsAgo), pick(alexTriggers, trigger)
+}
+
 // takeBeatTurn says whether this visitor's beat at now counts, and if so records it, in one step: of two beats
 // at once, only one passes the gap.
 func (s *Server) takeBeatTurn(vid string, now time.Time) bool {
@@ -329,6 +351,7 @@ func (s *Server) beat(w http.ResponseWriter, r *http.Request) {
 	}
 	visit := cleanBeat(vid, in)
 	visit.AlexAt = cleanAlexAt(in.AlexAt, s.now())
+	visit.AlexCard, visit.AlexCardAt, visit.AlexTrigger = cleanAlexCard(in.AlexCard, in.AlexCardS, in.AlexTrigger, s.now())
 	if err := s.Store.Beat(r.Context(), visit); err != nil {
 		s.redisFailed(w, "beat", err)
 		return
