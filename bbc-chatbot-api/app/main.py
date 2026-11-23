@@ -18,7 +18,6 @@ from app.api.agent import router as agent_router
 from app.api.integration import router as integration_router
 from app.api.tasks import router as tasks_router
 from app.api.offers import router as offers_router
-from app.api.followups import router as followups_router
 from app.api.qa import router as qa_router
 from app.api.search import router as search_router
 from app.api.live import router as live_router
@@ -106,7 +105,6 @@ app.include_router(teams_router,         prefix="/api", tags=["teams"],         
 app.include_router(agent_router,         prefix="/api", tags=["agent"],         dependencies=admin_deps)
 app.include_router(tasks_router,         prefix="/api", tags=["tasks"],         dependencies=admin_deps)
 app.include_router(offers_router,        prefix="/api", tags=["offers"],        dependencies=admin_deps)
-app.include_router(followups_router,     prefix="/api", tags=["followups"],     dependencies=admin_deps)
 app.include_router(qa_router,            prefix="/api", tags=["qa"],            dependencies=admin_deps)
 app.include_router(search_router,        prefix="/api", tags=["search"],        dependencies=admin_deps)
 app.include_router(live_router,          prefix="/api", tags=["live"],          dependencies=admin_deps)

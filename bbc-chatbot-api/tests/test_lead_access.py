@@ -28,7 +28,6 @@ def test_an_agent_may_act_on_their_own_lead(conv):
     _conv(assigned_agent_id=OTHER),
     _conv(metadata={"closed_by_agent_id": OTHER}),
     _conv(metadata={"engaged_agent_id": OTHER}),
-    _conv(metadata={"followup": {"state": "acked", "agent_id": OTHER}}),
 ])
 def test_never_on_a_colleagues(conv):
     assert lead_access.refusal({"role": "sales", "id": ME}, conv) == "This lead is another agent's."
@@ -39,14 +38,15 @@ def test_never_on_a_chat_waiting_blind_in_the_shared_line():
     assert "Take the chat first" in lead_access.refusal({"role": "sales", "id": ME}, conv)
 
 
-def test_a_lead_nobody_has_while_the_lottery_is_off_is_todays_practice():
-    """Rule 5: an AI-only lead stays open to any agent until the lottery shares leads out."""
+def test_a_lead_nobody_has_is_open_to_any_agent():
+    """An AI-only lead anyone may pick up (the follow-up lottery that shared them out was removed, 23 Nov 2026)."""
     assert lead_access.refusal({"role": "sales", "id": ME}, _conv()) is None
 
 
-def test_with_the_lottery_on_a_lead_nobody_has_waits_for_it(monkeypatch):
-    monkeypatch.setenv("FOLLOWUP_LOTTERY", "true")
-    assert "lottery" in lead_access.refusal({"role": "sales", "id": ME}, _conv())
+def test_a_lottery_give_left_in_the_metadata_names_no_owner():
+    """Old rows keep metadata.followup from the lottery: it no longer decides whose a lead is."""
+    conv = _conv(metadata={"followup": {"state": "acked", "agent_id": OTHER}})
+    assert lead_access.refusal({"role": "sales", "id": ME}, conv) is None
 
 
 @pytest.mark.parametrize("role", ["owner", "admin", "dev"])
@@ -66,17 +66,15 @@ async def test_a_chat_that_cannot_be_read_refuses_with_503():
 @pytest.mark.asyncio
 async def test_a_chat_read_that_answers_nothing_refuses_too(lead):
     """get_conversation_simple answers None when its read fails: an unknown owner is not "nobody's"."""
-    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=None)), \
-            patch("app.services.lead_lottery.enabled", return_value=False):
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=None)):
         with pytest.raises(HTTPException) as e:
             await lead_access.check({"role": "sales", "id": ME}, lead, "crm id")
     assert e.value.status_code == 503
 
 
 @pytest.mark.asyncio
-async def test_a_chat_read_as_nobodys_stays_open_with_the_lottery_off():
-    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
-            patch("app.services.lead_lottery.enabled", return_value=False):
+async def test_a_chat_read_as_nobodys_stays_open():
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())):
         await lead_access.check({"role": "sales", "id": ME}, {"id": "L1", "conversation_id": "c1"}, "crm id")
 
 

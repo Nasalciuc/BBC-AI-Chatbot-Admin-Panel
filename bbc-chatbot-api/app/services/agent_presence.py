@@ -10,9 +10,9 @@ Supabase slows down, those threads fill up and ops gets "DB executor saturated"
 Now a beat:
   * goes to Redis every time: ZADD presence:operators <unix seconds> <user id>, for
     the people who may take chats (an operator role, active, chat on); anyone else
-    is taken out. "Present" for the code that asks Redis (the follow-up lottery, the
-    live service) is a score inside queue_presence_window_seconds, the window the
-    shared queue uses. contracts/redis-keys.md lists the key.
+    is taken out. "Present" for the code that asks Redis (the live service) is a
+    score inside queue_presence_window_seconds, the window the shared queue uses.
+    contracts/redis-keys.md lists the key.
   * goes to Supabase at most every HEARTBEAT_DB_EVERY_S (15 s), and at once when
     the operator opens another conversation (viewing_conversation_id: the sweep's
     120 s courtesy reads it) or after the process starts. Nothing that reads

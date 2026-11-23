@@ -390,20 +390,6 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         # The queue must never break the heartbeat: presence is more important
         # than the badge. Logged, never silent.
         logger.warning(f"[heartbeat] queue fetch failed for {user_id}: {e}")
-    # Leads the follow-up lottery gave this agent that they have not opened yet: one Redis read, no
-    # database (app.services.lead_lottery). None when Redis can't say: the panel shows no number.
-    _followups_new = None
-    _followup_newest = None
-    _followup_newest_at = None
-    if _qa_ok_for_followups(user_db, role_db):
-        from app.services import lead_lottery
-        _followups_new = await lead_lottery.new_count(user_id)
-        if _followups_new:
-            # The last one given, and when: the panel's alert opens it in one click (opening confirms it) and
-            # announces only a lead given after the last it saw. A second read only while there is one to open.
-            _got = await lead_lottery.newest(user_id)
-            if _got:
-                _followup_newest, _followup_newest_at = _got
     _now = time.monotonic()
     HEARTBEAT_HEALTH["latency_ms"].append((_now, (_now - _t0) * 1000.0))
     HEARTBEAT_HEALTH["calls"] += 1
@@ -421,9 +407,6 @@ async def heartbeat(body: HeartbeatBody = HeartbeatBody(), user: dict = Depends(
         # countdown after Take is the server's, not a copy that can drift.
         "response_deadline_seconds": settings.agent_first_response_timeout_seconds,
         "viewing_grace_seconds": VIEWING_GRACE_SECONDS,
-        "followups_new": _followups_new,
-        "followup_newest": _followup_newest,
-        "followup_newest_at": _followup_newest_at,
         # "On the site now": the address of bbc-live and a 60 s pass to it, for the roles that see the
         # list, while LIVE_VISITORS is on (app.services.live_visitors). None otherwise.
         "live": _live_for(user, user_db),
@@ -440,11 +423,6 @@ def _live_for(user: dict, user_db: Optional[dict]) -> Optional[dict]:
         return None
     who = {**user, "role": role, "tunnel_scope": (user_db or {}).get("tunnel_scope") or role}
     return live_visitors.heartbeat_live(who)
-
-
-def _qa_ok_for_followups(user_db: Optional[dict], role_db: str) -> bool:
-    """Only an operator who may be given leads has a lottery badge."""
-    return bool(user_db) and role_db in db._OPERATOR_ROLES
 
 
 @router.get("/agent/day")

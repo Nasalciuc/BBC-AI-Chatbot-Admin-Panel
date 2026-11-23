@@ -107,7 +107,7 @@ def test_no_cron_secret_configured_never_matches_an_empty_bearer():
 
 def test_the_six_problems_counters_are_in_both_answers():
     """CodeRabbit #273: ?full=true lost the lock, presence, lottery, CRM, QA, search and live counters."""
-    keys = {"redis", "locks", "agent_presence", "lottery", "crm_source", "lead_access", "qa_sample", "crm_lookup",
+    keys = {"redis", "locks", "agent_presence", "crm_source", "lead_access", "qa_sample", "crm_lookup",
             "search", "live"}
     headers = {"Authorization": f"Bearer {_token('owner')}"}
     with patch("app.api.health.check_connection", return_value=True), \

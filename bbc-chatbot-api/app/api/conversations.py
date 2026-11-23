@@ -702,19 +702,6 @@ async def get_conversation(
     # _enforce_tunnel signals 403 via HTTPException — it must propagate untouched.
     _enforce_tunnel(user, conv.get("tunnel"))
 
-    # The follow-up lottery: the agent who was given this lead and opens it has confirmed it
-    # (app.services.lead_lottery). Only for their own pending lead; a lead a manager gave them by hand only
-    # leaves their badge; anything else reads as before.
-    _meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
-    _followup = _meta.get("followup")
-    if (
-        isinstance(_followup, dict)
-        and _followup.get("state") in ("pending", "manual")
-        and conv.get("assigned_agent_id") == user.get("id")
-    ):
-        from app.services import lead_lottery
-        await lead_lottery.confirm(conversation_id, user, _followup, "opened")
-
     # The search box's "opened lately" (app.services.recent_chats): best-effort, never in the way.
     from app.services import recent_chats
     await recent_chats.remember(user.get("id"), conversation_id)

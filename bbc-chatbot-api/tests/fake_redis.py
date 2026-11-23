@@ -304,22 +304,3 @@ def compare_and_delete(fake: FakeRedis, keys: list[str], args: list[str]) -> int
         fake.expires.pop(key, None)
         return 1
     return 0
-
-
-def badge_add(fake: FakeRedis, keys: list[str], args: list[str]) -> str:
-    """What lead_lottery.BADGE_ADD_LUA does: the lead scored strictly after the badge's newest and after the last
-    lead given to the agent (the floor, keys[1]), which it then keeps for args[2] seconds."""
-    z = fake._zset(keys[0])
-    score = float(args[1])
-    if z and max(z.values()) >= score:
-        score = max(z.values()) + 0.001
-    try:
-        floor = float(fake.kv.get(keys[1]) or 0) if fake._alive(keys[1]) else 0.0
-    except (TypeError, ValueError):
-        floor = 0.0
-    if floor >= score:
-        score = floor + 0.001
-    z[str(args[0])] = score
-    fake.kv[keys[1]] = repr(score)
-    fake.expires[keys[1]] = time.monotonic() + int(args[2])
-    return repr(score)
