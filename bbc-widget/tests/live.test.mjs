@@ -537,7 +537,8 @@ test('what came of Alex\'s card is noted where it happens', () => {
   assert.ok(note.indexOf("noteAlexShown('note')") > note.indexOf('if (!res.show || !res.message) return null'),
     'only an opening that shows')
   const w = readFileSync(join(here, '..', 'src', 'Widget.tsx'), 'utf8')
-  assert.match(w, /if \(o\.firstReply \|\| o\.firstChannel\) noteAlexAnswer\('engaged'\)/)
+  // A contact left in the row beside the refused form is an answer to Alex too.
+  assert.match(w, /if \(o\.firstReply \|\| o\.firstChannel \|\| o\.firstContact\) noteAlexAnswer\('engaged'\)/)
 })
 
 // ── CodeRabbit #278, round 1 ─────────────────────────────────────────────────────────────────────────────────

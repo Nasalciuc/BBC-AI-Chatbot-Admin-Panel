@@ -204,7 +204,7 @@ export function ChatWindow({
   const [turns] = useState(createReplyTurns)
   const [quickReplies, setQuickReplies] = useState<Chip[] | null>(() => {
     const o = openingRef.current
-    if (!o || o.firstReply || o.firstChannel || !o.quickReplies.length) return null
+    if (!o || o.firstReply || o.firstChannel || o.firstContact || !o.quickReplies.length) return null
     const chips = asChips(o.quickReplies)
     // C1 in the panel (computers): the card's own channel, before "Not now".
     if (o.channel) {
@@ -532,8 +532,15 @@ export function ChatWindow({
         onProactiveEngaged?.(first)
         // The card's yes on a card that knew the whole trip: its answer is on screen at once (A2).
         sendMessage(first, yesOptions(o, first))
+      } else if (o.firstContact) {
+        // The row beside the refused form took the contact itself (FormRow.tsx): it goes out as the client's first
+        // message, as the channel's field sends it. Only the kind goes to PostHog, never the contact.
+        const { kind, text } = o.firstContact
+        onProactiveEngaged?.(text)
+        posthog?.capture('chat_channel_given', { channel: kind, tunnel, where: 'row', ...fieldTestRef.current })
+        sendMessage(text, { button: kind })
       } else if (o.firstChannel) {
-        // The card's channel, the pill or the row: the chat opens on the field (nothing sent before it).
+        // The card's channel or the pill: the chat opens on the field (nothing sent before it).
         requestAnimationFrame(() => channelInputRef.current?.focus({ preventScroll: true }))
       }
       return

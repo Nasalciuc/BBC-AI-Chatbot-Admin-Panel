@@ -19,6 +19,7 @@ import { getTurnstileToken } from './turnstile'
 import { noteWaitMs } from './triggers'
 import { keepOpening, readKeptOpening } from './keptOpening'
 import { placeFormRow } from './FormRow'
+import { channelMessage, widgetLang } from './i18n'
 
 type Step = 'buttons' | 'form' | 'chat'
 
@@ -375,7 +376,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     noteRunRef.current++
     proactive.opened()
     // A reply or a channel tapped on Alex's card is an answer to him: never listed for an agent (agentTest.ts).
-    if (o.firstReply || o.firstChannel) noteAlexAnswer('engaged')
+    if (o.firstReply || o.firstChannel || o.firstContact) noteAlexAnswer('engaged')
     formFlowStartedRef.current = true
     setShowAttention(false)
     setTunnel('sales')
@@ -389,15 +390,17 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proactive.offer])
 
-  // D1: the row beside the site's refused quote form (FormRow.tsx). A channel tapped there opens the chat on
-  // its field; ✕ is the card's ✕ (24 h of quiet).
+  // D1: the row beside the site's refused quote form (FormRow.tsx). The contact left there opens the chat with it
+  // sent as the client's first message; ✕ is the card's ✕ (24 h of quiet).
   useEffect(() => {
     const o = proactive.offer
     const form = proactive.rowForm
     if (!o || o.surface !== 'row' || !form || !form.isConnected) return
     return placeFormRow(
       form, o,
-      (kind) => openProactive({ ...o, surface: 'panel', firstChannel: kind }),
+      (kind, contact) => openProactive({
+        ...o, surface: 'panel', firstContact: { kind, text: channelMessage(widgetLang(), kind, contact) },
+      }),
       () => proactive.dismiss('close'),
     )
   // eslint-disable-next-line react-hooks/exhaustive-deps

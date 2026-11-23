@@ -101,8 +101,11 @@ export const READER_SCROLL_SCREENS = 0.5
 export const QUOTE_IDLE_S = 8
 export const QUOTE_INVALID_IDLE_S = 5
 /** D1 (ADR-4a): a refused send whose form the widget can put a row beside — the row covers nothing, so it
- *  comes sooner than a card would. 54 of the 64 refused on 17-18 Nov never sent anything after. */
-export const QUOTE_ROW_IDLE_S = 2
+ *  comes sooner than a card would. 54 of the 64 refused on 17-18 Nov never sent anything after. At once since
+ *  23 Nov (owner; it was 2 s): about 73 visitors a day are refused without a whole contact and 71% of them leave
+ *  within 5 s, while the row, after its 2 s and the answer's trip, reached about 40 a day. proactive.ts asks as soon
+ *  as the refusal is heard, not at its next second. */
+export const QUOTE_ROW_IDLE_S = 0
 /** After this long since the last press — or, unpressed, since the last touch — the form is just part of
  *  the page again. */
 export const QUOTE_WATCH_S = 180

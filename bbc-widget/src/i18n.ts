@@ -48,6 +48,12 @@ const WORDS = {
     // The field opened by itself (the owner's contact test): the other channel, one tap away.
     otherSms: 'Text me instead',
     otherEmail: 'Email me instead',
+    // The row beside the refused quote form takes the contact itself (FormRow.tsx).
+    rowAny: 'Email or mobile number',
+    rowSend: 'Send me fares',
+    rowOneEmail: 'One is enough: just your email.',
+    rowOneSms: 'One is enough: just your mobile number.',
+    badEither: 'Enter your email or mobile number.',
   },
   es: {
     phoneLabel: 'Su número de móvil',
@@ -66,6 +72,11 @@ const WORDS = {
     hide: 'Ocultar',
     otherSms: 'Mejor por SMS',
     otherEmail: 'Mejor por correo',
+    rowAny: 'Correo o número de móvil',
+    rowSend: 'Envíenme tarifas',
+    rowOneEmail: 'Con uno basta: solo su correo.',
+    rowOneSms: 'Con uno basta: solo su número de móvil.',
+    badEither: 'Escriba su correo o su número de móvil.',
   },
   fr: {
     phoneLabel: 'Votre numéro de mobile',
@@ -84,6 +95,11 @@ const WORDS = {
     hide: 'Masquer',
     otherSms: 'Plutôt par SMS',
     otherEmail: 'Plutôt par e-mail',
+    rowAny: 'E-mail ou numéro de mobile',
+    rowSend: 'Envoyez-moi les tarifs',
+    rowOneEmail: 'Un seul suffit : votre e-mail.',
+    rowOneSms: 'Un seul suffit : votre numéro de mobile.',
+    badEither: 'Indiquez votre e-mail ou votre numéro de mobile.',
   },
 } as const
 

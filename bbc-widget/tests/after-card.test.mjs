@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validPhone } from '../src/channel.ts'
+import { guessCountry, ownerOf, phoneFor, readRowContact, readablePhone, rowField, validEmail, validPhone } from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
@@ -27,7 +27,7 @@ import { LAYOUT_AFTER_MS, cardAsideWatch, coveredShare, watchPopups } from '../s
 import { keyboardInset } from '../src/keyboard.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
 import { LOCAL_AI_PREFIX, reconcileBatch } from '../src/reconcile.ts'
-import { WIDGET_CSS } from '../src/styles.ts'
+import { ROW_CSS, WIDGET_CSS } from '../src/styles.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (f) => readFileSync(join(SRC, f), 'utf8')
@@ -183,18 +183,74 @@ test('ADR A1: the Kayak card at 2.5 s in view, after half a second of watching o
   assert.doesNotMatch(hook, /c4/i)
 })
 
-test('D1: a refused send beside a form the widget sees gets its row sooner than a card', () => {
-  const quote = { sincePressS: 2.5, sinceFormActivityS: 2.5, invalid: true, busy: false }
+test('D1: a refused send beside a form the widget sees gets its row at once, sooner than a card', () => {
+  // Owner, 23 Nov: at once (it was 2 s). 71% of the refused visitors left within 5 s.
+  assert.equal(QUOTE_ROW_IDLE_S, 0)
+  const quote = { sincePressS: 0, sinceFormActivityS: 0, invalid: true, busy: false }
   assert.equal(pickTrigger(page({ quote: { ...quote, row: true } })), 'quote')
+  // Without a form to stand beside, the card still waits for the form to go quiet; a send not refused waits too.
   assert.equal(pickTrigger(page({ quote })), null)
+  assert.equal(pickTrigger(page({ quote: { ...quote, row: true, invalid: false } })), null)
   assert.ok(QUOTE_ROW_IDLE_S < QUOTE_INVALID_IDLE_S)
   assert.match(hook, /const rowAt = trigger === 'quote' && press\?\.form\?\.isConnected \? press\.form : null/)
   assert.match(hook, /const surface: Surface = row \? 'row' : phone \? 'card' : 'panel'/)
-  assert.match(widget, /return placeFormRow\(\s+form, o,\s+\(kind\) => openProactive\(\{ \.\.\.o, surface: 'panel', firstChannel: kind \}\),/)
-  // The row stands under the pressed button, outside the widget, with its own styles; it never says "you made a mistake".
+  // The refusal is heard at once, the browser's and the site's, not at the next second of the clock.
+  assert.match(hook, /refused = withKinds\(refused, \[refusedKind\(e\.target\)\]\)\s+refusedNow\(\)/)
+  assert.match(hook, /if \(press\?\.invalid && \(siteRefused \|\| e\.name === 'quote_form_failed'\)\) refusedNow\(\)/)
+  assert.match(hook, /refusalTimer = setTimeout\(\(\) => \{\s+refusalTimer = null\s+evaluate\(\)\s+\}, 0\)/)
+  // A visitor fixing the form while the row's answer is on its way still gets it; a new press drops it.
+  assert.match(hook, /const forRow = trigger === 'quote' && before\.row/)
+  assert.match(hook, /if \(!forRow && lastSiteTyping !== before\.typing\) return 'typing'/)
+  assert.match(hook, /if \(\(press\?\.at \?\? null\) !== before\.pressAt \|\| \(!forRow && \(press\?\.activityAt \?\? null\) !== before\.formAt\)\) return 'quote_form'/)
+  // The contact left in the row opens the chat with it sent as the client's first message.
+  assert.match(widget, /return placeFormRow\(\s+form, o,\s+\(kind, contact\) => openProactive\(\{\s+\.\.\.o, surface: 'panel', firstContact: \{ kind, text: channelMessage\(widgetLang\(\), kind, contact\) \},/)
+  assert.match(chat, /const \{ kind, text \} = o\.firstContact\s+onProactiveEngaged\?\.\(text\)\s+posthog\?\.capture\('chat_channel_given', \{ channel: kind, tunnel, where: 'row', \.\.\.fieldTestRef\.current \}\)\s+sendMessage\(text, \{ button: kind \}\)/)
+  // The row stands under the pressed button, outside the widget, in its own tree: its field belongs to no form of
+  // the site, its keys and typing never reach the site's form scripts, and the site's styles never reach it.
   assert.match(row, /const button = form\.querySelector\('button\[type="submit"\], input\[type="submit"\], button:not\(\[type\]\)'\)/)
   assert.match(row, /at\.insertAdjacentElement\(where, host\)/)
-  assert.match(WIDGET_CSS, /#bbc-form-row button \{ all: unset;/)
+  assert.match(row, /if \(typeof host\.attachShadow !== 'function'\) return \(\) => \{\}/)
+  assert.match(row, /const root = host\.attachShadow\(\{ mode: 'open' \}\)/)
+  assert.match(row, /for \(const type of KEPT_IN_ROW\) host\.addEventListener\(type, keep\)/)
+  assert.match(row, /type="text"/)
+  assert.match(row, /if \(e\.key !== 'Enter'\) return\s+e\.preventDefault\(\)/)
+  assert.match(ROW_CSS, /button \{ all: unset;/)
+  assert.match(ROW_CSS, /\.bw-row-offer__input \{[^}]*font-size: 16px/)
+  assert.doesNotMatch(WIDGET_CSS, /\.bw-row-offer/)
+})
+
+test('D1: the row takes an email or a mobile number, and says one is enough to a visitor who gave the form one', () => {
+  // The kinds the form refused, never what was typed: a refused phone and no refused email gave the email.
+  assert.equal(rowField(['phone']), 'email')
+  assert.equal(rowField(['name', 'phone']), 'email')
+  assert.equal(rowField(['email']), 'sms')
+  assert.equal(rowField(['email', 'phone']), 'any')
+  assert.equal(rowField(['name']), 'any')
+  assert.equal(rowField([]), 'any')
+  assert.equal(rowField(null), 'any')
+  // Either contact goes in, whatever the field asked for; a number typed the local way is placed in its country.
+  assert.deepEqual(readRowContact(' client@example.com ', COUNTRIES, US), { kind: 'email', contact: 'client@example.com' })
+  assert.deepEqual(readRowContact('0412 345 678', COUNTRIES, AU), { kind: 'sms', contact: '+61 412 345 678' })
+  assert.deepEqual(readRowContact('+1 210 555 0100', COUNTRIES, AU), { kind: 'sms', contact: '+1 210 555 0100' })
+  assert.deepEqual(readRowContact('client@example', COUNTRIES, US), { error: 'email' })
+  assert.deepEqual(readRowContact('0412 345', COUNTRIES, AU), { error: 'phone' })
+  assert.deepEqual(readRowContact('', COUNTRIES, US), { error: 'either' })
+  assert.deepEqual(readRowContact('London', COUNTRIES, US), { error: 'either' })
+  // Its words in the three languages, with no WhatsApp.
+  for (const lang of ['en', 'es', 'fr']) {
+    const w = words(lang)
+    for (const k of ['rowAny', 'rowSend', 'rowOneEmail', 'rowOneSms', 'badEither']) assert.ok(w[k] && w[k].trim(), `${lang}.${k}`)
+  }
+  assert.equal(words('en').rowSend, 'Send me fares')
+  assert.match(row, /const one = field === 'email' \? w\.rowOneEmail : field === 'sms' \? w\.rowOneSms : ''/)
+  // The hook gives the row its field from the refused kinds, and measures it.
+  assert.match(hook, /\.\.\.\(row \? \{ rowField: rowField\(refused\) \} : \{\}\),/)
+  assert.match(hook, /\.\.\.\(opening\.rowField \? \{ row_field: opening\.rowField \} : \{\}\),/)
+  // Neither the contact nor the row's field is ever kept with the opening across pages.
+  const kept = keepOpening({ trigger: 'quote', message: 'Faster than the form', quickReplies: [], trip: null, surface: 'row',
+    shownAt: 1, variant: 'row', rowField: 'email', firstContact: { kind: 'email', text: 'Email: client@example.com' } })
+  assert.equal('firstContact' in kept, false)
+  assert.equal('rowField' in kept, false)
 })
 
 // ── E1: popups; E2: the keyboard ──────────────────────────────────────────────────────────

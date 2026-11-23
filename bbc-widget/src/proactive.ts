@@ -24,7 +24,7 @@ import { alexWaitLeftMs, holdAlex, noteAlexAnswer, noteAlexShown, noteSide } fro
 import {
   ensureVisitorId, fetchProactiveOffer, offerMeasures, type ContactTestSide, type OfferConfirm, type OfferTiming,
 } from './api'
-import type { ChannelKind, ChatButton } from './channel'
+import { rowField, type ChannelKind, type ChatButton, type RowField } from './channel'
 import brand from './config'
 import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
@@ -72,9 +72,14 @@ export interface ProactiveOpening {
    *  it; the chat still opens with `message`. Absent: the card shows `message`, as before. */
   headline?: string
   cardText?: string
-  /** The channel the client picked before the chat opened (the card's channel button, the pill, the row):
-   *  the chat opens on its field, and the conversation starts with what they leave there. */
+  /** The channel the client picked before the chat opened (the card's channel button, the pill): the chat opens
+   *  on its field, and the conversation starts with what they leave there. */
   firstChannel?: ChannelKind
+  /** The contact the client left in the row beside the refused form (23 Nov): the chat opens with it sent as their
+   *  first message ("Email: …"). Never kept with the opening (keptOpening.ts). */
+  firstContact?: { kind: ChannelKind; text: string }
+  /** D1: the contact the row asks for (channel.ts rowField): the one the form already had, or either. */
+  rowField?: RowField
   /** The owner's contact test (22 Nov): this visitor's side as the server named it, sent back at /chat/init and
    *  on the card's events. On the field side `confirm.field` is the field the yes opens at once. */
   contactTest?: ContactTestSide
@@ -556,6 +561,16 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         refused = []  // a send of its own: the kinds of an earlier refusal are not this one's
       }
     }
+    // A refused send is answered at once (triggers.ts QUOTE_ROW_IDLE_S), not at the next second of the clock below:
+    // after the last `invalid` of that send, so the row knows every field the form flagged.
+    let refusalTimer: ReturnType<typeof setTimeout> | null = null
+    const refusedNow = () => {
+      if (refusalTimer !== null) return
+      refusalTimer = setTimeout(() => {
+        refusalTimer = null
+        evaluate()
+      }, 0)
+    }
     // The browser refused the send and flagged a field (`invalid` does not bubble: caught on the way down).
     const onInvalid = (e: Event) => {
       if (!press || !inPressedForm(e.target)) return
@@ -563,6 +578,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       press.activityAt = Date.now()
       // One `invalid` per refused field, all in the same send: together they are that send's refusal.
       refused = withKinds(refused, [refusedKind(e.target)])
+      refusedNow()
     }
     const onLeave = (e: MouseEvent) => {
       if (e.relatedTarget || e.clientY > 8) return
@@ -599,6 +615,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ? { form: press?.form ?? null, at: fx.press.at, activityAt: fx.press.activityAt, invalid: fx.press.invalid }
         : null
       if (siteRefused) siteSaidFor = press?.at ?? null
+      // The site's word about a refused or failed send is heard at once too (the browser's, onInvalid above).
+      if (press?.invalid && (siteRefused || e.name === 'quote_form_failed')) refusedNow()
     }
 
     // What the moment was decided on. The server answers within OFFER_TIMEOUT_MS; by then the visitor
@@ -608,6 +626,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const seen = () => ({
       typing: lastSiteTyping, pressAt: press?.at ?? null, formAt: press?.activityAt ?? null,
       quoteForm: quoteFormAt, search: lastSearch(),
+      // The quote moment asks for the row beside the pressed form (D1) when the widget still sees that form.
+      row: !!press?.form?.isConnected,
     })
     const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, askedAds: string | null): string | null => {
       if (stopped) return stopped
@@ -617,8 +637,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (blockedPath(location.pathname)) return 'left_page'
       // The site moved on to its thank-you or a legal page while the answer was on its way.
       if (noMomentPage(sitePage())) return 'left_page'
-      if (lastSiteTyping !== before.typing) return 'typing'
-      if ((press?.at ?? null) !== before.pressAt || (press?.activityAt ?? null) !== before.formAt) return 'quote_form'
+      // The row covers nothing and comes at once (QUOTE_ROW_IDLE_S): a visitor fixing the refused form while its
+      // answer was on the way still gets it. A new press is a new send, and drops it.
+      const forRow = trigger === 'quote' && before.row
+      if (!forRow && lastSiteTyping !== before.typing) return 'typing'
+      if ((press?.at ?? null) !== before.pressAt || (!forRow && (press?.activityAt ?? null) !== before.formAt)) return 'quote_form'
       // Work on the quote form while the answer was on its way, pressed or not, holds kayak and reader
       // (triggers.ts); the quote moment keeps the press check above (CodeRabbit #267).
       if (trigger !== 'quote' && quoteFormAt !== before.quoteForm) return 'quote_form'
@@ -723,6 +746,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.lang ? { lang: res.lang } : {}),
         ...(res.headline && res.card_text ? { headline: res.headline, cardText: res.card_text } : {}),
         ...(res.contact_test ? { contactTest: res.contact_test } : {}),
+        // The row asks for the contact the form already had when it refused the other one ("One is enough").
+        ...(row ? { rowField: rowField(refused) } : {}),
       }
       if (row) setRowForm(rowAt)
       ssSet(DONE_KEY, 'shown')
@@ -739,6 +764,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         ...(res.lang ? { lang: res.lang } : {}),
         // The phone card led with the trip (ADR A3): measured against the cards that did not.
         ...(surface === 'card' && opening.headline ? { titled: true } : {}),
+        // The row's field: either contact, or the one the form already had ("One is enough").
+        ...(opening.rowField ? { row_field: opening.rowField } : {}),
         ...contactTestProps(opening),
       })
     }
@@ -839,6 +866,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       disposed = true
       clearInterval(tick)
       offSite()
+      if (refusalTimer !== null) clearTimeout(refusalTimer)
       for (const ev of pointerEvents) window.removeEventListener(ev, onActivity, cap)
       window.removeEventListener('scroll', onScroll, cap)
       document.removeEventListener('keydown', onType, cap)

@@ -642,33 +642,51 @@ export const WIDGET_CSS = `
   #bbc-widget-root *, #bbc-widget-root *::before, #bbc-widget-root *::after { animation: none !important; transition: none !important; }
 }
 
-/* D1 (FormRow.tsx): the row beside the site's refused quote form, outside the widget's root — its own
-   reset, so the site's button styles do not reach it, and the brand's colour from its host. */
+/* D1 (FormRow.tsx): the row beside the site's refused quote form, outside the widget's root. Only its host is
+   styled here; what is inside it lives in its own tree with ROW_CSS below, out of the site's reach. */
 #bbc-form-row { display: block; margin-top: 12px; margin-bottom: 4px; font-family: inherit; }
-#bbc-form-row .bw-row-offer {
+`
+
+/** The row's own styles, inside its shadow root (FormRow.tsx): the site's button and field styles never reach
+ *  it, and these never reach the site. The brand's colour comes from the host's custom properties. Its field is
+ *  16px, so a phone never zooms on it. */
+export const ROW_CSS = `
+:host { display: block; }
+.bw-row-offer {
   position: relative; display: flex; flex-direction: column; gap: 10px; box-sizing: border-box;
   padding: 14px 44px 14px 16px; border-radius: 14px; text-align: left;
   background: #FFFFFF; border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.35);
   box-shadow: 0 4px 14px rgba(16, 24, 40, 0.08);
-  color: #1F2937; font-size: 15px; line-height: 1.45;
+  color: #1F2937; font-family: inherit; font-size: 15px; line-height: 1.45;
 }
-#bbc-form-row .bw-row-offer__text { margin: 0; font: inherit; color: inherit; }
-#bbc-form-row .bw-row-offer__actions { display: flex; flex-wrap: wrap; gap: 8px; }
-#bbc-form-row button { all: unset; box-sizing: border-box; cursor: pointer; font-family: inherit; }
-#bbc-form-row .bw-row-offer__btn {
-  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 999px;
-  background: var(--bw-primary, #1E4FD8); color: #FFFFFF; font-size: 15px; font-weight: 600; line-height: 1.2;
+.bw-row-offer__text { margin: 0; font: inherit; color: inherit; }
+.bw-row-offer__one { margin: 0; font: inherit; font-weight: 600; color: var(--bw-primary, #1E4FD8); }
+.bw-row-offer__form { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.bw-row-offer__input {
+  flex: 1 1 200px; min-width: 0; min-height: 44px; box-sizing: border-box; margin: 0; padding: 0 16px;
+  border-radius: 999px; border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.45); background: #FFFFFF;
+  color: #111827; font-family: inherit; font-size: 16px; line-height: 1.2;
 }
-#bbc-form-row .bw-row-offer__btn:hover { background: var(--bw-primary-hover, #203359); }
-#bbc-form-row .bw-row-offer__btn:focus-visible, #bbc-form-row .bw-row-offer__x:focus-visible {
+.bw-row-offer__input::placeholder { color: #6B7280; opacity: 1; }
+.bw-row-offer__input:focus { outline: 2px solid var(--bw-primary, #1E4FD8); outline-offset: 1px; }
+.bw-row-offer__input[aria-invalid="true"] { border-color: #B3261E; }
+.bw-row-offer__error { margin: 0; color: #B3261E; font-size: 14px; }
+button { all: unset; box-sizing: border-box; cursor: pointer; font-family: inherit; }
+.bw-row-offer__btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 18px;
+  border-radius: 999px; background: var(--bw-primary, #1E4FD8); color: #FFFFFF; font-size: 15px; font-weight: 600;
+  line-height: 1.2;
+}
+.bw-row-offer__btn:hover { background: var(--bw-primary-hover, #203359); }
+.bw-row-offer__btn:focus-visible, .bw-row-offer__x:focus-visible {
   outline: 2px solid var(--bw-primary, #1E4FD8); outline-offset: 2px;
 }
-#bbc-form-row .bw-row-offer__btn svg, #bbc-form-row .bw-row-offer__x svg {
+.bw-row-offer__x svg {
   width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
-#bbc-form-row .bw-row-offer__x {
+.bw-row-offer__x {
   position: absolute; top: 6px; right: 6px; display: flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; border-radius: 50%; color: #6B7280;
 }
-#bbc-form-row .bw-row-offer__x:hover { color: #111827; background: rgba(0, 0, 0, 0.05); }
+.bw-row-offer__x:hover { color: #111827; background: rgba(0, 0, 0, 0.05); }
 `

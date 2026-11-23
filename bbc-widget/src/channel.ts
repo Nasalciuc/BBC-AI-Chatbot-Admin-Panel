@@ -100,3 +100,31 @@ export function validEmail(value: string): string | null {
   const v = (value || '').trim()
   return v.length <= 120 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v) ? v : null
 }
+
+/** The field of the row beside the refused quote form (owner, 23 Nov 2026): the contact the visitor already typed
+ *  into the form when it refused the other one ("One is enough"), else either. 65 of the visitors refused on 14-22
+ *  Nov had given one contact. Read from the kinds of the refused fields (siteSignals FIELD_KINDS), never from what
+ *  was typed: a refused phone and no refused email is a visitor who gave the email. */
+export type RowField = 'any' | 'email' | 'sms'
+
+export function rowField(refused: readonly string[] | null | undefined): RowField {
+  const r = new Set(refused || [])
+  if (r.has('phone') && !r.has('email')) return 'email'
+  if (r.has('email') && !r.has('phone')) return 'sms'
+  return 'any'
+}
+
+/** What the visitor typed in the row: an email when it has an @, else a mobile number placed as the chat's field
+ *  places it (a + or 00 names its own country, else `country`). The field takes either, whatever it asked for. */
+export function readRowContact(
+  value: string, countries: readonly Country[], country: Country,
+): { kind: ChannelKind; contact: string } | { error: 'email' | 'phone' | 'either' } {
+  const v = (value || '').trim()
+  if (v.includes('@')) {
+    const email = validEmail(v)
+    return email ? { kind: 'email', contact: email } : { error: 'email' }
+  }
+  if (v.replace(/\D/g, '').length < 6) return { error: 'either' }
+  const e164 = validPhone(countries, v, country)
+  return e164 ? { kind: 'sms', contact: readablePhone(countries, e164) } : { error: 'phone' }
+}
