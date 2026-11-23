@@ -568,9 +568,9 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
         // An agent's hello in the chat, unanswered (it took the place of Alex's opening): the visitor's "not now" to
         // the agent, as the chat's ✕ (ChatWindow). Else the card's chat left unanswered: the same 24 h of quiet as
         // its ✕ and "Not now".
+        // A first message carrying its tap (dismiss says false) is the visitor's answer, not a "not now".
         if (step === 'chat' && live.hello && !hasConversationNow()) {
-          posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
-          live.dismiss()
+          if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
         } else if (opening && !proactiveChatStarted()) proactive.dismiss('close')
         animateClose(() => {
           setFocusLauncher(true)
@@ -640,8 +640,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           hello={sessionActive || cachedConvId ? null : live.hello}
           onHelloReply={() => { void openLive() }}
           onHelloDismiss={() => {
-            posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'card' })
-            live.dismiss()
+            if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'card' })
           }}
         />
       )}
@@ -672,9 +671,9 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           onProactiveEngaged={(reply) => proactive.engaged(reply)}
           live={cachedConvId ? null : live.hello}
           onLiveDismiss={() => {
-            posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
-            live.dismiss()
+            if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
           }}
+          onLiveSending={live.sending}
           onLiveReplied={(held) => {
             live.taken()
             posthog?.capture('live_hello_replied', { held, site: brand.id, where: 'chat' })

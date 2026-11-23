@@ -29,8 +29,12 @@ export type { LiveHello } from './liveRead'
 const AFTER_S = 20
 const BEAT_S = 15
 const PASS_KEY = 'bbc_live_pass'
-// sessionStorage: the hello not answered yet, for the visit's next pages (bbc-live hands it over once).
+// sessionStorage: the hello not answered yet, for the visit's next pages (bbc-live hands it over once), and where
+// bbc-live is: a hello kept from an earlier page can be dismissed before this page's config comes (20 s in).
 const HELLO_KEY = 'bbc_live_hello'
+const URL_KEY = 'bbc_live_url'
+/** bbc-live counts one beat per 5 s (MinBeatGap); the last beat, refused inside the gap, goes again after it. */
+const LAST_BEAT_AGAIN_MS = 6_000
 /** A pass bbc-live refuses (401) is renewed at most this often. */
 const RENEW_MS = 5 * 60_000
 
@@ -51,6 +55,18 @@ function hasConversation(): boolean {
 /** The hello kept for this visit, while it holds. */
 export function keptHello(): LiveHello | null {
   try { return readKeptHello(sessionStorage.getItem(HELLO_KEY), Date.now()) } catch { return null }
+}
+
+/** Where bbc-live is, as the last config on this visit said. */
+function keptUrl(): string | null {
+  try {
+    const u = sessionStorage.getItem(URL_KEY)
+    return u && /^https?:\/\/[^\s/]+/.test(u) ? u : null
+  } catch { return null }
+}
+
+function keepUrl(u: string): void {
+  try { sessionStorage.setItem(URL_KEY, u) } catch { /* this page's config holds it */ }
 }
 
 function keepHello(h: LiveHello | null): void {
@@ -94,6 +110,7 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
   // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
   // inherit the last one's pass, which would only be refused (CodeRabbit #273).
   if (cfg.enabled && cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
+  if (cfg.enabled && cfg.url) keepUrl(cfg.url)
   return cfg
 }
 
@@ -104,7 +121,9 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
  */
 export function useLive({ apiUrl, active, chatOpen, trip, site }: {
   apiUrl: string; active: boolean; chatOpen: boolean; trip: () => TripPayload | null; site: string
-}): { hello: LiveHello | null; dismiss: () => void; taken: () => void } {
+}): {
+  hello: LiveHello | null; dismiss: () => boolean; taken: () => void; sending: (on: boolean) => void
+} {
   // A hello an earlier page received and nobody answered yet (bbc-live hands it over once); none over a chat.
   const [hello, setHelloState] = useState<LiveHello | null>(() => {
     const kept = keptHello()
@@ -120,6 +139,9 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
   }
   const configRef = useRef<LiveConfig | null>(null)
   const doneRef = useRef(false)
+  // A first message on its way carries the hello's tap (ChatWindow): until it lands the hello is the visitor's
+  // answer, never a "not now" (Escape on the chat meanwhile: CodeRabbit #278).
+  const tapInFlightRef = useRef(false)
   const chatOpenRef = useRef(chatOpen)
   chatOpenRef.current = chatOpen
   const tripRef = useRef(trip)
@@ -154,7 +176,7 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       return renewing
     }
 
-    const sendBeat = (cfg: LiveConfig, chat: boolean) => {
+    const sendBeat = (cfg: LiveConfig, chat: boolean, again = false) => {
       if (!cfg.url || !cfg.pass) return
       let path = '/'
       try { path = location.pathname } catch { /* keep "/" */ }
@@ -169,7 +191,13 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         alexCard: alexCardNow(Date.now()) })
       liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) })
-        .then(res => { if (res.status === 401 && !chat) void renew() })
+        .then(res => {
+          if (res.status === 401 && !chat) void renew()
+          // The last beat landed inside bbc-live's 5 s gap (202, not counted): once more after it, or the panel would
+          // list the visitor until the visit runs out (CodeRabbit #278). Not one of the effect's timers: it outlives
+          // the cleanup that sent it.
+          if (res.status === 202 && chat && !again) setTimeout(() => sendBeat(cfg, true, true), LAST_BEAT_AGAIN_MS)
+        })
         .catch(() => { /* a missed beat: the next one counts */ })
     }
 
@@ -270,14 +298,21 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
 
   return {
     hello,
+    // "Not now" to the hello: false while a first message carries its tap (nothing is dismissed then). A hello kept
+    // from an earlier page is dismissed before this page's config comes, with the pass and the place kept from it.
     dismiss: () => {
+      if (tapInFlightRef.current) return false
       const cfg = configRef.current
       doneRef.current = true
       setHello(null)
-      if (cfg?.url && cfg.pass) {
-        liveFetch(`${cfg.url}/v1/dismiss`, cfg.pass, { method: 'POST' }).catch(() => { /* runs out in 15 min */ })
+      const url = cfg?.url || keptUrl()
+      const pass = cfg?.pass || storedPass()
+      if (url && pass) {
+        liveFetch(`${url}/v1/dismiss`, pass, { method: 'POST' }).catch(() => { /* runs out in 15 min */ })
       }
+      return true
     },
     taken: () => { doneRef.current = true; setHello(null) },
+    sending: (on: boolean) => { tapInFlightRef.current = on },
   }
 }

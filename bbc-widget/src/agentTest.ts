@@ -105,6 +105,8 @@ export function alexWaitLeftMs(nowMs: number = Date.now()): number {
 export function noteAlexShown(trigger: string = '', atMs: number = Date.now()): void {
   alexShownInPage = true
   ssSet(ALEX_SHOWN_KEY, '1')
+  // A visitor who answered Alex stays his (noteAlexAnswer): a later opening of his doesn't list them (CodeRabbit #278).
+  if (alexCard()?.state === 'engaged') return
   keepAlexCard({ state: 'shown', at: atMs, trigger })
 }
 

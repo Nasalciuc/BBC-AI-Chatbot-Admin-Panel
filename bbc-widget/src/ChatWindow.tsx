@@ -111,6 +111,8 @@ interface Props {
   onLiveDismiss?: () => void
   /** The first message went with the hello's tap; `held`: the chat started as the agent's. */
   onLiveReplied?: (held: boolean) => void
+  /** A first message carries the hello's tap (true) until it lands or fails (false): no "not now" meanwhile. */
+  onLiveSending?: (on: boolean) => void
 }
 
 export interface Unread {
@@ -169,7 +171,7 @@ const liveMessage = (h: LiveHello): Message => ({
 export function ChatWindow({
   tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false, swapped = false,
   visible = true, draft = '', onUnread, proactive, onProactiveDismiss, onProactiveEngaged,
-  live, onLiveDismiss, onLiveReplied,
+  live, onLiveDismiss, onLiveReplied, onLiveSending,
 }: Props) {
   const visibleRef = useRef(visible)
   visibleRef.current = visible
@@ -1079,7 +1081,10 @@ export function ChatWindow({
       if (opening) openingRef.current = null
       // So it owns an agent's hello on screen: its tap goes with this send, once.
       const hello = convId ? null : liveRef.current
-      if (hello) liveRef.current = null
+      if (hello) {
+        liveRef.current = null
+        onLiveSending?.(true)
+      }
       if (!activeConvId) {
         try {
           const turnstile_token = await getTurnstileToken()
@@ -1146,6 +1151,7 @@ export function ChatWindow({
               markProactiveConversation(newConvId)
               const vid = getVisitorId()
               if (vid) posthog?.identify(vid)
+              onLiveSending?.(false)
               onLiveReplied?.(held)
             }
             activeConvId = newConvId
@@ -1163,11 +1169,17 @@ export function ChatWindow({
           } else {
             // Not created: the next send carries the opening (or the hello's tap) again.
             if (opening) openingRef.current = opening
-            if (hello) liveRef.current = hello
+            if (hello) {
+              liveRef.current = hello
+              onLiveSending?.(false)
+            }
           }
         } catch (e) {
           if (opening) openingRef.current = opening
-          if (hello) liveRef.current = hello
+          if (hello) {
+            liveRef.current = hello
+            onLiveSending?.(false)
+          }
           console.warn(`[bbc-widget] /init failed${opening || hello ? '' : ', falling back to direct POST'}`, e)
         }
         // The card's chat exists only through /chat/init (its opening, the page's trip, the label), and so does

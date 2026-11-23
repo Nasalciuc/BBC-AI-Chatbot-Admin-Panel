@@ -749,8 +749,8 @@ test('the first send owns the opening: a racing second send goes out plain', () 
   const send = chat.slice(chat.indexOf('let activeConvId = convId'))
   assert.match(send, /const opening = convId \? null : openingRef\.current\s+if \(opening\) openingRef\.current = null/)
   // Not created: the next send carries it again (and an agent's hello's tap, which took its place: live.ts).
-  assert.match(send, /\} else \{\s+\/\/ Not created[^\n]*\n\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) liveRef\.current = hello/)
-  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) liveRef\.current = hello/)
+  assert.match(send, /\} else \{\s+\/\/ Not created[^\n]*\n\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) \{\s+liveRef\.current = hello\s+onLiveSending\?\.\(false\)/)
+  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) \{\s+liveRef\.current = hello\s+onLiveSending\?\.\(false\)/)
 })
 
 test('a phone gets the card, a computer the panel', () => {

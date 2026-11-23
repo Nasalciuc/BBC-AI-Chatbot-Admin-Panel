@@ -414,7 +414,14 @@ test('what came of Alex\'s card: shown with its moment, then "Not now" or an ans
   assert.equal(at.alexCard().state, 'engaged')
   at.noteAlexAnswer('dismissed')
   assert.equal(at.alexCard().state, 'engaged', 'a visitor who answered Alex is his, whatever they close afterwards')
-  // A later opening of Alex's (the visitor opened the chat themselves) is the one that counts.
+  // Nor does a later opening of his list them (CodeRabbit #278).
+  at.noteAlexShown('note', NOW + 60_000)
+  assert.deepEqual(at.alexCard(), { state: 'engaged', at: NOW, trigger: 'kayak' })
+  assert.equal(at.alexShown(), true)
+  // After a "Not now", a later opening of Alex's (the visitor opened the chat themselves) is the one that counts.
+  at.resetAgentTestForTests()
+  at.noteAlexShown('kayak', NOW)
+  at.noteAlexAnswer('dismissed')
   at.noteAlexShown('note', NOW + 60_000)
   assert.deepEqual(at.alexCard(), { state: 'shown', at: NOW + 60_000, trigger: 'note' })
   for (const bad of [null, 'x', {}, { state: 'seen', at: NOW }, { state: 'shown', at: -1 }, { state: 'shown', at: 'now' }]) {
@@ -464,7 +471,7 @@ test('the hello kept for the next pages reads back only as a hello, and only bef
 
 test('the beats end once a chat exists, with one last beat that says so; no hello over a chat', () => {
   const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
-  const send = src.slice(src.indexOf('const sendBeat = (cfg: LiveConfig, chat: boolean) => {'), src.indexOf('const lastBeat = () => {'))
+  const send = src.slice(src.indexOf('const sendBeat = (cfg: LiveConfig, chat: boolean'), src.indexOf('const lastBeat = () => {'))
   assert.match(send, /hasChat: chat,/)
   assert.match(send, /alexCard: alexCardNow\(Date\.now\(\)\) \}\)/)
   const last = src.slice(src.indexOf('const lastBeat = () => {'), src.indexOf('const beat = () => {'))
@@ -497,7 +504,7 @@ test('the hello shows as Alex\'s card does: in the open chat, beside the button 
   assert.match(w, /\(restored\?\.step === 'chat' && !helloGone\)/)
   // Escape on it is the visitor's "not now" to the agent, not to Alex.
   const esc = w.slice(w.indexOf("if (e.key === 'Escape'"), w.indexOf('animateClose(', w.indexOf("if (e.key === 'Escape'")))
-  assert.match(esc, /if \(step === 'chat' && live\.hello && !hasConversationNow\(\)\) \{[\s\S]*?live\.dismiss\(\)\s+\} else if \(opening && !proactiveChatStarted\(\)\) proactive\.dismiss\('close'\)/)
+  assert.match(esc, /if \(step === 'chat' && live\.hello && !hasConversationNow\(\)\) \{\s+if \(live\.dismiss\(\)\) posthog\?\.capture\('live_hello_dismissed'[^\n]*\n\s+\} else if \(opening && !proactiveChatStarted\(\)\) proactive\.dismiss\('close'\)/)
 })
 
 test('the chat answers an agent\'s hello with its tap, never with Alex\'s opening', () => {
@@ -510,11 +517,11 @@ test('the chat answers an agent\'s hello with its tap, never with Alex\'s openin
   // The server takes a tap only for a chat without Alex's opening: with the hello on screen there is none.
   assert.match(chat, /useRef<ProactiveOpening \| null>\(!savedConvId && proactive && !liveRef\.current \? proactive : null\)/)
   const send = chat.slice(chat.indexOf('let activeConvId = convId'), chat.indexOf("const res = await apiFetch(`${apiUrl}/api/chat`, {"))
-  assert.match(send, /const hello = convId \? null : liveRef\.current\s+if \(hello\) liveRef\.current = null/)
+  assert.match(send, /const hello = convId \? null : liveRef\.current\s+if \(hello\) \{\s+liveRef\.current = null\s+onLiveSending\?\.\(true\)/)
   assert.match(send, /\.\.\.\(hello \? \{ live_tap: hello\.tap \} : \{\}\)/)
   assert.match(send, /if \(held && typeof initData\.live_at === 'string'\) lastMsgTime\.current = initData\.live_at/)
   assert.match(send, /if \(!held\) setMessages\(prev => prev\.filter\(m => m\.id !== liveId\(hello\)\)\)/)
-  assert.match(send, /markProactiveConversation\(newConvId\)\s+const vid = getVisitorId\(\)\s+if \(vid\) posthog\?\.identify\(vid\)\s+onLiveReplied\?\.\(held\)/)
+  assert.match(send, /markProactiveConversation\(newConvId\)\s+const vid = getVisitorId\(\)\s+if \(vid\) posthog\?\.identify\(vid\)\s+onLiveSending\?\.\(false\)\s+onLiveReplied\?\.\(held\)/)
   // ✕ before the visitor wrote is their "not now" to the agent.
   assert.match(chat, /if \(liveRef\.current && !convId\) onLiveDismiss\?\.\(\)/)
 })
@@ -531,4 +538,34 @@ test('what came of Alex\'s card is noted where it happens', () => {
     'only an opening that shows')
   const w = readFileSync(join(here, '..', 'src', 'Widget.tsx'), 'utf8')
   assert.match(w, /if \(o\.firstReply \|\| o\.firstChannel\) noteAlexAnswer\('engaged'\)/)
+})
+
+// ── CodeRabbit #278, round 1 ─────────────────────────────────────────────────────────────────────────────────
+
+test('a first message carrying the hello\'s tap is never a "not now" (Escape, ✕, the card)', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  const dismiss = src.slice(src.indexOf('dismiss: () => {'), src.indexOf('taken: () => {', src.indexOf('dismiss: () => {')))
+  assert.match(dismiss, /^dismiss: \(\) => \{\s+if \(tapInFlightRef\.current\) return false/)
+  assert.match(src, /sending: \(on: boolean\) => \{ tapInFlightRef\.current = on \}/)
+  const w = readFileSync(join(here, '..', 'src', 'Widget.tsx'), 'utf8')
+  assert.match(w, /onLiveSending=\{live\.sending\}/)
+  // Every "not now" event only for a dismissal that happened.
+  assert.equal(w.split("if (live.dismiss()) posthog?.capture('live_hello_dismissed'").length - 1, 3)
+  assert.doesNotMatch(w, /posthog\?\.capture\('live_hello_dismissed'[^\n]*\)\s+live\.dismiss\(\)/)
+})
+
+test('the last beat, refused inside bbc-live\'s gap, goes once more after it', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  assert.match(src, /if \(res\.status === 202 && chat && !again\) setTimeout\(\(\) => sendBeat\(cfg, true, true\), LAST_BEAT_AGAIN_MS\)/)
+  const again = Number(/const LAST_BEAT_AGAIN_MS = ([\d_]+)/.exec(src)[1].replace(/_/g, ''))
+  const go = readFileSync(join(here, '..', '..', 'bbc-live', 'main.go'), 'utf8')
+  const gap = Number(/MinBeatGap: (\d+) \* time\.Second/.exec(go)[1]) * 1000
+  assert.ok(again > gap && again < gap + 5_000, `again after ${again} ms, the gap ${gap} ms`)
+})
+
+test('a hello kept from an earlier page is dismissed before this page\'s config, with the place and the pass kept', () => {
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  const dismiss = src.slice(src.indexOf('dismiss: () => {'), src.indexOf('taken: () => {', src.indexOf('dismiss: () => {')))
+  assert.match(dismiss, /const url = cfg\?\.url \|\| keptUrl\(\)\s+const pass = cfg\?\.pass \|\| storedPass\(\)\s+if \(url && pass\)/)
+  assert.match(src, /if \(cfg\.enabled && cfg\.url\) keepUrl\(cfg\.url\)/)
 })
