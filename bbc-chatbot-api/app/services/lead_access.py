@@ -5,10 +5,9 @@ role only, so any sales agent could paste a CRM id on, or push to the CRM, a lea
 working, and take its credit. The rule now:
 
   - owner, admin, dev: any lead;
-  - an agent (sales): a lead whose chat is theirs (given to them, closed by them, taken by them, or
-    given by the follow-up lottery), or one nobody has while the lottery is off (today's practice:
-    an AI-only lead anyone may pick up). Never another agent's, never one waiting blind in the shared
-    line, and, with the lottery on, never one waiting for the lottery;
+  - an agent (sales): a lead whose chat is theirs (given to them, closed by them, taken by them), or one
+    nobody has (an AI-only lead anyone may pick up). Never another agent's, never one waiting blind in the
+    shared line;
   - anyone else: what the route's own role check allows (unchanged).
 
 Every refusal is counted (LEAD_ACCESS_HEALTH) and logged by ids only.
@@ -23,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 MANAGERS = ("owner", "admin", "dev")
 
-LEAD_ACCESS_HEALTH: dict[str, int] = {"refused_other_agent": 0, "refused_blind": 0, "refused_lottery": 0,
-                                      "allowed_unowned": 0, "read_failed": 0}
+LEAD_ACCESS_HEALTH: dict[str, int] = {"refused_other_agent": 0, "refused_blind": 0, "allowed_unowned": 0,
+                                      "read_failed": 0}
 
 
 def owner_of_conversation(conv: Optional[dict]) -> Optional[str]:
@@ -32,15 +31,12 @@ def owner_of_conversation(conv: Optional[dict]) -> Optional[str]:
     if not conv:
         return None
     meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
-    followup = meta.get("followup") if isinstance(meta.get("followup"), dict) else {}
-    given = followup.get("agent_id") if followup.get("state") in ("pending", "acked", "manual") else None
-    return conv.get("assigned_agent_id") or meta.get("closed_by_agent_id") or meta.get("engaged_agent_id") or given
+    return conv.get("assigned_agent_id") or meta.get("closed_by_agent_id") or meta.get("engaged_agent_id")
 
 
 def refusal(user: dict, conv: Optional[dict]) -> Optional[str]:
     """None when this user may act on the lead of `conv`, else what the panel says."""
     from app.api.conversations import _taken_blind
-    from app.services import lead_lottery
 
     if (user.get("role") or "") != "sales":
         return None  # managers act on any lead; other roles are held by the route's own role check
@@ -52,9 +48,6 @@ def refusal(user: dict, conv: Optional[dict]) -> Optional[str]:
         LEAD_ACCESS_HEALTH["refused_other_agent"] += 1
         return "This lead is another agent's."
     if not owner:
-        if lead_lottery.enabled():
-            LEAD_ACCESS_HEALTH["refused_lottery"] += 1
-            return "This lead is waiting for the lottery to give it to someone."
         LEAD_ACCESS_HEALTH["allowed_unowned"] += 1
     return None
 
@@ -77,7 +70,7 @@ async def check(user: dict, lead: dict, what: str) -> None:
         raise HTTPException(503, "Couldn't check who this lead belongs to. Try again.") from e
     if conv is None:
         # get_conversation_simple answers None for a failed read as well as for no row: either way the owner is
-        # unknown, and an unknown owner is not "nobody's" (with the lottery off that would let anyone act).
+        # unknown, and an unknown owner is not "nobody's" (that would let anyone act).
         LEAD_ACCESS_HEALTH["read_failed"] += 1
         logger.error(f"[lead-access] {what} lead={lead.get('id')}: its chat could not be read, refused")
         raise HTTPException(503, "Couldn't check who this lead belongs to. Try again.")

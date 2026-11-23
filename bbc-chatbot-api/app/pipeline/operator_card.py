@@ -7,7 +7,10 @@ regex extraction, merges it onto the lead, and pushes a lead_details event on
 the operator-only SSE channel (op:{cid}) with what is known, what is missing
 and the question to ask next. It never speaks to the client.
 
-Behind EXTRACT_EVERY_MESSAGE and OPERATOR_DETAILS_CARD (both off at merge).
+EXTRACT_EVERY_MESSAGE is on by default since 23 Nov 2026: in 43 of the 45 chats of the month whose
+client wrote the dates while the lead kept none, an agent was in the chat, and the abandoned-lead job
+then sent the CRM a departure 30 days after the chat. false turns it off without a deploy.
+OPERATOR_DETAILS_CARD (the card itself) stays off by default.
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ async def extract_and_push(conversation_id: str, message: str) -> None:
     """
     from app.flags import flag
 
-    if not flag("EXTRACT_EVERY_MESSAGE", False):
+    if not flag("EXTRACT_EVERY_MESSAGE", True):
         return
     try:
         from app.pipeline.entity_extractor import extract_entities
@@ -64,10 +67,14 @@ async def extract_and_push(conversation_id: str, message: str) -> None:
             "trip_type": extracted.trip_type,
             "passengers": extracted.passengers,
             "cabin_class": extracted.cabin_class,
-            "_children_count": extracted.children_count or 0,
-            "_infant_count": extracted.infant_count or 0,
+            # None when the message names no minor; 0 when it says there is none of that kind ("2 adults and
+            # a baby": no child): a 0 reaches the lead and clears an older count (CodeRabbit #279).
+            "_children_count": extracted.children_count,
+            "_infant_count": extracted.infant_count,
+            # "aisle seat", "travel insurance" said to the agent: labels only (needs_of).
+            "must_haves": extracted.needs,
         }
-        entities = {k: v for k, v in entities.items() if v}
+        entities = {k: v for k, v in entities.items() if v is not None}
         if entities:
             await lead_service.update_lead_from_entities(conversation_id, entities)
         if not flag("OPERATOR_DETAILS_CARD", False):

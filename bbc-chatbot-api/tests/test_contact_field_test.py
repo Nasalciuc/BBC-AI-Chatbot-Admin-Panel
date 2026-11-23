@@ -215,6 +215,8 @@ class TestOffer:
     def test_the_ads_card_with_a_place_and_no_dates_keeps_its_channel_and_gets_the_answer(self, field_v):
         trip = TripContext(destination_code="CDG")
         out = proactive.offer(field_v, "ads", trip, "bbc", device="computer", team_online=False, opens_field=True)
+        # Its yes is the Kayak card's (owner, 23 Nov), and it opens the field at once, as "Get a fare quote" did.
+        assert out["quick_replies"][0] == "Yes, send me fares"
         assert out["confirm"]["field"] == "email"
         assert out["confirm"]["message"].endswith("What's your email address?")
         assert [b["kind"] for b in out["confirm"]["buttons"]] == ["sms", "email"], "no waiting here off hours"

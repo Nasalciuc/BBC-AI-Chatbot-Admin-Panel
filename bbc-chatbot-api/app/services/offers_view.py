@@ -155,33 +155,14 @@ def owner_of(row: dict) -> Optional[str]:
     return row.get("assigned_agent_id") or row.get("closed_by_agent_id") or row.get("engaged_agent_id") or None
 
 
-def followup_line(row: dict, names: dict[str, str]) -> Optional[dict]:
-    """How the lead reached its agent, for "Given by the lottery to Charlie at 09:12" (lead_lottery)."""
-    f = row.get("followup")
-    if not isinstance(f, dict) or not f.get("by"):
-        return None
-    agent = f.get("agent_id")
-    return {
-        "by": f.get("by"),
-        "state": f.get("state"),
-        "at": f.get("assigned_at"),
-        "agent_name": names.get(agent) if agent else None,
-    }
-
-
-def _client_row(group: list[dict], *, masked: bool, blind: bool, hidden: bool = False) -> dict:
-    """The fields a row shares, waiting or done: who, how to reach them, the newest trip.
-
-    hidden: another agent's lead (with the follow-up lottery on): the route and whose it is, never how
-    to reach the client."""
+def _client_row(group: list[dict], *, masked: bool, blind: bool) -> dict:
+    """The fields a row shares, waiting or done: who, how to reach them, the newest trip."""
     main = group[0]
     email, phone = _first(group, "visitor_email"), _first(group, "visitor_phone")
     to_check = None if phone else _first(group, "phone_to_check")
     name = _first(group, "visitor_name")
-    if masked or hidden:
+    if masked:
         name, email, phone, to_check = mask_name(name), mask_email(email), mask_phone(phone), mask_phone(to_check)
-    if hidden:
-        email = phone = to_check = None
     out = {
         "conversation_id": main.get("conversation_id"),
         "lead_id": main.get("id"),
@@ -200,7 +181,6 @@ def _client_row(group: list[dict], *, masked: bool, blind: bool, hidden: bool = 
         "cabin_class": main.get("cabin_class"),
         "chats": _chats(group),
         "blind": blind,
-        "hidden": hidden and not blind,
     }
     if blind:
         # Blind take (the chats' rule): an agent learns who waits and since when, never the trip or how to
@@ -237,7 +217,6 @@ def build_offers(
     names: Optional[dict[str, str]] = None,
     masked: bool = False,
     blind: Optional[Callable[[dict], bool]] = None,
-    hidden: Optional[Callable[[dict], bool]] = None,
     owner: Optional[Callable[[dict], Optional[str]]] = None,
 ) -> dict:
     """The queue: {"waiting": oldest first, "done": newest first, "counts"}.
@@ -248,7 +227,6 @@ def build_offers(
     otherwise."""
     names = names or {}
     blind = blind or (lambda _row: False)
-    hidden = hidden or (lambda _row: False)
     owner = owner or owner_of
     waiting_rows: list[dict] = []
     done_rows: list[dict] = []
@@ -262,9 +240,8 @@ def build_offers(
         oldest = min(_at(r.get("created_at")) for r in group)
         wished = next((r for r in group if channels(r) or refusals(r)), main)
         state = crm_state(main)
-        agent = owner(main)  # given, closed by, or the one who took the chat: the rule that hides it
-        is_hidden = any(hidden(r) for r in group)
-        row = _client_row(group, masked=masked, blind=any(blind(r) for r in group), hidden=is_hidden)
+        agent = owner(main)  # given, closed by, or the one who took the chat
+        row = _client_row(group, masked=masked, blind=any(blind(r) for r in group))
         row.update({
             "channels": channels(wished),
             "refused": refusals(wished),
@@ -274,12 +251,9 @@ def build_offers(
             "crm_lead_id": main.get("crm_lead_id"),
             "agent_name": names.get(agent) if agent else None,
             "agent_id": agent,
-            "followup": followup_line(main, names),
             "chat_status": main.get("conversation_status"),
             "waiting_since": oldest.astimezone(timezone.utc).isoformat(),
         })
-        if is_hidden:
-            row["crm_lead_id"] = None  # a handle on the client in the CRM: theirs, not this agent's
         if row["blind"]:
             # The wishes, the price and the CRM's verdict come from the client's words and contact: they wait
             # for the take too.
@@ -292,8 +266,7 @@ def build_offers(
     for group in group_by_client(done_rows):
         group = _newest_first(group)
         state, at, by = max((mark_of(r) for r in group), key=lambda m: m[1])
-        row = _client_row(group, masked=masked, blind=any(blind(r) for r in group),
-                          hidden=any(hidden(r) for r in group))
+        row = _client_row(group, masked=masked, blind=any(blind(r) for r in group))
         row.update({"state": state, "at": at.astimezone(timezone.utc).isoformat(), "by_name": names.get(by) if by else None})
         done.append(row)
     done.sort(key=lambda r: r["at"], reverse=True)

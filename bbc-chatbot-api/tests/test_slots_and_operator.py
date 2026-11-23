@@ -128,11 +128,45 @@ def test_apply_slot_question_flag_off_unchanged(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_extract_and_push_inert_when_flag_off(monkeypatch):
+    """EXTRACT_EVERY_MESSAGE=false still turns it off, without a deploy."""
     from app.pipeline import operator_card
-    monkeypatch.delenv("EXTRACT_EVERY_MESSAGE", raising=False)
+    monkeypatch.setenv("EXTRACT_EVERY_MESSAGE", "false")
     with patch("app.pipeline.entity_extractor.extract_entities",
                side_effect=AssertionError("extractor ran")):
         await operator_card.extract_and_push("conv-1", "JFK to LHR on June 1")
+
+
+@pytest.mark.asyncio
+async def test_extract_and_push_runs_by_default_and_saves_the_clients_dates(monkeypatch):
+    """23 Nov 2026: in 43 of the month's 45 chats whose client wrote the dates while the lead kept none,
+    an agent was in the chat. The switch is on unless it says false: what the client tells the agent
+    reaches the lead, and the CRM gets the client's dates instead of a departure 30 days out."""
+    from datetime import date, timedelta
+
+    from app.pipeline import operator_card
+    monkeypatch.delenv("EXTRACT_EVERY_MESSAGE", raising=False)
+    monkeypatch.delenv("OPERATOR_DETAILS_CARD", raising=False)
+    # Relative to today: the suite also runs 120 days ahead (--as-of).
+    out, back = date.today() + timedelta(days=40), date.today() + timedelta(days=55)
+    upd = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", upd):
+        await operator_card.extract_and_push(
+            "conv-1", f"{out:%m/%d/%Y} to {back:%m/%d/%Y}, 2 adults")
+    assert upd.await_count == 1
+    saved = upd.await_args.args[1]
+    assert (saved["departure_date"], saved["return_date"]) == (out.isoformat(), back.isoformat())
+    assert saved["passengers"] == 2
+
+
+@pytest.mark.asyncio
+async def test_extract_and_push_by_default_writes_nothing_for_a_message_without_trip_details(monkeypatch):
+    """The message that carries no trip detail ("thanks, talk soon") writes nothing to the lead."""
+    from app.pipeline import operator_card
+    monkeypatch.delenv("EXTRACT_EVERY_MESSAGE", raising=False)
+    upd = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", upd):
+        await operator_card.extract_and_push("conv-1", "thanks, talk soon")
+    upd.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -5,8 +5,6 @@ import { useAuthStore } from '@/stores/auth-store'
 /**
  * What the heartbeat hands out every beat for "On the site now": the pass to bbc-live, fresh for 60 s (an auth
  * value). Written by use-heartbeat.ts only; null means "the server says nothing": the feature is off for me.
- * The follow-up lottery's badge rides the same beat but is server data: it lives in the query cache
- * (hooks/use-followups-new.ts).
  */
 interface LiveState {
   pass: LivePass | null

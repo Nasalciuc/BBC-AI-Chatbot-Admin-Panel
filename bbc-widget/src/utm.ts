@@ -18,6 +18,8 @@ type Kept = Record<string, string>
  * this copy what the page load saw still reaches the lead.
  */
 let seen: Kept | null = null
+// The site let the chat keep where the visitor came from (captureUtm's `attribution`): the session's source too.
+let attributionOn = true
 
 function readStored(): Kept | null {
   try {
@@ -47,6 +49,7 @@ function namesASource(kept: Kept | null): boolean {
  * anything an earlier page of the tab kept is dropped; the lead still names its page (getUtm).
  */
 export function captureUtm({ attribution = true }: { attribution?: boolean } = {}): void {
+  attributionOn = attribution
   if (!attribution) {
     seen = null
     try { sessionStorage.removeItem(UTM_KEY) } catch { /* storage blocked: nothing was kept */ }
@@ -90,6 +93,65 @@ export function captureUtm({ attribution = true }: { attribution?: boolean } = {
       sessionStorage.setItem(UTM_KEY, JSON.stringify(data))
     }
   } catch { /* storage blocked: `seen` still carries this page's tags to the lead */ }
+}
+
+const bareHost = (h: string) => h.trim().toLowerCase().replace(/^www\./, '')
+
+/** Another site's address: http(s), on a host that is not `host` (this site's own page leads nowhere new). */
+function otherSite(url: string, host: string): boolean {
+  try {
+    const u = new URL(url)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && bareHost(u.hostname) !== bareHost(host)
+  } catch {
+    return false
+  }
+}
+
+/** The tab's record says where the visit came from: a campaign tag, a click id, or another site's page before it. */
+export function namesWhereFrom(kept: Kept | null | undefined, host: string): boolean {
+  return namesASource(kept ?? null) || (!!kept?.referrer && otherSite(kept.referrer, host))
+}
+
+/**
+ * Where the visit came from as the PostHog session of the visit says it (posthog.ts posthogSessionEntry): its first
+ * page's campaign tags and click ids, and the site it came from — the lead's own keys, plus `source_via: 'posthog'`.
+ * `source_via: 'direct'` alone when PostHog saw no site before it ("$direct"). Nothing when it says nothing.
+ *
+ * Point D of "Conversia în chat" (23 Nov): on 14-22 Nov 33 chats reached the server with no source at all, 14 of them
+ * with a contact, over half from Apple's browsers (the tab's storage, above), and PostHog knew 29 of them: 16 direct,
+ * 10 from Facebook or Instagram, 3 others. Only the known keys are read from its first page's address, never the rest
+ * of it. Pure: the entry comes in as an argument.
+ */
+export function sessionSource(entry: unknown, host: string): Kept {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return {}
+  const e = entry as Record<string, unknown>
+  const str = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : '')
+  const out: Kept = {}
+  for (const k of [...UTM_PARAMS, ...CLICK_IDS]) {
+    const v = str(e[`$session_entry_${k}`], 200)
+    if (v) out[k] = v
+  }
+  const url = str(e.$session_entry_url, 2000)
+  if (url) {
+    try {
+      const params = new URL(url).searchParams
+      for (const k of [...UTM_PARAMS, ...CLICK_IDS]) {
+        const v = (params.get(k) || '').trim().slice(0, 200)
+        if (v && !out[k]) out[k] = v
+      }
+    } catch { /* not an address: its tags stay unread */ }
+  }
+  const referrer = str(e.$session_entry_referrer, 1000)
+  if (referrer && otherSite(referrer, host)) out.referrer = referrer
+  if (Object.keys(out).length) return { ...out, source_via: 'posthog' }
+  return referrer === '$direct' ? { source_via: 'direct' } : {}
+}
+
+/** What the chat adds to the tab's record about where the visit came from: the PostHog session's word
+ *  (sessionSource) when the record names nothing, and only where the site let the chat keep it (captureUtm). */
+export function sourceToAdd(kept: Kept, entry: unknown, host: string): Kept {
+  if (!attributionOn || namesWhereFrom(kept, host)) return {}
+  return sessionSource(entry, host)
 }
 
 /**

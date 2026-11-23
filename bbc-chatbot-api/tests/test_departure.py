@@ -125,6 +125,47 @@ class TestWords:
         assert departure_title("call", "", None) == "Call the client back"
         assert departure_title("email", "Maria", "JFK → LHR") == "Email Maria about JFK → LHR"
         assert departure_title("email", None, None) == "Email the client back"
+        assert departure_title("text", "Maria", "JFK → LHR") == "Text Maria back about JFK → LHR"
+        assert departure_title("text", None, None) == "Text the client back"
+
+
+def _signals(channel):
+    return {"id": "L1", "intent_signals": {"contact_channel": channel}}
+
+
+class TestKind:
+    """23 Nov 2026: the departure task was a call whenever the chat had a phone, also for a client who
+    had written "no calls" or "text me". The way the client asked for decides it now."""
+
+    @pytest.mark.parametrize("phone,email,channel,kind", [
+        (True, True, None, "call"),                    # nothing said: a call, as before
+        (False, True, None, "email"),                  # no phone: an e-mail, as before
+        (True, True, "text", "text"),                  # "text me"
+        (True, True, "whatsapp", "text"),              # said before SMS replaced WhatsApp
+        (True, True, "email", "email"),                # "email me"
+        (True, True, "no calls", "email"),             # no calls, an e-mail to write to
+        (True, False, "no calls", "text"),             # no calls, a phone only: a text
+        (True, True, "no calls, no texts", "email"),
+        (True, False, "no calls, no texts", None),     # every way the chat holds turned down
+        (False, True, "no email", None),
+        (True, True, "no texts", "call"),              # texts turned down, calls not
+        (False, True, "text", "email"),                # asked for texts, gave no phone
+    ])
+    def test_the_way_the_client_left_open(self, phone, email, channel, kind):
+        conv = _conv(visitor_phone="+12025550147" if phone else None,
+                     visitor_email="client@example.com" if email else None)
+        assert departure.departure_kind(conv, _signals(channel)) == kind
+
+    @pytest.mark.parametrize("lead", [None, {}, {"intent_signals": None}, {"intent_signals": ["legacy"]},
+                                      {"intent_signals": {"contact_channel": ["x"]}}])
+    def test_a_lead_without_readable_signals_is_a_call(self, lead):
+        assert departure.departure_kind(_conv(), lead) == "call"
+
+    def test_every_way_turned_down_gets_no_task(self):
+        conv = _conv(visitor_email=None)
+        with _left(150):
+            assert seconds_since_left(conv, _signals("no calls, no texts"), [], NOW) is None
+            assert seconds_since_left(conv, _signals("no calls"), [], NOW) == 150
 
     @pytest.mark.parametrize("user,ok", [
         ({"role": "sales", "tunnel_scope": None}, True),
@@ -368,6 +409,19 @@ class TestJob:
         assert "got its task from another run" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_a_client_who_asked_for_texts_gets_a_text_to_do(self):
+        leads = {"c-1": {**_signals("text"), "route_display": "ATL → ICN"}, "c-2": _signals("no calls")}
+        convs = [_conv(id="c-1"), _conv(id="c-2", visitor_email=None, visitor_name="Ana Pop")]
+        with _Patched(_job(convs, leads=leads, ready=[{"id": "agent-a", "role": "sales"}])) as p:
+            await departure.run_departure_tasks()
+            context_read, insert, history = p.mocks[3], p.mocks[6], p.mocks[7]
+        rows = [c.args[0] for c in insert.await_args_list]
+        assert [(r["kind"], r["title"]) for r in rows] == [
+            ("todo", "Text Test back about ATL → ICN"), ("todo", "Text Ana back")]
+        assert context_read.await_args.kwargs == {"with_signals": True}
+        assert history.await_args_list[0].args[3]["kind"] == "text"
+
+    @pytest.mark.asyncio
     async def test_the_history_line_carries_the_due_minutes(self):
         with _Patched(_job([_conv()], ready=[{"id": "agent-a", "role": "sales"}])) as p:
             await departure.run_departure_tasks()
@@ -415,6 +469,13 @@ class TestWiring:
         from app.services.scheduler import _QUIET_WHEN
         assert _QUIET_WHEN["departure_tasks"]({"created": 0}) is True
         assert _QUIET_WHEN["departure_tasks"]({"created": 1}) is False
+
+    def test_only_the_departure_job_reads_the_signals(self):
+        src = (ROOT / "app" / "db" / "supabase.py").read_text(encoding="utf-8")
+        body = src[src.index("async def get_follow_up_context"):src.index("async def client_messages_since")]
+        assert '(", intent_signals" if with_signals else "")' in body
+        for path in ("app/api/tasks.py", "app/api/notifications.py", "app/services/tasks_service.py"):
+            assert "with_signals" not in (ROOT / path).read_text(encoding="utf-8")
 
     def test_the_candidates_read_is_open_sales_chats_with_a_contact(self):
         src = (ROOT / "app" / "db" / "supabase.py").read_text(encoding="utf-8")

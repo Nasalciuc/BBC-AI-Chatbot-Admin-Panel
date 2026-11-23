@@ -14,7 +14,7 @@ from app.services.crm import check_crm_ready, format_phone_international, submit
 from app.db import supabase as db
 from app.pipeline.intent import detect_intent, Intent
 from app.pipeline.generator import generate_response, GeneratedResponse
-from app.pipeline.validator import validate_response
+from app.pipeline.validator import strip_guessed_name, validate_response
 from app.ai.templates import get_template
 from app.pipeline.contact_capture import (
     asks_for_channel,
@@ -30,7 +30,7 @@ from app.pipeline.contact_capture import (
     with_stored_contact,
     with_turn_contact,
 )
-from app.pipeline.entity_extractor import turns_down_calls
+from app.pipeline.entity_extractor import mentions_date, turns_down_calls
 from app.realtime.manager import manager
 from app.flags import flag
 
@@ -1346,7 +1346,9 @@ async def _pipeline(
         "price_seen": extracted.price_seen,
         "best_call_time": extracted.best_call_time,
         "contact_channel": extracted.contact_channel or _answer_channel,
-        "must_haves": _open_door_reply,
+        # The client's own words in the one turn after the summary; on any other turn, the needs this
+        # message names ("aisle seat", "travel insurance"), as labels (entity_extractor.needs_of).
+        "must_haves": _open_door_reply or extracted.needs,
         "_metadata": _site_metadata,
     }
     # An explicit one-way wipes a stale return date on the lead (KAZUO:
@@ -1736,6 +1738,16 @@ async def _pipeline(
             _tool_blocked.add("return_date")
         if _multi_city_declared:
             _tool_blocked.add("trip_type")
+        # The dates the lead holds came from the client: the tool takes them over only on a message that
+        # speaks of a date. #3579 (23 Nov 2026): a January → March trip the client had written became
+        # 23 → 30 Nov on "I will"; #3403 (20 Nov): a week in February became 15 → 30 Dec on "sounds good".
+        if not mentions_date(message):
+            _kept_dates = [k for k in ("departure_date", "return_date")
+                           if isinstance(lead, dict) and lead.get(k) and _te.get(k)]
+            if _kept_dates:
+                _tool_blocked.update(_kept_dates)
+                logger.info(f"[{cid}] Tool {', '.join(_kept_dates)} skipped — the lead's dates kept, "
+                            "no date in this message")
         _pax_updates: dict = {}
         if flag("PAX_TOOL_FIELDS", False):
             _pax_updates, _pax_inconsistent = _tool_pax_breakdown(
@@ -1894,6 +1906,16 @@ async def _pipeline(
         validated_text = gen.text
     else:
         validated_text = validate_response(gen.text)
+        # No name in the chat: never one read from the e-mail address (validator.strip_guessed_name).
+        if not (visitor and (visitor.name or "").strip()):
+            validated_text, _name_removed = strip_guessed_name(
+                validated_text,
+                visitor.email if visitor else None,
+                [m.get("content") or "" for m in (history or []) if isinstance(m, dict) and m.get("role") == "user"]
+                + [message],
+            )
+            if _name_removed:
+                logger.info(f"[{cid}] Reply addressed the client by a name read from their e-mail — taken out")
 
     logger.info(f"[{cid}] [PERF] validate: {(time.perf_counter() - t_section) * 1000:.0f}ms")
     t_section = time.perf_counter()

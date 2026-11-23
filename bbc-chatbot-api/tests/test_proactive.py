@@ -1816,17 +1816,38 @@ class TestAds:
     84% of the ad clicks land on a page about one destination. The widget asks with `ads` there, after 5 s
     in view (bbc-widget triggers.ts); the card says the destination back (owner, 18 Nov)."""
 
-    def test_the_card_says_the_destination_back_with_the_readers_buttons(self):
+    def test_the_card_asks_one_yes_for_the_destination_like_the_kayak_card(self):
+        """Owner, 23 Nov: one question and the Kayak card's yes; the dates and the origin come after the contact."""
         text, replies = proactive.compose("ads", TripContext(source="route_page", destination_name="Paris"))
         assert text == (
-            "Hi, I'm Alex from BuyBusinessClass. Planning a trip to Paris? "
-            "Tell me roughly when, and an agent will check business class fares for you."
+            "Hi, I'm Alex from BuyBusinessClass. Want an agent to send you today's business class fares to Paris?"
         )
-        assert replies == ["Get a fare quote", "I have a question", "Not now"]
-        # The same words as the reader's for the same page, on either site.
-        for site in ("bbc", "bct"):
-            trip = TripContext(source="route_page", destination_name="Madrid")
-            assert proactive.compose("ads", trip, site) == proactive.compose("reader", trip, site)
+        assert replies == ["Yes, send me fares", "I have a question", "Not now"]
+        assert replies[0] == proactive._REPLIES["kayak"][0]
+        for site, brand in (("bbc", "BuyBusinessClass"), ("bct", "Business Class Tickets")):
+            text, _ = proactive.compose("ads", TripContext(source="route_page", destination_name="Madrid"), site)
+            assert text == f"Hi, I'm Alex from {brand}. Want an agent to send you today's business class fares to Madrid?"
+
+    def test_the_reader_on_the_same_page_still_asks_when(self):
+        # The path that does not take the new words: the reader's card and the tapped note keep theirs.
+        trip = TripContext(source="route_page", destination_name="Madrid")
+        for trigger in ("reader", "note"):
+            text, replies = proactive.compose(trigger, trip, "bbc")
+            assert text == ("Hi, I'm Alex from BuyBusinessClass. Planning a trip to Madrid? "
+                            "Tell me roughly when, and an agent will check business class fares for you.")
+            assert replies[0] == "Get a fare quote"
+
+    @pytest.mark.parametrize("lang, words, yes", [
+        ("es", "¿Quiere que un agente le envíe las tarifas de hoy en clase Business a Paris?", "Sí, envíenme tarifas"),
+        ("fr", "Voulez-vous qu'un agent vous envoie les tarifs du jour en classe Affaires pour Paris ?",
+         "Oui, envoyez-moi les tarifs"),
+    ])
+    def test_the_yes_question_in_spanish_and_french(self, lang, words, yes):
+        trip = TripContext(source="route_page", destination_name="Paris")
+        text, replies = proactive.compose("ads", trip, "bbc", lang=lang)
+        assert text.endswith(words) and replies[0] == yes
+        face = proactive.card_face("ads", trip, lang=lang)
+        assert face is not None and face["card_text"] == words
 
     def test_a_page_that_names_the_route_and_the_dates_is_said_back_whole(self):
         trip = TripContext(origin_name="Chicago", destination_name="Paris", depart_date=_in(30).isoformat())
@@ -1860,7 +1881,7 @@ class TestAds:
         rome = {"visitor_id": _VISITOR, "trigger": "ads", "trip": {"destination_name": "Rome"}, "site": "bbc"}
         out = await proactive_offer(ProactiveOfferRequest(**rome), None)
         assert out["show"] is True and out["trigger"] == "ads"
-        assert "Planning a trip to Rome?" in out["message"]
+        assert "today's business class fares to Rome?" in out["message"]
         # A refused list is the quote card's alone: the same ads request with one gets the same answer, whole.
         assert await proactive_offer(ProactiveOfferRequest(**rome, refused=["email"]), None) == out
 

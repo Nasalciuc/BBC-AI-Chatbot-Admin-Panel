@@ -259,6 +259,20 @@ def validate_crm_payload(payload: dict) -> Optional[str]:
     return None
 
 
+def crm_source(meta: dict | None) -> str:
+    """Where the client came from, for the CRM's source (owner, 23 Nov: the CRM must see it on every lead): the
+    campaign's own tag, as before; else the ad's click id, as the chat's prompt reads it (gclid: google, fbclid: fb,
+    msclkid: bing, Kayak's: kayak). On 9-23 Nov 7 chats came with a click id and no tag, and the CRM saw no source.
+    "" when neither says anything: a visit PostHog saw come direct (source_via) stays without a campaign source."""
+    from app.pipeline.entity_extractor import infer_paid_source
+
+    m = meta if isinstance(meta, dict) else {}
+    own = m.get("utm_source")
+    if isinstance(own, str) and own.strip():
+        return own
+    return infer_paid_source(m) or ""
+
+
 def compute_defaults_notes(lead: dict, conv_metadata: dict | None = None) -> list[str]:
     """What the consultant must know before dialing a defaulted row.
 
@@ -289,7 +303,7 @@ def compute_defaults_notes(lead: dict, conv_metadata: dict | None = None) -> lis
         return extras
     return [
         "form only / data incomplete — "
-        f"source: {meta.get('utm_source') or 'direct'}, "
+        f"source: {crm_source(meta) or 'direct'}, "
         f"landing: {meta.get('page_url') or 'unknown'}",
         *gaps,
         *extras,
@@ -435,8 +449,9 @@ def build_crm_payload(
     # UTM marketing attribution
     _meta = conv_metadata or {}
     _utm = {}
-    if _meta.get("utm_source"):
-        _utm["_utmsource"] = _meta["utm_source"]
+    _source = crm_source(_meta)
+    if _source:
+        _utm["_utmsource"] = _source
     if _meta.get("utm_medium"):
         _utm["_utmmedium"] = _meta["utm_medium"]
     if _meta.get("utm_campaign"):
@@ -449,6 +464,10 @@ def build_crm_payload(
         _utm["gclid"] = _meta["gclid"]
     if _meta.get("fbclid"):
         _utm["fbclid"] = _meta["fbclid"]
+    # Bing's click id, as Google's and Facebook's ride (it was dropped here: a Bing ad chat without its tags reached
+    # the CRM with no trace of the ad).
+    if _meta.get("msclkid"):
+        _utm["msclkid"] = _meta["msclkid"]
     if _meta.get("referrer"):
         _utm["http_referrer"] = _meta["referrer"]
     if _meta.get("google_analytics_client_id"):

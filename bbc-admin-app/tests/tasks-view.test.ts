@@ -218,8 +218,7 @@ test('Tasks is in the menu for everyone but QA, with its count', async () => {
   const { readFileSync } = await import('node:fs')
   const src = (p: string) => readFileSync(new URL(`../src/${p}`, import.meta.url), 'utf8')
   assert.match(src('components/layout/data/sidebar-data.ts'), /\.\.\.\(role !== 'qa'\s*\? \[\{ key: 'tasks' as const, title: 'Tasks', url: '\/tasks'/)
-  // The late tasks, counted with the new leads given to me (src/lib/new-leads.ts, tests/lottery-view.test.ts).
-  assert.match(src('components/layout/app-sidebar.tsx'), /if \(item\.key === 'tasks'\) return tasksBadge\(taskCount, followupsNew\)/)
+  assert.match(src('components/layout/app-sidebar.tsx'), /item\.key === 'tasks' && taskCount > 0/)
   assert.match(src('components/layout/mobile-tab-bar.tsx'), /<Link to='\/tasks'/)
   // Reminders run once per person: the dozing tab stays quiet.
   assert.match(src('features/tasks/use-task-alerts.ts'), /if \(dormant \|\| !data\?\.set_up \|\| !data\.time_zone\) return/)

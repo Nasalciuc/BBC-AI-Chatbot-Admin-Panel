@@ -16,9 +16,10 @@ import type { TripPayload } from './tripContext'
 const OPENING_TRIGGERS: readonly OpeningTrigger[] = ['kayak', 'ads', 'quote', 'reader', 'exit', 'note']
 
 /** The opening as it is kept. The reply tapped on the card is not kept: it went out already; nor the channel
- *  picked before the chat opened (its field was on that page). What follows the card stays with it: the
- *  answer to its yes, its channel button, the row's buttons and its language. */
-export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstReply' | 'firstChannel'> {
+ *  picked before the chat opened (its field was on that page), nor the contact left in the row (it went out, and a
+ *  contact is never kept here), nor the row's field. What follows the card stays with it: the answer to its yes,
+ *  its channel button, the row's buttons and its language. */
+export function keepOpening(o: ProactiveOpening): Omit<ProactiveOpening, 'firstReply' | 'firstChannel' | 'firstContact' | 'rowField'> {
   return {
     trigger: o.trigger, message: o.message, quickReplies: o.quickReplies, trip: o.trip, surface: o.surface, shownAt: o.shownAt,
     ...(o.variant ? { variant: o.variant } : {}),

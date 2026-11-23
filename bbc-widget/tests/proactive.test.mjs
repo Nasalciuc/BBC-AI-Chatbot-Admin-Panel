@@ -200,8 +200,8 @@ test('kayak before reader', () => {
 
 // ── ads: a Google or Bing ad, on a page about one destination (owner, 18 Nov) ─────────────────────────
 
-test('ads: from an ad, on a page that names a destination, still here after 4 s in view', () => {
-  assert.equal(ADS_VISIBLE_S, 4)
+test('ads: from an ad, on a page that names a destination, still here after 2.5 s in view', () => {
+  assert.equal(ADS_VISIBLE_S, 2.5)
   assert.equal(at({ ad: true, destination: true, visibleS: ADS_VISIBLE_S - 0.5 }), null)
   assert.equal(at({ ad: true, destination: true, visibleS: ADS_VISIBLE_S }), 'ads')
   // No destination on the page (the home page, the deals): no ads card; the reader may still come.
@@ -552,7 +552,9 @@ test('the quote card hears which fields the form refused, by kind only (owner, 1
   assert.ok(hook.indexOf('if (siteRefused) siteSaidFor') > hook.indexOf('press = fx.press'))
   assert.equal(SAME_SEND_MS, 5000)
   // Only the quote moment sends them, and only when there are some.
-  assert.match(hook, /\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\)/)
+  // The kinds the server is asked with are copied once, for the request and the row (CodeRabbit #279).
+  assert.match(hook, /const refusedAsked = trigger === 'quote' \? \[\.\.\.refused\] : \[\]/)
+  assert.match(hook, /\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\)/)
   assert.match(api, /body: \{\s+visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\]\s/)
   // The card's words come back with their variant, and the card's shown event carries it (as engaged/dismissed do).
   const cardShown = payloads('proactive_shown').filter((p) => !p.includes("trigger: 'note'"))
@@ -641,7 +643,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(trigger === 'quote' && refused\.length \? \{ refused: \[\.\.\.refused\] \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })
@@ -1050,4 +1052,13 @@ test('an unanswered note chat comes back on the next page like a card chat', () 
   const o = { trigger: 'note', message: "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?", quickReplies: ['Get a fare quote', 'I have a question'], trip: null, surface: 'panel', shownAt: 1 }
   assert.deepEqual(readKeptOpening(JSON.parse(JSON.stringify(keepOpening(o)))), o)
   assert.equal(readKeptOpening({ ...o, trigger: 'something_else' }), null)
+})
+
+test('every chat carries where the visit came from: the tab\'s record, else the visit\'s PostHog session (point D, 23 Nov)', () => {
+  // Every door that creates the conversation takes proactiveMetadata (the card, the note, the form, the hello).
+  assert.match(hook, /\.\.\.utm, \.\.\.sourceToAdd\(utm, posthogSessionEntry\(\), host\),/)
+  // posthog-js keeps the session's first page in its own cookie and storage: read from the PostHog in use, guarded.
+  const ph = read('posthog.ts')
+  assert.match(ph, /const props = ph\?\.sessionPropsManager\?\.getSessionProps\?\.\(\)/)
+  assert.match(ph, /return null {2}\/\/ PostHog not loaded, blocked or changed/)
 })

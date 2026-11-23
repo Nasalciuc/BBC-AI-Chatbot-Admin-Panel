@@ -103,11 +103,11 @@ def test_the_ads_card_says_the_cabin_that_was_searched():
     assert "first class fares" in text and "business class" not in text
 
 
-def test_without_a_keyword_the_english_words_are_word_for_word_as_before():
+def test_without_a_keyword_the_card_asks_for_the_pages_cabin_and_place():
     trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business")
     text, _ = proactive.compose("ads", trip, "bbc")
-    assert text == ("Hi, I'm Alex from BuyBusinessClass. Planning a trip to Lakeside? Tell me roughly when, "
-                    "and an agent will check business class fares for you.")
+    # One yes, as the Kayak card (owner, 23 Nov): no "Tell me roughly when" before the contact.
+    assert text == "Hi, I'm Alex from BuyBusinessClass. Want an agent to send you today's business class fares to Lakeside?"
     dated = TripContext(source="route_page", destination_name="Lakeside", depart_date=_day(40))
     text, _ = proactive.compose("reader", dated, "bbc")
     assert text.endswith("Want an agent to check business class fares for these dates?")
@@ -115,7 +115,7 @@ def test_without_a_keyword_the_english_words_are_word_for_word_as_before():
 
 @pytest.mark.parametrize("cabin, lang, words", [
     ("premium_economy", None, "premium economy fares"), ("economy", None, "economy fares"),
-    ("premium_economy", "es", "tarifas en Premium Economy"), ("economy", "fr", "les tarifs en classe Économique"),
+    ("premium_economy", "es", "tarifas de hoy en Premium Economy"), ("economy", "fr", "les tarifs du jour en classe Économique"),
 ])
 def test_an_economy_search_on_a_business_page_is_not_answered_with_business_fares(cabin, lang, words):
     keyword = "premium economy flights to lakeside" if cabin == "premium_economy" else "economy flights to lakeside"
@@ -160,8 +160,9 @@ def test_an_ads_search_that_names_a_place_gets_the_card_its_title_and_its_channe
     out = proactive.offer(VISITOR, "ads", trip, "bbc", device="phone")
     assert out["show"] is True
     assert out["headline"] == "Lakeside · First class"
-    assert out["card_text"] == "Tell me roughly when, and an agent will check first class fares for you."
+    assert out["card_text"] == "Want an agent to send you today's first class fares to Lakeside?"
     assert out["message"].endswith(out["card_text"])
+    assert out["quick_replies"][0] == "Yes, send me fares"
     assert out["channel"] == {"kind": "sms", "label": "Fares by text"}
     assert "confirm" not in out            # no dates: no instant answer to the yes
     computer = proactive.offer(VISITOR, "ads", trip, "bbc", device="computer")

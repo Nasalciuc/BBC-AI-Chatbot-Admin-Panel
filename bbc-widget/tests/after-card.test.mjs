@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { guessCountry, ownerOf, phoneFor, readablePhone, validEmail, validPhone } from '../src/channel.ts'
+import { guessCountry, ownerOf, phoneFor, readRowContact, readablePhone, rowField, rowShowsCountry, validEmail, validPhone } from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
@@ -27,7 +27,7 @@ import { LAYOUT_AFTER_MS, cardAsideWatch, coveredShare, watchPopups } from '../s
 import { keyboardInset } from '../src/keyboard.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
 import { LOCAL_AI_PREFIX, reconcileBatch } from '../src/reconcile.ts'
-import { WIDGET_CSS } from '../src/styles.ts'
+import { ROW_CSS, WIDGET_CSS } from '../src/styles.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const read = (f) => readFileSync(join(SRC, f), 'utf8')
@@ -183,18 +183,119 @@ test('ADR A1: the Kayak card at 2.5 s in view, after half a second of watching o
   assert.doesNotMatch(hook, /c4/i)
 })
 
-test('D1: a refused send beside a form the widget sees gets its row sooner than a card', () => {
-  const quote = { sincePressS: 2.5, sinceFormActivityS: 2.5, invalid: true, busy: false }
+test('D1: a refused send beside a form the widget sees gets its row at once, sooner than a card', () => {
+  // Owner, 23 Nov: at once (it was 2 s). 71% of the refused visitors left within 5 s.
+  assert.equal(QUOTE_ROW_IDLE_S, 0)
+  const quote = { sincePressS: 0, sinceFormActivityS: 0, invalid: true, busy: false }
   assert.equal(pickTrigger(page({ quote: { ...quote, row: true } })), 'quote')
+  // Without a form to stand beside, the card still waits for the form to go quiet; a send not refused waits too.
   assert.equal(pickTrigger(page({ quote })), null)
+  assert.equal(pickTrigger(page({ quote: { ...quote, row: true, invalid: false } })), null)
   assert.ok(QUOTE_ROW_IDLE_S < QUOTE_INVALID_IDLE_S)
   assert.match(hook, /const rowAt = trigger === 'quote' && press\?\.form\?\.isConnected \? press\.form : null/)
   assert.match(hook, /const surface: Surface = row \? 'row' : phone \? 'card' : 'panel'/)
-  assert.match(widget, /return placeFormRow\(\s+form, o,\s+\(kind\) => openProactive\(\{ \.\.\.o, surface: 'panel', firstChannel: kind \}\),/)
-  // The row stands under the pressed button, outside the widget, with its own styles; it never says "you made a mistake".
+  // The refusal is heard at once, the browser's and the site's, not at the next second of the clock.
+  assert.match(hook, /refused = withKinds\(refused, \[refusedKind\(e\.target\)\]\)\s+refusedNow\(\)/)
+  assert.match(hook, /if \(press\?\.invalid && \(siteRefused \|\| e\.name === 'quote_form_failed'\)\) refusedNow\(\)/)
+  assert.match(hook, /refusalTimer = setTimeout\(\(\) => \{\s+refusalTimer = null\s+evaluate\(\)\s+\}, 0\)/)
+  // A visitor fixing the form while the row's answer is on its way still gets it; a new press drops it.
+  assert.match(hook, /const forRow = trigger === 'quote' && before\.row/)
+  assert.match(hook, /if \(!forRow && lastSiteTyping !== before\.typing\) return 'typing'/)
+  assert.match(hook, /if \(\(press\?\.at \?\? null\) !== before\.pressAt \|\| \(!forRow && \(press\?\.activityAt \?\? null\) !== before\.formAt\)\) return 'quote_form'/)
+  // The contact left in the row opens the chat with it sent as the client's first message.
+  assert.match(widget, /return placeFormRow\(\s+form, o,\s+\(kind, contact\) => openProactive\(\{\s+\.\.\.o, surface: 'panel', firstContact: \{ kind, text: channelMessage\(widgetLang\(\), kind, contact\) \},/)
+  assert.match(chat, /const \{ kind, text \} = o\.firstContact\s+onProactiveEngaged\?\.\(text\)\s+posthog\?\.capture\('chat_channel_given', \{ channel: kind, tunnel, where: 'row', \.\.\.fieldTestRef\.current \}\)\s+sendMessage\(text, \{ button: kind \}\)/)
+  // The row stands under the pressed button, outside the widget, in its own tree: its field belongs to no form of
+  // the site, its keys and typing never reach the site's form scripts, and the site's styles never reach it.
   assert.match(row, /const button = form\.querySelector\('button\[type="submit"\], input\[type="submit"\], button:not\(\[type\]\)'\)/)
   assert.match(row, /at\.insertAdjacentElement\(where, host\)/)
-  assert.match(WIDGET_CSS, /#bbc-form-row button \{ all: unset;/)
+  assert.match(row, /if \(typeof host\.attachShadow !== 'function'\) return \(\) => \{\}/)
+  assert.match(row, /const root = host\.attachShadow\(\{ mode: 'open' \}\)/)
+  assert.match(row, /for \(const type of KEPT_IN_ROW\) host\.addEventListener\(type, keep\)/)
+  assert.match(row, /type="text"/)
+  assert.match(row, /if \(e\.key !== 'Enter'\) return\s+e\.preventDefault\(\)/)
+  assert.match(ROW_CSS, /button \{ all: unset;/)
+  assert.match(ROW_CSS, /\.bw-row-offer__input \{[^}]*font-size: 16px/)
+  assert.doesNotMatch(WIDGET_CSS, /\.bw-row-offer/)
+})
+
+test('D1: the row takes an email or a mobile number, and says one is enough to a visitor who gave the form one', () => {
+  // The kinds the form refused, never what was typed: a refused phone and no refused email gave the email.
+  assert.equal(rowField(['phone']), 'email')
+  assert.equal(rowField(['name', 'phone']), 'email')
+  assert.equal(rowField(['email']), 'sms')
+  assert.equal(rowField(['email', 'phone']), 'any')
+  assert.equal(rowField(['name']), 'any')
+  assert.equal(rowField([]), 'any')
+  assert.equal(rowField(null), 'any')
+  // Either contact goes in, whatever the field asked for; a number typed the local way is placed in its country.
+  assert.deepEqual(readRowContact(' client@example.com ', COUNTRIES, US), { kind: 'email', contact: 'client@example.com' })
+  assert.deepEqual(readRowContact('0412 345 678', COUNTRIES, AU), { kind: 'sms', contact: '+61 412 345 678' })
+  assert.deepEqual(readRowContact('+1 210 555 0100', COUNTRIES, AU), { kind: 'sms', contact: '+1 210 555 0100' })
+  assert.deepEqual(readRowContact('client@example', COUNTRIES, US), { error: 'email' })
+  assert.deepEqual(readRowContact('0412 345', COUNTRIES, AU), { error: 'phone' })
+  assert.deepEqual(readRowContact('', COUNTRIES, US), { error: 'either' })
+  assert.deepEqual(readRowContact('London', COUNTRIES, US), { error: 'either' })
+  // Its words in the three languages, with no WhatsApp.
+  for (const lang of ['en', 'es', 'fr']) {
+    const w = words(lang)
+    for (const k of ['rowAny', 'rowSend', 'rowOneEmail', 'rowOneSms', 'badEither']) assert.ok(w[k] && w[k].trim(), `${lang}.${k}`)
+  }
+  assert.equal(words('en').rowSend, 'Send me fares')
+  assert.match(row, /const one = field === 'email' \? w\.rowOneEmail : field === 'sms' \? w\.rowOneSms : ''/)
+  // The hook gives the row its field from the refused kinds, and measures it: the kinds the server was asked with,
+  // one copy for the request and the row, whatever the site says of the same send meanwhile (CodeRabbit #279).
+  assert.match(hook, /const refusedAsked = trigger === 'quote' \? \[\.\.\.refused\] : \[\]/)
+  assert.match(hook, /\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),/)
+  assert.match(hook, /\.\.\.\(row \? \{ rowField: rowField\(refusedAsked\) \} : \{\}\),/)
+  assert.doesNotMatch(hook, /rowField\(refused\)/)
+  assert.match(hook, /\.\.\.\(opening\.rowField \? \{ row_field: opening\.rowField \} : \{\}\),/)
+  // Neither the contact nor the row's field is ever kept with the opening across pages.
+  const kept = keepOpening({ trigger: 'quote', message: 'Faster than the form', quickReplies: [], trip: null, surface: 'row',
+    shownAt: 1, variant: 'row', rowField: 'email', firstContact: { kind: 'email', text: 'Email: client@example.com' } })
+  assert.equal('firstContact' in kept, false)
+  assert.equal('rowField' in kept, false)
+})
+
+test('D1: the row shows the country it places a number in, and the visitor can change it (CodeRabbit #279)', () => {
+  // An en-GB browser guessed the UK for a US number typed without its code, unseen: the number went out as +44.
+  const GB = COUNTRIES.find(c => c.code === 'GB')
+  assert.equal(readRowContact('210 555 0100', COUNTRIES, GB).contact.startsWith('+44'), true)
+  assert.deepEqual(readRowContact('210 555 0100', COUNTRIES, US), { kind: 'sms', contact: '+1 210 555 0100' })
+  // Shown on the mobile-number row at once, on the others as soon as what is typed looks like a number.
+  assert.equal(rowShowsCountry('sms', ''), true)
+  assert.equal(rowShowsCountry('sms', '210 555 0100'), true)
+  assert.equal(rowShowsCountry('any', ''), false)
+  assert.equal(rowShowsCountry('any', '210 555'), true)
+  assert.equal(rowShowsCountry('email', '(210) 555-0100'), true)
+  // A number with its own code, an email, or words need none.
+  for (const field of ['any', 'sms', 'email']) {
+    assert.equal(rowShowsCountry(field, '+1 210 555 0100'), false)
+    assert.equal(rowShowsCountry(field, '0044 20 7946 0000'), false)
+    assert.equal(rowShowsCountry(field, 'client@example.com'), false)
+  }
+  assert.equal(rowShowsCountry('any', 'call me 210'), false)
+  // The row reads the number with the country it shows: the guess first, the visitor's pick after.
+  assert.match(row, /const \[country, setCountry\] = useState<Country>\(\(\) => guessCountry\(COUNTRIES, browserLanguage\(\), timeZone\(\)\)\)/)
+  assert.match(row, /const read = readRowContact\(value, COUNTRIES, country\)/)
+  assert.match(row, /const showCountry = rowShowsCountry\(field, value\)/)
+  assert.match(row, /\{showCountry && \(\s+<select\s+class="bw-row-offer__cc"\s+aria-label=\{w\.country\}\s+value=\{country\.code\}/)
+  assert.match(row, /if \(picked\) setCountry\(picked\)/)
+  assert.match(row, /\{COUNTRIES\.map\(c => <option key=\{c\.code\} value=\{c\.code\}>\{`\$\{c\.flag\} \$\{c\.dial\}`\}<\/option>\)\}/)
+  // As the field: 16px, so a phone does not zoom in on it.
+  assert.match(ROW_CSS, /\.bw-row-offer__cc \{[^}]*font-size: 16px/)
+  // Its change stays in the row like its keys and typing.
+  assert.match(row, /const KEPT_IN_ROW = \[[^\]]*'change'/)
+})
+
+test("D1: the row's contact reaches the chat when an agent's hello holds the opening's place (CodeRabbit #279)", () => {
+  // The hello takes the opening's place at mount (liveRef), which dropped the row's contact with the opening.
+  assert.match(chat, /const openingRef = useRef<ProactiveOpening \| null>\(!savedConvId && proactive && !liveRef\.current \? proactive : null\)/)
+  // It still goes out, as the answer to the hello: the send carries the hello's tap.
+  assert.match(chat, /const rowContact = liveRef\.current \? proactive\?\.firstContact : undefined\s+if \(rowContact\) \{\s+onProactiveEngaged\?\.\(rowContact\.text\)/)
+  assert.match(chat, /sendMessage\(rowContact\.text, \{ button: rowContact\.kind \}\)\s+return\s+\}\s+\/\/ An agent's hello is on screen: nothing exists on the server until the visitor answers it\.\s+if \(liveRef\.current\) return/)
+  assert.match(chat, /const hello = convId \? null : liveRef\.current/)
+  assert.match(chat, /\.\.\.\(hello \? \{ live_tap: hello\.tap \} : \{\}\),/)
 })
 
 // ── E1: popups; E2: the keyboard ──────────────────────────────────────────────────────────
@@ -406,11 +507,16 @@ test('reading back up while an answer streams is never pulled down again', () =>
 // ── The visitors who decide in seconds (ADR A1–A7, 20 Nov) ─────────────────────────────────────────
 // The places below are made up for the tests.
 
-test('ADR A1: the ads card at 4 s in view, after the Kayak card\'s 2.5 s', () => {
-  assert.equal(ADS_VISIBLE_S, 4)
-  assert.ok(KAYAK_VISIBLE_S < ADS_VISIBLE_S)
-  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 3.9, siteSignals: true })), null)
-  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 4, siteSignals: true })), 'ads')
+test('the ads card at 2.5 s in view, as the Kayak card (owner, 23 Nov; it was 4 s)', () => {
+  assert.equal(ADS_VISIBLE_S, 2.5)
+  assert.equal(ADS_VISIBLE_S, KAYAK_VISIBLE_S)
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.4, siteSignals: true })), null)
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.5, siteSignals: true })), 'ads')
+  // On a computer too (the panel), and still never before the widget watched the page.
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.5, phone: false, siteSignals: true })), 'ads')
+  assert.equal(pickTrigger(page({ ad: true, destination: true, visibleS: 2.5, watchedS: 0.4, siteSignals: true })), null)
+  // Kayak still comes first on a visit that is both.
+  assert.equal(pickTrigger(page({ kayak: true, ad: true, destination: true, visibleS: 2.5 })), 'kayak')
 })
 
 test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a place only after "to" or "in"', () => {

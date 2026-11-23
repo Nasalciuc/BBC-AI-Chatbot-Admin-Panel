@@ -664,18 +664,8 @@ export interface OfferRow extends OfferClient {
   chat_status: string | null
   /** Since the client's oldest chat in the window. */
   waiting_since: string
-  /** The follow-up lottery (part 2): whose lead this is, and how it got to them. */
+  /** Whose lead this is: given to them, closed by them, or the agent who took the chat. */
   agent_id?: string | null
-  followup?: OfferFollowup | null
-  /** Another agent's lead while the lottery is on: the trip and whose it is, never how to reach the client. */
-  hidden?: boolean
-}
-
-export interface OfferFollowup {
-  by: 'lottery' | 'manager' | string
-  state: 'pending' | 'acked' | 'missed' | 'manual' | string
-  at: string | null
-  agent_name: string | null
 }
 
 export interface OfferDone extends OfferClient {
@@ -690,8 +680,6 @@ export interface OffersView {
   counts: { waiting: number; sent: number; not_needed: number }
   days: number
   can: { mark: boolean }
-  /** The follow-up lottery is on: leads go to one agent each. */
-  lottery?: boolean
 }
 
 export interface OffersResponse {

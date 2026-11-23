@@ -5,7 +5,7 @@
  *   quote   pressed "Get free quote", is not on /thank-you, and stopped working on the form
  *   kayak   came from Kayak (paid, ≈$30 a visit) and is still here after 2.5 s in view
  *   ads     came from a Google or Bing ad (a paid click too), is on a page that names a destination or
- *           came with a search that names one ("… to Rome"), and is still here after 4 s in view
+ *           came with a search that names one ("… to Rome"), and is still here after 2.5 s in view
  *   reader  25 s in view and scrolled at least half a screen
  *
  * When two qualify at once the first in that order wins; one moment per visit, a 24 h pause after
@@ -50,8 +50,11 @@
  * WATCHED_FIRST_S more, then waited ~0.6 s for the answer. 76% of the Kayak phone visitors were still there at
  * 4 s, 54% at 7.5 s. Every kayak and ads moment of 18-20 Nov (1,418) had the site's signals, which replay a quote
  * form opened before the widget started: there the first watch is WATCHED_FIRST_SIGNALS_S. The C4 test (4 s
- * against 5 s) is retired: both sides came at ~7 s, so it measured nothing. Ads at 4 s, not 3: on a computer the
- * ads card is the open panel, over a page not read yet.
+ * against 5 s) is retired: both sides came at ~7 s, so it measured nothing.
+ *
+ * Ads at 2.5 s, as Kayak (owner, 23 Nov; it was 4 s, for the panel a computer opens over a page not read yet). In the
+ * two days from 20 Nov 18:00 UTC 2.7% of the Kayak cards brought a contact and 0.9% of the ads cards, about 390 ad
+ * visitors a day: the ads card now asks one yes, as the Kayak card does (the server's words), and comes as soon.
  *
  * The 2.5 s stays (owner, 22 Nov). The card now reaches about 3 in 4 Kayak visits, against about 1 in 3 on 17-18
  * Nov, with the same ~800 visits a day. Its yes grew from 8 taps (19 Nov) to 29 (21 Nov), and the contacts from it
@@ -92,14 +95,17 @@ export function offAfter(kept: string | null, trigger: Trigger): string {
 export type OpeningTrigger = Trigger | 'note'
 
 export const KAYAK_VISIBLE_S = 2.5
-export const ADS_VISIBLE_S = 4
+export const ADS_VISIBLE_S = 2.5
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5
 export const QUOTE_IDLE_S = 8
 export const QUOTE_INVALID_IDLE_S = 5
 /** D1 (ADR-4a): a refused send whose form the widget can put a row beside — the row covers nothing, so it
- *  comes sooner than a card would. 54 of the 64 refused on 17-18 Nov never sent anything after. */
-export const QUOTE_ROW_IDLE_S = 2
+ *  comes sooner than a card would. 54 of the 64 refused on 17-18 Nov never sent anything after. At once since
+ *  23 Nov (owner; it was 2 s): about 73 visitors a day are refused without a whole contact and 71% of them leave
+ *  within 5 s, while the row, after its 2 s and the answer's trip, reached about 40 a day. proactive.ts asks as soon
+ *  as the refusal is heard, not at its next second. */
+export const QUOTE_ROW_IDLE_S = 0
 /** After this long since the last press — or, unpressed, since the last touch — the form is just part of
  *  the page again. */
 export const QUOTE_WATCH_S = 180

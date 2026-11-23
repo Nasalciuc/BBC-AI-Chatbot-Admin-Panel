@@ -55,7 +55,6 @@ LOCK_HEALTH: dict[str, int] = {
     "redis_errors": 0,        # a SET or a release that Redis did not answer
     "wait_timeouts": 0,       # another process held the key past WAIT_S; the work went on
     "expired_before_release": 0,  # the work outlived TTL_MS; the key was gone or someone else's
-    "job_skipped_unknown": 0,     # a job that must run in one process only, skipped: Redis couldn't say
     "max_wait_ms": 0,
 }
 
@@ -186,45 +185,3 @@ async def _release_redis(kind: str, conversation_id: str, token: str) -> None:
         LOCK_HEALTH["expired_before_release"] += 1
         logger.warning(f"[lock] {kind} {conversation_id}: the work outlived the {TTL_MS // 1000}s lock; "
                        f"another process may have written alongside it")
-
-
-# ── a job that must not run twice at once (two replicas, one schedule) ──────
-
-
-async def try_job_lock(job: str, *, ttl_ms: int, skip_if_unreachable: bool = False) -> tuple[bool, Optional[str]]:
-    """(held, token) for a scheduled job, never waiting.
-
-    (True, token): this process holds lock:job:<job> in Redis; release it with the token.
-    (True, None): no Redis to ask (not configured, or LOCK_REDIS off): one process is the case, so the job
-    runs (the scheduler's in-process lock still keeps it from overlapping itself). So does a Redis that is
-    configured but cooling down or not answering, unless skip_if_unreachable: a job whose second run in
-    another process would do harm (the follow-up lottery) skips instead, and runs again next time.
-    (False, None): another process holds it, or (skip_if_unreachable) nobody can say: this run is skipped."""
-    from config.settings import settings
-
-    if not flag("LOCK_REDIS", True) or not settings.redis_url:
-        return True, None
-    r = get_redis()
-    if r is None:
-        if skip_if_unreachable:
-            LOCK_HEALTH["job_skipped_unknown"] += 1
-            logger.warning(f"[lock] job {job}: Redis is cooling down, so who holds the job can't be known: skipped")
-            return False, None
-        return True, None
-    token = secrets.token_hex(16)
-    try:
-        got = await r.set(_key("job", job), token, nx=True, px=ttl_ms)
-    except Exception as e:
-        redis_failed("job lock", e)
-        LOCK_HEALTH["redis_errors"] += 1
-        if skip_if_unreachable:
-            LOCK_HEALTH["job_skipped_unknown"] += 1
-            logger.warning(f"[lock] job {job}: Redis did not answer, the run is skipped ({type(e).__name__}: {e})")
-            return False, None
-        logger.warning(f"[lock] job {job}: Redis did not answer, the run goes ahead here ({type(e).__name__}: {e})")
-        return True, None
-    return (True, token) if got else (False, None)
-
-
-async def release_job_lock(job: str, token: str) -> None:
-    await _release_redis("job", job, token)

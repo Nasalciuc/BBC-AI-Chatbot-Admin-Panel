@@ -3,12 +3,10 @@ import { ChevronsUpDown, LogOut, PanelLeftClose, PanelLeftOpen } from 'lucide-re
 import { useAuthStore } from '@/stores/auth-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { useLiveStore } from '@/stores/live-store'
-import { useFollowupsNew } from '@/hooks/use-followups-new'
 import { usePermissions } from '@/lib/bbc/hooks'
 import type { UserRole } from '@/lib/bbc/types'
 import { cn } from '@/lib/utils'
 import { menuCount } from '@/features/tasks/view'
-import { tasksBadge } from '@/lib/new-leads'
 import { useTaskAlerts } from '@/features/tasks/use-task-alerts'
 import { useReadyToggle } from '@/hooks/use-ready-toggle'
 import useDialogState from '@/hooks/use-dialog-state'
@@ -61,7 +59,6 @@ export function AppSidebar() {
   const role = (user?.role ?? 'sales') as UserRole
   const permissions = usePermissions(role)
   const livePass = useLiveStore((s) => s.pass)
-  const followupsNew = useFollowupsNew()
   const groups = getNavGroups(role, permissions, { live: !!livePass })
   const queueCount = useQueueStore((s) => s.queueCount)
 
@@ -70,9 +67,7 @@ export function AppSidebar() {
 
   const badgeFor = (item: PanelNavItem): { text: string; label: string } | null => {
     if (item.key === 'conv' && queueCount > 0 && role !== 'qa') return { text: String(queueCount), label: `${queueCount} waiting for a person` }
-    // The late tasks and the follow-up lottery's leads given to me that I haven't opened yet (the offers to send
-    // are under Tasks), counted together; the label says each (src/lib/new-leads.ts).
-    if (item.key === 'tasks') return tasksBadge(taskCount, followupsNew)
+    if (item.key === 'tasks' && taskCount > 0) return { text: String(taskCount), label: `${taskCount} late` }
     return null
   }
 
@@ -143,7 +138,7 @@ function NavLink({
       onClick={() => setOpenMobile(false)}
       aria-current={active ? 'page' : undefined}
       aria-label={badge ? `${item.title}, ${badge.label}` : item.title}
-      // On hover: what the badge counts (the Tasks badge counts two things), and in the narrow menu the name too.
+      // On hover: what the badge counts, and in the narrow menu the name too.
       title={badge ? (mini ? `${item.title}, ${badge.label}` : badge.label) : mini ? item.title : undefined}
       className={cn(
         'relative flex h-10 items-center gap-3 rounded-xl text-sm no-underline transition-colors focus-visible:outline-2 focus-visible:outline-k-6ea8ff',

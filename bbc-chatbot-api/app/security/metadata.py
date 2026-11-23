@@ -35,6 +35,7 @@ _MAX_KEY = 64
 _MAX_VALUE = 2048  # a page URL or a referrer can be long; nothing else comes close
 _MAX_KEYS = 50     # attribution keys; the validated keys below come on top
 _POSTHOG_ID = re.compile(r"[0-9A-Za-z-]{16,64}")
+_SOURCE_VIA = frozenset({"posthog", "direct"})
 
 # What the site says the page is (bbc-signals.astro, window.bbcPage.page_type): one word of
 # bbc-widget/src/siteSignals.ts PAGE_TYPES, the same list.
@@ -135,4 +136,10 @@ def allowed_widget_metadata(raw: dict | None) -> dict:
     tz = raw.get("tz")
     if isinstance(tz, str) and _TIME_ZONE.fullmatch(tz.strip()):
         out["tz"] = tz.strip()
+    # Where the visit came from when the tab kept nothing of it (bbc-widget utm.ts sessionSource, 23 Nov): "posthog"
+    # when the attribution keys beside it came from the visit's PostHog session, "direct" when PostHog saw no site
+    # before the visit. One of the two words, nothing else.
+    via = raw.get("source_via")
+    if isinstance(via, str) and via in _SOURCE_VIA:
+        out["source_via"] = via
     return out

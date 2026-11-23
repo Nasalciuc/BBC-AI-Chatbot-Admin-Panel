@@ -13,7 +13,7 @@
  */
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { captureUtm, getUtm } from '../src/utm.ts'
+import { captureUtm, getUtm, namesWhereFrom, sessionSource, sourceToAdd } from '../src/utm.ts'
 
 function fakeStorage() {
   const m = new Map()
@@ -151,4 +151,61 @@ test('attribution off with a blocked storage: still only the page', () => {
   open(AD)
   assert.doesNotThrow(() => captureUtm({ attribution: false }))
   assert.deepEqual(getUtm(), { page_url: 'https://buybusinessclass.com/business-class-flights/chicago-to-london' })
+})
+
+// ── a chat whose tab kept nothing: the visit's PostHog session says where it came from (point D, 23 Nov) ──────────
+// On 14-22 Nov 33 chats reached the server with no source at all, over half from Apple's browsers; PostHog knew 29.
+
+const HOST = 'buybusinessclass.com'
+
+test('the PostHog session names the source the tab lost: its first page\'s tags and click ids, and the site before it', () => {
+  const entry = {
+    // Its first page's address: only the known keys are read from it, never the rest.
+    $session_entry_url: 'https://buybusinessclass.com/flights/rome?utm_source=fb&utm_medium=paid&fbclid=f-9&email=someone%40example.com',
+    $session_entry_referrer: 'https://l.facebook.com/',
+    $session_entry_referring_domain: 'l.facebook.com',
+    $session_entry_utm_source: 'fb',
+    $session_entry_fbclid: 'f-9',
+    $session_entry_pathname: '/flights/rome',
+  }
+  assert.deepEqual(sessionSource(entry, HOST), {
+    utm_source: 'fb', utm_medium: 'paid', fbclid: 'f-9', referrer: 'https://l.facebook.com/', source_via: 'posthog',
+  })
+  // A click id PostHog does not keep on its own (Kayak's) is read from the first page's address.
+  assert.deepEqual(sessionSource({ $session_entry_url: 'https://buybusinessclass.com/?kayak_click_id=k-1', $session_entry_referrer: '$direct' }, HOST),
+    { kayak_click_id: 'k-1', source_via: 'posthog' })
+})
+
+test('PostHog saw no site before the visit: direct, and nothing else', () => {
+  assert.deepEqual(sessionSource({ $session_entry_url: 'https://www.buybusinessclass.com/', $session_entry_referrer: '$direct' }, HOST),
+    { source_via: 'direct' })
+})
+
+test('a session that began on the site itself, or an entry that is not PostHog\'s, says nothing', () => {
+  assert.deepEqual(sessionSource({ $session_entry_url: 'https://buybusinessclass.com/deals', $session_entry_referrer: 'https://www.buybusinessclass.com/' }, HOST), {})
+  for (const bad of [null, undefined, 'fb', 42, [], { $session_entry_url: 'not an address' }]) {
+    assert.deepEqual(sessionSource(bad, HOST), {}, String(bad))
+  }
+  // A referrer that is no web address is no site.
+  assert.deepEqual(sessionSource({ $session_entry_referrer: 'android-app://com.google.android.gm/' }, HOST), {})
+})
+
+test('the session\'s word is added only when the tab names nothing, and only where the site lets the chat keep it', () => {
+  open(HOME)
+  captureUtm()
+  const entry = { $session_entry_referrer: 'https://l.facebook.com/', $session_entry_utm_source: 'fb' }
+  // The tab kept only the page: the session says the rest.
+  assert.deepEqual(sourceToAdd(getUtm(), entry, HOST), { utm_source: 'fb', referrer: 'https://l.facebook.com/', source_via: 'posthog' })
+  // A page of the site itself before this one is no source either.
+  assert.equal(namesWhereFrom({ page_url: HOME, referrer: 'https://buybusinessclass.com/deals' }, HOST), false)
+  assert.deepEqual(sourceToAdd({ page_url: HOME, referrer: 'https://buybusinessclass.com/deals' }, entry, HOST).source_via, 'posthog')
+  // The tab's own record wins whenever it names where the visit came from: a tag, a click id, another site.
+  open(AD, 'https://www.bing.com/')
+  captureUtm()
+  assert.deepEqual(sourceToAdd(getUtm(), entry, HOST), {})
+  assert.deepEqual(sourceToAdd({ page_url: HOME, gclid: 'g-1' }, entry, HOST), {})
+  assert.deepEqual(sourceToAdd({ page_url: HOME, referrer: 'https://www.google.com/' }, entry, HOST), {})
+  // Without marketing consent (data-attribution="off") nothing is added, whatever PostHog says.
+  captureUtm({ attribution: false })
+  assert.deepEqual(sourceToAdd(getUtm(), entry, HOST), {})
 })

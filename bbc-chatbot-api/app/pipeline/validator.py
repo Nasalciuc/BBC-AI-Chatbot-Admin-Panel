@@ -224,3 +224,88 @@ def validate_response(text: str) -> str:
         return EMPTY_FALLBACK
 
     return result
+
+
+# ── A name the client never gave ─────────────────────────────
+# #3341, and again in November 2026: with no name in the chat, the reply called the client by a name
+# read from their e-mail address ("Email is all set, <name>!"). The prompt forbids it ("never one read
+# from their email"); the model did it anyway. So, when the chat holds no name: a word the reply uses
+# to address the client ("Thanks, X!", "Hi X,", "X, I've noted…", "…, X.") that sits in the local part
+# of the e-mail and that the client never typed is taken out. Any other word stays where it is.
+_EMAIL_IN_TEXT_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_GREETING = (
+    r"(?:hi|hello|hey|dear|thanks|thank\s+you(?:\s+so\s+much)?|perfect|great|wonderful|lovely|excellent"
+    r"|got\s+it|of\s+course|absolutely|sure|welcome|no\s+problem|okay|ok|alright|noted|understood"
+    r"|sounds\s+good|all\s+set|happy\s+to\s+help|my\s+pleasure|good\s+(?:morning|afternoon|evening)"
+    r"|speak\s+soon|talk\s+soon|bye|goodbye|cheers|fantastic|brilliant|awesome)"
+)
+# One name, or a first and a last name ("Thank you, X Y!"): capitalised, as the model writes it.
+_NAME = r"(?P<name>[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)"
+# "Thanks, X!", "Hi X, how…", "Perfect X." — the greeting stays, the name goes.
+_AFTER_GREETING_RE = re.compile(r"\b(?P<greet>(?i:" + _GREETING + r"))\s*,?\s+" + _NAME + r"\b(?=\s*[,.!?;:]|\s*$)")
+# "X, I've noted your dates" — at the start of a sentence.
+_LEADING_RE = re.compile(r"(?:^|(?<=[.!?]\s))" + _NAME + r",\s+(?P<next>\w)")
+# "Speak soon, X." / "…for you, X!" — at the end of a sentence. Not a place after its city: "Amman, Jordan."
+# is a city and its country, "Richmond, Virginia." a city and its state, not someone addressed (CodeRabbit
+# #279). Only a country or a state counts: "on WhatsApp, Dana." still calls the client Dana (round 2).
+_TRAILING_RE = re.compile(r",\s*" + _NAME + r"(?=\s*[.!?](?:\s|$)|\s*$)")
+_WORD_BEFORE_RE = re.compile(r"([A-Za-z][\w'-]*)\W*$")
+# The countries, the US states and the Canadian provinces a "City, Place" names, in one or two words.
+_PLACES = frozenset((
+    "afghanistan albania algeria andorra angola argentina armenia australia austria azerbaijan bahamas bahrain "
+    "bangladesh barbados belarus belgium belize benin bhutan bolivia botswana brazil brunei bulgaria burundi "
+    "cambodia cameroon canada chad chile china colombia comoros congo croatia cuba cyprus czechia denmark "
+    "djibouti dominica ecuador egypt eritrea estonia eswatini ethiopia fiji finland france gabon gambia georgia "
+    "germany ghana greece grenada guatemala guinea guyana haiti honduras hungary iceland india indonesia iran "
+    "iraq ireland israel italy jamaica japan jordan kazakhstan kenya kiribati kosovo kuwait kyrgyzstan laos "
+    "latvia lebanon lesotho liberia libya liechtenstein lithuania luxembourg madagascar malawi malaysia "
+    "maldives mali malta mauritania mauritius mexico micronesia moldova monaco mongolia montenegro morocco "
+    "mozambique myanmar namibia nauru nepal netherlands nicaragua niger nigeria norway oman pakistan palau "
+    "panama paraguay peru philippines poland portugal qatar romania russia rwanda samoa senegal serbia "
+    "seychelles singapore slovakia slovenia somalia spain sudan suriname sweden switzerland syria taiwan "
+    "tajikistan tanzania thailand togo tonga tunisia turkey turkmenistan tuvalu uganda ukraine uruguay "
+    "uzbekistan vanuatu venezuela vietnam yemen zambia zimbabwe england scotland wales "
+    "alabama alaska arizona arkansas california colorado connecticut delaware florida hawaii idaho illinois "
+    "indiana iowa kansas kentucky louisiana maine maryland massachusetts michigan minnesota mississippi "
+    "missouri montana nebraska nevada ohio oklahoma oregon pennsylvania tennessee texas utah vermont virginia "
+    "washington wisconsin wyoming alberta manitoba ontario quebec saskatchewan"
+).split()) | frozenset((
+    "new zealand", "south africa", "south korea", "north korea", "saudi arabia", "sri lanka", "costa rica",
+    "el salvador", "puerto rico", "united kingdom", "united states", "czech republic", "dominican republic",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "rhode island",
+    "south carolina", "south dakota", "west virginia", "british columbia", "nova scotia", "new brunswick",
+))
+# Words a sentence opens with, never a name, whatever the e-mail holds.
+_NEVER_A_NAME = {
+    "great", "perfect", "thanks", "thank", "sure", "okay", "absolutely", "noted", "lovely", "wonderful",
+    "excellent", "understood", "certainly", "yes", "sorry", "welcome", "hello", "happy", "also", "just",
+    "please", "got", "alright", "right", "good", "fantastic", "brilliant", "awesome", "cool", "nice",
+    "sounds", "hey", "dear", "and", "but", "now", "then", "first", "business", "economy", "travel",
+}
+
+
+def strip_guessed_name(text: str, email: str | None, client_texts: list[str]) -> tuple[str, bool]:
+    """The reply without a name the client never gave (see above): (text, True when one was taken
+    out). Only for a chat that holds no name — the caller checks that. A word is a guessed name when
+    it is in the e-mail's local part (letters only, 3 or more) and in none of the client's messages
+    (their e-mail addresses left out: typing the address is not typing a name)."""
+    local = re.sub(r"[^a-z]", "", email.split("@", 1)[0].lower()) if isinstance(email, str) and "@" in email else ""
+    if len(local) < 3 or not text:
+        return text, False
+    typed = " ".join(_EMAIL_IN_TEXT_RE.sub(" ", t) for t in client_texts if isinstance(t, str)).lower()
+
+    def guessed(name: str) -> bool:
+        words = name.lower().split()
+        return all(len(w) >= 3 and w not in _NEVER_A_NAME and w in local
+                   and not re.search(r"\b" + re.escape(w) + r"\b", typed) for w in words)
+
+    out = _AFTER_GREETING_RE.sub(lambda m: m.group("greet") if guessed(m.group("name")) else m.group(0), text)
+    out = _LEADING_RE.sub(lambda m: m.group("next").upper() if guessed(m.group("name")) else m.group(0), out)
+    def trailing(m: re.Match) -> str:
+        before = _WORD_BEFORE_RE.search(m.string[:m.start()])
+        if before and before.group(1)[0].isupper() and m.group("name").lower() in _PLACES:
+            return m.group(0)  # "Amman, Jordan.": a city and its country
+        return "" if guessed(m.group("name")) else m.group(0)
+
+    out = _TRAILING_RE.sub(trailing, out)
+    return out, out != text

@@ -172,9 +172,6 @@ async def health_detail(full: bool = False) -> dict:
     from app.infra.redis_client import REDIS_HEALTH
     from app.services.conversation_lock import LOCK_HEALTH
     from app.services.agent_presence import AGENT_PRESENCE_HEALTH
-    # The follow-up lottery: what it gave, what came back unconfirmed, what waits, what it could not write.
-    from app.services.lead_lottery import LOTTERY_HEALTH
-    from app.db.supabase import LOTTERY_DB_HEALTH
     # How each CRM id got there, who may act on a lead, the morning QA sample.
     from app.db.supabase import CRM_SOURCE_HEALTH
     from app.services.lead_access import LEAD_ACCESS_HEALTH
@@ -191,12 +188,11 @@ async def health_detail(full: bool = False) -> dict:
     from app.services import contact_field_test
 
     # The six problems' counters (Nov 2026), in both answers under the same keys: an operator who asks for the
-    # full payload while looking into a lock, the lottery or the live list must not lose them.
+    # full payload while looking into a lock or the live list must not lose them.
     six_problems = {
         "redis": dict(REDIS_HEALTH),
         "locks": dict(LOCK_HEALTH),
         "agent_presence": dict(AGENT_PRESENCE_HEALTH),
-        "lottery": {**LOTTERY_HEALTH, **LOTTERY_DB_HEALTH},
         "crm_source": dict(CRM_SOURCE_HEALTH),
         "lead_access": dict(LEAD_ACCESS_HEALTH),
         "qa_sample": dict(QA_HEALTH),

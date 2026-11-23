@@ -390,6 +390,396 @@
         "children": null,
         "infants": null
       }
+    },
+    {
+      "text": "only one passanger, me",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "we are 2 passangers",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "Only one (me), and I have miles",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "just 1 - me",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 1,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "one adult and a child",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and a child",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "my wife and I with a baby",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      }
+    },
+    {
+      "text": "3 passengers with a child",
+      "legacy": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "only one stop please",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "just one more question",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "is there a child discount?",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "we need a child seat",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      }
+    },
+    {
+      "text": "2 adults and a child plus a 1-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 1,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults, 2 kids and a 1-year-old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 5,
+        "children": 2,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults, 1 baby and a 9-year-old",
+      "legacy": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 1,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults 2 kids (5 and 1 years old)",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults, 2 kids, a 5-year-old and a 1-year-old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults, 2 kids (a 5 year old and a 1 year old)",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults, 2 kids (a 5-year-old and a 1-year-old)",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults, 2 kids [a 5 year old and a 1 year old]",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults, 2 kids (a 5-year-old and a 7-year-old) plus a 1-year-old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 5,
+        "children": 2,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults, 2 kids, a 5-year-old and a 7-year-old, plus a 1-year-old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 5,
+        "children": 2,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults and two kids, a 5-year-old and a 1-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and 2 kids, one 1 year old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults with 2 kids, plus a 1 year old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 5,
+        "children": 2,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults, 1 baby and her 5 year old brother",
+      "legacy": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 1,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults and a child, he is 1 year old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "2 adults and a baby, she will be 2 years old by then",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults and a child, he is 9 years old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "one adult and a baby, 1 year old",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 0,
+        "infants": 1
+      }
     }
   ]
 }

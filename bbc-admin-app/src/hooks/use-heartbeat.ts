@@ -5,11 +5,9 @@ import { apiFetch, getConversations } from '@/lib/api'
 import {
   canReceiveAssignNotifications,
   notifyAssignment,
-  notifyNewLead,
   stopAssignmentAlerts,
   playQueueChime,
 } from '@/lib/notify-assignment'
-import { leadHref, leadToAnnounce, newLeadText, nextSeen } from '@/lib/new-leads'
 import { useAttentionStore } from '@/stores/attention-store'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
@@ -18,7 +16,6 @@ import { notifyName } from '@/lib/alert-prefs'
 import { hasSession, syncAccessTokenFromCookie, useAuthStore } from '@/stores/auth-store'
 import { useReadyStore } from '@/stores/ready-store'
 import { useLiveStore } from '@/stores/live-store'
-import { FOLLOWUPS_NEW_KEY } from '@/hooks/use-followups-new'
 import type { LivePass } from '@/lib/types'
 
 const HEARTBEAT_INTERVAL_MS = 5_000
@@ -58,12 +55,6 @@ type HeartbeatResponse = {
    *  the operator has the chat open — the countdown after Take uses these. */
   response_deadline_seconds?: number
   viewing_grace_seconds?: number
-  /** Leads the follow-up lottery gave this agent, not opened yet; null when the server can't say. */
-  followups_new?: number | null
-  /** The one given last, while there is one, and when (unix seconds): what the new-lead alert opens, and
-   *  announces only when it was given after the last one seen. */
-  followup_newest?: string | null
-  followup_newest_at?: number | null
   /** "On the site now": the pass to bbc-live, for the roles that see the list while it is on. */
   live?: LivePass | null
 }
@@ -95,10 +86,6 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
   const baselineTaken = useRef(false)
   /** Queue conversations already chimed about — one sound each, not one per 5s poll. */
   const announcedQueue = useRef<Set<string>>(new Set())
-  /** The new-lead alert (src/lib/new-leads.ts): when the last lead seen was given (null until the baseline),
-   *  and the count on the last beat that had one, for "2 new leads". */
-  const leadSeen = useRef<number | null>(null)
-  const leadCount = useRef<number | null>(null)
   /** Kept in a ref so the polling loop always reads the current selection. */
   const viewingRef = useRef<string | null>(viewingConversationId ?? null)
   // The dormant effect reconfigures the RUNNING worker; it must not be in the
@@ -121,31 +108,6 @@ export function useHeartbeat(intervalMs = HEARTBEAT_INTERVAL_MS, viewingConversa
       useLiveStore.getState().setFromBeat(
         res?.live && typeof res.live.url === 'string' && typeof res.live.token === 'string' ? res.live : null,
       )
-      // Server data: the query cache, so the sidebar reads it there (null = the server says nothing, 0 = none).
-      queryClient.setQueryData<number | null>(FOLLOWUPS_NEW_KEY, typeof res?.followups_new === 'number' ? res.followups_new : null)
-      // A lead given to me since the last beat: a gentle phrase, a notification and a toast whose Open opens the
-      // chat, which confirms the lead. Never on the first beat (what was there at sign-in is not news).
-      try {
-        const count = typeof res?.followups_new === 'number' ? res.followups_new : null
-        const newest = typeof res?.followup_newest === 'string' ? res.followup_newest : null
-        const newestAt = typeof res?.followup_newest_at === 'number' ? res.followup_newest_at : null
-        const before = leadCount.current
-        const lead = leadToAnnounce({ seen: leadSeen.current, newest, newestAt, viewing: viewingRef.current })
-        leadSeen.current = nextSeen(leadSeen.current, count, newestAt)
-        if (count !== null) leadCount.current = count
-        if (lead) {
-          // Opening one while another arrives leaves the count as it was: one new lead, not none.
-          const text = newLeadText(count !== null && before !== null ? Math.max(1, count - before) : 1)
-          notifyNewLead(text.title, text.body, leadHref(lead))
-          toast(text.title, {
-            description: text.body,
-            duration: 15_000,
-            action: { label: 'Open', onClick: () => window.location.assign(leadHref(lead)) },
-          })
-        }
-      } catch {
-        // The alert never breaks the beat: the badge still counts the lead
-      }
       if (
         typeof res?.response_deadline_seconds === 'number' &&
         typeof res?.viewing_grace_seconds === 'number'

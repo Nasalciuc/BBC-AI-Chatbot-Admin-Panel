@@ -108,6 +108,26 @@ export const posthog = {
 }
 
 /**
+ * What the PostHog in use keeps of how this session began: posthog-js' session entry properties
+ * (`$session_entry_url`, `$session_entry_referrer`, `$session_entry_utm_source`, `$session_entry_gclid`…), kept in
+ * its own cookie and storage from the session's first page. utm.ts reads the source from it for a chat whose tab
+ * kept none (sessionSource). Null when no PostHog runs or it keeps nothing.
+ */
+export function posthogSessionEntry(): Record<string, unknown> | null {
+  try {
+    const ph = active() as unknown as (PostHogLike & { sessionPropsManager?: { getSessionProps?: () => unknown } }) | undefined
+    // The session's first page is noted when its id is made, at its first event: asking for the id makes sure there
+    // is one (a page whose first event was dropped has none yet; the entry is then this page, which names no other
+    // site, so it adds nothing wrong).
+    ph?.get_session_id?.()
+    const props = ph?.sessionPropsManager?.getSessionProps?.()
+    return props && typeof props === 'object' && !Array.isArray(props) ? props as Record<string, unknown> : null
+  } catch {
+    return null  // PostHog not loaded, blocked or changed: the chat goes on with what the tab kept
+  }
+}
+
+/**
  * The PostHog session of this visit, sent with the conversation it starts (metadata.posthog_session_id),
  * so the panel can take the agent to the replay of what the client did before writing. An id only. With
  * the site's PostHog on, it is the site's session: the replay covers the whole visit, not only the chat.

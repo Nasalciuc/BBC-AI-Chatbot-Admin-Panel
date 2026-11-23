@@ -3,9 +3,10 @@
 The 3 Nov reading: in 27 of 50 conversations the number of travelers was said
 in the chat and never reached the lead. Two holes: the tool had no field for
 it, and the regex did not know "2 seniors", "my husband and I", "3 tickets".
-Both fixes sit behind a flag whose default is today's behaviour, and every
-test below pins that default too (rule 5: the message that does NOT take the
-new branch).
+Both fixes sit behind a flag. PAX_TOOL_FIELDS is still off by default;
+PAX_REGEX_V2 is on by default since 23 Nov 2026, and PAX_REGEX_V2=false still
+gives exactly the old reading (rule 5: the message that does NOT take the new
+branch).
 """
 
 import json
@@ -52,7 +53,8 @@ def _counts(text):
 # ── regex ────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("row", CORPUS, ids=[r["text"] for r in CORPUS])
-def test_flag_off_extracts_exactly_what_master_did(row):
+def test_flag_off_extracts_exactly_what_master_did(row, monkeypatch):
+    monkeypatch.setenv("PAX_REGEX_V2", "false")
     assert _counts(row["text"]) == row["legacy"]
 
 
@@ -62,10 +64,27 @@ def test_flag_on_extracts_the_target(row, monkeypatch):
     assert _counts(row["text"]) == row["v2"]
 
 
+@pytest.mark.parametrize("row", CORPUS, ids=[r["text"] for r in CORPUS])
+def test_the_target_is_the_default(row):
+    """23 Nov 2026: nothing set means the v2 reading."""
+    assert _counts(row["text"]) == row["v2"]
+
+
 def test_the_corpus_covers_the_lost_phrasings():
     lost = {r["text"] for r in CORPUS if r["legacy"]["passengers"] is None and r["v2"]["passengers"]}
     for phrase in ("2 seniors", "my husband and I", "3 tickets", "we are a family of four", "myself"):
         assert phrase in lost
+    # November 2026 (written like the chats, none copied): a typo, a count with "me", adults in words.
+    for phrase in ("only one passanger, me", "we are 2 passangers", "Only one (me), and I have miles",
+                   "one adult and a child", "my wife and I with a baby"):
+        assert phrase in lost
+
+
+def test_the_corpus_covers_what_must_stay_unread():
+    unread = {r["text"] for r in CORPUS if r["legacy"]["passengers"] is None and r["v2"]["passengers"] is None}
+    for phrase in ("only one stop please", "just one more question", "is there a child discount?",
+                   "we need a child seat", "one way"):
+        assert phrase in unread
 
 
 @pytest.mark.parametrize("text", ["one way", "2-3 options", "seat 14A", "flight 2 of 3",
