@@ -47,6 +47,8 @@ class ExtractedEntities:
     # How the client wants to be reached, when they say it: "text", "email",
     # "no calls" (comma-joined). The consultant reads it before dialling.
     contact_channel: Optional[str] = None
+    # What the client needs on the trip, as labels ("aisle seat; travel insurance"): needs_of().
+    needs: Optional[str] = None
     # Set ONLY on the correction path (context given): "17th am" — the
     # morning/evening preference rides into the lead notes.
     time_preference: Optional[str] = None
@@ -840,6 +842,67 @@ def merge_contact_channel(stored: Optional[str], new: str) -> str:
     kept = [p for p in old_parts if p not in new_parts and _CHANNEL_OPPOSITES.get(p) not in new_parts
             and _ONE_PHONE_MESSAGE.get(p) not in new_parts]
     return ", ".join(kept + new_parts)
+
+
+# What the client needs on the trip, said at any turn: a seat, help at the airport, a lie-flat bed, the
+# TSA PreCheck / Known Traveler number, a loyalty account, travel insurance. Until 23 Nov 2026 a need
+# reached the lead only in the one turn after the summary (#3579 asked for trip insurance and named a
+# loyalty account; the lead kept neither). Kept as LABELS only: never the number a client types (a KTN
+# or a loyalty number is not stored), never a reason or a condition ("needs a wheelchair", not why).
+_NEEDS: tuple[tuple[str, re.Pattern], ...] = (
+    ("aisle seat", re.compile(
+        r"\baisle\s+seats?\b|\b(?:prefers?|wants?|needs?|likes?|loves?|get|book)\s+(?:an?\s+|the\s+)?aisle\b"
+        r"|\baisle\s+(?:please|pls|for\s+me)\b|\bon\s+the\s+aisle\b", re.I)),
+    ("window seat", re.compile(
+        r"\bwindow\s+seats?\b|\b(?:prefers?|wants?|needs?|likes?|loves?|get|book)\s+(?:an?\s+|the\s+)?window\b"
+        r"|\bwindow\s+(?:please|pls|for\s+me)\b|\bby\s+the\s+window\b", re.I)),
+    ("lie-flat seat", re.compile(r"\b(?:lie|lay)[\s-]?flat\b|\bflat[\s-]?beds?\b|\bfully\s+flat\b", re.I)),
+    ("wheelchair / airport assistance", re.compile(
+        r"\bwheel\s?chairs?\b|\b(?:special|airport|mobility|wheelchair)\s+assistance\b"
+        r"|\bassistance\s+(?:at|through|in)\s+the\s+airports?\b|\bmeet\s+(?:and|&)\s+assist\b", re.I)),
+    ("TSA PreCheck / KTN", re.compile(
+        r"\bpre[\s-]?check\b|\bknown\s+travell?er\b|\bktn\b|\bglobal\s+entry\b|\bredress\s+number\b",
+        re.I)),
+    ("loyalty number / miles", re.compile(
+        r"\bfrequent\s+fl[yi]er\b|\bloyalty\s+(?:number|program(?:me)?|account|card|status)\b"
+        r"|\b(?:skymiles|aadvantage|mileageplus|avios|flying\s+blue|miles\s*(?:&|and)\s*more)\b"
+        r"|\b(?:miles|points|mileage|rewards?)\s+(?:number|account|#)"
+        r"|number\s+for\s+(?:points|miles)\b"
+        r"|\b(?:use|redeem|book\s+with|pay\s+with)\s+(?:my\s+|our\s+)?(?:points|miles)\b", re.I)),
+    ("travel insurance", re.compile(
+        r"\b(?:travel|trip|cancell?ation)\s+insurance\b|\binsurance\s+for\s+(?:the|our|my)\s+trip\b"
+        r"|\binsure\s+(?:the|our|my)\s+trip\b", re.I)),
+)
+# "no travel insurance", "I don't need a wheelchair", "without TSA": the need said away.
+_NEED_SAID_AWAY = re.compile(
+    r"\b(?:no|not|don'?t|do\s+not|doesn'?t|does\s+not|without|never|nor|skip)\b[^.,;!?]{0,24}$", re.I
+)
+
+
+def needs_of(text: Optional[str]) -> Optional[str]:
+    """The trip needs this message names, as labels joined by "; " ("aisle seat; travel insurance").
+    None when it names none, or only says them away ("no travel insurance")."""
+    text = (text or "").replace("’", "'")
+    found = []
+    for label, rx in _NEEDS:
+        for m in rx.finditer(text):
+            if not _NEED_SAID_AWAY.search(text[max(0, m.start() - 30):m.start()]):
+                found.append(label)
+                break
+    return "; ".join(found) or None
+
+
+def merge_must_haves(stored: Optional[str], new: Optional[str], limit: int = 200) -> Optional[str]:
+    """Every need said so far: the lead's, then this turn's that it does not already name (a need
+    said twice is kept once, a label the client's own words already hold is not added). Never more
+    than `limit` characters: a part that would not fit is left out, never cut."""
+    parts = [p.strip() for p in stored.split(";") if p.strip()] if isinstance(stored, str) else []
+    held = "; ".join(parts).lower()
+    for p in (x.strip() for x in (new or "").split(";")):
+        if p and p.lower() not in held and len("; ".join([*parts, p])) <= limit:
+            parts.append(p)
+            held = "; ".join(parts).lower()
+    return "; ".join(parts) or None
 
 
 def turns_down_calls(channel: Optional[str]) -> bool:
@@ -1812,6 +1875,7 @@ def extract_entities(
         entities.best_call_time = call_time.group(1).strip().rstrip(".")[:40]
 
     entities.contact_channel = contact_channel_of(text)
+    entities.needs = needs_of(text)
 
     # Correction-path only: day-only return mentions resolve against the
     # summary's departure. Runs AFTER the normal parsers so a full date
@@ -1862,7 +1926,7 @@ def extract_entities(
                           "passengers", "cabin_class", "departure_date", "return_date", "trip_type",
                           "occasion", "booking_for", "nonstop_only", "airline_preference",
                           "airline_avoid", "budget_hint", "price_seen", "best_call_time",
-                          "contact_channel", "time_preference"]
+                          "contact_channel", "time_preference", "needs"]
              if getattr(entities, k) is not None]
     if found:
         logger.info(f"Entities extracted: {', '.join(found)}")

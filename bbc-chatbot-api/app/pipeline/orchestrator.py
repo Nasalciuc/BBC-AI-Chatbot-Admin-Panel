@@ -1346,7 +1346,9 @@ async def _pipeline(
         "price_seen": extracted.price_seen,
         "best_call_time": extracted.best_call_time,
         "contact_channel": extracted.contact_channel or _answer_channel,
-        "must_haves": _open_door_reply,
+        # The client's own words in the one turn after the summary; on any other turn, the needs this
+        # message names ("aisle seat", "travel insurance"), as labels (entity_extractor.needs_of).
+        "must_haves": _open_door_reply or extracted.needs,
         "_metadata": _site_metadata,
     }
     # An explicit one-way wipes a stale return date on the lead (KAZUO:

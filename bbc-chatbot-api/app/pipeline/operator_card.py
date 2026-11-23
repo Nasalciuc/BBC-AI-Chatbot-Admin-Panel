@@ -69,6 +69,8 @@ async def extract_and_push(conversation_id: str, message: str) -> None:
             "cabin_class": extracted.cabin_class,
             "_children_count": extracted.children_count or 0,
             "_infant_count": extracted.infant_count or 0,
+            # "aisle seat", "travel insurance" said to the agent: labels only (needs_of).
+            "must_haves": extracted.needs,
         }
         entities = {k: v for k, v in entities.items() if v}
         if entities:

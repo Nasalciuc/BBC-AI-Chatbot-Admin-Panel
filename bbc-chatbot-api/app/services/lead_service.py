@@ -7,7 +7,7 @@ from datetime import date
 from typing import Optional
 
 from app.pipeline.callback_intent import notes_without_call
-from app.pipeline.entity_extractor import DREAM_OUTCOMES, merge_contact_channel, turns_down_calls
+from app.pipeline.entity_extractor import DREAM_OUTCOMES, merge_contact_channel, merge_must_haves, turns_down_calls
 from app.services.conversation_lock import ConversationLock, conversation_lock, local_locks
 
 logger = logging.getLogger(__name__)
@@ -428,6 +428,10 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
                 else ({} if not raw_existing else {"legacy": raw_existing})
             )
             merged_signals = {**existing_signals, **signals}
+            if signals.get("must_haves"):
+                # Every need said so far: "aisle seat", then "travel insurance" keeps both.
+                merged_signals["must_haves"] = merge_must_haves(
+                    existing_signals.get("must_haves"), signals["must_haves"])
             # "Call me", then "text only" or "no calls": the newest wish wins
             # and the call is no longer owed (CodeRabbit #262).
             call_turned_down = turns_down_calls(signals.get("contact_channel"))
