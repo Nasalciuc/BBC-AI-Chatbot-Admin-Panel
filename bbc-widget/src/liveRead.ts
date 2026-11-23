@@ -216,3 +216,11 @@ export function nextPollDelay(status: number | 'error', failures: number): numbe
   if (status === 204 || status === 200) return 0
   return Math.min(30_000, 2_000 * 2 ** Math.min(failures, 4))
 }
+
+/** The last beat (`has_chat`) didn't count, and one more try after bbc-live's 5 s gap can still land: refused
+ *  inside the gap (202), a request that failed on the way ('error'), or bbc-live's own failure (5xx). Without it
+ *  the panel lists a visitor already in a chat until the visit runs out (CodeRabbit #278). A refusal (4xx) would
+ *  only be refused again. */
+export function lastBeatAgain(status: number | 'error'): boolean {
+  return status === 'error' || status === 202 || status >= 500
+}

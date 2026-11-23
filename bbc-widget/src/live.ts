@@ -16,7 +16,8 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexAt, alexCard, alexShown, noteSide } from './agentTest'
 import { apiFetch, ensureVisitorId } from './api'
 import {
-  afterRefusedPass, beatBody, failedAsk, keptPass, nextPollDelay, readConfig, readHello, readKeptHello, renewalOf,
+  afterRefusedPass, beatBody, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello, readKeptHello,
+  renewalOf,
   type BeatAlexCard, type LiveConfig, type LiveHello, type Renewal,
 } from './liveRead'
 import { posthog } from './posthog'
@@ -33,7 +34,8 @@ const PASS_KEY = 'bbc_live_pass'
 // bbc-live is: a hello kept from an earlier page can be dismissed before this page's config comes (20 s in).
 const HELLO_KEY = 'bbc_live_hello'
 const URL_KEY = 'bbc_live_url'
-/** bbc-live counts one beat per 5 s (MinBeatGap); the last beat, refused inside the gap, goes again after it. */
+/** bbc-live counts one beat per 5 s (MinBeatGap); the last beat that didn't count (refused inside the gap, lost on
+ *  the way, bbc-live down) goes once more after it. */
 const LAST_BEAT_AGAIN_MS = 6_000
 /** A pass bbc-live refuses (401) is renewed at most this often. */
 const RENEW_MS = 5 * 60_000
@@ -191,12 +193,13 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         alexCard: alexCardNow(Date.now()) })
       liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) })
-        .then(res => {
-          if (res.status === 401 && !chat) void renew()
-          // The last beat landed inside bbc-live's 5 s gap (202, not counted): once more after it, or the panel would
-          // list the visitor until the visit runs out (CodeRabbit #278). Not one of the effect's timers: it outlives
-          // the cleanup that sent it.
-          if (res.status === 202 && chat && !again) setTimeout(() => sendBeat(cfg, true, true), LAST_BEAT_AGAIN_MS)
+        .then((res): number | 'error' => res.status, (): number | 'error' => 'error')
+        .then(status => {
+          if (status === 401 && !chat) void renew()
+          // The last beat didn't count (202 inside bbc-live's 5 s gap, a request that failed, bbc-live down): once
+          // more after the gap, or the panel would list the visitor until the visit runs out (CodeRabbit #278). Only
+          // once. Not one of the effect's timers: it outlives the cleanup that sent it.
+          if (chat && !again && lastBeatAgain(status)) setTimeout(() => sendBeat(cfg, true, true), LAST_BEAT_AGAIN_MS)
         })
         .catch(() => { /* a missed beat: the next one counts */ })
     }

@@ -7,8 +7,8 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  ALEX_CARD_OLDEST_S, ALEX_TRIGGERS, BEAT_PAGE_TYPES, beatBody, keptPass, nextPollDelay, readConfig, readHello, readKeptHello,
-  sourceOf,
+  ALEX_CARD_OLDEST_S, ALEX_TRIGGERS, BEAT_PAGE_TYPES, beatBody, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello,
+  readKeptHello, sourceOf,
 } from '../src/liveRead.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -556,11 +556,27 @@ test('a first message carrying the hello\'s tap is never a "not now" (Escape, �
 
 test('the last beat, refused inside bbc-live\'s gap, goes once more after it', () => {
   const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
-  assert.match(src, /if \(res\.status === 202 && chat && !again\) setTimeout\(\(\) => sendBeat\(cfg, true, true\), LAST_BEAT_AGAIN_MS\)/)
+  assert.match(src, /if \(chat && !again && lastBeatAgain\(status\)\) setTimeout\(\(\) => sendBeat\(cfg, true, true\), LAST_BEAT_AGAIN_MS\)/)
   const again = Number(/const LAST_BEAT_AGAIN_MS = ([\d_]+)/.exec(src)[1].replace(/_/g, ''))
   const go = readFileSync(join(here, '..', '..', 'bbc-live', 'main.go'), 'utf8')
   const gap = Number(/MinBeatGap: (\d+) \* time\.Second/.exec(go)[1]) * 1000
   assert.ok(again > gap && again < gap + 5_000, `again after ${again} ms, the gap ${gap} ms`)
+})
+
+// ── CodeRabbit #278, round 2 ─────────────────────────────────────────────────────────────────────────────────
+
+test('the last beat lost on the way, or bbc-live down, goes once more too; a refusal and every other beat never', () => {
+  // Didn't count, and may after the gap: refused inside it, a request that failed, bbc-live's own failure.
+  for (const status of [202, 'error', 500, 502, 503]) assert.equal(lastBeatAgain(status), true, String(status))
+  // Counted, or a refusal that the same beat would only get again (a bad beat, a pass refused).
+  for (const status of [200, 400, 401, 403, 404, 413]) assert.equal(lastBeatAgain(status), false, String(status))
+  const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  const send = src.slice(src.indexOf('const sendBeat = '), src.indexOf('const lastBeat = '))
+  // A request that failed on the way reaches the same decision as an answer, as 'error' (not the catch-all).
+  assert.match(send, /\.then\(\(res\): number \| 'error' => res\.status, \(\): number \| 'error' => 'error'\)\s+\.then\(status => \{/)
+  // Only the last beat, and only once: the try after the gap carries `again`.
+  assert.equal(send.split('setTimeout(').length - 1, 1)
+  assert.match(send, /if \(status === 401 && !chat\) void renew\(\)/)
 })
 
 test('a hello kept from an earlier page is dismissed before this page\'s config, with the place and the pass kept', () => {
