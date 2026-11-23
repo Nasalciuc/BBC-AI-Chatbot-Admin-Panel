@@ -288,6 +288,16 @@ test('D1: the row shows the country it places a number in, and the visitor can c
   assert.match(row, /const KEPT_IN_ROW = \[[^\]]*'change'/)
 })
 
+test("D1: the row's contact reaches the chat when an agent's hello holds the opening's place (CodeRabbit #279)", () => {
+  // The hello takes the opening's place at mount (liveRef), which dropped the row's contact with the opening.
+  assert.match(chat, /const openingRef = useRef<ProactiveOpening \| null>\(!savedConvId && proactive && !liveRef\.current \? proactive : null\)/)
+  // It still goes out, as the answer to the hello: the send carries the hello's tap.
+  assert.match(chat, /const rowContact = liveRef\.current \? proactive\?\.firstContact : undefined\s+if \(rowContact\) \{\s+onProactiveEngaged\?\.\(rowContact\.text\)/)
+  assert.match(chat, /sendMessage\(rowContact\.text, \{ button: rowContact\.kind \}\)\s+return\s+\}\s+\/\/ An agent's hello is on screen: nothing exists on the server until the visitor answers it\.\s+if \(liveRef\.current\) return/)
+  assert.match(chat, /const hello = convId \? null : liveRef\.current/)
+  assert.match(chat, /\.\.\.\(hello \? \{ live_tap: hello\.tap \} : \{\}\),/)
+})
+
 // ── E1: popups; E2: the keyboard ──────────────────────────────────────────────────────────
 
 test('E1: something fixed of the site over a third of the screen is a popup — for a minute, then layout', () => {

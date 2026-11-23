@@ -545,6 +545,18 @@ export function ChatWindow({
       }
       return
     }
+    // The row beside the refused form took the contact while an agent's hello held the opening's place (the hello
+    // came after the row was shown): the contact still goes out, as the visitor's answer to the hello, whose tap
+    // goes with this send (CodeRabbit #279). Dropped with the opening, it was never sent nor shown.
+    const rowContact = liveRef.current ? proactive?.firstContact : undefined
+    if (rowContact) {
+      onProactiveEngaged?.(rowContact.text)
+      posthog?.capture('chat_channel_given', {
+        channel: rowContact.kind, tunnel, where: 'row', ...contactTestProps(proactive ?? null),
+      })
+      sendMessage(rowContact.text, { button: rowContact.kind })
+      return
+    }
     // An agent's hello is on screen: nothing exists on the server until the visitor answers it.
     if (liveRef.current) return
     if (savedConvId) return
