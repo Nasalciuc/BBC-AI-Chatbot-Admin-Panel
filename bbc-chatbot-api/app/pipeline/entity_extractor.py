@@ -275,7 +275,23 @@ _PERSON_AGE = r'\b(?:a|an|one|my|our|his|her|their)\s+(\d{1,2})[\s-]?(?:years?|y
 ADDED_AGE_RE = re.compile(_PERSON_AGE, re.I)
 # Ages set off right after the kids counted name those kids, a baby among them: "2 kids, a 5-year-old and a
 # 1-year-old" is two kids, not two kids and a baby. A baby's age joined by "and"/"plus" is one more.
-KIDS_NAMED_RE = re.compile(r'\s*(?:[,:(\[]|--?|[–—])\s*' + _PERSON_AGE, re.I)
+KIDS_NAMED_RE = re.compile(r'\s*(?P<sep>[,:(\[]|--?|[–—])\s*(?P<age>' + _PERSON_AGE + ')', re.I)
+# The run of such ages after a comma, colon or dash: "a 5-year-old and a 1-year-old". Inside brackets the
+# closing bracket ends them (_kids_named_span).
+_PERSON_AGE_ANY = r'\b(?:a|an|one|my|our|his|her|their)\s+\d{1,2}[\s-]?(?:years?|yrs?)[\s-]?old\b'
+KIDS_NAMED_RUN_RE = re.compile(_PERSON_AGE_ANY + r'(?:\s*(?:,|&|\band\b)\s*' + _PERSON_AGE_ANY + r')*', re.I)
+
+
+def _kids_named_span(text: str, named: re.Match) -> tuple[int, int]:
+    """Where the ages that name the kids counted stand (KIDS_NAMED_RE matched right after the count): up to the
+    closing bracket, or the run of ages after a comma, colon or dash. An age after that span is one more minor:
+    "2 kids (a 5-year-old and a 7-year-old) plus a 1-year-old" is two kids and an infant (CodeRabbit #279, round 4)."""
+    closer = {"(": ")", "[": "]"}.get(named.group("sep"))
+    if closer:
+        end = text.find(closer, named.end())
+        return named.start(), (end + 1 if end >= 0 else len(text))
+    run = KIDS_NAMED_RUN_RE.match(text, named.start("age"))
+    return named.start(), (run.end() if run else named.end())
 # "we are a family of four" — FAMILY_RE only knew digits.
 FAMILY_WORD_RE = re.compile(
     r'\b(?:family|group|party)\s+of\s+(one|two|three|four|five|six|seven|eight|nine)\b', re.I
@@ -1795,11 +1811,14 @@ def extract_entities(
         # one infant. Kids may be babies, so a baby's age set off right after them names one of them.
         _kids = child_m or child_words
         _counted = _kids or infant_m or infant_words
-        _ages = [int(a) for a in (ADDED_AGE_RE if _counted else AGE_RE).findall(text)]
+        _ages = [(int(m.group(1)), m.start()) for m in (ADDED_AGE_RE if _counted else AGE_RE).finditer(text)]
+        _named = KIDS_NAMED_RE.match(text, _kids.end()) if _kids else None
+        # Only the ages inside that span name the kids counted; an age outside it is one more minor.
+        _named_from, _named_to = _kids_named_span(text, _named) if _named else (0, 0)
         if not child_m and not child_words:
-            children_count = sum(1 for a in _ages if 2 <= a <= 11)
-        if not infant_m and not infant_words and not (_kids and KIDS_NAMED_RE.match(text, _kids.end())):
-            infant_count = sum(1 for a in _ages if a < 2)
+            children_count = sum(1 for a, _ in _ages if 2 <= a <= 11)
+        if not infant_m and not infant_words:
+            infant_count = sum(1 for a, at in _ages if a < 2 and not _named_from <= at < _named_to)
 
     if children_count or infant_count:
         adult_count = entities.passengers or 0
