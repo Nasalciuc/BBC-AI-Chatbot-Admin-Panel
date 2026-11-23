@@ -58,11 +58,16 @@ export const LAYOUT_AFTER_MS = 60_000
  *  $100" at 5 s, the Kayak card at 2.5 s: 4 of the 413 recordings, and the sandbox run of 22 Nov) puts the card
  *  aside, into the corner button, until the popup closes or has covered the page for a minute (then it is the
  *  page's layout, and the card comes back over it). Each call looks once; `changed` hears each turn, never the
- *  same state twice. */
-export function cardAsideWatch(popups: { open: () => boolean }, changed: (aside: boolean) => void): () => void {
+ *  same state twice. `ignore`: what is not a popup for this card, as for its moment (the quote card looks past
+ *  the quote form's own modal, CodeRabbit #276). */
+export function cardAsideWatch(
+  popups: { open: (ignore?: (el: Element) => boolean) => boolean },
+  changed: (aside: boolean) => void,
+  ignore?: (el: Element) => boolean,
+): () => void {
   let aside = false
   return () => {
-    const now = popups.open()
+    const now = popups.open(ignore)
     if (now === aside) return
     aside = now
     changed(now)

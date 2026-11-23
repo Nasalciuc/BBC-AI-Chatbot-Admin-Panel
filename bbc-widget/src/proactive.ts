@@ -374,6 +374,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   // E1 (overlay.ts): one watch of the site's popups for the page, so a popup's minute is counted once — by the
   // moments before the card and by the card once it is on screen (two clocks made the card wait a minute more).
   const [pagePopups] = useState(watchPopups)
+  // The quote card's own form (the one pressed): its modal is the moment, never a popup to step aside for.
+  const cardFormRef = useRef<Element | null>(null)
   const shownRef = useRef<ProactiveOpening | null>(restored)
   const engagedRef = useRef(false)
   const stepRef = useRef(step)
@@ -416,10 +418,13 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     setAside(false)
     if (!offer || offer.surface !== 'card' || step !== 'buttons') return
     const o = offer
+    // The quote card looks past the quote form's own modal, as its moment did (CodeRabbit #276): a phone visitor
+    // on the site's quote modal still sees the card; any other popup still puts it aside.
+    const form = o.trigger === 'quote' ? cardFormRef.current : null
     const look = cardAsideWatch(pagePopups, (on) => {
       setAside(on)
       posthog?.capture(on ? 'proactive_card_aside' : 'proactive_card_back', { trigger: o.trigger, site: brand.id })
-    })
+    }, form ? (el: Element) => el.contains(form) : undefined)
     look()
     // A quarter of a second: the card makes room while the site's popup is still fading in.
     const t = setInterval(look, 250)
@@ -720,6 +725,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       ssSet(DONE_KEY, 'shown')
       ssSet(ATTENTION_KEY, '1')
       shownRef.current = opening
+      cardFormRef.current = trigger === 'quote' ? pressed : null
       setQuiet(true)
       setOffer(opening)
       noteAlexShown()

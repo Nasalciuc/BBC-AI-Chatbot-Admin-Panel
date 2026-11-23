@@ -241,7 +241,7 @@ test('E1 after the card: a popup that opens over the card puts it aside until th
   assert.deepEqual(heard, [[5000, true], [8000, false], [9000, true], [9000 + LAYOUT_AFTER_MS, false]])
   // Watched only while the phone card is on screen (the computer's panel has room); while aside the corner button
   // stands alone and a tap on it still opens Alex's chat with the card's words.
-  assert.match(hook, /if \(!offer \|\| offer\.surface !== 'card' \|\| step !== 'buttons'\) return\s+const o = offer\s+const look = cardAsideWatch\(pagePopups, \(on\) => \{/)
+  assert.match(hook, /if \(!offer \|\| offer\.surface !== 'card' \|\| step !== 'buttons'\) return\s+const o = offer\s+(\/\/[^\n]*\s+)*const form = o\.trigger === 'quote' \? cardFormRef\.current : null\s+const look = cardAsideWatch\(pagePopups, \(on\) => \{/)
   // One watch for the page: the minute a popup has covered it is counted once, by the moments before the card
   // and by the card after (a second watch started its own minute: the card at 184 s in the sandbox, 23 Nov).
   assert.match(hook, /const \[pagePopups\] = useState\(watchPopups\)/)
@@ -251,6 +251,31 @@ test('E1 after the card: a popup that opens over the card puts it aside until th
   assert.match(hook, /const t = setInterval\(look, 250\)\s+return \(\) => clearInterval\(t\)\s+\}, \[offer, step\]\)/)
   assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' && !proactive\.aside \? proactive\.offer : null\}/)
   assert.match(widget, /onSelect=\{\(t\) => \(proactive\.offer \? openProactive\(proactive\.offer\) : openFromButton\(t\)\)\}/)
+})
+
+test('E1 after the card: the quote card looks past its own form\'s modal, any other popup still puts it aside (CodeRabbit #276)', () => {
+  let covering = []
+  const w = watchPopups(() => 0)
+  const form = { id: 'the pressed quote form' }
+  const formModal = { contains: (el) => el === form }
+  const sitePopup = { contains: () => false }
+  const heard = []
+  const ignore = (el) => el.contains(form)
+  const look = cardAsideWatch({ open: (ig) => w.open(ig, covering) }, (on) => heard.push(on), ignore)
+  covering = [formModal]; look()                    // the visitor is on the quote form's modal: the card stays
+  assert.deepEqual(heard, [])
+  covering = [formModal, sitePopup]; look()         // the site's own popup over it: aside
+  covering = [formModal]; look()                    // gone again: back
+  assert.deepEqual(heard, [true, false])
+  // Without an exception (every other card) the same modal is a popup like any other.
+  const other = []
+  const plain = cardAsideWatch({ open: (ig) => watchPopups(() => 0).open(ig, [formModal]) }, (on) => other.push(on))
+  plain()
+  assert.deepEqual(other, [true])
+  // The hook keeps the form the quote card's moment was pressed on, and hands its exception to the watch.
+  assert.match(hook, /const cardFormRef = useRef<Element \| null>\(null\)/)
+  assert.match(hook, /shownRef\.current = opening\s+cardFormRef\.current = trigger === 'quote' \? pressed : null\s+setQuiet\(true\)\s+setOffer\(opening\)/)
+  assert.match(hook, /\}, form \? \(el: Element\) => el\.contains\(form\) : undefined\)/)
 })
 
 test('E1: a popup\'s minute runs from when it appears, through Alex\'s wait too (22 Nov: 185 s, now 125 s)', () => {
