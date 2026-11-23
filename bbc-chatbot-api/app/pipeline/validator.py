@@ -245,10 +245,36 @@ _NAME = r"(?P<name>[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)"
 _AFTER_GREETING_RE = re.compile(r"\b(?P<greet>(?i:" + _GREETING + r"))\s*,?\s+" + _NAME + r"\b(?=\s*[,.!?;:]|\s*$)")
 # "X, I've noted your dates" — at the start of a sentence.
 _LEADING_RE = re.compile(r"(?:^|(?<=[.!?]\s))" + _NAME + r",\s+(?P<next>\w)")
-# "Speak soon, X." / "…for you, X!" — at the end of a sentence. Not after a capitalised word: "Amman,
-# Jordan." is a place and its country, not someone addressed (CodeRabbit #279).
+# "Speak soon, X." / "…for you, X!" — at the end of a sentence. Not a place after its city: "Amman, Jordan."
+# is a city and its country, "Richmond, Virginia." a city and its state, not someone addressed (CodeRabbit
+# #279). Only a country or a state counts: "on WhatsApp, Dana." still calls the client Dana (round 2).
 _TRAILING_RE = re.compile(r",\s*" + _NAME + r"(?=\s*[.!?](?:\s|$)|\s*$)")
 _WORD_BEFORE_RE = re.compile(r"([A-Za-z][\w'-]*)\W*$")
+# The countries, the US states and the Canadian provinces a "City, Place" names, in one or two words.
+_PLACES = frozenset((
+    "afghanistan albania algeria andorra angola argentina armenia australia austria azerbaijan bahamas bahrain "
+    "bangladesh barbados belarus belgium belize benin bhutan bolivia botswana brazil brunei bulgaria burundi "
+    "cambodia cameroon canada chad chile china colombia comoros congo croatia cuba cyprus czechia denmark "
+    "djibouti dominica ecuador egypt eritrea estonia eswatini ethiopia fiji finland france gabon gambia georgia "
+    "germany ghana greece grenada guatemala guinea guyana haiti honduras hungary iceland india indonesia iran "
+    "iraq ireland israel italy jamaica japan jordan kazakhstan kenya kiribati kosovo kuwait kyrgyzstan laos "
+    "latvia lebanon lesotho liberia libya liechtenstein lithuania luxembourg madagascar malawi malaysia "
+    "maldives mali malta mauritania mauritius mexico micronesia moldova monaco mongolia montenegro morocco "
+    "mozambique myanmar namibia nauru nepal netherlands nicaragua niger nigeria norway oman pakistan palau "
+    "panama paraguay peru philippines poland portugal qatar romania russia rwanda samoa senegal serbia "
+    "seychelles singapore slovakia slovenia somalia spain sudan suriname sweden switzerland syria taiwan "
+    "tajikistan tanzania thailand togo tonga tunisia turkey turkmenistan tuvalu uganda ukraine uruguay "
+    "uzbekistan vanuatu venezuela vietnam yemen zambia zimbabwe england scotland wales "
+    "alabama alaska arizona arkansas california colorado connecticut delaware florida hawaii idaho illinois "
+    "indiana iowa kansas kentucky louisiana maine maryland massachusetts michigan minnesota mississippi "
+    "missouri montana nebraska nevada ohio oklahoma oregon pennsylvania tennessee texas utah vermont virginia "
+    "washington wisconsin wyoming alberta manitoba ontario quebec saskatchewan"
+).split()) | frozenset((
+    "new zealand", "south africa", "south korea", "north korea", "saudi arabia", "sri lanka", "costa rica",
+    "el salvador", "puerto rico", "united kingdom", "united states", "czech republic", "dominican republic",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "rhode island",
+    "south carolina", "south dakota", "west virginia", "british columbia", "nova scotia", "new brunswick",
+))
 # Words a sentence opens with, never a name, whatever the e-mail holds.
 _NEVER_A_NAME = {
     "great", "perfect", "thanks", "thank", "sure", "okay", "absolutely", "noted", "lovely", "wonderful",
@@ -277,8 +303,8 @@ def strip_guessed_name(text: str, email: str | None, client_texts: list[str]) ->
     out = _LEADING_RE.sub(lambda m: m.group("next").upper() if guessed(m.group("name")) else m.group(0), out)
     def trailing(m: re.Match) -> str:
         before = _WORD_BEFORE_RE.search(m.string[:m.start()])
-        if before and before.group(1)[0].isupper():
-            return m.group(0)
+        if before and before.group(1)[0].isupper() and m.group("name").lower() in _PLACES:
+            return m.group(0)  # "Amman, Jordan.": a city and its country
         return "" if guessed(m.group("name")) else m.group(0)
 
     out = _TRAILING_RE.sub(trailing, out)

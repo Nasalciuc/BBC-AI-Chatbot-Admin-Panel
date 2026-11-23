@@ -36,6 +36,9 @@ EMAIL = "dana.miller1960@example.com"
     ("Noted. Dana, how many travel?", "Noted. How many travel?"),
     ("I'll pass this to a consultant, Dana.", "I'll pass this to a consultant."),
     ("Speak soon, Dana", "Speak soon"),
+    # A capitalised word before the comma is no place of itself (CodeRabbit #279, round 2).
+    ("You can reach us on WhatsApp, Dana.", "You can reach us on WhatsApp."),
+    ("Thanks for flying with us to Rome, Dana.", "Thanks for flying with us to Rome."),
 ])
 def test_a_name_read_from_the_email_is_taken_out(reply, clean):
     assert strip_guessed_name(reply, EMAIL, ["my email is " + EMAIL]) == (clean, True)
@@ -66,6 +69,8 @@ def test_part_of_a_run_together_address_counts_too():
     ("", EMAIL, []),
     # A place and its country, not someone addressed (CodeRabbit #279).
     ("Your destination is Amman, Jordan.", "jordan@example.com", ["Flights to Amman, please"]),
+    ("You land in Richmond, Virginia.", "virginia@example.com", []),
+    ("Flights to Wellington, New Zealand.", "newzealand@example.com", []),
 ])
 def test_these_stay_as_written(reply, email, typed):
     assert strip_guessed_name(reply, email, typed) == (reply, False)

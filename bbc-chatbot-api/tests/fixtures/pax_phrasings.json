@@ -561,6 +561,45 @@
       }
     },
     {
+      "text": "2 adults, 2 kids and a 1-year-old",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 5,
+        "children": 2,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults, 1 baby and a 9-year-old",
+      "legacy": {
+        "passengers": 3,
+        "children": 0,
+        "infants": 1
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 1,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults 2 kids (5 and 1 years old)",
+      "legacy": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 2,
+        "infants": 0
+      }
+    },
+    {
       "text": "2 adults and a child, he is 9 years old",
       "legacy": {
         "passengers": 2,
