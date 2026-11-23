@@ -113,6 +113,30 @@ async def test_only_the_held_date_is_kept_a_missing_return_is_still_filled():
     assert ents.get("return_date") == _BACK
 
 
+@pytest.mark.asyncio
+async def test_a_stay_written_with_a_dash_is_no_new_departure():
+    """"we'd stay 10-14 days" is a length: read as the 14th of October, it replaced the departure the lead held."""
+    ents = await _merged("we'd stay 10-14 days", None, _LEAD)
+    assert ents.get("departure_date") in (None, _OUT)
+    assert ents.get("return_date") in (None, _BACK)
+
+
+@pytest.mark.asyncio
+async def test_said_to_an_agent_a_stay_written_with_a_dash_leaves_the_dates(monkeypatch):
+    """The agents' chats are read by default (#279): a length there must not move the lead's departure either.
+    The message that names a date still does."""
+    from app.pipeline import operator_card
+
+    monkeypatch.delenv("EXTRACT_EVERY_MESSAGE", raising=False)
+    upd = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", upd):
+        await operator_card.extract_and_push("conv-1", "we would stay 2-3 weeks, 3-4 people")
+        await operator_card.extract_and_push("conv-1", "leaving 12/20 for 2-3 weeks")
+    stay, dated = (c.args[1] for c in upd.await_args_list)
+    assert "departure_date" not in stay and stay.get("passengers") == 4
+    assert dated.get("departure_date", "").endswith("-12-20")
+
+
 @pytest.mark.parametrize("text", [
     "January 12, 2027", "back on 10 March 2027", "feb 3 to feb 9", "Nov. 8", "12/12/2026", "2027-02-10",
     "on Friday", "the 17th", "a week later", "push it back", "change the dates", "next month", "2 weeks",

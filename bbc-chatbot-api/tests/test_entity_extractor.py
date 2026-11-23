@@ -280,3 +280,39 @@ class TestRangeEndsAndMonthYear:
     def test_a_month_with_its_year_is_no_day(self, text):
         e = extract_entities(text)
         assert e.departure_date is None and e.return_date is None
+
+
+@freeze_time("2026-11-23")
+class TestACountWithADashIsNoDate:
+    """23 Nov 2026: a stay or a count written with a dash ("for 2-3 weeks", "10-14 days") was read as a month
+    and a day (the 3rd of February, the 14th of October) and became the lead's departure. 7 such messages in
+    60 days, 6 of them in chats that had an agent; #279 reads the agent's part by default. Phrasings invented."""
+
+    @pytest.mark.parametrize("text", [
+        "for 2-3 weeks", "10-14 days", "we'd stay 5-7 nights", "3-4 days in Rome", "a 3-4 hour layover",
+        "1-2 stops is fine", "we are 3-4 people", "2-3 bags each", "give me 2-3 options", "10-15% off", "1-2 pm",
+    ])
+    def test_a_length_or_a_count_is_no_date(self, text):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (None, None)
+
+    def test_the_count_is_still_read_as_travellers(self):
+        assert extract_entities("we are 3-4 people").passengers == 4
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("on 12-15", "2026-12-15", None),
+        ("12-20 2 adults", "2026-12-20", None),
+        ("12/20 for 2 weeks", "2026-12-20", None),
+        ("dec 20 for 2-3 weeks", "2026-12-20", None),
+        ("3/15 pm flight", "2027-03-15", None),             # a slash is a date, whatever follows
+        ("12/20-1/5", "2026-12-20", "2027-01-05"),
+        ("12/23/26-1/3/27", "2026-12-23", "2027-01-03"),
+        ("12-15-2026 2 weeks", "2026-12-15", None),         # with its year, a date
+    ])
+    def test_a_date_written_in_digits_is_still_a_date(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+
+    def test_a_range_ending_in_stops_is_no_return(self):
+        e = extract_entities("march 5 to 2 stops")
+        assert (e.departure_date, e.return_date) == ("2027-03-05", None)

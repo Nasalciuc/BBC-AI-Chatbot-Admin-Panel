@@ -395,12 +395,20 @@ def _range_side(m: "re.Match", p: str) -> "tuple[int, int, int | None] | None":
     return month, day, year
 
 
+# A number followed by one of these counts or measures something, it is not a day: a length ("10 days"),
+# a count ("2 people", "1-2 stops"), a time ("7 pm"), a share ("15%").
+_UNIT_AFTER = (
+    r"\s*(?:(?:days?|nights?|weeks?|months?|years?|yrs?|hours?|hrs?|people|persons?|pax|pass[ae]ngers?"
+    r"|adults?|travell?ers?|kids?|child(?:ren)?|tickets?|seats?|stops?|bags?|options?|layovers?|connections?"
+    r"|of\s+us|am|pm)\b|%)"
+)
+_UNIT_AFTER_RE = re.compile(_UNIT_AFTER, re.I)
+
 # What may follow the end of a range that names only the day, and makes it something else: a length
 # ("march 5 - 10 days"), a count ("april 7 to 2 people"), a time ("june 9 to 12:30", "may 6 to 7 pm"), or
 # its own month ("May 6 to 7 June": the named dates read both, CodeRabbit #279).
 _NOT_A_DAY_END = (
-    r"(?!\s*(?:days?|nights?|weeks?|months?|years?|yrs?|hours?|hrs?|people|persons?|pax|pass[ae]ngers?"
-    r"|adults?|travell?ers?|kids?|child(?:ren)?|tickets?|seats?|of\s+us|am|pm|%)\b|\s*[:/.]\d"
+    r"(?!" + _UNIT_AFTER + r"|\s*[:/.]\d"
     r"|\s*(?:of\s+)?(?:" + _MONTH_PAT + r")\b)"
 )
 # "March 15-22" (same month range with dash)
@@ -593,6 +601,13 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
             # "available 24/7" is an idiom, not a date — the European swap
             # below would coerce it into July 24 (conv "Costa").
             if re.fullmatch(r"24\s*/\s*7", match.group(0)):
+                continue
+            # "for 2-3 weeks", "10-14 days", "we are 3-4 people", "1-2 stops": a length or a count, not the
+            # 3rd of February, and it became the lead's departure. The agent's part of a chat is read by
+            # default now (#279, 23 Nov 2026: 7 such messages in 60 days, 6 in chats that had an agent).
+            # Only with a dash: "3/15 pm flight" is a date.
+            if (match.group("y") is None and "-" in match.group(0)
+                    and _UNIT_AFTER_RE.match(text, match.end())):
                 continue
             m_val, d_val = int(match.group("m")), int(match.group("d"))
             y_val = int(match.group("y")) if match.group("y") else None
