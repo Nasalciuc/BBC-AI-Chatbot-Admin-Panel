@@ -440,13 +440,17 @@ def note_variant(trip: Optional[TripContext]) -> Optional[str]:
 
 def beat_variant(visitor_id: Optional[str], trip: Optional[TripContext], now: Optional[datetime] = None) -> Optional[str]:
     """C5: BEAT for half the Kayak visitors (stable per visitor) once the tests started, on a card that says
-    the whole trip back; None (the usual words) otherwise. KAYAK_CARD_BEAT (app.flags, on) stops it."""
+    the whole trip back; None (the usual words) otherwise.
+
+    Off since 23 Nov: from 21 Nov 13:49 UTC the beat sentence was tapped by 36 of the 668 visitors who saw it and the
+    usual words by 35 of 625, and their chats left 20 and 21 contacts; the usual words are the base.
+    KAYAK_CARD_BEAT=true (app.flags) runs the test again."""
     from app.experiments import in_arm
     from app.flags import flag
 
     if not visitor_id or not full_trip(trip) or not tests_started(now):
         return None
-    if not flag("KAYAK_CARD_BEAT", True):
+    if not flag("KAYAK_CARD_BEAT", False):
         return None
     return BEAT if in_arm(BEAT_EXPERIMENT, visitor_id, 50) else None
 
@@ -718,9 +722,10 @@ def _with_after_words(
     the whole trip back. The quote card that offered the chat instead of the form keeps its own way.
 
     The owner's contact test (contact_field_test) is named on the cards it changes: a yes answered at once, and
-    "Get a fare quote" with no whole trip (CONTACT_FIRST_TRIGGERS). On its field side the yes opens the field of
-    the visitor's screen (`confirm.field`: SMS on a phone, email on a computer), and "Get a fare quote" gets an
-    instant answer too, contact first."""
+    "Get a fare quote" with no whole trip (CONTACT_FIRST_TRIGGERS). On its field side, the base since 23 Nov, the yes
+    opens the email field at once (`confirm.field`, card_words.field_channel), and "Get a fare quote" gets an
+    instant answer too, contact first. The card's own channel button stays the screen's (card_words.device_channel):
+    on a phone it still offers the fares by text."""
     from app.services import card_words, contact_field_test
 
     if lang:
@@ -730,7 +735,7 @@ def _with_after_words(
     # region to tap, or where and when typed) and learns from the visitor's second message, so it is left as it is.
     first = not full_trip(trip) and trigger in CONTACT_FIRST_TRIGGERS and applied_variant(trigger, trip, variant) is None
     side = contact_side if (whole or first) else None
-    field = card_words.device_channel(device) if side == contact_field_test.FIELD else None
+    field = card_words.field_channel(device) if side == contact_field_test.FIELD else None
     if side:
         out["contact_test"] = side
         contact_field_test.count(side)

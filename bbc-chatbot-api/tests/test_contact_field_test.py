@@ -2,6 +2,10 @@
 contact field at once with words that ask for that one contact, and "Get a fare quote" on a card that knows no whole
 trip is answered at once, contact first; the choice side, and a widget cached from before, are as they were.
 
+Since 23 Nov the field side is the base (CONTACT_FIELD_TEST_PERCENT 100 by default) and its field is email on every
+device (card_words.field_channel); 50 runs the test again, 0 gives everyone the choice, and
+CONTACT_FIELD_PHONE_CHANNEL=sms gives a phone the SMS field again.
+
 Every contact, route and visitor here is invented."""
 
 import os
@@ -42,7 +46,7 @@ def _trip(**over) -> TripContext:
 def _clean(monkeypatch):
     flags._reset_for_tests()
     for k in ("PROACTIVE_ENABLED", "PROACTIVE_PERCENT", "PROACTIVE_TRIGGERS", "KAYAK_CARD_BEAT",
-              "KAYAK_EARLY_TEST", "CONTACT_FIELD_TEST_PERCENT"):
+              "KAYAK_EARLY_TEST", "CONTACT_FIELD_TEST_PERCENT", "CONTACT_FIELD_PHONE_CHANNEL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("PROACTIVE_ENABLED", "true")
     monkeypatch.setenv("PROACTIVE_PERCENT", "100")
@@ -60,10 +64,12 @@ def _clean(monkeypatch):
 
 
 def _visitor(side: str) -> str:
-    """A visitor id on `side` at the owner's 50."""
+    """A visitor id on `side` when the test runs at 50 (a field visitor at 50 is on the field at the base's 100 too)."""
+    from app.experiments import in_arm
+
     for i in range(500):
         vid = f"visitor-{i:010d}"
-        if contact_field_test.side(vid) == side:
+        if in_arm(contact_field_test.EXPERIMENT, vid, 50) == (side == contact_field_test.FIELD):
             return vid
     raise AssertionError(f"no visitor on the {side} side")
 
@@ -74,7 +80,10 @@ def field_v():
 
 
 @pytest.fixture
-def choice_v():
+def choice_v(monkeypatch):
+    """A visitor on the choice side, which exists only while the test runs again (50)."""
+    monkeypatch.setenv("CONTACT_FIELD_TEST_PERCENT", "50")
+    flags._reset_for_tests()
     return _visitor(contact_field_test.CHOICE)
 
 
@@ -83,7 +92,11 @@ def choice_v():
 # ══════════════════════════════════════════════════════════════
 
 class TestSide:
-    def test_half_the_visitors_each_side_and_a_visitor_keeps_theirs(self, field_v, choice_v):
+    def test_the_field_is_the_base_every_visitor_with_an_id_is_on_it(self):
+        assert contact_field_test.percent() == 100
+        assert {contact_field_test.side(f"visitor-{i:010d}") for i in range(400)} == {"field"}
+
+    def test_run_again_at_50_half_the_visitors_each_side_and_a_visitor_keeps_theirs(self, field_v, choice_v):
         assert contact_field_test.percent() == 50
         assert contact_field_test.side(field_v) == "field" and contact_field_test.side(field_v) == "field"
         assert contact_field_test.side(choice_v) == "choice"
@@ -95,13 +108,13 @@ class TestSide:
         ids = [f"visitor-{i:010d}" for i in range(200)]
         assert [bucket("contact_field", v) for v in ids] != [bucket("agent_first", v) for v in ids]
 
-    def test_0_ends_it_for_everyone_and_an_unreadable_switch_keeps_the_owners_50(self, monkeypatch, field_v):
+    def test_0_gives_everyone_the_choice_and_an_unreadable_switch_keeps_the_base(self, monkeypatch, field_v):
         monkeypatch.setenv("CONTACT_FIELD_TEST_PERCENT", "0")
         flags._reset_for_tests()
         assert contact_field_test.side(field_v) is None
         monkeypatch.setenv("CONTACT_FIELD_TEST_PERCENT", "nonsense")  # app.flags warns and keeps the default
         flags._reset_for_tests()
-        assert contact_field_test.percent() == 50 and contact_field_test.side(field_v) == "field"
+        assert contact_field_test.percent() == 100 and contact_field_test.side(field_v) == "field"
 
     def test_no_visitor_id_no_side(self):
         assert contact_field_test.side(None) is None and contact_field_test.side("") is None
@@ -131,15 +144,29 @@ class TestSide:
 # ══════════════════════════════════════════════════════════════
 
 class TestOffer:
-    def test_on_the_field_side_the_yes_opens_the_phones_field_and_asks_its_number(self, field_v):
+    def test_on_a_phone_too_the_yes_opens_the_email_field_and_the_card_still_offers_the_text(self, field_v):
         out = proactive.offer(field_v, "kayak", _trip(), "bbc", device="phone", team_online=True, opens_field=True)
         assert out["contact_test"] == "field"
-        assert out["confirm"]["field"] == "sms"
+        assert out["confirm"]["field"] == "email"
         assert out["confirm"]["message"].startswith("Got it, New York → Paris")
-        assert out["confirm"]["message"].endswith("and text them to you. What's your mobile number?")
-        assert [b["kind"] for b in out["confirm"]["buttons"]] == ["sms", "email", "wait", "change"]
-        assert out["channel"] == {"kind": "sms", "label": "Fares by text"}
+        assert out["confirm"]["message"].endswith("and email them to you. What's your email address?")
+        assert [b["kind"] for b in out["confirm"]["buttons"]] == ["sms", "email", "wait", "change"], "SMS one tap away"
+        assert out["channel"] == {"kind": "sms", "label": "Fares by text"}, "the card's own button is the phone's"
         assert contact_field_test.CONTACT_FIELD_HEALTH["field"] == 1
+
+    @pytest.mark.parametrize("said, phone_field", [("sms", "sms"), (" SMS ", "sms"), ("email", "email"),
+                                                   ("whatsapp", "email"), ("", "email")])
+    def test_its_switch_gives_a_phone_the_sms_field_again_and_never_a_computer(self, monkeypatch, field_v, said,
+                                                                                phone_field):
+        monkeypatch.setenv("CONTACT_FIELD_PHONE_CHANNEL", said)
+        flags._reset_for_tests()
+        phone = proactive.offer(field_v, "kayak", _trip(), "bbc", device="phone", opens_field=True)
+        computer = proactive.offer(field_v, "kayak", _trip(), "bbc", device="computer", opens_field=True)
+        assert phone["confirm"]["field"] == phone_field
+        assert computer["confirm"]["field"] == "email"
+        if phone_field == "sms":
+            assert phone["confirm"]["message"].endswith("and text them to you. What's your mobile number?")
+        assert card_words.field_channel(None) == "email", "a widget that did not say is a computer"
 
     def test_on_a_computer_the_email_field(self, field_v):
         out = proactive.offer(field_v, "kayak", _trip(), "bbc", device="computer", opens_field=True)
@@ -165,9 +192,10 @@ class TestOffer:
         assert out["contact_test"] == "field"
         assert out["quick_replies"][0] == "Get a fare quote"
         assert out["confirm"] == {
-            "message": "Sure. An agent will check live fares for your trip and text them to you. What's your mobile number?",
+            "message": "Sure. An agent will check live fares for your trip and email them to you. "
+                       "What's your email address?",
             "buttons": [card_words.button(k) for k in ("sms", "email", "wait")],
-            "field": "sms",
+            "field": "email",
         }
 
     @pytest.mark.parametrize("trigger, trip", [("reader", None), ("note", TripContext(destination_code="CDG"))])
@@ -203,19 +231,23 @@ class TestOffer:
     def test_the_beat_sentence_asks_for_the_fields_contact_too(self, monkeypatch, field_v):
         monkeypatch.setattr(proactive, "beat_variant", lambda vid, trip: proactive.BEAT)
         out = proactive.offer(field_v, "kayak", _trip(), "bbc", device="phone", opens_field=True)
-        assert out["confirm"]["message"].endswith("beat the price you saw, and text you. What's your mobile number?")
+        assert out["confirm"]["message"].endswith("beat the price you saw, and email you. What's your email address?")
 
     @pytest.mark.parametrize("lang, start, sms, email", [
         ("es", "Perfecto:", "¿Cuál es su número de móvil?", "¿Cuál es su correo?"),
         ("fr", "Parfait :", "Quel est votre numéro de mobile ?", "Quelle est votre adresse e-mail ?"),
     ])
-    def test_in_spanish_and_french(self, field_v, lang, start, sms, email):
+    def test_in_spanish_and_french(self, monkeypatch, field_v, lang, start, sms, email):
         phone = proactive.offer(field_v, "kayak", _trip(), "bbc", lang=lang, device="phone", opens_field=True)
         computer = proactive.offer(field_v, "kayak", _trip(), "bbc", lang=lang, device="computer", opens_field=True)
-        assert phone["confirm"]["message"].startswith(start) and phone["confirm"]["message"].endswith(sms)
+        assert phone["confirm"]["message"].startswith(start) and phone["confirm"]["message"].endswith(email)
         assert computer["confirm"]["message"].endswith(email)
         reader = proactive.offer(field_v, "reader", None, "bbc", lang=lang, device="phone", opens_field=True)
-        assert reader["confirm"]["message"].endswith(sms)
+        assert reader["confirm"]["message"].endswith(email)
+        monkeypatch.setenv("CONTACT_FIELD_PHONE_CHANNEL", "sms")
+        flags._reset_for_tests()
+        texted = proactive.offer(field_v, "kayak", _trip(), "bbc", lang=lang, device="phone", opens_field=True)
+        assert texted["confirm"]["message"].endswith(sms)
 
     @pytest.mark.parametrize("lang", [None, "es", "fr"])
     def test_no_amount_and_no_long_dash_in_any_of_its_words(self, lang):
@@ -236,7 +268,7 @@ class TestOffer:
         req = ProactiveOfferRequest(visitor_id=field_v, trigger="kayak", trip=_trip(), site="bbc", device="phone",
                                     opens_field=True)
         assert req.opens_field is True
-        assert (await proactive_offer(req))["confirm"]["field"] == "sms"
+        assert (await proactive_offer(req))["confirm"]["field"] == "email"
         for odd in ("yes", 1, "true", None):
             assert ProactiveOfferRequest(visitor_id=field_v, trigger="kayak", opens_field=odd).opens_field is False
         old = ProactiveOfferRequest(visitor_id=field_v, trigger="kayak", trip=_trip(), site="bbc", device="phone")

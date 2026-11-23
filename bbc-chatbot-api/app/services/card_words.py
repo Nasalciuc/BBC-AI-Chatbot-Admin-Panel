@@ -196,8 +196,24 @@ def card_channel(kind: str, lang: Optional[str] = None) -> dict:
 
 
 def device_channel(device: Optional[str]) -> str:
-    """SMS on a phone, email on a computer (ADR-3a); a computer when the widget did not say."""
+    """The card's own channel button and the pill (C1/C2): SMS on a phone, email on a computer (ADR-3a); a computer
+    when the widget did not say."""
     return "sms" if device == "phone" else "email"
+
+
+def field_channel(device: Optional[str]) -> str:
+    """The field the yes opens at once (and "Get a fare quote" contact first): email on every device, the base since
+    23 Nov. The owner's contact test, 22 Nov 20:05 to 23 Nov 06:30 UTC: the email field opened at once got a contact
+    in 9 of 12 chats, the choice of channel in 10 of 18, the SMS field on a phone in 2 of 7 (3 of the other 5 closed
+    the chat 10-16 s after it opened); phone visitors free to choose took email over SMS, 16 to 10 on 16-22 Nov.
+    SMS stays one tap away under the field, and on a phone the card's own button still offers the fares by text.
+
+    CONTACT_FIELD_PHONE_CHANNEL=sms (app.flags) gives a phone the SMS field again, without a deploy."""
+    from app.flags import flag
+
+    if device == "phone" and str(flag("CONTACT_FIELD_PHONE_CHANNEL", "email") or "").strip().lower() == "sms":
+        return "sms"
+    return "email"
 
 
 def confirm(line: str, lang: Optional[str] = None, beat: bool = False, field: Optional[str] = None) -> str:
