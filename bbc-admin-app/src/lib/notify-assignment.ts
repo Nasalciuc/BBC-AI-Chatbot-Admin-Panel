@@ -293,28 +293,6 @@ export function notifyTaskReminder(title: string, body: string, tag: string): vo
   }
 }
 
-/**
- * A lead given to me (the follow-up lottery, or a manager by hand): my sound once (the gentle melody unless I
- * chose another), at the volume set in Settings → Alerts, and one browser notification whose click opens the
- * chat (`href`; opening it confirms the lead). Never a loop, never a flashing tab: nobody is typing to me now.
- */
-export function notifyNewLead(title: string, body: string, href: string): void {
-  const prefs = readAlertPrefs()
-  if ((prefs.ring || prefs.beep) && prefs.volume > 0) _playOnce(prefs.sound, prefs.volume / 100)
-  if ('Notification' in window && Notification.permission === 'granted') {
-    try {
-      const n = new Notification(title, { body, icon: LOGO_SRC, tag: 'bbc-lead' })
-      n.onclick = () => {
-        window.focus()
-        n.close()
-        window.location.assign(href)
-      }
-    } catch {
-      /* notifications blocked in this context */
-    }
-  }
-}
-
 export function stopAssignmentAlerts(): void {
   _alertsActive = false
   if (_ringAudio) {

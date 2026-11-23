@@ -16,8 +16,6 @@ import {
   crmNote,
   doneLine,
   emptyText,
-  GIVEN_TEXT,
-  GIVE_RESTRICTED,
   MARK_RESTRICTED,
   markedText,
   otherChats,
@@ -146,22 +144,8 @@ test('a reader who may not mark sees the marks locked, never missing', () => {
   assert.match(list, /\{!canMark && !row\.blind && \(/)
   assert.match(list, /<LockedMark label='Offer sent'/)
   assert.match(list, /<LockedMark label='Undo'/)
-  assert.match(list, /reason = MARK_RESTRICTED/)
-  assert.match(list, /disabled\s+title=\{reason\}/)
+  assert.match(list, /disabled\s+title=\{MARK_RESTRICTED\}/)
   assert.equal(MARK_RESTRICTED, 'Only the sales team marks offers')
-})
-
-test('a reader who may not give a lead sees the control locked, and a give by hand names no deadline (CodeRabbit #273)', () => {
-  const list = read('src/features/tasks/components/offers-list.tsx')
-  // Shown to everyone the lottery is on for, locked with the server's words for the roles that can't give…
-  assert.match(list, /footer=\{data\.lottery && !r\.blind && !canGive \? \(\s*<LockedMark label='Give to an agent' reason=\{GIVE_RESTRICTED\}/)
-  assert.match(read('../bbc-chatbot-api/app/api/followups.py'), new RegExp(`HTTPException\\(403, "${GIVE_RESTRICTED}"\\)`))
-  // …and the selector stays the managers' alone.
-  assert.match(list, /data\.lottery && canGive && !r\.blind \? \(/)
-  // A lead given by hand has no clock to open it (state "manual", no ack_by): the toast says none.
-  assert.match(list, /toast\.success\(GIVEN_TEXT\)/)
-  assert.doesNotMatch(GIVEN_TEXT, /while|time|minutes/)
-  assert.match(read('../bbc-chatbot-api/app/services/lead_lottery.py'), /if state == "pending":\s+f\["ack_by"\]/)
 })
 
 test('the marked list, the counts, the empty queue and the toast', () => {

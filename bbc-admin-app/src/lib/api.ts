@@ -814,14 +814,6 @@ export function getOffers(days: number) {
   return apiFetch<OffersResponse>(`/api/offers?days=${days}`)
 }
 
-/** A manager gives a lead to an agent by hand (the lottery's other door): owner, admin, dev, a supervisor
- *  within their team. */
-export function assignFollowup(conversationId: string, agentId: string) {
-  return apiFetch<{ success: boolean }>(`/api/followups/${encodeURIComponent(conversationId)}/assign`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId }),
-  })
-}
-
 /** Sent, not needed, or open again (Undo) — on the chat and the client's other chats. */
 export function markOffer(conversationId: string, state: OfferMark, chats: string[] = []) {
   return apiFetch<{ success: boolean; data: { state: OfferMark; at: string; chats: string[] } }>(

@@ -99,7 +99,7 @@ test('the melody everywhere: the ring repeats it until the chat is opened and st
   const chime = src.slice(src.indexOf('export function playQueueChime'), src.indexOf('export function notifyTaskReminder'))
   assert.match(chime, /_playOnce\(prefs\.sound, 0\.6 \* \(prefs\.volume \/ 100\)\)/)
   assert.doesNotMatch(chime, /notification\.wav/, 'the recording only for whoever chose it')
-  const reminder = src.slice(src.indexOf('export function notifyTaskReminder'), src.indexOf('export function notifyNewLead'))
+  const reminder = src.slice(src.indexOf('export function notifyTaskReminder'), src.indexOf('export function stopAssignmentAlerts'))
   assert.match(reminder, /_playOnce\(prefs\.sound, \(prefs\.sound === 'classic' \? 0\.7 : 1\) \* \(prefs\.volume \/ 100\)\)/)
   // Every beat with nothing waiting stops the ring: a one-shot never registers as the ring's, so it plays out.
   const once = src.slice(src.indexOf('function _playOnce'), src.indexOf('export function notifyAssignment'))
