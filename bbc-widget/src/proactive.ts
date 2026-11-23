@@ -29,7 +29,7 @@ import brand from './config'
 import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
 import { cardAsideWatch, watchPopups } from './overlay'
-import { posthog } from './posthog'
+import { posthog, posthogSessionEntry } from './posthog'
 import {
   applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
   withKinds, type FieldKind, type SiteEvent,
@@ -40,7 +40,7 @@ import {
   adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
   quoteClick, replyKind, worksOnPressedForm, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
-import { getUtm } from './utm'
+import { getUtm, sourceToAdd } from './utm'
 
 /** Where the opening shows: a card above the button (phones), the panel (computers), or the row beside the
  *  site's refused quote form (D1, ADR-4a). */
@@ -142,11 +142,18 @@ export function markNoteClosed(): void { ssSet(NOTE_CLOSED_KEY, '1') }
 
 /** Where the visitor came from, for the conversation the card opens (what the form sends today), with the
  *  browser's language and time zone: a phone typed the local way is placed in its country by them
- *  (app/services/phone_country.py; #3296). */
+ *  (app/services/phone_country.py; #3296). When the tab kept nothing of where the visit came from, the visit's
+ *  PostHog session says it (utm.ts sourceToAdd), so every chat carries its source to the lead and the CRM. */
 export function proactiveMetadata(): Record<string, string> {
   const lang = browserLanguage()
   const tz = timeZone()
-  return { ...(getUtm() as Record<string, string>), site: brand.id, ...(lang ? { browser_lang: lang } : {}), ...(tz ? { tz } : {}) }
+  const utm = getUtm() as Record<string, string>
+  let host = ''
+  try { host = location.hostname } catch { /* no address: any referrer counts as another site's */ }
+  return {
+    ...utm, ...sourceToAdd(utm, posthogSessionEntry(), host),
+    site: brand.id, ...(lang ? { browser_lang: lang } : {}), ...(tz ? { tz } : {}),
+  }
 }
 
 /** The pill kept for this visit's pages (C2), or null. */

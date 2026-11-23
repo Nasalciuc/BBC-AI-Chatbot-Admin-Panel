@@ -1051,3 +1051,12 @@ test('an unanswered note chat comes back on the next page like a card chat', () 
   assert.deepEqual(readKeptOpening(JSON.parse(JSON.stringify(keepOpening(o)))), o)
   assert.equal(readKeptOpening({ ...o, trigger: 'something_else' }), null)
 })
+
+test('every chat carries where the visit came from: the tab\'s record, else the visit\'s PostHog session (point D, 23 Nov)', () => {
+  // Every door that creates the conversation takes proactiveMetadata (the card, the note, the form, the hello).
+  assert.match(hook, /\.\.\.utm, \.\.\.sourceToAdd\(utm, posthogSessionEntry\(\), host\),/)
+  // posthog-js keeps the session's first page in its own cookie and storage: read from the PostHog in use, guarded.
+  const ph = read('posthog.ts')
+  assert.match(ph, /const props = ph\?\.sessionPropsManager\?\.getSessionProps\?\.\(\)/)
+  assert.match(ph, /return null {2}\/\/ PostHog not loaded, blocked or changed/)
+})
