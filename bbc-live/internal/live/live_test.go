@@ -221,6 +221,112 @@ func TestABeatSaysWhenAlexComesOnlyNearNow(t *testing.T) {
 	}
 }
 
+// What came of Alex's card on this visit: the panel lists the visitors it didn't start a chat with. The time it
+// showed is bbc-live's (the visitor's clock may be off): a beat says how long ago, the list how long ago now.
+func TestABeatSaysWhatCameOfAlexsCard(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	listed := func() map[string]any {
+		t.Helper()
+		w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		return decode(t, w)["data"].([]any)[0].(map[string]any)
+	}
+	beat := func(b map[string]any) {
+		t.Helper()
+		if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, b); w.Code != http.StatusOK {
+			t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+		}
+	}
+	beat(map[string]any{"page": "/", "source": "kayak", "alex_card": "shown", "alex_card_s": 45, "alex_trigger": "kayak"})
+	c.add(10)
+	if v := listed(); v["alex_card"] != "shown" || v["alex_card_s"] != float64(55) || v["alex_trigger"] != "kayak" {
+		t.Errorf("listed %v", v)
+	}
+	// "Not now" to it: the next beat says so; the time it showed stays.
+	beat(map[string]any{"page": "/", "alex_card": "dismissed", "alex_card_s": 55, "alex_trigger": "kayak"})
+	if v := listed(); v["alex_card"] != "dismissed" || v["alex_card_s"] != float64(55) {
+		t.Errorf("listed %v", v)
+	}
+	// Shown this second: 0 seconds is listed as 0, not left out.
+	c.add(10)
+	beat(map[string]any{"page": "/", "alex_card": "shown", "alex_card_s": 0, "alex_trigger": "note"})
+	if v := listed(); v["alex_card_s"] != float64(0) || v["alex_trigger"] != "note" {
+		t.Errorf("listed %v", v)
+	}
+	// Rule 5: a beat without it lists without it (the fields left out, never 0 or "").
+	c.add(10)
+	beat(map[string]any{"page": "/"})
+	v := listed()
+	for _, k := range []string{"alex_card", "alex_card_s", "alex_trigger"} {
+		if _, has := v[k]; has {
+			t.Errorf("%s listed for a beat without Alex's card: %v", k, v)
+		}
+	}
+}
+
+// The widget's last beat says the chat started, and no beat follows it: one sent before it that lands after it must
+// not take it back, or the visitor is listed and claimable again (CodeRabbit #278).
+func TestAChatOnceStartedStaysForTheVisit(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	beat := func(hasChat bool) {
+		t.Helper()
+		b := map[string]any{"page": "/", "has_chat": hasChat, "alex_card": "shown", "alex_card_s": 40}
+		if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, b); w.Code != http.StatusOK {
+			t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+		}
+	}
+	beat(true)
+	c.add(10)
+	beat(false) // late: sent before the chat started
+	w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	if v := decode(t, w)["data"].([]any)[0].(map[string]any); v["has_chat"] != true {
+		t.Errorf("a late beat took the chat back: %v", v)
+	}
+	w = do(t, h, "POST", "/v1/claim", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")},
+		map[string]any{"visitor_id": vid1})
+	if w.Code != http.StatusConflict || decode(t, w)["state"] != "in_a_chat" {
+		t.Errorf("claimed a visitor in a chat: %d %s", w.Code, w.Body.String())
+	}
+	// Rule 5: a visit with no chat beats has_chat false as before.
+	beatOther := map[string]any{"page": "/", "has_chat": false}
+	if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid2)}, beatOther); w.Code != http.StatusOK {
+		t.Fatalf("beat: %d", w.Code)
+	}
+	w = do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+	for _, row := range decode(t, w)["data"].([]any) {
+		v := row.(map[string]any)
+		if v["visitor_id"] == vid2 && v["has_chat"] != false {
+			t.Errorf("a visit without a chat listed in one: %v", v)
+		}
+	}
+}
+
+func TestOnlyAKnownStateShownWithinADayIsKept(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, bad := range []struct {
+		state string
+		ago   float64
+	}{{"", 10}, {"answered", 10}, {"SHOWN", 10}, {"shown", -1}, {"shown", 12.5}, {"shown", AlexCardOldest + 1}} {
+		if st, at, tr := cleanAlexCard(bad.state, bad.ago, "kayak", now); st != "" || at != 0 || tr != "" {
+			t.Errorf("kept %q %v as %q %d %q", bad.state, bad.ago, st, at, tr)
+		}
+	}
+	if st, at, tr := cleanAlexCard("engaged", 0, "note", now); st != "engaged" || at != now.Unix() || tr != "note" {
+		t.Errorf("engaged now: %q %d %q", st, at, tr)
+	}
+	if st, at, _ := cleanAlexCard("dismissed", AlexCardOldest, "exit", now); st != "dismissed" || at != now.Unix()-AlexCardOldest {
+		t.Errorf("a day ago: %q %d", st, at)
+	}
+	// A moment it doesn't know drops the moment, not the card.
+	if st, at, tr := cleanAlexCard("shown", 30, "popup", now); st != "shown" || at != now.Unix()-30 || tr != "" {
+		t.Errorf("unknown moment: %q %d %q", st, at, tr)
+	}
+}
+
 func TestOnlyKnownPageKindsAndTheLastStepsAreKept(t *testing.T) {
 	if got := cleanBeat(vid1, beatIn{PageType: "checkout"}).PageType; got != "" {
 		t.Errorf("page_type %q", got)

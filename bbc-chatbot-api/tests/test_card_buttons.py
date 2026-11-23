@@ -220,17 +220,34 @@ class TestKayakTests:
         return next(f"visitor-{i:010d}" for i in range(500)
                     if not in_arm(proactive.BEAT_EXPERIMENT, f"visitor-{i:010d}", 50))
 
-    def test_the_beat_sentence_starts_after_the_72_hours(self):
+    def test_the_usual_words_are_the_base_the_beat_sentence_runs_only_when_its_switch_says_so(self, monkeypatch):
+        """C5 ended 23 Nov (as many taps, no more contacts): no visitor gets the beat sentence unless the owner runs
+        the test again with KAYAK_CARD_BEAT=true."""
+        v = self._beat_visitor()
+        assert proactive.beat_variant(v, _trip(), _AFTER) is None
+        monkeypatch.setenv("KAYAK_CARD_BEAT", "true")
+        assert proactive.beat_variant(v, _trip(), _AFTER) == proactive.BEAT
+        monkeypatch.setenv("KAYAK_CARD_BEAT", "false")
+        assert proactive.beat_variant(v, _trip(), _AFTER) is None
+
+    def test_by_default_the_offer_carries_the_usual_words(self, monkeypatch):
+        _on(monkeypatch)
+        with patch.object(proactive, "tests_started", return_value=True):
+            out = proactive.offer(self._beat_visitor(), "kayak", _trip(), "bbc")
+        assert "variant" not in out and "beat the price you saw" not in out["confirm"]["message"]
+        assert "Already seen a price?" not in out["message"]
+
+    def test_run_again_the_beat_sentence_starts_after_the_72_hours(self, monkeypatch):
+        monkeypatch.setenv("KAYAK_CARD_BEAT", "true")
         v = self._beat_visitor()
         assert proactive.beat_variant(v, _trip(), _BEFORE) is None
         assert proactive.beat_variant(v, _trip(), _AFTER) == proactive.BEAT
         assert proactive.beat_variant(self._fares_visitor(), _trip(), _AFTER) is None
 
-    def test_only_on_a_card_with_the_whole_trip_and_its_switch_stops_it(self, monkeypatch):
+    def test_run_again_only_on_a_card_with_the_whole_trip(self, monkeypatch):
+        monkeypatch.setenv("KAYAK_CARD_BEAT", "true")
         v = self._beat_visitor()
         assert proactive.beat_variant(v, _trip(depart_date=None, return_date=None), _AFTER) is None
-        monkeypatch.setenv("KAYAK_CARD_BEAT", "false")
-        assert proactive.beat_variant(v, _trip(), _AFTER) is None
 
     def test_the_beat_words_name_no_price_and_its_yes_answer_asks_where(self):
         text, _ = proactive.compose("kayak", _trip(), "bbc", proactive.BEAT)
@@ -238,8 +255,9 @@ class TestKayakTests:
         assert not has_price(text)
         assert "beat the price you saw" in card_words.confirm("x", None, beat=True)
 
-    def test_the_offer_carries_beat_for_its_side(self, monkeypatch):
+    def test_run_again_the_offer_carries_beat_for_its_side(self, monkeypatch):
         _on(monkeypatch)
+        monkeypatch.setenv("KAYAK_CARD_BEAT", "true")
         v = self._beat_visitor()
         with patch.object(proactive, "tests_started", return_value=True):
             out = proactive.offer(v, "kayak", _trip(), "bbc")

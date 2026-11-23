@@ -484,6 +484,10 @@ def _request():
     return req
 
 
+# When the hello became the chat's first message (the row the database answers with).
+STORED_AT = "2026-11-23T10:00:00.123456+00:00"
+
+
 def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
     row = {**SALES_DB, "avatar_url": None} if agent_row is None else agent_row
     return [
@@ -493,7 +497,7 @@ def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, 
         patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)),
         patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=row)),
         patch("app.services.conversation_service.db.add_message",
-              new=AsyncMock(return_value={"id": "m1"} if stored else None)),
+              new=AsyncMock(return_value={"id": "m1", "created_at": STORED_AT} if stored else None)),
         patch("app.db.supabase.release_live_claim", new=AsyncMock(return_value=given_back)),
         patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=reread)),
     ]
@@ -521,6 +525,8 @@ async def test_the_tapped_chat_starts_as_the_agents_with_the_hello_first(redis):
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
     res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
     assert res.conversation_id == "c1" and res.live_agent == "Ana" and res.live_hello == "Hi, can I help with your trip?"
+    # The widget that shows the hello already (the chat opened with it) reads messages after it.
+    assert res.live_at == STORED_AT
     m["claim"].assert_awaited_once_with("c1", AGENT)
     patched = m["meta"].await_args.args[1]
     assert patched["engaged_agent_id"] == AGENT and patched["live_hello"]["agent_id"] == AGENT
@@ -535,7 +541,7 @@ async def test_a_tap_that_does_not_hold_starts_an_ordinary_chat(redis):
 
     for payload in (ChatInitRequest(visitor_id=VID, live_tap="t1.forged.0000"), ChatInitRequest(visitor_id=VID)):
         res, m = await _init(payload)
-        assert res.conversation_id == "c1" and res.live_agent is None
+        assert res.conversation_id == "c1" and res.live_agent is None and res.live_at is None
         m["claim"].assert_not_awaited()
         m["add"].assert_not_awaited()
 
@@ -651,7 +657,8 @@ async def test_a_chat_that_cannot_be_given_back_stays_the_agents(redis, reread):
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
     res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), stored=False, given_back=False,
                          reread=reread)
-    assert res.live_agent == "Ana" and res.live_hello
+    # The agent's, with no stored hello to read after: the widget then reads the chat from its start.
+    assert res.live_agent == "Ana" and res.live_hello and res.live_at is None
     m["meta"].assert_awaited_once()
     assert live_visitors.LIVE_HEALTH["release_failed"] == 1 and live_visitors.LIVE_HEALTH["tap_failed"] == 1
 

@@ -114,6 +114,11 @@ type Visit struct {
 	Activity string
 	// The owner's agent-first test: when Alex's card may come (unix seconds), 0 when he waits for nobody.
 	AlexAt int64
+	// What came of Alex's card ("" when it didn't show), when it showed (unix seconds, bbc-live's clock) and the
+	// moment that showed it.
+	AlexCard    string
+	AlexCardAt  int64
+	AlexTrigger string
 }
 
 func flag(b bool) string {
@@ -133,11 +138,16 @@ func (s *Store) Beat(ctx context.Context, v Visit) error {
 	if v.AlexAt > 0 {
 		alexAt = strconv.FormatInt(v.AlexAt, 10)
 	}
+	alexCardAt := ""
+	if v.AlexCard != "" && v.AlexCardAt > 0 {
+		alexCardAt = strconv.FormatInt(v.AlexCardAt, 10)
+	}
 	fields := []string{
 		"page", v.Page, "from", v.Trip.From, "to", v.Trip.To, "depart", v.Trip.Depart,
 		"return", v.Trip.Return, "cabin", v.Trip.Cabin, "pax", pax, "source", v.Source,
 		"device", v.Device, "site", v.Site, "chat_open", flag(v.ChatOpen), "has_chat", flag(v.HasChat),
 		"page_type", v.PageType, "activity", v.Activity, "alex_at", alexAt,
+		"alex_card", v.AlexCard, "alex_card_at", alexCardAt, "alex_trigger", v.AlexTrigger,
 	}
 	args := append([]string{v.ID, strconv.FormatInt(s.now().Unix(), 10), strconv.Itoa(VisitTTL)}, fields...)
 	_, err := s.eval(ctx, beatLua, []string{visitKey(v.ID), VisitorsKey}, args...)
@@ -164,6 +174,11 @@ type Listed struct {
 	Activity []string `json:"activity,omitempty"`
 	// The agent-first test: when Alex's card may come (unix seconds), while he waits for an agent.
 	AlexAt int64 `json:"alex_at,omitempty"`
+	// What came of Alex's card on this visit (shown, dismissed, engaged), how many seconds ago it showed and the
+	// moment that showed it; all three left out when it didn't show. The panel lists who Alex's card didn't start.
+	AlexCard    string `json:"alex_card,omitempty"`
+	AlexCardS   *int64 `json:"alex_card_s,omitempty"`
+	AlexTrigger string `json:"alex_trigger,omitempty"`
 }
 
 // Live lists who beat in the last Window seconds, longest on the site first.
@@ -196,6 +211,10 @@ func (s *Store) Live(ctx context.Context) ([]Listed, error) {
 		}
 		if at, err := strconv.ParseInt(h["alex_at"], 10, 64); err == nil && at > 0 {
 			l.AlexAt = at
+		}
+		if at, err := strconv.ParseInt(h["alex_card_at"], 10, 64); err == nil && at > 0 && alexCards[h["alex_card"]] {
+			since := max(now-at, 0)
+			l.AlexCard, l.AlexCardS, l.AlexTrigger = h["alex_card"], &since, h["alex_trigger"]
 		}
 		if first > 0 {
 			l.OnSite = now - first

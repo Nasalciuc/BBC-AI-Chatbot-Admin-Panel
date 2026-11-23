@@ -23,8 +23,9 @@ import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
 import { posthog, posthogSessionId } from './posthog'
 import { contactTestProps, markProactiveConversation, type ProactiveOpening } from './proactive'
+import type { LiveHello } from './liveRead'
 import { siteMetadata } from './siteSignals'
-import { isNotNow } from './triggers'
+import { isNotNow, keysOnSite } from './triggers'
 import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
 import { createReplyTurns } from './replyTurns'
 
@@ -100,6 +101,18 @@ interface Props {
   onProactiveDismiss?: (how: 'not_now' | 'close') => void
   /** The visitor's first answer to the card (a button or typed text). */
   onProactiveEngaged?: (reply: string) => void
+  /**
+   * "On the site now" (live.ts): an agent's hello for a visitor with no chat yet. It shows as the agent's first
+   * words, in the place of Alex's opening; nothing exists on the server until the visitor writes, and that first
+   * message starts the chat with the hello's tap (/chat/init `live_tap`), already the agent's.
+   */
+  live?: LiveHello | null
+  /** ✕ before the visitor wrote: their "not now" to the agent. */
+  onLiveDismiss?: () => void
+  /** The first message went with the hello's tap; `held`: the chat started as the agent's. */
+  onLiveReplied?: (held: boolean) => void
+  /** A first message carries the hello's tap (true) until it lands or fails (false): no "not now" meanwhile. */
+  onLiveSending?: (on: boolean) => void
 }
 
 export interface Unread {
@@ -149,10 +162,16 @@ function withSession(metadata?: Record<string, unknown>): Record<string, unknown
 }
 
 const openingId = (o: ProactiveOpening) => `opening-${o.shownAt}`
+const liveId = (h: LiveHello) => `live-${h.id}`
+/** An agent's hello as the chat shows it before it is stored: their words, their first name. */
+const liveMessage = (h: LiveHello): Message => ({
+  id: liveId(h), role: 'agent', content: h.text, agent_name: h.agent, created_at: new Date().toISOString(),
+})
 
 export function ChatWindow({
   tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false, swapped = false,
   visible = true, draft = '', onUnread, proactive, onProactiveDismiss, onProactiveEngaged,
+  live, onLiveDismiss, onLiveReplied, onLiveSending,
 }: Props) {
   const visibleRef = useRef(visible)
   visibleRef.current = visible
@@ -161,15 +180,19 @@ export function ChatWindow({
   // The whole-screen view with bigger text (computers; largeView.ts): set from the panel's top.
   const [large] = useLarge()
   const savedConvId = getCachedConvId()
+  // An agent's hello for a visitor with no conversation yet: it takes the opening's place (below), and the first
+  // /chat/init carries its tap. One send owns it, as the opening.
+  const liveRef = useRef<LiveHello | null>(!savedConvId && live ? live : null)
   // The card's opening, for a visitor with no conversation yet. Fixed at mount: it is what the first
-  // /chat/init carries, and it is dropped once the conversation exists.
-  const openingRef = useRef<ProactiveOpening | null>(!savedConvId && proactive ? proactive : null)
+  // /chat/init carries, and it is dropped once the conversation exists (or an agent's hello takes its place).
+  const openingRef = useRef<ProactiveOpening | null>(!savedConvId && proactive && !liveRef.current ? proactive : null)
 
   const [messages, setMessages] = useState<Message[]>(() => {
+    if (liveRef.current) return [liveMessage(liveRef.current)]
     const o = openingRef.current
     return o ? [{ id: openingId(o), role: 'ai', content: o.message, created_at: new Date(o.shownAt).toISOString() }] : []
   })
-  const [input, setInput] = useState<string>(() => ssGet(DRAFT_KEY) ?? (savedConvId || openingRef.current ? '' : draft))
+  const [input, setInput] = useState<string>(() => ssGet(DRAFT_KEY) ?? (savedConvId || openingRef.current || liveRef.current ? '' : draft))
   const [sending, setSending] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -244,7 +267,7 @@ export function ChatWindow({
     try { return JSON.parse(ssGet(QUEUE_KEY) || '[]') } catch { return [] }
   })
   /** The greeting is on its way (fresh sessions): the log shows the assistant typing instead of nothing. */
-  const [starting, setStarting] = useState(!savedConvId && !openingRef.current)
+  const [starting, setStarting] = useState(!savedConvId && !openingRef.current && !liveRef.current)
   /** The visitor scrolled up to read: new messages no longer pull the log down; a button offers to. */
   const atBottomRef = useRef(true)
   const [hasUnseen, setHasUnseen] = useState(false)
@@ -416,10 +439,12 @@ export function ChatWindow({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, visible, docVisible, convId])
 
-  // The composer takes focus on computers; on touch screens the keyboard waits for a tap.
+  // The composer takes focus on computers; on touch screens the keyboard waits for a tap. Never out of a field
+  // of the site: a panel that opened by itself while a name was being typed took the last keys (22 Nov).
   const focusComposer = () => {
     try {
       if (!window.matchMedia('(pointer: fine)').matches) return
+      if (keysOnSite(document.activeElement)) return
       const el = composerRef.current
       if (!el) return
       el.focus({ preventScroll: true })
@@ -513,6 +538,8 @@ export function ChatWindow({
       }
       return
     }
+    // An agent's hello is on screen: nothing exists on the server until the visitor answers it.
+    if (liveRef.current) return
     if (savedConvId) return
     startConversation()
   // eslint-disable-next-line
@@ -833,6 +860,19 @@ export function ChatWindow({
   // the channels (app/pipeline/card_buttons.py, before_you_go), once per conversation. Asked once per tab.
   const messagesRef = useRef(messages)
   messagesRef.current = messages
+
+  // An agent's hello while the chat is open with nothing sent yet (Alex's opening unanswered): their words take the
+  // opening's place, so what the visitor answers is what the chat will hold (the hello, stored first). Not over
+  // anything the visitor sent (a first message on its way owns the opening, and the chat it makes is Alex's), nor
+  // over a greeting being made on the server (/chat/start).
+  useEffect(() => {
+    if (!live || convId || starting || liveRef.current?.id === live.id) return
+    if (messagesRef.current.some(m => m.role === 'user')) return
+    liveRef.current = live
+    openingRef.current = null
+    setMessages([liveMessage(live)])
+    setQuickReplies(null)
+  }, [live?.id, convId, starting])
   const busyRef = useRef(false)
   busyRef.current = sending || isStreaming || !!channelForm || !!input.trim() || agentTyping.is_typing
   const beforeYouGoRef = useRef<(keepalive?: boolean) => void>(() => {})
@@ -1039,6 +1079,12 @@ export function ChatWindow({
       // its way) goes out plain and finds the same conversation, never removing or re-labelling it.
       const opening = convId ? null : openingRef.current
       if (opening) openingRef.current = null
+      // So it owns an agent's hello on screen: its tap goes with this send, once.
+      const hello = convId ? null : liveRef.current
+      if (hello) {
+        liveRef.current = null
+        onLiveSending?.(true)
+      }
       if (!activeConvId) {
         try {
           const turnstile_token = await getTurnstileToken()
@@ -1057,6 +1103,9 @@ export function ChatWindow({
               visitor_id: getVisitorId(),
               turnstile_token,
               form_check: formCheck,
+              // An agent's hello: its tap makes the chat theirs, the hello its first message (never with
+              // Alex's opening: the hello took its place).
+              ...(hello ? { live_tap: hello.tap } : {}),
               // The card's moment and the page's trip: the server writes the opening as the assistant's
               // first message and starts the lead with the trip (unconfirmed). `variant`: the way the
               // server asked the first question (the note's bandit) — the same words, counted for it.
@@ -1091,6 +1140,20 @@ export function ChatWindow({
               const vid = getVisitorId()
               if (vid) posthog?.identify(vid)
             }
+            if (hello) {
+              // Held: the hello is the chat's first message, stored; messages are read after it. Not held (it ran
+              // out, the agent no longer takes chats): the chat is an ordinary one that never had it, so it leaves
+              // the screen too, as an opening not stored does.
+              const held = typeof initData.live_agent === 'string'
+              if (held && typeof initData.live_at === 'string') lastMsgTime.current = initData.live_at
+              if (!held) setMessages(prev => prev.filter(m => m.id !== liveId(hello)))
+              // No form behind it: this visitor's chat on the next pages, as the card's.
+              markProactiveConversation(newConvId)
+              const vid = getVisitorId()
+              if (vid) posthog?.identify(vid)
+              onLiveSending?.(false)
+              onLiveReplied?.(held)
+            }
             activeConvId = newConvId
             setConvId(newConvId)
             apiFetch(`${apiUrl}/api/chat/session/${newConvId}/open`, { method: 'POST' }).catch(() => {})
@@ -1103,17 +1166,26 @@ export function ChatWindow({
                 resolve()
               }, 400)
             })
-          } else if (opening) {
-            openingRef.current = opening  // not created: the next send carries the opening again
+          } else {
+            // Not created: the next send carries the opening (or the hello's tap) again.
+            if (opening) openingRef.current = opening
+            if (hello) {
+              liveRef.current = hello
+              onLiveSending?.(false)
+            }
           }
         } catch (e) {
           if (opening) openingRef.current = opening
-          console.warn(`[bbc-widget] /init failed${opening ? '' : ', falling back to direct POST'}`, e)
+          if (hello) {
+            liveRef.current = hello
+            onLiveSending?.(false)
+          }
+          console.warn(`[bbc-widget] /init failed${opening || hello ? '' : ', falling back to direct POST'}`, e)
         }
-        // The card's chat exists only through /chat/init (its opening, the page's trip, the label): the
-        // direct POST would make a plain one the widget can't find again. The send fails instead, and
-        // Retry carries the opening again.
-        if (opening && !activeConvId) throw new Error('init failed')
+        // The card's chat exists only through /chat/init (its opening, the page's trip, the label), and so does
+        // the agent's (the tap): the direct POST would make a plain one the widget can't find again, or one that
+        // isn't the agent's. The send fails instead, and Retry carries the opening or the tap again.
+        if ((opening || hello) && !activeConvId) throw new Error('init failed')
       }
 
       const res = await apiFetch(`${apiUrl}/api/chat`, {
@@ -1462,6 +1534,8 @@ export function ChatWindow({
         canEnlarge={!embedded}
         onClose={embedded ? undefined : () => {
           if (openingRef.current && !convId) onProactiveDismiss?.('close')
+          // The agent's hello, unanswered: the visitor's "not now" to them (nobody says hello for an hour).
+          if (liveRef.current && !convId) onLiveDismiss?.()
           notifySessionClose('minimized', true)
           onClose()
         }}

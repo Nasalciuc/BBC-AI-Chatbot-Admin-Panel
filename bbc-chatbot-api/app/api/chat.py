@@ -146,9 +146,11 @@ class ChatInitResponse(BaseModel):
     opening: Optional[str] = None
     opening_at: Optional[str] = None
     # The agent whose hello the visitor tapped, when the chat started as theirs: their first name
-    # and their hello's words, which are the chat's first message.
+    # and their hello's words, which are the chat's first message, and when it was stored: the widget
+    # reads messages after `live_at`, so the hello it already shows is not drawn twice.
     live_agent: Optional[str] = None
     live_hello: Optional[str] = None
+    live_at: Optional[str] = None
 
 
 async def _widget_gate(request: Request, turnstile_token: Optional[str], form_check: Optional[dict], meta: dict) -> None:
@@ -287,6 +289,7 @@ async def chat_init(
         opening_at=_opening.get("created_at"),
         live_agent=_live.get("agent"),
         live_hello=_live.get("text"),
+        live_at=_live.get("at"),
     )
 
 

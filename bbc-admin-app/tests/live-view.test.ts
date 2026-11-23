@@ -5,8 +5,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  HELLO_RESTRICTED, activityText, alexLine, alexWaiting, claimProblem, heldBy, helloProblem, onSite, ordered, pageLine,
-  rowState, sourceLabel, stepText, suggestedHello, testLine, tripLine, clockS,
+  ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
+  helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
+  tripLine, clockS,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -187,7 +188,7 @@ test('the agent-first test: Alex’s countdown, the visitors he waits on first, 
   for (const off of [undefined, null, { percent: 0, hold_s: 120 }]) assert.equal(testLine(off), '')
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
   assert.match(page, /const nowS = clockS\(tickS, list\.dataUpdatedAt\)/)
-  assert.match(page, /const rows = ordered\(list\.data\?\.data \?\? \[\], meId, nowS\)/)
+  assert.match(page, /const rows = ordered\(listed\(list\.data\?\.data \?\? \[\], meId, nowS\), meId, nowS\)/)
   assert.match(page, /\{test && <p className='rounded-\[14px\] bg-k-fff3e0/)
   assert.match(page, /Test · \{alexLine\(v, nowS\)\}/)
   assert.match(page, /if \(!anyWaiting\) return\n\s+const t = setInterval\(\(\) => setTickS\(Math\.floor\(Date\.now\(\) \/ 1000\)\), 1000\)/)
@@ -201,4 +202,58 @@ test('the countdowns read the list’s last answer when the tick is older, the t
   // Rule 5: a tick after the answer is the newer second; no answer yet, the tick.
   assert.equal(clockS(now + 4, (now + 2) * 1000), now + 4)
   assert.equal(clockS(now, 0), now)
+})
+
+// ── The list is the visitors Alex's card didn't start a chat with (the owner, 23 Nov 2026) ─────────────────────
+
+test('listed: who Alex’s card didn’t start a chat with, who Alex waits on, and the ones I hold', () => {
+  const now = 1_900_000_000
+  const rows = [
+    v({ visitor_id: 'ignored', alex_card: 'shown', alex_card_s: 45 }),
+    v({ visitor_id: 'not-now', alex_card: 'dismissed', alex_card_s: 5 }),
+    v({ visitor_id: 'just-shown', alex_card: 'shown', alex_card_s: ALEX_GAVE_UP_S - 1 }),
+    v({ visitor_id: 'answered', alex_card: 'engaged', alex_card_s: 300 }),
+    v({ visitor_id: 'no-card', seconds_on_site: 900 }),
+    v({ visitor_id: 'in-chat', alex_card: 'shown', alex_card_s: 300, has_chat: true }),
+    v({ visitor_id: 'waited-on', alex_at: now + 60 }),
+    v({ visitor_id: 'mine-now-in-chat', claimed_by: ME, has_chat: true, alex_card: 'engaged', alex_card_s: 90 }),
+  ]
+  assert.deepEqual(listed(rows, ME, now).map((r) => r.visitor_id), ['ignored', 'not-now', 'waited-on', 'mine-now-in-chat'])
+  // A visitor Alex waits on who opened the chat meanwhile is in it, not waiting (CodeRabbit #278).
+  assert.deepEqual(listed([v({ alex_at: now + 60, has_chat: true })], ME, now), [])
+  assert.equal(listed([v({ alex_at: now + 60, has_chat: true, claimed_by: ME })], ME, now).length, 1, 'mine stays')
+  assert.equal(alexCouldnt(v({ alex_card: 'shown', alex_card_s: ALEX_GAVE_UP_S })), true, 'at the second')
+  assert.equal(alexCouldnt(v({ alex_card: 'shown' })), false, 'no time, no verdict')
+  // Rule 5: no card, nobody waited on, held by someone else or by nobody: not listed.
+  assert.deepEqual(listed([v(), v({ claimed_by: 'someone-else', alex_card: 'engaged', alex_card_s: 99 })], ME, now), [])
+  assert.deepEqual(listed([v({ claimed_by: 'x' })], undefined, now), [])
+})
+
+test('within a state, the one Alex’s card showed to last comes first', () => {
+  const rows = [
+    v({ visitor_id: 'old', alex_card: 'shown', alex_card_s: 600, seconds_on_site: 900 }),
+    v({ visitor_id: 'fresh', alex_card: 'shown', alex_card_s: 31, seconds_on_site: 40 }),
+    v({ visitor_id: 'not-now', alex_card: 'dismissed', alex_card_s: 120 }),
+    v({ visitor_id: 'mine', claimed_by: ME, alex_card: 'shown', alex_card_s: 900 }),
+  ]
+  assert.deepEqual(ordered(rows, ME).map((r) => r.visitor_id), ['mine', 'fresh', 'not-now', 'old'])
+})
+
+test('what came of Alex’s card, in words on the row', () => {
+  assert.equal(alexCardLine(v({ alex_card: 'shown', alex_card_s: 45, alex_trigger: 'kayak' })), 'Alex’s card 45 s ago, no answer')
+  assert.equal(alexCardLine(v({ alex_card: 'shown', alex_card_s: 185, alex_trigger: 'note' })), 'Opened the chat 3 min ago, didn’t write')
+  assert.equal(alexCardLine(v({ alex_card: 'dismissed', alex_card_s: 60, alex_trigger: 'ads' })), 'Said not now to Alex’s card')
+  assert.equal(alexCardLine(v({ alex_card: 'dismissed', alex_trigger: 'note' })), 'Closed the chat with Alex')
+  assert.equal(alexCardLine(v({ alex_card: 'engaged', alex_card_s: 10 })), 'Answered Alex')
+  assert.equal(alexCardLine(v()), '')
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /\{alexCardLine\(v\) && \(/)
+})
+
+test('time on the site is never less than the time since Alex’s card (the first beat comes at 20 s)', () => {
+  assert.equal(onSiteSeconds(v({ seconds_on_site: 15, alex_card: 'shown', alex_card_s: 32 })), 32)
+  assert.equal(onSiteSeconds(v({ seconds_on_site: 300, alex_card: 'shown', alex_card_s: 32 })), 300)
+  assert.equal(onSiteSeconds(v({ seconds_on_site: 45 })), 45)
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /\{onSite\(onSiteSeconds\(v\)\)\} on the site/)
 })

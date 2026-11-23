@@ -290,8 +290,10 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
 
 async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str) -> dict:
     """/chat/init with live_tap: the visitor tapped an agent's hello, so the chat becomes the agent's, with the
-    hello as its first message. {"agent": first name, "text": the hello}, or {} when the tap doesn't hold or the
-    agent can't take the chat: the chat then stays an ordinary one, counted, never a failure for the visitor.
+    hello as its first message. {"agent": first name, "text": the hello, "at": when it was stored (None when it
+    wasn't)}, or {} when the tap doesn't hold or the agent can't take the chat: the chat then stays an ordinary
+    one, counted, never a failure for the visitor. The widget reads messages after "at", so a hello it already
+    shows (the chat opened with it, on a computer) is not drawn twice.
 
     Order: the agent may still take chats; the claim; the hello stored; then the presence fields. A hello that
     cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary; a
@@ -349,4 +351,4 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
         "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
                        "tapped_at": now},
     })
-    return {"agent": first_name(agent.get("name")), "text": hello["text"]}
+    return {"agent": first_name(agent.get("name")), "text": hello["text"], "at": (row or {}).get("created_at")}

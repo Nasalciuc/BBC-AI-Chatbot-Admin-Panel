@@ -24,7 +24,7 @@ const readTrip = (href, h1) => {
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
   SAME_SEND_MS, TRIGGER_OFF_ARM, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs,
-  offAfter, pauseRunning, pickTrigger, readOff, replyKind,
+  keysOnSite, offAfter, pauseRunning, pickTrigger, quoteClick, readOff, replyKind, worksOnPressedForm,
 } from '../src/triggers.ts'
 import { fetchProactiveOffer, offerMeasures, offerVariant, preconnect } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -440,6 +440,60 @@ test('the hook marks the quote form worked on from the page and from the site, p
   assert.match(hook, /if \(trigger !== 'quote' && quoteFormAt !== before\.quoteForm\) return 'quote_form'/)
 })
 
+test('a press whose form the widget does not know: any field of the site keeps the quote moment waiting (22 Nov)', () => {
+  // The form known (form.qf): only work inside it counts — a field elsewhere on the page does not.
+  assert.equal(worksOnPressedForm({ formKnown: true, inForm: true, inWidget: false, field: true }), true)
+  assert.equal(worksOnPressedForm({ formKnown: true, inForm: true, inWidget: false, field: false }), true)
+  assert.equal(worksOnPressedForm({ formKnown: true, inForm: false, inWidget: false, field: true }), false)
+  // The form unknown (secret-site's Vue page: the button with no form around it): any field of the site counts,
+  // a click on something that is no field does not, and the widget's own fields never do.
+  assert.equal(worksOnPressedForm({ formKnown: false, inForm: false, inWidget: false, field: true }), true)
+  assert.equal(worksOnPressedForm({ formKnown: false, inForm: false, inWidget: false, field: false }), false)
+  assert.equal(worksOnPressedForm({ formKnown: false, inForm: false, inWidget: true, field: true }), false)
+  // The three ways the hook hears work on the form use it: a key, a focus or change, a click.
+  assert.match(hook, /const worksOnPressed = \(t: EventTarget \| null\) => !!press && worksOnPressedForm\(\{\s+formKnown: !!press\.form, inForm: inPressedForm\(t\), inWidget: inWidget\(t\), field: isField\(t\),/)
+  assert.match(hook, /const onType = [\s\S]*?if \(press && worksOnPressed\(e\.target\)\) press\.activityAt = Date\.now\(\)/)
+  assert.match(hook, /const onFormTouch = \(e: Event\) => \{\s+touchQuoteForm\(e\.target\)\s+if \(press && worksOnPressed\(e\.target\)\) press\.activityAt = Date\.now\(\)/)
+  assert.match(hook, /const kind = quoteClick\(\{\s+knownSubmit: !!form && isSubmitControl\(el\), works: worksOnPressed\(el\),\s+quoteControl: !!control && QUOTE_TEXT\.test\(text\), inKnownForm: !!form,\s+\}\)/)
+  assert.match(hook, /if \(kind === 'work' && press\) \{\s+press\.activityAt = Date\.now\(\)\s+return/)
+  assert.match(hook, /if \(kind === 'press_unknown'\) \{\s+\/\/ The site's button without the form we know: still a press/)
+  assert.doesNotMatch(hook, /if \(press && inPressedForm\((e\.target|el)\)\) (press\.activityAt|\{)/)
+})
+
+test('the site\'s quote button pressed again outside a known form is a new press, not work on the form (CodeRabbit #276)', () => {
+  // A submit input is a field too: pressed again while a press runs, it starts a new one (its clock), it is not work.
+  assert.equal(quoteClick({ knownSubmit: false, works: true, quoteControl: true, inKnownForm: false }), 'press_unknown')
+  // Ordinary work on the form stays work: a field, a checkbox, a click inside the known pressed form.
+  assert.equal(quoteClick({ knownSubmit: false, works: true, quoteControl: false, inKnownForm: false }), 'work')
+  assert.equal(quoteClick({ knownSubmit: false, works: true, quoteControl: true, inKnownForm: true }), 'work')
+  // The known form's own submit is its press, whatever else holds; the quote button with no press running, a press.
+  assert.equal(quoteClick({ knownSubmit: true, works: true, quoteControl: true, inKnownForm: true }), 'press')
+  assert.equal(quoteClick({ knownSubmit: false, works: false, quoteControl: true, inKnownForm: false }), 'press_unknown')
+  // Anything else on the page is nothing to the quote moment.
+  assert.equal(quoteClick({ knownSubmit: false, works: false, quoteControl: false, inKnownForm: false }), null)
+})
+
+test('a chat that opens by itself leaves the keys in the field of the site the visitor is typing in (22 Nov)', () => {
+  const el = (tag, { inWidget = false, editable = false } = {}) => ({
+    matches: (sel) => sel.split(',').map((s) => s.trim()).includes(tag),
+    closest: (sel) => (inWidget && sel === '#bbc-widget-root' ? {} : null),
+    isContentEditable: editable,
+  })
+  assert.equal(keysOnSite(el('input')), true)
+  assert.equal(keysOnSite(el('textarea')), true)
+  assert.equal(keysOnSite(el('select')), true)
+  assert.equal(keysOnSite(el('div', { editable: true })), true)
+  // Not a field, the widget's own composer or button, or nothing at all: the composer may take the focus.
+  assert.equal(keysOnSite(el('button')), false)
+  assert.equal(keysOnSite(el('body')), false)
+  assert.equal(keysOnSite(el('textarea', { inWidget: true })), false)
+  assert.equal(keysOnSite(el('button', { inWidget: true })), false)
+  assert.equal(keysOnSite(null), false)
+  assert.equal(keysOnSite({}), false)
+  // The composer asks before it takes the focus, on every open.
+  assert.match(chat, /const focusComposer = \(\) => \{\s+try \{\s+if \(!window\.matchMedia\('\(pointer: fine\)'\)\.matches\) return\s+if \(keysOnSite\(document\.activeElement\)\) return\s+const el = composerRef\.current/)
+})
+
 test('the 10 s note waits while the quote form is worked on, as the moments do (owner, 17 Nov)', () => {
   // Never touched, or untouched for longer than the watch: no wait.
   assert.equal(noteWaitMs(null), 0)
@@ -694,22 +748,23 @@ test('the corner button next to a card opens the card\'s chat, not the form', ()
 test('the first send owns the opening: a racing second send goes out plain', () => {
   const send = chat.slice(chat.indexOf('let activeConvId = convId'))
   assert.match(send, /const opening = convId \? null : openingRef\.current\s+if \(opening\) openingRef\.current = null/)
-  // Not created: the next send carries it again.
-  assert.match(send, /\} else if \(opening\) \{\s+openingRef\.current = opening/)
-  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening/)
+  // Not created: the next send carries it again (and an agent's hello's tap, which took its place: live.ts).
+  assert.match(send, /\} else \{\s+\/\/ Not created[^\n]*\n\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) \{\s+liveRef\.current = hello\s+onLiveSending\?\.\(false\)/)
+  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) \{\s+liveRef\.current = hello\s+onLiveSending\?\.\(false\)/)
 })
 
 test('a phone gets the card, a computer the panel', () => {
   assert.match(hook, /const surface: Surface = row \? 'row' : phone \? 'card' : 'panel'/)
   assert.match(widget, /if \(proactive\.offer\?\.surface === 'panel'\) openProactive\(proactive\.offer\)/)
-  assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' \? proactive\.offer : null\}/)
+  // The card stands aside while a popup of the site covers the page (after-card.test.mjs, E1 after the card).
+  assert.match(widget, /card=\{proactive\.offer\?\.surface === 'card' && !proactive\.aside \? proactive\.offer : null\}/)
 })
 
 // ── CodeRabbit round on #256 ─────────────────────────────────────────────────────────
 
 test('the card\'s chat never falls back to a plain conversation: the send fails, Retry carries the opening', () => {
   const send = chat.slice(chat.indexOf('let activeConvId = convId'), chat.indexOf("const res = await apiFetch(`${apiUrl}/api/chat`, {"))
-  assert.match(send, /if \(opening && !activeConvId\) throw new Error\('init failed'\)/)
+  assert.match(send, /if \(\(opening \|\| hello\) && !activeConvId\) throw new Error\('init failed'\)/)
 })
 
 test('the note closed with ✕ stops the moments on the next tick, not only on the next page', () => {
@@ -748,14 +803,14 @@ test('the open panel keeps its unanswered opening across the tab\'s pages: never
   // Kept while the visitor has not answered; read back only where no conversation exists yet.
   const keep = widget.slice(widget.indexOf("// Keep an open chat open across this tab's pages"))
   assert.match(keep, /const kept = opening && !proactiveChatStarted\(\) \? \{ opening: keepOpening\(opening\) \} : \{\}/)
-  assert.match(keep, /safeSet\('bbc_widget', JSON\.stringify\(\{ step: 'chat', tunnel, visitor, metadata, \.\.\.kept \}\)\)/)
-  assert.match(keep, /\}, \[step, tunnel, opening\]\)/)
+  assert.match(keep, /safeSet\('bbc_widget', JSON\.stringify\(\{ step: 'chat', tunnel, visitor, metadata, \.\.\.kept, \.\.\.withHello \}\)\)/)
+  assert.match(keep, /\}, \[step, tunnel, opening, live\.hello\]\)/)
   assert.match(widget, /const keptOpening = cachedConvId \? null : readKeptOpening\(restored\?\.opening\)/)
   assert.match(widget, /const \[opening, setOpening\] = useState<ProactiveOpening \| null>\(keptOpening\)/)
   // Its answer or dismissal on the next page is still measured against the moment it was shown.
   assert.match(hook, /const shownRef = useRef<ProactiveOpening \| null>\(restored\)/)
-  // With the opening, ChatWindow shows its words and waits: no /chat/start.
-  assert.match(chat, /if \(openingRef\.current\) \{[\s\S]*?return\s+\}\s+if \(savedConvId\) return\s+startConversation\(\)/)
+  // With the opening, ChatWindow shows its words and waits: no /chat/start. So with an agent's hello (live.ts).
+  assert.match(chat, /if \(openingRef\.current\) \{[\s\S]*?return\s+\}[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s+if \(liveRef\.current\) return\s+if \(savedConvId\) return\s+startConversation\(\)/)
 })
 
 test('a kept opening reads back whole, without the reply already sent; anything else is no opening', () => {
