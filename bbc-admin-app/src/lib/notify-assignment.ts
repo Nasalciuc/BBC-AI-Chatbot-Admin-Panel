@@ -147,7 +147,7 @@ function _playMade(sound: Exclude<RingSound, 'classic'>, volume: number): GainNo
   return null
 }
 
-/** Once, whatever the sound: the queue chime, a task reminder, a lead given to me. Never cut by a ring's stop. */
+/** Once, whatever the sound: the queue chime, a task reminder. Never cut by a ring's stop. */
 function _playOnce(sound: RingSound, volume: number): void {
   if (volume <= 0) return
   if (sound !== 'classic') {

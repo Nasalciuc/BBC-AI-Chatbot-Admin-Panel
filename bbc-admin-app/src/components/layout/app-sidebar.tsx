@@ -138,7 +138,7 @@ function NavLink({
       onClick={() => setOpenMobile(false)}
       aria-current={active ? 'page' : undefined}
       aria-label={badge ? `${item.title}, ${badge.label}` : item.title}
-      // On hover: what the badge counts (the Tasks badge counts two things), and in the narrow menu the name too.
+      // On hover: what the badge counts, and in the narrow menu the name too.
       title={badge ? (mini ? `${item.title}, ${badge.label}` : badge.label) : mini ? item.title : undefined}
       className={cn(
         'relative flex h-10 items-center gap-3 rounded-xl text-sm no-underline transition-colors focus-visible:outline-2 focus-visible:outline-k-6ea8ff',
