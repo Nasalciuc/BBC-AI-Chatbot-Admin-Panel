@@ -28,7 +28,7 @@ import type { ChannelKind, ChatButton } from './channel'
 import brand from './config'
 import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
-import { watchPopups } from './overlay'
+import { cardAsideWatch, watchPopups } from './overlay'
 import { posthog } from './posthog'
 import {
   applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
@@ -38,7 +38,7 @@ import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type 
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
   adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
-  replyKind, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  quoteClick, replyKind, worksOnPressedForm, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm } from './utm'
 
@@ -357,6 +357,9 @@ export interface Proactive {
   closePill: () => void
   /** The pill was tapped (its chat opens): it goes. */
   pillUsed: () => void
+  /** E1 after the card (overlay.ts cardAsideWatch): a popup of the site covers the page, so the card waits in
+   *  the corner button (a tap on it still opens Alex's chat) and comes back when the popup goes. */
+  aside: boolean
 }
 
 export function useProactive({ apiUrl, step, allowed, restored = null }: {
@@ -370,6 +373,12 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   const [quiet, setQuiet] = useState(() => ssGet(DONE_KEY) === 'shown')
   const [rowForm, setRowForm] = useState<HTMLFormElement | null>(null)
   const [pill, setPill] = useState<ProactiveOpening | null>(() => readPill())
+  const [aside, setAside] = useState(false)
+  // E1 (overlay.ts): one watch of the site's popups for the page, so a popup's minute is counted once — by the
+  // moments before the card and by the card once it is on screen (two clocks made the card wait a minute more).
+  const [pagePopups] = useState(watchPopups)
+  // The quote card's own form (the one pressed): its modal is the moment, never a popup to step aside for.
+  const cardFormRef = useRef<Element | null>(null)
   const shownRef = useRef<ProactiveOpening | null>(restored)
   const engagedRef = useRef(false)
   const stepRef = useRef(step)
@@ -406,6 +415,25 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     return onSiteEvent(stopFor)
   }, [])
 
+  // E1 after the card: while the card is on screen, a popup of the site that opens over the page puts it
+  // aside until the popup goes (overlay.ts cardAsideWatch). Only the phone card: the computer's panel has room.
+  useEffect(() => {
+    setAside(false)
+    if (!offer || offer.surface !== 'card' || step !== 'buttons') return
+    const o = offer
+    // The quote card looks past the quote form's own modal, as its moment did (CodeRabbit #276): a phone visitor
+    // on the site's quote modal still sees the card; any other popup still puts it aside.
+    const form = o.trigger === 'quote' ? cardFormRef.current : null
+    const look = cardAsideWatch(pagePopups, (on) => {
+      setAside(on)
+      posthog?.capture(on ? 'proactive_card_aside' : 'proactive_card_back', { trigger: o.trigger, site: brand.id })
+    }, form ? (el: Element) => el.contains(form) : undefined)
+    look()
+    // A quarter of a second: the card makes room while the site's popup is still fading in.
+    const t = setInterval(look, 250)
+    return () => clearInterval(t)
+  }, [offer, step])
+
   useEffect(() => {
     if (!allowed || step !== 'buttons') return
     if (ssGet(DONE_KEY) || ssGet(NOTE_CLOSED_KEY) || pauseRunning(lsGet(PAUSE_KEY), Date.now())) return
@@ -417,7 +445,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let popupHeldOnce = false
     const start = Date.now()
     // E1 (overlay.ts): the site's popups over the page; a card waits while one is open.
-    const popups = watchPopups()
+    const popups = pagePopups
     // The moments count the visitor's seconds, not the widget's (triggers.ts, "in view"): the time the page
     // was in view before this script started counts too. `widgetStartS`: how long after the page showed this
     // script started, for the measurements (null when the browser does not say when the page showed).
@@ -454,6 +482,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const inPressedForm = (t: EventTarget | null) => !!press?.form && t instanceof Node && press.form.contains(t)
     const isField = (t: EventTarget | null) =>
       t instanceof HTMLElement && (t.matches('input, textarea, select') || t.isContentEditable)
+    // Work on the pressed form: inside it, or any field of the site for a press whose form is unknown (triggers.ts).
+    const worksOnPressed = (t: EventTarget | null) => !!press && worksOnPressedForm({
+      formKnown: !!press.form, inForm: inPressedForm(t), inWidget: inWidget(t), field: isField(t),
+    })
     // A touch inside the site's quote form (quoteForm: form.qf, or one labelled as a quote), pressed or not.
     const touchQuoteForm = (t: EventTarget | null) => {
       if (t instanceof Element && !inWidget(t) && quoteForm(t)) quoteFormAt = Date.now()
@@ -479,11 +511,11 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (inWidget(e.target)) return
       if (isField(e.target)) lastSiteTyping = Date.now()
       touchQuoteForm(e.target)
-      if (press && inPressedForm(e.target)) press.activityAt = Date.now()
+      if (press && worksOnPressed(e.target)) press.activityAt = Date.now()
     }
     const onFormTouch = (e: Event) => {
       touchQuoteForm(e.target)
-      if (press && inPressedForm(e.target)) press.activityAt = Date.now()
+      if (press && worksOnPressed(e.target)) press.activityAt = Date.now()
     }
     const onClick = (e: Event) => {
       lastActivity = Date.now()
@@ -491,18 +523,22 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (!el || inWidget(el)) return
       touchQuoteForm(el)
       const form = quoteForm(el)
-      if (form && isSubmitControl(el)) {
+      const control = el.closest('button, a, [role="button"], input[type="submit"]')
+      const text = control ? (control.textContent || (control as HTMLInputElement).value || '') : ''
+      const kind = quoteClick({
+        knownSubmit: !!form && isSubmitControl(el), works: worksOnPressed(el),
+        quoteControl: !!control && QUOTE_TEXT.test(text), inKnownForm: !!form,
+      })
+      if (kind === 'press' && form) {
         press = { at: Date.now(), form, activityAt: Date.now(), invalid: false }
         refused = []
         return
       }
-      if (press && inPressedForm(el)) {
+      if (kind === 'work' && press) {
         press.activityAt = Date.now()
         return
       }
-      const control = el.closest('button, a, [role="button"], input[type="submit"]')
-      const text = control ? (control.textContent || (control as HTMLInputElement).value || '') : ''
-      if (control && QUOTE_TEXT.test(text)) {
+      if (kind === 'press_unknown') {
         // The site's button without the form we know: still a press, and the HTML changed — say so.
         press = { at: Date.now(), form: null, activityAt: Date.now(), invalid: false }
         refused = []
@@ -692,6 +728,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       ssSet(DONE_KEY, 'shown')
       ssSet(ATTENTION_KEY, '1')
       shownRef.current = opening
+      cardFormRef.current = trigger === 'quote' ? pressed : null
       setQuiet(true)
       setOffer(opening)
       noteAlexShown(trigger)
@@ -728,6 +765,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         press = null
       }
       if (sentInline) return
+      // E1's minute runs from when a popup of the site appears, not from when a moment first wants to come:
+      // a popup left open through Alex's wait (the agent-first test) held the card one more minute after the
+      // two (secret-site run, 22 Nov: the card at 185 s instead of 125 s). The look only keeps the clock.
+      popups.open()
       const now = Date.now()
       const quote: QuoteState | null = press ? {
         sincePressS: (now - press.at) / 1000,
@@ -815,6 +856,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
   return {
     offer,
     quiet,
+    aside,
     opened: () => { setOffer(null); setRowForm(null) },
     gaveWay: () => { setOffer(null); setRowForm(null) },
     dismiss: (how) => {

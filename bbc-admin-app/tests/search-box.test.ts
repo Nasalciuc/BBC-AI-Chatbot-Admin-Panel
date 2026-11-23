@@ -4,7 +4,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { EMPTY_FILTERS, MESSAGES_RESTRICTED, MESSAGE_READERS, SEARCH_DEBOUNCE_MS, SEARCH_MAX, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from '../src/features/chats/search.ts'
+import { EMPTY_FILTERS, MESSAGES_RESTRICTED, MESSAGE_READERS, SEARCH_DEBOUNCE_MS, SEARCH_MAX, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchElsewhere, searchEmptyText, searchHint } from '../src/features/chats/search.ts'
+import { focusKey } from '../src/features/chats/view.ts'
 
 test('the box says what it will look for, as the server reads it', () => {
   assert.equal(searchHint('#3403'), 'The chat number')
@@ -108,4 +109,33 @@ test('the chats opened lately stay while focus is in the box or the list (CodeRa
 test('what was said scrolls in its own region (CodeRabbit #273)', () => {
   const page = read('src/features/chats/index.tsx')
   assert.match(page, /<section aria-label='What was said' className=\{cn\('flex max-h-\[35vh\] flex-none flex-col gap-1 overflow-y-auto/)
+})
+
+test('a search that finds nothing on its tab offers the tab one wider, the owner’s Mine first (secret-site run, 22 Nov)', () => {
+  const manager = ['my_active', 'all_active', 'to_read', 'all_closed']
+  assert.equal(searchElsewhere('my_active', manager), 'all_active')
+  assert.equal(searchElsewhere('to_read', manager), 'all_active')
+  assert.equal(searchElsewhere('all_active', manager), 'all_closed')
+  assert.equal(searchElsewhere('all_closed', manager), null)
+  // An agent: Mine, then their own Closed; nothing wider.
+  assert.equal(searchElsewhere('my_active', ['my_active', 'my_closed']), 'my_closed')
+  assert.equal(searchElsewhere('my_closed', ['my_active', 'my_closed']), null)
+  // Admin, supervisor, QA have no Mine: All active, then Closed.
+  assert.equal(searchElsewhere('all_active', ['all_active', 'to_read', 'all_closed']), 'all_closed')
+  const src = readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8')
+  assert.match(src, /const searchMoreKey = debouncedSearch && !idleOnly \? searchElsewhere\(activeTab, visibleTabs\.map\(\(t\) => t\.key\)\) : null/)
+  assert.match(src, /onClick=\{\(\) => \{ setActiveTab\(searchMoreTab\.key\); setSelectedId\(null\) \}\}>\s+Look in \{searchMoreTab\.label\}/)
+  // A keyboard user who presses it keeps the focus: the button names the tab it opens, so when that tab's rows
+  // replace it the focus goes to the tab (focusKey, the column's own focus keeper; CodeRabbit #276).
+  assert.match(src, /<button type='button' data-tab=\{searchMoreTab\.key\} className='[^']*' onClick=\{\(\) => \{ setActiveTab\(searchMoreTab\.key\)/)
+  assert.equal(focusKey({ dataset: { tab: 'all_active' } }), 'tab:all_active')
+})
+
+test('with what was said listed above, the list’s empty line says what it looked in (secret-site run, 22 Nov)', () => {
+  // The tab is said with the messages above too: the list looked only there (CodeRabbit #276).
+  assert.equal(searchEmptyText('Seoul in May', 'Mine', true), 'No chat in Mine matches “Seoul in May” by name, contact or route. Where it was said is above.')
+  assert.equal(searchEmptyText('Seoul in May', 'Mine', false), 'No chat in Mine matches “Seoul in May”.')
+  const src = readFileSync(new URL('../src/features/chats/index.tsx', import.meta.url), 'utf8')
+  assert.match(src, /searchEmptyText\(debouncedSearch, tab\.label, wantMessages && \(hits\.data \?\? \[\]\)\.length > 0\)/)
+  assert.doesNotMatch(src, /`No chat matches “\$\{debouncedSearch\}”\.`/)
 })

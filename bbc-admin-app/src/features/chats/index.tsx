@@ -6,7 +6,7 @@ import { getConversations, getNotifications, getRecentChats, searchMessages, api
 import { stopAssignmentAlerts } from '@/lib/notify-assignment'
 import { isEmbedded } from '@/lib/crm-bridge'
 import { cn } from '@/lib/utils'
-import { EMPTY_FILTERS, MESSAGES_RESTRICTED, SEARCH_DEBOUNCE_MS, SEARCH_MAX, type ListFilters, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchHint } from './search'
+import { EMPTY_FILTERS, MESSAGES_RESTRICTED, SEARCH_DEBOUNCE_MS, SEARCH_MAX, type ListFilters, canSearchMessages, filterCount, filterKey, filterParams, messagesSearchable, searchElsewhere, searchEmptyText, searchHint } from './search'
 import { Logo } from '@/assets/logo'
 import { HeaderActions } from '@/components/header-actions'
 import { PageHeader } from '@/components/layout/page-header'
@@ -465,12 +465,14 @@ export function Chats() {
     )
   }
 
+  const searchMoreKey = debouncedSearch && !idleOnly ? searchElsewhere(activeTab, visibleTabs.map((t) => t.key)) : null
+  const searchMoreTab = searchMoreKey ? visibleTabs.find((t) => t.key === searchMoreKey) ?? null : null
   const emptyText = isError
     ? null
     : idleOnly
       ? 'No idle chats right now.'
       : debouncedSearch
-        ? `No chat matches “${debouncedSearch}”.`
+        ? searchEmptyText(debouncedSearch, tab.label, wantMessages && (hits.data ?? []).length > 0)
         : tagFilter !== 'all'
           ? `No ${TAG_LABELS[tagFilter].toLowerCase()} chats.`
           : activeTab === 'my_active'
@@ -782,7 +784,16 @@ export function Chats() {
         ) : isLoading ? (
           <div className='p-4 text-sm text-k-6b6b6b'>Loading…</div>
         ) : rows.length === 0 ? (
-          <div className='m-1.5 rounded-[14px] bg-k-ffffff p-[18px] text-sm leading-normal text-k-555555'>{emptyText}</div>
+          <div className='m-1.5 rounded-[14px] bg-k-ffffff p-[18px] text-sm leading-normal text-k-555555'>
+            {emptyText}
+            {/* A search that found nothing here: one tap to look a tab wider, the words kept (search.ts). */}
+            {/* data-tab: when the wider tab's rows replace this button, the focus goes to that tab (focusKey). */}
+            {searchMoreTab && (
+              <button type='button' data-tab={searchMoreTab.key} className='mt-1 block font-bold text-k-5b45e0 hover:underline' onClick={() => { setActiveTab(searchMoreTab.key); setSelectedId(null) }}>
+                Look in {searchMoreTab.label}
+              </button>
+            )}
+          </div>
         ) : showGroups ? (
           <>
             <div className='flex items-baseline gap-1.5 px-2.5 pt-1 pb-1 text-[11px] font-bold tracking-[0.05em] text-k-555555 uppercase'>

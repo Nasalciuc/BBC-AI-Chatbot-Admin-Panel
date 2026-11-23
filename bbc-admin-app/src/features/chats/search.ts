@@ -83,3 +83,24 @@ export function canSearchMessages(role: string): boolean {
 /** How long the typing pauses before the list and the message search ask the server: one request per word,
  *  not one per keystroke (the message search allows 20 a minute, CodeRabbit #273). */
 export const SEARCH_DEBOUNCE_MS = 400
+
+/** The tab a search that found nothing here may still find it in: the chats one tab wider (Mine → All active
+ *  or your Closed, All active → Closed), when the role sees that tab; null from the widest. The owner lands on
+ *  Mine, where they have no chats, and read "No chat matches" for a chat on All active (secret-site run, 22 Nov). */
+export function searchElsewhere(active: string, visible: readonly string[]): string | null {
+  const wider: Record<string, readonly string[]> = {
+    my_active: ['all_active', 'my_closed'],
+    to_read: ['all_active'],
+    all_active: ['all_closed'],
+  }
+  return (wider[active] ?? []).find((k) => visible.includes(k)) ?? null
+}
+
+/** What the list says when a search finds no chat on this tab: always the tab it looked in (the list searches
+ *  only that tab). With "In what was said" listing messages above, it also says what it looked in, so it no
+ *  longer reads as if nothing was found anywhere (CodeRabbit #276). */
+export function searchEmptyText(q: string, tabLabel: string, saidAbove: boolean): string {
+  return saidAbove
+    ? `No chat in ${tabLabel} matches “${q}” by name, contact or route. Where it was said is above.`
+    : `No chat in ${tabLabel} matches “${q}”.`
+}
