@@ -30,7 +30,7 @@ from app.pipeline.contact_capture import (
     with_stored_contact,
     with_turn_contact,
 )
-from app.pipeline.entity_extractor import turns_down_calls
+from app.pipeline.entity_extractor import mentions_date, turns_down_calls
 from app.realtime.manager import manager
 from app.flags import flag
 
@@ -1736,6 +1736,16 @@ async def _pipeline(
             _tool_blocked.add("return_date")
         if _multi_city_declared:
             _tool_blocked.add("trip_type")
+        # The dates the lead holds came from the client: the tool takes them over only on a message that
+        # speaks of a date. #3579 (23 Nov 2026): a January → March trip the client had written became
+        # 23 → 30 Nov on "I will"; #3403 (20 Nov): a week in February became 15 → 30 Dec on "sounds good".
+        if not mentions_date(message):
+            _kept_dates = [k for k in ("departure_date", "return_date")
+                           if isinstance(lead, dict) and lead.get(k) and _te.get(k)]
+            if _kept_dates:
+                _tool_blocked.update(_kept_dates)
+                logger.info(f"[{cid}] Tool {', '.join(_kept_dates)} skipped — the lead's dates kept, "
+                            "no date in this message")
         _pax_updates: dict = {}
         if flag("PAX_TOOL_FIELDS", False):
             _pax_updates, _pax_inconsistent = _tool_pax_breakdown(

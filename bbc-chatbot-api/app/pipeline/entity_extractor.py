@@ -411,6 +411,42 @@ def _make_date(month: int, day: int, year: int | None = None) -> str | None:
     return _coerce_future_iso(month, day, year)
 
 
+# A client message that speaks of a date: a month with a day ("Feb 10", "10th of March", "Nov. 8"), a
+# month by its full name, a date in digits ("2/10", "2027-02-10"), a weekday, a day of the month ("the
+# 17th", "on the 20"), a year, a length ("2 weeks", "a couple of weeks"), a holiday or season ("for
+# Christmas", "next summer"), "asap", or a move ("a week later", "push it back", "change the dates").
+# It errs on the side of a date: a message it takes for one only lets the AI's reading through for that
+# turn, as before; a date it missed would be one the client changed and the lead did not take.
+# Chats #3579 and #3403 (23 and 20 Nov 2026): the AI's extraction on each turn rewrote dates the client
+# had written clearly (a January → March trip, a week in February) on a message with no date in it
+# ("I will", "sounds good"), and the CRM would have had the new ones.
+_DATE_MENTION_RE = re.compile(
+    r"\b(?:" + _MONTH_PAT + r")\.?\s*\d{1,2}(?:st|nd|rd|th)?\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:" + _MONTH_PAT + r")\b"
+    r"|\b(?:january|february|march|april|june|july|august|september|october|november|december)\b"
+    r"|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b20\d\d-\d{1,2}-\d{1,2}\b"
+    r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)\b|\bon\s+the\s+\d{1,2}\b|\b20[2-3]\d\b"
+    r"|\b(?:today|tomorrow|tonight|weekend|asap|as\s+soon\s+as\s+possible"
+    r"|next\s+(?:week|month|year)|this\s+(?:week|month))\b"
+    r"|\b(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|couple(?:\s+of)?|few)"
+    r"\s+(?:days?|weeks?|months?|nights?)\b"
+    r"|\b(?:christmas|xmas|new\s+year|thanksgiving|easter|spring\s+break|summer|winter|autumn"
+    r"|(?:this|next|the|in)\s+(?:spring|fall))\b"
+    r"|\b(?:postpone|reschedule|push(?:ed)?\s+(?:it\s+|the\s+\w+\s+)?back"
+    r"|move(?:d)?\s+(?:it|the\s+(?:trip|flight|dates?))"
+    r"|(?:change|different|other|new|return|departure|travel)\s+(?:the\s+)?dates?"
+    r"|(?:earlier|later)\s+(?:date|flight))\b",
+    re.I,
+)
+
+
+def mentions_date(text: Optional[str]) -> bool:
+    """True when the client's message speaks of a date (_DATE_MENTION_RE): only then may a later reading
+    replace the dates the lead already holds."""
+    return bool(text and _DATE_MENTION_RE.search(text))
+
+
 def _extract_dates(text: str) -> tuple[str | None, str | None]:
     """Extract departure and optional return date from message text.
     Returns (departure_date, return_date) as YYYY-MM-DD strings or None.
