@@ -120,13 +120,49 @@ export function heldBy(rows: LiveVisitor[], me: string | undefined): number {
 }
 
 /** Mine first, then the ones nobody holds; within each, a visitor Alex is waiting on before the rest (the one he
- *  comes to soonest first), then the longest on the site. */
+ *  comes to soonest first), then the one Alex's card showed to last (still on the page he left), then the longest
+ *  on the site. */
 export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): LiveVisitor[] {
   const rank: Record<RowState, number> = { mine: 0, free: 1, taken: 2, declined: 3, in_chat: 4 }
   const due = (v: LiveVisitor) => (alexWaiting(v, nowS) ? (v.alex_at as number) : Number.POSITIVE_INFINITY)
+  const since = (v: LiveVisitor) => (typeof v.alex_card_s === 'number' ? v.alex_card_s : Number.POSITIVE_INFINITY)
   return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)]
     || (due(a) === due(b) ? 0 : due(a) < due(b) ? -1 : 1)
+    || (since(a) === since(b) ? 0 : since(a) < since(b) ? -1 : 1)
     || b.seconds_on_site - a.seconds_on_site)
+}
+
+// ── Who is listed: the visitors Alex's card didn't start a chat with (the owner, 23 Nov 2026) ─────────────────
+// Alex's card shows to most visitors anyway; the agent greets the ones it didn't start: no answer for a while after
+// it showed (70 % of the answers it gets come within 30 s), or "Not now" to it.
+
+/** Seconds without an answer after Alex's card showed before the visitor is listed. */
+export const ALEX_GAVE_UP_S = 30
+
+/** Alex's card didn't start a chat with this visitor: "Not now" to it, or no answer for ALEX_GAVE_UP_S. */
+export function alexCouldnt(v: Pick<LiveVisitor, 'alex_card' | 'alex_card_s' | 'has_chat'>): boolean {
+  if (v.has_chat) return false
+  if (v.alex_card === 'dismissed') return true
+  return v.alex_card === 'shown' && typeof v.alex_card_s === 'number' && v.alex_card_s >= ALEX_GAVE_UP_S
+}
+
+/** The page's list: who Alex's card didn't start a chat with; who Alex still waits on (the agent-first test, while
+ *  it runs); and the ones I hold, whatever became of them since (in a chat now: let them go). */
+export function listed(rows: LiveVisitor[], me: string | undefined, nowS: number): LiveVisitor[] {
+  return rows.filter((v) => alexCouldnt(v) || alexWaiting(v, nowS) || (!!me && v.claimed_by === me))
+}
+
+/** What came of Alex's card, in words: "Alex’s card 45 s ago, no answer", "Said not now to Alex’s card", "Opened the
+ *  chat 2 min ago, didn’t write"; '' when his card didn't show. */
+export function alexCardLine(v: Pick<LiveVisitor, 'alex_card' | 'alex_card_s' | 'alex_trigger'>): string {
+  const ago = typeof v.alex_card_s === 'number' ? ` ${onSite(v.alex_card_s)} ago` : ''
+  const opened = v.alex_trigger === 'note'
+  switch (v.alex_card) {
+    case 'shown': return opened ? `Opened the chat${ago}, didn’t write` : `Alex’s card${ago}, no answer`
+    case 'dismissed': return opened ? 'Closed the chat with Alex' : 'Said not now to Alex’s card'
+    case 'engaged': return 'Answered Alex'
+    default: return ''
+  }
 }
 
 // ── The owner's agent-first test (22 Nov 2026; bbc-chatbot-api app/services/agent_first_test.py) ─────────────

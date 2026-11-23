@@ -13,8 +13,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexLine, alexWaiting, claimProblem, clockS, heldBy, helloProblem,
-  onSite, ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine, tripLine,
+  ALEX_GAVE_UP_S, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine, alexWaiting, claimProblem,
+  clockS, heldBy, helloProblem, listed, onSite, ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine, tripLine,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -27,7 +27,7 @@ const STATE_CLS: Record<string, string> = {
 
 const btn = 'h-9 rounded-xl px-3.5 text-sm font-semibold disabled:opacity-50'
 
-/** "On the site now": who is on the site, and a hello before they write (contracts/live.md). */
+/** "On the site now": the visitors Alex's card didn't start a chat with, and a hello from a person (contracts/live.md). */
 export function LiveVisitors() {
   const pass = useLiveStore((s) => s.pass)
   const me = useAuthStore((s) => s.auth.user)
@@ -46,7 +46,7 @@ export function LiveVisitors() {
   })
   // Between ticks (none while nobody is waited on) the list's own answers keep the clock fresh.
   const nowS = clockS(tickS, list.dataUpdatedAt)
-  const rows = ordered(list.data?.data ?? [], meId, nowS)
+  const rows = ordered(listed(list.data?.data ?? [], meId, nowS), meId, nowS)
   const anyWaiting = rows.some((v) => alexWaiting(v, nowS))
   useEffect(() => {
     if (!anyWaiting) return
@@ -80,7 +80,7 @@ export function LiveVisitors() {
   const send = useMutation({
     mutationFn: ({ v, words }: { v: LiveVisitor; words: string }) => sendHello(v.visitor_id, words),
     onSuccess: (_res, { v }) => {
-      toast.success('Sent. If they tap Reply, the chat opens in your list, already yours.')
+      toast.success('Sent. On a computer their chat opens with your words; on a phone they show beside the chat button. Their answer opens the chat in your list, already yours.')
       // Close the editor this hello came from, never another: the agent may have opened another visitor's
       // while it went (CodeRabbit #273).
       setWriting((cur) => (cur?.visitor_id === v.visitor_id ? null : cur))
@@ -94,7 +94,7 @@ export function LiveVisitors() {
     <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
       <PageHeader
         title='On the site now'
-        subtitle='Visitors on the site this minute, without a chat: the page they read, the trip it names and what they did there. Hold one and say hello first; a tap on Reply opens the chat, already yours.'
+        subtitle={`Visitors Alex’s card didn’t start a chat with: no answer ${ALEX_GAVE_UP_S} s after it showed, or “Not now”. Say hello: on a computer their chat opens with your words, on a phone they show beside the chat button. Their answer opens the chat, already yours.`}
         actions={<HeaderActions className='ms-0' />}
       />
       {!pass ? (
@@ -106,7 +106,10 @@ export function LiveVisitors() {
           Couldn’t load who is on the site: {list.error instanceof Error ? list.error.message : 'unknown error'}. Trying again.
         </p>
       ) : rows.length === 0 ? (
-        <p className='text-sm text-k-6b6b6b'>Nobody on the site right now without a chat.</p>
+        <p className='text-sm text-k-6b6b6b'>
+          Nobody to greet right now. A visitor appears here {ALEX_GAVE_UP_S} s after Alex’s card goes unanswered, or when they say
+          “Not now” to it, while they are on the site and have no chat.
+        </p>
       ) : (
         <>
           {test && <p className='rounded-[14px] bg-k-fff3e0 px-3.5 py-2.5 text-sm text-k-8a4b00'>{test}</p>}
@@ -128,6 +131,9 @@ export function LiveVisitors() {
                       <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{sourceLabel(v.source)}</span>
                       <Device aria-label={v.device === 'phone' ? 'On a phone' : 'On a computer'} className='size-4 text-k-6b6b6b' />
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATE_CLS[state])}>{ROW_LABEL[state]}</span>
+                      {alexCardLine(v) && (
+                        <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{alexCardLine(v)}</span>
+                      )}
                       {alexLine(v, nowS) && (
                         <span className='rounded-full bg-k-fff3e0 px-2 py-0.5 text-xs font-medium tabular-nums text-k-8a4b00'>
                           Test · {alexLine(v, nowS)}

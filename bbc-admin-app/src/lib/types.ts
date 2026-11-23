@@ -1209,6 +1209,13 @@ export interface LiveVisitor {
   activity?: string[]
   /** The agent-first test: when Alex's card may come (unix seconds), while he waits for an agent to say hello. */
   alex_at?: number
+  /** What came of Alex's card on this visit: shown (no answer yet), dismissed ("Not now" or its ✕) or engaged (they
+   *  answered him). Absent when his card didn't show (contracts/live.md). */
+  alex_card?: 'shown' | 'dismissed' | 'engaged'
+  /** Seconds since Alex's card showed, by bbc-live's clock when it listed them. */
+  alex_card_s?: number
+  /** The moment that showed it (kayak, ads, quote, reader, exit; note: the visitor opened the chat themselves). */
+  alex_trigger?: string
 }
 
 export interface LiveListResponse {
