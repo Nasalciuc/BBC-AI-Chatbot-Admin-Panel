@@ -667,6 +667,12 @@ export const ROW_CSS = `
   border-radius: 999px; border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.45); background: #FFFFFF;
   color: #111827; font-family: inherit; font-size: 16px; line-height: 1.2;
 }
+.bw-row-offer__cc {
+  flex: 0 0 auto; min-height: 44px; box-sizing: border-box; margin: 0; padding: 0 10px;
+  border-radius: 999px; border: 1px solid rgba(var(--bw-primary-rgb, 30,79,216), 0.45); background: #FFFFFF;
+  color: #111827; font-family: inherit; font-size: 16px; line-height: 1.2; cursor: pointer;
+}
+.bw-row-offer__cc:focus { outline: 2px solid var(--bw-primary, #1E4FD8); outline-offset: 1px; }
 .bw-row-offer__input::placeholder { color: #6B7280; opacity: 1; }
 .bw-row-offer__input:focus { outline: 2px solid var(--bw-primary, #1E4FD8); outline-offset: 1px; }
 .bw-row-offer__input[aria-invalid="true"] { border-color: #B3261E; }

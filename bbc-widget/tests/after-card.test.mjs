@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { guessCountry, ownerOf, phoneFor, readRowContact, readablePhone, rowField, validEmail, validPhone } from '../src/channel.ts'
+import { guessCountry, ownerOf, phoneFor, readRowContact, readablePhone, rowField, rowShowsCountry, validEmail, validPhone } from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
@@ -251,6 +251,37 @@ test('D1: the row takes an email or a mobile number, and says one is enough to a
     shownAt: 1, variant: 'row', rowField: 'email', firstContact: { kind: 'email', text: 'Email: client@example.com' } })
   assert.equal('firstContact' in kept, false)
   assert.equal('rowField' in kept, false)
+})
+
+test('D1: the row shows the country it places a number in, and the visitor can change it (CodeRabbit #279)', () => {
+  // An en-GB browser guessed the UK for a US number typed without its code, unseen: the number went out as +44.
+  const GB = COUNTRIES.find(c => c.code === 'GB')
+  assert.equal(readRowContact('210 555 0100', COUNTRIES, GB).contact.startsWith('+44'), true)
+  assert.deepEqual(readRowContact('210 555 0100', COUNTRIES, US), { kind: 'sms', contact: '+1 210 555 0100' })
+  // Shown on the mobile-number row at once, on the others as soon as what is typed looks like a number.
+  assert.equal(rowShowsCountry('sms', ''), true)
+  assert.equal(rowShowsCountry('sms', '210 555 0100'), true)
+  assert.equal(rowShowsCountry('any', ''), false)
+  assert.equal(rowShowsCountry('any', '210 555'), true)
+  assert.equal(rowShowsCountry('email', '(210) 555-0100'), true)
+  // A number with its own code, an email, or words need none.
+  for (const field of ['any', 'sms', 'email']) {
+    assert.equal(rowShowsCountry(field, '+1 210 555 0100'), false)
+    assert.equal(rowShowsCountry(field, '0044 20 7946 0000'), false)
+    assert.equal(rowShowsCountry(field, 'client@example.com'), false)
+  }
+  assert.equal(rowShowsCountry('any', 'call me 210'), false)
+  // The row reads the number with the country it shows: the guess first, the visitor's pick after.
+  assert.match(row, /const \[country, setCountry\] = useState<Country>\(\(\) => guessCountry\(COUNTRIES, browserLanguage\(\), timeZone\(\)\)\)/)
+  assert.match(row, /const read = readRowContact\(value, COUNTRIES, country\)/)
+  assert.match(row, /const showCountry = rowShowsCountry\(field, value\)/)
+  assert.match(row, /\{showCountry && \(\s+<select\s+class="bw-row-offer__cc"\s+aria-label=\{w\.country\}\s+value=\{country\.code\}/)
+  assert.match(row, /if \(picked\) setCountry\(picked\)/)
+  assert.match(row, /\{COUNTRIES\.map\(c => <option key=\{c\.code\} value=\{c\.code\}>\{`\$\{c\.flag\} \$\{c\.dial\}`\}<\/option>\)\}/)
+  // As the field: 16px, so a phone does not zoom in on it.
+  assert.match(ROW_CSS, /\.bw-row-offer__cc \{[^}]*font-size: 16px/)
+  // Its change stays in the row like its keys and typing.
+  assert.match(row, /const KEPT_IN_ROW = \[[^\]]*'change'/)
 })
 
 // ── E1: popups; E2: the keyboard ──────────────────────────────────────────────────────────

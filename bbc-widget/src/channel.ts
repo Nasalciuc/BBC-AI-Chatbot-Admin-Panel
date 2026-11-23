@@ -114,6 +114,17 @@ export function rowField(refused: readonly string[] | null | undefined): RowFiel
   return 'any'
 }
 
+/** Whether the row shows the country it reads a number with, as the chat's field does (CodeRabbit #279): a number
+ *  typed without its own code is placed in that country, and the visitor sees it and can change it. Always on the
+ *  mobile-number row; on the others once what is typed looks like a number. A + or 00 names its own country, and
+ *  an email needs none. */
+export function rowShowsCountry(field: RowField, value: string): boolean {
+  const v = (value || '').trim()
+  if (v.includes('@') || /^(?:\+|00)/.test(v)) return false
+  if (field === 'sms') return true
+  return /\d/.test(v) && !/[a-z]/i.test(v)
+}
+
 /** What the visitor typed in the row: an email when it has an @, else a mobile number placed as the chat's field
  *  places it (a + or 00 names its own country, else `country`). The field takes either, whatever it asked for. */
 export function readRowContact(

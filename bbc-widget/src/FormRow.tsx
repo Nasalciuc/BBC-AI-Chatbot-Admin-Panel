@@ -1,8 +1,8 @@
 import { render } from 'preact'
 import { useState } from 'preact/hooks'
-import { guessCountry, readRowContact, type ChannelKind } from './channel'
+import { guessCountry, readRowContact, rowShowsCountry, type ChannelKind } from './channel'
 import brand from './config'
-import { COUNTRIES } from './countries'
+import { COUNTRIES, type Country } from './countries'
 import { browserLanguage, timeZone, widgetLang, words } from './i18n'
 import { IconClose } from './icons'
 import type { ProactiveOpening } from './proactive'
@@ -35,10 +35,14 @@ export function FormRow({ opening, onSend, onClose }: {
   const field = opening.rowField ?? 'any'
   const [value, setValue] = useState('')
   const [error, setError] = useState('')
+  // The country a number typed without its code goes to: the browser's guess, shown beside the field and changeable,
+  // as in the chat's own field (CodeRabbit #279: an en-GB browser placed a US number in the UK, unseen).
+  const [country, setCountry] = useState<Country>(() => guessCountry(COUNTRIES, browserLanguage(), timeZone()))
   const one = field === 'email' ? w.rowOneEmail : field === 'sms' ? w.rowOneSms : ''
   const label = field === 'email' ? w.emailLabel : field === 'sms' ? w.phoneLabel : w.rowAny
+  const showCountry = rowShowsCountry(field, value)
   const send = () => {
-    const read = readRowContact(value, COUNTRIES, guessCountry(COUNTRIES, browserLanguage(), timeZone()))
+    const read = readRowContact(value, COUNTRIES, country)
     if ('error' in read) {
       setError(read.error === 'email' ? w.badEmail : read.error === 'phone' ? w.badPhone : w.badEither)
       return
@@ -50,6 +54,20 @@ export function FormRow({ opening, onSend, onClose }: {
       <p class="bw-row-offer__text">{opening.message}</p>
       {one && <p class="bw-row-offer__one">{one}</p>}
       <div class="bw-row-offer__form">
+        {showCountry && (
+          <select
+            class="bw-row-offer__cc"
+            aria-label={w.country}
+            value={country.code}
+            onChange={(e) => {
+              const picked = COUNTRIES.find(c => c.code === (e.target as HTMLSelectElement).value)
+              if (picked) setCountry(picked)
+              if (error) setError('')
+            }}
+          >
+            {COUNTRIES.map(c => <option key={c.code} value={c.code}>{`${c.flag} ${c.dial}`}</option>)}
+          </select>
+        )}
         <input
           class="bw-row-offer__input"
           // Text, not email: an email or a number go in the same field, and a text field is never "invalid".
