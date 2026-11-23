@@ -1,7 +1,10 @@
 /**
  * "On the site now" (contracts/live.md): from 20 s on the page, while the page is visible and there is no chat
- * yet, the widget beats to bbc-live every 15 s and waits for an agent's hello. The hello shows as a card of plain
- * text; a tap on it starts a chat that is already the agent's (/chat/init with the tap token inside the hello).
+ * yet, the widget beats to bbc-live every 15 s and waits for an agent's hello. The panel lists the visitors Alex's
+ * card didn't start a chat with (the beat says what came of it: agentTest.ts). The hello shows as Alex's card does
+ * (the owner, 23 Nov 2026): in the chat when it is open, else as the card beside the button on a phone, else the
+ * chat opens with it on a computer (Widget.tsx). The visitor's answer starts a chat that is already the agent's
+ * (/chat/init with the tap token inside the hello). The hello is kept for the visit's next pages until it runs out.
  *
  * Nothing the visitor typed goes in a beat: the path (its query and fragment cut), the page's trip as codes and
  * dates, where they came from, the screen. The API says whether this is on and where bbc-live is, and hands the
@@ -10,11 +13,11 @@
  */
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { alexAt, alexShown, noteSide } from './agentTest'
+import { alexAt, alexCard, alexShown, noteSide } from './agentTest'
 import { apiFetch, ensureVisitorId } from './api'
 import {
-  afterRefusedPass, beatBody, failedAsk, keptPass, nextPollDelay, readConfig, readHello, renewalOf, type LiveConfig,
-  type LiveHello, type Renewal,
+  afterRefusedPass, beatBody, failedAsk, keptPass, nextPollDelay, readConfig, readHello, readKeptHello, renewalOf,
+  type BeatAlexCard, type LiveConfig, type LiveHello, type Renewal,
 } from './liveRead'
 import { posthog } from './posthog'
 import { activityLine, siteEvents, sitePage } from './siteSignals'
@@ -26,6 +29,8 @@ export type { LiveHello } from './liveRead'
 const AFTER_S = 20
 const BEAT_S = 15
 const PASS_KEY = 'bbc_live_pass'
+// sessionStorage: the hello not answered yet, for the visit's next pages (bbc-live hands it over once).
+const HELLO_KEY = 'bbc_live_hello'
 /** A pass bbc-live refuses (401) is renewed at most this often. */
 const RENEW_MS = 5 * 60_000
 
@@ -33,8 +38,32 @@ function visible(): boolean {
   try { return document.visibilityState !== 'hidden' } catch { return true }
 }
 
-function isPhone(): boolean {
+/** A phone's screen, as the widget's other parts read it: the hello is a card there, the chat elsewhere. */
+export function isPhone(): boolean {
   try { return window.matchMedia('(max-width: 767px)').matches } catch { return false }
+}
+
+/** This visitor has a chat (started on this page or another): no beat after it, no hello into it. */
+function hasConversation(): boolean {
+  try { return !!localStorage.getItem('bbc_conv_id') } catch { return false }
+}
+
+/** The hello kept for this visit, while it holds. */
+export function keptHello(): LiveHello | null {
+  try { return readKeptHello(sessionStorage.getItem(HELLO_KEY), Date.now()) } catch { return null }
+}
+
+function keepHello(h: LiveHello | null): void {
+  try {
+    if (h) sessionStorage.setItem(HELLO_KEY, JSON.stringify(h))
+    else sessionStorage.removeItem(HELLO_KEY)
+  } catch { /* this page holds it all the same */ }
+}
+
+/** What came of Alex's card, as the beat says it: how long ago by this browser's clock (agentTest.ts). */
+function alexCardNow(nowMs: number): BeatAlexCard | null {
+  const c = alexCard()
+  return c ? { state: c.state, secondsAgo: (nowMs - c.at) / 1000, trigger: c.trigger } : null
 }
 
 function storedPass(): string | null {
@@ -69,13 +98,26 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
 }
 
 /**
- * The hook: `active` while the visitor has no chat and the panel is closed. It returns the hello waiting for
- * them (or null), `dismiss` ("not now", sent to bbc-live) and `taken` (the visitor tapped it: stop).
+ * The hook: `active` while the visitor has no chat (the chat closed, or open on an opening nobody answered). It
+ * returns the hello waiting for them (or null), `dismiss` ("not now", sent to bbc-live) and `taken` (answered:
+ * the chat is made with its tap, stop).
  */
 export function useLive({ apiUrl, active, chatOpen, trip, site }: {
   apiUrl: string; active: boolean; chatOpen: boolean; trip: () => TripPayload | null; site: string
 }): { hello: LiveHello | null; dismiss: () => void; taken: () => void } {
-  const [hello, setHello] = useState<LiveHello | null>(null)
+  // A hello an earlier page received and nobody answered yet (bbc-live hands it over once); none over a chat.
+  const [hello, setHelloState] = useState<LiveHello | null>(() => {
+    const kept = keptHello()
+    if (kept && hasConversation()) {
+      keepHello(null)
+      return null
+    }
+    return kept
+  })
+  const setHello = (h: LiveHello | null) => {
+    keepHello(h)
+    setHelloState(h)
+  }
   const configRef = useRef<LiveConfig | null>(null)
   const doneRef = useRef(false)
   const chatOpenRef = useRef(chatOpen)
@@ -112,24 +154,39 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       return renewing
     }
 
+    const sendBeat = (cfg: LiveConfig, chat: boolean) => {
+      if (!cfg.url || !cfg.pass) return
+      let path = '/'
+      try { path = location.pathname } catch { /* keep "/" */ }
+      // What the visitor is doing right now, for the agent who says hello first (the owner, 22 Nov 2026): the
+      // kind of page and the steps on the site, as the site told the widget; never what they typed.
+      const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
+        phone: isPhone(), site, chatOpen: chatOpenRef.current, hasChat: chat,
+        pageType: sitePage()?.pageType ?? null, activity: activityLine(siteEvents()),
+        // The agent-first test: when Alex's card may come, so the agent sees how long they have.
+        alexAt: alexAt(),
+        // What came of Alex's card: the panel lists the visitors it didn't start a chat with.
+        alexCard: alexCardNow(Date.now()) })
+      liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body) })
+        .then(res => { if (res.status === 401 && !chat) void renew() })
+        .catch(() => { /* a missed beat: the next one counts */ })
+    }
+
+    // The chat started (Alex's answered, or the agent's): one last beat says so, and the panel stops listing the
+    // visitor at once instead of a minute later; then the beats end, and the poll with them.
+    const lastBeat = () => {
+      const cfg = configRef.current
+      stopped = true
+      abort?.abort()
+      if (cfg?.enabled) sendBeat(cfg, true)
+    }
+
     const beat = () => {
       const cfg = configRef.current
       if (stopped || !cfg?.enabled || !cfg.url || !cfg.pass) return
-      if (visible()) {
-        let path = '/'
-        try { path = location.pathname } catch { /* keep "/" */ }
-        // What the visitor is doing right now, for the agent who says hello first (the owner, 22 Nov 2026): the
-        // kind of page and the steps on the site, as the site told the widget; never what they typed.
-        const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
-          phone: isPhone(), site, chatOpen: chatOpenRef.current, hasChat: false,
-          pageType: sitePage()?.pageType ?? null, activity: activityLine(siteEvents()),
-          // The agent-first test: when Alex's card may come, so the agent sees how long they have.
-          alexAt: alexAt() })
-        liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body) })
-          .then(res => { if (res.status === 401) void renew() })
-          .catch(() => { /* a missed beat: the next one counts */ })
-      }
+      if (hasConversation()) return lastBeat()
+      if (visible()) sendBeat(cfg, false)
       later(beat, (cfg.beat_s || BEAT_S) * 1000)
     }
 
@@ -146,11 +203,16 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         status = res.status
         if (res.status === 200) {
           const h = readHello(await res.json(), Date.now())
-          if (h && !stopped) {
+          // A chat that started meanwhile is the visitor's answer already: no hello over it.
+          if (h && !stopped && !hasConversation()) {
             setHello(h)
-            // The agent-first test's first step for the agent's words, as proactive_shown is for Alex's; after_alex:
-            // Alex's card showed on this visit first, so this hello is a second word.
-            posthog?.capture('live_hello_shown', { site, after_alex: alexShown() })
+            // The first step for the agent's words, as proactive_shown is for Alex's; after_alex: Alex's card showed
+            // on this visit first, so this hello is a second word. `where`: in the open chat, the card beside the
+            // button (a phone), or the chat it opens (a computer).
+            posthog?.capture('live_hello_shown', {
+              site, after_alex: alexShown(), where: chatOpenRef.current ? 'chat' : isPhone() ? 'card' : 'opens_chat',
+              ...(alexCard() ? { alex_card: alexCard()?.state } : {}),
+            })
             return
           }
         }
@@ -190,13 +252,16 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
     later(start, AFTER_S * 1000)
 
     return () => {
+      // The widget stops beating because the chat started (Widget.tsx: no longer `active`): the last beat says so,
+      // as the loop's own would have.
+      if (!stopped && hasConversation()) lastBeat()
       stopped = true
       abort?.abort()
       timers.forEach(clearTimeout)
     }
   }, [active, apiUrl])
 
-  // A hello that runs out goes away by itself.
+  // A hello that runs out goes away by itself, from this page and the next.
   useEffect(() => {
     if (!hello) return
     const t = setTimeout(() => setHello(null), Math.max(0, hello.expiresAt - Date.now()))

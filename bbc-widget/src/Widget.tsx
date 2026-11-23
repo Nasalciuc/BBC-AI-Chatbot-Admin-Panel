@@ -12,7 +12,8 @@ import {
   currentTrip, forgetProactiveConversation, isProactiveConversation, markProactiveConversation, proactiveChatStarted,
   proactiveMetadata, useProactive, watchQuoteForm, type ProactiveOpening,
 } from './proactive'
-import { useLive } from './live'
+import { isPhone, keptHello, useLive } from './live'
+import { noteAlexAnswer } from './agentTest'
 import { siteMetadata } from './siteSignals'
 import { getTurnstileToken } from './turnstile'
 import { noteWaitMs } from './triggers'
@@ -30,6 +31,11 @@ function safeSet(key: string, val: string): void {
 }
 function safeRemove(key: string): void {
   try { sessionStorage.removeItem(key) } catch {}
+}
+
+/** This visitor has a chat now (ChatWindow keeps its id): read at the moment, not at the last render. */
+function hasConversationNow(): boolean {
+  try { return !!localStorage.getItem('bbc_conv_id') } catch { return false }
 }
 
 function clearWidgetStorage() {
@@ -132,8 +138,11 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // On the site the panel opens on load only when this tab had it open (sessionStorage), so a visitor who
   // closed the chat is not handed it again on every page. A returning visitor's conversation is still
   // there: a tap on the button restores it (handleTunnelSelect). The CRM iframe keeps the old rule.
+  // A panel kept open on an agent's hello (no chat yet) opens again only while the hello holds or something else
+  // stands behind it: with nothing, ChatWindow would start a chat on the server that nobody answered.
+  const helloGone = !!restored?.live && !keptOpening && !cachedConvId && !keptHello()
   const [step, setStep] = useState<Step>(
-    restored?.step === 'chat' || (embedded && hasOptimisticSession && savedVisitor)
+    (restored?.step === 'chat' && !helloGone) || (embedded && hasOptimisticSession && savedVisitor)
       ? 'chat'
       : embedded ? 'form' : 'buttons'
   )
@@ -275,15 +284,6 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
 
-  // Keep an open chat open across this tab's pages (also when it was restored by a tap on the button).
-  // The card's chat not answered yet keeps its opening: without it the next page would open a chat with
-  // nothing behind it, and ChatWindow would start one on the server (/chat/start) that nobody answered.
-  useEffect(() => {
-    if (embedded || step !== 'chat') return
-    const kept = opening && !proactiveChatStarted() ? { opening: keepOpening(opening) } : {}
-    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata, ...kept }))
-  }, [step, tunnel, opening])
-
   // A tap on the note waits for Alex's words (proactive.noteOpening); whatever the visitor opens or closes
   // meanwhile wins. Every flow that starts takes the turn, and a note answer that lost it does nothing:
   // it neither replaces the form the visitor opened with the chat nor selects the tunnel again.
@@ -374,6 +374,8 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   const openProactive = (o: ProactiveOpening) => {
     noteRunRef.current++
     proactive.opened()
+    // A reply or a channel tapped on Alex's card is an answer to him: never listed for an agent (agentTest.ts).
+    if (o.firstReply || o.firstChannel) noteAlexAnswer('engaged')
     formFlowStartedRef.current = true
     setShowAttention(false)
     setTunnel('sales')
@@ -401,13 +403,45 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proactive.offer, proactive.rowForm])
 
-  // "On the site now" (live.ts): an agent may say hello first, while this visitor has no chat and the panel is
-  // closed. "Reply" starts the chat at once, already the agent's, with the hello as its first message (the
-  // server checks the tap); a tap that doesn't hold opens an ordinary chat. No form behind it, like the card's.
+  // "On the site now" (live.ts): an agent may say hello to a visitor Alex's card didn't start a chat with, while
+  // they have none: the chat closed, or open on Alex's opening nobody answered. The hello shows as Alex's card does
+  // (the owner, 23 Nov 2026): in the open chat, in its place; else beside the button on a phone, where "Reply"
+  // starts the chat at once, already the agent's (the server checks the tap; a tap that doesn't hold opens an
+  // ordinary chat); else, on a computer, the chat opens with it, and the visitor's first message makes the chat,
+  // already theirs. No form behind it, like the card's.
   const live = useLive({
-    apiUrl, active: !embedded && step === 'buttons' && !cachedConvId && !sessionActive,
+    apiUrl, active: !embedded && (step === 'buttons' || step === 'chat') && !cachedConvId && !sessionActive,
     chatOpen: step === 'chat', trip: currentTrip, site: brand.id,
   })
+  const helloOpenedRef = useRef<string | null>(null)
+  useEffect(() => {
+    const h = live.hello
+    if (!h || embedded || sessionActive || hasConversationNow()) return
+    // Alex's card, unanswered, makes way for the agent's words (it doesn't come back after them).
+    if (proactive.offer?.surface === 'card') proactive.gaveWay()
+    if (step !== 'buttons' || isPhone() || helloOpenedRef.current === h.id) return
+    helloOpenedRef.current = h.id
+    noteRunRef.current++
+    formFlowStartedRef.current = true
+    setShowAttention(false)
+    setTunnel('sales')
+    setMetadata(proactiveMetadata())
+    setSwapped(false)
+    setStep('chat')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.hello, step])
+
+  // Keep an open chat open across this tab's pages (also when it was restored by a tap on the button).
+  // The card's chat not answered yet keeps its opening: without it the next page would open a chat with
+  // nothing behind it, and ChatWindow would start one on the server (/chat/start) that nobody answered.
+  // An agent's hello in the open chat, not answered yet, is marked too: the next page opens the chat with the hello
+  // it keeps (live.ts), and only while it holds.
+  useEffect(() => {
+    if (embedded || step !== 'chat') return
+    const kept = opening && !proactiveChatStarted() ? { opening: keepOpening(opening) } : {}
+    const withHello = live.hello && !hasConversationNow() ? { live: true } : {}
+    safeSet('bbc_widget', JSON.stringify({ step: 'chat', tunnel, visitor, metadata, ...kept, ...withHello }))
+  }, [step, tunnel, opening, live.hello])
   const liveBusyRef = useRef(false)
   const openLive = async () => {
     const h = live.hello
@@ -441,7 +475,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           } catch { /* storage off: the chat still opens */ }
           markProactiveConversation(cid)
         }
-        posthog?.capture('live_hello_replied', { held: typeof data.live_agent === 'string', site: brand.id })
+        posthog?.capture('live_hello_replied', { held: typeof data.live_agent === 'string', site: brand.id, where: 'card' })
       }
     } catch { /* the chat opens as any other */ }
     liveBusyRef.current = false
@@ -531,8 +565,13 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     if (embedded) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && step !== 'buttons') {
-        // The card's chat left unanswered: the same 24 h of quiet as its ✕ and "Not now".
-        if (opening && !proactiveChatStarted()) proactive.dismiss('close')
+        // An agent's hello in the chat, unanswered (it took the place of Alex's opening): the visitor's "not now" to
+        // the agent, as the chat's ✕ (ChatWindow). Else the card's chat left unanswered: the same 24 h of quiet as
+        // its ✕ and "Not now".
+        if (step === 'chat' && live.hello && !hasConversationNow()) {
+          posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
+          live.dismiss()
+        } else if (opening && !proactiveChatStarted()) proactive.dismiss('close')
         animateClose(() => {
           setFocusLauncher(true)
           setSwapped(false)
@@ -546,7 +585,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [step, opening])
+  }, [step, opening, live.hello])
 
   usePhoneSheet(step !== 'buttons', embedded, brand.colors.ink)
 
@@ -598,10 +637,10 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           onPillOpen={openPill}
           onPillClose={proactive.closePill}
           onNoteOpen={() => { if (proactive.offer) openProactive(proactive.offer); else void openNote() }}
-          hello={live.hello}
+          hello={sessionActive || cachedConvId ? null : live.hello}
           onHelloReply={() => { void openLive() }}
           onHelloDismiss={() => {
-            posthog?.capture('live_hello_dismissed', { site: brand.id })
+            posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'card' })
             live.dismiss()
           }}
         />
@@ -631,6 +670,15 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           proactive={opening}
           onProactiveDismiss={(how) => proactive.dismiss(how)}
           onProactiveEngaged={(reply) => proactive.engaged(reply)}
+          live={cachedConvId ? null : live.hello}
+          onLiveDismiss={() => {
+            posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
+            live.dismiss()
+          }}
+          onLiveReplied={(held) => {
+            live.taken()
+            posthog?.capture('live_hello_replied', { held, site: brand.id, where: 'chat' })
+          }}
         />
       )}
     </div>

@@ -20,7 +20,7 @@
  * form we recognise (the site's HTML changed: the quote moment would otherwise die silently).
  */
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { alexWaitLeftMs, holdAlex, noteAlexShown, noteSide } from './agentTest'
+import { alexWaitLeftMs, holdAlex, noteAlexAnswer, noteAlexShown, noteSide } from './agentTest'
 import {
   ensureVisitorId, fetchProactiveOffer, offerMeasures, type ContactTestSide, type OfferConfirm, type OfferTiming,
 } from './api'
@@ -336,6 +336,9 @@ export interface Proactive {
   quiet: boolean
   /** The chat opened from the offer: the card goes away (the measurements keep it). */
   opened: () => void
+  /** An agent's hello came for this visitor ("On the site now"): Alex's card, unanswered, makes way for it and
+   *  doesn't come back after it (no dismissal: the visitor said nothing to Alex). */
+  gaveWay: () => void
   /** "Not now" or ✕ before the conversation existed: 24 h of quiet. */
   dismiss: (how: 'not_now' | 'close') => void
   /** The visitor answered (a button or typed text): measured once. */
@@ -691,7 +694,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       shownRef.current = opening
       setQuiet(true)
       setOffer(opening)
-      noteAlexShown()
+      noteAlexShown(trigger)
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
         // The agent-first test: the card came because Alex's wait ran out with no hello.
@@ -813,9 +816,12 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     offer,
     quiet,
     opened: () => { setOffer(null); setRowForm(null) },
+    gaveWay: () => { setOffer(null); setRowForm(null) },
     dismiss: (how) => {
       lsSet(PAUSE_KEY, String(Date.now() + PAUSE_AFTER_DISMISS_MS))
       const o = shownRef.current
+      // "On the site now" lists a visitor who said no to Alex at once (agentTest.ts).
+      noteAlexAnswer('dismissed')
       if (o) {
         posthog?.capture('proactive_dismissed', {
           trigger: o.trigger, how, surface: o.surface, seconds_visible: Math.round((Date.now() - o.shownAt) / 1000),
@@ -847,6 +853,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     },
     engaged: (reply) => {
       const o = shownRef.current
+      // Answered: Alex's, never listed for an agent's hello (agentTest.ts).
+      noteAlexAnswer('engaged')
       if (!o || engagedRef.current) return
       engagedRef.current = true
       posthog?.capture('proactive_engaged', {
@@ -898,6 +906,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       ssSet(DONE_KEY, 'chat')
       shownRef.current = opening
       engagedRef.current = false
+      // Alex's opening in the chat they opened: unanswered, it is listed for an agent like his card (agentTest.ts).
+      noteAlexShown('note')
       // `variant`: the note's bandit compares its two first questions from the tap on, not only from the
       // chats that started (the server counts those).
       posthog?.capture('proactive_shown', {

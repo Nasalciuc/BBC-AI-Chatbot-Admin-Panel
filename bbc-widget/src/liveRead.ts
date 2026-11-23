@@ -48,7 +48,24 @@ export interface Beat {
   activity?: string
   /** The agent-first test: when Alex's card may come (unix seconds), while he waits for an agent. */
   alex_at?: number
+  /** What came of Alex's card on this visit (agentTest.ts): shown, dismissed ("Not now" or its ✕) or engaged; how
+   *  many seconds ago it showed (bbc-live sets the time by its own clock); the moment that showed it. */
+  alex_card?: 'shown' | 'dismissed' | 'engaged'
+  alex_card_s?: number
+  alex_trigger?: string
 }
+
+/** What a beat says of Alex's card (agentTest.ts alexCard, with the seconds since it showed). */
+export interface BeatAlexCard {
+  state: string
+  secondsAgo: number
+  trigger: string
+}
+
+/** bbc-live keeps a card shown at most a day ago (internal/live/http.go AlexCardOldest). */
+export const ALEX_CARD_OLDEST_S = 86_400
+// The moments that show Alex's card (triggers.ts OpeningTrigger; bbc-live's alexTriggers): repeated, no imports here.
+export const ALEX_TRIGGERS: readonly string[] = ['kayak', 'ads', 'quote', 'reader', 'exit', 'note']
 
 /** siteSignals.ts PAGE_TYPES, here because this file imports nothing but types (tests/live.test.mjs pins them). */
 export const BEAT_PAGE_TYPES: readonly string[] = [
@@ -123,6 +140,8 @@ export function beatBody(o: {
   pageType?: string | null; activity?: string
   /** The agent-first test: when Alex's card may come (agentTest.ts alexAt), unix seconds. */
   alexAt?: number | null
+  /** What came of Alex's card on this visit; "On the site now" lists the visitors it didn't start a chat with. */
+  alexCard?: BeatAlexCard | null
 }): Beat {
   const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
   const t = o.trip
@@ -145,7 +164,28 @@ export function beatBody(o: {
   if (o.pageType && BEAT_PAGE_TYPES.includes(o.pageType)) b.page_type = o.pageType
   if (o.activity && o.activity.length <= 300) b.activity = o.activity
   if (typeof o.alexAt === 'number' && Number.isInteger(o.alexAt) && o.alexAt > 0) b.alex_at = o.alexAt
+  const c = o.alexCard
+  if (c && (c.state === 'shown' || c.state === 'dismissed' || c.state === 'engaged') && Number.isFinite(c.secondsAgo)
+    && c.secondsAgo <= ALEX_CARD_OLDEST_S) {
+    // A clock set back since it showed reads as this second, never as the future.
+    b.alex_card = c.state
+    b.alex_card_s = Math.max(0, Math.floor(c.secondsAgo))
+    if (ALEX_TRIGGERS.includes(c.trigger)) b.alex_trigger = c.trigger
+  }
   return b
+}
+
+/** The hello kept for this visit's next pages (live.ts, sessionStorage): read back in the shape a hello has, and
+ *  only before its time; null for anything else. */
+export function readKeptHello(raw: string | null, nowMs: number): LiveHello | null {
+  let v: unknown = null
+  try { v = raw ? JSON.parse(raw) : null } catch { return null }
+  if (!v || typeof v !== 'object') return null
+  const h = v as Record<string, unknown>
+  const at = typeof h.expiresAt === 'number' ? new Date(h.expiresAt) : null
+  if (!at || Number.isNaN(at.getTime())) return null
+  return readHello({ messages: [{ kind: 'hello', id: h.id, agent: h.agent, text: h.text, tap: h.tap,
+    expires_at: at.toISOString() }] }, nowMs)
 }
 
 /** What a renewal of the pass came to: a new pass (`ok`), the feature or the pass refused for this visitor (`off`),

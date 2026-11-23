@@ -694,9 +694,9 @@ test('the corner button next to a card opens the card\'s chat, not the form', ()
 test('the first send owns the opening: a racing second send goes out plain', () => {
   const send = chat.slice(chat.indexOf('let activeConvId = convId'))
   assert.match(send, /const opening = convId \? null : openingRef\.current\s+if \(opening\) openingRef\.current = null/)
-  // Not created: the next send carries it again.
-  assert.match(send, /\} else if \(opening\) \{\s+openingRef\.current = opening/)
-  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening/)
+  // Not created: the next send carries it again (and an agent's hello's tap, which took its place: live.ts).
+  assert.match(send, /\} else \{\s+\/\/ Not created[^\n]*\n\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) liveRef\.current = hello/)
+  assert.match(send, /\} catch \(e\) \{\s+if \(opening\) openingRef\.current = opening\s+if \(hello\) liveRef\.current = hello/)
 })
 
 test('a phone gets the card, a computer the panel', () => {
@@ -709,7 +709,7 @@ test('a phone gets the card, a computer the panel', () => {
 
 test('the card\'s chat never falls back to a plain conversation: the send fails, Retry carries the opening', () => {
   const send = chat.slice(chat.indexOf('let activeConvId = convId'), chat.indexOf("const res = await apiFetch(`${apiUrl}/api/chat`, {"))
-  assert.match(send, /if \(opening && !activeConvId\) throw new Error\('init failed'\)/)
+  assert.match(send, /if \(\(opening \|\| hello\) && !activeConvId\) throw new Error\('init failed'\)/)
 })
 
 test('the note closed with ✕ stops the moments on the next tick, not only on the next page', () => {
@@ -748,14 +748,14 @@ test('the open panel keeps its unanswered opening across the tab\'s pages: never
   // Kept while the visitor has not answered; read back only where no conversation exists yet.
   const keep = widget.slice(widget.indexOf("// Keep an open chat open across this tab's pages"))
   assert.match(keep, /const kept = opening && !proactiveChatStarted\(\) \? \{ opening: keepOpening\(opening\) \} : \{\}/)
-  assert.match(keep, /safeSet\('bbc_widget', JSON\.stringify\(\{ step: 'chat', tunnel, visitor, metadata, \.\.\.kept \}\)\)/)
-  assert.match(keep, /\}, \[step, tunnel, opening\]\)/)
+  assert.match(keep, /safeSet\('bbc_widget', JSON\.stringify\(\{ step: 'chat', tunnel, visitor, metadata, \.\.\.kept, \.\.\.withHello \}\)\)/)
+  assert.match(keep, /\}, \[step, tunnel, opening, live\.hello\]\)/)
   assert.match(widget, /const keptOpening = cachedConvId \? null : readKeptOpening\(restored\?\.opening\)/)
   assert.match(widget, /const \[opening, setOpening\] = useState<ProactiveOpening \| null>\(keptOpening\)/)
   // Its answer or dismissal on the next page is still measured against the moment it was shown.
   assert.match(hook, /const shownRef = useRef<ProactiveOpening \| null>\(restored\)/)
-  // With the opening, ChatWindow shows its words and waits: no /chat/start.
-  assert.match(chat, /if \(openingRef\.current\) \{[\s\S]*?return\s+\}\s+if \(savedConvId\) return\s+startConversation\(\)/)
+  // With the opening, ChatWindow shows its words and waits: no /chat/start. So with an agent's hello (live.ts).
+  assert.match(chat, /if \(openingRef\.current\) \{[\s\S]*?return\s+\}[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s+if \(liveRef\.current\) return\s+if \(savedConvId\) return\s+startConversation\(\)/)
 })
 
 test('a kept opening reads back whole, without the reply already sent; anything else is no opening', () => {

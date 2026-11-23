@@ -5,7 +5,9 @@
  * it for the visit and puts it on every PostHog event the widget sends (posthog.ts), so the result reads per side.
  *
  * Also the time Alex's card may come (the end of its wait, unix seconds), sent with each beat so the agent sees
- * how long they have, and whether Alex's card was shown on this visit before an agent's hello.
+ * how long they have, and whether Alex's card was shown on this visit before an agent's hello. With or without the
+ * test, what came of Alex's card (shown, "Not now", answered) rides the beats too: "On the site now" lists the
+ * visitors it didn't start a chat with (the owner, 23 Nov 2026).
  *
  * No imports: the tests run it in node. Storage refused: it all lives in this page's memory.
  */
@@ -98,14 +100,65 @@ export function alexWaitLeftMs(nowMs: number = Date.now()): number {
   return until ? Math.max(0, until - nowMs) : 0
 }
 
-/** Alex's card showed on this visit (an agent's hello after it is a second word, measured as such). */
-export function noteAlexShown(): void {
+/** Alex's card showed on this visit (an agent's hello after it is a second word, measured as such), or his
+ *  opening in the chat the visitor opened (`note`): what came of it is beaten to "On the site now" (below). */
+export function noteAlexShown(trigger: string = '', atMs: number = Date.now()): void {
   alexShownInPage = true
   ssSet(ALEX_SHOWN_KEY, '1')
+  keepAlexCard({ state: 'shown', at: atMs, trigger })
 }
 
 export function alexShown(): boolean {
   return alexShownInPage || ssGet(ALEX_SHOWN_KEY) === '1'
+}
+
+// ── What came of Alex's card, for "On the site now" (contracts/live.md; the owner, 23 Nov 2026) ─────────────────
+// The panel lists the visitors Alex's card didn't start a chat with: no answer 30 s after it showed, or "Not now".
+// The beat says which, how long ago it showed and the moment that showed it; never anything the visitor typed.
+
+export type AlexCardState = 'shown' | 'dismissed' | 'engaged'
+
+export interface AlexCard {
+  state: AlexCardState
+  /** When it showed, ms since the epoch by this browser's clock (the beat sends how long ago, not the time). */
+  at: number
+  /** The moment that showed it (triggers.ts OpeningTrigger), '' when unknown. */
+  trigger: string
+}
+
+const ALEX_CARD_KEY = 'bbc_alex_card'
+let alexCardInPage: AlexCard | null | undefined
+
+function keepAlexCard(c: AlexCard): void {
+  alexCardInPage = c
+  ssSet(ALEX_CARD_KEY, JSON.stringify(c))
+}
+
+/** A kept record read back, or null when it is not one. */
+export function readAlexCard(v: unknown): AlexCard | null {
+  if (!v || typeof v !== 'object') return null
+  const c = v as Record<string, unknown>
+  if (c.state !== 'shown' && c.state !== 'dismissed' && c.state !== 'engaged') return null
+  if (typeof c.at !== 'number' || !Number.isFinite(c.at) || c.at <= 0) return null
+  return { state: c.state, at: c.at, trigger: typeof c.trigger === 'string' ? c.trigger : '' }
+}
+
+/** What the visitor did with it: "Not now" or its ✕ (dismissed), or answered it (engaged: a reply, a channel, a
+ *  message). Answered stays answered: a visitor who talked to Alex is his, whatever they close afterwards. */
+export function noteAlexAnswer(how: 'dismissed' | 'engaged'): void {
+  const c = alexCard()
+  if (!c || c.state === 'engaged') return
+  keepAlexCard({ ...c, state: how })
+}
+
+/** Alex's card on this visit, or null when none showed. */
+export function alexCard(): AlexCard | null {
+  if (alexCardInPage !== undefined) return alexCardInPage
+  try {
+    return readAlexCard(JSON.parse(ssGet(ALEX_CARD_KEY) || 'null'))
+  } catch {
+    return null
+  }
 }
 
 /** Tests only: forget this page's memory. */
@@ -114,4 +167,5 @@ export function resetAgentTestForTests(): void {
   alexAtInPage = undefined
   waitUntilInPage = undefined
   alexShownInPage = false
+  alexCardInPage = undefined
 }
