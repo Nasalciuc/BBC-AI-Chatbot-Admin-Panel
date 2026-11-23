@@ -118,6 +118,8 @@ async def test_only_the_held_date_is_kept_a_missing_return_is_still_filled():
     "on Friday", "the 17th", "a week later", "push it back", "change the dates", "next month", "2 weeks",
     "in March", "tomorrow", "in two weeks", "a couple of weeks", "for Christmas", "next summer", "asap", "12.01",
     "on the 20", "what is my return date",
+    # A month after a word that makes it one (CodeRabbit #279): "may" alone stays a verb.
+    "Actually, in May instead", "early Feb works", "mid-March", "end of June",
 ])
 def test_these_speak_of_a_date(text):
     assert mentions_date(text)
@@ -127,6 +129,7 @@ def test_these_speak_of_a_date(text):
     "I will", "sounds good", "Ok", "Only one (me), and yes to trip insurance",
     "nothing specific yet, I'll tell you later", "1", "2 adults", "Dana", "", None,
     "we may go business", "send it to the email", "have a nice day", "my wife and I", "aisle seat please",
+    "I may call later", "in decent shape",
 ])
 def test_these_do_not(text):
     assert not mentions_date(text)

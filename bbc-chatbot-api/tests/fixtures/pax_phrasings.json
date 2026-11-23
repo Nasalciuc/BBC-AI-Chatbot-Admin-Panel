@@ -546,6 +546,45 @@
         "children": null,
         "infants": null
       }
+    },
+    {
+      "text": "2 adults and a child plus a 1-year-old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 4,
+        "children": 1,
+        "infants": 1
+      }
+    },
+    {
+      "text": "2 adults and a child, he is 9 years old",
+      "legacy": {
+        "passengers": 2,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 3,
+        "children": 1,
+        "infants": 0
+      }
+    },
+    {
+      "text": "one adult and a baby, 1 year old",
+      "legacy": {
+        "passengers": null,
+        "children": null,
+        "infants": null
+      },
+      "v2": {
+        "passengers": 2,
+        "children": 0,
+        "infants": 1
+      }
     }
   ]
 }

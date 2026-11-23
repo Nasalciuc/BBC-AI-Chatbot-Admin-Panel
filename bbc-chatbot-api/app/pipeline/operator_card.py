@@ -67,12 +67,14 @@ async def extract_and_push(conversation_id: str, message: str) -> None:
             "trip_type": extracted.trip_type,
             "passengers": extracted.passengers,
             "cabin_class": extracted.cabin_class,
-            "_children_count": extracted.children_count or 0,
-            "_infant_count": extracted.infant_count or 0,
+            # None when the message names no minor; 0 when it says there is none of that kind ("2 adults and
+            # a baby": no child): a 0 reaches the lead and clears an older count (CodeRabbit #279).
+            "_children_count": extracted.children_count,
+            "_infant_count": extracted.infant_count,
             # "aisle seat", "travel insurance" said to the agent: labels only (needs_of).
             "must_haves": extracted.needs,
         }
-        entities = {k: v for k, v in entities.items() if v}
+        entities = {k: v for k, v in entities.items() if v is not None}
         if entities:
             await lead_service.update_lead_from_entities(conversation_id, entities)
         if not flag("OPERATOR_DETAILS_CARD", False):

@@ -245,8 +245,10 @@ _NAME = r"(?P<name>[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)"
 _AFTER_GREETING_RE = re.compile(r"\b(?P<greet>(?i:" + _GREETING + r"))\s*,?\s+" + _NAME + r"\b(?=\s*[,.!?;:]|\s*$)")
 # "X, I've noted your dates" — at the start of a sentence.
 _LEADING_RE = re.compile(r"(?:^|(?<=[.!?]\s))" + _NAME + r",\s+(?P<next>\w)")
-# "Speak soon, X." / "…for you, X!" — at the end of a sentence.
+# "Speak soon, X." / "…for you, X!" — at the end of a sentence. Not after a capitalised word: "Amman,
+# Jordan." is a place and its country, not someone addressed (CodeRabbit #279).
 _TRAILING_RE = re.compile(r",\s*" + _NAME + r"(?=\s*[.!?](?:\s|$)|\s*$)")
+_WORD_BEFORE_RE = re.compile(r"([A-Za-z][\w'-]*)\W*$")
 # Words a sentence opens with, never a name, whatever the e-mail holds.
 _NEVER_A_NAME = {
     "great", "perfect", "thanks", "thank", "sure", "okay", "absolutely", "noted", "lovely", "wonderful",
@@ -273,5 +275,11 @@ def strip_guessed_name(text: str, email: str | None, client_texts: list[str]) ->
 
     out = _AFTER_GREETING_RE.sub(lambda m: m.group("greet") if guessed(m.group("name")) else m.group(0), text)
     out = _LEADING_RE.sub(lambda m: m.group("next").upper() if guessed(m.group("name")) else m.group(0), out)
-    out = _TRAILING_RE.sub(lambda m: "" if guessed(m.group("name")) else m.group(0), out)
+    def trailing(m: re.Match) -> str:
+        before = _WORD_BEFORE_RE.search(m.string[:m.start()])
+        if before and before.group(1)[0].isupper():
+            return m.group(0)
+        return "" if guessed(m.group("name")) else m.group(0)
+
+    out = _TRAILING_RE.sub(trailing, out)
     return out, out != text

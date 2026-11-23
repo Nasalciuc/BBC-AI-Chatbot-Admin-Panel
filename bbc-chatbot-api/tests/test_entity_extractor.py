@@ -244,6 +244,10 @@ class TestRangeEndsAndMonthYear:
         ("November 20-28", "2027-11-20", "2027-11-28"),      # never a return a year before the departure
         ("March 15-22", "2027-03-15", "2027-03-22"),         # as before
         ("dec 23 to jan 02", "2026-12-23", "2027-01-02"),    # as before
+        ("May 6 to 7", "2027-05-06", "2027-05-07"),
+        # An end with its own month is a whole date, read by the named dates (CodeRabbit #279).
+        ("May 6 to 7 June", "2027-05-06", "2027-06-07"),
+        ("March 15-22 April", "2027-03-15", "2027-04-22"),
     ])
     def test_a_range_with_a_day_for_its_end(self, text, dep, ret):
         e = extract_entities(text)

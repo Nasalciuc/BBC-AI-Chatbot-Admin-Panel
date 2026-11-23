@@ -41,6 +41,14 @@ def test_a_name_read_from_the_email_is_taken_out(reply, clean):
     assert strip_guessed_name(reply, EMAIL, ["my email is " + EMAIL]) == (clean, True)
 
 
+@pytest.mark.parametrize("reply,clean", [
+    ("Thanks, Jordan!", "Thanks!"),
+    ("Have a great trip, Jordan!", "Have a great trip!"),
+])
+def test_the_same_word_addressing_the_client_still_goes(reply, clean):
+    assert strip_guessed_name(reply, "jordan@example.com", ["Flights to Amman, please"]) == (clean, True)
+
+
 def test_part_of_a_run_together_address_counts_too():
     assert strip_guessed_name("Thanks, Dana!", "danam@example.com", []) == ("Thanks!", True)
 
@@ -56,6 +64,8 @@ def test_part_of_a_run_together_address_counts_too():
     ("Thanks! When would you like to fly?", EMAIL, []),
     ("Got it, thanks.", "thanksgiving@example.com", []),
     ("", EMAIL, []),
+    # A place and its country, not someone addressed (CodeRabbit #279).
+    ("Your destination is Amman, Jordan.", "jordan@example.com", ["Flights to Amman, please"]),
 ])
 def test_these_stay_as_written(reply, email, typed):
     assert strip_guessed_name(reply, email, typed) == (reply, False)

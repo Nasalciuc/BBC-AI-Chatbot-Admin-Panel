@@ -396,10 +396,12 @@ def _range_side(m: "re.Match", p: str) -> "tuple[int, int, int | None] | None":
 
 
 # What may follow the end of a range that names only the day, and makes it something else: a length
-# ("march 5 - 10 days"), a count ("april 7 to 2 people"), a time ("june 9 to 12:30", "may 6 to 7 pm").
+# ("march 5 - 10 days"), a count ("april 7 to 2 people"), a time ("june 9 to 12:30", "may 6 to 7 pm"), or
+# its own month ("May 6 to 7 June": the named dates read both, CodeRabbit #279).
 _NOT_A_DAY_END = (
     r"(?!\s*(?:days?|nights?|weeks?|months?|years?|yrs?|hours?|hrs?|people|persons?|pax|pass[ae]ngers?"
-    r"|adults?|travell?ers?|kids?|child(?:ren)?|tickets?|seats?|of\s+us|am|pm|%)\b|\s*[:/.]\d)"
+    r"|adults?|travell?ers?|kids?|child(?:ren)?|tickets?|seats?|of\s+us|am|pm|%)\b|\s*[:/.]\d"
+    r"|\s*(?:of\s+)?(?:" + _MONTH_PAT + r")\b)"
 )
 # "March 15-22" (same month range with dash)
 _DATE_RANGE_DASH = re.compile(
@@ -484,6 +486,9 @@ _DATE_MENTION_RE = re.compile(
     r"\b(?:" + _MONTH_PAT + r")\.?\s*\d{1,2}(?:st|nd|rd|th)?\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:" + _MONTH_PAT + r")\b"
     r"|\b(?:january|february|march|april|june|july|august|september|october|november|december)\b"
+    # "in May", "early Feb", "mid-March": "may" alone is a verb ("we may go business"), after these a month.
+    r"|\b(?:in|for|by|until|till|from|since|around|early|mid|late|end\s+of|beginning\s+of|start\s+of"
+    r"|middle\s+of)[\s-]+(?:" + _MONTH_PAT + r")\b"
     r"|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|\b20\d\d-\d{1,2}-\d{1,2}\b"
     r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)\b|\bon\s+the\s+\d{1,2}\b|\b20[2-3]\d\b"
@@ -873,9 +878,12 @@ _NEEDS: tuple[tuple[str, re.Pattern], ...] = (
         r"\b(?:travel|trip|cancell?ation)\s+insurance\b|\binsurance\s+for\s+(?:the|our|my)\s+trip\b"
         r"|\binsure\s+(?:the|our|my)\s+trip\b", re.I)),
 )
-# "no travel insurance", "I don't need a wheelchair", "without TSA": the need said away.
+# "no travel insurance", "I don't need a wheelchair", "without TSA": the need said away. Only within its
+# clause: "No window seat but aisle seat please" says the aisle seat (CodeRabbit #279).
 _NEED_SAID_AWAY = re.compile(
-    r"\b(?:no|not|don'?t|do\s+not|doesn'?t|does\s+not|without|never|nor|skip)\b[^.,;!?]{0,24}$", re.I
+    r"\b(?:no|not|don'?t|do\s+not|doesn'?t|does\s+not|without|never|nor|skip)\b"
+    r"(?:(?!\b(?:but|however|though|although|instead|rather|except|yet|whereas|while)\b)[^.,;!?]){0,24}$",
+    re.I,
 )
 
 
@@ -1754,14 +1762,16 @@ def extract_entities(
             children_count = _WORD_COUNT[child_words.group(1).lower()]
         if infant_words:
             infant_count = _WORD_COUNT[infant_words.group(1).lower()]
-    if _pax_v2 and not (child_m or child_words) and not (infant_m or infant_words) and (
-        not entities.passengers or _pax_adults_only
-    ):
+    if _pax_v2 and not child_m and not infant_m and (not entities.passengers or _pax_adults_only):
         # "2 adults + a 9-year-old": the child is named by an age, not a count.
-        # 2–11 is a child fare, under 2 an infant; 12+ is already an adult.
+        # 2–11 is a child fare, under 2 an infant; 12+ is already an adult. A kind counted in words keeps its
+        # count (the age then names that minor); the other kind still comes from the ages: "2 adults and a
+        # child plus a 1-year-old" is a child and an infant (CodeRabbit #279).
         _ages = [int(a) for a in AGE_RE.findall(text)]
-        children_count = sum(1 for a in _ages if 2 <= a <= 11)
-        infant_count = sum(1 for a in _ages if a < 2)
+        if not child_words:
+            children_count = sum(1 for a in _ages if 2 <= a <= 11)
+        if not infant_words:
+            infant_count = sum(1 for a in _ages if a < 2)
 
     if children_count or infant_count:
         adult_count = entities.passengers or 0

@@ -49,6 +49,9 @@ def _flags_clean():
     ("i also have a number for points with a few airlines", "loyalty number / miles"),
     ("can we pay with miles?", "loyalty number / miles"),
     ("aisle seat, travel insurance and my KTN", "aisle seat; TSA PreCheck / KTN; travel insurance"),
+    # A need said away only within its clause (CodeRabbit #279).
+    ("No window seat but aisle seat please", "aisle seat"),
+    ("no insurance needed, however a wheelchair at the airport", "wheelchair / airport assistance"),
 ])
 def test_the_needs_a_message_names(text, labels):
     assert needs_of(text) == labels
@@ -193,6 +196,22 @@ async def test_the_open_door_answer_is_still_the_clients_own_words():
 
 
 # ── a chat with an agent ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_an_agent_chat_keeps_a_zero_count_and_sends_no_count_it_did_not_read(monkeypatch):
+    """"2 adults and a baby": no child, said; a 0 reaches the lead and clears an older child count. "2 adults"
+    names no minor: nothing about minors is sent (CodeRabbit #279)."""
+    from app.pipeline import operator_card
+
+    monkeypatch.delenv("EXTRACT_EVERY_MESSAGE", raising=False)
+    upd = AsyncMock()
+    with patch("app.services.lead_service.update_lead_from_entities", upd):
+        await operator_card.extract_and_push("conv-1", "2 adults and a baby")
+        await operator_card.extract_and_push("conv-1", "2 adults")
+    with_baby, adults_only = (c.args[1] for c in upd.await_args_list)
+    assert (with_baby["_children_count"], with_baby["_infant_count"], with_baby["passengers"]) == (0, 1, 3)
+    assert "_children_count" not in adults_only and "_infant_count" not in adults_only
+
 
 @pytest.mark.asyncio
 async def test_a_need_said_to_an_agent_reaches_the_lead(monkeypatch):
