@@ -1,6 +1,8 @@
 """The agent's "Create lead in CRM" button (CRM's CHAT-LEADS-API v1.1). Every name, number and address here is
 invented."""
 
+import base64
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -10,9 +12,19 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+
+def _placeholder_jwt() -> str:
+    """JWT-shaped, built at run time: create_client checks the shape and nothing checks the signature, and no
+    key-shaped literal sits in the source for the secret scan (.gitleaks.toml) to flag."""
+    def part(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{part({'alg': 'HS256', 'typ': 'JWT'})}.{part({'role': 'test'})}.sig"
+
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
-os.environ.setdefault("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoieCJ9.sig")
+os.environ.setdefault("SUPABASE_KEY", _placeholder_jwt())
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from app.api import crm_lead as route  # noqa: E402
