@@ -4979,6 +4979,30 @@ async def get_button_lead_contact_rows(days: int = 30) -> list[dict] | None:
         return None
 
 
+async def close_conversation_if_unowned(conversation_id: str, payload: dict) -> tuple[str, str]:
+    """The abandoned sweep's close, written only while no agent holds the chat (assigned_agent_id empty, mode not
+    human): an agent who took it after the sweep's read keeps it (CodeRabbit #280).
+
+    ("closed", "") written; ("owned", "") an agent holds it now (or the chat is gone): nothing written;
+    ("failed", code) the write raised. Only the database's code is logged."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .update(payload)
+            .eq("id", conversation_id)
+            .is_("assigned_agent_id", "null")
+            .neq("mode", "human")
+            .execute(),
+            label="cron",
+        )
+        return ("closed", "") if res.data else ("owned", "")
+    except Exception as e:
+        code = _loggable_code(_error_code(e)) or "none"
+        logger.error(f"[{conversation_id}] the sweep's close failed (code={code}, {type(e).__name__})")
+        return ("failed", code)
+
+
 async def get_crm_receipts(conversation_id: str) -> Optional[dict]:
     """What says this chat's lead is in the CRM already, read now: the button's receipt (metadata.crm_lead) and
     the lead row's mark (created_in_crm, crm_lead_id) from every other path. One query.
@@ -4991,7 +5015,7 @@ async def get_crm_receipts(conversation_id: str) -> Optional[dict]:
         db = get_client()
         res = await _run_sync(
             lambda: db.table("conversations")
-            .select("id, metadata, leads(created_in_crm, crm_lead_id)")
+            .select("id, metadata, assigned_agent_id, status, mode, leads(created_in_crm, crm_lead_id)")
             .eq("id", conversation_id)
             .limit(1)
             .execute(),
@@ -5007,6 +5031,10 @@ async def get_crm_receipts(conversation_id: str) -> Optional[dict]:
             "crm_lead": crm_lead if isinstance(crm_lead, dict) else None,
             "created_in_crm": bool(marked),
             "crm_lead_id": next((str(x["crm_lead_id"]) for x in marked if x.get("crm_lead_id")), None),
+            # Who holds the chat now: an automatic submit read its rows minutes ago (CodeRabbit #280).
+            "assigned_agent_id": row.get("assigned_agent_id"),
+            "status": row.get("status"),
+            "mode": row.get("mode"),
         }
     except Exception as e:
         logger.error(f"get_crm_receipts conv={conversation_id}: {type(e).__name__}: {e}")

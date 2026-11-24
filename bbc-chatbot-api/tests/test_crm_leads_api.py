@@ -317,6 +317,42 @@ async def test_an_address_without_https_sends_nothing(crm, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_lost_submit_lock_sends_nothing(crm):
+    """CodeRabbit #280, round 6: the chat's submit lock stopped being this process's (another may be sending the
+    same chat now). Nothing leaves, counted, and the agent is told to try again."""
+    answers, seen = crm
+    answers.append(_ok())
+    before = api.CRM_LEADS_API_HEALTH["errors"].get("LEASE_LOST", 0)
+    call = await api.post_lead({"conversation_id": "c-1"}, still_held=lambda: False)
+    assert not call.ok and call.error_code == "LEASE_LOST" and "Try again in a minute" in call.message
+    assert seen == []
+    assert api.CRM_LEADS_API_HEALTH["errors"]["LEASE_LOST"] == before + 1
+    assert route._http_status(call) == 503
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_after_a_timeout_stops_the_retry(crm):
+    answers, seen = crm
+    answers.extend([httpx.ReadTimeout("slow"), _ok()])
+    held = iter([True, False])
+    call = await api.post_lead({"conversation_id": "c-1"}, still_held=lambda: next(held))
+    assert not call.ok and call.error_code == "LEASE_LOST" and len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lock_still_held_sends_as_before(crm):
+    answers, seen = crm
+    answers.extend([httpx.ReadTimeout("slow"), _ok()])
+    call = await api.post_lead({"conversation_id": "c-1"}, still_held=lambda: True)
+    assert call.ok and len(seen) == 2
+
+
+def test_the_submit_lock_is_strict_and_renewed():
+    lock = api.submit_lock("c-1")
+    assert (lock._strict, lock._renew, lock._ttl_ms) == (True, True, api.SUBMIT_LOCK_MS)
+
+
+@pytest.mark.asyncio
 async def test_not_configured_makes_no_call(monkeypatch):
     monkeypatch.setattr(api.settings, "crm_chat_api_url", "")
     before = api.CRM_LEADS_API_HEALTH["not_configured"]
@@ -535,6 +571,64 @@ async def test_a_press_while_another_process_sends_the_chat_sends_nothing():
     read.assert_not_awaited()
     post.assert_not_awaited()
     assert api.CRM_LEADS_API_HEALTH["busy"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_press_redis_cannot_make_safe_sends_nothing():
+    """CodeRabbit #280, round 6: Redis is configured but did not answer, so another process's send cannot be ruled
+    out. Nothing is read or sent, and the agent is told why, apart from "being sent right now"."""
+    from app.services.conversation_lock import LockBusy
+
+    class _Unconfirmed:
+        async def __aenter__(self):
+            raise LockBusy("crm_submit", "c-1", reason="unconfirmed")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    before = api.CRM_LEADS_API_HEALTH["busy"]
+    ps = _route_patches(_conv())
+    with ps["flags"], ps["conv"] as read, ps["user"], ps["post"] as post, ps["keep"], ps["mark"], ps["universe"], \
+            patch.object(route.api, "submit_lock", return_value=_Unconfirmed()):
+        with pytest.raises(HTTPException) as e:
+            await route.create_crm_lead("c-1", body=None, confirm_locked=False, user=ME)
+    assert e.value.status_code == 503 and e.value.detail.startswith("Couldn't make sure this chat isn't sent twice")
+    read.assert_not_awaited()
+    post.assert_not_awaited()
+    assert api.CRM_LEADS_API_HEALTH["busy"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_press_whose_lock_is_lost_stops_before_the_crm(crm):
+    """The route hands post_lead the lock's own `lost`: a lease lost while the chat was read sends nothing."""
+    answers, seen = crm
+    answers.append(_ok())
+
+    class _LostLease:
+        lost = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    lease = _LostLease()
+
+    async def _read(*a, **k):
+        lease.lost = True  # the key stopped being ours while the chat was read
+        return _conv()
+
+    ps = _route_patches(_conv())
+    with ps["flags"], ps["user"], ps["keep"] as keep, ps["mark"] as mark, ps["universe"], \
+            patch.object(route.db, "get_conversation", new=AsyncMock(side_effect=_read)), \
+            patch.object(route.api, "submit_lock", return_value=lease):
+        with pytest.raises(HTTPException) as e:
+            await route.create_crm_lead("c-1", body=None, confirm_locked=False, user=ME)
+    assert e.value.status_code == 503 and "Try again in a minute" in e.value.detail
+    assert seen == []
+    keep.assert_not_awaited()
+    mark.assert_not_awaited()
 
 
 @pytest.mark.asyncio

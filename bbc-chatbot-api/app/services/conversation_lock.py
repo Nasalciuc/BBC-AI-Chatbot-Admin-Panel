@@ -25,8 +25,12 @@ turns the Redis half off without a deploy.
 
 A strict lock is the exception: work that must not run twice side by side (a call to
 the CRM, which a second process would repeat) raises LockBusy when another process
-still holds the key after WAIT_S, and its caller tries again later. Redis absent or
-failing still means the in-process lock alone: there is no other holder to wait for.
+still holds the key after WAIT_S, or when a configured Redis cannot confirm the key
+(it fails, or cools down after failing), and its caller tries again later. Without
+REDIS_URL (or with LOCK_REDIS off) there is no other process to wait for: the
+in-process lock alone. A renewed lock pushes its key's expiry forward while the work
+runs, and marks itself lost the moment Redis says the key is no longer its own: the
+work checks `lost` before each call it must not repeat (CodeRabbit #280).
 """
 
 from __future__ import annotations
@@ -54,12 +58,21 @@ end
 return 0
 """
 
+RENEW_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('pexpire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
 LOCK_HEALTH: dict[str, int] = {
     "redis_held": 0,          # held in Redis too
     "local_only": 0,          # Redis off, absent or cooling down: the in-process lock alone
     "redis_errors": 0,        # a SET or a release that Redis did not answer
     "wait_timeouts": 0,       # another process held the key past WAIT_S; the work went on
     "busy_refused": 0,        # ...and the lock was strict: the work did not run (LockBusy)
+    "unconfirmed_refused": 0,  # a strict lock a configured Redis could not confirm: the work did not run
+    "lease_lost": 0,          # a renewed lock's key stopped being its own while held: the work stopped sending
     "expired_before_release": 0,  # the work outlived TTL_MS; the key was gone or someone else's
     "max_wait_ms": 0,
 }
@@ -68,12 +81,17 @@ _LOCAL: dict[str, "weakref.WeakValueDictionary[str, asyncio.Lock]"] = {}
 
 
 class LockBusy(Exception):
-    """A strict lock another process still held after WAIT_S: the work did not run."""
+    """A strict lock the work did not get: reason "held" (another process still held it after WAIT_S) or
+    "unconfirmed" (a configured Redis failed or was cooling down). The work did not run."""
 
-    def __init__(self, kind: str, conversation_id: str):
-        super().__init__(f"the {kind} lock on {conversation_id} is held by another process")
+    def __init__(self, kind: str, conversation_id: str, reason: str = "held"):
+        why = "is held by another process" if reason == "held" else "could not be confirmed in Redis"
+        super().__init__(f"the {kind} lock on {conversation_id} {why}")
         self.kind = kind
         self.conversation_id = conversation_id
+        self.reason = reason
+
+
 _RELEASES: set = set()  # releases started by a sync release(), kept alive until they finish
 
 
@@ -104,13 +122,19 @@ class ConversationLock:
     `locked()`) work too, for the writers that hold it that way; a sync release() lets
     the Redis key go a moment later, in the background."""
 
-    def __init__(self, kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False):
+    def __init__(
+        self, kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False, renew: bool = False
+    ):
         self._kind = kind
         self._cid = conversation_id
         self._ttl_ms = ttl_ms
         self._strict = strict
+        self._renew = renew
         self._local = _local(kind, conversation_id)
         self._token: Optional[str] = None
+        self._renewer: Optional[asyncio.Task] = None
+        # The Redis key stopped being ours while the work ran (renewed locks only): stop sending.
+        self.lost = False
 
     def locked(self) -> bool:
         return self._local.locked()
@@ -123,9 +147,41 @@ class ConversationLock:
             # Cancelled while waiting for the key: the in-process lock must not stay held.
             self._local.release()
             raise
+        self.lost = False
+        if self._token and self._renew:
+            self._renewer = asyncio.get_running_loop().create_task(self._keep_alive(self._token))
         return True
 
+    async def _keep_alive(self, token: str) -> None:
+        """Push the key's expiry forward every third of its TTL; the first answer that it is not ours (or no
+        answer) marks the lease lost and stops."""
+        key = _key(self._kind, self._cid)
+        while True:
+            await asyncio.sleep(self._ttl_ms / 3000.0)
+            r = get_redis(even_cooling_down=True)
+            renewed = 0
+            if r is not None:
+                try:
+                    renewed = await r.eval(RENEW_LUA, 1, key, token, self._ttl_ms)
+                except Exception as e:
+                    redis_failed("renew", e)
+                    LOCK_HEALTH["redis_errors"] += 1
+                    logger.warning(f"[lock] {self._kind} {self._cid}: the lease was not renewed "
+                                   f"({type(e).__name__}: {e})")
+            if not renewed:
+                self.lost = True
+                LOCK_HEALTH["lease_lost"] += 1
+                logger.warning(f"[lock] {self._kind} {self._cid}: the lease is no longer ours; the work stops sending")
+                return
+
+    def _stop_renewing(self) -> Optional[asyncio.Task]:
+        task, self._renewer = self._renewer, None
+        if task is not None:
+            task.cancel()
+        return task
+
     def release(self) -> None:
+        self._stop_renewing()
         token, self._token = self._token, None
         if token:
             task = asyncio.get_running_loop().create_task(_release_redis(self._kind, self._cid, token, self._ttl_ms))
@@ -138,21 +194,26 @@ class ConversationLock:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
+        task = self._stop_renewing()
         token, self._token = self._token, None
         try:
+            if task is not None:
+                await asyncio.wait({task})  # ends with the cancel; never raises, never swallows ours
             if token:
                 await _release_redis(self._kind, self._cid, token, self._ttl_ms)
         finally:
+            # Even when this exit is cancelled itself: an in-process lock left held would block the chat for good
+            # (a Redis key not released expires on its own).
             self._local.release()
 
 
 def conversation_lock(
-    kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False
+    kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False, renew: bool = False
 ) -> ConversationLock:
-    """ttl_ms: how long the Redis key outlives a holder that died. Work that waits on another service (a CRM call
-    with its retry) asks for more than TTL_MS, so the key is still there when the work ends. strict: raise
-    LockBusy rather than go on beside another process that still holds the key after WAIT_S."""
-    return ConversationLock(kind, conversation_id, ttl_ms, strict)
+    """ttl_ms: how long the Redis key outlives a holder that died. strict: raise LockBusy rather than go on
+    beside another process (the key held after WAIT_S, or a configured Redis that cannot confirm it). renew:
+    keep the key alive while the work runs, and set `lost` if it stops being ours."""
+    return ConversationLock(kind, conversation_id, ttl_ms, strict, renew)
 
 
 async def _acquire_redis(
@@ -164,6 +225,13 @@ async def _acquire_redis(
         return None
     r = get_redis()
     if r is None:
+        from config.settings import settings
+
+        if strict and settings.redis_url:
+            # Configured but cooling down after a failure: another process may hold the key, nothing says no.
+            LOCK_HEALTH["unconfirmed_refused"] += 1
+            logger.warning(f"[lock] {kind} {conversation_id}: Redis is cooling down, this work waits for it")
+            raise LockBusy(kind, conversation_id, reason="unconfirmed")
         LOCK_HEALTH["local_only"] += 1
         return None
     key = _key(kind, conversation_id)
@@ -176,6 +244,11 @@ async def _acquire_redis(
         except Exception as e:
             redis_failed("lock", e)
             LOCK_HEALTH["redis_errors"] += 1
+            if strict:
+                LOCK_HEALTH["unconfirmed_refused"] += 1
+                logger.warning(f"[lock] {kind} {conversation_id}: Redis did not answer, this work waits for it "
+                               f"({type(e).__name__}: {e})")
+                raise LockBusy(kind, conversation_id, reason="unconfirmed") from e
             logger.warning(f"[lock] {kind} {conversation_id}: Redis did not answer, in-process lock only "
                            f"({type(e).__name__}: {e})")
             return None

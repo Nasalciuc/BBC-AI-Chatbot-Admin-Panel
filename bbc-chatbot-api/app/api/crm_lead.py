@@ -81,7 +81,7 @@ def _answer(enabled: bool, lead: Optional[dict], can_create: bool, reason: Optio
 
 
 def _http_status(call: api.CrmLeadCall) -> int:
-    if call.error_code in ("NOT_CONFIGURED", "NOT_HTTPS"):
+    if call.error_code in ("NOT_CONFIGURED", "NOT_HTTPS", "LEASE_LOST"):
         return 503
     if call.error_code in ("AUTH_INVALID", "IP_NOT_ALLOWED"):
         return 502
@@ -149,17 +149,20 @@ async def create_crm_lead(
     # One CRM submit at a time per chat: the old sweep and the backstop hold the same lock around theirs, and the
     # chat is read inside it, so whichever goes second finds the other's receipt (CodeRabbit #280).
     try:
-        async with api.submit_lock(conversation_id):
-            return await _create(conversation_id, body, confirm_locked, user)
+        async with api.submit_lock(conversation_id) as lease:
+            return await _create(conversation_id, body, confirm_locked, user, lease)
     except LockBusy as e:
-        # Another process is sending this chat to the CRM right now: nothing was sent from here.
+        # Another process is sending this chat to the CRM right now, or Redis could not say it is not: nothing was
+        # sent from here.
         api.CRM_LEADS_API_HEALTH["busy"] += 1
         logger.warning(f"[crm-leads-api] conv={conversation_id}: not sent, {e}")
-        raise HTTPException(503, "This chat is being sent to the CRM right now. Try again in a minute.") from e
+        if e.reason == "held":
+            raise HTTPException(503, "This chat is being sent to the CRM right now. Try again in a minute.") from e
+        raise HTTPException(503, "Couldn't make sure this chat isn't sent twice. Try again in a minute.") from e
 
 
 async def _create(
-    conversation_id: str, body: Optional[CrmLeadRequest], confirm_locked: bool, user: dict
+    conversation_id: str, body: Optional[CrmLeadRequest], confirm_locked: bool, user: dict, lease
 ) -> dict:
     conv: Optional[dict] = None
     try:
@@ -203,7 +206,8 @@ async def _create(
         raise HTTPException(503, "Couldn't read the agent's account. Try again in a moment.")
 
     payload = api.build_payload(conv, agent_email=agent_email, agent_id=agent_id, note=body.note if body else None)
-    call = await api.post_lead(payload)
+    # The lock is renewed while this runs; if Redis says it is no longer ours, nothing more leaves for the CRM.
+    call = await api.post_lead(payload, still_held=lambda: not lease.lost)
     if not call.ok:
         raise HTTPException(_http_status(call), _http_message(call))
 

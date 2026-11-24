@@ -63,11 +63,20 @@ async def _plain_write(conversation_id, payload, receipt_keys=()):
     return await sb.update_conversation(conversation_id, payload)
 
 
+async def _plain_close(conversation_id, payload):
+    from app.db import supabase as sb
+
+    await sb.update_conversation(conversation_id, payload)
+    return "closed", ""
+
+
 @pytest.fixture(autouse=True)
 def _handoff_writes_without_a_database():
     """Without a database the receipt guard of a new cycle's write has nothing to guard: the write is the plain
-    update_conversation, which tests patch and read as before (inner patches win). The deadline sweep finds no
-    Take to restore a lost clock from. Tests of the real functions capture them before this runs."""
+    update_conversation, which tests patch and read as before (inner patches win). The abandoned sweep's
+    conditional close is the plain update too. The deadline sweep finds no Take to restore a lost clock from.
+    Tests of the real functions capture them before this runs."""
     with patch("app.db.supabase.update_conversation_keeping_receipts", new=_plain_write), \
+            patch("app.db.supabase.close_conversation_if_unowned", new=_plain_close), \
             patch("app.db.supabase.get_last_take", new=AsyncMock(return_value=("none", None))):
         yield

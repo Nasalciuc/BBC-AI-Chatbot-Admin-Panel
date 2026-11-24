@@ -173,22 +173,32 @@ async def _contacts_already_in_crm() -> set[str] | None:
     return ids
 
 
-async def _sent_since_read(cid: str) -> str:
-    """Why an automatic CRM submit must not go ahead after all, read right before it; "" to go ahead.
+async def _recheck_before_submit(cid: str) -> tuple[str, dict]:
+    """(why an automatic CRM submit must not go ahead after all, the chat as it is now); "" to go ahead.
 
-    Called under crm_leads_api.submit_lock(cid). The agent's button holds that lock from its read of the chat to
-    its receipt, so a lead it made after this job read its rows is found here, and this job's own receipt is
-    written before the button can read. A failed read waits a cycle: it is not "nothing sent"."""
-    receipts = await db.get_crm_receipts(cid)
-    if receipts is None:
+    Called under crm_leads_api.submit_lock(cid), right before the send. The agent's button holds that lock from
+    its read of the chat to its receipt, so a lead it made after this job read its rows is found here, and this
+    job's own receipt is written before the button can read. The chat's owner is read again too: an agent who
+    took it since the job's read now holds it (CodeRabbit #280). A failed read waits a cycle: it is not "nothing
+    sent"."""
+    now = await db.get_crm_receipts(cid)
+    if now is None:
         CRM_PUSH_HEALTH["receipt_read_failed"] += 1
         logger.warning(f"[cron][{cid}] the CRM receipts could not be read again before the submit — next cycle")
-        return "receipt_read_failed"
-    if crm_leads_api.is_receipt(receipts.get("crm_lead")):
-        return "made_by_button"
-    if receipts.get("created_in_crm"):
-        return "already_in_crm"
-    return ""
+        return "receipt_read_failed", {}
+    if crm_leads_api.is_receipt(now.get("crm_lead")):
+        return "made_by_button", now
+    if now.get("created_in_crm"):
+        return "already_in_crm", now
+    if crm_leads_api.everyone_on() and now.get("assigned_agent_id") and now.get("status") in db.OPEN_STATUSES:
+        return "agent_holds_chat", now
+    return "", now
+
+
+def _still_closable(now: dict) -> bool:
+    """The close decision on the chat as read under the lock: never closed, never an agent's (keys the read does
+    not carry leave the decision to the earlier read)."""
+    return now.get("mode") != "human" and now.get("status") != "closed" and not now.get("assigned_agent_id")
 
 
 def _hold_for_crm_lookup(cid: str, in_crm: set[str] | None, where: str) -> str | None:
@@ -478,9 +488,14 @@ async def run_abandoned_crm() -> dict:
             # submit's own mark is written: a button lead made since is found, and no button call starts before
             # this one is marked (CodeRabbit #280).
             marked: Optional[dict] = None
+            _now: dict = {}
             try:
-                async with crm_leads_api.submit_lock(cid):
-                    _why = await _sent_since_read(cid)
+                async with crm_leads_api.submit_lock(cid) as _lease:
+                    _why, _now = await _recheck_before_submit(cid)
+                    if not _why and _lease.lost:
+                        # The lock stopped being ours: another process may be sending this chat now.
+                        CRM_PUSH_HEALTH["submit_busy"] += 1
+                        _why = "submit_busy"
                     if _why:
                         results.append({"id": cid, "status": "skipped", "reason": _why})
                         continue
@@ -512,16 +527,25 @@ async def run_abandoned_crm() -> dict:
                         "crm_id": crm_result.request_id,
                     })
                     continue
-                if _may_close:
-                    await db.update_conversation(cid, {
+                # Closed only if it still may be: decided on the chat as read under the lock as well as at the
+                # start, and written only while no agent holds it, so a chat taken in between keeps its agent.
+                _closed = False
+                if _may_close and _still_closable(_now):
+                    _outcome, _code = await db.close_conversation_if_unowned(cid, {
                         "status": "closed",
                         "closed_at": datetime.now(timezone.utc).isoformat(),
                         "mode": "ai",
                         "assigned_agent_id": None,
                     })
+                    _closed = _outcome == "closed"
+                    if _outcome == "owned":
+                        logger.info(f"[cron][{cid}] an agent took the chat during the submit: left open")
+                    elif _outcome == "failed":
+                        CRM_PUSH_HEALTH["close_failed"] += 1
+                        logger.error(f"[cron][{cid}] CRM submitted but the close failed (code={_code})")
                 logger.info(
                     f"[cron][{cid}] Success: CRM submitted"
-                    f"{' + closed' if _may_close else ' (left open — human/closed)'}"
+                    f"{' + closed' if _closed else ' (left open — human/closed)'}"
                 )
                 _pushed_today.add(cid)
                 if _in_crm is not None:
@@ -795,8 +819,12 @@ async def run_crm_orphan_backstop() -> dict:
                 continue  # the agent who holds the chat sends it with the button
             cid = lead.get("conversation_id") or lead_id
             # Same lock as the button and the sweep, held until push_lead_to_crm has written its mark.
-            async with crm_leads_api.submit_lock(cid):
-                why = await _sent_since_read(cid) if lead.get("conversation_id") else ""
+            async with crm_leads_api.submit_lock(cid) as lease:
+                why = (await _recheck_before_submit(cid))[0] if lead.get("conversation_id") else ""
+                if not why and lease.lost:
+                    # The lock stopped being ours: another process may be sending this chat now.
+                    CRM_PUSH_HEALTH["submit_busy"] += 1
+                    why = "submit_busy"
                 if why:
                     results.append({"id": lead_id, "status": "skipped", "reason": why})
                     continue

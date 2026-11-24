@@ -68,8 +68,12 @@ CRM_PUSH_HEALTH: dict = {
     # Read again under the chat's CRM lock right before an automatic submit, the receipts could not be
     # read: the submit waited a cycle rather than risk a second lead behind the agent's button.
     "receipt_read_failed": 0,
-    # Another process held the chat's CRM-submit lock past the wait: this submit waited a cycle.
+    # Another process held the chat's CRM-submit lock past the wait (or Redis could not confirm it, or it stopped
+    # being ours before the send): this submit waited a cycle.
     "submit_busy": 0,
+    # The abandoned sweep sent the lead but its close of the chat failed: the chat stays open, the next tick
+    # closes it (the lead is marked, nothing is sent twice).
+    "close_failed": 0,
 }
 
 

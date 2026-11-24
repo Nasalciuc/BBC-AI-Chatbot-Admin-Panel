@@ -11,7 +11,7 @@ import pytest
 
 from app.infra import redis_client
 from app.services import conversation_lock as cl
-from tests.fake_redis import FakeRedis, compare_and_delete
+from tests.fake_redis import FakeRedis, compare_and_delete, compare_and_pexpire
 
 
 @pytest.fixture
@@ -20,6 +20,7 @@ def fake(monkeypatch):
 
     r = FakeRedis()
     r.register(cl.RELEASE_LUA, compare_and_delete)
+    r.register(cl.RENEW_LUA, compare_and_pexpire)
     monkeypatch.setattr(settings, "redis_url", "redis://fake")
     redis_client.set_client_for_tests(r)
     for k in cl.LOCK_HEALTH:
@@ -112,13 +113,153 @@ async def test_a_strict_lock_held_past_the_wait_does_not_run_the_work(fake, monk
 
 
 @pytest.mark.asyncio
-async def test_a_strict_lock_still_runs_when_redis_is_down(fake):
-    """No Redis, no other holder to wait for: the in-process lock alone, as for every lock."""
+async def test_a_strict_lock_a_configured_redis_cannot_confirm_does_not_run(fake):
+    """CodeRabbit #280, round 6: a configured Redis that fails may hide another process's key. Refused, counted,
+    and refused again without asking Redis while it cools down; the in-process lock is free for the next try."""
     fake.down = True
+    ran = []
+    with pytest.raises(cl.LockBusy) as e:
+        async with cl.conversation_lock("crm_submit", "c1", strict=True):
+            ran.append(1)
+    assert e.value.reason == "unconfirmed" and ran == []
+    assert cl.LOCK_HEALTH["unconfirmed_refused"] == 1 and cl.LOCK_HEALTH["redis_errors"] == 1
+    assert not cl.conversation_lock("crm_submit", "c1").locked()
+    calls = len(fake.calls)
+    with pytest.raises(cl.LockBusy) as e:
+        async with cl.conversation_lock("crm_submit", "c1", strict=True):
+            ran.append(1)
+    assert e.value.reason == "unconfirmed" and ran == []
+    assert len(fake.calls) == calls, "cooling down: Redis is not asked"
+    assert cl.LOCK_HEALTH["unconfirmed_refused"] == 2 and cl.LOCK_HEALTH["busy_refused"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_plain_lock_still_runs_when_redis_is_down(fake):
+    """The rule is the strict lock's alone: every other writer goes on under the in-process lock."""
+    fake.down = True
+    ran = []
+    async with cl.conversation_lock("lead", "c1"):
+        ran.append(1)
+    assert ran == [1] and cl.LOCK_HEALTH["unconfirmed_refused"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_strict_lock_without_redis_configured_runs_alone(monkeypatch):
+    """No REDIS_URL: one process, nobody else to wait for."""
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "redis_url", "")
+    before = dict(cl.LOCK_HEALTH)
+    ran = []
+    async with cl.conversation_lock("crm_submit", "c1", strict=True, renew=True) as lock:
+        ran.append(1)
+    assert ran == [1] and lock.lost is False
+    assert cl.LOCK_HEALTH["local_only"] == before["local_only"] + 1
+    assert cl.LOCK_HEALTH["unconfirmed_refused"] == before["unconfirmed_refused"]
+
+
+@pytest.mark.asyncio
+async def test_with_the_switch_off_a_strict_lock_runs_alone(fake, monkeypatch):
+    """LOCK_REDIS=false is the way out without a deploy when Redis is away for long."""
+    fake.down = True
+    monkeypatch.setenv("LOCK_REDIS", "false")
     ran = []
     async with cl.conversation_lock("crm_submit", "c1", strict=True):
         ran.append(1)
-    assert ran == [1] and cl.LOCK_HEALTH["busy_refused"] == 0
+    assert ran == [1] and cl.LOCK_HEALTH["unconfirmed_refused"] == 0 and fake.calls == []
+
+
+# A renewed lock (CodeRabbit #280, round 6): the CRM submit holds its key past the TTL while it works, and stops
+# sending the moment the key is no longer its own.
+
+@pytest.mark.asyncio
+async def test_a_renewed_lock_outlives_its_ttl_while_the_work_runs(fake):
+    async with cl.conversation_lock("crm_submit", "c1", ttl_ms=300, strict=True, renew=True) as lock:
+        mine = await fake.get("lock:crm_submit:c1")
+        await asyncio.sleep(0.75)
+        assert await fake.get("lock:crm_submit:c1") == mine, "still ours, two and a half TTLs later"
+        assert lock.lost is False
+    assert await fake.get("lock:crm_submit:c1") is None
+    assert cl.LOCK_HEALTH["expired_before_release"] == 0 and cl.LOCK_HEALTH["lease_lost"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_lock_that_is_not_renewed_still_expires(fake):
+    async with cl.conversation_lock("crm_submit", "c1", ttl_ms=300, strict=True):
+        await asyncio.sleep(0.45)
+        assert await fake.get("lock:crm_submit:c1") is None, "gone at its TTL"
+    assert cl.LOCK_HEALTH["expired_before_release"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_renewed_lock_whose_key_is_someone_elses_is_lost(fake):
+    """The key expired and another process set its own: the renewal finds it, the work is told, and the other
+    process's key is left alone."""
+    async with cl.conversation_lock("crm_submit", "c1", ttl_ms=300, strict=True, renew=True) as lock:
+        _held_elsewhere(fake, "c1", 60_000, name="crm_submit")
+        for _ in range(40):
+            if lock.lost:
+                break
+            await asyncio.sleep(0.02)
+        assert lock.lost is True
+    assert cl.LOCK_HEALTH["lease_lost"] == 1
+    assert await fake.get("lock:crm_submit:c1") == "their-token"
+    assert not cl.conversation_lock("crm_submit", "c1").locked()
+
+
+@pytest.mark.asyncio
+async def test_a_renewal_redis_does_not_answer_is_a_lost_lease(fake):
+    """No answer is no proof the key is still ours: lost, counted."""
+    async with cl.conversation_lock("crm_submit", "c1", ttl_ms=300, strict=True, renew=True) as lock:
+        fake.down = True
+        for _ in range(40):
+            if lock.lost:
+                break
+            await asyncio.sleep(0.02)
+        assert lock.lost is True
+    assert cl.LOCK_HEALTH["lease_lost"] == 1 and cl.LOCK_HEALTH["redis_errors"] >= 1
+    assert not cl.conversation_lock("crm_submit", "c1").locked()
+
+
+@pytest.mark.asyncio
+async def test_the_renewal_stops_with_the_work(fake):
+    async with cl.conversation_lock("crm_submit", "c1", ttl_ms=300, strict=True, renew=True):
+        pass
+    calls = len(fake.calls)
+    await asyncio.sleep(0.25)
+    assert len(fake.calls) == calls, "nothing renews a lock that was let go"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_exit_still_frees_the_in_process_lock(fake, monkeypatch):
+    """Cancelled while it waits for its renewal to stop, the exit still lets the chat go in this process (the
+    Redis key expires on its own)."""
+    renewers = []
+
+    async def _stubborn(self, token):
+        renewers.append(asyncio.current_task())
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(3600)  # does not end on the first cancel
+
+    monkeypatch.setattr(cl.ConversationLock, "_keep_alive", _stubborn)
+    lock = cl.conversation_lock("crm_submit", "c1", strict=True, renew=True)
+
+    async def _hold():
+        async with lock:
+            await asyncio.sleep(0.01)  # the renewal is running when the work ends
+
+    task = asyncio.create_task(_hold())
+    await asyncio.sleep(0.05)
+    assert lock.locked(), "the exit is waiting for the renewal"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not lock.locked()
+    for t in renewers:
+        t.cancel()
+    await asyncio.gather(*renewers, return_exceptions=True)
 
 
 @pytest.mark.asyncio

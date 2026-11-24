@@ -29,7 +29,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 import httpx
@@ -137,10 +137,12 @@ def is_configured() -> bool:
 
 def submit_lock(conversation_id: str):
     """The chat's CRM-submit lock (see SUBMIT_LOCK_KIND). Strict: when another process still holds it after the
-    wait, LockBusy is raised and nothing is sent; the caller tries again later (CodeRabbit #280)."""
+    wait, or a configured Redis cannot confirm it, LockBusy is raised and nothing is sent; the caller tries again
+    later. Renewed: its key stays alive while the work runs, and `lost` turns true if it stops being ours, which
+    every sender checks before a call to the CRM (CodeRabbit #280)."""
     from app.services.conversation_lock import conversation_lock
 
-    return conversation_lock(SUBMIT_LOCK_KIND, conversation_id, ttl_ms=SUBMIT_LOCK_MS, strict=True)
+    return conversation_lock(SUBMIT_LOCK_KIND, conversation_id, ttl_ms=SUBMIT_LOCK_MS, strict=True, renew=True)
 
 
 # ── what the CRM receives ───────────────────────────────────────
@@ -354,8 +356,14 @@ def _body(resp: httpx.Response) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-async def post_lead(payload: dict) -> CrmLeadCall:
-    """POST the lead. One retry after a timeout, a network error or a 5xx (safe: same conversation_id)."""
+_LEASE_LOST_MESSAGE = "This chat is being sent to the CRM right now. Try again in a minute."
+
+
+async def post_lead(payload: dict, still_held: Optional[Callable[[], bool]] = None) -> CrmLeadCall:
+    """POST the lead. One retry after a timeout, a network error or a 5xx (safe: same conversation_id).
+
+    still_held: asked before each attempt; False (the chat's submit lock is no longer this process's) stops before
+    the request leaves (LEASE_LOST), since another process may be sending the same chat now."""
     cid = str(payload.get("conversation_id") or "")
     url = settings.crm_chat_api_url.strip()
     key = settings.crm_chat_api_key.strip()
@@ -375,6 +383,10 @@ async def post_lead(payload: dict) -> CrmLeadCall:
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
     last = CrmLeadCall(ok=False, error_code="NO_ANSWER", message="The CRM didn't answer. Try again.")
     for attempt in (1, 2):
+        if still_held is not None and not still_held():
+            count_error("LEASE_LOST")
+            logger.warning(f"[crm-leads-api] conv={cid} attempt {attempt}: the submit lock is no longer ours; not sent")
+            return CrmLeadCall(ok=False, error_code="LEASE_LOST", message=_LEASE_LOST_MESSAGE)
         try:
             resp = await _http().post(url, json=payload, headers=headers)
         except httpx.TimeoutException as e:

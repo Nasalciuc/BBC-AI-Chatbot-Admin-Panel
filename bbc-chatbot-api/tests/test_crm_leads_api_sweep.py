@@ -388,22 +388,42 @@ def _db_returning(res):
         patch.object(sb, "_run_sync", new=AsyncMock(return_value=res))
 
 
+_NOBODY = {"assigned_agent_id": None, "status": None, "mode": None}
+
+
 @pytest.mark.parametrize("row,want", [
     ({"id": _CID, "metadata": {"crm_lead": {"flight_request_id": 7}},
       "leads": [{"created_in_crm": True, "crm_lead_id": 55}]},
-     {"crm_lead": {"flight_request_id": 7}, "created_in_crm": True, "crm_lead_id": "55"}),
+     {"crm_lead": {"flight_request_id": 7}, "created_in_crm": True, "crm_lead_id": "55", **_NOBODY}),
     ({"id": _CID, "metadata": {}, "leads": [{"created_in_crm": False, "crm_lead_id": None}]},
-     {"crm_lead": None, "created_in_crm": False, "crm_lead_id": None}),
+     {"crm_lead": None, "created_in_crm": False, "crm_lead_id": None, **_NOBODY}),
     ({"id": _CID, "metadata": None, "leads": {"created_in_crm": True, "crm_lead_id": None}},
-     {"crm_lead": None, "created_in_crm": True, "crm_lead_id": None}),
+     {"crm_lead": None, "created_in_crm": True, "crm_lead_id": None, **_NOBODY}),
     ({"id": _CID, "metadata": {"crm_lead": "not a receipt"}, "leads": []},
-     {"crm_lead": None, "created_in_crm": False, "crm_lead_id": None}),
+     {"crm_lead": None, "created_in_crm": False, "crm_lead_id": None, **_NOBODY}),
+    # Round 6: who holds the chat now, read in the same query.
+    ({"id": _CID, "metadata": {}, "leads": [], "assigned_agent_id": "agent-1", "status": "active", "mode": "human"},
+     {"crm_lead": None, "created_in_crm": False, "crm_lead_id": None,
+      "assigned_agent_id": "agent-1", "status": "active", "mode": "human"}),
 ])
 @pytest.mark.asyncio
 async def test_the_receipts_read_both_marks_in_one_query(row, want):
     a, b = _db_returning(MagicMock(data=[row]))
     with a, b:
         assert await _real_receipts(_CID) == want
+
+
+def test_the_receipts_query_asks_for_the_chats_owner():
+    client = MagicMock()
+    client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = \
+        MagicMock(data=[])
+    import asyncio
+
+    with patch.object(sb, "get_client", return_value=client), \
+            patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+        asyncio.run(_real_receipts(_CID))
+    cols = client.table.return_value.select.call_args.args[0]
+    assert all(c in cols for c in ("assigned_agent_id", "status", "mode", "leads(created_in_crm, crm_lead_id)"))
 
 
 @pytest.mark.asyncio
@@ -465,3 +485,184 @@ async def test_the_orphan_page_starts_at_its_offset():
     ordered.range.assert_called_once_with(100, 149)
     assert client.table.return_value.select.return_value.gte.return_value.or_.return_value.lt.return_value \
         .order.call_args.args == ("created_at",), "newest first, then by id so a page boundary is stable"
+
+
+# ── CodeRabbit #280, round 6 ────────────────────────────────────
+# The chat itself is read again under the lock, right before the send: an agent who took it after the sweep's read
+# keeps it. With the button on for everyone no lead is sent behind them, and the sweep's close never unassigns
+# them: it is decided on the chat as read under the lock, and written only while nobody holds the chat.
+
+def _now(**kw):
+    base = {"crm_lead": None, "created_in_crm": False, "crm_lead_id": None,
+            "assigned_agent_id": None, "status": "active", "mode": "ai"}
+    base.update(kw)
+    return base
+
+
+_TAKEN = {"assigned_agent_id": "agent-1", "status": "active", "mode": "human"}
+
+
+async def _sweep_and_close(conv, now, flags=None, close=("closed", "")):
+    result = MagicMock(success=True, request_id="crm-1", error=None)
+    lead = {"id": "l1", "created_in_crm": False, "origin_code": "JFK", "destination_code": "LHR"}
+    closer = AsyncMock(return_value=close)
+    with _flags(flags or {}), \
+            patch.object(cron.db, "get_abandoned_conversations", new=AsyncMock(return_value=[conv])), \
+            patch.object(cron, "get_or_create_lead", new=AsyncMock(return_value=lead)), \
+            patch.object(cron, "_contacts_already_in_crm", new=AsyncMock(return_value=set())), \
+            patch.object(cron.db, "get_crm_receipts", new=AsyncMock(return_value=now)), \
+            patch("app.api.cron.submit_abandoned_to_crm", new=AsyncMock(return_value=result)) as submit, \
+            patch.object(cron.db, "close_conversation_if_unowned", new=closer), \
+            patch.object(cron.db, "update_conversation", new=AsyncMock()) as update, \
+            patch.object(cron.db, "mark_lead_created_in_crm", new=AsyncMock(return_value={"id": "l1"})), \
+            patch.object(cron.db, "add_message", new=AsyncMock()), \
+            patch.object(cron, "_persist_refusal", new=AsyncMock(return_value=True)):
+        out = await cron.run_abandoned_crm()
+    update.assert_not_awaited()  # the close goes through the conditional write only
+    return out, submit, closer
+
+
+@pytest.mark.asyncio
+async def test_an_agent_who_took_the_chat_after_the_sweeps_read_keeps_it():
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(**_TAKEN), flags={"CRM_LEADS_API": True})
+    submit.assert_not_awaited()
+    closer.assert_not_awaited()
+    assert "agent_holds_chat" in _reasons(out)
+
+
+@pytest.mark.asyncio
+async def test_an_unowned_chat_is_still_sent_and_closed():
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), flags={"CRM_LEADS_API": True})
+    submit.assert_awaited_once()
+    closer.assert_awaited_once()
+    cid, payload = closer.await_args.args
+    assert cid == _CID and payload["status"] == "closed" and payload["mode"] == "ai"
+    assert payload["assigned_agent_id"] is None
+    assert [r["status"] for r in out["results"]] == ["success"]
+
+
+@pytest.mark.asyncio
+async def test_during_the_pilot_a_chat_taken_after_the_read_is_sent_but_not_closed():
+    """The pilot keeps the old send (an agent's chat is still pushed), but nothing unassigns the agent."""
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(**_TAKEN),
+                                                 flags={"CRM_LEADS_API_PILOT": "agent@example.com"})
+    submit.assert_awaited_once()
+    closer.assert_not_awaited()
+    assert [r["status"] for r in out["results"]] == ["success"]
+
+
+@pytest.mark.parametrize("now", [
+    {"mode": "human"},
+    {"status": "closed"},
+    {"assigned_agent_id": "agent-1", "status": "closed"},
+])
+@pytest.mark.asyncio
+async def test_a_chat_that_changed_hands_or_closed_under_the_lock_is_not_closed(now):
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(**now), flags={"CRM_LEADS_API": True})
+    submit.assert_awaited_once()
+    closer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_chat_taken_between_the_recheck_and_the_close_stays_open():
+    from app.services.crm import CRM_PUSH_HEALTH
+
+    before = CRM_PUSH_HEALTH["close_failed"]
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), close=("owned", ""))
+    closer.assert_awaited_once()
+    assert [r["status"] for r in out["results"]] == ["success"], "the lead went, the chat is the agent's"
+    assert CRM_PUSH_HEALTH["close_failed"] == before
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_fails_is_counted():
+    from app.services.crm import CRM_PUSH_HEALTH
+
+    before = CRM_PUSH_HEALTH["close_failed"]
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), close=("failed", "08006"))
+    assert [r["status"] for r in out["results"]] == ["success"]
+    assert CRM_PUSH_HEALTH["close_failed"] == before + 1
+
+
+class _LostLease:
+    """The chat's CRM-submit lock, got, then lost before the send: its key is no longer this process's."""
+
+    lost = True
+
+    def __init__(self, cid):
+        self.cid = cid
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_before_the_sweeps_send_sends_nothing():
+    from app.services.crm import CRM_PUSH_HEALTH
+
+    before = CRM_PUSH_HEALTH["submit_busy"]
+    with patch.object(crm_leads_api, "submit_lock", side_effect=_LostLease):
+        out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now())
+    submit.assert_not_awaited()
+    closer.assert_not_awaited()
+    assert "submit_busy" in _reasons(out)
+    assert CRM_PUSH_HEALTH["submit_busy"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_the_backstop_leaves_a_chat_taken_after_its_read_to_the_agent():
+    out, push, _ = await _backstop([[_orphan(1)]], lambda cid: _conv(id=cid), flags={"CRM_LEADS_API": True},
+                                   receipts=_now(**_TAKEN))
+    push.assert_not_awaited()
+    assert out["results"] == [{"id": "l1", "status": "skipped", "reason": "agent_holds_chat"}]
+
+
+@pytest.mark.asyncio
+async def test_the_backstop_still_sends_an_orphan_nobody_took():
+    out, push, _ = await _backstop([[_orphan(1)]], lambda cid: _conv(id=cid), flags={"CRM_LEADS_API": True},
+                                   receipts=_now())
+    push.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_before_the_backstops_send_sends_nothing():
+    from app.services.crm import CRM_PUSH_HEALTH
+
+    before = CRM_PUSH_HEALTH["submit_busy"]
+    with patch.object(crm_leads_api, "submit_lock", side_effect=_LostLease):
+        out, push, _ = await _backstop([[_orphan(1)]], lambda cid: _conv(id=cid))
+    push.assert_not_awaited()
+    assert out["results"] == [{"id": "l1", "status": "skipped", "reason": "submit_busy"}]
+    assert CRM_PUSH_HEALTH["submit_busy"] == before + 1
+
+
+_real_close = sb.close_conversation_if_unowned
+
+
+def _close_chain(client):
+    return client.table.return_value.update.return_value.eq.return_value.is_.return_value.neq.return_value
+
+
+@pytest.mark.parametrize("data,want", [([{"id": _CID}], ("closed", "")), ([], ("owned", ""))])
+@pytest.mark.asyncio
+async def test_the_close_is_written_only_while_nobody_holds_the_chat(data, want):
+    client = MagicMock()
+    _close_chain(client).execute.return_value = MagicMock(data=data)
+    with patch.object(sb, "get_client", return_value=client), \
+            patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+        assert await _real_close(_CID, {"status": "closed"}) == want
+    upd = client.table.return_value.update
+    assert upd.call_args.args == ({"status": "closed"},)
+    assert upd.return_value.eq.call_args.args == ("id", _CID)
+    assert upd.return_value.eq.return_value.is_.call_args.args == ("assigned_agent_id", "null")
+    assert upd.return_value.eq.return_value.is_.return_value.neq.call_args.args == ("mode", "human")
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_raises_is_failed_not_owned():
+    with patch.object(sb, "get_client", side_effect=RuntimeError("SSL EOF")):
+        outcome, code = await _real_close(_CID, {"status": "closed"})
+    assert outcome == "failed" and code
