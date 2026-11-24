@@ -132,6 +132,8 @@ def get_current_user(request: Request) -> dict:
             "name": payload.get("name", ""),
             "tunnel_scope": payload.get("tunnel_scope", "sales"),
             "phone": payload.get("phone", ""),
+            # The CRM's user id, only on a session opened from the CRM (sso/crm-exchange).
+            "crm_sub": payload.get("crm_sub") or None,
         }
 
     # ── No / unsupported auth header ───────────────────────────
