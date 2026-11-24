@@ -194,7 +194,7 @@ export const CARD_NO_CONTACT = 'Card · no contact'
 /** The same chat while "Left … · no contact" shows: the card named, "no contact" not said twice. */
 export const CARD_ONLY = 'Card'
 export const CARD_NO_CONTACT_TITLE =
-  'Opened from Alex’s card (or the note beside the button), and the client left no email or phone: a message here reaches them only while they’re on the site.'
+  'Opened from Skye’s card (or the note beside the button), and the client left no email or phone: a message here reaches them only while they’re on the site.'
 
 export function cardNoContact(c: Pick<Conversation, 'metadata' | 'has_contact'>, leftLineShown = false): string | null {
   const trigger = (c.metadata as Record<string, unknown> | undefined)?.proactive_trigger
