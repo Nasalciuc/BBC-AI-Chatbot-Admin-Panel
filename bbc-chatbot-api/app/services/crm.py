@@ -65,6 +65,9 @@ CRM_PUSH_HEALTH: dict = {
     # The "already in the CRM?" read failed, so the automatic push waited a
     # tick instead of guessing. Rising = duplicates were being risked.
     "crm_contact_lookup_failed": 0,
+    # Read again under the chat's CRM lock right before an automatic submit, the receipts could not be
+    # read: the submit waited a cycle rather than risk a second lead behind the agent's button.
+    "receipt_read_failed": 0,
 }
 
 

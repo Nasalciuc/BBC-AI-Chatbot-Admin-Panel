@@ -45,5 +45,13 @@ def _no_contact_in_crm_by_default():
     with patch(
         "app.db.supabase.get_crm_contact_rows",
         new=AsyncMock(return_value=[]),
+    ), patch(
+        # The same question for the agent's button receipts, and the one asked
+        # again right before an automatic submit: "nothing sent" by default.
+        "app.db.supabase.get_button_lead_contact_rows",
+        new=AsyncMock(return_value=[]),
+    ), patch(
+        "app.db.supabase.get_crm_receipts",
+        new=AsyncMock(return_value={"crm_lead": None, "created_in_crm": False, "crm_lead_id": None}),
     ):
         yield

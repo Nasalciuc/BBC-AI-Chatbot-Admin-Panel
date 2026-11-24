@@ -130,6 +130,21 @@ def test_a_one_way_trip_has_one_segment_even_with_a_return_date():
     assert len(api.trip_of(lead, TODAY)["segments"]) == 1
 
 
+@pytest.mark.parametrize("trip_type", ["multi_city", "open_jaw", "Open-Jaw", "MULTI CITY"])
+def test_a_multi_city_or_open_jaw_trip_sends_its_first_leg_only(trip_type):
+    """CodeRabbit #280, round 4: their return date says nothing about the airports they come back from; a JFK-LHR
+    open jaw back from Paris is not LHR-JFK. The rest is in the transcript."""
+    lead = {**_conv()["lead"], "trip_type": trip_type}
+    assert api.trip_of(lead, TODAY)["segments"] == [{"from": "JFK", "to": "LHR", "date": SOON}]
+
+
+@pytest.mark.parametrize("trip_type", ["round_trip", None, ""])
+def test_a_round_trip_or_a_return_date_with_no_type_goes_there_and_back(trip_type):
+    """Not "round_trip only": the extractor reads a return date with no type as a round trip."""
+    lead = {**_conv()["lead"], "trip_type": trip_type}
+    assert api.trip_of(lead, TODAY)["segments"][1] == {"from": "LHR", "to": "JFK", "date": LATER}
+
+
 def test_unknown_passengers_send_no_count():
     lead = {**_conv()["lead"], "passengers": None}
     trip = api.trip_of(lead, TODAY)
@@ -281,6 +296,27 @@ async def test_rate_limited_says_when_to_try_again(crm):
 
 
 @pytest.mark.asyncio
+async def test_an_address_without_https_sends_nothing(crm, monkeypatch):
+    """CodeRabbit #280, round 4: the key, the contact and the chat never travel in clear. Refused before a header is
+    built, counted, and an admin's problem, not the agent's."""
+    answers, seen = crm
+    answers.append(_ok())
+    for url in ("http://crm.example.test/chat-api/v1/leads", "crm.example.test/chat-api/v1/leads", "https://"):
+        monkeypatch.setattr(api.settings, "crm_chat_api_url", url)
+        before = api.CRM_LEADS_API_HEALTH["not_https"]
+        call = await api.post_lead({"conversation_id": "c-1"})
+        assert not call.ok and call.error_code == "NOT_HTTPS"
+        assert call.message == "The CRM connection isn't set up right. Tell an admin."
+        assert api.CRM_LEADS_API_HEALTH["not_https"] == before + 1
+        assert route._http_status(call) == 503
+        assert api.is_configured() is False
+    assert seen == [], "nothing was sent"
+    monkeypatch.setattr(api.settings, "crm_chat_api_url", "https://crm.example.test/chat-api/v1/leads")
+    assert api.is_configured() is True
+    assert (await api.post_lead({"conversation_id": "c-1"})).ok and len(seen) == 1
+
+
+@pytest.mark.asyncio
 async def test_not_configured_makes_no_call(monkeypatch):
     monkeypatch.setattr(api.settings, "crm_chat_api_url", "")
     before = api.CRM_LEADS_API_HEALTH["not_configured"]
@@ -381,11 +417,40 @@ async def test_the_crms_refusal_reaches_the_agent_in_its_words():
 
 
 @pytest.mark.asyncio
-async def test_a_lead_the_old_path_already_sent_keeps_its_receipt():
+async def test_a_lead_the_old_path_already_sent_is_answered_without_a_call():
+    """CodeRabbit #280, round 4: the sweep, the backstop or Send to CRM put this chat's lead in the CRM. The button
+    answers from that mark, before any call: it never relies on the CRM to dedupe (the doc's D4)."""
     conv = _conv()
     conv["lead"] = {**conv["lead"], "created_in_crm": True, "crm_lead_id": "a" * 24}
-    out, err, _, keep, mark = await _create(ME, conv)
+    out, err, post, keep, mark = await _create(ME, conv)
     assert err is None
+    post.assert_not_awaited()
+    keep.assert_not_awaited()
+    mark.assert_not_awaited()
+    assert out["data"] == {"enabled": True, "lead": None, "can_create": False,
+                           "reason": f"Already in the CRM as lead {'a' * 24}."}
+
+
+@pytest.mark.asyncio
+async def test_a_mark_without_a_number_still_says_it_is_in_the_crm():
+    conv = _conv()
+    conv["lead"] = {**conv["lead"], "created_in_crm": True, "crm_lead_id": None}
+    out, _, post, _, _ = await _create(ME, conv)
+    post.assert_not_awaited()
+    assert out["data"]["reason"] == "Already in the CRM."
+
+
+@pytest.mark.asyncio
+async def test_a_lead_marked_by_another_path_during_the_call_keeps_that_receipt():
+    """The chat read without its lead row, and the row marked meanwhile by a path that does not take the lock (Send
+    to CRM): the button's own lead is kept on the chat and the row keeps the receipt it has."""
+    conv = _conv()
+    del conv["lead"]
+    marked_row = {"id": "L1", "created_in_crm": True, "crm_lead_id": "R-1"}
+    with patch("app.services.lead_service.get_or_create_lead", new=AsyncMock(return_value=marked_row)):
+        out, err, post, keep, mark = await _create(ME, conv)
+    assert err is None and out["data"]["lead"]["flight_request_id"] == 98765
+    post.assert_awaited_once()
     keep.assert_awaited_once()
     mark.assert_not_awaited()
 
@@ -423,6 +488,51 @@ async def test_the_status_tells_the_panel_what_to_show(conv, can, reason):
         status = await route.crm_lead_status("c-1", user=ME)
     assert status["data"]["enabled"] is True
     assert status["data"]["can_create"] is can and status["data"]["reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_the_status_of_a_chat_the_old_path_sent_has_no_button():
+    receipts = {"crm_lead": None, "created_in_crm": True, "crm_lead_id": "R-77"}
+    with _flags({"CRM_LEADS_API": True}), \
+            patch.object(route.db, "get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch.object(route.db, "get_crm_receipts", new=AsyncMock(return_value=receipts)):
+        status = await route.crm_lead_status("c-1", user=ME)
+    assert status["data"] == {"enabled": True, "lead": None, "can_create": False,
+                              "reason": "Already in the CRM as lead R-77."}
+
+
+@pytest.mark.asyncio
+async def test_a_mark_that_cannot_be_read_is_a_503_not_a_button():
+    before = api.CRM_LEADS_API_HEALTH["status_read_failed"]
+    with _flags({"CRM_LEADS_API": True}), \
+            patch.object(route.db, "get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch.object(route.db, "get_crm_receipts", new=AsyncMock(return_value=None)):
+        with pytest.raises(HTTPException) as e:
+            await route.crm_lead_status("c-1", user=ME)
+    assert e.value.status_code == 503
+    assert api.CRM_LEADS_API_HEALTH["status_read_failed"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_submit_waits_for_the_first_and_reads_its_receipt():
+    """CodeRabbit #280, round 4: the sweep and the backstop hold the chat's CRM lock from their read to their mark.
+    The button takes the same lock before it reads the chat, so it reads what the other wrote."""
+    import asyncio
+
+    held = api.submit_lock("c-1")
+    await held.acquire()
+    conv = _conv()
+    conv["lead"] = {**conv["lead"], "created_in_crm": True, "crm_lead_id": "R-9"}  # what the sweep wrote
+    ps = _route_patches(conv)
+    with ps["flags"], ps["conv"] as read, ps["user"], ps["post"] as post, ps["keep"], ps["mark"], ps["universe"]:
+        task = asyncio.create_task(route.create_crm_lead("c-1", body=None, confirm_locked=False, user=ME))
+        await asyncio.sleep(0.05)
+        read.assert_not_awaited()  # waiting for the lock, not reading a chat about to change
+        held.release()
+        out = await asyncio.wait_for(task, 2)
+    read.assert_awaited_once()
+    post.assert_not_awaited()
+    assert out["data"]["reason"] == "Already in the CRM as lead R-9."
 
 
 @pytest.mark.asyncio

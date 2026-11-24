@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -40,6 +41,11 @@ logger = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 15.0
 MAX_MESSAGES = 2000  # the CRM's limit on the transcript
 NOTE_MAX = 2000  # the CRM's limit on `note`
+# One CRM submit at a time per chat: this button, the old sweep and the backstop each hold the chat's "crm_submit"
+# lock from their last read to their receipt, so whichever goes second reads the other's receipt. The Redis key
+# outlives a CRM call with its retry (2 x 15 s) and the writes after it.
+SUBMIT_LOCK_KIND = "crm_submit"
+SUBMIT_LOCK_MS = 60_000
 
 CRM_LEADS_API_HEALTH: dict[str, Any] = {
     "calls": 0,
@@ -50,6 +56,7 @@ CRM_LEADS_API_HEALTH: dict[str, Any] = {
     "network_error": 0,
     "server_error": 0,
     "not_configured": 0,
+    "not_https": 0,
     "no_contact": 0,
     "save_failed": 0,
     "mark_failed": 0,
@@ -76,6 +83,7 @@ _CABINS = {
 _NAMELESS = {"visitor", "customer", "guest", "client", "chat visitor", "unknown", "anonymous", "n/a", "-"}
 _IATA_RE = re.compile(r"^[A-Z]{3}$")
 _PLACEHOLDER_IATA = {"AAA", "XXX", "ZZZ"}
+_NO_RETURN_LEG = {"oneway", "multicity", "openjaw"}  # trip_type, letters only
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 
@@ -116,8 +124,21 @@ def everyone_on() -> bool:
     return bool(flag("CRM_LEADS_API", False))
 
 
+def _https(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme.lower() == "https" and bool(parts.netloc)
+
+
 def is_configured() -> bool:
-    return bool(settings.crm_chat_api_url.strip() and settings.crm_chat_api_key.strip())
+    url = settings.crm_chat_api_url.strip()
+    return bool(url and settings.crm_chat_api_key.strip()) and _https(url)
+
+
+def submit_lock(conversation_id: str):
+    """The chat's CRM-submit lock (see SUBMIT_LOCK_KIND)."""
+    from app.services.conversation_lock import conversation_lock
+
+    return conversation_lock(SUBMIT_LOCK_KIND, conversation_id, ttl_ms=SUBMIT_LOCK_MS)
 
 
 # ── what the CRM receives ───────────────────────────────────────
@@ -198,7 +219,8 @@ def _future_day(raw: Any, today: date) -> Optional[str]:
 
 def trip_of(lead: Optional[dict], today: date) -> dict:
     """The `trip` block from what the lead holds: cabin, passengers when known, and the segments whose airports
-    and dates are real (one way or there and back; a multi-city's first leg, the rest is in the transcript)."""
+    and dates are real: one way, or there and back. A multi-city or an open jaw gets its first leg only: its return
+    date says nothing about the airports it comes back from, and the rest is in the transcript."""
     trip: dict = {}
     if not isinstance(lead, dict):
         return trip
@@ -218,7 +240,9 @@ def trip_of(lead: Optional[dict], today: date) -> dict:
     if origin and dest and origin != dest and out_day:
         segments = [{"from": origin, "to": dest, "date": out_day}]
         back_day = _future_day(lead.get("return_date"), today)
-        if back_day and back_day >= out_day and lead.get("trip_type") != "one_way":
+        # Not "only a round trip": a return date with no trip type is one (the extractor reads it that way).
+        kind = re.sub(r"[^a-z]", "", str(lead.get("trip_type") or "").lower())
+        if back_day and back_day >= out_day and kind not in _NO_RETURN_LEG:
             segments.append({"from": dest, "to": origin, "date": back_day})
         trip["segments"] = segments
     return trip
@@ -301,7 +325,7 @@ class CrmLeadCall:
 
 
 # Written for an admin, not for the agent: what the agent can do is tell someone.
-_SETUP_CODES = {"AUTH_INVALID", "IP_NOT_ALLOWED", "NOT_CONFIGURED"}
+_SETUP_CODES = {"AUTH_INVALID", "IP_NOT_ALLOWED", "NOT_CONFIGURED", "NOT_HTTPS"}
 _SETUP_MESSAGE = "The CRM connection isn't set up right. Tell an admin."
 
 
@@ -338,6 +362,12 @@ async def post_lead(payload: dict) -> CrmLeadCall:
         count_error("NOT_CONFIGURED")
         logger.error(f"[crm-leads-api] conv={cid}: CRM_CHAT_API_URL or CRM_CHAT_API_KEY is not set")
         return CrmLeadCall(ok=False, error_code="NOT_CONFIGURED", message=_SETUP_MESSAGE)
+    if not _https(url):
+        # The key, the contact and the chat never travel in clear: fail closed before a header is built.
+        CRM_LEADS_API_HEALTH["not_https"] += 1
+        count_error("NOT_HTTPS")
+        logger.error(f"[crm-leads-api] conv={cid}: CRM_CHAT_API_URL is not an https address; nothing was sent")
+        return CrmLeadCall(ok=False, error_code="NOT_HTTPS", message=_SETUP_MESSAGE)
 
     CRM_LEADS_API_HEALTH["calls"] += 1
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
@@ -424,8 +454,13 @@ def record_of(call: CrmLeadCall, *, agent_user_id: Optional[str], by: Optional[s
     }
 
 
+def is_receipt(rec: Any) -> bool:
+    """A kept answer with the lead's number: what metadata.crm_lead holds once the button made the lead."""
+    return isinstance(rec, dict) and bool(rec.get("flight_request_id"))
+
+
 def stored_record(conv: Optional[dict]) -> Optional[dict]:
     """The lead this chat already made through the button, if any."""
     meta = (conv or {}).get("metadata") if isinstance((conv or {}).get("metadata"), dict) else {}
     rec = meta.get("crm_lead") if isinstance(meta, dict) else None
-    return rec if isinstance(rec, dict) and rec.get("flight_request_id") else None
+    return rec if is_receipt(rec) else None

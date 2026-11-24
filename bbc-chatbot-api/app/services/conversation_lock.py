@@ -89,9 +89,10 @@ class ConversationLock:
     `locked()`) work too, for the writers that hold it that way; a sync release() lets
     the Redis key go a moment later, in the background."""
 
-    def __init__(self, kind: str, conversation_id: str):
+    def __init__(self, kind: str, conversation_id: str, ttl_ms: int = TTL_MS):
         self._kind = kind
         self._cid = conversation_id
+        self._ttl_ms = ttl_ms
         self._local = _local(kind, conversation_id)
         self._token: Optional[str] = None
 
@@ -101,7 +102,7 @@ class ConversationLock:
     async def acquire(self) -> bool:
         await self._local.acquire()
         try:
-            self._token = await _acquire_redis(self._kind, self._cid)
+            self._token = await _acquire_redis(self._kind, self._cid, self._ttl_ms)
         except BaseException:
             # Cancelled while waiting for the key: the in-process lock must not stay held.
             self._local.release()
@@ -111,7 +112,7 @@ class ConversationLock:
     def release(self) -> None:
         token, self._token = self._token, None
         if token:
-            task = asyncio.get_running_loop().create_task(_release_redis(self._kind, self._cid, token))
+            task = asyncio.get_running_loop().create_task(_release_redis(self._kind, self._cid, token, self._ttl_ms))
             _RELEASES.add(task)
             task.add_done_callback(_RELEASES.discard)
         self._local.release()
@@ -124,16 +125,18 @@ class ConversationLock:
         token, self._token = self._token, None
         try:
             if token:
-                await _release_redis(self._kind, self._cid, token)
+                await _release_redis(self._kind, self._cid, token, self._ttl_ms)
         finally:
             self._local.release()
 
 
-def conversation_lock(kind: str, conversation_id: str) -> ConversationLock:
-    return ConversationLock(kind, conversation_id)
+def conversation_lock(kind: str, conversation_id: str, ttl_ms: int = TTL_MS) -> ConversationLock:
+    """ttl_ms: how long the Redis key outlives a holder that died. Work that waits on another service (a CRM call
+    with its retry) asks for more than TTL_MS, so the key is still there when the work ends."""
+    return ConversationLock(kind, conversation_id, ttl_ms)
 
 
-async def _acquire_redis(kind: str, conversation_id: str) -> Optional[str]:
+async def _acquire_redis(kind: str, conversation_id: str, ttl_ms: int = TTL_MS) -> Optional[str]:
     """The token when the Redis lock is ours, None when the work goes on without it."""
     if not flag("LOCK_REDIS", True):
         LOCK_HEALTH["local_only"] += 1
@@ -148,7 +151,7 @@ async def _acquire_redis(kind: str, conversation_id: str) -> Optional[str]:
     delay = 0.02
     while True:
         try:
-            got = await r.set(key, token, nx=True, px=TTL_MS)
+            got = await r.set(key, token, nx=True, px=ttl_ms)
         except Exception as e:
             redis_failed("lock", e)
             LOCK_HEALTH["redis_errors"] += 1
@@ -169,7 +172,7 @@ async def _acquire_redis(kind: str, conversation_id: str) -> Optional[str]:
         delay = min(delay * 2, 0.25)
 
 
-async def _release_redis(kind: str, conversation_id: str, token: str) -> None:
+async def _release_redis(kind: str, conversation_id: str, token: str, ttl_ms: int = TTL_MS) -> None:
     r = get_redis(even_cooling_down=True)
     if r is None:
         return
@@ -179,9 +182,9 @@ async def _release_redis(kind: str, conversation_id: str, token: str) -> None:
         redis_failed("unlock", e)
         LOCK_HEALTH["redis_errors"] += 1
         logger.warning(f"[lock] {kind} {conversation_id}: release not confirmed, the key expires in "
-                       f"{TTL_MS // 1000}s ({type(e).__name__}: {e})")
+                       f"{ttl_ms // 1000}s ({type(e).__name__}: {e})")
         return
     if not deleted:
         LOCK_HEALTH["expired_before_release"] += 1
-        logger.warning(f"[lock] {kind} {conversation_id}: the work outlived the {TTL_MS // 1000}s lock; "
+        logger.warning(f"[lock] {kind} {conversation_id}: the work outlived the {ttl_ms // 1000}s lock; "
                        f"another process may have written alongside it")

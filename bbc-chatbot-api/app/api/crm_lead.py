@@ -6,6 +6,10 @@ POST /api/conversations/{id}/crm-lead   makes it: one call to the CRM; the answe
                                         (metadata.crm_lead) and the lead row is marked "in the CRM", so the old
                                         sweep and the backstop never send this client a second time.
 
+A chat the old path already sent (the lead row is "in the CRM": the sweep, the backstop, Send to CRM) gets no
+button and no call: `lead` stays null, `can_create` false and `reason` says it is in the CRM, with its number when
+there is one (the doc's D4: blocked until the CRM team says what a second call does to such a lead).
+
 Who: the agent who has the chat (given to them, closed by them, or the one who talked in it). A manager (owner,
 admin, dev) may press it on any chat an agent has had: the lead still goes to that agent, never to the manager.
 A chat nobody has taken (the shared line, the assistant alone) answers "Take the chat first", as the CRM asks.
@@ -59,6 +63,14 @@ def _no_contact(conv: dict) -> str:
     return f"No phone or e-mail yet: ask {_first(conv)} in the chat."
 
 
+def _sent_before(lead: Optional[dict]) -> Optional[str]:
+    """The reason under the chat when the old path already put its lead in the CRM; None when it did not."""
+    if not isinstance(lead, dict) or not lead.get("created_in_crm"):
+        return None
+    crm_id = str(lead.get("crm_lead_id") or "").strip()
+    return f"Already in the CRM as lead {crm_id}." if crm_id else "Already in the CRM."
+
+
 def _answer(enabled: bool, lead: Optional[dict], can_create: bool, reason: Optional[str]) -> dict:
     return {
         "success": True,
@@ -68,7 +80,7 @@ def _answer(enabled: bool, lead: Optional[dict], can_create: bool, reason: Optio
 
 
 def _http_status(call: api.CrmLeadCall) -> int:
-    if call.error_code == "NOT_CONFIGURED":
+    if call.error_code in ("NOT_CONFIGURED", "NOT_HTTPS"):
         return 503
     if call.error_code in ("AUTH_INVALID", "IP_NOT_ALLOWED"):
         return 502
@@ -100,6 +112,14 @@ async def crm_lead_status(conversation_id: str, user: dict = Depends(get_current
     stored = api.stored_record(conv)
     if stored:
         return _answer(True, stored, False, None)
+    receipts = await db.get_crm_receipts(conversation_id)
+    if receipts is None:
+        api.CRM_LEADS_API_HEALTH["status_read_failed"] += 1
+        logger.warning(f"[crm-leads-api] status conv={conversation_id}: the lead's CRM mark could not be read")
+        raise HTTPException(503, "Couldn't check this chat. Try again in a moment.")
+    sent = _sent_before(receipts)
+    if sent:
+        return _answer(True, None, False, sent)
     _agent, why = _agent_for(user, conv)
     if why:
         # Not this user's chat (or nobody's yet): no button and nothing to say under it.
@@ -122,6 +142,15 @@ async def create_crm_lead(
         raise HTTPException(403, "Not authorized to create leads in the CRM")
     if not api.enabled_for(user):
         raise HTTPException(403, "The CRM button isn't on for you yet.")
+    # One CRM submit at a time per chat: the old sweep and the backstop hold the same lock around theirs, and the
+    # chat is read inside it, so whichever goes second finds the other's receipt (CodeRabbit #280).
+    async with api.submit_lock(conversation_id):
+        return await _create(conversation_id, body, confirm_locked, user)
+
+
+async def _create(
+    conversation_id: str, body: Optional[CrmLeadRequest], confirm_locked: bool, user: dict
+) -> dict:
     conv: Optional[dict] = None
     try:
         conv = await db.get_conversation(conversation_id, raise_on_error=True)
@@ -135,6 +164,10 @@ async def create_crm_lead(
     stored = api.stored_record(conv)
     if stored:
         return _answer(True, stored, False, None)
+    # Sent by the old path already: answered from its mark, before any call (the CRM's own dedup is not relied on).
+    sent = _sent_before(conv.get("lead") if isinstance(conv.get("lead"), dict) else None)
+    if sent:
+        return _answer(True, None, False, sent)
 
     agent_user_id, why = _agent_for(user, conv)
     if why or not agent_user_id:

@@ -2326,11 +2326,14 @@ async def get_crm_orphan_leads(
     younger_than_iso: str = "",
     max_attempts: int = 3,
     limit: int = 20,
+    offset: int = 0,
 ) -> list[dict]:
     """Gold leads the CRM never received: score>=min, flag false/null,
     created inside (younger_than, older_than] — the backstop's auto
     window. Attempt-capped so a permanently failing lead stops burning
-    CRM calls and stays visible in the work-list instead."""
+    CRM calls and stays visible in the work-list instead. Newest first,
+    `limit` rows from `offset`: the backstop pages past the leads it may
+    not send (an agent's chat), so they never use up its page."""
     try:
         db_client = get_client()
 
@@ -2342,7 +2345,8 @@ async def get_crm_orphan_leads(
                 .or_("created_in_crm.is.null,created_in_crm.eq.false")
                 .lt("crm_push_attempts", max_attempts)
                 .order("created_at", desc=True)
-                .limit(limit)
+                .order("id")
+                .range(offset, offset + limit - 1)
             )
             if older_than_iso:
                 q = q.lt("created_at", older_than_iso)
@@ -4847,6 +4851,99 @@ async def get_crm_contact_rows(days: int = 30) -> list[dict] | None:
         return rows[:_CRM_CONTACT_SCAN_CAP]
     except Exception as e:
         logger.error(f"get_crm_contact_rows error: {e}")
+        return None
+
+
+async def get_button_lead_contact_rows(days: int = 30) -> list[dict] | None:
+    """Contacts (phone, email) of every chat whose lead the agent's "Create lead in CRM" button made in the
+    last N days (metadata.crm_lead, its `at`): the same guard as get_crm_contact_rows, for the button.
+
+    The button marks the lead row too, and get_crm_contact_rows reads those marks. A mark that failed leaves
+    only the receipt on the chat, and a second chat from the same person must still not be pushed behind it
+    (CodeRabbit #280). Returns None when the read failed, [] when there is none; paged like the leads."""
+    try:
+        db = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        def _page(first: int, last: int, with_count: bool):
+            return (
+                db.table("conversations")
+                .select(
+                    "id, visitor_phone, visitor_email",
+                    count="exact" if with_count else None,  # type: ignore[arg-type]
+                )
+                .gte("metadata->crm_lead->>at", cutoff)
+                .order("id")
+                .range(first, last)
+                .execute()
+            )
+
+        rows: list[dict] = []
+        total: int | None = None
+        offset = 0
+        while offset < _CRM_CONTACT_SCAN_CAP:
+            last = min(offset + _CRM_CONTACT_PAGE, _CRM_CONTACT_SCAN_CAP) - 1
+            res = await _run_sync(
+                lambda f=offset, l=last, c=(total is None): _page(f, l, c),
+                label="cron",
+            )
+            if total is None:
+                total = res.count if isinstance(res.count, int) else None
+                if total is None:
+                    logger.error(
+                        "get_button_lead_contact_rows: no exact count returned — "
+                        "cannot prove the contact list is complete"
+                    )
+                    return None
+            page = res.data or []
+            rows.extend(
+                {"visitor_phone": r.get("visitor_phone"), "visitor_email": r.get("visitor_email")} for r in page
+            )
+            offset += len(page)
+            if not page or offset >= total:
+                break
+        if (total or 0) > _CRM_CONTACT_SCAN_CAP:
+            logger.warning(
+                f"get_button_lead_contact_rows: {total} button leads in the {days}-day window, "
+                f"only {_CRM_CONTACT_SCAN_CAP} were loaded"
+            )
+        return rows[:_CRM_CONTACT_SCAN_CAP]
+    except Exception as e:
+        logger.error(f"get_button_lead_contact_rows error: {type(e).__name__}: {e}")
+        return None
+
+
+async def get_crm_receipts(conversation_id: str) -> Optional[dict]:
+    """What says this chat's lead is in the CRM already, read now: the button's receipt (metadata.crm_lead) and
+    the lead row's mark (created_in_crm, crm_lead_id) from every other path. One query.
+
+    The automatic paths (the sweep, the backstop) read their rows minutes before they send; this is read again
+    under the chat's CRM lock right before they do. Returns {"crm_lead": dict | None, "created_in_crm": bool,
+    "crm_lead_id": str | None}; None when the read failed, and the caller waits a cycle (rule 7: "nothing
+    sent" and "could not look" are different answers)."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .select("id, metadata, leads(created_in_crm, crm_lead_id)")
+            .eq("id", conversation_id)
+            .limit(1)
+            .execute(),
+            label="crm_receipts",
+        )
+        row = (res.data or [{}])[0] or {}
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        leads = row.get("leads")
+        leads = [leads] if isinstance(leads, dict) else [x for x in (leads or []) if isinstance(x, dict)]
+        marked = [x for x in leads if x.get("created_in_crm")]
+        crm_lead = meta.get("crm_lead")
+        return {
+            "crm_lead": crm_lead if isinstance(crm_lead, dict) else None,
+            "created_in_crm": bool(marked),
+            "crm_lead_id": next((str(x["crm_lead_id"]) for x in marked if x.get("crm_lead_id")), None),
+        }
+    except Exception as e:
+        logger.error(f"get_crm_receipts conv={conversation_id}: {type(e).__name__}: {e}")
         return None
 
 
