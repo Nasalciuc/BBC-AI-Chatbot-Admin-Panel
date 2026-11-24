@@ -539,6 +539,8 @@ async def perform_handoff_to_agent(
     # Merge metadata: preserve guard fields, add tracking fields.
     _conv_cur = await db.get_conversation_simple(conversation_id)
     _meta = dict((_conv_cur or {}).get("metadata") or {})
+    # What was read: metadata is written back only if this call changed it.
+    _meta_read = dict(_meta)
     # agent_assigned_at marks the START of an assignment CYCLE.
     # Write it ONLY when the assigned agent CHANGES — never refresh on
     # re-handoff to the same agent (F1: refreshing evicted engaged agents).
@@ -597,11 +599,16 @@ async def perform_handoff_to_agent(
             return {}
         _gate_won = True
 
-    _update: dict = {"metadata": _meta}
+    # update_conversation replaces the whole metadata blob, so a call that
+    # changed nothing in it must not write back the copy it read: a second tab
+    # or a double click re-handing the chat to the same agent may have read it
+    # before the Take's write, and would erase the clock that write added.
+    _update: dict = {}
+    if _meta != _meta_read:
+        _update["metadata"] = _meta
     if not _gate_won:
         # Re-handoff to the SAME agent (not a new cycle): ownership is already
-        # correct, we only refresh metadata. Writing it again is harmless and
-        # keeps behaviour identical to today.
+        # correct; metadata goes out only if this call changed it (above).
         _update["mode"] = "human"
         _update["assigned_agent_id"] = agent_id
     _operator = await db.get_user_by_id(agent_id)
@@ -609,7 +616,8 @@ async def perform_handoff_to_agent(
     if _operator_team_id:
         _update["team_id"] = _operator_team_id
 
-    await db.update_conversation(conversation_id, _update)
+    if _update:
+        await db.update_conversation(conversation_id, _update)
     if _is_new_cycle:
         from app.services.presence import log_activity
         from app.pipeline.orchestrator import _fire_and_forget

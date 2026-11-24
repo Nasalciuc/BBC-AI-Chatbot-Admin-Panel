@@ -428,7 +428,7 @@ class TestClaimEndpointAfterTheGate:
         assert out == {"success": True, "data": {"conversation_id": _CID, "assigned_to": "me"}}
         assert delta == {"won": 0, "lost": 0, "already_mine": 1}
         handoff_call.assert_awaited_once()
-        assert "_gate_won" not in handoff_call.await_args.kwargs, "same as re-claiming my own chat"
+        assert handoff_call.await_args.kwargs.get("_gate_won") is True, "a take of mine: the clock starts"
         activity.assert_not_awaited()  # no claim_won (the winning call logs it) and no claim_lost
 
     @pytest.mark.asyncio
@@ -605,10 +605,87 @@ class TestTakeStartsTheClock:
             await handoff.perform_handoff_to_agent(
                 _CID, "agent-A", emit_messages=False, handoff_reason="manual_claim"
             )
-        meta = upd.await_args.args[1]["metadata"]
-        assert meta["agent_assigned_at"] == started
-        assert meta["handoff_reason"] == "first_message"
+        payload = upd.await_args.args[1]
+        assert "metadata" not in payload, "nothing in it changed, so the running clock is not even rewritten"
+        assert payload["assigned_agent_id"] == "agent-A" and payload["mode"] == "human"
         fire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_stale_copy_from_a_second_tab_cannot_erase_the_clock(self):
+        """CodeRabbit #280: the second tab read the row before the Take's write
+        and writes after it. update_conversation replaces the whole metadata
+        blob, so writing that copy back used to erase the clock."""
+        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human",
+                 "status": "active", "metadata": {"handoff_reason": "affinity"}}
+        stale = {**store, "metadata": dict(store["metadata"])}
+        # The winning Take lands between the second tab's read and its write.
+        store["metadata"] = {**store["metadata"], "handoff_reason": "manual_claim",
+                             "agent_assigned_at": datetime.now(timezone.utc).isoformat()}
+
+        async def _write(cid, payload):
+            store.update(payload)  # the column write: metadata, if sent, replaces the blob
+
+        with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=stale)), \
+             patch.object(handoff.db, "update_conversation", new=AsyncMock(side_effect=_write)), \
+             patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            await handoff.perform_handoff_to_agent(
+                _CID, "me", emit_messages=False, handoff_reason="manual_claim",
+                _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+            )
+        assert "agent_assigned_at" in store["metadata"], "the Take's clock survives"
+        assert store["metadata"]["handoff_reason"] == "manual_claim"
+
+    @pytest.mark.asyncio
+    async def test_a_same_agent_handoff_that_changes_metadata_still_writes_it(self):
+        """The other side of the guard: a loop guard to reset is still written."""
+        row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+               "metadata": {"agent_assign_count": 3, "handoff_reason": "auto_assign"}}
+        upd = AsyncMock()
+        with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=row)), \
+             patch.object(handoff.db, "update_conversation", upd), \
+             patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            await handoff.perform_handoff_to_agent(
+                _CID, "me", emit_messages=False, handoff_reason="manual_claim",
+                _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+            )
+        meta = upd.await_args.args[1]["metadata"]
+        assert "agent_assign_count" not in meta
+        assert meta["handoff_reason"] == "auto_assign", "not a Take: the reason stays"
+
+    @pytest.mark.asyncio
+    async def test_a_take_whose_answer_was_lost_still_gets_the_clock(self):
+        """The gate's write landed but its answer did not: the endpoint finds
+        the chat is mine after all ("already mine"). That is my Take."""
+        from app.api import conversations as capi
+
+        conv = {"id": _CID, "assigned_agent_id": None, "status": "needs_agent",
+                "tunnel": "sales", "metadata": {}}
+        mine = {"id": _CID, "assigned_agent_id": "me", "mode": "human",
+                "status": "active", "metadata": {}}
+        upd = AsyncMock()
+        activity = AsyncMock()
+        with patch.object(sb, "get_conversation", new=AsyncMock(return_value=conv)), \
+             patch.object(sb, "get_user_by_id",
+                          new=AsyncMock(return_value={"id": "me", "name": "Ana", "role": "sales"})), \
+             patch.object(sb, "claim_conversation_if_unassigned",
+                          new=AsyncMock(return_value={"won": False, "queued_age_seconds": None})), \
+             patch.object(sb, "get_conversation_simple", new=AsyncMock(return_value=mine)), \
+             patch.object(sb, "update_conversation", upd), \
+             patch("app.services.presence.log_activity", activity), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            out = await capi.claim_conversation(conversation_id=_CID, user=dict(self._ME))
+        assert out["data"]["assigned_to"] == "me"
+        payload = upd.await_args.args[1]
+        assert "assigned_agent_id" not in payload, "ownership is the gate's"
+        assert 0 <= _iso_age_s(payload["metadata"]["agent_assigned_at"]) < 5
+        activity.assert_not_called()  # no claim_won twice, no 'assigned'
 
     @pytest.mark.asyncio
     async def test_a_new_owner_is_still_the_full_new_cycle(self):

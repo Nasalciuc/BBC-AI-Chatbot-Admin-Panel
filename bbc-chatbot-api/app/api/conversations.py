@@ -1038,7 +1038,10 @@ async def claim_conversation(
             # and its owner check were lost. Before, the operator read their
             # OWN name in "… took this chat a moment before you", and the chat
             # never opened. Same as re-claiming my own chat above: no second
-            # win and no second point on the score.
+            # win and no second point on the score. But it IS a take of mine,
+            # won a moment ago: _gate_won=True starts the first-reply clock,
+            # which the call that won may have died before writing (the lost
+            # answer); if it did write it, this restarts it a moment later.
             CLAIM_HEALTH["already_mine"] += 1
             await perform_handoff_to_agent(
                 conversation_id=conversation_id,
@@ -1047,6 +1050,7 @@ async def claim_conversation(
                 emit_messages=False,
                 handoff_reason="manual_claim",
                 _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+                _gate_won=True,
             )
             return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
         _winner = await db.get_user_by_id(_winner_id) if _winner_id else None
