@@ -734,3 +734,66 @@ async def test_a_close_only_branch_that_fails_is_counted_and_tried_next_tick():
     assert out["results"] == [{"id": _CID, "status": "close_failed"}]
     assert CRM_PUSH_HEALTH["close_failed"] == before + 1
     assert _CID not in cron._pushed_today
+
+
+# ── CodeRabbit #280, round 8 ────────────────────────────────────
+# In the close-only branch the goodbye follows a close that landed: an agent who took the chat after the run's
+# read gets no goodbye in it, and a failed close is tried again next tick with its goodbye, sent once.
+
+async def _close_only(close, meta=None, claimed=True):
+    order: list = []
+
+    async def _close(*a, **k):
+        order.append("close")
+        return close
+
+    async def _claim(*a, **k):
+        order.append("claim")
+        return claimed
+
+    async def _post(*a, **k):
+        order.append("goodbye")
+
+    lead = dict(_MARKED)
+    with _flags({}), \
+            patch.object(cron.db, "get_abandoned_conversations",
+                         new=AsyncMock(return_value=[_conv(mode="ai", metadata=meta or {})])), \
+            patch.object(cron, "get_or_create_lead", new=AsyncMock(return_value=lead)), \
+            patch("app.api.cron.submit_abandoned_to_crm", new=AsyncMock()) as submit, \
+            patch.object(cron.db, "close_conversation_if_unowned", new=AsyncMock(side_effect=_close)), \
+            patch.object(cron.db, "update_conversation", new=AsyncMock()), \
+            patch.object(cron.db, "add_message", new=AsyncMock(side_effect=_post)), \
+            patch("app.services.closing.claim_closing_sent", new=AsyncMock(side_effect=_claim)):
+        out = await cron.run_abandoned_crm()
+    submit.assert_not_awaited()
+    return out, order
+
+
+@pytest.mark.asyncio
+async def test_the_goodbye_follows_a_close_that_landed():
+    out, order = await _close_only(("closed", ""))
+    assert order == ["close", "claim", "goodbye"]
+    assert out["results"] == [{"id": _CID, "status": "closed_existing_crm"}]
+
+
+@pytest.mark.asyncio
+async def test_a_chat_an_agent_took_gets_no_goodbye():
+    out, order = await _close_only(("owned", ""))
+    assert order == ["close"]
+    assert out["results"] == [{"id": _CID, "status": "skipped", "reason": "agent_holds_chat"}]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_close_keeps_its_goodbye_for_the_next_tick():
+    out, order = await _close_only(("failed", "08006"))
+    assert order == ["close"], "no goodbye in a chat that is still open"
+    out, order = await _close_only(("closed", ""))
+    assert order == ["close", "claim", "goodbye"], "the next tick closes it and says goodbye"
+
+
+@pytest.mark.asyncio
+async def test_a_goodbye_already_sent_is_not_sent_again():
+    out, order = await _close_only(("closed", ""), meta={"closing_sent_at": "2026-11-24T10:00:00+00:00"})
+    assert order == ["close"]
+    out, order = await _close_only(("closed", ""), claimed=False)
+    assert order == ["close", "claim"], "the claim keeps it to one"

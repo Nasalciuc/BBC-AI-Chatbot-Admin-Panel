@@ -414,13 +414,10 @@ async def run_abandoned_crm() -> dict:
                     claim_closing_sent,
                     compute_closing_text,
                 )
-                if not has_closing_been_sent(_conv_meta):
-                    _claimed = await claim_closing_sent(cid)
-                    if _claimed:
-                        _closing = compute_closing_text(_site)
-                        await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
-                # Written only while no agent holds the chat, as after a submit: an agent who took it since this
-                # run's read keeps it. A close that failed after a submit is tried again here (CodeRabbit #280).
+                # Closed first, and only while no agent holds the chat, as after a submit: an agent who took it
+                # since this run's read keeps it, with no goodbye in it. The goodbye follows a close that landed (a
+                # closed chat cannot be taken). A close that failed, after a submit or here, is tried again next
+                # tick with its goodbye, and the claim keeps that to one (CodeRabbit #280).
                 _zombie_close, _zombie_code = await db.close_conversation_if_unowned(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
@@ -428,6 +425,11 @@ async def run_abandoned_crm() -> dict:
                     "assigned_agent_id": None,
                 })
                 if _zombie_close == "closed":
+                    if not has_closing_been_sent(_conv_meta):
+                        _claimed = await claim_closing_sent(cid)
+                        if _claimed:
+                            _closing = compute_closing_text(_site)
+                            await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
                     logger.info(f"[cron][{cid}] Closed existing CRM lead")
                     results.append({"id": cid, "status": "closed_existing_crm"})
                 elif _zombie_close == "owned":
