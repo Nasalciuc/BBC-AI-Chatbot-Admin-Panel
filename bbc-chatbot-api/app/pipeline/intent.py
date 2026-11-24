@@ -85,9 +85,11 @@ _GOODBYE_PHRASES_RE = re.compile(
     + _GOODBYE_ALONE + r")\b",
     re.I,
 )
+# The assistant's name is filler too ("Thanks Skye!"): Skye since 24 Nov, Alex before, and a chat opened
+# before the rename still says Alex.
 _GOODBYE_FILLER = frozenset({
     "so", "very", "much", "a", "lot", "lots", "again", "ok", "okay", "great", "perfect", "cheers", "dear",
-    "sir", "madam", "guys", "all", "now", "really", "alex", "and", "you", "too", "oh", "well",
+    "sir", "madam", "guys", "all", "now", "really", "skye", "alex", "and", "you", "too", "oh", "well",
 })
 
 
