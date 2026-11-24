@@ -543,6 +543,16 @@ async def perform_handoff_to_agent(
     # Write it ONLY when the assigned agent CHANGES — never refresh on
     # re-handoff to the same agent (F1: refreshing evicted engaged agents).
     _is_new_cycle = (_conv_cur or {}).get("assigned_agent_id") != agent_id
+    # A Take starts a cycle too, but the claim gate wrote assigned_agent_id
+    # BEFORE the read above, so the comparison reads "same agent" and the
+    # clock never started: no countdown in the panel, and the sweep skipped
+    # the chat (DEADLINE_HEALTH.skipped_no_assigned_at), so an agent who took
+    # a chat and never wrote kept it with Alex silent. Only what the clock
+    # reads is written here: engaged_agent_id still waits for the agent's
+    # first message (the one who speaks owns the chat), announce_pending is
+    # left as it was, and claim_won is the take's row in agent_activity_log,
+    # so no second "assigned" row.
+    _take_starts_clock = _gate_won and not _is_new_cycle
     if _is_new_cycle:
         _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
         _meta["handoff_reason"] = handoff_reason
@@ -552,8 +562,14 @@ async def perform_handoff_to_agent(
             _meta.pop("agent_cooldown_until", None)
         else:
             _meta.pop("announce_pending", None)
-    # _is_new_cycle False → leave agent_assigned_at / handoff_reason /
-    # announce_pending exactly as they are.
+    elif _take_starts_clock:
+        _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
+        # The deadline's accounting reads it: a take after an "affinity"
+        # fallback must not count as a sticky chat that fell back.
+        _meta["handoff_reason"] = handoff_reason
+    # Neither (a re-handoff to the same agent without a gate won just now) →
+    # leave agent_assigned_at / handoff_reason / announce_pending exactly as
+    # they are.
     if _extra_meta:
         _meta.update(_extra_meta)
     if _pop_meta_keys:
