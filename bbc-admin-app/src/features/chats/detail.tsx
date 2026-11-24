@@ -16,6 +16,7 @@ import {
   isLockedPushRefusal,
   unlockConversation,
   setLeadCrmId,
+  getCrmLeadStatus,
   type ApiError,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -41,6 +42,7 @@ import { draftId, readDraft, withSuggestedQuestion, writeDraft } from '@/lib/cha
 import { isOddCrmIdRefusal } from '@/features/leads/view'
 import { ChatAvatar } from './components/chat-avatar'
 import { CloseChat } from './components/close-chat'
+import { CrmLeadButton } from './components/crm-lead-button'
 import { DetailsPanel } from './components/details-panel'
 import { OperatorBadge } from './operator-history'
 import {
@@ -175,6 +177,17 @@ export default function ConversationDetail({
     retry: 1,
     retryDelay: 500,
   })
+
+  // The agent's "Create lead in CRM" button (CRM's CHAT-LEADS-API): on for this user or not, and the lead it
+  // made. Keyed on who has the chat and its contact, so a Take or a new phone asks again.
+  const { data: crmLead } = useQuery({
+    queryKey: ['crm-lead', conversationId, conv?.assigned_agent_id ?? '', conv?.status ?? '', !!conv?.visitor_email, !!conv?.visitor_phone],
+    queryFn: () => getCrmLeadStatus(conversationId),
+    enabled: !usingMock && !dormant && !!conv,
+    staleTime: 30_000,
+    retry: 1,
+  })
+  const crmButtonOn = crmLead?.enabled === true
 
   // A waiting chat an agent hasn't taken is shown blind (the gate below):
   // nothing about it is polled or streamed for them either, and the server
@@ -655,10 +668,12 @@ export default function ConversationDetail({
   const canTake = owner === 'waiting' && HANDS_ON.includes(role) && conv.status !== 'closed' && (!canBeReady || ready)
   const canManage = permissions.canReassignConversations && conv.status !== 'closed'
   const canActOnLead = isAdmin || (role === 'sales' && (owner === 'mine' || engagedMe))
-  const crm = crmView(conv, lead, { canAct: canActOnLead, ownerName: conv.assigned_agent_name ?? null })
+  const crm = crmView(conv, lead, { canAct: canActOnLead, ownerName: conv.assigned_agent_name ?? null, button: crmButtonOn })
   const leadNow = leadLine(lead, crm, markingLead)
-  const canPush = !!lead && crm.state === 'ready' && canActOnLead
-  const canManual = !!lead && (crm.state === 'ready' || crm.state === 'missing') && canActOnLead
+  // With the new button on, it replaces Send to CRM here (and in the close dialog); a manager can still save a
+  // lead number typed by hand.
+  const canPush = !!lead && crm.state === 'ready' && canActOnLead && !crmButtonOn
+  const canManual = !!lead && (crm.state === 'ready' || crm.state === 'missing') && canActOnLead && !(crmButtonOn && role === 'sales')
   const viewingDeadline = viewingGraceSeconds
   const left = canWrite ? deadlineLeft(conv, nowMs, viewingDeadline) : null
   const waitingMin = owner === 'waiting' ? minutesSince(conv.queued_at ?? conv.updated_at, nowMs) : null
@@ -1110,6 +1125,7 @@ export default function ConversationDetail({
                 </span>
               </div>
             )}
+            {crmButtonOn && <CrmLeadButton conversationId={conversationId} status={crmLead} />}
             {canWrite && leftMin !== null && (
               <div className='flex items-center gap-2 px-1 text-[13px] text-k-555555'>
                 <span aria-hidden='true' className='size-[7px] rounded-full bg-k-c9c9c9' />
