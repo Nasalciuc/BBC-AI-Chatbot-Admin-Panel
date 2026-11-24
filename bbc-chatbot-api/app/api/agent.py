@@ -38,16 +38,18 @@ HEARTBEAT_HEALTH: dict = {"calls": 0, "latency_ms": _deque(maxlen=1000)}
 # It would hang forever — and every hung chat is one more row in every sweep.
 # Counted rather than silently skipped: if this stays 0 the concern is
 # theoretical; if it climbs, the metadata repair is its own ticket.
-# A missing clock on a chat whose agent has not spoken is not skipped: the
-# sweep starts it (clock_started_late, or clock_start_failed when that write
-# failed), so a take whose clock write was lost still has a deadline.
+# A missing clock on a chat its agent holds since a Take is not skipped: the
+# sweep writes the clock the Take should have written, at the Take
+# (clock_started_late, or clock_start_failed when that read or write failed),
+# so a take whose clock write was lost still has a deadline.
 DEADLINE_HEALTH: dict = {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0,
                          "clock_started_late": 0, "clock_start_failed": 0}
 
-# An agent message moves last_agent_message_at a moment before the send marks
-# its author engaged (two writes). A reply this recent may be the agent's own:
-# the sweep waits one more round before it calls their chat unanswered.
-_RECENT_REPLY = timedelta(seconds=30)
+# Chats the sweep found no Take for (an assignment from before the clock): asked
+# again only after this long, so a hung row costs one query every ten minutes,
+# not one every round (the loop is otherwise free of queries: 31 Aug).
+_NO_TAKE_RECHECK_S = 600.0
+_NO_TAKE: dict[str, float] = {}
 
 
 def heartbeat_health_snapshot(window_seconds: float | None = None) -> dict:
@@ -72,16 +74,34 @@ def _recent_fallback_system_message(last_sys: dict | None) -> bool:
         return False
 
 
-async def _start_missing_clock(conv: dict, now: datetime) -> None:
-    """Start the first-reply clock a Take left missing (its write failed, or its request died before it).
+async def _restore_take_clock(conv: dict) -> bool:
+    """Write the first-reply clock a Take left missing (both its writes failed, or its requests died first).
 
-    Only for a chat whose assigned agent has not spoken since they got it: the agent who speaks becomes
-    engaged_agent_id, so a different (or no) engaged agent means no reply of theirs. Written only while the
-    clock is still missing, the chat is still theirs and their last message is still the one read: a clock
-    put after a reply would send an answered chat back to Alex. The next round enforces it."""
-    meta = dict(conv.get("metadata") or {})
+    The clock goes where the Take put it: when the agent took the chat, their latest claim_won for it (written
+    before the Take's handoff, on the database's clock like every message's created_at). A reply since then is
+    theirs, in this hold of the chat, and stands after the clock: the sweep reads it as answered. No reply means
+    the deadline runs from the Take. Nothing here leans on engaged_agent_id: it keeps an earlier hold's agent, and
+    the send can store a reply without it (CodeRabbit #280).
+
+    Written only while the clock is still missing, the chat still theirs, their last message the one read and no
+    CRM receipt saved since. Returns False when there is no Take to go by (the caller skips and counts the chat,
+    as before), True when the chat was dealt with this round."""
     agent = conv.get("assigned_agent_id")
-    meta["agent_assigned_at"] = now.isoformat()
+    key = f"{conv['id']}:{agent}"
+    if _NO_TAKE.get(key, 0.0) > time.monotonic():
+        return False
+    found, took_at = await db.get_last_take(conv["id"], agent)
+    if found == "failed":
+        DEADLINE_HEALTH["clock_start_failed"] += 1
+        return True  # counted: the next round reads again
+    if found == "none" or not took_at:
+        now_m = time.monotonic()
+        for k in [k for k, until in _NO_TAKE.items() if until <= now_m]:
+            _NO_TAKE.pop(k, None)
+        _NO_TAKE[key] = now_m + _NO_TAKE_RECHECK_S
+        return False
+    meta = dict(conv.get("metadata") or {})
+    meta["agent_assigned_at"] = took_at
     meta["clock_agent_id"] = agent
     from app.services.handoff import _RECEIPT_KEYS
 
@@ -96,11 +116,12 @@ async def _start_missing_clock(conv: dict, now: datetime) -> None:
     )
     if outcome == "written":
         DEADLINE_HEALTH["clock_started_late"] += 1
-        logger.warning(f"[deadline] conv {conv['id']}: its agent had no first-reply clock and has not answered; started now")
+        logger.warning(f"[deadline] conv {conv['id']}: its Take had no first-reply clock; written at the Take")
     elif outcome == "failed":
         DEADLINE_HEALTH["clock_start_failed"] += 1
         logger.error(f"[deadline] conv {conv['id']}: the missing first-reply clock was not written (code={code}); next round")
     # "changed": the clock was written, the agent spoke or the chat changed hands since the read; the next round reads it.
+    return True
 
 
 async def _enforce_response_deadline(
@@ -152,12 +173,9 @@ async def _enforce_response_deadline(
     for conv in convs:
         meta = conv.get("metadata") or {}
         assigned_at = _parse(meta.get("agent_assigned_at"), count_bad=True)
-        if not assigned_at and not meta.get("agent_assigned_at") and meta.get("engaged_agent_id") != conv.get("assigned_agent_id"):
-            # No clock, and the agent who has the chat has not spoken in it: a Take whose clock write was lost
-            # (CodeRabbit #280). Started now, so the deadline runs from here instead of never.
-            last_agent = _parse(conv.get("last_agent_message_at"))
-            if last_agent is None or now - last_agent >= _RECENT_REPLY:
-                await _start_missing_clock(conv, now)
+        if not assigned_at and not meta.get("agent_assigned_at") and await _restore_take_clock(conv):
+            # No clock on a chat its agent holds since a Take whose clock write was lost (CodeRabbit #280):
+            # written now at the Take; the next round judges it.
             continue
         if not assigned_at:
             # Pre-PR3 assignment, or metadata we cannot read. The stale pass

@@ -25,6 +25,8 @@ from app.db import supabase as sb
 from app.services import handoff
 
 _CID = "conv-1"
+# The real one: conftest stands in for it with the plain write while the tests run.
+_real_keep_receipts = sb.update_conversation_keeping_receipts
 
 
 class _ConvTable:
@@ -1095,6 +1097,45 @@ class TestTakeStartsTheClock:
         assert captured[0]["engaged_agent_id"] == "me", "the engaged agent stays (stickiness)"
 
 
+    @pytest.mark.asyncio
+    async def test_a_chat_let_go_since_the_read_is_not_written_back_to_the_agent(self):
+        """CodeRabbit #280, round 5: a re-handoff to the same agent writes assigned_agent_id and mode back. If the
+        chat was let go between its read and its write, that copy would hand it to the agent again. The write
+        now also needs the chat to be theirs still."""
+        store = {"id": _CID, "assigned_agent_id": None, "mode": "ai", "status": "active",
+                 "metadata": {"agent_assign_count": 2}, "last_agent_message_at": None}
+        stale = {**store, "assigned_agent_id": "me", "mode": "human", "metadata": dict(store["metadata"])}
+        cas, plain = self._store_with_cas(store)
+        reads = iter([stale, {**store, "metadata": dict(store["metadata"])}])
+        await self._gate_won_take(lambda cid: next(reads), cas, plain)
+        assert store["assigned_agent_id"] is None and store["mode"] == "ai", "the release stands"
+        assert cas.await_args_list[0].kwargs["owner"] == "me"
+        plain.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_new_cycle_writes_through_the_receipt_guard(self):
+        """CodeRabbit #280, round 5: a new owner's metadata blob was read before the gate and the operator read; it
+        goes through the write that keeps a CRM receipt saved since."""
+        row = {"id": _CID, "assigned_agent_id": None, "metadata": {"engaged_agent_id": "agent-old"}}
+        keep = AsyncMock(return_value={"id": _CID})
+        plain = AsyncMock()
+        with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=row)), \
+             patch.object(handoff.db, "claim_conversation_if_unassigned",
+                          new=AsyncMock(return_value={"won": True, "queued_age_seconds": None})), \
+             patch.object(handoff.db, "update_conversation_keeping_receipts", keep), \
+             patch.object(handoff.db, "update_conversation", plain), \
+             patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            await handoff.perform_handoff_to_agent(_CID, "agent-A", emit_messages=False, handoff_reason="first_message")
+        keep.assert_awaited_once()
+        cid, payload, keys = keep.await_args.args
+        assert payload["metadata"]["engaged_agent_id"] == "agent-A" and payload["metadata"]["clock_agent_id"] == "agent-A"
+        assert keys == ("crm_lead", "crm")
+        plain.assert_not_awaited()
+
+
 class TestClockConditionalWrite:
     """update_conversation_if_clock_unchanged against a row that honours its WHERE clause."""
 
@@ -1158,3 +1199,50 @@ class TestClockConditionalWrite:
         assert out == ("changed", "")
         out, _ = await self._write(dict(row), clock=None, owner="agent-B")
         assert out == ("written", "")
+
+
+
+class TestWriteKeepingReceipts:
+    """update_conversation_keeping_receipts against a row that honours its WHERE clause (CodeRabbit #280, round 5)."""
+
+    async def _write(self, row, meta, **table_kw):
+        table = _ConvTable(row)
+        for k, v in table_kw.items():
+            setattr(table, k, v)
+        with patch.object(sb, "get_client", return_value=table), \
+             patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+            out = await _real_keep_receipts(_CID, {"metadata": meta, "mode": "human"}, ("crm_lead", "crm"))
+        return out, table
+
+    @pytest.mark.asyncio
+    async def test_a_receipt_saved_since_the_read_is_carried_into_the_write(self):
+        receipt = {"flight_request_id": 98765}
+        row = {"id": _CID, "metadata": {"crm_lead": receipt, "old": 1}, "mode": "ai"}
+        out, table = await self._write(row, {"engaged_agent_id": "agent-A"})
+        assert table.row["metadata"] == {"engaged_agent_id": "agent-A", "crm_lead": receipt}
+        assert table.row["mode"] == "human" and out is not None
+
+    @pytest.mark.asyncio
+    async def test_no_receipt_on_the_row_is_one_guarded_write(self):
+        row = {"id": _CID, "metadata": {"old": 1}, "mode": "ai"}
+        out, table = await self._write(row, {"engaged_agent_id": "agent-A"})
+        assert table.row["metadata"] == {"engaged_agent_id": "agent-A"} and table.update_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_blob_that_already_carries_the_receipts_is_written_as_it_is(self):
+        both = {"crm_lead": {"flight_request_id": 1}, "crm": {"source": "push"}, "engaged_agent_id": "agent-A"}
+        out, table = await self._write({"id": _CID, "metadata": {}, "mode": "ai"}, dict(both))
+        assert table.row["metadata"] == both and table.update_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_chat_that_is_gone_writes_nothing(self):
+        table = _ConvTable({"id": "another", "metadata": {}})
+        with patch.object(sb, "get_client", return_value=table), \
+             patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+            out = await _real_keep_receipts(_CID, {"metadata": {"x": 1}}, ("crm_lead",))
+        assert out is None and table.update_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_breaks_is_none_and_logged(self):
+        out, table = await self._write({"id": _CID, "metadata": {}}, {"x": 1}, fail_update=True)
+        assert out is None and table.row["metadata"] == {}

@@ -653,7 +653,7 @@ async def _write_same_cycle(
     it moved, the chat is read again and this call's own changes go on top of
     what is there now, once. A CRM receipt the copy read did not have must still
     be absent too (_RECEIPT_KEYS): one saved since is read again the same way,
-    never erased (CodeRabbit #280).
+    never erased (CodeRabbit #280). And the chat must still be this agent's.
 
     A write that raised may still have landed (idempotent=False: never retried
     blind), so the chat is read back before anything is said or counted: the
@@ -673,6 +673,9 @@ async def _write_same_cycle(
             # Legacy column set (no last_agent_message_at read): the clock alone.
             check_last_agent=starts_clock and "last_agent_message_at" in (conv_read or {}),
             absent_keys=tuple(k for k in _RECEIPT_KEYS if k not in meta_read),
+            # Still this agent's: a chat let go (or taken by someone else) since the read is never written back
+            # to them by a copy that predates it (CodeRabbit #280).
+            owner=agent_id,
         )
         if outcome == "written":
             return
@@ -811,8 +814,12 @@ async def perform_handoff_to_agent(
         _update["team_id"] = _operator_team_id
 
     if _update:
-        if _is_new_cycle or "metadata" not in _update:
+        if "metadata" not in _update:
             await db.update_conversation(conversation_id, _update)
+        elif _is_new_cycle:
+            # A new owner: the gate decided it, there is no clock of theirs to guard. The blob was read before the
+            # gate and the operator read; a CRM receipt merged in since is kept, not erased (CodeRabbit #280).
+            await db.update_conversation_keeping_receipts(conversation_id, _update, _RECEIPT_KEYS)
         else:
             # The same agent already holds the chat, and the other request of
             # the same Take may write between the read above and this write.

@@ -55,3 +55,19 @@ def _no_contact_in_crm_by_default():
         new=AsyncMock(return_value={"crm_lead": None, "created_in_crm": False, "crm_lead_id": None}),
     ):
         yield
+
+
+async def _plain_write(conversation_id, payload, receipt_keys=()):
+    from app.db import supabase as sb
+
+    return await sb.update_conversation(conversation_id, payload)
+
+
+@pytest.fixture(autouse=True)
+def _handoff_writes_without_a_database():
+    """Without a database the receipt guard of a new cycle's write has nothing to guard: the write is the plain
+    update_conversation, which tests patch and read as before (inner patches win). The deadline sweep finds no
+    Take to restore a lost clock from. Tests of the real functions capture them before this runs."""
+    with patch("app.db.supabase.update_conversation_keeping_receipts", new=_plain_write), \
+            patch("app.db.supabase.get_last_take", new=AsyncMock(return_value=("none", None))):
+        yield

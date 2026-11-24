@@ -1759,6 +1759,58 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
         return None
 
 
+async def update_conversation_keeping_receipts(
+    conversation_id: str, payload: dict, receipt_keys: tuple[str, ...]
+) -> Optional[dict]:
+    """update_conversation for a payload carrying the whole metadata blob read a moment ago, without erasing a
+    receipt another request merged in since (patch_conv_presence: the CRM button's metadata.crm_lead).
+
+    The write lands only while the receipt keys its blob lacks are still absent on the row. If one appeared, it is
+    read and put into the blob and the write goes again; after two such rounds it goes plainly (a receipt is written
+    once per chat). Answers like update_conversation: the row, or None when the write failed (logged)."""
+    meta = payload.get("metadata")
+    if not isinstance(meta, dict):
+        return await update_conversation(conversation_id, payload)
+    try:
+        db = get_client()
+        for _attempt in (1, 2):
+            absent = tuple(k for k in receipt_keys if k not in meta)
+            if not absent:
+                break
+            body = {**payload, "metadata": meta}
+
+            def _guarded(b=body, keys=absent):
+                q = db.table("conversations").update(b).eq("id", conversation_id)
+                for k in keys:
+                    q = q.is_(f"metadata->>{k}", "null")
+                return q.execute()
+
+            # Idempotent: the same blob under the same guards lands the same way twice.
+            res = await _run_sync(_guarded)
+            if res.data:
+                return res.data[0]
+            cur = await _run_sync(
+                lambda: db.table("conversations").select("metadata").eq("id", conversation_id).limit(1).execute()
+            )
+            rows = cur.data or []
+            if not rows:
+                return None  # no such chat: nothing to write
+            now_meta = rows[0].get("metadata") if isinstance(rows[0].get("metadata"), dict) else {}
+            carried = {k: now_meta[k] for k in absent if now_meta.get(k) is not None}
+            if carried:
+                logger.info(
+                    f"[{conversation_id}] a receipt saved since the handoff's read is kept: {sorted(carried)}"
+                )
+            meta = {**meta, **carried}
+        res = await _run_sync(
+            lambda: db.table("conversations").update({**payload, "metadata": meta}).eq("id", conversation_id).execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"update_conversation_keeping_receipts error conv={conversation_id}: {type(e).__name__}: {e}")
+        return None
+
+
 async def update_conversation_if_clock_unchanged(
     conversation_id: str,
     payload: dict,
@@ -5134,6 +5186,35 @@ async def insert_activity_log(
         )
     except Exception as e:
         logger.warning(f"insert_activity_log error: {e}")
+
+
+async def get_last_take(conversation_id: str, user_id: str) -> tuple[str, Optional[str]]:
+    """When this agent's current hold on this chat began with a Take: their latest claim_won in agent_activity_log,
+    written before the Take's handoff (and on the database's clock, like every message's created_at).
+
+    ("found", happened_at); ("none", None) when they never took it, or their latest assignment of it came another
+    way ("assigned": a new cycle writes its clock with the rest of its metadata); ("failed", None) when the read
+    failed (rule 7)."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("agent_activity_log")
+            .select("action, happened_at")
+            .eq("conversation_id", conversation_id)
+            .eq("user_id", user_id)
+            .in_("action", ["claim_won", "assigned"])
+            .order("happened_at", desc=True)
+            .limit(1)
+            .execute(),
+            label="sweep",
+        )
+        rows = res.data or []
+        if not rows or rows[0].get("action") != "claim_won" or not rows[0].get("happened_at"):
+            return ("none", None)
+        return ("found", str(rows[0]["happened_at"]))
+    except Exception as e:
+        logger.error(f"get_last_take conv={conversation_id}: {type(e).__name__}: {e}")
+        return ("failed", None)
 
 
 async def count_agent_messages_since(conversation_id: str, since_iso: str) -> int:
