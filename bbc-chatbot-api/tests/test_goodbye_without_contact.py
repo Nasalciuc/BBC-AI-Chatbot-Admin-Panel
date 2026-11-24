@@ -45,7 +45,8 @@ def _health():
 
 @pytest.mark.parametrize("text", [
     "Thank you so much!", "Bye for now", "Goodbye", "That's all I needed", "ok thanks", "thank you",
-    "thank you, have a nice day", "Thanks Alex", "thanks a lot", "Thanks for your help!", "thank you, bye",
+    "thank you, have a nice day", "Thanks Skye", "Thank you so much Skye!", "Thanks Alex", "thanks a lot",
+    "Thanks for your help!", "thank you, bye",
     # no "thank" and no "bye" in them (CodeRabbit #270)
     "Have a nice day", "I appreciate your help", "Take care!", "That is all", "Really appreciate it",
 ])
@@ -69,10 +70,20 @@ def test_nothing_else_alone_answers_a_question_and_is_no_goodbye():
     ("thanks, my email is client@example.com", Intent.GENERAL_QUESTION),
     ("take care of the booking please", Intent.NEW_BOOKING),
     ("I appreciate your help, how long is the flight?", Intent.NEW_BOOKING),
+    ("Thanks Skye, how long is the flight?", Intent.NEW_BOOKING),
 ])
 def test_a_thanks_that_says_more_is_answered_not_closed(text, intent):
     assert not is_only_goodbye(text)
     assert detect_intent(text, use_llm=False) == intent
+
+
+def test_the_name_the_openings_use_is_filler_in_a_goodbye():
+    """"Thanks Skye!" closes like "Thanks!". Tied to PERSONA, so the next rename can't turn the client's
+    thank-you into a question to answer."""
+    from app.services.proactive import PERSONA
+    assert is_only_goodbye(f"Thanks {PERSONA}!")
+    assert is_only_goodbye(f"thank you {PERSONA.lower()}, bye")
+    assert not is_only_goodbye(f"Thanks {PERSONA}, is it one way?")
 
 
 def test_the_classifiers_goodbye_counts_only_for_a_plain_goodbye():
