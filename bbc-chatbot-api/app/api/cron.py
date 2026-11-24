@@ -19,6 +19,7 @@ from app.services.crm import (
     submit_abandoned_to_crm,
 )
 from app.services.lead_service import get_or_create_lead
+from app.services import crm_leads_api
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -394,6 +395,17 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "closed_existing_crm"})
                 continue
 
+            # The agent's "Create lead in CRM" button made this lead (metadata.crm_lead): the CRM has it under the
+            # agent's name, so the old path never sends a second one, even when the lead row's mark failed.
+            if crm_leads_api.stored_record(conv):
+                results.append({"id": cid, "status": "skipped", "reason": "made_by_button"})
+                continue
+            # With the button on for every agent (CRM_LEADS_API), a chat an agent still holds is theirs to send:
+            # the sweep no longer pushes it behind them as an unassigned lead.
+            if crm_leads_api.everyone_on() and conv.get("assigned_agent_id") and conv.get("status") in db.OPEN_STATUSES:
+                results.append({"id": cid, "status": "skipped", "reason": "agent_holds_chat"})
+                continue
+
             # The `if not lead:` recreate-and-push branch that used to live here
             # is gone. It was only ever reached when the read above failed — and
             # on that path we had already lost the one thing that says "this
@@ -718,6 +730,10 @@ async def run_crm_orphan_backstop() -> dict:
             from app.security.behavior import is_locked as _is_locked
             if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 continue  # PR-12: waits for a human push from the panel
+            if crm_leads_api.stored_record(conv):
+                continue  # the agent's button made it: never a second lead through the old path
+            if crm_leads_api.everyone_on() and conv.get("assigned_agent_id") and conv.get("status") in db.OPEN_STATUSES:
+                continue  # the agent who holds the chat sends it with the button
             result = await push_lead_to_crm(
                 lead,
                 visitor,

@@ -4556,7 +4556,7 @@ _ABANDONED_SCAN_CAP = 200
 
 _ABANDONED_COLUMNS = (
     "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
-    "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
+    "tunnel, message_count, mode, status, metadata, visitor_id, created_at, assigned_agent_id"
 )
 
 # What the sweep's scan cost, for /health. `embedded`: one read brought every
