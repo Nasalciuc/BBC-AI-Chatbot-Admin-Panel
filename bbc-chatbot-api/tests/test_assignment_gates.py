@@ -620,10 +620,15 @@ class TestTakeStartsTheClock:
     def _store_with_cas(store: dict):
         """The row as the database holds it: the conditional write lands only
         while metadata->>agent_assigned_at is still what the caller read."""
-        async def _cas(cid, payload, *, clock, last_agent_message_at=None, check_last_agent=False):
+        async def _cas(cid, payload, *, clock, last_agent_message_at=None, check_last_agent=False,
+                       absent_keys=(), owner=None):
             if (store.get("metadata") or {}).get("agent_assigned_at") != clock:
                 return ("changed", "")
             if check_last_agent and store.get("last_agent_message_at") != last_agent_message_at:
+                return ("changed", "")
+            if any((store.get("metadata") or {}).get(k) is not None for k in absent_keys):
+                return ("changed", "")
+            if owner is not None and store.get("assigned_agent_id") != owner:
                 return ("changed", "")
             store.update(payload)  # the column write: metadata replaces the blob
             return ("written", "")
@@ -824,7 +829,8 @@ class TestTakeStartsTheClock:
         def _row():
             now = datetime.now(timezone.utc).isoformat()
             return {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
-                    "metadata": {"agent_assigned_at": now, "handoff_reason": "manual_claim"},
+                    "metadata": {"agent_assigned_at": now, "handoff_reason": "manual_claim",
+                                 "clock_agent_id": "me", "engaged_agent_id": "me"},
                     "last_agent_message_at": now}
 
         cas, plain = await self._recovered_take(_row)
@@ -838,7 +844,7 @@ class TestTakeStartsTheClock:
         def _row():
             return {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
                     "metadata": {"agent_assigned_at": datetime.now(timezone.utc).isoformat(),
-                                 "handoff_reason": "manual_claim"},
+                                 "handoff_reason": "manual_claim", "clock_agent_id": "me"},
                     "last_agent_message_at": None}
 
         cas, plain = await self._recovered_take(_row)
@@ -850,8 +856,10 @@ class TestTakeStartsTheClock:
         """The request that won died before writing the clock, and the agent has
         already answered: a clock started now would postdate the answer."""
         def _row():
+            # The send marks the agent who wrote as engaged (conversations.py).
             return {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
-                    "metadata": {}, "last_agent_message_at": datetime.now(timezone.utc).isoformat()}
+                    "metadata": {"engaged_agent_id": "me"},
+                    "last_agent_message_at": datetime.now(timezone.utc).isoformat()}
 
         cas, plain = await self._recovered_take(_row)
         cas.assert_not_awaited()
@@ -881,7 +889,8 @@ class TestTakeStartsTheClock:
                  "metadata": {}, "last_agent_message_at": None}
         first_read = {**store, "metadata": {}}
         winner_clock = datetime.now(timezone.utc).isoformat()
-        store["metadata"] = {"agent_assigned_at": winner_clock, "handoff_reason": "manual_claim"}
+        store["metadata"] = {"agent_assigned_at": winner_clock, "handoff_reason": "manual_claim",
+                             "clock_agent_id": "me"}
         cas, plain = self._store_with_cas(store)
         reads = iter([first_read, {**store, "metadata": dict(store["metadata"])}])
         with patch.object(handoff.db, "get_conversation_simple",
@@ -919,6 +928,171 @@ class TestTakeStartsTheClock:
                 _CID, "me", emit_messages=False, handoff_reason="manual_claim", _gate_won=True,
             )
         assert handoff.HANDOFF_HEALTH["same_cycle_write_failed"] == failed + 1
+
+
+    @staticmethod
+    def _handoff_patches(read, cas, plain=None):
+        return [
+            patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(side_effect=read)),
+            patch.object(handoff.db, "update_conversation_if_clock_unchanged", cas),
+            patch.object(handoff.db, "update_conversation", plain or AsyncMock()),
+            patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})),
+            patch("app.services.presence.log_activity", new=AsyncMock()),
+            patch("app.pipeline.orchestrator._fire_and_forget",
+                  new=MagicMock(side_effect=lambda coro: coro.close())),
+        ]
+
+    async def _gate_won_take(self, read, cas, plain=None, floor=None):
+        ps = self._handoff_patches(read, cas, plain)
+        for p_ in ps:
+            p_.start()
+        try:
+            await handoff.perform_handoff_to_agent(
+                _CID, "me", emit_messages=False, handoff_reason="manual_claim",
+                _gate_won=True, _seen_unassigned_at=floor,
+            )
+        finally:
+            for p_ in reversed(ps):
+                p_.stop()
+
+    @pytest.mark.asyncio
+    async def test_another_agents_answer_since_the_read_does_not_stand_for_this_take(self):
+        """CodeRabbit #280, round 4: between this Take's read and its gate, agent B
+        was given the chat, answered and let it go. The answer stays on the row
+        (and B as engaged), newer than the read but not this take's: the take
+        starts its own clock, or the chat would keep no deadline at all."""
+        floor = datetime.now(timezone.utc) - timedelta(seconds=5)
+        b_answer = (floor + timedelta(seconds=2)).isoformat()
+        row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+               "metadata": {"engaged_agent_id": "agent-B"}, "last_agent_message_at": b_answer}
+        cas = AsyncMock(return_value=("written", ""))
+        await self._gate_won_take(lambda cid: dict(row, metadata=dict(row["metadata"])), cas, floor=floor)
+        cas.assert_awaited_once()
+        meta = cas.await_args.args[1]["metadata"]
+        assert 0 <= _iso_age_s(meta["agent_assigned_at"]) < 5
+        assert meta["clock_agent_id"] == "me" and meta["engaged_agent_id"] == "agent-B"
+        assert cas.await_args.kwargs["last_agent_message_at"] == b_answer, "the write still checks nothing moved"
+
+    @pytest.mark.asyncio
+    async def test_another_agents_clock_since_the_read_does_not_stand_for_this_take(self):
+        floor = datetime.now(timezone.utc) - timedelta(seconds=5)
+        b_clock = (floor + timedelta(seconds=1)).isoformat()
+        for meta in ({"agent_assigned_at": b_clock, "clock_agent_id": "agent-B"},
+                     {"agent_assigned_at": b_clock, "engaged_agent_id": "agent-B"}):
+            row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                   "metadata": meta, "last_agent_message_at": None}
+            cas = AsyncMock(return_value=("written", ""))
+            await self._gate_won_take(lambda cid, r=row: dict(r, metadata=dict(r["metadata"])), cas, floor=floor)
+            written = cas.await_args.args[1]["metadata"]
+            assert written["agent_assigned_at"] != b_clock and written["clock_agent_id"] == "me"
+
+    @pytest.mark.asyncio
+    async def test_a_clock_written_before_clock_agent_id_still_counts_by_engaged(self):
+        """The other side: a clock from before this change names its agent only
+        through engaged_agent_id, and this agent's is kept."""
+        floor = datetime.now(timezone.utc) - timedelta(seconds=5)
+        row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+               "metadata": {"agent_assigned_at": datetime.now(timezone.utc).isoformat(),
+                            "engaged_agent_id": "me"},
+               "last_agent_message_at": None}
+        cas = AsyncMock(return_value=("written", ""))
+        await self._gate_won_take(lambda cid: dict(row, metadata=dict(row["metadata"])), cas, floor=floor)
+        cas.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_crm_receipt_saved_since_the_read_is_never_erased(self):
+        """CodeRabbit #280, round 4: the button's receipt (metadata.crm_lead) is
+        merged in server-side. A handoff that read the chat before it and wrote
+        its whole copy after it erased it: the panel offered the button again
+        and the sweep could send a second lead. The write now waits for the
+        receipt to be read, and carries it."""
+        floor = datetime.now(timezone.utc) - timedelta(seconds=1)
+        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                 "metadata": {}, "last_agent_message_at": None}
+        first_read = {**store, "metadata": {}}
+        receipt = {"flight_request_id": 98765, "url": "https://crm.example.test/requests/98765"}
+        store["metadata"] = {"crm_lead": receipt}  # saved between the read and the write
+        cas, plain = self._store_with_cas(store)
+        reads = iter([first_read, {**store, "metadata": dict(store["metadata"])}])
+        await self._gate_won_take(lambda cid: next(reads), cas, plain, floor=floor)
+        assert store["metadata"]["crm_lead"] == receipt, "the receipt survives"
+        assert 0 <= _iso_age_s(store["metadata"]["agent_assigned_at"]) < 5, "and the take still gets its clock"
+        assert cas.await_count == 2, "the first write found the receipt and wrote nothing"
+        assert cas.await_args_list[0].kwargs["absent_keys"] == ("crm_lead", "crm")
+        assert cas.await_args_list[1].kwargs["absent_keys"] == ("crm",), "a receipt in the copy needs no guard"
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_raised_but_landed_is_not_called_a_failure(self):
+        """CodeRabbit #280, round 4: the UPDATE landed and its answer was lost.
+        The row is read back first: the clock is there, so nothing is counted
+        and nothing is written twice."""
+        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                 "metadata": {}, "last_agent_message_at": None}
+
+        async def _landed_then_raised(cid, payload, **kw):
+            store.update(payload)
+            return ("failed", "none")
+
+        cas = AsyncMock(side_effect=_landed_then_raised)
+        failed = handoff.HANDOFF_HEALTH["same_cycle_write_failed"]
+        unknown = handoff.HANDOFF_HEALTH["same_cycle_write_unknown"]
+        await self._gate_won_take(lambda cid: {**store, "metadata": dict(store["metadata"])}, cas)
+        cas.assert_awaited_once()
+        assert 0 <= _iso_age_s(store["metadata"]["agent_assigned_at"]) < 5
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_failed"] == failed
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_unknown"] == unknown
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_raised_with_no_read_back_is_unknown_not_failed(self):
+        row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+               "metadata": {}, "last_agent_message_at": None}
+        reads = iter([dict(row), None])
+        cas = AsyncMock(return_value=("failed", "none"))
+        failed = handoff.HANDOFF_HEALTH["same_cycle_write_failed"]
+        unknown = handoff.HANDOFF_HEALTH["same_cycle_write_unknown"]
+        await self._gate_won_take(lambda cid: next(reads), cas)
+        cas.assert_awaited_once()
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_unknown"] == unknown + 1
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_failed"] == failed
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_failed_is_tried_once_more_and_the_clock_lands(self):
+        """CodeRabbit #280, round 4: a failed clock write left the Take with no
+        deadline. Read back and absent, it is written once more from the row."""
+        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                 "metadata": {}, "last_agent_message_at": None}
+        outcomes = iter([("failed", "57014"), None])
+
+        async def _cas(cid, payload, **kw):
+            out = next(outcomes)
+            if out:
+                return out
+            store.update(payload)
+            return ("written", "")
+
+        cas = AsyncMock(side_effect=_cas)
+        failed = handoff.HANDOFF_HEALTH["same_cycle_write_failed"]
+        await self._gate_won_take(lambda cid: {**store, "metadata": dict(store["metadata"])}, cas)
+        assert cas.await_count == 2
+        assert 0 <= _iso_age_s(store["metadata"]["agent_assigned_at"]) < 5
+        assert store["metadata"]["clock_agent_id"] == "me"
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_failed"] == failed, "it landed: not a failure"
+
+    @pytest.mark.asyncio
+    async def test_the_release_takes_the_clocks_agent_with_the_clock(self):
+        captured = []
+
+        async def _release(_id, _agent, metadata, reason="agent_offline"):
+            captured.append(metadata)
+            return False  # lost the race: nothing else happens
+
+        conv = {"id": _CID, "assigned_agent_id": "me", "mode": "human",
+                "metadata": {"agent_assigned_at": "T", "clock_agent_id": "me", "engaged_agent_id": "me"}}
+        with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=conv)), \
+             patch.object(handoff, "_release_from_agent", new=AsyncMock(side_effect=_release)):
+            await handoff.fall_back_to_ai(_CID)
+        assert "agent_assigned_at" not in captured[0] and "clock_agent_id" not in captured[0]
+        assert captured[0]["engaged_agent_id"] == "me", "the engaged agent stays (stickiness)"
 
 
 class TestClockConditionalWrite:
@@ -966,3 +1140,21 @@ class TestClockConditionalWrite:
              patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
             out = await sb.update_conversation_if_clock_unchanged(_CID, {"metadata": {}}, clock=None)
         assert out[0] == "failed"
+
+
+    @pytest.mark.asyncio
+    async def test_a_receipt_absent_in_the_read_must_still_be_absent(self):
+        row = {"id": _CID, "metadata": {"crm_lead": {"flight_request_id": 1}}}
+        out, table = await self._write(row, clock=None, absent_keys=("crm_lead", "crm"))
+        assert out == ("changed", "")
+        assert table.update_count == 0 and row["metadata"] == {"crm_lead": {"flight_request_id": 1}}
+        out, _ = await self._write({"id": _CID, "metadata": {}}, clock=None, absent_keys=("crm_lead", "crm"))
+        assert out == ("written", ""), "still absent: written"
+
+    @pytest.mark.asyncio
+    async def test_the_owner_must_still_hold_the_chat_when_asked(self):
+        row = {"id": _CID, "assigned_agent_id": "agent-B", "metadata": {}}
+        out, _ = await self._write(dict(row), clock=None, owner="me")
+        assert out == ("changed", "")
+        out, _ = await self._write(dict(row), clock=None, owner="agent-B")
+        assert out == ("written", "")

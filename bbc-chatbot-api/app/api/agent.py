@@ -38,7 +38,16 @@ HEARTBEAT_HEALTH: dict = {"calls": 0, "latency_ms": _deque(maxlen=1000)}
 # It would hang forever — and every hung chat is one more row in every sweep.
 # Counted rather than silently skipped: if this stays 0 the concern is
 # theoretical; if it climbs, the metadata repair is its own ticket.
-DEADLINE_HEALTH: dict = {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
+# A missing clock on a chat whose agent has not spoken is not skipped: the
+# sweep starts it (clock_started_late, or clock_start_failed when that write
+# failed), so a take whose clock write was lost still has a deadline.
+DEADLINE_HEALTH: dict = {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0,
+                         "clock_started_late": 0, "clock_start_failed": 0}
+
+# An agent message moves last_agent_message_at a moment before the send marks
+# its author engaged (two writes). A reply this recent may be the agent's own:
+# the sweep waits one more round before it calls their chat unanswered.
+_RECENT_REPLY = timedelta(seconds=30)
 
 
 def heartbeat_health_snapshot(window_seconds: float | None = None) -> dict:
@@ -61,6 +70,37 @@ def _recent_fallback_system_message(last_sys: dict | None) -> bool:
         ).total_seconds() < _HANDOFF_COOLDOWN_SECONDS
     except Exception:
         return False
+
+
+async def _start_missing_clock(conv: dict, now: datetime) -> None:
+    """Start the first-reply clock a Take left missing (its write failed, or its request died before it).
+
+    Only for a chat whose assigned agent has not spoken since they got it: the agent who speaks becomes
+    engaged_agent_id, so a different (or no) engaged agent means no reply of theirs. Written only while the
+    clock is still missing, the chat is still theirs and their last message is still the one read: a clock
+    put after a reply would send an answered chat back to Alex. The next round enforces it."""
+    meta = dict(conv.get("metadata") or {})
+    agent = conv.get("assigned_agent_id")
+    meta["agent_assigned_at"] = now.isoformat()
+    meta["clock_agent_id"] = agent
+    from app.services.handoff import _RECEIPT_KEYS
+
+    outcome, code = await db.update_conversation_if_clock_unchanged(
+        conv["id"],
+        {"metadata": meta},
+        clock=None,
+        last_agent_message_at=conv.get("last_agent_message_at"),
+        check_last_agent=True,
+        absent_keys=tuple(k for k in _RECEIPT_KEYS if k not in (conv.get("metadata") or {})),
+        owner=agent,
+    )
+    if outcome == "written":
+        DEADLINE_HEALTH["clock_started_late"] += 1
+        logger.warning(f"[deadline] conv {conv['id']}: its agent had no first-reply clock and has not answered; started now")
+    elif outcome == "failed":
+        DEADLINE_HEALTH["clock_start_failed"] += 1
+        logger.error(f"[deadline] conv {conv['id']}: the missing first-reply clock was not written (code={code}); next round")
+    # "changed": the clock was written, the agent spoke or the chat changed hands since the read; the next round reads it.
 
 
 async def _enforce_response_deadline(
@@ -112,6 +152,13 @@ async def _enforce_response_deadline(
     for conv in convs:
         meta = conv.get("metadata") or {}
         assigned_at = _parse(meta.get("agent_assigned_at"), count_bad=True)
+        if not assigned_at and not meta.get("agent_assigned_at") and meta.get("engaged_agent_id") != conv.get("assigned_agent_id"):
+            # No clock, and the agent who has the chat has not spoken in it: a Take whose clock write was lost
+            # (CodeRabbit #280). Started now, so the deadline runs from here instead of never.
+            last_agent = _parse(conv.get("last_agent_message_at"))
+            if last_agent is None or now - last_agent >= _RECENT_REPLY:
+                await _start_missing_clock(conv, now)
+            continue
         if not assigned_at:
             # Pre-PR3 assignment, or metadata we cannot read. The stale pass
             # only catches OFFLINE agents, so a row like this sitting on an

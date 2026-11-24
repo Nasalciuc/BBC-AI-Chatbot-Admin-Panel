@@ -347,7 +347,7 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
                      "it stays the agent's")
     now = datetime.now(timezone.utc).isoformat()
     await db.patch_conversation_presence(conv_id, {
-        "engaged_agent_id": agent_id, "agent_assigned_at": now,
+        "engaged_agent_id": agent_id, "agent_assigned_at": now, "clock_agent_id": agent_id,
         "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
                        "tapped_at": now},
     })

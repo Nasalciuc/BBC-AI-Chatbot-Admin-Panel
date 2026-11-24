@@ -56,7 +56,8 @@ def _reset_counters():
     agent_api.HEARTBEAT_HEALTH["calls"] = 0
     agent_api.HEARTBEAT_HEALTH["latency_ms"].clear()
     agent_api.DEADLINE_HEALTH.update(
-        {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
+        {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0,
+         "clock_started_late": 0, "clock_start_failed": 0}
     )
     yield
 
@@ -647,10 +648,14 @@ async def test_db_slow_ignores_calls_under_one_second(caplog):
 
 @pytest.mark.asyncio
 async def test_a_row_we_cannot_judge_is_counted_not_swallowed():
-    """No agent_assigned_at: the stale pass only sees OFFLINE agents, so this
+    """No agent_assigned_at on a chat its agent has spoken in (an assignment
+    from before the clock): the stale pass only sees OFFLINE agents, so this
     row hangs on an online one. Skipping is safe; being silent is not."""
-    conv = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {}}
-    count, _p, fb = await _deadline([conv])
+    conv = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {"engaged_agent_id": _AGENT},
+            "last_agent_message_at": _iso(600)}
+    with patch.object(agent_api.db, "update_conversation_if_clock_unchanged", new=AsyncMock()) as write:
+        count, _p, fb = await _deadline([conv])
+    write.assert_not_awaited()
     assert count == 0
     fb.assert_not_awaited()
     assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 1
@@ -677,7 +682,86 @@ async def test_a_readable_row_never_touches_the_skip_counters():
     assert agent_api.DEADLINE_HEALTH == {
         "skipped_no_assigned_at": 0,
         "skipped_bad_timestamp": 0,
+        "clock_started_late": 0,
+        "clock_start_failed": 0,
     }
+
+
+# CodeRabbit #280: a Take whose clock write was lost kept the chat with no
+# deadline at all. The sweep starts a missing clock when the chat's agent has
+# not spoken in it (the one who speaks is engaged_agent_id), never after a reply.
+
+def _no_clock(**kw):
+    row = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {"engaged_agent_id": "agent-before"},
+           "last_agent_message_at": None}
+    row.update(kw)
+    return row
+
+
+async def _deadline_writing(convs, outcome=("written", "")):
+    with patch.object(agent_api.db, "update_conversation_if_clock_unchanged",
+                      new=AsyncMock(return_value=outcome)) as write:
+        count, _p, fb = await _deadline(convs)
+    return count, fb, write
+
+
+@pytest.mark.asyncio
+async def test_a_missing_clock_on_a_chat_its_agent_never_answered_is_started():
+    count, fb, write = await _deadline_writing([_no_clock()])
+    assert count == 0
+    fb.assert_not_awaited()  # the deadline runs from now: nothing is handed back this round
+    write.assert_awaited_once()
+    meta = write.await_args.args[1]["metadata"]
+    assert 0 <= (datetime.now(timezone.utc) - datetime.fromisoformat(meta["agent_assigned_at"])).total_seconds() < 5
+    assert meta["clock_agent_id"] == _AGENT
+    assert meta["engaged_agent_id"] == "agent-before", "only the clock is added"
+    kw = write.await_args.kwargs
+    assert kw["clock"] is None, "written only while the clock is still missing"
+    assert kw["owner"] == _AGENT, "and the chat is still this agent's"
+    assert kw["check_last_agent"] is True and kw["last_agent_message_at"] is None, "and they still have not written"
+    assert set(kw["absent_keys"]) == {"crm_lead", "crm"}, "a CRM receipt saved since is never erased"
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 1
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_missing_clock_with_no_engaged_agent_at_all_is_started_too():
+    count, fb, write = await _deadline_writing([_no_clock(metadata={})])
+    write.assert_awaited_once()
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reply_this_recent_waits_a_round_before_the_clock():
+    """The send moves last_agent_message_at a moment before it marks the agent
+    engaged: a reply seconds old may be theirs, so nothing is written yet."""
+    count, fb, write = await _deadline_writing([_no_clock(last_agent_message_at=_iso(3))])
+    write.assert_not_awaited()
+    fb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_older_reply_from_an_earlier_assignment_does_not_hold_the_clock_back():
+    row = _no_clock(last_agent_message_at=_iso(3600))
+    count, fb, write = await _deadline_writing([row])
+    write.assert_awaited_once()
+    assert write.await_args.kwargs["last_agent_message_at"] == row["last_agent_message_at"], \
+        "a reply since this read stops the write"
+
+
+@pytest.mark.asyncio
+async def test_a_clock_that_could_not_be_written_is_counted():
+    count, fb, write = await _deadline_writing([_no_clock()], outcome=("failed", "57014"))
+    assert agent_api.DEADLINE_HEALTH["clock_start_failed"] == 1
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 0
+    fb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_clock_written_meanwhile_is_left_to_the_next_round():
+    count, fb, write = await _deadline_writing([_no_clock()], outcome=("changed", ""))
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 0
+    assert agent_api.DEADLINE_HEALTH["clock_start_failed"] == 0
 
 
 # ══════════════════════════════════════════════════════════════

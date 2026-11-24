@@ -1766,6 +1766,8 @@ async def update_conversation_if_clock_unchanged(
     clock: Optional[str],
     last_agent_message_at: Optional[str] = None,
     check_last_agent: bool = False,
+    absent_keys: tuple[str, ...] = (),
+    owner: Optional[str] = None,
 ) -> tuple[str, str]:
     """update_conversation, but only while the first-reply clock is what the caller read.
 
@@ -1779,6 +1781,12 @@ async def update_conversation_if_clock_unchanged(
     can. The row is written only if metadata->>agent_assigned_at is still
     `clock` (absent when None) and, with check_last_agent, last_agent_message_at
     is still the value read.
+
+    absent_keys: metadata keys the copy read did not have and that must not be
+    lost if another request added them since (the CRM receipts, written by a
+    server-side merge): the row is written only while they are still absent,
+    so a stale copy never erases one. owner: only while assigned_agent_id is
+    still this agent.
 
     Returns (outcome, code), never None:
       ("written", "")  the row matched and the payload is on it;
@@ -1800,6 +1808,10 @@ async def update_conversation_if_clock_unchanged(
                     q = q.is_("last_agent_message_at", "null")
                 else:
                     q = q.eq("last_agent_message_at", last_agent_message_at)
+            for key in absent_keys:
+                q = q.is_(f"metadata->>{key}", "null")
+            if owner is not None:
+                q = q.eq("assigned_agent_id", owner)
             return q.execute()
 
         res = await _run_sync(_q, idempotent=False)
