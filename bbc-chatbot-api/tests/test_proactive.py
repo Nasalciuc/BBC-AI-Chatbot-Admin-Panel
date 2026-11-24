@@ -216,7 +216,7 @@ class TestCompose:
     def test_kayak_full_search_is_said_back(self):
         text, replies = proactive.compose("kayak", _kayak_trip())
         assert text == (
-            f"Hi, I'm Alex from BuyBusinessClass. I see you're looking at Atlanta → Seoul, "
+            f"Hi, I'm Skye from BuyBusinessClass. I see you're looking at Atlanta → Seoul, "
             f"{_day(_in(30))} – {_day(_in(60))}, 4 adults in First. "
             "Want an agent to check private fares for exactly this trip?"
         )
@@ -225,21 +225,21 @@ class TestCompose:
     def test_quote_names_the_form_trouble_with_and_without_a_route(self):
         text, replies = proactive.compose("quote", _kayak_trip(return_date=None, adults="1", cabin="business"))
         assert text == (
-            "Hi, I'm Alex from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
+            "Hi, I'm Skye from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
             f"An agent can check fares for Atlanta → Seoul, {_day(_in(30))}, 1 adult in Business."
         )
         # The first button asks for nothing personal (ADR 14): the email comes in the chat.
         assert replies == ["Yes, send me fares", "I have a question", "Not now"]
         assert proactive.compose("quote", None)[0] == (
-            "Hi, I'm Alex from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
+            "Hi, I'm Skye from BuyBusinessClass. Looks like the quote form is giving you trouble. Can I help? "
             "Tell me where and roughly when, and an agent will check fares for you."
         )
 
     def test_exit_with_and_without_a_route(self):
         text, _ = proactive.compose("exit", TripContext(origin_name="New York", destination_name="London"))
-        assert text == "Hi, I'm Alex from BuyBusinessClass. Before you go: want an agent to check fares for New York → London?"
+        assert text == "Hi, I'm Skye from BuyBusinessClass. Before you go: want an agent to check fares for New York → London?"
         assert proactive.compose("exit", TripContext())[0] == (
-            "Hi, I'm Alex from BuyBusinessClass. Before you go: want an agent to check business class fares for you?"
+            "Hi, I'm Skye from BuyBusinessClass. Before you go: want an agent to check business class fares for you?"
         )
         # "Want an agent to check fares…?" — the first button is the yes to it.
         assert proactive.compose("exit", None)[1] == ["Yes, send me fares", "I have a question", "Not now"]
@@ -247,7 +247,7 @@ class TestCompose:
     def test_a_route_page_names_the_city_and_asks_roughly_when(self):
         text, replies = proactive.compose("reader", TripContext(source="route_page", destination_name="Paris"))
         assert text == (
-            "Hi, I'm Alex from BuyBusinessClass. Planning a trip to Paris? "
+            "Hi, I'm Skye from BuyBusinessClass. Planning a trip to Paris? "
             "Tell me roughly when, and an agent will check business class fares for you."
         )
         assert replies == ["Get a fare quote", "I have a question", "Not now"]
@@ -260,13 +260,13 @@ class TestCompose:
         trip = TripContext(destination_name="Seoul", depart_date=_in(30).isoformat(), adults="2")
         text, _ = proactive.compose(trigger, trip)
         assert text == (
-            f"Hi, I'm Alex from BuyBusinessClass. I see you're looking at Seoul, {_day(_in(30))}, 2 adults. "
+            f"Hi, I'm Skye from BuyBusinessClass. I see you're looking at Seoul, {_day(_in(30))}, 2 adults. "
             "Want an agent to check business class fares for these dates?"
         )
 
     def test_nothing_known_is_generic(self):
         assert proactive.compose("reader", None)[0] == (
-            "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
+            "Hi, I'm Skye from BuyBusinessClass. Planning a business class trip? "
             "Tell me where and roughly when, and an agent will check fares for you."
         )
 
@@ -287,11 +287,11 @@ class TestCompose:
         assert replies[0] in ("Yes, send me fares", "Get a fare quote")
 
     def test_the_brand_follows_the_site(self):
-        assert proactive.compose("reader", None, "bct")[0].startswith("Hi, I'm Alex from Business Class Tickets.")
-        assert proactive.compose("kayak", _kayak_trip(), "bbc")[0].startswith("Hi, I'm Alex from BuyBusinessClass.")
+        assert proactive.compose("reader", None, "bct")[0].startswith("Hi, I'm Skye from Business Class Tickets.")
+        assert proactive.compose("kayak", _kayak_trip(), "bbc")[0].startswith("Hi, I'm Skye from BuyBusinessClass.")
         # Unknown or missing: BBC, the way the prompt's brand defaults.
         for site in (None, "", "evil.example", "BCT"):
-            assert proactive.compose("exit", None, site)[0].startswith("Hi, I'm Alex from BuyBusinessClass.")
+            assert proactive.compose("exit", None, site)[0].startswith("Hi, I'm Skye from BuyBusinessClass.")
 
     @pytest.mark.parametrize("trigger", ["kayak", "ads", "quote", "reader", "exit"])
     @pytest.mark.parametrize("trip_kind", ["full", "dest", "dest_dated", "none"])
@@ -427,7 +427,7 @@ class TestOffer:
         req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="reader", trip="not an object")
         out = await proactive_offer(req, None)
         assert out["show"] is True
-        assert out["message"].startswith("Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?")
+        assert out["message"].startswith("Hi, I'm Skye from BuyBusinessClass. Planning a business class trip?")
 
     @pytest.mark.asyncio
     async def test_the_card_names_the_brand_of_the_site(self, monkeypatch):
@@ -435,7 +435,7 @@ class TestOffer:
         req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="reader", site="bct")
         assert req.site == "bct"
         out = await proactive_offer(req, None)
-        assert out["message"].startswith("Hi, I'm Alex from Business Class Tickets.")
+        assert out["message"].startswith("Hi, I'm Skye from Business Class Tickets.")
 
     @pytest.mark.parametrize("site", ["evil.example", "BBC", 7, ["bct"], {"x": 1}, ""])
     def test_an_unknown_site_is_dropped_never_a_422(self, site):
@@ -453,7 +453,7 @@ class TestNote:
         out = proactive.offer(_VISITOR, "note", None, "bbc")
         assert out["show"] is True and out["arm"] == "note"
         assert out["message"] == (
-            "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip? "
+            "Hi, I'm Skye from BuyBusinessClass. Planning a business class trip? "
             "Tell me where and roughly when, and an agent will check fares for you."
         )
         assert out["quick_replies"] == ["Get a fare quote", "I have a question"]
@@ -479,7 +479,7 @@ class TestNote:
         req = ProactiveOfferRequest(visitor_id=_VISITOR, trigger="note", site="bct")
         out = await proactive_offer(req, None)
         assert out["show"] is True
-        assert out["message"].startswith("Hi, I'm Alex from Business Class Tickets.")
+        assert out["message"].startswith("Hi, I'm Skye from Business Class Tickets.")
 
     @pytest.mark.asyncio
     async def test_the_answer_opens_the_chat_with_the_feature_off(self):
@@ -597,7 +597,7 @@ class TestNoteBandit:
     def test_places_asks_where_with_buttons(self):
         text, replies = proactive.compose("note", None, "bbc", "places")
         assert text == (
-            "Hi, I'm Alex from BuyBusinessClass. Where are you thinking of flying? "
+            "Hi, I'm Skye from BuyBusinessClass. Where are you thinking of flying? "
             "Tap one or type a city, and an agent will check business class fares for you."
         )
         assert replies == ["Europe", "Asia", "Somewhere else", "I have a question"]
@@ -625,7 +625,7 @@ class TestNoteBandit:
         flying from" (ADR 11); the brand of the site."""
         for site, brand in (("bbc", "BuyBusinessClass"), ("bct", "Business Class Tickets")):
             text, replies = proactive.compose("note", None, site, "places")
-            assert text.startswith(f"Hi, I'm Alex from {brand}.")
+            assert text.startswith(f"Hi, I'm Skye from {brand}.")
             lowered = text.lower()
             assert not re.search(r"\bI(?:'ll| will)? (?:check|pull|find|get)\b", text), text
             assert "where are you flying" not in lowered and "$" not in text and "within" not in lowered
@@ -869,7 +869,7 @@ class TestOpenConversation:
         with p_count, p_add as add, p_meta, p_seed:
             await proactive.open_conversation(_CONV_ID, "reader", None, "bct")
         assert add.await_args.args[2] == proactive.compose("reader", None, "bct")[0]
-        assert add.await_args.args[2].startswith("Hi, I'm Alex from Business Class Tickets.")
+        assert add.await_args.args[2].startswith("Hi, I'm Skye from Business Class Tickets.")
 
     @pytest.mark.asyncio
     async def test_a_chat_with_messages_is_left_alone(self):
@@ -1454,10 +1454,10 @@ class TestPrompt:
             tunnel="sales", visitor=VisitorInfo(), lead=None, entities={"site": site},
         )
         prompt = static + dynamic
-        assert f"Your name is Alex, the AI Travel Agent of {brand}." in prompt
+        assert f"Your name is Skye, the AI Travel Agent of {brand}." in prompt
         # Owner, 16 Nov: the badge in the window's header says AI; Alex says his name and the brand.
-        assert 'The chat window shows "Alex" over "Travel Agent", with an "AI" badge on his photo at the top' in prompt
-        assert f'say it with the brand ("I\'m Alex from {brand}")' in prompt
+        assert 'The chat window shows "Skye" over "Travel Agent", with an "AI" badge on his photo at the top' in prompt
+        assert f'say it with the brand ("I\'m Skye from {brand}")' in prompt
         assert "You ARE an AI Travel Agent, never a person." in prompt
         assert 'be HONEST: "I\'m an AI Travel Agent.' in prompt
         assert "NEVER imply you are a human" in prompt
@@ -1716,12 +1716,12 @@ class TestQuoteContact:
         text, replies = proactive.compose("quote", _kayak_trip(return_date=None, adults="1", cabin="business"),
                                           "bbc", proactive.CONTACT)
         assert text == (
-            "Hi, I'm Alex from BuyBusinessClass. Rather not fill in the whole form? I can pass Atlanta → Seoul, "
+            "Hi, I'm Skye from BuyBusinessClass. Rather not fill in the whole form? I can pass Atlanta → Seoul, "
             f"{_day(_in(30))}, 1 adult in Business to an agent right here, and they'll email you the fares."
         )
         assert replies == ["Email me the fares", "I have a question", "Not now"]
         assert proactive.compose("quote", None, "bct", proactive.CONTACT)[0] == (
-            "Hi, I'm Alex from Business Class Tickets. Rather not fill in the whole form? Tell me here where and "
+            "Hi, I'm Skye from Business Class Tickets. Rather not fill in the whole form? Tell me here where and "
             "roughly when, and an agent will email you the fares."
         )
 
@@ -1820,20 +1820,20 @@ class TestAds:
         """Owner, 23 Nov: one question and the Kayak card's yes; the dates and the origin come after the contact."""
         text, replies = proactive.compose("ads", TripContext(source="route_page", destination_name="Paris"))
         assert text == (
-            "Hi, I'm Alex from BuyBusinessClass. Want an agent to send you today's business class fares to Paris?"
+            "Hi, I'm Skye from BuyBusinessClass. Want an agent to send you today's business class fares to Paris?"
         )
         assert replies == ["Yes, send me fares", "I have a question", "Not now"]
         assert replies[0] == proactive._REPLIES["kayak"][0]
         for site, brand in (("bbc", "BuyBusinessClass"), ("bct", "Business Class Tickets")):
             text, _ = proactive.compose("ads", TripContext(source="route_page", destination_name="Madrid"), site)
-            assert text == f"Hi, I'm Alex from {brand}. Want an agent to send you today's business class fares to Madrid?"
+            assert text == f"Hi, I'm Skye from {brand}. Want an agent to send you today's business class fares to Madrid?"
 
     def test_the_reader_on_the_same_page_still_asks_when(self):
         # The path that does not take the new words: the reader's card and the tapped note keep theirs.
         trip = TripContext(source="route_page", destination_name="Madrid")
         for trigger in ("reader", "note"):
             text, replies = proactive.compose(trigger, trip, "bbc")
-            assert text == ("Hi, I'm Alex from BuyBusinessClass. Planning a trip to Madrid? "
+            assert text == ("Hi, I'm Skye from BuyBusinessClass. Planning a trip to Madrid? "
                             "Tell me roughly when, and an agent will check business class fares for you.")
             assert replies[0] == "Get a fare quote"
 
@@ -1853,7 +1853,7 @@ class TestAds:
         trip = TripContext(origin_name="Chicago", destination_name="Paris", depart_date=_in(30).isoformat())
         text, _ = proactive.compose("ads", trip)
         assert text == (
-            f"Hi, I'm Alex from BuyBusinessClass. I see you're looking at Chicago → Paris, {_day(_in(30))}. "
+            f"Hi, I'm Skye from BuyBusinessClass. I see you're looking at Chicago → Paris, {_day(_in(30))}. "
             "Want an agent to check private fares for exactly this trip?"
         )
 
