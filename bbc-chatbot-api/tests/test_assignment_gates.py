@@ -91,7 +91,11 @@ class _Chain:
         if self._select == "assigned_agent_id, status" and self.t.fail_owner_read:
             raise _goaway()
         for kind, col, val in self._filters:
-            have = row.get(col)
+            if "->>" in col:  # a JSON key, as PostgREST reads metadata->>key
+                base, key = col.split("->>", 1)
+                have = (row.get(base) or {}).get(key)
+            else:
+                have = row.get(col)
             if kind == "eq" and have != val:
                 return MagicMock(data=[])
             if kind == "is" and val == "null" and have is not None:
@@ -546,16 +550,17 @@ class TestTakeStartsTheClock:
 
     _ME = {"id": "me", "role": "sales", "tunnel_scope": "sales"}
 
-    async def _take(self, meta_before: dict):
+    async def _take(self, meta_before: dict, **row_extra):
         """The claim endpoint as production runs it: the gate wins, then the
-        real perform_handoff reads the row the gate has just written."""
+        real perform_handoff reads the row the gate has just written. The
+        chat is the agent's already, so its write is the conditional one."""
         from app.api import conversations as capi
 
         conv = {"id": _CID, "assigned_agent_id": None, "status": "needs_agent",
-                "tunnel": "sales", "metadata": dict(meta_before)}
+                "tunnel": "sales", "metadata": dict(meta_before), **row_extra}
         after_gate = {"id": _CID, "assigned_agent_id": "me", "mode": "human",
-                      "status": "active", "metadata": dict(meta_before)}
-        upd = AsyncMock()
+                      "status": "active", "metadata": dict(meta_before), **row_extra}
+        upd = AsyncMock(return_value=("written", ""))
         activity = AsyncMock()
         with patch.object(sb, "get_conversation", new=AsyncMock(return_value=conv)), \
              patch.object(sb, "get_user_by_id",
@@ -563,7 +568,8 @@ class TestTakeStartsTheClock:
              patch.object(sb, "claim_conversation_if_unassigned",
                           new=AsyncMock(return_value={"won": True, "queued_age_seconds": 12})), \
              patch.object(sb, "get_conversation_simple", new=AsyncMock(return_value=after_gate)), \
-             patch.object(sb, "update_conversation", upd), \
+             patch.object(sb, "update_conversation_if_clock_unchanged", upd), \
+             patch.object(sb, "update_conversation", new=AsyncMock()), \
              patch("app.services.presence.log_activity", activity), \
              patch("app.pipeline.orchestrator._fire_and_forget",
                    new=MagicMock(side_effect=lambda coro: coro.close())):
@@ -610,23 +616,43 @@ class TestTakeStartsTheClock:
         assert payload["assigned_agent_id"] == "agent-A" and payload["mode"] == "human"
         fire.assert_not_called()
 
+    @staticmethod
+    def _store_with_cas(store: dict):
+        """The row as the database holds it: the conditional write lands only
+        while metadata->>agent_assigned_at is still what the caller read."""
+        async def _cas(cid, payload, *, clock, last_agent_message_at=None, check_last_agent=False):
+            if (store.get("metadata") or {}).get("agent_assigned_at") != clock:
+                return ("changed", "")
+            if check_last_agent and store.get("last_agent_message_at") != last_agent_message_at:
+                return ("changed", "")
+            store.update(payload)  # the column write: metadata replaces the blob
+            return ("written", "")
+
+        async def _plain(cid, payload):
+            store.update(payload)
+
+        return AsyncMock(side_effect=_cas), AsyncMock(side_effect=_plain)
+
     @pytest.mark.asyncio
     async def test_a_stale_copy_from_a_second_tab_cannot_erase_the_clock(self):
         """CodeRabbit #280: the second tab read the row before the Take's write
         and writes after it. update_conversation replaces the whole metadata
-        blob, so writing that copy back used to erase the clock."""
-        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human",
-                 "status": "active", "metadata": {"handoff_reason": "affinity"}}
+        blob, so writing that copy back used to erase the clock. Round 2: the
+        copy here still has a loop guard to reset, so it does want to write."""
+        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                 "metadata": {"handoff_reason": "affinity", "agent_assign_count": 2}}
         stale = {**store, "metadata": dict(store["metadata"])}
         # The winning Take lands between the second tab's read and its write.
-        store["metadata"] = {**store["metadata"], "handoff_reason": "manual_claim",
-                             "agent_assigned_at": datetime.now(timezone.utc).isoformat()}
+        clock = datetime.now(timezone.utc).isoformat()
+        store["metadata"] = {"handoff_reason": "manual_claim", "agent_assigned_at": clock}
+        cas, plain = self._store_with_cas(store)
+        raced = handoff.HANDOFF_HEALTH["same_cycle_write_raced"]
+        reads = iter([stale, {**store, "metadata": dict(store["metadata"])}])
 
-        async def _write(cid, payload):
-            store.update(payload)  # the column write: metadata, if sent, replaces the blob
-
-        with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=stale)), \
-             patch.object(handoff.db, "update_conversation", new=AsyncMock(side_effect=_write)), \
+        with patch.object(handoff.db, "get_conversation_simple",
+                          new=AsyncMock(side_effect=lambda cid: next(reads))), \
+             patch.object(handoff.db, "update_conversation_if_clock_unchanged", cas), \
+             patch.object(handoff.db, "update_conversation", plain), \
              patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
              patch("app.services.presence.log_activity", new=AsyncMock()), \
              patch("app.pipeline.orchestrator._fire_and_forget",
@@ -635,17 +661,18 @@ class TestTakeStartsTheClock:
                 _CID, "me", emit_messages=False, handoff_reason="manual_claim",
                 _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
             )
-        assert "agent_assigned_at" in store["metadata"], "the Take's clock survives"
-        assert store["metadata"]["handoff_reason"] == "manual_claim"
+        assert store["metadata"] == {"handoff_reason": "manual_claim", "agent_assigned_at": clock}, \
+            "the Take's clock survives, and the stale copy is not written back"
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_raced"] == raced + 1
 
     @pytest.mark.asyncio
     async def test_a_same_agent_handoff_that_changes_metadata_still_writes_it(self):
         """The other side of the guard: a loop guard to reset is still written."""
         row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
                "metadata": {"agent_assign_count": 3, "handoff_reason": "auto_assign"}}
-        upd = AsyncMock()
+        upd = AsyncMock(return_value=("written", ""))
         with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=row)), \
-             patch.object(handoff.db, "update_conversation", upd), \
+             patch.object(handoff.db, "update_conversation_if_clock_unchanged", upd), \
              patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
              patch("app.services.presence.log_activity", new=AsyncMock()), \
              patch("app.pipeline.orchestrator._fire_and_forget",
@@ -668,7 +695,7 @@ class TestTakeStartsTheClock:
                 "tunnel": "sales", "metadata": {}}
         mine = {"id": _CID, "assigned_agent_id": "me", "mode": "human",
                 "status": "active", "metadata": {}}
-        upd = AsyncMock()
+        upd = AsyncMock(return_value=("written", ""))
         activity = AsyncMock()
         with patch.object(sb, "get_conversation", new=AsyncMock(return_value=conv)), \
              patch.object(sb, "get_user_by_id",
@@ -676,7 +703,8 @@ class TestTakeStartsTheClock:
              patch.object(sb, "claim_conversation_if_unassigned",
                           new=AsyncMock(return_value={"won": False, "queued_age_seconds": None})), \
              patch.object(sb, "get_conversation_simple", new=AsyncMock(return_value=mine)), \
-             patch.object(sb, "update_conversation", upd), \
+             patch.object(sb, "update_conversation_if_clock_unchanged", upd), \
+             patch.object(sb, "update_conversation", new=AsyncMock()), \
              patch("app.services.presence.log_activity", activity), \
              patch("app.pipeline.orchestrator._fire_and_forget",
                    new=MagicMock(side_effect=lambda coro: coro.close())):
@@ -726,10 +754,10 @@ class TestTakeStartsTheClock:
 
         row = {"id": _CID, "assigned_agent_id": "agent-A", "mode": "human",
                "status": "active", "metadata": {}}
-        upd = AsyncMock()
+        upd = AsyncMock(return_value=("written", ""))
         with patch.object(handoff, "datetime", _Past), \
              patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=row)), \
-             patch.object(handoff.db, "update_conversation", upd), \
+             patch.object(handoff.db, "update_conversation_if_clock_unchanged", upd), \
              patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
              patch("app.services.presence.log_activity", new=AsyncMock()), \
              patch("app.pipeline.orchestrator._fire_and_forget",
@@ -759,3 +787,182 @@ class TestTakeStartsTheClock:
         count, fallback = await self._sweep_after_take(agent_wrote_after_s=20)
         assert count == 0
         fallback.assert_not_awaited()
+
+    async def _recovered_take(self, read_row):
+        """The endpoint's "already mine" path: the gate lost, the re-read finds
+        the chat is mine. read_row() builds the row each time it is read, that
+        is after the endpoint noted when it saw the chat unassigned."""
+        from app.api import conversations as capi
+
+        conv = {"id": _CID, "assigned_agent_id": None, "status": "needs_agent",
+                "tunnel": "sales", "metadata": {}}
+        cas = AsyncMock(return_value=("written", ""))
+        plain = AsyncMock()
+        with patch.object(sb, "get_conversation", new=AsyncMock(return_value=conv)), \
+             patch.object(sb, "get_user_by_id",
+                          new=AsyncMock(return_value={"id": "me", "name": "Ana", "role": "sales"})), \
+             patch.object(sb, "claim_conversation_if_unassigned",
+                          new=AsyncMock(return_value={"won": False, "queued_age_seconds": None})), \
+             patch.object(sb, "get_conversation_simple",
+                          new=AsyncMock(side_effect=lambda cid: read_row())), \
+             patch.object(sb, "update_conversation_if_clock_unchanged", cas), \
+             patch.object(sb, "update_conversation", plain), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            out = await capi.claim_conversation(conversation_id=_CID, user=dict(self._ME))
+        assert out["data"]["assigned_to"] == "me"
+        return cas, plain
+
+    @pytest.mark.asyncio
+    async def test_a_second_request_keeps_the_clock_the_first_one_started(self):
+        """CodeRabbit #280, round 2: the request that won wrote the clock, and
+        the agent answered before the "already mine" request reached its write.
+        A clock started again would come after the answer, and the sweep counts
+        only an answer at or after agent_assigned_at: an answered chat would go
+        back to Alex. The clock is this cycle's, so it is kept, untouched."""
+        def _row():
+            now = datetime.now(timezone.utc).isoformat()
+            return {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                    "metadata": {"agent_assigned_at": now, "handoff_reason": "manual_claim"},
+                    "last_agent_message_at": now}
+
+        cas, plain = await self._recovered_take(_row)
+        cas.assert_not_awaited()
+        plain.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_running_clock_is_kept_before_any_answer_too(self):
+        """The usual double click: the winner's clock is there, nobody has
+        written yet. The second request does not move it a moment later."""
+        def _row():
+            return {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                    "metadata": {"agent_assigned_at": datetime.now(timezone.utc).isoformat(),
+                                 "handoff_reason": "manual_claim"},
+                    "last_agent_message_at": None}
+
+        cas, plain = await self._recovered_take(_row)
+        cas.assert_not_awaited()
+        plain.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_answer_in_this_cycle_is_never_put_before_a_new_clock(self):
+        """The request that won died before writing the clock, and the agent has
+        already answered: a clock started now would postdate the answer."""
+        def _row():
+            return {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                    "metadata": {}, "last_agent_message_at": datetime.now(timezone.utc).isoformat()}
+
+        cas, plain = await self._recovered_take(_row)
+        cas.assert_not_awaited()
+        plain.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_take_after_an_older_cycle_starts_a_fresh_clock(self):
+        """The branch the fix does not take: the clock and the answer the row
+        still carries are older than the moment this Take saw the chat
+        unassigned, so they belong to an earlier cycle and the take starts its
+        own clock, as before. The write still checks that nothing moved."""
+        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        _out, upd, _activity = await self._take({"agent_assigned_at": old}, last_agent_message_at=old)
+        upd.assert_awaited_once()
+        assert upd.await_args.kwargs["clock"] == old
+        assert upd.await_args.kwargs["last_agent_message_at"] == old
+        assert upd.await_args.kwargs["check_last_agent"] is True
+        assert 0 <= _iso_age_s(upd.await_args.args[1]["metadata"]["agent_assigned_at"]) < 5
+
+    @pytest.mark.asyncio
+    async def test_the_clock_is_written_only_if_nobody_wrote_it_meanwhile(self):
+        """The condition holds where the write lands, not on the copy read: the
+        winner's clock arriving between this request's read and its write stays
+        exactly as the winner wrote it."""
+        floor = datetime.now(timezone.utc) - timedelta(seconds=1)
+        store = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+                 "metadata": {}, "last_agent_message_at": None}
+        first_read = {**store, "metadata": {}}
+        winner_clock = datetime.now(timezone.utc).isoformat()
+        store["metadata"] = {"agent_assigned_at": winner_clock, "handoff_reason": "manual_claim"}
+        cas, plain = self._store_with_cas(store)
+        reads = iter([first_read, {**store, "metadata": dict(store["metadata"])}])
+        with patch.object(handoff.db, "get_conversation_simple",
+                          new=AsyncMock(side_effect=lambda cid: next(reads))), \
+             patch.object(handoff.db, "update_conversation_if_clock_unchanged", cas), \
+             patch.object(handoff.db, "update_conversation", plain), \
+             patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            await handoff.perform_handoff_to_agent(
+                _CID, "me", emit_messages=False, handoff_reason="manual_claim",
+                _gate_won=True, _seen_unassigned_at=floor,
+            )
+        assert store["metadata"]["agent_assigned_at"] == winner_clock, "not restarted"
+        assert cas.await_count == 1, "one conditional write, which found the clock moved"
+        plain.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_conditional_write_that_breaks_is_counted(self):
+        """Money path (CLAUDE.md rule 2): a take whose clock did not land is
+        counted in /health, not only logged."""
+        row = {"id": _CID, "assigned_agent_id": "me", "mode": "human", "status": "active",
+               "metadata": {}}
+        failed = handoff.HANDOFF_HEALTH["same_cycle_write_failed"]
+        with patch.object(handoff.db, "get_conversation_simple", new=AsyncMock(return_value=row)), \
+             patch.object(handoff.db, "update_conversation_if_clock_unchanged",
+                          new=AsyncMock(return_value=("failed", "57014"))), \
+             patch.object(handoff.db, "update_conversation", new=AsyncMock()), \
+             patch.object(handoff.db, "get_user_by_id", new=AsyncMock(return_value={})), \
+             patch("app.services.presence.log_activity", new=AsyncMock()), \
+             patch("app.pipeline.orchestrator._fire_and_forget",
+                   new=MagicMock(side_effect=lambda coro: coro.close())):
+            await handoff.perform_handoff_to_agent(
+                _CID, "me", emit_messages=False, handoff_reason="manual_claim", _gate_won=True,
+            )
+        assert handoff.HANDOFF_HEALTH["same_cycle_write_failed"] == failed + 1
+
+
+class TestClockConditionalWrite:
+    """update_conversation_if_clock_unchanged against a row that honours its WHERE clause."""
+
+    async def _write(self, row, **kw):
+        table = _ConvTable(row)
+        with patch.object(sb, "get_client", return_value=table), \
+             patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+            out = await sb.update_conversation_if_clock_unchanged(_CID, {"metadata": {"x": 1}}, **kw)
+        return out, table
+
+    @pytest.mark.asyncio
+    async def test_writes_while_the_clock_is_what_was_read(self):
+        out, table = await self._write({"id": _CID, "metadata": {"agent_assigned_at": "T1"}}, clock="T1")
+        assert out == ("written", "")
+        assert table.row["metadata"] == {"x": 1}
+
+    @pytest.mark.asyncio
+    async def test_a_clock_read_as_absent_must_still_be_absent(self):
+        out, table = await self._write({"id": _CID, "metadata": {"agent_assigned_at": "T2"}}, clock=None)
+        assert out == ("changed", "")
+        assert table.row["metadata"] == {"agent_assigned_at": "T2"} and table.update_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_moved_clock_writes_nothing(self):
+        out, table = await self._write({"id": _CID, "metadata": {"agent_assigned_at": "T2"}}, clock="T1")
+        assert out == ("changed", "")
+        assert table.update_count == 0
+
+    @pytest.mark.asyncio
+    async def test_an_answer_since_the_read_blocks_it_only_when_asked(self):
+        answered = {"id": _CID, "metadata": {}, "last_agent_message_at": "R1"}
+        out, _ = await self._write(dict(answered), clock=None, last_agent_message_at=None,
+                                   check_last_agent=True)
+        assert out == ("changed", "")
+        out, _ = await self._write(dict(answered), clock=None)
+        assert out == ("written", ""), "not asked: the clock alone decides"
+
+    @pytest.mark.asyncio
+    async def test_a_broken_write_says_failed_not_changed(self):
+        table = _ConvTable({"id": _CID, "metadata": {}})
+        table.fail_update = True
+        with patch.object(sb, "get_client", return_value=table), \
+             patch.object(sb, "_run_sync", new=AsyncMock(side_effect=lambda fn, **k: fn())):
+            out = await sb.update_conversation_if_clock_unchanged(_CID, {"metadata": {}}, clock=None)
+        assert out[0] == "failed"

@@ -1759,6 +1759,60 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
         return None
 
 
+async def update_conversation_if_clock_unchanged(
+    conversation_id: str,
+    payload: dict,
+    *,
+    clock: Optional[str],
+    last_agent_message_at: Optional[str] = None,
+    check_last_agent: bool = False,
+) -> tuple[str, str]:
+    """update_conversation, but only while the first-reply clock is what the caller read.
+
+    update_conversation replaces the whole metadata blob. A handoff to the agent
+    who already holds the chat writes back the copy it read, and two requests of
+    one Take run side by side (a double click, a second tab, the gate's answer
+    lost and found again): a copy read before the other request started the
+    clock erases it, and a clock started after the agent's reply makes an
+    answered chat look unanswered to the deadline sweep. A check on the copy
+    cannot close the window between that read and this write; the WHERE clause
+    can. The row is written only if metadata->>agent_assigned_at is still
+    `clock` (absent when None) and, with check_last_agent, last_agent_message_at
+    is still the value read.
+
+    Returns (outcome, code), never None:
+      ("written", "")  the row matched and the payload is on it;
+      ("changed", "")  the clock or the agent's last message moved since the
+                       read: nothing written;
+      ("failed", code) the write raised. Only the database's code is logged.
+    """
+    try:
+        db = get_client()
+
+        def _q():
+            q = db.table("conversations").update(payload).eq("id", conversation_id)
+            if clock is None:
+                q = q.is_("metadata->>agent_assigned_at", "null")
+            else:
+                q = q.eq("metadata->>agent_assigned_at", clock)
+            if check_last_agent:
+                if last_agent_message_at is None:
+                    q = q.is_("last_agent_message_at", "null")
+                else:
+                    q = q.eq("last_agent_message_at", last_agent_message_at)
+            return q.execute()
+
+        res = await _run_sync(_q, idempotent=False)
+        return ("written", "") if res.data else ("changed", "")
+    except Exception as e:
+        code = _loggable_code(_error_code(e)) or "none"
+        logger.error(
+            f"[{conversation_id}] conditional conversation write failed "
+            f"(code={code}, {type(e).__name__})"
+        )
+        return ("failed", code)
+
+
 async def mark_needs_agent(conversation_id: str) -> tuple[str, str]:
     """The client asked for a person: status needs_agent, on an open conversation only.
 
