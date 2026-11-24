@@ -96,6 +96,39 @@ async def test_held_past_the_wait_the_work_still_goes_on(fake, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_strict_lock_held_past_the_wait_does_not_run_the_work(fake, monkeypatch):
+    """CodeRabbit #280, round 5: a CRM submit must not run beside another process's. Counted, refused, and the
+    in-process lock is free again for the next try."""
+    monkeypatch.setattr(cl, "WAIT_S", 0.15)
+    _held_elsewhere(fake, "c1", 60_000, name="crm_submit")
+    ran = []
+    with pytest.raises(cl.LockBusy):
+        async with cl.conversation_lock("crm_submit", "c1", strict=True):
+            ran.append(1)
+    assert ran == []
+    assert cl.LOCK_HEALTH["wait_timeouts"] == 1 and cl.LOCK_HEALTH["busy_refused"] == 1
+    assert await fake.get("lock:crm_submit:c1") == "their-token", "someone else's key is left alone"
+    assert not cl.conversation_lock("crm_submit", "c1").locked()
+
+
+@pytest.mark.asyncio
+async def test_a_strict_lock_still_runs_when_redis_is_down(fake):
+    """No Redis, no other holder to wait for: the in-process lock alone, as for every lock."""
+    fake.down = True
+    ran = []
+    async with cl.conversation_lock("crm_submit", "c1", strict=True):
+        ran.append(1)
+    assert ran == [1] and cl.LOCK_HEALTH["busy_refused"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_strict_lock_keeps_its_longer_ttl(fake):
+    async with cl.conversation_lock("crm_submit", "c1", ttl_ms=60_000, strict=True):
+        left = fake.expires["lock:crm_submit:c1"] - time.monotonic()
+    assert 50 < left <= 60
+
+
+@pytest.mark.asyncio
 async def test_redis_down_means_the_in_process_lock_alone_and_a_cooldown(fake):
     fake.down = True
     async with cl.conversation_lock("lead", "c1"):

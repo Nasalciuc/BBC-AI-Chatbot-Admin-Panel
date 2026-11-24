@@ -291,7 +291,69 @@ async def test_the_backstop_still_sends_at_most_twenty_a_run():
     page = [_orphan(i) for i in range(cron._BACKSTOP_PAGE)]
     out, push, calls = await _backstop([page, page], lambda cid: _conv(id=cid))
     assert push.await_count == cron._BACKSTOP_SENDS
-    assert len(calls) == 1, "twenty sent: no second page"
+    assert [c["offset"] for c in calls] == [0, 50, 100], "every candidate is read before the first send"
+
+
+@pytest.mark.asyncio
+async def test_a_send_does_not_shift_the_next_candidate_out_of_the_run():
+    """CodeRabbit #280, round 5: 49 held chats, then E1 and E2. A page read at an offset after E1 was sent (and
+    left the query's answer) started past E2. Read first, send after: both are tried in the same run."""
+    live = [_orphan(i) for i in range(49)] + [_orphan(1001), _orphan(1002)]
+
+    async def _page(**kw):
+        return live[kw["offset"]:kw["offset"] + kw["limit"]]
+
+    async def _push(lead, *a, **k):
+        live.remove(lead)  # sent: created_in_crm, so it leaves the query's answer
+        return MagicMock(success=True, request_id="crm-1", error=None)
+
+    def convs(cid):
+        held = cid not in ("conv-1001", "conv-1002")
+        return _conv(id=cid, assigned_agent_id="agent-1" if held else None)
+
+    with _flags({"CRM_LEADS_API": True}), \
+            patch.object(cron.db, "get_crm_orphan_leads", new=AsyncMock(side_effect=_page)), \
+            patch.object(cron.db, "get_conversation_simple", new=AsyncMock(side_effect=convs)), \
+            patch.object(cron.db, "update_lead_crm_push_state", new=AsyncMock()), \
+            patch("app.services.crm.push_lead_to_crm", new=AsyncMock(side_effect=_push)) as push:
+        out = await cron.run_crm_orphan_backstop()
+    assert [c.args[2] for c in push.await_args_list] == ["conv-1001", "conv-1002"]
+    assert [r["status"] for r in out["results"]] == ["pushed", "pushed"]
+
+
+class _Busy:
+    """The chat's CRM-submit lock, held by another process past the wait."""
+
+    def __init__(self, cid):
+        self.cid = cid
+
+    async def __aenter__(self):
+        from app.services.conversation_lock import LockBusy
+
+        raise LockBusy("crm_submit", self.cid)
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_a_chat_another_process_is_sending_waits_for_the_next_sweep():
+    from app.services.crm import CRM_PUSH_HEALTH
+
+    before = CRM_PUSH_HEALTH["submit_busy"]
+    with patch.object(crm_leads_api, "submit_lock", side_effect=_Busy):
+        out, submit = await _sweep(_conv())
+    submit.assert_not_awaited()
+    assert "submit_busy" in _reasons(out)
+    assert CRM_PUSH_HEALTH["submit_busy"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_lead_another_process_is_sending_waits_for_the_next_backstop_run():
+    with patch.object(crm_leads_api, "submit_lock", side_effect=_Busy):
+        out, push, _ = await _backstop([[_orphan(1)]], lambda cid: _conv(id=cid))
+    push.assert_not_awaited()
+    assert out["results"] == [{"id": "l1", "status": "skipped", "reason": "submit_busy"}]
 
 
 @pytest.mark.asyncio
@@ -364,6 +426,18 @@ async def test_button_contacts_come_from_the_receipts_of_the_last_30_days():
     assert col == "metadata->crm_lead->>at", "the receipt's own time, not the chat's"
     from datetime import datetime, timedelta, timezone
     assert abs(datetime.fromisoformat(cutoff) - (datetime.now(timezone.utc) - timedelta(days=30))).total_seconds() < 60
+
+
+@pytest.mark.asyncio
+async def test_more_button_contacts_than_can_be_loaded_is_no_answer():
+    """CodeRabbit #280, round 5: a list cut at the cap is not a guard. None: the automatic pushes wait."""
+    rows = [{"id": f"c{i}", "visitor_phone": None, "visitor_email": f"p{i}@example.com"} for i in range(3)]
+    a, b = _db_returning(MagicMock(data=rows, count=sb._CRM_CONTACT_SCAN_CAP + 1))
+    with a, b, patch.object(sb, "_CRM_CONTACT_SCAN_CAP", 3):
+        assert await _real_button_rows() is None
+    a, b = _db_returning(MagicMock(data=rows, count=3))
+    with a, b, patch.object(sb, "_CRM_CONTACT_SCAN_CAP", 3):
+        assert len(await _real_button_rows()) == 3, "exactly the cap: complete"
 
 
 @pytest.mark.asyncio

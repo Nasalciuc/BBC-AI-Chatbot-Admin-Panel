@@ -502,6 +502,42 @@ async def test_the_status_of_a_chat_the_old_path_sent_has_no_button():
 
 
 @pytest.mark.asyncio
+async def test_the_status_shows_a_lead_the_button_made_between_its_two_reads():
+    """CodeRabbit #280, round 5: the receipts are read a moment after the chat. A lead saved in between comes back
+    with its link, not as a button (its lead-row mark may not be written yet)."""
+    rec = {"flight_request_id": 98765, "url": "https://crm.example.test/requests/98765", "warnings": []}
+    receipts = {"crm_lead": rec, "created_in_crm": False, "crm_lead_id": None}
+    with _flags({"CRM_LEADS_API": True}), \
+            patch.object(route.db, "get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch.object(route.db, "get_crm_receipts", new=AsyncMock(return_value=receipts)):
+        status = await route.crm_lead_status("c-1", user=ME)
+    assert status["data"] == {"enabled": True, "lead": rec, "can_create": False, "reason": None}
+
+
+@pytest.mark.asyncio
+async def test_a_press_while_another_process_sends_the_chat_sends_nothing():
+    from app.services.conversation_lock import LockBusy
+
+    class _Busy:
+        async def __aenter__(self):
+            raise LockBusy("crm_submit", "c-1")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    before = api.CRM_LEADS_API_HEALTH["busy"]
+    ps = _route_patches(_conv())
+    with ps["flags"], ps["conv"] as read, ps["user"], ps["post"] as post, ps["keep"], ps["mark"], ps["universe"], \
+            patch.object(route.api, "submit_lock", return_value=_Busy()):
+        with pytest.raises(HTTPException) as e:
+            await route.create_crm_lead("c-1", body=None, confirm_locked=False, user=ME)
+    assert e.value.status_code == 503 and "being sent to the CRM right now" in e.value.detail
+    read.assert_not_awaited()
+    post.assert_not_awaited()
+    assert api.CRM_LEADS_API_HEALTH["busy"] == before + 1
+
+
+@pytest.mark.asyncio
 async def test_a_mark_that_cannot_be_read_is_a_503_not_a_button():
     before = api.CRM_LEADS_API_HEALTH["status_read_failed"]
     with _flags({"CRM_LEADS_API": True}), \

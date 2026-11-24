@@ -57,6 +57,7 @@ CRM_LEADS_API_HEALTH: dict[str, Any] = {
     "server_error": 0,
     "not_configured": 0,
     "not_https": 0,
+    "busy": 0,
     "no_contact": 0,
     "save_failed": 0,
     "mark_failed": 0,
@@ -135,10 +136,11 @@ def is_configured() -> bool:
 
 
 def submit_lock(conversation_id: str):
-    """The chat's CRM-submit lock (see SUBMIT_LOCK_KIND)."""
+    """The chat's CRM-submit lock (see SUBMIT_LOCK_KIND). Strict: when another process still holds it after the
+    wait, LockBusy is raised and nothing is sent; the caller tries again later (CodeRabbit #280)."""
     from app.services.conversation_lock import conversation_lock
 
-    return conversation_lock(SUBMIT_LOCK_KIND, conversation_id, ttl_ms=SUBMIT_LOCK_MS)
+    return conversation_lock(SUBMIT_LOCK_KIND, conversation_id, ttl_ms=SUBMIT_LOCK_MS, strict=True)
 
 
 # ── what the CRM receives ───────────────────────────────────────

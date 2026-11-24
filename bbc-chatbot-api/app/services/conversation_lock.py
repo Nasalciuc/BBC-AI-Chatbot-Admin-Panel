@@ -22,6 +22,11 @@ which is exactly the behaviour before this change, and it is counted in /health
 (`locks`). A write is never dropped for want of a lock: losing the client's contact
 would cost more than a score computed once from a stale read. LOCK_REDIS=false
 turns the Redis half off without a deploy.
+
+A strict lock is the exception: work that must not run twice side by side (a call to
+the CRM, which a second process would repeat) raises LockBusy when another process
+still holds the key after WAIT_S, and its caller tries again later. Redis absent or
+failing still means the in-process lock alone: there is no other holder to wait for.
 """
 
 from __future__ import annotations
@@ -54,11 +59,21 @@ LOCK_HEALTH: dict[str, int] = {
     "local_only": 0,          # Redis off, absent or cooling down: the in-process lock alone
     "redis_errors": 0,        # a SET or a release that Redis did not answer
     "wait_timeouts": 0,       # another process held the key past WAIT_S; the work went on
+    "busy_refused": 0,        # ...and the lock was strict: the work did not run (LockBusy)
     "expired_before_release": 0,  # the work outlived TTL_MS; the key was gone or someone else's
     "max_wait_ms": 0,
 }
 
 _LOCAL: dict[str, "weakref.WeakValueDictionary[str, asyncio.Lock]"] = {}
+
+
+class LockBusy(Exception):
+    """A strict lock another process still held after WAIT_S: the work did not run."""
+
+    def __init__(self, kind: str, conversation_id: str):
+        super().__init__(f"the {kind} lock on {conversation_id} is held by another process")
+        self.kind = kind
+        self.conversation_id = conversation_id
 _RELEASES: set = set()  # releases started by a sync release(), kept alive until they finish
 
 
@@ -89,10 +104,11 @@ class ConversationLock:
     `locked()`) work too, for the writers that hold it that way; a sync release() lets
     the Redis key go a moment later, in the background."""
 
-    def __init__(self, kind: str, conversation_id: str, ttl_ms: int = TTL_MS):
+    def __init__(self, kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False):
         self._kind = kind
         self._cid = conversation_id
         self._ttl_ms = ttl_ms
+        self._strict = strict
         self._local = _local(kind, conversation_id)
         self._token: Optional[str] = None
 
@@ -102,7 +118,7 @@ class ConversationLock:
     async def acquire(self) -> bool:
         await self._local.acquire()
         try:
-            self._token = await _acquire_redis(self._kind, self._cid, self._ttl_ms)
+            self._token = await _acquire_redis(self._kind, self._cid, self._ttl_ms, self._strict)
         except BaseException:
             # Cancelled while waiting for the key: the in-process lock must not stay held.
             self._local.release()
@@ -130,13 +146,18 @@ class ConversationLock:
             self._local.release()
 
 
-def conversation_lock(kind: str, conversation_id: str, ttl_ms: int = TTL_MS) -> ConversationLock:
+def conversation_lock(
+    kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False
+) -> ConversationLock:
     """ttl_ms: how long the Redis key outlives a holder that died. Work that waits on another service (a CRM call
-    with its retry) asks for more than TTL_MS, so the key is still there when the work ends."""
-    return ConversationLock(kind, conversation_id, ttl_ms)
+    with its retry) asks for more than TTL_MS, so the key is still there when the work ends. strict: raise
+    LockBusy rather than go on beside another process that still holds the key after WAIT_S."""
+    return ConversationLock(kind, conversation_id, ttl_ms, strict)
 
 
-async def _acquire_redis(kind: str, conversation_id: str, ttl_ms: int = TTL_MS) -> Optional[str]:
+async def _acquire_redis(
+    kind: str, conversation_id: str, ttl_ms: int = TTL_MS, strict: bool = False
+) -> Optional[str]:
     """The token when the Redis lock is ours, None when the work goes on without it."""
     if not flag("LOCK_REDIS", True):
         LOCK_HEALTH["local_only"] += 1
@@ -165,6 +186,11 @@ async def _acquire_redis(kind: str, conversation_id: str, ttl_ms: int = TTL_MS) 
             return token
         if time.monotonic() - started >= WAIT_S:
             LOCK_HEALTH["wait_timeouts"] += 1
+            if strict:
+                LOCK_HEALTH["busy_refused"] += 1
+                logger.warning(f"[lock] {kind} {conversation_id}: held by another process for over {WAIT_S:.0f}s, "
+                               f"this work does not run beside it")
+                raise LockBusy(kind, conversation_id)
             logger.warning(f"[lock] {kind} {conversation_id}: held by another process for over {WAIT_S:.0f}s, "
                            f"the work goes on under the in-process lock")
             return None

@@ -4915,11 +4915,13 @@ async def get_button_lead_contact_rows(days: int = 30) -> list[dict] | None:
             if not page or offset >= total:
                 break
         if (total or 0) > _CRM_CONTACT_SCAN_CAP:
-            logger.warning(
-                f"get_button_lead_contact_rows: {total} button leads in the {days}-day window, "
-                f"only {_CRM_CONTACT_SCAN_CAP} were loaded"
+            # A list that cannot hold every receipt is not a guard: the automatic pushes wait (CodeRabbit #280).
+            logger.error(
+                f"get_button_lead_contact_rows: {total} button leads in the {days}-day window, over the "
+                f"{_CRM_CONTACT_SCAN_CAP} that can be loaded: the contact list is not complete"
             )
-        return rows[:_CRM_CONTACT_SCAN_CAP]
+            return None
+        return rows
     except Exception as e:
         logger.error(f"get_button_lead_contact_rows error: {type(e).__name__}: {e}")
         return None

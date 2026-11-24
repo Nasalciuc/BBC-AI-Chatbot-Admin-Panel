@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from app.db import supabase as db
 from app.security.auth import get_current_user
 from app.services import crm_leads_api as api
+from app.services.conversation_lock import LockBusy
 from app.services.lead_access import MANAGERS, owner_of_conversation
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,9 @@ async def crm_lead_status(conversation_id: str, user: dict = Depends(get_current
         api.CRM_LEADS_API_HEALTH["status_read_failed"] += 1
         logger.warning(f"[crm-leads-api] status conv={conversation_id}: the lead's CRM mark could not be read")
         raise HTTPException(503, "Couldn't check this chat. Try again in a moment.")
+    # Read a moment after the chat: a lead the button made in between is here, with its link (CodeRabbit #280).
+    if api.is_receipt(receipts.get("crm_lead")):
+        return _answer(True, receipts["crm_lead"], False, None)
     sent = _sent_before(receipts)
     if sent:
         return _answer(True, None, False, sent)
@@ -144,8 +148,14 @@ async def create_crm_lead(
         raise HTTPException(403, "The CRM button isn't on for you yet.")
     # One CRM submit at a time per chat: the old sweep and the backstop hold the same lock around theirs, and the
     # chat is read inside it, so whichever goes second finds the other's receipt (CodeRabbit #280).
-    async with api.submit_lock(conversation_id):
-        return await _create(conversation_id, body, confirm_locked, user)
+    try:
+        async with api.submit_lock(conversation_id):
+            return await _create(conversation_id, body, confirm_locked, user)
+    except LockBusy as e:
+        # Another process is sending this chat to the CRM right now: nothing was sent from here.
+        api.CRM_LEADS_API_HEALTH["busy"] += 1
+        logger.warning(f"[crm-leads-api] conv={conversation_id}: not sent, {e}")
+        raise HTTPException(503, "This chat is being sent to the CRM right now. Try again in a minute.") from e
 
 
 async def _create(
