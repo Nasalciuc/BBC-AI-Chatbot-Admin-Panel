@@ -419,14 +419,24 @@ async def run_abandoned_crm() -> dict:
                     if _claimed:
                         _closing = compute_closing_text(_site)
                         await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
-                await db.update_conversation(cid, {
+                # Written only while no agent holds the chat, as after a submit: an agent who took it since this
+                # run's read keeps it. A close that failed after a submit is tried again here (CodeRabbit #280).
+                _zombie_close, _zombie_code = await db.close_conversation_if_unowned(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                     "mode": "ai",
                     "assigned_agent_id": None,
                 })
-                logger.info(f"[cron][{cid}] Closed existing CRM lead")
-                results.append({"id": cid, "status": "closed_existing_crm"})
+                if _zombie_close == "closed":
+                    logger.info(f"[cron][{cid}] Closed existing CRM lead")
+                    results.append({"id": cid, "status": "closed_existing_crm"})
+                elif _zombie_close == "owned":
+                    logger.info(f"[cron][{cid}] in the CRM already, an agent holds the chat: left open")
+                    results.append({"id": cid, "status": "skipped", "reason": "agent_holds_chat"})
+                else:
+                    CRM_PUSH_HEALTH["close_failed"] += 1
+                    logger.error(f"[cron][{cid}] in the CRM already, the close failed (code={_zombie_code}) — next tick")
+                    results.append({"id": cid, "status": "close_failed"})
                 continue
 
             # The agent's "Create lead in CRM" button made this lead (metadata.crm_lead): the CRM has it under the
@@ -530,6 +540,7 @@ async def run_abandoned_crm() -> dict:
                 # Closed only if it still may be: decided on the chat as read under the lock as well as at the
                 # start, and written only while no agent holds it, so a chat taken in between keeps its agent.
                 _closed = False
+                _outcome = ""
                 if _may_close and _still_closable(_now):
                     _outcome, _code = await db.close_conversation_if_unowned(cid, {
                         "status": "closed",
@@ -547,7 +558,11 @@ async def run_abandoned_crm() -> dict:
                     f"[cron][{cid}] Success: CRM submitted"
                     f"{' + closed' if _closed else ' (left open — human/closed)'}"
                 )
-                _pushed_today.add(cid)
+                if _outcome != "failed":
+                    _pushed_today.add(cid)
+                # else: the day guard would stop the next tick before the close-only branch, and the chat would stay
+                # open all day. The lead is marked, and every submit reads that mark again under the lock first, so
+                # nothing is sent twice (CodeRabbit #280).
                 if _in_crm is not None:
                     _in_crm.update(_contact_ids(conv))
                 results.append({"id": cid, "status": "success"})

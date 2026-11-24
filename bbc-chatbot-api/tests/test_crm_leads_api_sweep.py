@@ -502,9 +502,9 @@ def _now(**kw):
 _TAKEN = {"assigned_agent_id": "agent-1", "status": "active", "mode": "human"}
 
 
-async def _sweep_and_close(conv, now, flags=None, close=("closed", "")):
+async def _sweep_and_close(conv, now, flags=None, close=("closed", ""), lead=None):
     result = MagicMock(success=True, request_id="crm-1", error=None)
-    lead = {"id": "l1", "created_in_crm": False, "origin_code": "JFK", "destination_code": "LHR"}
+    lead = lead or {"id": "l1", "created_in_crm": False, "origin_code": "JFK", "destination_code": "LHR"}
     closer = AsyncMock(return_value=close)
     with _flags(flags or {}), \
             patch.object(cron.db, "get_abandoned_conversations", new=AsyncMock(return_value=[conv])), \
@@ -516,9 +516,11 @@ async def _sweep_and_close(conv, now, flags=None, close=("closed", "")):
             patch.object(cron.db, "update_conversation", new=AsyncMock()) as update, \
             patch.object(cron.db, "mark_lead_created_in_crm", new=AsyncMock(return_value={"id": "l1"})), \
             patch.object(cron.db, "add_message", new=AsyncMock()), \
+            patch("app.services.closing.claim_closing_sent", new=AsyncMock(return_value=True)), \
             patch.object(cron, "_persist_refusal", new=AsyncMock(return_value=True)):
         out = await cron.run_abandoned_crm()
-    update.assert_not_awaited()  # the close goes through the conditional write only
+    plain_closes = [c for c in update.await_args_list if len(c.args) > 1 and c.args[1].get("status") == "closed"]
+    assert plain_closes == [], "the close goes through the conditional write only"
     return out, submit, closer
 
 
@@ -666,3 +668,69 @@ async def test_a_close_that_raises_is_failed_not_owned():
     with patch.object(sb, "get_client", side_effect=RuntimeError("SSL EOF")):
         outcome, code = await _real_close(_CID, {"status": "closed"})
     assert outcome == "failed" and code
+
+
+# ── CodeRabbit #280, round 7 ────────────────────────────────────
+# A close that failed right after a submit is tried again the next tick: the chat is not put behind the day guard
+# (which would stop it before the close-only branch until the day changed). The close-only branch closes only while
+# no agent holds the chat, like the close after a submit.
+
+_MARKED = {"id": "l1", "created_in_crm": True, "crm_lead_id": "crm-1", "origin_code": "JFK", "destination_code": "LHR"}
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_failed_after_the_submit_is_tried_again_next_tick():
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), close=("failed", "08006"))
+    submit.assert_awaited_once()
+    assert _CID not in cron._pushed_today, "not behind the day guard: the next tick must reach the close"
+    # The next tick: the lead is marked now, the chat still open. Closed by the close-only branch, never sent again.
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), lead=dict(_MARKED))
+    submit.assert_not_awaited()
+    closer.assert_awaited_once()
+    assert [r["status"] for r in out["results"]] == ["closed_existing_crm"]
+
+
+@pytest.mark.parametrize("close", [("closed", ""), ("owned", "")])
+@pytest.mark.asyncio
+async def test_a_close_that_landed_or_was_left_to_an_agent_keeps_the_day_guard(close):
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), close=close)
+    closer.assert_awaited_once()
+    assert _CID in cron._pushed_today
+
+
+@pytest.mark.asyncio
+async def test_a_chat_not_ours_to_close_keeps_the_day_guard():
+    out, submit, closer = await _sweep_and_close(_conv(mode="human"), _now(mode="human"))
+    submit.assert_awaited_once()
+    closer.assert_not_awaited()
+    assert _CID in cron._pushed_today
+
+
+@pytest.mark.asyncio
+async def test_the_day_guard_still_stops_a_second_submit_the_same_day():
+    """The guard itself is unchanged: a chat pushed today whose lead reads as not in the CRM is not sent again."""
+    cron._day_guard_blocks(_CID)  # starts today's set
+    cron._pushed_today.add(_CID)
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now())
+    submit.assert_not_awaited()
+    assert "pushed_today" in _reasons(out)
+
+
+@pytest.mark.asyncio
+async def test_the_close_only_branch_leaves_an_agents_chat_open():
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), lead=dict(_MARKED), close=("owned", ""))
+    submit.assert_not_awaited()
+    closer.assert_awaited_once()
+    assert out["results"] == [{"id": _CID, "status": "skipped", "reason": "agent_holds_chat"}]
+
+
+@pytest.mark.asyncio
+async def test_a_close_only_branch_that_fails_is_counted_and_tried_next_tick():
+    from app.services.crm import CRM_PUSH_HEALTH
+
+    before = CRM_PUSH_HEALTH["close_failed"]
+    out, submit, closer = await _sweep_and_close(_conv(mode="ai"), _now(), lead=dict(_MARKED), close=("failed", "08006"))
+    submit.assert_not_awaited()
+    assert out["results"] == [{"id": _CID, "status": "close_failed"}]
+    assert CRM_PUSH_HEALTH["close_failed"] == before + 1
+    assert _CID not in cron._pushed_today
