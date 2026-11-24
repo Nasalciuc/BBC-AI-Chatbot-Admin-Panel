@@ -870,10 +870,10 @@ function hue(hex) {
   return (h * 60 + 360) % 360
 }
 
-test('Alex is a "Travel Agent" on both sites, "AI" read to screen readers; the server uses the same name', () => {
+test('Skye is a "Travel Agent" on both sites, "AI" read to screen readers; the server uses the same name', () => {
   for (const site of [bbc, bct]) {
-    assert.equal(site.persona.name, 'Alex')
-    assert.equal(site.persona.initial, 'A')
+    assert.equal(site.persona.name, 'Skye')
+    assert.equal(site.persona.initial, 'S')
     // Capital T and A, and no "AI" in the line itself (owner, 16 Nov); the badge that showed it on his photo
     // is gone (owner, 17 Nov), the word read to screen readers stays.
     assert.equal(site.persona.role, 'Travel Agent')
@@ -891,7 +891,7 @@ test('Alex is a "Travel Agent" on both sites, "AI" read to screen readers; the s
   assert.match(chat, /`\$\{brand\.persona\.name\}, the AI \$\{brand\.persona\.role\}, is typing`/)
   // No bubble is signed "Assistant" any more, the unread preview included.
   assert.doesNotMatch(chat, /'Assistant'|<b>Assistant<\/b>/)
-  // The server's openings: "Hi, I'm Alex from …" (bbc-chatbot-api/app/services/proactive.py, PERSONA).
+  // The server's openings: "Hi, I'm Skye from …" (bbc-chatbot-api/app/services/proactive.py, PERSONA).
   assert.match(read('config/types.ts'), /PERSONA\): keep them equal/)
 })
 
@@ -1049,7 +1049,7 @@ test('a note answer that comes after the visitor opened the form, or closed it, 
 })
 
 test('an unanswered note chat comes back on the next page like a card chat', () => {
-  const o = { trigger: 'note', message: "Hi, I'm Alex from BuyBusinessClass. Planning a business class trip?", quickReplies: ['Get a fare quote', 'I have a question'], trip: null, surface: 'panel', shownAt: 1 }
+  const o = { trigger: 'note', message: "Hi, I'm Skye from BuyBusinessClass. Planning a business class trip?", quickReplies: ['Get a fare quote', 'I have a question'], trip: null, surface: 'panel', shownAt: 1 }
   assert.deepEqual(readKeptOpening(JSON.parse(JSON.stringify(keepOpening(o)))), o)
   assert.equal(readKeptOpening({ ...o, trigger: 'something_else' }), null)
 })
