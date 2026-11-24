@@ -179,9 +179,18 @@ export default function ConversationDetail({
   })
 
   // The agent's "Create lead in CRM" button (CRM's CHAT-LEADS-API): on for this user or not, and the lead it
-  // made. Keyed on who has the chat and its contact, so a Take or a new phone asks again.
+  // made. Keyed on who has the chat, its contact and the lead row's CRM mark, so a Take, a new phone or a lead
+  // the sweep sent meanwhile asks again.
   const { data: crmLead } = useQuery({
-    queryKey: ['crm-lead', conversationId, conv?.assigned_agent_id ?? '', conv?.status ?? '', !!conv?.visitor_email, !!conv?.visitor_phone],
+    queryKey: [
+      'crm-lead',
+      conversationId,
+      conv?.assigned_agent_id ?? '',
+      conv?.status ?? '',
+      !!conv?.visitor_email,
+      !!conv?.visitor_phone,
+      !!conv?.lead?.created_in_crm,
+    ],
     queryFn: () => getCrmLeadStatus(conversationId),
     enabled: !usingMock && !dormant && !!conv,
     staleTime: 30_000,
@@ -1125,7 +1134,10 @@ export default function ConversationDetail({
                 </span>
               </div>
             )}
-            {crmButtonOn && <CrmLeadButton conversationId={conversationId} status={crmLead} />}
+            {crmButtonOn && (
+              // Keyed by chat: switching chats starts from an empty note, never the last chat's.
+              <CrmLeadButton key={conversationId} conversationId={conversationId} status={crmLead} />
+            )}
             {canWrite && leftMin !== null && (
               <div className='flex items-center gap-2 px-1 text-[13px] text-k-555555'>
                 <span aria-hidden='true' className='size-[7px] rounded-full bg-k-c9c9c9' />

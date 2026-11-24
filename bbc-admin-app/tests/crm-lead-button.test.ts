@@ -4,8 +4,14 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Conversation, CrmLeadStatus, Lead } from '../src/lib/types.ts'
 import { crmButtonView, crmView, safeCrmUrl } from '../src/features/chats/view.ts'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const read = (p: string) => readFileSync(join(root, p), 'utf-8')
 
 const off: CrmLeadStatus = { enabled: false, lead: null, can_create: false, reason: null }
 
@@ -84,4 +90,25 @@ test('a lead already in the CRM reads the same with the button on', () => {
   const v = crmView(conv(), lead({ created_in_crm: true, crm_lead_id: '98765' }), { canAct: true, ownerName: null, button: true })
   assert.equal(v.state, 'in')
   assert.equal(v.title, 'In the CRM · lead 98765')
+})
+
+// CodeRabbit #280, round 4: a press for chat A that ends after the panel moved to chat B wrote A's lead under B,
+// and a note typed in A went out with B's press. The component holds no DOM test, so its contract is read here.
+
+test('each press carries its own chat, and its answer lands under that chat', () => {
+  const src = read('src/features/chats/components/crm-lead-button.tsx')
+  assert.match(src, /mutationFn: \(press: Press\) => createCrmLead\(press\.conversationId, press\.note, press\.confirmLocked\)/)
+  assert.match(src, /setQueriesData\(\{ queryKey: \['crm-lead', press\.conversationId\] \}/)
+  assert.match(src, /invalidateQueries\(\{ queryKey: \['conversation', press\.conversationId\] \}/)
+  assert.match(src, /create\.mutate\(\{ \.\.\.press, confirmLocked: true \}\)/, 'Create anyway is for the chat it was asked about')
+  assert.match(src, /create\.mutate\(\{ conversationId, note, confirmLocked: false \}\)/)
+  assert.doesNotMatch(src, /createCrmLead\(conversationId/, 'never the render closure')
+  // The draft and the error belong to the chat on screen: cleared only for its own press.
+  assert.match(src, /if \(press\.conversationId === conversationId\) \{\s*setError\(null\)\s*setNote\(''\)/)
+})
+
+test('switching chats starts the button from an empty note', () => {
+  const src = read('src/features/chats/detail.tsx')
+  assert.match(src, /<CrmLeadButton key=\{conversationId\} conversationId=\{conversationId\} status=\{crmLead\} \/>/)
+  assert.match(src, /!!conv\?\.lead\?\.created_in_crm,\n\s*\],/, 'a lead the sweep sent meanwhile asks again')
 })

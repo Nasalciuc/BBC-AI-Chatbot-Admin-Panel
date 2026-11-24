@@ -9,6 +9,14 @@ import { crmButtonView } from '../view'
 
 const NOTE_MAX = 2000
 
+// What one press sends. The mutation's callbacks read these, never the render's: a press for one chat that ends
+// after the panel moved to another must not write its lead under the other chat (CodeRabbit #280).
+interface Press {
+  conversationId: string
+  note: string
+  confirmLocked: boolean
+}
+
 interface Props {
   conversationId: string
   status: CrmLeadStatus | undefined
@@ -25,25 +33,29 @@ export function CrmLeadButton({ conversationId, status }: Props) {
   const view = crmButtonView(status)
 
   const create = useMutation({
-    mutationFn: (confirmLocked: boolean) => createCrmLead(conversationId, note, confirmLocked),
-    onSuccess: (data) => {
-      setError(null)
-      setNote('')
-      setNoteOpen(false)
-      queryClient.setQueriesData({ queryKey: ['crm-lead', conversationId] }, data)
+    mutationFn: (press: Press) => createCrmLead(press.conversationId, press.note, press.confirmLocked),
+    onSuccess: (data, press) => {
+      queryClient.setQueriesData({ queryKey: ['crm-lead', press.conversationId] }, data)
       // The lead row is now "in the CRM" with this number: the line above and the details follow.
-      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      void queryClient.invalidateQueries({ queryKey: ['conversation', press.conversationId] })
+      if (press.conversationId === conversationId) {
+        setError(null)
+        setNote('')
+        setNoteOpen(false)
+      }
     },
-    onError: (err) => {
+    onError: (err, press) => {
       if (isLockedPushRefusal(err)) {
-        // Only ever the operator's own yes (same rule as Send to CRM, PR-15).
+        // Only ever the operator's own yes (same rule as Send to CRM, PR-15), and for the chat it was asked about.
         toast.warning('This conversation was locked for abuse.', {
           duration: 10_000,
-          action: { label: 'Create anyway', onClick: () => create.mutate(true) },
+          action: { label: 'Create anyway', onClick: () => create.mutate({ ...press, confirmLocked: true }) },
         })
         return
       }
-      setError((err as ApiError)?.message || 'Couldn’t create the lead. Try again.')
+      if (press.conversationId === conversationId) {
+        setError((err as ApiError)?.message || 'Couldn’t create the lead. Try again.')
+      }
     },
   })
 
@@ -86,7 +98,7 @@ export function CrmLeadButton({ conversationId, status }: Props) {
           type='button'
           onClick={() => {
             setError(null)
-            create.mutate(false)
+            create.mutate({ conversationId, note, confirmLocked: false })
           }}
           disabled={busy}
           className='h-9 rounded-full bg-kb-202020 px-4 text-sm font-bold text-on-btn disabled:opacity-50'
