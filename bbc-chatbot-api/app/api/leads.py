@@ -372,7 +372,8 @@ async def mark_lead_created_in_crm(
             _conv_payload.setdefault("id", conv_id)
             if _tag == "no_engagement":
                 _conv_payload["_no_engagement"] = True
-            result = await submit_abandoned_to_crm(_conv_payload, lead)
+            # A chat an agent has had goes to that agent in the CRM (crm_leads_api.send_for_agent, chat #3700).
+            result = await submit_abandoned_to_crm(_conv_payload, lead, presser=user)
             if result.success and result.request_id:
                 await db.mark_lead_created_in_crm(
                     lead_id, crm_lead_id=result.request_id, source="push", set_by=user.get("id")
@@ -405,6 +406,7 @@ async def mark_lead_created_in_crm(
             conv_metadata=conv.get("metadata"),
             suid=conv.get("visitor_id"),
             set_by=user.get("id"),
+            presser=user,
         )
         if not result.success:
             # The refusal reason was written on the lead: show it on the list.

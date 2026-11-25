@@ -536,8 +536,19 @@ async def submit_to_crm(
     conv_metadata: dict | None = None,
     client_ip: str | None = None,
     suid: str | None = None,
+    *,
+    presser: dict | None = None,
 ) -> CRMResult:
-    """Submit flight request to BBC CRM. Non-blocking errors."""
+    """Submit flight request to BBC CRM. Non-blocking errors.
+
+    A chat an agent has had goes first through the CRM's chat API, with that agent (crm_leads_api.send_for_agent);
+    the endpoint below names no agent. `presser`: the panel user who pressed Send to CRM, if one did."""
+    from app.services import crm_leads_api
+
+    sent = await crm_leads_api.send_for_agent(conversation_id, presser=presser)
+    if sent.route == "new":
+        return CRMResult(success=sent.ok, request_id=sent.request_id, error=sent.error)
+
     if not settings.crm_api_url:
         return CRMResult(success=False, error="CRM not configured")
 
@@ -598,8 +609,11 @@ async def push_lead_to_crm(
     *,
     source: str = "push",
     set_by: str | None = None,
+    presser: dict | None = None,
 ) -> CRMResult:
     """THE push path: gate → submit → flag ONLY on proof (2xx + crm id).
+
+    `presser`: the panel user who pressed Send to CRM; a chat an agent has had goes to that agent (submit_to_crm).
 
     Every caller that wants created_in_crm=true goes through here — the
     panel's Push button and the orphan backstop. The flag, timestamp and
@@ -624,7 +638,7 @@ async def push_lead_to_crm(
 
     result = await submit_to_crm(
         lead, visitor, conversation_id,
-        conv_metadata=conv_metadata, client_ip=client_ip, suid=suid,
+        conv_metadata=conv_metadata, client_ip=client_ip, suid=suid, presser=presser,
     )
     if result.success and result.request_id:
         # How it got there (metadata.crm): the system sent it; a person may have pressed Push.
@@ -667,8 +681,11 @@ def _refused_fields(resp) -> str:
     return ",".join(fields) or "unknown"
 
 
-async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
-    """Submit abandoned conv to CRM. Bypasses check_crm_ready, uses defaults for missing route."""
+async def submit_abandoned_to_crm(conv: dict, lead: dict | None, *, presser: dict | None = None) -> CRMResult:
+    """Submit abandoned conv to CRM. Bypasses check_crm_ready, uses defaults for missing route.
+
+    After every gate below, a chat an agent has had goes through the CRM's chat API with that agent
+    (crm_leads_api.send_for_agent) instead of the endpoint here, which names no agent."""
     if not settings.crm_api_url:
         return CRMResult(success=False, error="CRM URL not configured")
 
@@ -770,6 +787,16 @@ async def submit_abandoned_to_crm(conv: dict, lead: dict | None) -> CRMResult:
             _record_push("refused", _contract)
             logger.info(f"[CRM-ABANDONED] refused conv={cid} reason={_contract}")
             return CRMResult(success=False, error=f"gate:{_contract}")
+
+        # Every gate above holds for both ways; only then does a chat an agent has had leave with that agent.
+        if conv.get("id"):
+            from app.services import crm_leads_api
+
+            sent = await crm_leads_api.send_for_agent(str(conv["id"]), presser=presser)
+            if sent.route == "new":
+                if sent.ok:
+                    logger.info(f"[CRM-ABANDONED] OK conv={cid} crm_id={sent.request_id} (chat API, with the agent)")
+                return CRMResult(success=sent.ok, request_id=sent.request_id, error=sent.error)
 
         _ab_site = _ab_meta.get("site")
         _crm_base = _resolve_crm_base(_ab_site)
