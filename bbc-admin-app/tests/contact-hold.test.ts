@@ -12,6 +12,7 @@ import {
   holdButton,
   holdLeft,
   holdLine,
+  takeClass,
   takeRefusal,
 } from '../src/features/chats/view.ts'
 
@@ -58,12 +59,22 @@ test('the first message names one channel and a reason, with no long dash', () =
   assert.ok(!FIRST_MESSAGE.includes('—'))
 })
 
-test('both Take buttons wait for the hold, and both read the 409 the same way', () => {
+test('during the hold Take stays pressable and the server decides; a refusal reads the chat again', () => {
+  // CodeRabbit #282: the hold ends early on the server (a contact, an ask for a person) and nothing tells a waiting
+  // chat's screen (no stream, no timer: PR-10). Shut until the cached deadline, Take kept the agent out of a chat the
+  // server would give. Now it is light while held, says when it opens, and a press the server refuses says why.
+  assert.equal(takeClass(true), 'bg-k-ffffff text-k-202020 shadow-[0_0_0_1px_var(--k-ececec)]')
+  assert.equal(takeClass(false), 'bg-kb-202020 text-on-btn')
   const detail = src('src/features/chats/detail.tsx')
-  assert.equal((detail.match(/disabled=\{taking \|\| heldS > 0\}/g) ?? []).length, 2, 'the blind view and the waiting block')
+  assert.equal((detail.match(/onClick=\{handleClaim\} disabled=\{taking\} className=\{cn\('h-11 rounded-full px-6 text-\[15px\] font-bold disabled:opacity-50', takeClass\(heldS > 0\)\)\}/g) ?? []).length, 2, 'the blind view and the waiting block')
+  assert.doesNotMatch(detail, /heldS > 0\}/)
   assert.match(detail, /takeRefusal\(/)
+  // A refused press reads the chat again: the toast says the server's time, the button follows it.
+  assert.match(detail, /toast\.info\(holdLine\(firstName\(conv\?\.visitor_name\), refusal\.holdSeconds\)\)[\s\S]{0,300}queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/)
   const queue = src('src/features/chats/components/queue-section.tsx')
-  assert.equal((queue.match(/disabled=\{busyId === conv\.id \|\| held > 0\}/g) ?? []).length, 2, 'the rail and the list')
+  assert.equal((queue.match(/disabled=\{busyId === conv\.id\}/g) ?? []).length, 2, 'the rail and the list')
+  assert.equal((queue.match(/takeClass\(held > 0\)/g) ?? []).length, 2)
   assert.match(queue, /takeRefusal\(err\.message\)/)
+  assert.match(queue, /queryClient\.invalidateQueries\(\{ queryKey: \['queue-rows'\] \}\)/)
   assert.match(queue, /ticking \? 1_000 : 15_000/)
 })

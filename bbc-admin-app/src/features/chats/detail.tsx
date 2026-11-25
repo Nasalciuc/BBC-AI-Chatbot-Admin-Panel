@@ -70,6 +70,7 @@ import {
   presenceFromMeta,
   presenceLine,
   presenceView,
+  takeClass,
   takeRefusal,
   takenBlind,
 } from './view'
@@ -746,7 +747,7 @@ export default function ConversationDetail({
               chat and the trip once you take it.</>}
         </p>
         {canTakeBlind ? (
-          <button type='button' onClick={handleClaim} disabled={taking || heldS > 0} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+          <button type='button' onClick={handleClaim} disabled={taking} className={cn('h-11 rounded-full px-6 text-[15px] font-bold disabled:opacity-50', takeClass(heldS > 0))}>
             {taking ? 'Taking…' : heldS > 0 ? holdButton(heldS) : 'Take'}
           </button>
         ) : (
@@ -1242,7 +1243,7 @@ export default function ConversationDetail({
                     </>
                   )}
                 </span>
-                <button type='button' onClick={handleClaim} disabled={taking || heldS > 0} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+                <button type='button' onClick={handleClaim} disabled={taking} className={cn('h-11 rounded-full px-6 text-[15px] font-bold disabled:opacity-50', takeClass(heldS > 0))}>
                   {taking ? 'Taking…' : heldS > 0 ? holdButton(heldS) : 'Take'}
                 </button>
               </div>

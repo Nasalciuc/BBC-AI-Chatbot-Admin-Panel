@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { ChatAvatar } from './chat-avatar'
-import { countdown, firstName, holdButton, holdLeft, holdLine, initials, minutesLabel, minutesSince, presenceView, queueLine, takeRefusal } from '../view'
+import { countdown, firstName, holdButton, holdLeft, holdLine, initials, minutesLabel, minutesSince, presenceView, queueLine, takeClass, takeRefusal } from '../view'
 
 /**
  * The shared line — conversations waiting for ANY operator; first click wins.
@@ -129,9 +129,9 @@ export function QueueSection({
                 <button
                   type='button'
                   onClick={() => claim(conv)}
-                  disabled={busyId === conv.id || held > 0}
+                  disabled={busyId === conv.id}
                   aria-label={held > 0 ? holdLine(firstName(conv.visitor_name), held) : `Take ${who}’s chat`}
-                  className='h-7 rounded-full bg-kb-202020 px-3 text-xs font-bold text-on-btn disabled:opacity-50'
+                  className={cn('h-7 rounded-full px-3 text-xs font-bold disabled:opacity-50', takeClass(held > 0))}
                 >
                   {busyId === conv.id ? '…' : held > 0 ? countdown(held) : 'Take'}
                 </button>
@@ -171,9 +171,9 @@ export function QueueSection({
               <button
                 type='button'
                 onClick={() => claim(conv)}
-                disabled={busyId === conv.id || held > 0}
+                disabled={busyId === conv.id}
                 title={held > 0 ? holdLine(firstName(conv.visitor_name), held) : undefined}
-                className='h-9 flex-none rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn disabled:opacity-50'
+                className={cn('h-9 flex-none rounded-full px-4 text-[13px] font-bold disabled:opacity-50', takeClass(held > 0))}
               >
                 {busyId === conv.id ? 'Taking…' : held > 0 ? holdButton(held) : 'Take'}
               </button>

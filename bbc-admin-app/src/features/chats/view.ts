@@ -462,6 +462,14 @@ export function holdButton(left: number): string {
   return `Take in ${countdown(left)}`
 }
 
+/** Take's look: dark, or light while the hold runs. The button stays pressable either way and the server decides
+ *  (409 contact_hold says how long, and the chat is read again): the hold ends early when the client leaves a contact
+ *  or asks for a person, and nothing tells a waiting chat's screen, which has no stream and no timer (PR-10). A
+ *  button shut until the cached deadline kept the agent out of a chat the server would give (CodeRabbit #282). */
+export function takeClass(held: boolean): string {
+  return held ? 'bg-k-ffffff text-k-202020 shadow-[0_0_0_1px_var(--k-ececec)]' : 'bg-kb-202020 text-on-btn'
+}
+
 /** A 409 from Take, read: the colleague who won it, or the seconds the contact hold still runs. apiFetch keeps
  *  the raw JSON body as the message when `detail` is an object. */
 export function takeRefusal(message: string): { winner?: string; holdSeconds?: number } {
