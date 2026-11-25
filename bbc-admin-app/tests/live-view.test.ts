@@ -8,7 +8,7 @@ import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
   helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
   tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, helloDraft, stuckInForm,
-  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock,
+  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock, ROW_LABEL,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -21,6 +21,14 @@ test('who a visitor is to me', () => {
   assert.equal(rowState(v(), ME), 'free')
   assert.equal(rowState(v({ claimed_by: ME }), ME), 'mine')
   assert.equal(rowState(v({ claimed_by: 'someone' }), ME), 'taken')
+  // Skye's own hello holds the visitor (bbc-chatbot-api live_bot.py): hers, never a colleague's, no button.
+  assert.equal(rowState(v({ claimed_by: 'skye' }), ME), 'skye')
+  assert.equal(ROW_LABEL.skye, 'Skye said hello')
+  assert.equal(rowState(v({ claimed_by: 'skye', dismissed: true }), ME), 'declined')
+  assert.equal(rowState(v({ claimed_by: 'skye', has_chat: true }), ME), 'in_chat')
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /skye: 'bg-k-efeaff text-k-4a36c4',/)
+  assert.doesNotMatch(page, /state === 'skye'/, 'no say-hello button on a visitor Skye greeted')
   assert.equal(rowState(v({ dismissed: true, claimed_by: ME }), ME), 'declined')
   assert.equal(rowState(v({ has_chat: true, claimed_by: ME }), ME), 'in_chat')
 })

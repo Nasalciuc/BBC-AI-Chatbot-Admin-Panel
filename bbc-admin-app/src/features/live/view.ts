@@ -102,12 +102,18 @@ export function sourceLabel(source: string): string {
   return SOURCE_LABEL[source] ?? 'Site'
 }
 
-/** Who the visitor is to me: free to greet, mine, a colleague's, said not now, or in a chat already. */
-export type RowState = 'free' | 'mine' | 'taken' | 'declined' | 'in_chat'
+/** Who holds a visitor Skye said hello to herself (bbc-chatbot-api app/services/live_bot.py, BOT_ID): her hello holds
+ *  them for its 15 minutes, as an agent's claim would. */
+export const SKYE_ID = 'skye'
+
+/** Who the visitor is to me: free to greet, mine, a colleague's, greeted by Skye herself, said not now, or in a chat
+ *  already. */
+export type RowState = 'free' | 'mine' | 'taken' | 'skye' | 'declined' | 'in_chat'
 
 export function rowState(v: LiveVisitor, me: string | undefined): RowState {
   if (v.has_chat) return 'in_chat'
   if (v.dismissed) return 'declined'
+  if (v.claimed_by === SKYE_ID) return 'skye'
   if (v.claimed_by) return v.claimed_by === me ? 'mine' : 'taken'
   return 'free'
 }
@@ -116,6 +122,7 @@ export const ROW_LABEL: Record<RowState, string> = {
   free: 'Nobody yet',
   mine: 'Yours: say hello',
   taken: 'A colleague is on it',
+  skye: 'Skye said hello',
   declined: 'Said not now',
   in_chat: 'In a chat',
 }
@@ -129,7 +136,7 @@ export function heldBy(rows: LiveVisitor[], me: string | undefined): number {
  *  comes to soonest first), then the one Alex's card showed to last (still on the page he left), then the longest
  *  on the site. */
 export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): LiveVisitor[] {
-  const rank: Record<RowState, number> = { mine: 0, free: 1, taken: 2, declined: 3, in_chat: 4 }
+  const rank: Record<RowState, number> = { mine: 0, free: 1, taken: 2, skye: 2, declined: 3, in_chat: 4 }
   const due = (v: LiveVisitor) => (alexWaiting(v, nowS) ? (v.alex_at as number) : Number.POSITIVE_INFINITY)
   const since = (v: LiveVisitor) => (typeof v.alex_card_s === 'number' ? v.alex_card_s : Number.POSITIVE_INFINITY)
   return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)]

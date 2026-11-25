@@ -22,6 +22,7 @@ const STATE_CLS: Record<string, string> = {
   free: 'bg-k-f2f2f2 text-k-555555',
   mine: 'bg-k-e3f6ea text-k-0a6b35',
   taken: 'bg-k-fff3e0 text-k-8a4b00',
+  skye: 'bg-k-efeaff text-k-4a36c4',
   declined: 'bg-k-f2f2f2 text-k-8a8a8a',
   in_chat: 'bg-k-efeaff text-k-4a36c4',
 }
