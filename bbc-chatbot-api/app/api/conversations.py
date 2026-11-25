@@ -829,6 +829,13 @@ async def send_agent_message(
     user: dict = Depends(get_current_user),
 ):
     """Agent sends a message in a conversation. Auto-sets mode to 'human'."""
+    return await send_as_agent(conversation_id, body, user)
+
+
+async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict, *, must_hold: bool = False):
+    """The agent's send. `must_hold`: only in a chat that is the sender's now, in human mode (an agent's own bot,
+    app.services.live_bot): any other is refused with 409 before anything is written, and never claimed, no manual
+    handoff (CodeRabbit #282, round 7). The panel's send claims a chat it doesn't hold, as before."""
     # SECURITY: role from DB, not JWT. Only hands-on roles may speak as agent.
     _sender_db = await db.get_user_by_id(user.get("id"))
     _role_db = (_sender_db or {}).get("role") or ""
@@ -847,6 +854,9 @@ async def send_agent_message(
         conv.get("mode") == "human"
         and conv.get("assigned_agent_id") == _user_id
     )
+
+    if must_hold and not _already_mine:
+        raise HTTPException(status_code=409, detail="The chat is no longer yours.")
 
     # F1 FIX: perform_handoff ONLY when this is a NEW assignment (admin
     # jumping into an AI conv, or takeover). Re-calling it per message
@@ -917,7 +927,7 @@ async def send_agent_message(
             from datetime import datetime, timezone
             _assigned = datetime.fromisoformat(_at.replace("Z", "+00:00"))
             _rs = int((datetime.now(timezone.utc) - _assigned).total_seconds())
-        except (ValueError, TypeError):
+        except (ValueError, TypeError):  # noqa: silent — an unreadable agent_assigned_at logs the first response without its seconds
             pass
         _fire_and_forget(
             log_activity(

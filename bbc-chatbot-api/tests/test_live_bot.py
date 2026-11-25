@@ -72,7 +72,7 @@ def _list_lua(fake, keys, args):
 def _bot_send_lua(fake, keys, args):
     """bot_send.lua, line by line."""
     visit, claim, dismissed, inbox, hello, said, bot = keys
-    holder, vid, message, hello_json, ttl, once, agent = args
+    holder, vid, message, hello_json, ttl, once, agent, steps = args
     if not fake._alive(visit):
         return -1
     if fake.kv[visit].get("has_chat") == "1":
@@ -83,6 +83,8 @@ def _bot_send_lua(fake, keys, args):
         return -4
     if fake._alive(bot):
         return -6
+    if fake.kv[visit].get("activity", "") != steps:
+        return -7
     if fake._alive(said):
         return -5
     for key, value, life in ((said, holder, ttl), (bot, "1", once), (claim, holder, ttl), (hello, hello_json, ttl)):
@@ -106,7 +108,6 @@ def redis(monkeypatch):
     monkeypatch.setenv("AGENT_FIRST_MESSAGE", "true")
     monkeypatch.setenv("AGENT_FIRST_TEST_PERCENT", "0")
     monkeypatch.setattr(live_bot, "_steps", {})
-    monkeypatch.setattr(live_bot, "_agents", {})
     monkeypatch.setattr(ban_store, "_MEM_REVOKED", {})
     for health in (live_bot.BOT_HEALTH, live_visitors.LIVE_HEALTH):
         for k in health:
@@ -153,7 +154,10 @@ async def _agent(fake) -> dict:
 async def test_a_key_works_as_its_agent(redis):
     out = await live_bot.issue_key(SALES)
     claims = jwt.decode(out["key"], SECRET, algorithms=["HS256"])
-    assert claims["sub"] == AGENT and claims["scope"] == "live_bot" and redis.kv[f"live:botkey:{AGENT}"] == claims["jti"]
+    assert claims["sub"] == AGENT and claims["scope"] == "live_bot"
+    # Kept: the key's id, when it was made and the agent's token_version then, never the key itself.
+    assert json.loads(redis.kv[f"live:botkey:{AGENT}"]) == {"id": claims["jti"], "iat": claims["iat"], "tv": 0}
+    assert out["key"] not in redis.kv[f"live:botkey:{AGENT}"]
     assert claims["exp"] - claims["iat"] == live_bot.KEY_TTL_S
     agent = await live_bot.agent_for(f"Bearer {out['key']}")
     assert agent["id"] == AGENT and agent["first_name"] == "Ana" and agent["role"] == "sales"
@@ -185,7 +189,7 @@ async def test_what_is_no_key(redis):
     key = await _key()
     session = jwt.encode({"sub": AGENT, "iat": int(time.time()), "exp": int(time.time()) + 60, "jti": "x"}, SECRET,
                          algorithm="HS256")
-    expired = jwt.encode({"sub": AGENT, "scope": "live_bot", "jti": redis.kv[f"live:botkey:{AGENT}"],
+    expired = jwt.encode({"sub": AGENT, "scope": "live_bot", "jti": json.loads(redis.kv[f"live:botkey:{AGENT}"])["id"],
                           "iat": int(time.time()) - 100, "exp": int(time.time()) - 1}, SECRET, algorithm="HS256")
     for header, code in ((None, "key"), ("", "key"), (key, "key"), ("Bearer junk", "key"),
                          (f"Bearer {jwt.encode({'sub': AGENT}, 'other-secret-' * 4, algorithm='HS256')}", "key"),
@@ -215,12 +219,10 @@ async def test_a_key_ends_with_the_agents_access(redis, monkeypatch):
 
     key = f"Bearer {await _key()}"
     redis.user.return_value = {**ROW, "token_version": 1}
-    monkeypatch.setattr(live_bot, "_agents", {})
     with pytest.raises(BotRefused) as e:
         await live_bot.agent_for(key)
     assert (e.value.status, e.value.code) == (401, "key_revoked")
     redis.user.return_value = dict(ROW)
-    monkeypatch.setattr(live_bot, "_agents", {})
     ban_store._MEM_REVOKED[AGENT] = int(time.time()) + 1
     with pytest.raises(BotRefused) as e:
         await live_bot.agent_for(key)
@@ -234,12 +236,10 @@ async def test_a_key_ends_with_the_agents_access(redis, monkeypatch):
     for row in ({**ROW, "chat_enabled": False}, {**ROW, "is_active": False}, {**ROW, "role": "support"},
                 {**ROW, "tunnel_scope": "support"}):
         redis.user.return_value = row
-        monkeypatch.setattr(live_bot, "_agents", {})
         with pytest.raises(BotRefused) as e:
             await live_bot.agent_for(key)
         assert (e.value.status, e.value.code) == (403, "not_for_you"), row
     redis.user.return_value = None
-    monkeypatch.setattr(live_bot, "_agents", {})
     with pytest.raises(BotRefused) as e:
         await live_bot.agent_for(key)
     assert (e.value.status, e.value.code) == (503, "agent_unreadable")
@@ -257,6 +257,45 @@ async def test_only_who_may_say_hello_takes_a_key(redis, row, code, status):
         await live_bot.issue_key(SALES)
     assert (e.value.code, e.value.status) == (code, status)
     assert f"live:botkey:{AGENT}" not in redis.kv
+
+
+@pytest.mark.asyncio
+async def test_the_panel_says_a_key_stopped_when_the_bot_would_be_refused(redis):
+    """CodeRabbit #282, round 7: the key's state checks it as agent_for does: a "sign out everywhere" after it was
+    made, or a role or access change since (token_version), and it no longer works."""
+    from app.security import ban_store
+
+    key = f"Bearer {await _key()}"
+    assert (await live_bot.key_status(SALES))["active"] is True
+    # Rule 5: a sign-out before the key was made leaves it working, here and for the bot.
+    redis.kv[f"revoked_before:{AGENT}"] = str(int(time.time()) - 60)
+    assert (await live_bot.key_status(SALES))["active"] is True
+    assert (await live_bot.agent_for(key))["id"] == AGENT
+    redis.kv[f"revoked_before:{AGENT}"] = str(int(time.time()) + 1)
+    assert await live_bot.key_status(SALES) == {"active": False, "expires_at": None}
+    with pytest.raises(BotRefused):
+        await live_bot.agent_for(key)
+    redis.kv.pop(f"revoked_before:{AGENT}")
+    ban_store._MEM_REVOKED[AGENT] = int(time.time()) + 1
+    assert (await live_bot.key_status(SALES))["active"] is False
+    ban_store._MEM_REVOKED.clear()
+    redis.user.return_value = {**ROW, "token_version": 1}
+    assert (await live_bot.key_status(SALES))["active"] is False
+    redis.user.return_value = None
+    with pytest.raises(BotRefused) as e:
+        await live_bot.key_status(SALES)
+    assert (e.value.status, e.value.code) == (503, "agent_unreadable")
+
+
+@pytest.mark.asyncio
+async def test_the_agents_row_is_read_at_every_call(redis):
+    """CodeRabbit #282, round 7: nothing of the agent is kept between calls: a switch-off reaches the bot's next one."""
+    key = f"Bearer {await _key()}"
+    assert (await live_bot.agent_for(key))["id"] == AGENT
+    redis.user.return_value = {**ROW, "chat_enabled": False}
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(key)
+    assert (e.value.status, e.value.code) == (403, "not_for_you")
 
 
 @pytest.mark.asyncio
@@ -359,7 +398,8 @@ async def test_the_agent_first_tests_alex_side_stays_the_comparison(redis, monke
 
 @pytest.mark.asyncio
 async def test_the_bots_hello_is_the_agents(redis):
-    _visit(redis, returning="1", to="IST", depart="2027-03-01")
+    # No departure day: one 15 to 45 days off would make them "soon" (CodeRabbit #282, round 7).
+    _visit(redis, returning="1", to="IST")
     agent = await _agent(redis)
     out = await live_bot.greet(agent, VID)
     (msg_raw,) = redis.kv[f"live:inbox:{VID}"]
@@ -411,7 +451,7 @@ async def test_a_visitor_the_agent_holds_from_the_panel_is_theirs_to_greet_by_th
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code, rc", [("already", -5), ("bot_already", -6), ("taken", -4), ("declined", -3),
-                                      ("in_a_chat", -2), ("gone", -1)])
+                                      ("in_a_chat", -2), ("gone", -1), ("changed", -7)])
 async def test_the_script_settles_what_changed_after_the_read(redis, code, rc):
     """Between the visitor read and the send, the script checks again: whatever it refuses comes back with its code."""
     _visit(redis)
@@ -421,6 +461,53 @@ async def test_the_script_settles_what_changed_after_the_read(redis, code, rc):
         await live_bot.greet(agent, VID)
     assert e.value.code == code
     assert f"live:inbox:{VID}" not in redis.kv and live_bot.BOT_HEALTH["refused"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_step_taken_after_the_read_holds_the_hello(redis):
+    """CodeRabbit #282, round 7: the script gets the steps why_not judged; one taken since (the quote form opened)
+    refuses the hello, nothing sent, and read again the visitor waits as the panel's rule says."""
+    _visit(redis, activity="search:JFK-IST")
+    agent = await _agent(redis)
+    read = live_bot._one
+
+    async def form_opened_meanwhile(r, vid):
+        v = await read(r, vid)
+        redis.kv[f"live:v:{vid}"]["activity"] = "search:JFK-IST;quote_opened"
+        return v
+
+    with patch.object(live_bot, "_one", new=form_opened_meanwhile):
+        with pytest.raises(BotRefused) as e:
+            await live_bot.greet(agent, VID)
+    assert (e.value.status, e.value.code) == (409, "changed")
+    assert f"live:inbox:{VID}" not in redis.kv and f"live:said:{VID}" not in redis.kv
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID)
+    assert e.value.code == "filling_form"
+    # Rule 5: the steps it read are the visitor's steps: the hello goes.
+    _visit(redis, OTHER, activity="search:JFK-IST")
+    await live_bot.greet(agent, OTHER)
+    assert len(redis.kv[f"live:inbox:{OTHER}"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_hello_whose_answer_was_lost_says_how_to_tell(redis):
+    """A 503 may come after the hello went (the reply lost): the bot reads the visitors (state my_bot) before trying
+    again (CodeRabbit #282, round 7)."""
+    _visit(redis)
+    agent = await _agent(redis)
+
+    def sent_then_lost(fake, keys, args):
+        _bot_send_lua(fake, keys, args)
+        raise ConnectionError("the reply was lost")
+
+    redis.register(live_bot.BOT_SEND_LUA, sent_then_lost)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID)
+    assert e.value.status == 503 and "my_bot" in e.value.detail
+    redis_client.set_client_for_tests(redis)  # Redis is back after its cooldown
+    (row,) = [v for v in await live_bot.visitors(agent) if v["visitor_id"] == VID]
+    assert row["state"] == "my_bot" and row["may_greet"] is False
 
 
 @pytest.mark.asyncio
@@ -457,6 +544,27 @@ async def test_the_bots_own_words_go_without_a_long_dash_and_keep_their_group(re
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("to, code", [("Call +1 214 208 5185", "contact"), ("IST from $1,200", "price")])
+async def test_the_ready_hello_is_held_to_the_clients_rules_too(redis, to, code):
+    """CodeRabbit #282, round 7: the ready hello carries the page's destination (the visitor's own page) and the
+    agent's name: the same rules as the bot's own words."""
+    _visit(redis, returning="1", to=to)
+    agent = await _agent(redis)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID)
+    assert (e.value.status, e.value.code) == (422, code)
+    assert f"live:inbox:{VID}" not in redis.kv and live_bot.BOT_HEALTH["refused"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_ready_hello_goes_without_a_long_dash(redis):
+    _visit(redis, returning="1", to="Paris — CDG")
+    agent = await _agent(redis)
+    out = await live_bot.greet(agent, VID)
+    assert "—" not in out["text"] and "Paris" in out["text"]
+
+
+@pytest.mark.asyncio
 async def test_nothing_is_sent_while_off(redis, monkeypatch):
     _visit(redis)
     agent = await _agent(redis)
@@ -483,6 +591,24 @@ async def test_the_tapped_chat_is_the_agents_and_marked_the_bots(redis):
     assert m["add"].await_args.args[1:3] == ("agent", out["text"])
     live_hello = m["meta"].await_args.args[1]["live_hello"]
     assert live_hello["bot"] is True and live_hello["agent_id"] == AGENT and live_hello["group"] == "back"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given_back", [True, False])
+async def test_a_bots_chat_that_cannot_be_marked_goes_to_skye(redis, given_back):
+    """CodeRabbit #282, round 7: without live_hello.bot the bot never sees the chat: twice not written, it is given back
+    (Skye answers the visitor who tapped); one that can't be given back stays the agent's, counted."""
+    from app.api.chat import ChatInitRequest
+
+    _visit(redis)
+    agent = await _agent(redis)
+    await live_bot.greet(agent, VID)
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), marked=False, given_back=given_back)
+    assert m["meta"].await_count == 2 and live_visitors.LIVE_HEALTH["mark_failed"] == 1
+    m["give_back"].assert_awaited_once_with("c1", AGENT)
+    assert (res.live_agent is None) is given_back
+    assert live_visitors.LIVE_HEALTH["release_failed"] == (0 if given_back else 1)
 
 
 @pytest.mark.asyncio
@@ -543,6 +669,8 @@ async def test_the_bot_reads_its_chat(redis):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("conv", [
     _conv(metadata={"live_hello": {"id": "h1", "agent_id": AGENT}}),   # a hello from the panel
+    # A colleague's bot's chat a supervisor moved to the agent (CodeRabbit #282, round 7).
+    _conv(metadata={"live_hello": {"id": "h1", "agent_id": COLLEAGUE, "bot": True}}),
     _conv(metadata={}),                                                 # no hello at all
     _conv(assigned_agent_id=COLLEAGUE),                                 # a colleague's now
     _conv(mode="ai"),                                                   # back with Skye
@@ -553,7 +681,7 @@ async def test_a_chat_that_isnt_the_bots_is_never_read_or_answered(redis, conv):
     agent = await _agent(redis)
     with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)), \
             patch("app.db.supabase.get_messages_after", new=AsyncMock(return_value=[])) as read, \
-            patch("app.api.conversations.send_agent_message", new=AsyncMock()) as send:
+            patch("app.api.conversations.send_as_agent", new=AsyncMock()) as send:
         for call in (live_bot.messages(agent, CONV), live_bot.say(agent, CONV, "Hello")):
             with pytest.raises(BotRefused) as e:
                 await call
@@ -567,14 +695,16 @@ async def test_the_bot_answers_as_the_agent_through_the_panels_own_send(redis):
     agent = await _agent(redis)
     stored = {"id": "m3", "content": "Two seats, got it. Which dates?", "created_at": "t3"}
     with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
-            patch("app.api.conversations.send_agent_message",
+            patch("app.api.conversations.send_as_agent",
                   new=AsyncMock(return_value={"success": True, "data": stored})) as send:
         out = await live_bot.say(agent, CONV, "Two seats — got it. Which dates?")
     assert out == {"id": "m3", "text": "Two seats, got it. Which dates?", "at": "t3"}
-    conv_id, body = send.await_args.args
+    conv_id, body, user = send.await_args.args
     assert conv_id == CONV and body.content == "Two seats, got it. Which dates?"
-    assert send.await_args.kwargs["user"] == {"id": AGENT, "email": "ana@example.com", "role": "sales",
-                                              "tunnel_scope": "sales", "name": "Ana Agent"}
+    assert user == {"id": AGENT, "email": "ana@example.com", "role": "sales", "tunnel_scope": "sales",
+                    "name": "Ana Agent"}
+    # Only while the chat is the agent's, never claimed (CodeRabbit #282, round 7).
+    assert send.await_args.kwargs == {"must_hold": True}
     assert live_bot.BOT_HEALTH["messages_sent"] == 1
 
 
@@ -586,7 +716,7 @@ async def test_the_bot_answers_as_the_agent_through_the_panels_own_send(redis):
 async def test_the_bots_answers_are_held_to_the_clients_rules(redis, text, code):
     agent = await _agent(redis)
     with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
-            patch("app.api.conversations.send_agent_message", new=AsyncMock()) as send:
+            patch("app.api.conversations.send_as_agent", new=AsyncMock()) as send:
         with pytest.raises(BotRefused) as e:
             await live_bot.say(agent, CONV, text)
     assert (e.value.status, e.value.code) == (422, code)
@@ -595,10 +725,121 @@ async def test_the_bots_answers_are_held_to_the_clients_rules(redis, text, code)
 
 
 @pytest.mark.asyncio
+async def test_a_chat_that_moves_while_its_messages_are_read_gives_none_of_them(redis):
+    """CodeRabbit #282, round 7: the chat is read again after its messages: what the bot gets was said in the agent's
+    chat."""
+    agent = await _agent(redis)
+    msgs = [{"id": "m9", "role": "user", "content": "To the agent who has the chat now", "created_at": "t9"}]
+    with patch("app.db.supabase.get_conversation_simple",
+               new=AsyncMock(side_effect=[_conv(), _conv(assigned_agent_id=COLLEAGUE)])), \
+            patch("app.db.supabase.get_messages_after", new=AsyncMock(return_value=msgs)):
+        with pytest.raises(BotRefused) as e:
+            await live_bot.messages(agent, CONV)
+    assert (e.value.status, e.value.code) == (403, "not_the_bots")
+
+
+@pytest.mark.asyncio
+async def test_a_chat_that_moved_before_the_send_is_refused_by_the_send(redis):
+    from fastapi import HTTPException
+
+    agent = await _agent(redis)
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch("app.api.conversations.send_as_agent",
+                  new=AsyncMock(side_effect=HTTPException(status_code=409, detail="The chat is no longer yours."))):
+        with pytest.raises(BotRefused) as e:
+            await live_bot.say(agent, CONV, "Which dates?")
+    assert (e.value.status, e.value.code) == (403, "not_the_bots") and live_bot.BOT_HEALTH["messages_refused"] == 1
+
+
+def _send_patches(conv):
+    from app.api import conversations as mod
+
+    return [
+        patch.object(mod.db, "get_user_by_id", new=AsyncMock(return_value={"id": AGENT, "role": "sales", "name": "Ana Agent"})),
+        patch.object(mod.db, "get_conversation", new=AsyncMock(return_value=conv)),
+        patch.object(mod, "add_message", new=AsyncMock(return_value={"id": "m3", "role": "agent", "content": "Hi"})),
+        patch.object(mod.db, "count_agent_messages_since", new=AsyncMock(return_value=2)),
+        patch.object(mod.db, "update_conversation", new=AsyncMock(return_value=conv)),
+        patch.object(mod.manager, "push", new=AsyncMock()),
+        patch.object(mod.db, "update_user_last_seen", new=AsyncMock()),
+        patch("app.services.handoff.perform_handoff_to_agent", new=AsyncMock()),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conv", [_conv(assigned_agent_id=COLLEAGUE), _conv(mode="ai", assigned_agent_id=None)])
+async def test_the_bots_send_writes_nothing_in_a_chat_no_longer_the_agents(conv):
+    """CodeRabbit #282, round 7: must_hold refuses before any write and never claims the chat (no manual handoff)."""
+    from fastapi import HTTPException
+
+    from app.api import conversations as mod
+
+    ps = _send_patches(conv)
+    mocks = [p.start() for p in ps]
+    try:
+        with pytest.raises(HTTPException) as e:
+            await mod.send_as_agent(CONV, mod.AgentMessageBody(content="Which dates?"), dict(SALES), must_hold=True)
+    finally:
+        for p in ps:
+            p.stop()
+    assert e.value.status_code == 409
+    add, update, claim = mocks[2], mocks[4], mocks[7]
+    add.assert_not_awaited()
+    update.assert_not_awaited()
+    claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_bots_send_in_its_chat_and_the_panels_send_are_as_before():
+    """Rule 5: the bot's chat, still the agent's, is answered; the panel's send still claims a chat it doesn't hold."""
+    from app.api import conversations as mod
+
+    for conv, must_hold, claims in ((_conv(), True, False), (_conv(assigned_agent_id=COLLEAGUE), False, True)):
+        ps = _send_patches(conv)
+        mocks = [p.start() for p in ps]
+        try:
+            out = await mod.send_as_agent(CONV, mod.AgentMessageBody(content="Which dates?"), dict(SALES),
+                                          must_hold=must_hold)
+        finally:
+            for p in ps:
+                p.stop()
+        assert out["success"] is True and out["data"]["id"] == "m3"
+        assert mocks[7].await_count == (1 if claims else 0)
+
+
+@pytest.mark.asyncio
+async def test_the_bots_chat_list_is_its_own_hellos_only():
+    """CodeRabbit #282, round 7: the list asks for the agent's bot's own hellos, next to the bot mark."""
+    from app.db import supabase as db
+
+    calls: list = []
+
+    class Q:
+        def __getattr__(self, name):
+            def step(*a, **kw):
+                calls.append((name, a))
+                return self
+            return step
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class C:
+        def table(self, name):
+            return Q()
+
+    with patch.object(db, "get_client", return_value=C()), patch.object(db, "_supervisor_columns_available", return_value=False):
+        assert await db.list_live_bot_chats(AGENT, 5) == []
+    for want in (("eq", ("assigned_agent_id", AGENT)), ("eq", ("metadata->live_hello->>bot", "true")),
+                 ("eq", ("metadata->live_hello->>agent_id", AGENT))):
+        assert want in calls, want
+
+
+@pytest.mark.asyncio
 async def test_an_answer_that_is_not_stored_is_said_so(redis):
     agent = await _agent(redis)
     with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
-            patch("app.api.conversations.send_agent_message",
+            patch("app.api.conversations.send_as_agent",
                   new=AsyncMock(return_value={"success": True, "data": None})):
         with pytest.raises(BotRefused) as e:
             await live_bot.say(agent, CONV, "Which dates?")

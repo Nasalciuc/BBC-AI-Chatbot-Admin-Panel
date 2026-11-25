@@ -1734,7 +1734,8 @@ async def get_messages_after(
 
 async def list_live_bot_chats(agent_id: str, limit: int = 50) -> Optional[list]:
     """The open chats an agent's bot started with its hellos (metadata.live_hello.bot, app/services/live_bot.py) that
-    are still the agent's, in human mode, the most recently updated first. None when they can't be read: the caller
+    are still the agent's, in human mode, the most recently updated first: its own hellos (live_hello.agent_id), not a
+    colleague's bot's chat moved to the agent (CodeRabbit #282, round 7). None when they can't be read: the caller
     says so, never "no chats"."""
     db_client = get_client()
     cols = "id, visitor_id, status, mode, created_at, updated_at, live_hello:metadata->live_hello"
@@ -1747,6 +1748,7 @@ async def list_live_bot_chats(agent_id: str, limit: int = 50) -> Optional[list]:
             .eq("assigned_agent_id", agent_id).eq("mode", "human")
             .in_("status", list(OPEN_STATUSES))
             .eq("metadata->live_hello->>bot", "true")
+            .eq("metadata->live_hello->>agent_id", agent_id)
             .order("updated_at", desc=True).limit(limit)
             .execute()
         )

@@ -47,7 +47,7 @@ PASS_NEW_PER_ADDRESS = 20   # new visitor ids one address gets passes for in an 
 
 LIVE_HEALTH: dict = {"tokens": 0, "sent": 0, "refused": 0, "send_failed": 0, "taps": 0, "taps_refused": 0,
                      "tap_failed": 0, "release_failed": 0, "redis_failed": 0, "passes": 0, "passes_refused": 0,
-                     "pass_failed": 0}
+                     "pass_failed": 0, "mark_failed": 0}
 
 _LUA_DIR = Path(__file__).with_name("live_lua")
 
@@ -325,7 +325,9 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
 
     Order: the agent may still take chats; the claim; the hello stored; then the presence fields. A hello that
     cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary; a
-    chat that cannot be given back stays the agent's, and the answer says so."""
+    chat that cannot be given back stays the agent's, and the answer says so. The presence fields are tried twice;
+    a bot's chat they can't be written on is given back the same way (its bot would never see it), a chat from the
+    panel stays the agent's, counted (mark_failed)."""
     from app.db import supabase as db
     from app.services.agent_presence import _may_take_chats
     from app.services.conversation_service import add_message
@@ -374,10 +376,26 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
         logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat could not be given back: "
                      "it stays the agent's")
     now = datetime.now(timezone.utc).isoformat()
-    await db.patch_conversation_presence(conv_id, {
+    fields = {
         "engaged_agent_id": agent_id, "agent_assigned_at": now, "clock_agent_id": agent_id,
         "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
                        "tapped_at": now, **({"group": hello["group"]} if hello.get("group") else {}),
                        **({"bot": True} if hello.get("bot") else {})},
-    })
+    }
+    # The merge writes the same keys again, so a second try is safe (CodeRabbit #282, round 7).
+    marked = await db.patch_conversation_presence(conv_id, fields)
+    if not marked:
+        marked = await db.patch_conversation_presence(conv_id, fields)
+    if not marked:
+        LIVE_HEALTH["mark_failed"] += 1
+        if hello.get("bot"):
+            # Without live_hello.bot the agent's bot never sees this chat (live_bot._bots_chat), and nobody may be at the
+            # panel for it: given back, Skye answers the visitor who tapped (the hello stays in the chat, as said).
+            if await db.release_live_claim(conv_id, agent_id):
+                logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked; given back to Skye")
+                return {}
+            LIVE_HEALTH["release_failed"] += 1
+            logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked nor given back: it stays the agent's")
+        else:
+            logger.error(f"[live] conv {conv_id}: the hello's chat fields were not written; the chat stays the agent's")
     return {"agent": first_name(agent.get("name")), "text": hello["text"], "at": (row or {}).get("created_at")}

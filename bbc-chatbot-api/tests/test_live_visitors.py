@@ -488,13 +488,15 @@ def _request():
 STORED_AT = "2026-11-23T10:00:00.123456+00:00"
 
 
-def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
+def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, reread=None, marked=True):
     row = {**SALES_DB, "avatar_url": None} if agent_row is None else agent_row
+    # `marked`: what the presence fields' writes answer, one for all or one each (a list).
+    mark = AsyncMock(side_effect=marked) if isinstance(marked, list) else AsyncMock(return_value=marked)
     return [
         patch("app.api.chat.is_blocked", new=AsyncMock(return_value=False)),
         patch("app.services.conversation_service.get_or_create_conversation", new=AsyncMock(return_value={"id": "c1"})),
         patch("app.db.supabase.claim_conversation_if_unassigned", new=AsyncMock(return_value={"won": claim_won})),
-        patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)),
+        patch("app.db.supabase.patch_conversation_presence", new=mark),
         patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=row)),
         patch("app.services.conversation_service.db.add_message",
               new=AsyncMock(return_value={"id": "m1", "created_at": STORED_AT} if stored else None)),
@@ -503,10 +505,10 @@ def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, 
     ]
 
 
-async def _init(payload, claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
+async def _init(payload, claim_won=True, agent_row=None, stored=True, given_back=True, reread=None, marked=True):
     from app.api.chat import chat_init
 
-    ps = _init_patches(claim_won, agent_row, stored, given_back, reread)
+    ps = _init_patches(claim_won, agent_row, stored, given_back, reread, marked)
     mocks = [p.start() for p in ps]
     try:
         res = await chat_init(payload, _request(), None)
@@ -660,6 +662,26 @@ def test_the_list_pass_follows_the_database_row_not_the_session(configured, row,
 
     session = {"id": AGENT, "role": "sales", "tunnel_scope": "sales"}
     assert (_live_for(session, row) is not None) is gets
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marked, writes, counted", [
+    (True, 1, 0),             # Rule 5: written at once, written once
+    ([False, True], 2, 0),    # a write that failed once: the second holds
+    (False, 2, 1),            # failed twice: counted, the chat from the panel stays the agent's
+])
+async def test_the_hellos_chat_fields_are_tried_twice(redis, marked, writes, counted):
+    """CodeRabbit #282, round 7: the presence fields (the hello's live_hello among them) are no longer written once
+    and forgotten."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), marked=marked)
+    assert m["meta"].await_count == writes and live_visitors.LIVE_HEALTH["mark_failed"] == counted
+    assert res.live_agent == "Ana", "a hello from the panel: its agent is at the panel, the chat stays theirs"
+    m["give_back"].assert_not_awaited()
 
 
 @pytest.mark.asyncio

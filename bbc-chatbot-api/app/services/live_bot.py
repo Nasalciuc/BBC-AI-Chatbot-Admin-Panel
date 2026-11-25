@@ -15,8 +15,9 @@ An agent takes a key in the panel (POST /api/live/bot-key); their bot then works
 The key is a JWT signed with the panel's secret, scope "live_bot": no route of the panel takes it as a session (any
 scope is refused there), and it is good while it is the agent's newest key (live:botkey:<agent>, deleted on "revoke"),
 the agent's token_version is the one it was issued with (a role change or a deactivation ends it) and no "sign out
-everywhere" came after it. Every call reads the agent again: an agent who may no longer say hello or take chats has a
-key that answers 403. Nothing here logs what a visitor wrote, a name or a contact.
+everywhere" came after it. Every call reads the agent's row again, nothing of it kept between calls: an agent who may
+no longer say hello or take chats has a key that answers 403 from their next call. Nothing here logs what a visitor
+wrote, a name or a contact.
 """
 
 from __future__ import annotations
@@ -37,10 +38,9 @@ logger = logging.getLogger(__name__)
 
 KEY_SCOPE = "live_bot"
 KEY_TTL_S = 90 * 86_400          # a key's life; a new one replaces it before
-KEY_REDIS = "live:botkey:"       # + agent id: the id of their newest key
+KEY_REDIS = "live:botkey:"       # + agent id: their newest key, {"id", "iat", "tv"} (JSON)
 HOLDER = "bot:"                  # + agent id: who holds a visitor while the bot's hello is out (live:claim:<vid>)
 ONCE_S = 86_400                  # one bot's hello a visitor this long, whoever's bot
-AGENT_CACHE_S = 15.0             # the agent's row, read again at most this often per process
 ALEX_GAVE_UP_S = 30              # the panel's: Skye's card unanswered this long, the visitor is listed
 FORM_QUIET_S = 120               # the panel's: a step in the quote form holds the hello this long
 LIVE_WINDOW_S = 45               # bbc-live's Window: a beat in the last 45 s is on the site now
@@ -70,6 +70,7 @@ _REFUSALS = {
     -4: (409, "taken", "Someone holds this visitor to say hello."),
     -5: (409, "already", "This visitor got a hello already."),
     -6: (409, "bot_already", "A bot said hello to this visitor today."),
+    -7: (409, "changed", "The visitor did something new on the page meanwhile: read them again."),
 }
 # Why the bot may not greet a visitor now (why_not), in words.
 _WHY_NOT = {
@@ -85,8 +86,6 @@ _WHY_NOT = {
 
 # The step clock (the panel's stepClock): per visitor, their steps as this process last saw them, and since when.
 _steps: dict[str, tuple[str, float]] = {}
-# The agents whose keys were read lately: id -> (row, when read).
-_agents: dict[str, tuple[dict, float]] = {}
 
 
 class BotRefused(Exception):
@@ -132,16 +131,18 @@ async def issue_key(user: dict) -> dict:
     now = int(time.time())
     key_id = uuid.uuid4().hex
     agent_id = str(row["id"])
+    version = int(row.get("token_version") or 0)
     try:
-        await r.set(KEY_REDIS + agent_id, key_id, ex=KEY_TTL_S)
+        # What key_status checks a key by, as agent_for does (CodeRabbit #282, round 7): when it was made, and the
+        # agent's token_version then. The key itself is never kept.
+        await r.set(KEY_REDIS + agent_id, json.dumps({"id": key_id, "iat": now, "tv": version}), ex=KEY_TTL_S)
     except Exception as e:
         redis_failed("live bot key", e)
         logger.error(f"[live-bot] a key for {agent_id} not made: {type(e).__name__}: {e}")
         raise BotRefused(503, "redis", "Couldn't make the key. Try again.") from e
     key = jwt.encode({"sub": agent_id, "scope": KEY_SCOPE, "jti": key_id,
-                      "token_version": int(row.get("token_version") or 0), "iat": now, "exp": now + KEY_TTL_S},
+                      "token_version": version, "iat": now, "exp": now + KEY_TTL_S},
                      _secret(), algorithm="HS256")
-    _agents.pop(agent_id, None)
     BOT_HEALTH["keys_issued"] += 1
     await db.log_audit(agent_id, user.get("email"), "live_bot_key_issued", "users", agent_id, {"key_id": key_id})
     expires = datetime.fromtimestamp(now + KEY_TTL_S, tz=timezone.utc).isoformat()
@@ -149,19 +150,41 @@ async def issue_key(user: dict) -> dict:
 
 
 async def key_status(user: dict) -> dict:
-    """Whether the agent has a key now, and until when: {"active", "expires_at"}."""
+    """Whether the agent's key works now, and until when: {"active", "expires_at"}. A key a "sign out everywhere"
+    came after, or one made before the agent's role or access changed (token_version), no longer works: the panel
+    says so as agent_for refuses it (CodeRabbit #282, round 7)."""
+    from app.db import supabase as db
+
     r = get_redis()
     if r is None:
         raise BotRefused(503, "redis", "Couldn't reach the live service. Try again.")
-    ttl = -2
+    agent_id = str(user.get("id") or "")
+    ttl, raw, revoked = -2, None, None
     try:
-        ttl = int(await r.ttl(KEY_REDIS + str(user.get("id") or "")))
+        pipe = r.pipeline(transaction=False)
+        pipe.ttl(KEY_REDIS + agent_id)
+        pipe.get(KEY_REDIS + agent_id)
+        pipe.get(f"revoked_before:{agent_id}")
+        ttl, raw, revoked = await pipe.execute()
+        ttl = int(ttl)
     except Exception as e:
         redis_failed("live bot key", e)
         logger.error(f"[live-bot] a key's state not read: {type(e).__name__}: {e}")
         raise BotRefused(503, "redis", "Couldn't read the key. Try again.") from e
-    if ttl < 0:
-        return {"active": False, "expires_at": None}
+    stored = _stored_key(raw)
+    none = {"active": False, "expires_at": None}
+    if ttl < 0 or not stored.get("id"):
+        return none
+    if "iat" in stored and _sessions_ended(agent_id, _int(stored["iat"]), revoked):
+        return none
+    if "tv" in stored:
+        row = await db.get_user_by_id(agent_id)
+        if row is None:
+            BOT_HEALTH["agent_unreadable"] += 1
+            logger.error(f"[live-bot] the agent {agent_id} of a bot key not read")
+            raise BotRefused(503, "agent_unreadable", "Couldn't read the agent. Try again.")
+        if int(row.get("token_version") or 0) != _int(stored["tv"]):
+            return none
     return {"active": True, "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()}
 
 
@@ -180,7 +203,6 @@ async def revoke_key(user: dict) -> dict:
         redis_failed("live bot key", e)
         logger.error(f"[live-bot] the key of {agent_id} not revoked: {type(e).__name__}: {e}")
         raise BotRefused(503, "redis", "Couldn't revoke the key. Try again.") from e
-    _agents.pop(agent_id, None)
     if gone:
         BOT_HEALTH["keys_revoked"] += 1
         await db.log_audit(agent_id, user.get("email"), "live_bot_key_revoked", "users", agent_id, {})
@@ -192,16 +214,24 @@ def _refuse_key(code: str, detail: str) -> BotRefused:
     return BotRefused(401, code, detail)
 
 
-async def _agent_row(agent_id: str) -> Optional[dict]:
-    from app.db import supabase as db
+def _stored_key(raw: Any) -> dict:
+    """live:botkey:<agent> as {"id", "iat", "tv"}; {} for none."""
+    if not raw:
+        return {}
+    try:
+        out = json.loads(raw)
+    except ValueError:  # noqa: silent — a key kept as its id alone (made before it kept more) reads as that id
+        return {"id": str(raw)}
+    return out if isinstance(out, dict) else {"id": str(raw)}
 
-    cached = _agents.get(agent_id)
-    if cached and time.monotonic() - cached[1] < AGENT_CACHE_S:
-        return cached[0]
-    row = await db.get_user_by_id(agent_id)
-    if isinstance(row, dict):
-        _agents[agent_id] = (row, time.monotonic())
-    return row
+
+def _sessions_ended(agent_id: str, iat: int, revoked: Any) -> bool:
+    """A "sign out everywhere" came after a key made at `iat`: Redis's revoked_before:<agent>, or this process's own
+    mark (ban_store._MEM_REVOKED), as the panel's sessions are checked."""
+    from app.security.ban_store import _MEM_REVOKED
+
+    marks = [m for m in (_MEM_REVOKED.get(agent_id), _int(revoked)) if m]
+    return bool(marks) and iat < max(marks)
 
 
 async def agent_for(authorization: Optional[str]) -> dict:
@@ -210,7 +240,7 @@ async def agent_for(authorization: Optional[str]) -> dict:
     who may no longer say hello, 503 when the key or the agent can't be read."""
     import jwt
 
-    from app.security.ban_store import _MEM_REVOKED
+    from app.db import supabase as db
 
     secret = _secret()
     if not secret:
@@ -242,12 +272,12 @@ async def agent_for(authorization: Optional[str]) -> dict:
         redis_failed("live bot key", e)
         logger.error(f"[live-bot] a key not checked: {type(e).__name__}: {e}")
         raise BotRefused(503, "redis", "Couldn't check the key. Try again.") from e
-    if newest != key_id:
+    if _stored_key(newest).get("id") != key_id:
         raise _refuse_key("key_revoked", "The key was revoked or replaced: take a new one in the panel.")
-    marks = [m for m in (_MEM_REVOKED.get(agent_id), _int(revoked)) if m]
-    if marks and int(claims["iat"]) < max(marks):
+    if _sessions_ended(agent_id, int(claims["iat"]), revoked):
         raise _refuse_key("key_revoked", "The agent's sessions were ended after this key was made: take a new one.")
-    row = await _agent_row(agent_id)
+    # Read at every call, never kept: a role, chat or access change reaches the bot's next call (CodeRabbit #282).
+    row = await db.get_user_by_id(agent_id)
     if row is None:
         BOT_HEALTH["agent_unreadable"] += 1
         logger.error(f"[live-bot] the agent {agent_id} of a bot key not read")
@@ -332,7 +362,8 @@ async def _marks(r, rows: list[dict]) -> None:
 
 
 async def _one(r, vid: str) -> Optional[dict]:
-    """One visitor as the list shows them, with who holds them, their "not now" and the hellos that went to them."""
+    """One visitor as the list shows them, with who holds them, their "not now" and the hellos that went to them, and
+    `steps`: their activity field as read, which bot_send.lua holds the hello to."""
     pipe = r.pipeline(transaction=False)
     pipe.hgetall(f"live:v:{vid}")
     pipe.get(f"live:claim:{vid}")
@@ -343,6 +374,7 @@ async def _one(r, vid: str) -> Optional[dict]:
     flat = [x for kv in fields.items() for x in kv]
     v = read_listed([vid, flat, holder or "", dismissed], int(time.time()))[0]
     await _marks(r, [v])
+    v["steps"] = str(fields.get("activity") or "")
     return v
 
 
@@ -627,6 +659,9 @@ async def greet(agent: dict, visitor_id: str, *, text: Optional[str] = None, gro
             raise BotRefused(409, reason, _WHY_NOT[reason])
         if text is None:
             words, kept_group = ready_hello(v, int(now * 1000), agent["first_name"])
+            # The ready hello carries the agent's name and the page's destination: held to the same rules as the bot's
+            # own words (CodeRabbit #282, round 7).
+            words = _words(words, live_visitors.MAX_TEXT)
         tap = live_tokens.tap_token(visitor_id, agent_id, hello_id)
         if not tap:
             BOT_HEALTH["send_failed"] += 1
@@ -642,10 +677,11 @@ async def greet(agent: dict, visitor_id: str, *, text: Optional[str] = None, gro
             hello["group"] = kept_group
         keys = [f"live:v:{visitor_id}", f"live:claim:{visitor_id}", f"live:dismissed:{visitor_id}",
                 f"live:inbox:{visitor_id}", f"live:hello:{hello_id}", f"live:said:{visitor_id}", f"live:bot:{visitor_id}"]
-        # ARGV[7]: a visitor the agent holds from the panel is theirs to greet by their bot too.
+        # ARGV[7]: a visitor the agent holds from the panel is theirs to greet by their bot too. ARGV[8]: the steps
+        # why_not judged; one taken since (the quote form opened) refuses the hello (-7, CodeRabbit #282, round 7).
         result = int(await r.eval(BOT_SEND_LUA, len(keys), *keys, HOLDER + agent_id, visitor_id,
                                   json.dumps(message, separators=(",", ":")), json.dumps(hello, separators=(",", ":")),
-                                  str(live_visitors.HELLO_TTL), str(ONCE_S), agent_id))
+                                  str(live_visitors.HELLO_TTL), str(ONCE_S), agent_id, v["steps"]))
     except BotRefused as e:
         if e.status < 500:
             BOT_HEALTH["refused"] += 1
@@ -654,7 +690,9 @@ async def greet(agent: dict, visitor_id: str, *, text: Optional[str] = None, gro
         redis_failed("live bot send", e)
         BOT_HEALTH["send_failed"] += 1
         logger.error(f"[live-bot] hello to {visitor_id} not sent: {type(e).__name__}: {e}")
-        raise BotRefused(503, "redis", "Couldn't send the hello. Try again.") from e
+        # The answer may be the one lost, after the hello went: the visitors list says it (state my_bot).
+        raise BotRefused(503, "redis", "Couldn't confirm the hello: read the visitors again (state my_bot: it went "
+                                       "out) before trying again.") from e
     if result != 1:
         BOT_HEALTH["refused"] += 1
         raise BotRefused(*_REFUSALS.get(result, (409, "refused", "The hello wasn't sent.")))
@@ -668,14 +706,16 @@ async def greet(agent: dict, visitor_id: str, *, text: Optional[str] = None, gro
 
 
 def _bots_chat(conv: Optional[dict], agent_id: str) -> bool:
-    """A chat the bot may read and answer: started by its hello, still the agent's, in human mode, open."""
+    """A chat the bot may read and answer: started by its own hello (the agent's bot, not a colleague's whose chat
+    was moved to the agent: CodeRabbit #282, round 7), still the agent's, in human mode, open."""
     from app.db.supabase import OPEN_STATUSES
 
     if not isinstance(conv, dict):
         return False
     hello = (conv.get("metadata") or {}).get("live_hello") or {}
-    return (isinstance(hello, dict) and hello.get("bot") is True and conv.get("assigned_agent_id") == agent_id
-            and conv.get("mode") == "human" and conv.get("status") in OPEN_STATUSES)
+    return (isinstance(hello, dict) and hello.get("bot") is True and hello.get("agent_id") == agent_id
+            and conv.get("assigned_agent_id") == agent_id and conv.get("mode") == "human"
+            and conv.get("status") in OPEN_STATUSES)
 
 
 async def chats(agent: dict) -> list[dict]:
@@ -723,14 +763,18 @@ async def messages(agent: dict, conversation_id: str, after: Optional[str] = Non
             raise BotRefused(422, "after", "`after` is an ISO time, as `at` gives it.") from e
     await _the_chat(agent, conversation_id)
     rows = await db.get_messages_after(conversation_id, since)
+    # The chat is read again after its messages: one that moved to someone else meanwhile gives the bot none of
+    # them, so what it gets was said while the chat was the agent's (CodeRabbit #282, round 7).
+    await _the_chat(agent, conversation_id)
     return [{"id": m.get("id"), "role": _ROLES.get(str(m.get("role")), str(m.get("role"))),
              "text": m.get("content") or "", "at": m.get("created_at")} for m in rows if isinstance(m, dict)]
 
 
 async def say(agent: dict, conversation_id: str, text: str) -> dict:
     """The bot's answer in its chat, as the agent's own message from the panel (the same send: the widget, the
-    response clock, the follow-up task): {"id", "text", "at"}."""
-    from app.api.conversations import AgentMessageBody, send_agent_message
+    response clock, the follow-up task): {"id", "text", "at"}. A chat that stopped being the agent's after the check
+    is refused by the send itself, before anything is written, and never claimed (CodeRabbit #282, round 7)."""
+    from app.api.conversations import AgentMessageBody, send_as_agent
 
     await _the_chat(agent, conversation_id)
     try:
@@ -743,9 +787,11 @@ async def say(agent: dict, conversation_id: str, text: str) -> dict:
     user = {k: agent[k] for k in ("id", "email", "role", "tunnel_scope", "name")}
     out: Any = None
     try:
-        out = await send_agent_message(conversation_id, AgentMessageBody(content=words), user=user)
+        out = await send_as_agent(conversation_id, AgentMessageBody(content=words), user, must_hold=True)
     except HTTPException as e:
         BOT_HEALTH["messages_refused"] += 1
+        if e.status_code == 409:
+            raise BotRefused(403, "not_the_bots", "No longer the agent's chat.") from e
         raise BotRefused(e.status_code, "refused", str(e.detail)) from e
     msg = (out or {}).get("data") if isinstance(out, dict) else None
     if not isinstance(msg, dict):
