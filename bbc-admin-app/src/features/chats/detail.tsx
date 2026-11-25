@@ -16,7 +16,6 @@ import {
   isLockedPushRefusal,
   unlockConversation,
   setLeadCrmId,
-  setClientName,
   getCrmLeadStatus,
   type ApiError,
 } from '@/lib/api'
@@ -48,7 +47,6 @@ import { DetailsPanel } from './components/details-panel'
 import { OperatorBadge } from './operator-history'
 import {
   avatarClasses,
-  canEditName,
   canSeeSources,
   clock,
   closedNote,
@@ -353,6 +351,11 @@ export default function ConversationDetail({
             // the stream. Reload it so the gate (Take) replaces the thread.
             queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
             break
+          case 'contact':
+            // The client's name, e-mail or phone just landed on the chat: the Contact card shows it now, not at
+            // the agent's next message (the owner, 25 Nov 2026).
+            void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+            break
         }
       },
       (state) => {
@@ -401,6 +404,20 @@ export default function ConversationDetail({
     const fresh = accumMsgs.filter(m => !existingIds.has(m.id))
     return fresh.length > 0 ? [...base, ...fresh] : base
   }, [conv?.messages, accumMsgs])
+
+  // A client's message can carry their name, e-mail or phone, recorded a moment after it lands
+  // (operator_contact). The stream says so (the `contact` event); without the stream, or if that push is lost,
+  // the chat is read again 2 s after the client's newest message, so the Contact card never waits for the
+  // agent's next message (the owner, 25 Nov 2026).
+  const lastClientMsgId = useMemo(() => {
+    for (let i = accumMsgs.length - 1; i >= 0; i--) if (accumMsgs[i].role === 'user') return accumMsgs[i].id
+    return null
+  }, [accumMsgs])
+  useEffect(() => {
+    if (!lastClientMsgId) return
+    const t = setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] }) }, 2_000)
+    return () => clearTimeout(t)
+  }, [lastClientMsgId, conversationId, queryClient])
 
   // "{first} came back to the chat": over a promise of mine that's now late, the
   // client's first message after a pause (not the "thanks" right after it).
@@ -628,19 +645,6 @@ export default function ConversationDetail({
     }
   }
 
-  // The client's name, written or corrected by the agent on the chat (the owner, 25 Nov 2026).
-  const handleSaveName = async (name: string): Promise<boolean> => {
-    try {
-      const res = await setClientName(conversationId, name)
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-      toast.success(`Name saved: ${res.data.visitor_name}.`)
-      return true
-    } catch (err) {
-      toast.error((err as ApiError)?.message ?? 'Couldn’t save the name. Try again.')
-      return false
-    }
-  }
-
   const handleSendAndClose = async () => {
     const ok = await handleMarkLeadCreated()
     if (ok) await handleCloseConfirm()
@@ -833,9 +837,6 @@ export default function ConversationDetail({
       pushError={markLeadError}
       onPush={() => { void handleMarkLeadCreated() }}
       onSaveManual={handleSaveManual}
-      canEditName={canEditName(role, conv, me?.accountNo)}
-      crmIn={crm.state === 'in'}
-      onSaveName={handleSaveName}
     />
   )
 

@@ -15,8 +15,6 @@ import {
   levelOf,
   missingForReady,
   joinAnd,
-  NAME_MAX,
-  nameProblem,
   noSummaryText,
   openedByText,
   type Owner,
@@ -138,11 +136,6 @@ export interface DetailsPanelProps {
   pushError: string | null
   onPush: () => void
   onSaveManual: (crmId: string) => Promise<boolean>
-  /** Writes or corrects the client's name (canEditName): the agent who has the chat, or a manager. */
-  canEditName: boolean
-  /** The chat's lead is in the CRM already: it keeps the name it was made with. */
-  crmIn: boolean
-  onSaveName: (name: string) => Promise<boolean>
 }
 
 /** About this visitor: what the assistant understood, the trip, the person,
@@ -154,12 +147,6 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const [manualOpen, setManualOpen] = useState(false)
   const [manualId, setManualId] = useState('')
   const [savingManual, setSavingManual] = useState(false)
-  // The client's name, written in the panel: null while not writing. The panel stays as the list opens another
-  // chat, so a draft belongs to its chat: another chat shows none, and can't be saved with this one's words.
-  const [nameEdit, setNameEdit] = useState<{ id: string; text: string } | null>(null)
-  const nameDraft = nameEdit && nameEdit.id === p.conv.id ? nameEdit.text : null
-  const setNameDraft = (text: string | null) => setNameEdit(text === null ? null : { id: p.conv.id, text })
-  const [savingName, setSavingName] = useState(false)
   // "Who handled it" opens with the chat, as Operator History did before the
   // redesign: it is what QA and supervisors open a chat to read. For the same
   // people "This chat" opens too, with its Agent row (the old Details card).
@@ -228,16 +215,6 @@ export function DetailsPanel(p: DetailsPanelProps) {
       setManualOpen(false)
       setManualId('')
     }
-  }
-
-  const nameIssue = nameDraft === null ? null : nameProblem(nameDraft)
-  const saveName = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (nameDraft === null || nameIssue || savingName) return
-    setSavingName(true)
-    const ok = await p.onSaveName(nameDraft)
-    setSavingName(false)
-    if (ok) setNameDraft(null)
   }
 
   return (
@@ -336,51 +313,13 @@ export function DetailsPanel(p: DetailsPanelProps) {
             </>
           ) : (
             <div className='flex flex-col gap-1.5'>
-              {nameDraft !== null ? (
-                // The client's name, written or corrected here: it reaches the chat, the lead and the CRM
-                // (the owner, 25 Nov 2026; app/api/conversations.py set_client_name).
-                <form onSubmit={saveName} className='flex flex-col gap-1.5'>
-                  <label className='flex flex-col gap-1'>
-                    <span className='text-xs text-k-6b6b6b'>The client’s name, as they gave it</span>
-                    <input
-                      autoFocus
-                      value={nameDraft}
-                      onChange={(e) => setNameDraft(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Escape') setNameDraft(null) }}
-                      maxLength={NAME_MAX + 20}
-                      autoComplete='off'
-                      aria-invalid={!!(nameDraft.trim() && nameIssue)}
-                      className='h-9 rounded-[10px] border border-k-e3e2e2 bg-k-ffffff px-2.5 text-sm text-k-202020'
-                    />
-                  </label>
-                  {nameDraft.trim() && nameIssue && <div className='text-xs leading-[1.45] text-k-b3261e'>{nameIssue}</div>}
-                  {p.crmIn && (
-                    <div className='text-xs leading-[1.45] text-k-6b6b6b'>The lead in the CRM keeps the name it was made with: change it there too.</div>
-                  )}
-                  <div className='flex gap-2'>
-                    <button type='submit' disabled={!!nameIssue || savingName} className='h-9 rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn disabled:opacity-50'>
-                      {savingName ? 'Saving…' : 'Save'}
-                    </button>
-                    <button type='button' onClick={() => setNameDraft(null)} className='h-9 rounded-full border border-k-c9c9c9 bg-k-ffffff px-4 text-[13px] font-bold text-k-202020'>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div className='flex min-h-8 items-center gap-2 text-sm'>
-                  <span className={cn('min-w-0 flex-1 font-bold [overflow-wrap:anywhere]', conv.visitor_name ? 'text-k-202020' : 'text-k-6b6b6b')}>
-                    {conv.visitor_name || 'No name yet'}
-                  </span>
-                  {p.canEditName && (
-                    <button
-                      type='button'
-                      onClick={() => setNameDraft(conv.visitor_name ?? '')}
-                      className='flex-none rounded-full px-2.5 py-1 text-xs font-bold text-k-5b45e0 hover:bg-k-f7f7f7 focus-visible:outline-2 focus-visible:outline-k-6ea8ff'
-                    >
-                      {conv.visitor_name ? 'Edit name' : 'Add name'}
-                    </button>
-                  )}
-                </div>
+              {/* The name only as the client wrote it (the owner, 25 Nov 2026: a name an agent types from his own head
+                  could be taken for manipulation). It fills in by itself, and the open chat shows it at once. */}
+              <div className={cn('text-sm font-bold', conv.visitor_name ? 'text-k-202020' : 'text-k-6b6b6b')}>
+                {conv.visitor_name || 'No name yet'}
+              </div>
+              {!conv.visitor_name && (
+                <div className='text-xs leading-[1.45] text-k-6b6b6b'>It fills in by itself when the client writes it in the chat.</div>
               )}
               <div className='flex min-h-8 items-center gap-2 text-sm'>
                 <span className={cn('flex-1', conv.visitor_phone ? 'text-k-202020' : toCheck ? 'font-bold text-k-8a4b00' : 'text-k-6b6b6b')}>

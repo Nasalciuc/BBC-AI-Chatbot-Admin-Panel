@@ -87,3 +87,9 @@ test('parseAgentSseEvent: a user row without event is a message row', () => {
   assert.equal((row as { role: string }).role, 'user')
   assert.equal((row as { id: string }).id, 'u1')
 })
+
+test('parseAgentSseEvent: the contact event names fields, never values', () => {
+  assert.deepEqual(parseAgentSseEvent({ event: 'contact', fields: ['visitor_name', 3, 'visitor_email'] }),
+    { event: 'contact', fields: ['visitor_name', 'visitor_email'] })
+  assert.deepEqual(parseAgentSseEvent({ event: 'contact' }), { event: 'contact', fields: [] })
+})

@@ -910,6 +910,9 @@ export type AgentSseEvent =
   /** The chat started waiting for a person and isn't yours (blind take):
    *  the server closes the stream right after this frame. */
   | { event: 'blind' }
+  /** The client's name, e-mail or phone just landed on the chat (lead_service._tell_the_panel): the fields'
+   *  names only, never their values. The chat is read again. */
+  | { event: 'contact'; fields: string[] }
   | SseMessageRow   // plain message row (agent / system / ai)
 
 // ── Learning loop (PR-8) ──────────────────────────────────────
@@ -959,6 +962,10 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   const r = raw as Record<string, unknown>
   const ev = r.event
   if (ev === 'blind') return { event: 'blind' }
+  if (ev === 'contact') {
+    const fields = Array.isArray(r.fields) ? r.fields.filter((f): f is string => typeof f === 'string') : []
+    return { event: 'contact', fields }
+  }
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
