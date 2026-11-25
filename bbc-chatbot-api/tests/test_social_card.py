@@ -52,8 +52,10 @@ class TestTheWords:
     def test_a_page_that_names_a_region_says_it_back_and_asks_one_yes(self):
         out = proactive.offer(_VISITOR, "social", _ASIA, site="bbc", device="phone", opens_field=True)
         assert out["show"] is True and out["arm"] == "proactive" and out["trigger"] == "social"
+        # The persona by its constant: Alex here, Skye once #280 is in (owner, 24 Nov).
         assert out["message"] == (
-            "Hi, I'm Alex from BuyBusinessClass. Want an agent to send you today's business class fares to Asia?"
+            f"Hi, I'm {proactive.PERSONA} from BuyBusinessClass. "
+            "Want an agent to send you today's business class fares to Asia?"
         )
         assert out["quick_replies"] == ["Yes, send me fares", "I have a question", "Not now"]
         # The phone card leads with the place, and asks only the question under it (ADR A3).
@@ -63,7 +65,7 @@ class TestTheWords:
     def test_a_page_that_names_no_place_still_asks_one_yes(self):
         out = proactive.offer(_VISITOR, "social", None, site="bct", device="computer")
         assert out["message"] == (
-            "Hi, I'm Alex from Business Class Tickets. Planning a business class trip? "
+            f"Hi, I'm {proactive.PERSONA} from Business Class Tickets. Planning a business class trip? "
             "Want an agent to send you today's best fares?"
         )
         assert "headline" not in out
