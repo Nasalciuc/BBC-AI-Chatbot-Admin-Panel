@@ -99,6 +99,11 @@ test('a second opening of the card’s own moment is not the card: its seconds p
     NOW + 64_000), first)
   assert.equal(cardAfter(first, 'proactive_dismissed', { trigger: 'note', how: 'close', seconds_visible: 3 },
     NOW + 63_000), first)
+  // The first note closed, the chat opened again and the second note answered: the card stays closed.
+  const closed = cardAfter(first, 'proactive_dismissed', { trigger: 'note', how: 'close', seconds_visible: 6 }, NOW + 6_000)
+  assert.equal(closed.state, 'dismissed')
+  assert.equal(cardAfter(closed, 'proactive_engaged', { trigger: 'note', reply: 'typed', seconds_to_reply: 4 },
+    NOW + 64_000), closed)
   // The card's own answer, its seconds rounded by the widget: counted.
   assert.equal(cardAfter(first, 'proactive_engaged', { trigger: 'note', reply: 'typed', seconds_to_reply: 12 },
     NOW + 12_400).state, 'engaged')
