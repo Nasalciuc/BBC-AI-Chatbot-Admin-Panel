@@ -23,8 +23,9 @@ const readTrip = (href, h1) => {
 }
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
-  SAME_SEND_MS, TRIGGER_OFF_ARM, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs,
-  keysOnSite, offAfter, pauseRunning, pickTrigger, quoteClick, readOff, replyKind, worksOnPressedForm,
+  SAME_SEND_MS, TRIGGER_OFF_ARM, TRIP_ASKS_AGAIN, WATCHED_FIRST_S, adVisit, blockedPath, givesMomentBack,
+  inViewBeforeStartMs, isNotNow, noteWaitMs, keysOnSite, offAfter, pauseRunning, pickTrigger, quoteClick, readOff,
+  replyKind, worksOnPressedForm,
 } from '../src/triggers.ts'
 import { fetchProactiveOffer, offerMeasures, offerVariant, preconnect } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -319,6 +320,28 @@ test('an ads or Meta answer whose destination left the page meanwhile is dropped
   assert.match(why, /if \(askedTrip !== null && JSON\.stringify\(tripFor\(trigger\)\) !== askedTrip\) return 'trip_changed'/)
   assert.match(hook, /const NAMES_ITS_TRIP: readonly Trigger\[\] = \['ads', 'social'\]/)
   assert.match(hook, /function tripFor\(trigger: Trigger\): TripPayload \| null \{\s+return trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)\s+\}/)
+})
+
+test('a trip that changed under the answer gives the visit its moment back, a few times a page (CodeRabbit #282, round 5)', () => {
+  // The page named another destination while the ads or Meta answer was on its way: asked again with the trip of now.
+  assert.equal(givesMomentBack('trip_changed', 0), true)
+  assert.equal(givesMomentBack('trip_changed', TRIP_ASKS_AGAIN - 1), true)
+  // A page whose destination keeps changing is not asked every second: past the cap the moment stays used.
+  assert.equal(TRIP_ASKS_AGAIN, 2)
+  assert.equal(givesMomentBack('trip_changed', TRIP_ASKS_AGAIN), false)
+  // Every other reason the moment passed keeps it used, and an answer in time is no passed moment at all.
+  for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'searched', 'sent', 'contact', 'popup']) {
+    assert.equal(givesMomentBack(reason, 0), false, reason)
+  }
+  assert.equal(givesMomentBack(null, 0), false)
+  // Wired before the line that drops a passed answer: the reservation it owned goes back ('asked' only, a stop the
+  // site said meanwhile stays), evaluate may fire again, and the page counts the asks.
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
+  // Measured first: the dropped answer keeps its moment_passed on proactive_eligible.
+  assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (givesMomentBack(passed, tripAskedAgain))'))
+  // Counted per page: the hook's moments start each page at nothing.
+  assert.match(hook, /let popupHeldOnce = false\n(?:\s*\/\/[^\n]*\n)*\s+let tripAskedAgain = 0\n/)
 })
 
 test('a destination code equal to the origin\'s names no place (the server drops it)', () => {

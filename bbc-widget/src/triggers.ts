@@ -102,6 +102,20 @@ export function offAfter(kept: string | null, trigger: Trigger): string {
   return (off.includes(trigger) ? off : [...off, trigger]).join(',')
 }
 
+/** How many times a page asks its moment again after the page named another trip while the answer was on its way
+ *  (givesMomentBack): a page whose destination keeps changing is not asked every second, and the server's limit per
+ *  address is the chat's too. */
+export const TRIP_ASKS_AGAIN = 2
+
+/** Whether an answer that came after its moment passed (proactive.ts, momentPassed) gives the visit its moment back.
+ *  Only a trip that changed under it, at most TRIP_ASKS_AGAIN times on a page: the ads card's and the Meta ad's card's
+ *  words name the page's old destination and say nothing about the new one, as a "no" about the old trip says nothing
+ *  (CodeRabbit #272; #282, round 5). Every other reason (the visitor typing, searching, leaving, the chat opened…)
+ *  keeps the moment used. */
+export function givesMomentBack(passed: string | null, askedAgain: number): boolean {
+  return passed === 'trip_changed' && askedAgain < TRIP_ASKS_AGAIN
+}
+
 /** What can open the chat without the form: one of the moments, or `note` — the visitor tapped the 10 s
  *  note beside the button (owner's decision, 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the
  *  chat got past the form the note led to). The note is no moment: no arm and no switch holds it. */

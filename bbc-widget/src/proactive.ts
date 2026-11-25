@@ -37,7 +37,8 @@ import {
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
-  adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
+  adKeyword, adVisit, blockedPath, givesMomentBack, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning,
+  pickTrigger, readOff,
   quoteClick, readingMoment, replyKind, socialVisit, worksOnPressedForm, type OpeningTrigger, type PageState,
   type QuoteState, type Trigger,
 } from './triggers'
@@ -481,6 +482,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     let warnedShape = false
     let sentInline = false
     let popupHeldOnce = false
+    // How many times this page asked again after the trip changed under an answer (triggers.ts givesMomentBack).
+    let tripAskedAgain = 0
     const start = Date.now()
     // E1 (overlay.ts): the site's popups over the page; a card waits while one is open.
     const popups = pagePopups
@@ -762,6 +765,14 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         // site now" with the time he comes. The moment goes back; evaluate asks again once the wait is over.
         // A "no" from this arm (an agent said hello, or the visitor said not now) keeps the moment used.
         holdAlex(res.retry_after_s, res.alex_at)
+        if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
+        fired = false
+        return
+      }
+      if (givesMomentBack(passed, tripAskedAgain)) {
+        // The card would name the destination the page showed before (CodeRabbit #282, round 5): dropped and
+        // measured above, and the moment goes back; evaluate asks again with the trip of now if it is still due.
+        tripAskedAgain++
         if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')
         fired = false
         return
