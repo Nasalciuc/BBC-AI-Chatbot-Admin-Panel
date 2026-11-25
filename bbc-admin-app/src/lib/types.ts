@@ -110,6 +110,9 @@ export interface CrmLeadStatus {
   can_create: boolean
   /** Why not yet, in words for the agent (no phone or e-mail). */
   reason: string | null
+  /** "Send to CRM" (the old path) takes a phone OR an e-mail: the server's CRM_SINGLE_CONTACT. Older servers leave it
+   *  out: both, as before. */
+  one_contact?: boolean
 }
 
 // ── Leads ─────────────────────────────────────────────────────

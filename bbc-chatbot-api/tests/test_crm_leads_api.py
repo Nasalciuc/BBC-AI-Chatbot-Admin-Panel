@@ -464,7 +464,7 @@ async def test_a_lead_the_old_path_already_sent_is_answered_without_a_call():
     keep.assert_not_awaited()
     mark.assert_not_awaited()
     assert out["data"] == {"enabled": True, "lead": None, "can_create": False,
-                           "reason": f"Already in the CRM as lead {'a' * 24}."}
+                           "reason": f"Already in the CRM as lead {'a' * 24}.", "one_contact": False}
 
 
 @pytest.mark.asyncio
@@ -509,7 +509,28 @@ async def test_off_for_this_user_refuses_and_the_status_says_off():
             await route.create_crm_lead("c-1", body=None, confirm_locked=False, user=ME)
         status = await route.crm_lead_status("c-1", user=ME)
     assert e.value.status_code == 403
-    assert status["data"] == {"enabled": False, "lead": None, "can_create": False, "reason": None}
+    assert status["data"] == {"enabled": False, "lead": None, "can_create": False, "reason": None,
+                              "one_contact": False}
+
+
+@pytest.mark.parametrize("single", [True, False])
+@pytest.mark.asyncio
+async def test_the_status_says_whether_one_contact_is_enough_even_with_the_button_off(single):
+    """25 Nov, chat 492c524b: the client left an e-mail only, the server takes one contact
+    (CRM_SINGLE_CONTACT), and the panel still asked for both, so "Send to CRM" never showed. The panel reads the
+    rule from here, the switch off included (the message that does NOT turn the button on: rule 5)."""
+    with _flags({"CRM_SINGLE_CONTACT": single}):
+        status = await route.crm_lead_status("c-1", user=ME)
+    assert status["data"]["enabled"] is False
+    assert status["data"]["one_contact"] is single
+
+
+@pytest.mark.asyncio
+async def test_the_status_with_the_button_on_says_it_too():
+    with _flags({"CRM_LEADS_API": True, "CRM_SINGLE_CONTACT": True}), \
+            patch.object(route.db, "get_conversation_simple", new=AsyncMock(return_value=_conv())):
+        status = await route.crm_lead_status("c-1", user=ME)
+    assert status["data"]["enabled"] is True and status["data"]["one_contact"] is True
 
 
 @pytest.mark.parametrize("conv,can,reason", [
@@ -534,7 +555,7 @@ async def test_the_status_of_a_chat_the_old_path_sent_has_no_button():
             patch.object(route.db, "get_crm_receipts", new=AsyncMock(return_value=receipts)):
         status = await route.crm_lead_status("c-1", user=ME)
     assert status["data"] == {"enabled": True, "lead": None, "can_create": False,
-                              "reason": "Already in the CRM as lead R-77."}
+                              "reason": "Already in the CRM as lead R-77.", "one_contact": False}
 
 
 @pytest.mark.asyncio
@@ -547,7 +568,7 @@ async def test_the_status_shows_a_lead_the_button_made_between_its_two_reads():
             patch.object(route.db, "get_conversation_simple", new=AsyncMock(return_value=_conv())), \
             patch.object(route.db, "get_crm_receipts", new=AsyncMock(return_value=receipts)):
         status = await route.crm_lead_status("c-1", user=ME)
-    assert status["data"] == {"enabled": True, "lead": rec, "can_create": False, "reason": None}
+    assert status["data"] == {"enabled": True, "lead": rec, "can_create": False, "reason": None, "one_contact": False}
 
 
 @pytest.mark.asyncio

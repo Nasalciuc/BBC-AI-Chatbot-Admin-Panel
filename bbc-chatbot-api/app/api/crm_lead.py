@@ -73,9 +73,16 @@ def _sent_before(lead: Optional[dict]) -> Optional[str]:
 
 
 def _answer(enabled: bool, lead: Optional[dict], can_create: bool, reason: Optional[str]) -> dict:
+    """`one_contact`: the old path takes a lead with a phone OR an e-mail (CRM_SINGLE_CONTACT). Said in every
+    answer, the button's switch off included: the panel's "Send to CRM" then asks for the contacts the server
+    asks for. On 25 Nov a chat with an e-mail only (492c524b) got no "Send to CRM", because the panel still
+    wanted both."""
+    from app.services.crm import single_contact_ok
+
     return {
         "success": True,
-        "data": {"enabled": enabled, "lead": lead, "can_create": can_create, "reason": reason},
+        "data": {"enabled": enabled, "lead": lead, "can_create": can_create, "reason": reason,
+                 "one_contact": single_contact_ok()},
         "count": 1,
     }
 
