@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import type { Conversation, Lead } from '../src/lib/types.ts'
 import {
   aboutOf,
+  canEditName,
   closedNote,
   countdown,
   crmView,
@@ -22,6 +23,8 @@ import {
   minutesLabel,
   missingForReady,
   agentHasChat,
+  NAME_MAX,
+  nameProblem,
   noSummaryText,
   notesOf,
   ownerOf,
@@ -523,4 +526,58 @@ test('under a closed chat: when it closed, with its day, and a stand-in time is 
   assert.match(panel, /label: 'Started', value: dayClock\(conv\.created_at, now\)/)
   assert.match(panel, /label: 'Asked for a person', value: dayClock\(handoff\.created_at, now\)/)
   assert.ok(!/(?<!day)clock\(/i.test(panel), 'no bare clock() left in the facts card')
+})
+
+// ── The client's name, written in the panel (the owner, 25 Nov 2026) ─────────────────────────────────────
+
+test('who writes the client’s name: the agent who has the chat, and a manager on any chat', () => {
+  for (const role of ['owner', 'admin', 'dev']) assert.equal(canEditName(role, conv({ assigned_agent_id: 'someone-else' }), ME), true, role)
+  for (const role of ['sales', 'support']) {
+    assert.equal(canEditName(role, conv(), ME), true, `${role}: assigned to them`)
+    assert.equal(canEditName(role, conv({ assigned_agent_id: null, mode: 'ai', metadata: { engaged_agent_id: ME } }), ME), true,
+      `${role}: theirs, back with the assistant`)
+    // Rule 5: a colleague's chat, a waiting one, and no id are not theirs.
+    assert.equal(canEditName(role, conv({ assigned_agent_id: 'someone-else' }), ME), false, `${role}: a colleague's`)
+    assert.equal(canEditName(role, conv({ assigned_agent_id: null, status: 'needs_agent', mode: 'waiting_for_agent' }), ME), false)
+    assert.equal(canEditName(role, conv(), undefined), false)
+  }
+  for (const role of ['supervisor', 'qa', 'project_manager', undefined]) assert.equal(canEditName(role, conv(), ME), false, String(role))
+})
+
+test('a name before it goes: what the server refuses, said first', () => {
+  for (const ok of ['Ana Popescu', 'ana popescu', 'Mary-Ann O’Neil', "Mary-Ann O'Neil", 'J. R. Smith', 'María José García de la Fuente',
+    '  Ana Popescu! ', 'Smith Jr.', 'Hope', 'Zoë Ünal']) {
+    assert.equal(nameProblem(ok), null, ok)
+  }
+  assert.equal(nameProblem('   '), 'Write the client’s name first.')
+  assert.equal(nameProblem('x'.repeat(NAME_MAX + 1)), `At most ${NAME_MAX} characters (${NAME_MAX + 1} now).`)
+  assert.equal(nameProblem('ana@example.com'), 'That’s an e-mail: it stays in the chat, the name is letters only.')
+  assert.equal(nameProblem('+40 721 000 000'), 'No numbers in a name.')
+  assert.equal(nameProblem('Ana 2'), 'No numbers in a name.')
+  assert.equal(nameProblem('www.example.com'), 'No links in a name.')
+  assert.equal(nameProblem('ana.popescu'), 'No links in a name.')
+  assert.equal(nameProblem('a b c d e f g'), 'At most 6 words.')
+  assert.equal(nameProblem('Ana (Popescu)'), 'Letters only: spaces, hyphens, apostrophes and dots are fine.')
+  assert.equal(nameProblem('A'), 'At least 2 letters.')
+})
+
+test('the Contact card writes the name, and says a lead in the CRM keeps the old one', () => {
+  const panel = read('src/features/chats/components/details-panel.tsx')
+  const detail = read('src/features/chats/detail.tsx')
+  const api = read('src/lib/api.ts')
+  assert.match(panel, /\{conv\.visitor_name \? 'Edit name' : 'Add name'\}/)
+  assert.match(panel, /\{p\.canEditName && \(/)
+  assert.match(panel, /onClick=\{\(\) => setNameDraft\(conv\.visitor_name \?\? ''\)\}/)
+  assert.match(panel, /<button type='submit' disabled=\{!!nameIssue \|\| savingName\}/)
+  assert.match(panel, /\{p\.crmIn && \(\s*<div className='text-xs leading-\[1\.45\] text-k-6b6b6b'>The lead in the CRM keeps the name it was made with: change it there too\.<\/div>/)
+  // The panel stays as the list opens another chat: a draft belongs to its chat, never saved on another.
+  assert.match(panel, /const nameDraft = nameEdit && nameEdit\.id === p\.conv\.id \? nameEdit\.text : null/)
+  // Escape leaves the name as it was.
+  assert.match(panel, /onKeyDown=\{\(e\) => \{ if \(e\.key === 'Escape'\) setNameDraft\(null\) \}\}/)
+  assert.match(detail, /canEditName=\{canEditName\(role, conv, me\?\.accountNo\)\}/)
+  assert.match(detail, /crmIn=\{crm\.state === 'in'\}/)
+  assert.match(detail, /const res = await setClientName\(conversationId, name\)/)
+  assert.match(detail, /queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)\s*toast\.success\(`Name saved: \$\{res\.data\.visitor_name\}\.`\)/)
+  // Through api.ts, as JSON (bbc-admin-app/CLAUDE.md: features never fetch).
+  assert.match(api, /`\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/name`, \{\s*method: 'POST',\s*headers: \{ 'Content-Type': 'application\/json' \},\s*body: JSON\.stringify\(\{ name \}\),/)
 })

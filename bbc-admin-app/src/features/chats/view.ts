@@ -241,6 +241,39 @@ export function phoneToCheck(c: Pick<Conversation, 'visitor_phone' | 'metadata'>
   return typeof v === 'string' && v.trim() ? v.trim() : null
 }
 
+// ── The client's name, written in the panel (the owner, 25 Nov 2026) ─────────────────────────────────────
+// In the week before, 155 of 188 chats an agent had carried no name, and 72 of them reached the CRM without one.
+
+/** Who writes or corrects the client's name: the agent who has the chat (assigned to them, or theirs and back
+ *  with the assistant), and an owner, admin or dev on any chat. The server's rule (set_client_name). */
+export function canEditName(
+  role: string | undefined,
+  c: Pick<Conversation, 'assigned_agent_id' | 'metadata'>,
+  meId: string | undefined,
+): boolean {
+  if (role === 'owner' || role === 'admin' || role === 'dev') return true
+  if ((role !== 'sales' && role !== 'support') || !meId) return false
+  const engaged = (c.metadata as Record<string, unknown> | undefined)?.engaged_agent_id
+  return c.assigned_agent_id === meId || engaged === meId
+}
+
+export const NAME_MAX = 60
+
+/** What's wrong with a name before it goes, or null. The server checks again and tidies it
+ *  (bbc-chatbot-api contact_capture.typed_name): letters, and the marks names carry. */
+export function nameProblem(text: string): string | null {
+  const t = text.replace(/\s+/g, ' ').trim().replace(/^[ ,;:!?]+|[ ,;:!?]+$/g, '')
+  if (!t) return 'Write the client’s name first.'
+  if (t.length > NAME_MAX) return `At most ${NAME_MAX} characters (${t.length} now).`
+  if (t.includes('@')) return 'That’s an e-mail: it stays in the chat, the name is letters only.'
+  if (/\d/.test(t)) return 'No numbers in a name.'
+  if (/:\/\/|\bwww\./i.test(t) || /\p{L}\.\p{L}{2,}/u.test(t)) return 'No links in a name.'
+  if (t.split(' ').length > 6) return 'At most 6 words.'
+  if (!/^\p{L}[\p{L}\p{M}'’.-]*(?: \p{L}[\p{L}\p{M}'’.-]*)*$/u.test(t)) return 'Letters only: spaces, hyphens, apostrophes and dots are fine.'
+  if ((t.match(/\p{L}/gu) ?? []).length < 2) return 'At least 2 letters.'
+  return null
+}
+
 /** presence from a detail payload's metadata (the list carries it on the row). */
 export function presenceFromMeta(meta: Record<string, unknown> | undefined): {
   effective: string | null

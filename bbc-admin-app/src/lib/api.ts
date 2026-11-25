@@ -407,6 +407,16 @@ export function setLeadCrmId(leadId: string, crmId: string, confirmOdd = false):
   )
 }
 
+/** The client's name, written or corrected by the agent on the chat (or an owner, admin or dev). The server
+ *  tidies it and answers with what it saved (app/api/conversations.py set_client_name). */
+export function setClientName(conversationId: string, name: string): Promise<{ success: boolean; data: { visitor_name: string } }> {
+  return apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
 export function claimConversation(id: string): Promise<{ success: boolean }> {
   return apiFetch(`/api/conversations/${encodeURIComponent(id)}/claim`, { method: 'POST' })
 }

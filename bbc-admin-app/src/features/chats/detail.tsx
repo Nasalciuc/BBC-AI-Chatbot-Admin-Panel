@@ -16,6 +16,7 @@ import {
   isLockedPushRefusal,
   unlockConversation,
   setLeadCrmId,
+  setClientName,
   getCrmLeadStatus,
   type ApiError,
 } from '@/lib/api'
@@ -47,6 +48,7 @@ import { DetailsPanel } from './components/details-panel'
 import { OperatorBadge } from './operator-history'
 import {
   avatarClasses,
+  canEditName,
   canSeeSources,
   clock,
   closedNote,
@@ -626,6 +628,19 @@ export default function ConversationDetail({
     }
   }
 
+  // The client's name, written or corrected by the agent on the chat (the owner, 25 Nov 2026).
+  const handleSaveName = async (name: string): Promise<boolean> => {
+    try {
+      const res = await setClientName(conversationId, name)
+      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      toast.success(`Name saved: ${res.data.visitor_name}.`)
+      return true
+    } catch (err) {
+      toast.error((err as ApiError)?.message ?? 'Couldn’t save the name. Try again.')
+      return false
+    }
+  }
+
   const handleSendAndClose = async () => {
     const ok = await handleMarkLeadCreated()
     if (ok) await handleCloseConfirm()
@@ -818,6 +833,9 @@ export default function ConversationDetail({
       pushError={markLeadError}
       onPush={() => { void handleMarkLeadCreated() }}
       onSaveManual={handleSaveManual}
+      canEditName={canEditName(role, conv, me?.accountNo)}
+      crmIn={crm.state === 'in'}
+      onSaveName={handleSaveName}
     />
   )
 
