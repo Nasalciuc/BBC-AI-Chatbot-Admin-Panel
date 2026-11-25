@@ -106,7 +106,8 @@ func decode(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 // ── the contract ────────────────────────────────────────────────────
 
 func TestTheScriptsAreTheContracts(t *testing.T) {
-	for _, name := range []string{"beat.lua", "list.lua", "claim.lua", "release.lua", "dismiss.lua", "take_inbox.lua"} {
+	for _, name := range []string{"beat.lua", "list.lua", "claim.lua", "release.lua", "dismiss.lua", "take_inbox.lua",
+		"visit.lua", "close.lua"} {
 		mine, err := luaFiles.ReadFile("lua/" + name)
 		if err != nil {
 			t.Fatal(err)

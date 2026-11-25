@@ -191,6 +191,8 @@ async def health_detail(full: bool = False) -> dict:
     from app.services import agent_first_test
     # The owner's contact test: the card answers on each side (the field at once, or the choice first).
     from app.services import contact_field_test
+    # The visit registry: visits stored, lost, a table not there yet, the queue's length.
+    from app.services.visit_registry import VISIT_HEALTH
 
     # The six problems' counters (Nov 2026), in both answers under the same keys: an operator who asks for the
     # full payload while looking into a lock or the live list must not lose them.
@@ -206,6 +208,7 @@ async def health_detail(full: bool = False) -> dict:
         "live": dict(LIVE_HEALTH),
         "agent_first_test": agent_first_test.health(),
         "contact_field_test": contact_field_test.health(),
+        "visit_registry": dict(VISIT_HEALTH),
     }
 
     if not full:

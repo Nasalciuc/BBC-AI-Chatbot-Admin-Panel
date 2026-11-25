@@ -170,14 +170,14 @@ def passes(redis):
     return redis
 
 
-def _ask(vid=VID, live_pass=None, ip="203.0.113.7"):
+def _ask(vid=VID, live_pass=None, ip="203.0.113.7", headers=None):
     from app.api import chat as chat_api
 
     app = FastAPI()
     app.include_router(chat_api.router)
     body = {"visitor_id": vid, **({"live_pass": live_pass} if live_pass is not None else {})}
     with patch("app.api.chat.client_ip", return_value=ip):
-        return TestClient(app).post("/chat/live", json=body)
+        return TestClient(app).post("/chat/live", json=body, headers=headers or {})
 
 
 def test_a_new_visitor_gets_where_to_beat_and_a_pass(passes):
@@ -718,3 +718,63 @@ async def test_a_chat_that_is_no_longer_the_agents_starts_ordinary(redis):
                          reread={"id": "c1", "assigned_agent_id": "someone-else"})
     assert res.live_agent is None and res.live_hello is None
     m["meta"].assert_not_awaited()
+
+
+# ── the visit registry's pass (app/services/visit_registry.py, contracts/live.md "The visit registry") ──────
+
+
+@pytest.fixture
+def registry_on(passes, monkeypatch):
+    from app.services import visit_registry
+
+    monkeypatch.setenv("VISIT_REGISTRY", "true")
+    for k in visit_registry.VISIT_HEALTH:
+        visit_registry.VISIT_HEALTH[k] = None if k == "queued" else 0
+    return passes
+
+
+def test_the_registry_alone_hands_a_pass_and_no_beats(registry_on, monkeypatch):
+    from app.services import visit_registry
+
+    monkeypatch.setenv("LIVE_VISITORS", "false")
+    out = _ask(headers={"cf-ipcountry": "us"}).json()
+    assert out["enabled"] is False, "no beats, no list, no hello: the registry only"
+    assert out["visits"] is True and out["url"] == "https://live.example.test" and out["country"] == "US"
+    assert live_tokens.read_pass(out["pass"])[0]["v"] == VID
+    assert "after_s" not in out and "hello" not in out
+    assert live_visitors.LIVE_HEALTH["passes"] == 1 and visit_registry.VISIT_HEALTH["passes"] == 1
+
+
+def test_with_the_list_on_the_registry_rides_on_the_same_pass(registry_on):
+    from app.services import visit_registry
+
+    out = _ask(headers={"cf-ipcountry": "GB"}).json()
+    assert out["enabled"] is True and out["visits"] is True and out["country"] == "GB" and out["after_s"] == 20
+    assert visit_registry.VISIT_HEALTH["passes"] == 0, "counted as the registry's alone only without the list"
+
+
+def test_alexs_side_is_never_listed_but_its_visit_is_kept(registry_on, monkeypatch):
+    from app.services import agent_first_test
+
+    monkeypatch.setattr(agent_first_test, "side", lambda vid: agent_first_test.ALEX)
+    out = _ask().json()
+    assert out["enabled"] is False and out["test"] == "alex", "the owner's test: Alex's side is never listed"
+    assert out["visits"] is True and live_tokens.read_pass(out["pass"])[0]["v"] == VID
+    monkeypatch.setenv("VISIT_REGISTRY", "false")
+    with patch.object(registry_on, "eval", new=AsyncMock()) as ev:
+        assert _ask().json() == {"enabled": False, "test": "alex"}, "the registry off: as before"
+    ev.assert_not_called()
+
+
+@pytest.mark.parametrize("header", ["XX", "T1", "usa", "", "1A"])
+def test_a_country_that_is_not_one_is_left_out(registry_on, header):
+    out = _ask(headers={"cf-ipcountry": header}).json()
+    assert out["visits"] is True and "country" not in out
+
+
+def test_the_registry_off_adds_nothing(passes, monkeypatch):
+    monkeypatch.delenv("VISIT_REGISTRY", raising=False)
+    out = _ask(headers={"cf-ipcountry": "US"}).json()
+    assert out["enabled"] is True and "visits" not in out and "country" not in out
+    monkeypatch.setenv("LIVE_VISITORS", "false")
+    assert _ask().json() == {"enabled": False}

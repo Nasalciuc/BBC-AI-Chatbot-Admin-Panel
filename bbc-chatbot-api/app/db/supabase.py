@@ -7076,3 +7076,57 @@ async def get_active_emails_for_role(role: str) -> list[str]:
     )
     return [r["email"] for r in (res.data or [])
             if isinstance(r, dict) and r.get("email") and r.get("is_active", True)]
+
+
+# ── The visit registry (app/services/visit_registry.py, migration 056) ─────────────────────────────────────────────
+
+
+async def store_site_visits(rows: list[dict]) -> str:
+    """The registry's rows: "stored", "table_missing" (056 not applied: the queue waits in Redis) or "failed".
+
+    One row a visit (UNIQUE visitor_id, started_at; ON CONFLICT DO NOTHING): a visit stored twice, by a retry after a
+    disconnect or by the two schedulers of a deploy, is still one row, so the retry this call gets is safe. The log
+    names the database's code, never a row (a row carries the visitor's address)."""
+    if not rows:
+        return "stored"
+    db_client = get_client()
+    try:
+        await _run_sync(
+            lambda: db_client.table("site_visits")
+            .upsert(rows, on_conflict="visitor_id,started_at", ignore_duplicates=True)
+            .execute(),
+            idempotent=True,
+            label="visit_registry",
+        )
+        return "stored"
+    except Exception as e:
+        code = _error_code(e)
+        if code in _SCHEMA_MISSING_CODES:
+            logger.warning(f"[visit-registry] site_visits is not there yet (056 not applied): {type(e).__name__} {code}")
+            return "table_missing"
+        logger.error(f"[visit-registry] {len(rows)} visits not stored: {type(e).__name__} {code or 'no code'}")
+        return "failed"
+
+
+async def chats_of_visitors(visitor_ids: list[str], since_iso: str) -> Optional[list[dict]]:
+    """The chats these visitors began since a moment (id, visitor_id, created_at), oldest first; None when the
+    database could not say (the visit is then stored without its chat, counted by the caller)."""
+    if not visitor_ids:
+        return []
+    db_client = get_client()
+    try:
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, visitor_id, created_at")
+            .in_("visitor_id", visitor_ids)
+            .gte("created_at", since_iso)
+            .order("created_at")
+            .limit(500)
+            .execute(),
+            label="visit_registry",
+        )
+        return [r for r in (res.data or []) if isinstance(r, dict) and r.get("id") and r.get("visitor_id")]
+    except Exception as e:
+        logger.warning(f"[visit-registry] chats of {len(visitor_ids)} visitors not read: {type(e).__name__} "
+                       f"{_error_code(e) or e}")
+        return None

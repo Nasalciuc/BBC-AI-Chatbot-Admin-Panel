@@ -79,6 +79,19 @@ func run(log *slog.Logger) error {
 			}
 		}
 	}()
+	// The visit registry: the visits gone quiet go to the API's queue (registry.go).
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				srv.CloseQuietVisits(ctx)
+			}
+		}
+	}()
 
 	port := os.Getenv("PORT")
 	if port == "" {

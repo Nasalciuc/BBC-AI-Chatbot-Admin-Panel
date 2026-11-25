@@ -308,15 +308,26 @@ async def chat_live(payload: LivePassRequest, request: Request):
     from app.services import agent_first_test
     from app.services.live_visitors import widget_pass
 
-    # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it.
+    from app.services import visit_registry
+
+    # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it. The
+    # visit registry still takes its visits (live=False: a pass for the registry only, "enabled" stays false).
     side = agent_first_test.side(payload.visitor_id)
-    if side == agent_first_test.ALEX:
+    if side == agent_first_test.ALEX and not visit_registry.registry_enabled():
         return JSONResponse({"enabled": False, "test": side}, headers={"Cache-Control": "no-store"})
     # The address as the rate limiter reads it (X-Forwarded-For, then the peer): a cf-connecting-ip header is the
     # client's to write unless the edge is Cloudflare, and the limit on new ids would not hold.
-    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False))
-    if side == agent_first_test.AGENT:
+    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False),
+                            live=side != agent_first_test.ALEX)
+    if side == agent_first_test.ALEX:
+        out = {**out, "enabled": False, "test": side}
+    elif side == agent_first_test.AGENT:
         out = {**out, "test": side, "hold_s": agent_first_test.hold_seconds()}
+    if out.get("visits"):
+        # The country Cloudflare saw, for the registry (bbc-live sees no Cloudflare): two letters or nothing.
+        _country = (request.headers.get("cf-ipcountry") or "").strip().upper()
+        if len(_country) == 2 and _country.isalpha() and _country not in ("XX", "T1"):
+            out = {**out, "country": _country}
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 

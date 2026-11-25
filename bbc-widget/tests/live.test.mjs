@@ -255,7 +255,8 @@ test('a pass is kept only for the visitor id it was asked for (CodeRabbit #273, 
   const ask = src.slice(src.indexOf('async function askConfig('), src.indexOf('export function useLive('))
   assert.match(ask, /const visitorId = ensureVisitorId\(\)\s+const res = await apiFetch/)
   assert.match(ask, /visitor_id: visitorId,/)
-  assert.match(ask, /if \(cfg\.enabled && cfg\.pass && ensureVisitorId\(\) === visitorId\) keepPass\(cfg\.pass\)/)
+  // The registry's pass alone (the list off, `visits: true`) is kept too: the next page renews it (visits.ts).
+  assert.match(ask, /if \(cfg\.pass && ensureVisitorId\(\) === visitorId\) keepPass\(cfg\.pass\)/)
 })
 
 // ── The owner's agent-first test (22 Nov; agentTest.ts, bbc-chatbot-api app/services/agent_first_test.py) ─────
@@ -584,7 +585,7 @@ test('a hello kept from an earlier page is dismissed before this page\'s config,
   const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
   const dismiss = src.slice(src.indexOf('dismiss: () => {'), src.indexOf('taken: () => {', src.indexOf('dismiss: () => {')))
   assert.match(dismiss, /const url = cfg\?\.url \|\| keptUrl\(\)\s+const pass = cfg\?\.pass \|\| storedPass\(\)\s+if \(url && pass\)/)
-  assert.match(src, /if \(cfg\.enabled && cfg\.url\) keepUrl\(cfg\.url\)/)
+  assert.match(src, /if \(cfg\.url\) keepUrl\(cfg\.url\)/)
 })
 
 // ── The panel's groups (the owner, 25 Nov 2026): the time zone, and a browser that came before ──────────────

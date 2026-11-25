@@ -9,6 +9,7 @@ import { exposeRoutes } from './page-globals'
 import { startPostHog } from './posthog'
 import { startSiteSignals, stopSiteSignals } from './siteSignals'
 import { noteVisit } from './visitCount'
+import { startVisits } from './visits'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
@@ -56,6 +57,10 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
   // This page, in the browser's count of visits ("On the site now" names a client who comes back;
   // visitCount.ts). Never in the CRM's chat, which is no visit to the site.
   if (!embedded) noteVisit()
+
+  // The visit registry (visits.ts): this page's snapshots, from its start, when the API says the registry is on.
+  // Never in the CRM's embedded chat: that is an agent's screen, not a visit.
+  if (!embedded) startVisits({ apiUrl, site: brand.id })
 
   // The widget's stylesheet (src/styles.ts): scoped to #bbc-widget-root, with its own reset.
   if (!document.getElementById('bbc-widget-css')) {
