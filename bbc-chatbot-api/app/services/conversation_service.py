@@ -18,7 +18,7 @@ async def get_or_create_conversation(
 
 async def add_message(conversation_id: str, role: str, content: str,
                       model_used: Optional[str] = None, cost: float = 0.0,
-                      live_extra: Optional[dict] = None):
+                      live_extra: Optional[dict] = None, *, outbound: bool = True):
     """Store a message and publish it. `live_extra` rides the published copy
     only — the operator's name and photo, which the messages table has no
     column for. This push is the first copy a client gets, and both consumers
@@ -40,4 +40,11 @@ async def add_message(conversation_id: str, role: str, content: str,
             await manager.push(conversation_id, {**row, **live_extra} if live_extra else row)
         except Exception as e:  # noqa: silent — the message is SAVED; a failed fan-out must never fail the save
             logger.warning(f"[sse] push after add_message failed conv={conversation_id}: {e}")
+    # A chat on Facebook Messenger: what is said to the person goes out there too (app.services.messenger_channel,
+    # which never raises and counts what fails). `outbound=False`: a row that must not go out (what someone wrote
+    # from the Page's inbox, a note for the agent). Nothing here while the channel is off.
+    if row and outbound and role in ("ai", "agent", "system"):
+        from app.services import messenger_channel
+
+        await messenger_channel.outbound(conversation_id, role, row)
     return row

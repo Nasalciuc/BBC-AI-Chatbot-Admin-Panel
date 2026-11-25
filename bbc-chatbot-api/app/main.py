@@ -29,6 +29,7 @@ from app.api.cron import router as cron_router
 from app.api.canary import router as canary_router
 from app.api.security_bans import router as security_bans_router
 from app.api.live_bot import router as live_bot_router
+from app.api.channels import router as channels_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 from app.security.ban_guard import BanGuardMiddleware
@@ -90,6 +91,9 @@ app.include_router(cron_router, prefix="/api", tags=["cron"])
 # An agent's own bot in "On the site now": PUBLIC with the agent's bot key as a bearer (the bot calls it, not a
 # panel session). Before the admin routers: /api/live/bot/* is never a panel route.
 app.include_router(live_bot_router, prefix="/api", tags=["live-bot"])
+
+# Other channels' gateways (Facebook Messenger: bbc-messenger): PUBLIC, each call signed by its gateway.
+app.include_router(channels_router, prefix="/api", tags=["channels"])
 
 # Auth: PUBLIC login, protected invite (auth dependency inside the route)
 app.include_router(auth_router)

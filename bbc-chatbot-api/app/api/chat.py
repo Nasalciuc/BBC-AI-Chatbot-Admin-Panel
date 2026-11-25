@@ -729,6 +729,12 @@ async def _post_sale_reply(conversation_id: str, message: str) -> ChatResponse:
     return _post_sale_response(conversation_id, ack, row)
 
 
+# What a client writing to an agent who holds the chat is told (never stored): the first time, and after. Named so
+# another channel can tell them apart (app.services.messenger_channel sends the first, not each "sent").
+QUEUED_FIRST = "One moment please, connecting you with a specialist..."
+QUEUED_AGAIN = "Your message has been sent to the specialist."
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     req: ChatRequest,
@@ -1002,11 +1008,7 @@ async def chat(
                 from app.services.handoff import _handoff_phrase_recently_sent
 
                 already = await _handoff_phrase_recently_sent(req.conversation_id)
-                queued_msg = (
-                    "Your message has been sent to the specialist."
-                    if already
-                    else "One moment please, connecting you with a specialist..."
-                )
+                queued_msg = QUEUED_AGAIN if already else QUEUED_FIRST
                 return ChatResponse(
                     conversation_id=req.conversation_id,
                     message=queued_msg,

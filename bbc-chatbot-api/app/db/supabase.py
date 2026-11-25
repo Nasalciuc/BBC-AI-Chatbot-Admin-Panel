@@ -7164,3 +7164,28 @@ async def first_chat_of_visit(visitor_id: str, since_iso: str, until_iso: str) -
         return None
     rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id") and r.get("created_at")]
     return rows[0] if rows else {}
+
+
+# ── Facebook Messenger (app/services/messenger_channel.py, contracts/messenger.md) ────────────────────────────────
+
+
+async def latest_conversation_of_visitor(visitor_id: str) -> Optional[dict]:
+    """The newest conversation of a visitor, whatever its status (id, status, mode, assigned_agent_id, updated_at,
+    created_at, last_user_message_at, metadata): {} when there is none, None when the database could not say (rule 7). A Messenger thread
+    goes on in the chat it had, closed or not, as the widget's does with the chat it keeps."""
+    db_client = get_client()
+    try:
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, status, mode, assigned_agent_id, updated_at, created_at, last_user_message_at, metadata")
+            .eq("visitor_id", visitor_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute(),
+            label="messenger",
+        )
+    except Exception as e:
+        logger.warning(f"[messenger] a thread's chat not read: {type(e).__name__} {_error_code(e) or e}")
+        return None
+    rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id")]
+    return rows[0] if rows else {}
