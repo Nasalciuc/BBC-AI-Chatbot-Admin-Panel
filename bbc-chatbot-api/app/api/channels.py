@@ -17,12 +17,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# The gateway never sends more (bbc-messenger MaxBody): a bigger body is read no further, signed or not.
+MAX_BODY = 1 << 20
+
+
+async def _read_capped(request: Request) -> bytes:
+    declared = request.headers.get("content-length") or ""
+    if declared.isdigit() and int(declared) > MAX_BODY:
+        raise HTTPException(status_code=413, detail="Too large.")
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_BODY:
+            raise HTTPException(status_code=413, detail="Too large.")
+    return bytes(body)
+
+
 @router.post("/channels/messenger/inbound")
 async def messenger_inbound(request: Request) -> dict:
     if not messenger_channel.enabled():
         # 503, never 404: a gateway pointed here early is told to wait, not counted as a scan (ban_guard).
         raise HTTPException(status_code=503, detail="Messenger is off.")
-    body = await request.body()
+    body = await _read_capped(request)
     if not messenger_channel.valid_signed(request.headers.get("x-gateway-time"),
                                           request.headers.get("x-gateway-signature"), body):
         messenger_channel.MESSENGER_HEALTH["bad_signature"] += 1

@@ -174,6 +174,8 @@ def test_the_route_answers_the_gateway_only(monkeypatch):
     with patch.object(mc, "handle", new=AsyncMock(side_effect=RuntimeError("db"))):
         assert _post(client, body).status_code == 503
     assert mc.MESSENGER_HEALTH["turns_failed"] == 1
+    # A body bigger than the gateway ever sends is not read, signed or not.
+    assert _post(client, b"x" * ((1 << 20) + 1)).status_code == 413
     # Off: 503 (never 404, which ban_guard counts as a scan), and nothing is read.
     monkeypatch.setenv("MESSENGER_CHANNEL", "false")
     with patch.object(mc, "handle", new=AsyncMock()) as handle:

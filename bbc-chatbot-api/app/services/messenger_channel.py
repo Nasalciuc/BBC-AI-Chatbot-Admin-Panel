@@ -49,7 +49,8 @@ QUEUED_EVERY_S = 1800
 PENDING_S = 120
 ANSWERED_S = 86400
 TARGET_S = 30 * 86400
-GATEWAY_TIMEOUT_S = 40.0
+# The gateway waits for Meta, with its retries (bbc-messenger: 10 s a call, 2 + 5 + 15 s between): never longer.
+GATEWAY_TIMEOUT_S = 80.0
 SIGNED_SKEW_S = 300
 
 # What a message with no text but an attachment is kept as, and what Skye says to it.
