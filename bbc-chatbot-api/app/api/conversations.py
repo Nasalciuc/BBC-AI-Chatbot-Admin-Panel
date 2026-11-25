@@ -833,9 +833,9 @@ async def send_agent_message(
 
 
 async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict, *, must_hold: bool = False):
-    """The agent's send. `must_hold`: only in a chat that is the sender's now, in human mode (an agent's own bot,
-    app.services.live_bot): any other is refused with 409 before anything is written, and never claimed, no manual
-    handoff (CodeRabbit #282, round 7). The panel's send claims a chat it doesn't hold, as before."""
+    """The agent's send. `must_hold`: only in a chat that is the sender's now, in human mode and open (an agent's own
+    bot, app.services.live_bot): any other is refused with 409 before anything is written, and never claimed, no
+    manual handoff (CodeRabbit #282, rounds 7 and 8). The panel's send claims a chat it doesn't hold, as before."""
     # SECURITY: role from DB, not JWT. Only hands-on roles may speak as agent.
     _sender_db = await db.get_user_by_id(user.get("id"))
     _role_db = (_sender_db or {}).get("role") or ""
@@ -855,7 +855,8 @@ async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict
         and conv.get("assigned_agent_id") == _user_id
     )
 
-    if must_hold and not _already_mine:
+    # Open too: a chat the agent closed after the bot's check keeps its owner and mode (CodeRabbit #282, round 8).
+    if must_hold and (not _already_mine or conv.get("status") not in db.OPEN_STATUSES):
         raise HTTPException(status_code=409, detail="The chat is no longer yours.")
 
     # F1 FIX: perform_handoff ONLY when this is a NEW assignment (admin

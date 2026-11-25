@@ -785,9 +785,11 @@ def _send_patches(conv):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("conv", [_conv(assigned_agent_id=COLLEAGUE), _conv(mode="ai", assigned_agent_id=None)])
+@pytest.mark.parametrize("conv", [_conv(assigned_agent_id=COLLEAGUE), _conv(mode="ai", assigned_agent_id=None),
+                                  _conv(status="closed")])
 async def test_the_bots_send_writes_nothing_in_a_chat_no_longer_the_agents(conv):
-    """CodeRabbit #282, round 7: must_hold refuses before any write and never claims the chat (no manual handoff)."""
+    """CodeRabbit #282, round 7: must_hold refuses before any write and never claims the chat (no manual handoff).
+    Round 8: a chat the agent closed keeps its owner and mode, and is refused too."""
     from fastapi import HTTPException
 
     from app.api import conversations as mod
@@ -808,11 +810,36 @@ async def test_the_bots_send_writes_nothing_in_a_chat_no_longer_the_agents(conv)
 
 
 @pytest.mark.asyncio
-async def test_the_bots_send_in_its_chat_and_the_panels_send_are_as_before():
-    """Rule 5: the bot's chat, still the agent's, is answered; the panel's send still claims a chat it doesn't hold."""
+async def test_a_chat_closed_after_the_bots_check_gets_no_answer(redis):
+    """CodeRabbit #282, round 8: the chat was open when the bot read it and closed by the agent before the send:
+    nothing is written."""
     from app.api import conversations as mod
 
-    for conv, must_hold, claims in ((_conv(), True, False), (_conv(assigned_agent_id=COLLEAGUE), False, True)):
+    agent = await _agent(redis)
+    ps = _send_patches(_conv(status="closed"))
+    mocks = [p.start() for p in ps]
+    try:
+        with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())):
+            with pytest.raises(BotRefused) as e:
+                await live_bot.say(agent, CONV, "Which dates?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert (e.value.status, e.value.code) == (403, "not_the_bots")
+    mocks[2].assert_not_awaited()
+    mocks[4].assert_not_awaited()
+    assert mod.db.OPEN_STATUSES == ("active", "needs_agent")
+
+
+@pytest.mark.asyncio
+async def test_the_bots_send_in_its_chat_and_the_panels_send_are_as_before():
+    """Rule 5: the bot's chat, still the agent's, is answered; the panel's send still claims a chat it doesn't hold,
+    and still answers in a chat the agent holds that is closed (round 8 changes only the bot's send)."""
+    from app.api import conversations as mod
+
+    for conv, must_hold, claims in ((_conv(), True, False), (_conv(status="needs_agent"), True, False),
+                                    (_conv(assigned_agent_id=COLLEAGUE), False, True),
+                                    (_conv(status="closed"), False, False)):
         ps = _send_patches(conv)
         mocks = [p.start() for p in ps]
         try:
