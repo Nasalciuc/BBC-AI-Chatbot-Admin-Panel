@@ -73,8 +73,10 @@ def last_question(history: Optional[list]) -> str:
 # address you by?" (18-19 Nov: four chats asked it so, and the answer was not
 # kept: #3361 was asked again). Not "the name of the airline you prefer?".
 _NAME_QUESTION_RE = re.compile(
-    # "your good name" is how agents in India ask it.
-    r"\b(?:(?:your(?:\s+(?:good|full|first|last))?|full|first|last|best)\s+name"
+    # "your good name" is how agents in India ask it. Not a rule about the name: "Does your name match your
+    # passport, and where are you flying from?" is answered "Boston" (CodeRabbit #282, round 3).
+    r"\b(?:(?:your(?:\s+(?:good|full|first|last))?|full|first|last|best)\s+name(?!\s+(?:must|should|needs?\b"
+    r"|has\s+to|will\b|match|appears?\b|spell))"
     r"|what\s+name|name\s+should|who\s+to\s+address|address\s+you\s+(?:by|as)\b"
     # Skye, 18-21 Nov: "a name to put on the request?", "a name for the file, who should they ask for when they
     # reach out?" — both answered with a name, neither kept.
@@ -111,11 +113,15 @@ def _asked(question: str, pattern: re.Pattern) -> bool:
 # An agent asks without a question mark (18-25 Nov, 7 chats whose answer was a name and none kept): "Also your
 # name please to address you better.", "whats your name", "Could you please advise your name, email and phone
 # number", "please your name and contact details", a list with a "Name" line. A request, never a statement: "Thanks,
-# your name is noted." asks nothing.
+# your name is noted." asks nothing. Nor a rule about the name: "Please make sure your name matches your passport.
+# Where are you flying from?" is answered "Boston" (CodeRabbit #282, round 3); "please type your name exactly as in
+# your passport" still asks for it.
+_NAME_RULE_BEFORE = r"(?!\b(?:make\s+sure|ensure|check|note|remember|verify|double[\s-]?check|be\s+sure|confirm\s+that)\b)"
 _NAME_REQUEST_RE = re.compile(
     r"\b(?:please|pls|kindly|advise|share|provide|give|send|tell|type|write|need|whats|what's|what\s+is"
     r"|help\s+me\s+with|may\s+i\s+(?:have|know|ask|get)|can\s+i\s+(?:have|get|know)|could\s+(?:you|i))\b"
-    r"[^.!?\n]{0,40}?\byour\s+(?:good\s+|full\s+|first\s+)?name\b(?!\s+(?:is|was|has|on\s+file))"
+    rf"(?:{_NAME_RULE_BEFORE}[^.!?\n]){{0,40}}?\byour\s+(?:good\s+|full\s+|first\s+)?name\b"
+    r"(?!\s+(?:is|was|has|on\s+file|must|should|needs?\b|will\b|match|appears?\b|spell))"
     r"|\byour\s+(?:good\s+|full\s+)?name\s*(?:,\s*)?(?:please|pls|plz)\b"
     r"|^[\s\-*•\d.)]*(?:your\s+)?(?:full\s+)?name\s*:?\s*$",
     re.IGNORECASE | re.MULTILINE,
@@ -228,10 +234,14 @@ _SELF_INTRO_RE = re.compile(
     re.IGNORECASE,
 )
 # Words after "my name is" that no name holds: "my name is on the booking", "…is spelled with a K", "…as in the
-# passport". The name ends at one, and a phrase that starts with one names nobody.
+# passport". The name ends at one, and a phrase that starts with one names nobody. The sentence that goes on after
+# the name ends it too: "My name is Ana looking for flights" is Ana, not "Ana Looking" (CodeRabbit #282, round 3) —
+# never a word a name can be ("Will", "Can", "Ming" stay).
 _NEVER_IN_A_NAME = frozenset("""
 on in at to for of as by under spelled written already still also there here this that same correct wrong
 different missing misspelled listed above below with from but y et mas mais pero
+looking searching seeking trying wanting planning hoping travelling traveling flying going coming calling writing
+texting contacting reaching asking inquiring enquiring booking interested about need needs want wants would
 """.split())
 # A name's last word is never one of these: "María José García de" lost its last word to the four-word limit.
 _NAME_PARTICLES = frozenset("de da del della di do dos das du la le van von der den ter".split())

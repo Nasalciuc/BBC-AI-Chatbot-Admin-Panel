@@ -34,6 +34,13 @@ ASKED_DATES = "Which dates work for you?"
     ("Hello! My name is Paul. I want business class to Paris", "Paul"),
     ("My first name is Ana", "Ana"),
     ("me llamo maría josé y viajo a Madrid", "María José"),
+    # The sentence that goes on after the name ends it (CodeRabbit #282, round 3); a name that ends in -ing stays.
+    ("My name is Ana looking for flights", "Ana"),
+    ("My name is Ana Popescu looking to fly", "Ana Popescu"),
+    ("my name is john trying to book", "John"),
+    ("My name is Ana calling about my booking", "Ana"),
+    ("My name is Li Ming", "Li Ming"),
+    ("My name is Will Smith", "Will Smith"),
     ("Je m’appelle Lucie Martin.", "Lucie Martin"),
     ("meu nome é Ana e moro em Lisboa", "Ana"),
     # Four words at most, and never a particle at the end.
@@ -86,6 +93,10 @@ def test_beside_no_contact_or_beside_more_than_a_name_nobody(message):
     assert name_beside_contact(message) is None
 
 
+def test_the_answer_after_a_rule_about_the_name_is_no_name():
+    assert name_in_reply("Boston", "Please make sure your name matches your passport. Where are you flying from?") is None
+
+
 def test_beside_the_contact_only_when_the_name_was_asked():
     assert name_in_reply("Ana Popescu, ana@example.com", ASKED_NAME) == "Ana Popescu"
     assert name_in_reply("Ana Popescu", ASKED_NAME) == "Ana Popescu"
@@ -119,6 +130,10 @@ def test_an_initial_is_no_article():
     "Last thing, and a name to put on the request?",
     "Still just need a name for the file, who should they ask for when they reach out?",
     "Who should they ask for when they reach out, what name is this under?",
+    # A request with words after the name still asks for it.
+    "Please share your name",
+    "please type your name exactly as in your passport",
+    "What is your full name as it appears on the passport?",
 ])
 def test_the_name_question_in_the_shapes_it_was_asked(question):
     assert asks_for_name(question)
@@ -133,6 +148,12 @@ def test_the_name_question_in_the_shapes_it_was_asked(question):
     "What's the name of the airline you prefer?",
     "Name of the hotel?",
     "Please confirm the dates",
+    # A rule about the name asks for nothing (CodeRabbit #282, round 3).
+    "Please make sure your name matches your passport. Where are you flying from?",
+    "Kindly note your name must match the ID.",
+    "Please check your name spelling.",
+    "Does your name match your passport, and where are you flying from?",
+    "Please note that your name will appear on the ticket. Which dates?",
 ])
 def test_a_statement_or_another_question_asks_no_name(question):
     """Rule 5: the agent's own name, a name already noted, and another thing's name."""
@@ -215,6 +236,40 @@ def test_an_email_and_a_phone_too_and_a_trip_alone_tells_nothing():
     ok, pushed = _write({"origin": "JFK", "destination": "LHR"})
     assert ok is True
     pushed.assert_not_awaited()
+
+
+class _LeadWriteFails(_Recorder):
+    """The lead is read, then its write is refused."""
+
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.writing = False
+
+    def update(self, *args, **kwargs):
+        self.writing = True
+        return self
+
+    def execute(self):
+        if self.writing:
+            raise RuntimeError("refused")
+        return super().execute()
+
+
+def test_a_contact_saved_on_the_chat_is_told_even_when_the_leads_write_fails():
+    """CodeRabbit #282, round 3: the chat's write landed, the agent's open chat hears of it; the lead's failure goes
+    on as before."""
+    lead = _LeadWriteFails([{"id": "L-1", "score": 0}])
+    conv = _Recorder([{"visitor_name": None, "visitor_email": None, "visitor_phone": None}])
+    client = MagicMock()
+    client.table.side_effect = lambda name: conv if name == "conversations" else lead
+    pushed = AsyncMock()
+    from app.services import lead_service
+
+    with patch("app.db.supabase.get_client", return_value=client), \
+            patch("app.realtime.manager.manager.push", new=pushed):
+        ok = asyncio.run(lead_service.update_lead_from_entities("c-1", {"name": "Ana Popescu", "passengers": 2}))
+    assert ok is False
+    pushed.assert_awaited_once_with("op:c-1", {"event": "contact", "fields": ["visitor_name"]})
 
 
 def test_a_push_that_fails_never_fails_the_save(caplog):

@@ -173,8 +173,26 @@ async def test_a_failed_read_is_counted_and_logged_without_the_message(caplog):
         await operator_contact.record_contact("c1", "Paul Moreau")
     write.assert_not_awaited()
     assert operator_contact.OPERATOR_CONTACT_HEALTH == {"found": 0, "failures": 1}
-    assert "not recorded (RuntimeError)" in caplog.text
+    assert "the name not read (RuntimeError)" in caplog.text
     assert "paul.moreau@example.com" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", ["history", "conversation"])
+async def test_a_failed_name_read_still_saves_the_email_beside_the_name(fails, caplog):
+    """The name is lost, the email is not (CodeRabbit #282, round 3)."""
+    write = AsyncMock()
+    down = AsyncMock(side_effect=RuntimeError("down"))
+    recent = down if fails == "history" else AsyncMock(return_value=NAME_Q)
+    simple = down if fails == "conversation" else AsyncMock(return_value={})
+    with patch("app.services.lead_service.update_lead_from_entities", new=write), \
+         patch("app.db.supabase.get_recent_messages", new=recent), \
+         patch("app.db.supabase.get_conversation_simple", new=simple), \
+         caplog.at_level(logging.INFO):
+        await operator_contact.record_contact("c1", "Ana Popescu, ana@example.com")
+    write.assert_awaited_once_with("c1", {"email": "ana@example.com"})
+    assert operator_contact.OPERATOR_CONTACT_HEALTH == {"found": 1, "failures": 1}
+    assert "Popescu" not in caplog.text and "ana@example.com" not in caplog.text
 
 
 def test_health_shows_the_operator_contacts():

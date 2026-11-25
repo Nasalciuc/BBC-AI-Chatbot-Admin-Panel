@@ -514,11 +514,14 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
         if tasks:
             # Both writes settle before an error goes on: one still in flight would land after the
             # lock is released, under the next writer's score (CodeRabbit #268, round 3).
-            for outcome in await asyncio.gather(*tasks, return_exceptions=True):
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            # The chat's contact saved is told to the agent's open chat even when the lead's write failed
+            # (CodeRabbit #282, round 3); the conversation's write is the first task when there is one.
+            if conv_payload and not isinstance(outcomes[0], BaseException):
+                await _tell_the_panel(conversation_id, conv_payload)
+            for outcome in outcomes:
                 if isinstance(outcome, BaseException):
                     raise outcome
-        if conv_payload:
-            await _tell_the_panel(conversation_id, conv_payload)
 
         # Score from merged local state (no re-select lead + conv): this
         # call's contacts first, then the ones the conversation already holds.

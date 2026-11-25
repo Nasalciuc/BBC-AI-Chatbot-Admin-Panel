@@ -71,22 +71,28 @@ async def record_contact(conversation_id: str, message: str) -> None:
         # A name: the answer to the operator's name question (the whole message, or the name beside the
         # contact given with it), or one the client gives unasked with "my name is …" (contact_capture). Free
         # text never names the client (orchestrator). The history is read only for a message that could hold one.
+        # A read that fails loses the name only: the email or the phone beside it is saved all the same
+        # (CodeRabbit #282, round 3), and the failed read is counted with the others.
         if could_name(message):
-            asked = last_question(await db.get_recent_messages(conversation_id, limit=10))
-            if name_in_reply(message, asked):
-                conv = await db.get_conversation_simple(conversation_id) or {}
-                # Read again in the conversation's language, as the chat does: a bare "dale" answers yes to
-                # a Spanish client's operator, and is no name (CodeRabbit #270).
-                from app.pipeline.language import current_lang, turn_lang
+            try:
+                asked = last_question(await db.get_recent_messages(conversation_id, limit=10))
+                if name_in_reply(message, asked):
+                    conv = await db.get_conversation_simple(conversation_id) or {}
+                    # Read again in the conversation's language, as the chat does: a bare "dale" answers yes to
+                    # a Spanish client's operator, and is no name (CodeRabbit #270).
+                    from app.pipeline.language import current_lang, turn_lang
 
-                meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
-                token = current_lang.set(turn_lang(message, meta.get("client_lang")))
-                try:
-                    answer = name_in_reply(message, asked)
-                finally:
-                    current_lang.reset(token)
-                if answer:
-                    found["name"] = name_to_store(conv.get("visitor_name"), answer, asks_for_last_name(asked))
+                    meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
+                    token = current_lang.set(turn_lang(message, meta.get("client_lang")))
+                    try:
+                        answer = name_in_reply(message, asked)
+                    finally:
+                        current_lang.reset(token)
+                    if answer:
+                        found["name"] = name_to_store(conv.get("visitor_name"), answer, asks_for_last_name(asked))
+            except Exception as e:  # noqa: silent — logged by type and counted; the error text can carry the message
+                OPERATOR_CONTACT_HEALTH["failures"] += 1
+                logger.warning(f"[operator-contact] {conversation_id}: the name not read ({type(e).__name__})")
         found = {k: v for k, v in found.items() if v}
         if not found:
             return
