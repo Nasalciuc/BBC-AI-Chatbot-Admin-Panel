@@ -116,6 +116,14 @@ export function givesMomentBack(passed: string | null, askedAgain: number): bool
   return passed === 'trip_changed' && askedAgain < TRIP_ASKS_AGAIN
 }
 
+/** Whether the row's second chance (rowAgainOpen) goes back when its answer came after its moment passed. Only a new
+ *  press of the form: that press is a new send, which the site may refuse too, and its refusal is then the row's
+ *  moment (CodeRabbit #282, round 8). Every other reason spends the chance as it spends the visit's moment, an answer
+ *  that never came among them: one ask a chance, never one a second while the server doesn't answer. */
+export function givesRowBack(passed: string | null, rowOnly: boolean): boolean {
+  return rowOnly && passed === 'quote_form'
+}
+
 /** What can open the chat without the form: one of the moments, or `note` — the visitor tapped the 10 s
  *  note beside the button (owner's decision, 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the
  *  chat got past the form the note led to). The note is no moment: no arm and no switch holds it. */

@@ -337,7 +337,8 @@ test('a trip that changed under the answer gives the visit its moment back, a fe
   // Wired before the line that drops a passed answer: the reservation it owned goes back ('asked' only, a stop the
   // site said meanwhile stays), evaluate may fire again, and the page counts the asks.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
+  // Then the row's second chance's own (round 8), then the drop that keeps the moment used.
+  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(givesRowBack\(passed, rowOnly\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{/)
   // Measured first: the dropped answer keeps its moment_passed on proactive_eligible.
   assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (givesMomentBack(passed, tripAskedAgain))'))
   // Counted per page: the hook's moments start each page at nothing.
@@ -806,7 +807,7 @@ test('an answer that comes after the visitor moved on is dropped and measured, n
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.ok(ask.indexOf('const before = seen()') < ask.indexOf('await fetchProactiveOffer('))
   assert.match(ask, /\.\.\.\(passed \? \{ moment_passed: passed \} : \{\}\)/)
-  assert.match(ask, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
+  assert.match(ask, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{\n(?:\s*\/\/[^\n]*\n)*\s+pending = false\n\s+return\n\s+\}/)
   const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
   for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'sent', 'trip_changed']) {
     assert.match(why, new RegExp(`return '${reason}'`), reason)

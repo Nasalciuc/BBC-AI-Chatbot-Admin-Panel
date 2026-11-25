@@ -39,7 +39,7 @@ import {
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
-  adKeyword, adVisit, blockedPath, givesMomentBack, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning,
+  adKeyword, adVisit, blockedPath, givesMomentBack, givesRowBack, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning,
   pickTrigger, readOff, rowAgainOpen, rowMoment,
   quoteClick, readingMoment, replyKind, socialVisit, worksOnPressedForm, type OpeningTrigger, type PageState,
   type QuoteState, type Trigger,
@@ -515,7 +515,14 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     // What this run's moment reserves while its answer is on the way: the visit's one moment, or the row's second
     // chance (rowOnly). An answer that gives it back frees only its own 'asked': a stop the site said meanwhile stays.
     const held = rowOnly ? ROW_AGAIN_KEY : DONE_KEY
-    const giveBack = () => { if (ssGet(held) === 'asked') ssSet(held, '') }
+    // This run's own reservation while nothing is decided about its answer (on its way, or waiting for a popup): the
+    // run that ends first gives it back (the cleanup below), and an answer that comes after its run ended gives back
+    // nothing, so it never frees a newer run's 'asked' (CodeRabbit #282, round 8).
+    let pending = false
+    const giveBack = () => {
+      pending = false
+      if (!disposed && ssGet(held) === 'asked') ssSet(held, '')
+    }
     const start = Date.now()
     // E1 (overlay.ts): the site's popups over the page; a card waits while one is open.
     const popups = pagePopups
@@ -815,7 +822,18 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         fired = false
         return
       }
-      if (disposed || !res || !res.show || !res.message || passed) return
+      if (givesRowBack(passed, rowOnly)) {
+        // The row's second chance, dropped for a new press of the form (measured above): that send may be refused
+        // too, and its refusal is the row's moment then (CodeRabbit #282, round 8).
+        giveBack()
+        fired = false
+        return
+      }
+      if (disposed || !res || !res.show || !res.message || passed) {
+        // Dropped, or no answer: the moment (or the second chance) is used, as asked.
+        pending = false
+        return
+      }
       // D1: the server gave the row's words, and the form is still there to stand beside.
       const row = res.variant === 'row' && !!res.buttons?.length && !!rowAt?.isConnected
       if ((res.variant === 'row' || rowOnly) && !row) {
@@ -841,6 +859,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       if (row) setRowForm(rowAt)
       // The visit's one moment is used now (the second chance keeps it 'shown'). Any row shown uses the row's second
       // chance: that chance itself, or the visit's moment that was the row (it had its row; the chance is after a card).
+      pending = false
       if (!rowOnly) ssSet(DONE_KEY, 'shown')
       if (row) ssSet(ROW_AGAIN_KEY, 'used')
       ssSet(ATTENTION_KEY, '1')
@@ -945,6 +964,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         return
       }
       fired = true
+      pending = true
       ssSet(held, 'asked')
       void ask(trigger, state.phone, readingMoment(state, trigger))
     }
@@ -970,6 +990,9 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
 
     return () => {
       disposed = true
+      // An answer still undecided when its run ends is never shown (disposed): its reservation goes back now.
+      if (pending && ssGet(held) === 'asked') ssSet(held, '')
+      pending = false
       clearInterval(tick)
       offSite()
       if (refusalTimer !== null) clearTimeout(refusalTimer)

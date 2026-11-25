@@ -23,7 +23,7 @@ import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, WATCHED_FIRST_S, WATCHED_FIRST_SIGNALS_S,
-  adKeyword, givesMomentBack, isNotNow, keywordNamesPlace, pickTrigger, rowAgainOpen, rowMoment,
+  adKeyword, givesMomentBack, givesRowBack, isNotNow, keywordNamesPlace, pickTrigger, rowAgainOpen, rowMoment,
 } from '../src/triggers.ts'
 import { LAYOUT_AFTER_MS, cardAsideWatch, coveredShare, watchPopups } from '../src/overlay.ts'
 import { keyboardInset } from '../src/keyboard.ts'
@@ -748,9 +748,10 @@ test('the second chance is wired: its own reservation, given back as the first i
   assert.match(hook, /const rowOnly = rowAgain && rowAgainNow\(\)/)
   assert.match(hook, /function rowAgainNow\(\): boolean \{\s+return rowAgainOpen\(ssGet\(DONE_KEY\), ssGet\(ROW_AGAIN_KEY\), ssGet\(CONTACT_LEFT_KEY\) === '1'\)\s+\}/)
   // Its reservation is its own: the visit's moment stays 'shown'. Every answer that gives a moment back gives this one.
-  assert.match(hook, /const held = rowOnly \? ROW_AGAIN_KEY : DONE_KEY\n\s+const giveBack = \(\) => \{ if \(ssGet\(held\) === 'asked'\) ssSet\(held, ''\) \}/)
+  assert.match(hook, /const held = rowOnly \? ROW_AGAIN_KEY : DONE_KEY\n(?:\s*\/\/[^\n]*\n)*\s+let pending = false\n\s+const giveBack = \(\) => \{\s+pending = false\s+if \(!disposed && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+\}/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.equal(ask.split('giveBack()').length - 1, 5)
+  // The four answers that give a moment back, the row's new press (round 8) and the form gone.
+  assert.equal(ask.split('giveBack()').length - 1, 6)
   assert.doesNotMatch(ask, /ssSet\(DONE_KEY, ''\)/)
   // Only the row may come of it: any other answer gives the chance back.
   assert.match(ask, /if \(\(res\.variant === 'row' \|\| rowOnly\) && !row\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}/)
@@ -762,7 +763,7 @@ test('the second chance is wired: its own reservation, given back as the first i
   const evaluate = hook.slice(hook.indexOf('const evaluate = () => {'), hook.indexOf('const pointerEvents = ['))
   assert.match(evaluate, /if \(rowOnly && !rowAgainNow\(\)\) return/)
   assert.match(evaluate, /const trigger = pickTrigger\(state\)\n\s+if \(!trigger\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(rowOnly && !rowMoment\(trigger, quote\)\) return/)
-  assert.match(evaluate, /fired = true\n\s+ssSet\(held, 'asked'\)/)
+  assert.match(evaluate, /fired = true\n\s+pending = true\n\s+ssSet\(held, 'asked'\)/)
   // The site's stop closes it (they sent the request, or reached out).
   const stopFor = hook.slice(hook.indexOf('const stopFor = (e: SiteEvent) => {'))
   assert.match(stopFor, /if \(!stop\) return\n(?:\s*\/\/[^\n]*\n)*\s+const again = ssGet\(ROW_AGAIN_KEY\)\n\s+if \(!again \|\| again === 'asked'\) ssSet\(ROW_AGAIN_KEY, stop\)/)
@@ -793,13 +794,44 @@ test('a contact left while the second chance\'s row was on its way drops the row
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // Both must be there before their order means anything: a missing one is -1 (CodeRabbit #282, round 8).
   const measured = ask.indexOf('moment_passed: passed')
-  const dropped = ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) return')
+  const dropped = ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) {')
   assert.ok(measured >= 0, 'the passed moment is measured')
   assert.ok(dropped >= 0, 'and dropped')
   assert.ok(measured < dropped, 'measured before it is dropped')
   assert.equal(givesMomentBack('contact_left', 0), false)
   // Rule 5: the visit's first moment does not read it (with a chat a visitor has none: `allowed` is false).
   assert.doesNotMatch(why, /if \(ssGet\(CONTACT_LEFT_KEY\)/)
+})
+
+test('the row\'s second chance goes back for a new press of the form, and only for it (CodeRabbit #282, round 8)', () => {
+  // A new press while the row's answer was on its way is a new send: refused too, it is the row's moment.
+  assert.equal(givesRowBack('quote_form', true), true)
+  // Rule 5: any other drop spends the chance as it spends the visit's moment, and the visit's moment itself keeps its
+  // rules (givesMomentBack): one ask a chance, never one a second while the server doesn't answer.
+  for (const passed of [null, 'typing', 'hidden', 'chat_opened', 'popup', 'searched', 'sent', 'contact_left', 'left_page']) {
+    assert.equal(givesRowBack(passed, true), false, String(passed))
+  }
+  assert.equal(givesRowBack('quote_form', false), false, 'the visit\'s first moment keeps its word')
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  const back = ask.indexOf('if (givesRowBack(passed, rowOnly)) {')
+  const dropped = ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) {')
+  assert.ok(back >= 0 && dropped >= 0 && back < dropped, 'given back before a dropped answer spends it')
+  assert.match(ask.slice(back, dropped), /giveBack\(\)\s+fired = false\s+return/)
+  // An answer that never came spends the chance: nothing is given back on that path.
+  assert.doesNotMatch(ask.slice(dropped, dropped + 160), /giveBack\(\)/)
+})
+
+test('a run that ends before its answer is decided gives its reservation back, and a late answer frees nothing (CodeRabbit #282, round 8)', () => {
+  const run = hook.slice(hook.indexOf("const held = rowOnly ? ROW_AGAIN_KEY : DONE_KEY"), hook.indexOf('  }, [allowed, rowAgain, step, apiUrl])'))
+  // The reservation is this run's while nothing is decided about its answer.
+  assert.match(run, /fired = true\s+pending = true\s+ssSet\(held, 'asked'\)/)
+  // A late answer (its run ended) gives back nothing: it would free a newer run's 'asked'.
+  assert.match(run, /const giveBack = \(\) => \{\s+pending = false\s+if \(!disposed && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+\}/)
+  // The run that ends first gives it back, only while it is still its 'asked' (a site stop said meanwhile stays).
+  assert.match(run, /return \(\) => \{\s+disposed = true\s+(?:\/\/[^\n]*\n\s+)*if \(pending && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+pending = false/)
+  // Decided: shown, or dropped (used as asked): nothing for the cleanup to give back.
+  assert.match(run, /pending = false\s+if \(!rowOnly\) ssSet\(DONE_KEY, 'shown'\)/)
+  assert.match(run, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{\s+(?:\/\/[^\n]*\n\s+)*pending = false\s+return/)
 })
 
 test('the row\'s contact goes into the conversation the visitor already has, once', () => {
