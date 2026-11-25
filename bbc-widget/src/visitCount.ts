@@ -34,15 +34,6 @@ export function noteVisit(nowMs: number = Date.now()): void {
   } catch { /* storage blocked: a browser we can't tell apart is not returning */ }
 }
 
-/** The number of this browser's visit, as the last page or beat counted it (0 when it can't say): the visit
- *  registry keeps a tab's card for this visit only (visits.ts). */
-export function visitNumber(): number {
-  try {
-    const kept = JSON.parse(localStorage.getItem(KEY) ?? 'null') as { n?: unknown } | null
-    return kept && typeof kept.n === 'number' && Number.isInteger(kept.n) && kept.n >= 1 ? kept.n : 0
-  } catch { return 0 }
-}
-
 /** This browser came before this visit. */
 export function isReturning(): boolean {
   return returning

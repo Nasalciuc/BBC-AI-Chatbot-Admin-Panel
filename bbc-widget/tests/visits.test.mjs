@@ -8,8 +8,8 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  MAX_EVENTS, VISIT_EVENTS, addEvent, cardAfter, cardToKeep, channelOf, eventToken, keptCardFor, newPageId,
-  readVisitCard, visitBody,
+  MAX_EVENTS, MAX_SEQ, VISIT_EVENTS, addEvent, cardAfter, cardStillOn, cardToKeep, channelOf, eventToken, keptCardFor,
+  newPageId, readVisitCard, snapshotTimer, visitBody,
 } from '../src/visitsRead.ts'
 import { configFor, readConfig } from '../src/liveRead.ts'
 
@@ -83,21 +83,82 @@ test('only the card’s own answer is what came of it: a note opened later and c
   const said = cardAfter(kayak, 'proactive_dismissed', { trigger: 'kayak', how: 'not_now' }, NOW + 5000)
   assert.equal(cardAfter(said, 'proactive_engaged', { trigger: 'note', reply: 'typed' }, NOW + 9000), said,
     '"Not now" to the card, then a reply to the note: the card stays "not now"')
-  // The Meta ads' card is a card of the visit too, and its answer counts.
+  // The Meta ads' card is a card of the visit too: its answer counts and is kept for the visit's next pages.
   const social = cardAfter(null, 'proactive_shown', { trigger: 'social', surface: 'card' }, NOW)
   assert.equal(social?.trigger, 'social')
-  assert.equal(cardAfter(social, 'proactive_engaged', { trigger: 'social', reply: 'yes' }, NOW + 4000).state, 'engaged')
-  assert.deepEqual(readVisitCard(JSON.stringify(social)), social)
+  const socialAnswered = cardAfter(social, 'proactive_engaged', { trigger: 'social', reply: 'yes', seconds_to_reply: 4 },
+    NOW + 4000)
+  assert.equal(socialAnswered.state, 'engaged')
+  assert.deepEqual(readVisitCard(cardToKeep(socialAnswered)), socialAnswered, 'the answered card reads back whole')
 })
 
-test('a tab’s card is kept for its visit only: a new visit’s first card is the card (CodeRabbit #282, round 3)', () => {
+test('a second opening of the card’s own moment is not the card: its seconds put it after the card (CodeRabbit #282, round 3)', () => {
+  const first = cardAfter(null, 'proactive_shown', { trigger: 'note', surface: 'panel' }, NOW)
+  // The first note was left unanswered; a second one showed a minute later and was answered or closed.
+  assert.equal(cardAfter(first, 'proactive_engaged', { trigger: 'note', reply: 'typed', seconds_to_reply: 4 },
+    NOW + 64_000), first)
+  assert.equal(cardAfter(first, 'proactive_dismissed', { trigger: 'note', how: 'close', seconds_visible: 3 },
+    NOW + 63_000), first)
+  // The card's own answer, its seconds rounded by the widget: counted.
+  assert.equal(cardAfter(first, 'proactive_engaged', { trigger: 'note', reply: 'typed', seconds_to_reply: 12 },
+    NOW + 12_400).state, 'engaged')
+  // "Not now", the pill, then the reply on the same page: the reply counts from the card's own time, so it is the card's.
+  const kayak = cardAfter(null, 'proactive_shown', { trigger: 'kayak', surface: 'card' }, NOW)
+  const notNow = cardAfter(kayak, 'proactive_dismissed', { trigger: 'kayak', how: 'not_now', seconds_visible: 5 },
+    NOW + 5_000)
+  assert.equal(notNow.state, 'dismissed')
+  assert.equal(cardAfter(notNow, 'proactive_engaged', { trigger: 'kayak', reply: 'channel', seconds_to_reply: 40 },
+    NOW + 40_300).state, 'engaged')
+})
+
+test('a tab’s card is kept while the registry’s visit goes on: a new visit’s first card is the card (CodeRabbit #282, round 3)', () => {
   const card = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW)
-  assert.deepEqual(keptCardFor(cardToKeep(card, 3), 3), card, 'the same visit: the next page keeps it')
-  assert.equal(keptCardFor(cardToKeep(card, 3), 4), null, 'a reload after 30 quiet minutes: the last visit’s card goes')
-  assert.equal(keptCardFor(cardToKeep(card, 3), 0), null, 'a browser that counts nothing keeps nothing')
-  for (const raw of [null, '', '{', JSON.stringify(card), JSON.stringify({ visit: 3, card: { state: 'loved' } })]) {
-    assert.equal(keptCardFor(raw, 3), null, String(raw))
+  const kept = cardToKeep(card)
+  assert.deepEqual(keptCardFor(kept, NOW + 60_000, NOW + 2 * 60_000), card, 'the next page, a minute on: kept')
+  // The live list's beats kept the browser's count of visits going; the registry heard nothing for 31 minutes.
+  assert.equal(keptCardFor(kept, NOW + 60_000, NOW + 32 * 60_000), null, 'a page after 30 quiet minutes: it goes')
+  assert.deepEqual(keptCardFor(kept, NOW + 25 * 60_000, NOW + 35 * 60_000), card, 'another tab’s snapshot kept it on')
+  // The card's own answer is heard of too: a snapshot follows it.
+  const answered = cardAfter(card, 'proactive_engaged', { trigger: 'ads', reply: 'yes' }, NOW + 20 * 60_000)
+  assert.ok(cardStillOn(answered, 0, NOW + 49 * 60_000))
+  assert.ok(!cardStillOn(answered, 0, NOW + 50 * 60_000))
+  for (const raw of [null, '', '{', JSON.stringify({ visit: 3, card: { state: 'loved' } })]) {
+    assert.equal(keptCardFor(raw, NOW, NOW), null, String(raw))
   }
+})
+
+test('one snapshot waits at a time, and the stop leaves none behind (CodeRabbit #282, round 3)', () => {
+  const waiting = new Map()
+  let ids = 0
+  const set = (fn, ms) => { ids++; waiting.set(ids, { fn, ms }); return ids }
+  const clear = (id) => { waiting.delete(id) }
+  const fire = () => { const [[id, t]] = [...waiting]; waiting.delete(id); t.fn() }
+  let runs = 0
+  const snap = snapshotTimer(() => { runs++ }, set, clear)
+  snap.soon(1500)
+  snap.soon(1500)
+  assert.equal(waiting.size, 1, 'an event after an event: one snapshot waits')
+  snap.now()
+  assert.equal(runs, 1)
+  assert.equal(waiting.size, 0, 'the minute’s snapshot, sent now, takes the waiting one with it')
+  snap.soon(1500)
+  assert.ok(snap.waiting())
+  fire()
+  assert.equal(runs, 2)
+  assert.ok(!snap.waiting())
+  snap.soon(1500)
+  snap.cancel()
+  assert.equal(waiting.size, 0, 'the teardown: nothing fires after the widget is gone')
+  assert.ok(!snap.waiting())
+  assert.equal(runs, 2)
+})
+
+test('a snapshot carries its number on the page, so bbc-live keeps the newest (CodeRabbit #282, round 3)', () => {
+  const base = { pageId: 'pabc123def456g', path: '/', pageMs: 0, seenMs: 0, trip: null, utm: {}, referrer: '',
+    siteHost: '', phone: false, site: 'bbc', events: [], steps: '', card: null, hasChat: false, nowMs: NOW }
+  assert.equal(visitBody({ ...base, seq: 7 }).seq, 7)
+  assert.equal(visitBody({ ...base, seq: MAX_SEQ + 5 }).seq, MAX_SEQ)
+  for (const seq of [undefined, 0, -1, 1.5]) assert.equal(visitBody({ ...base, seq }).seq, undefined, String(seq))
 })
 
 test('where the visitor came from, in one word', () => {
@@ -193,13 +254,21 @@ test('the registry’s stop, the fresh pass after a refusal, and the visit kept 
   const visits = readFileSync(join(here, '..', 'src', 'visits.ts'), 'utf8')
   // A refused pass: asked for again, not the page's first answer kept by pageConfig.
   assert.match(visits, /res\.status === 401 && Date\.now\(\) - renewedAt > RENEW_MS\) \{\s+renewedAt = Date\.now\(\)\s+askConfig\(apiUrl\)/)
-  // Every snapshot keeps the browser's visit going, and a new visit drops the last one's card.
-  assert.match(visits, /const goingOn = \(\) => \{\s+noteVisit\(\)\s+const now = visitNumber\(\)\s+if \(now === visit\) return\s+visit = now\s+card = null/)
+  // Every snapshot keeps the browser's visit going; a card whose registry visit went quiet is dropped first, and the
+  // snapshot's time is kept for every tab of the browser.
+  assert.match(visits, /const goingOn = \(\) => \{\s+noteVisit\(\)\s+if \(!card \|\| cardStillOn\(card, lastSent\(\), Date\.now\(\)\)\) return\s+card = null/)
   assert.equal((visits.match(/sends\+\+\n\s+goingOn\(\)/g) ?? []).length, 2, 'a snapshot by fetch and the page’s last one')
+  assert.equal((visits.match(/lsSet\(SENT_KEY, String\(Date\.now\(\)\)\)/g) ?? []).length, 2)
+  assert.match(visits, /let card: VisitCard \| null = keptCardFor\(ssGet\(CARD_KEY\), lastSent\(\), Date\.now\(\)\)/)
+  assert.match(visits, /conversationId: conversationId\(\), nowMs: now, pass, seq: \+\+seq,/)
+  // One snapshot waits at a time, through the page's one timer.
+  assert.match(visits, /const snap = snapshotTimer\(send\)/)
+  assert.match(visits, /if \(t\) snap\.soon\(AFTER_EVENT_MS\)/)
+  assert.ok(!/setTimeout\(send/.test(visits), 'no snapshot timer outside snapshotTimer')
   // The minute's loop stops once the page's snapshots run out, and the stop takes everything down.
   assert.match(visits, /if \(sends < MAX_SENDS\) everyTimer = setTimeout\(every, EVERY_MS\)/)
   const stop = visits.slice(visits.indexOf('const stop = () => {'), visits.indexOf('stopCurrent = stop'))
-  for (const part of [/clearTimeout\(timer\)/, /clearTimeout\(everyTimer\)/, /removeEventListener\('visibilitychange', onVisibility\)/,
+  for (const part of [/snap\.cancel\(\)/, /clearTimeout\(everyTimer\)/, /removeEventListener\('visibilitychange', onVisibility\)/,
     /removeEventListener\('pagehide', onPageHide\)/, /offCapture\(tap\)/]) {
     assert.match(stop, part)
   }

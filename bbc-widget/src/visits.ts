@@ -15,13 +15,16 @@ import { currentTrip } from './proactive'
 import { posthogSessionId } from './posthog'
 import { activityLine, siteEvents, sitePage } from './siteSignals'
 import { getUtm } from './utm'
-import { noteVisit, visitNumber } from './visitCount'
+import { noteVisit } from './visitCount'
 import { offCapture, onCapture } from './visitTap'
 import {
-  MAX_STEPS, addEvent, cardAfter, cardToKeep, eventToken, keptCardFor, newPageId, visitBody, type VisitCard,
+  MAX_STEPS, addEvent, cardAfter, cardStillOn, cardToKeep, eventToken, keptCardFor, newPageId, snapshotTimer,
+  visitBody, type VisitCard,
 } from './visitsRead'
 
 const CARD_KEY = 'bbc_visit_card'
+/** When this browser last sent the registry a snapshot (any tab): the registry's visit goes on while it is recent. */
+const SENT_KEY = 'bbc_visit_sent'
 const EVERY_MS = 60_000
 const AFTER_EVENT_MS = 1_500
 const MAX_SENDS = 60
@@ -34,6 +37,8 @@ let stopCurrent: (() => void) | null = null
 function ssGet(k: string): string | null { try { return sessionStorage.getItem(k) } catch { return null } }
 function ssSet(k: string, v: string): void { try { sessionStorage.setItem(k, v) } catch { /* this page holds it */ } }
 function lsGet(k: string): string | null { try { return localStorage.getItem(k) } catch { return null } }
+function lsSet(k: string, v: string): void { try { localStorage.setItem(k, v) } catch { /* this tab's card rules */ } }
+function lastSent(): number { return Number(lsGet(SENT_KEY)) || 0 }
 
 function visible(): boolean {
   try { return document.visibilityState !== 'hidden' } catch { return true }
@@ -63,23 +68,20 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
   let seenMs = 0
   let seenFrom: number | null = visible() ? pageStart : null
   let events: string[] = []
-  // The browser's visit this page counted (entry.tsx noteVisit), and the tab's card if it is this visit's.
-  let visit = visitNumber()
-  let card: VisitCard | null = keptCardFor(ssGet(CARD_KEY), visit)
+  // The tab's card, while the registry's visit it belongs to goes on (cardStillOn).
+  let card: VisitCard | null = keptCardFor(ssGet(CARD_KEY), lastSent(), Date.now())
   let sends = 0
-  let timer: ReturnType<typeof setTimeout> | null = null
+  let seq = 0
   let everyTimer: ReturnType<typeof setTimeout> | null = null
   let renewedAt = 0
   let stopped = false
 
-  // The browser's visit goes on with each snapshot and each event (visitCount.ts: the 30 minutes bbc-live closes a
-  // visit after), the live list on or off (CodeRabbit #282, round 3). A new visit leaves the last one's card
-  // behind: its own first card is the card.
+  // The browser's visit goes on with each snapshot and each event (visitCount.ts), the live list on or off. A card
+  // whose registry visit went quiet (no snapshot from this browser for 30 minutes) is not the next visit's: its own
+  // first card is the card (CodeRabbit #282, round 3).
   const goingOn = () => {
     noteVisit()
-    const now = visitNumber()
-    if (now === visit) return
-    visit = now
+    if (!card || cardStillOn(card, lastSent(), Date.now())) return
     card = null
     ssSet(CARD_KEY, '')
   }
@@ -98,7 +100,7 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
       trip: currentTrip(), utm, referrer: utm.referrer || referrer, siteHost: host, phone: isPhone(), site,
       lang: browserLang(), tz: timeZone(), country: currentConfig()?.country, phSession: posthogSessionId(),
       events, steps: activityLine(siteEvents(), MAX_STEPS), card, hasChat: !!conversationId(),
-      conversationId: conversationId(), nowMs: now, pass,
+      conversationId: conversationId(), nowMs: now, pass, seq: ++seq,
     })
   }
 
@@ -109,6 +111,7 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     sends++
     goingOn()
     const text = JSON.stringify(body(cfg.pass))
+    lsSet(SENT_KEY, String(Date.now()))
     try {
       if (navigator.sendBeacon?.(`${cfg.url}/v1/visit`, new Blob([text], { type: 'text/plain;charset=UTF-8' }))) return
     } catch { /* the fetch below */ }
@@ -117,11 +120,11 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
   }
 
   const send = () => {
-    timer = null
     const cfg = currentConfig()
     if (stopped || !cfg?.visits || !cfg.url || !cfg.pass || sends >= MAX_SENDS) return
     sends++
     goingOn()
+    lsSet(SENT_KEY, String(Date.now()))
     fetch(`${cfg.url}/v1/visit`, {
       method: 'POST', body: JSON.stringify(body(cfg.pass)), keepalive: true, credentials: 'omit', mode: 'cors',
       headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
@@ -135,10 +138,8 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     }, () => { /* offline or bbc-live away: the next snapshot says it all again */ })
   }
 
-  const soon = (ms: number) => {
-    if (timer !== null) clearTimeout(timer)
-    timer = setTimeout(send, ms)
-  }
+  // One snapshot waits at a time: the minute's, sent now, takes the one an event scheduled with it.
+  const snap = snapshotTimer(send)
 
   const tap = (event: string, props: Record<string, unknown> | undefined) => {
     const now = Date.now()
@@ -150,9 +151,9 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     const next = cardAfter(card, event, props, now)
     if (next !== card) {
       card = next
-      ssSet(CARD_KEY, next ? cardToKeep(next, visit) : '')
+      ssSet(CARD_KEY, next ? cardToKeep(next) : '')
     }
-    if (t) soon(AFTER_EVENT_MS)
+    if (t) snap.soon(AFTER_EVENT_MS)
   }
   onCapture(tap)
 
@@ -160,7 +161,7 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
   const every = () => {
     everyTimer = null
     if (stopped) return
-    if (visible()) send()
+    if (visible()) snap.now()
     if (sends < MAX_SENDS) everyTimer = setTimeout(every, EVERY_MS)
   }
 
@@ -187,9 +188,8 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
   const stop = () => {
     if (stopped) return
     stopped = true
-    if (timer !== null) clearTimeout(timer)
+    snap.cancel()
     if (everyTimer !== null) clearTimeout(everyTimer)
-    timer = null
     everyTimer = null
     try {
       document.removeEventListener('visibilitychange', onVisibility)
@@ -203,7 +203,7 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
   // The page's config, now (the live list takes the same answer 20 s in): on with `visits`, the first snapshot.
   pageConfig(apiUrl).then((cfg) => {
     if (stopped || !cfg.visits) return
-    send()
+    snap.now()
     everyTimer = setTimeout(every, EVERY_MS)
   }, () => { /* the API away: no registry on this page */ })
   return stop

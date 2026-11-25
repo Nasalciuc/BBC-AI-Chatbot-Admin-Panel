@@ -94,6 +94,9 @@ export interface VisitCard {
 // Every moment the widget shows a card for: `social` is the Meta ads' card (CodeRabbit #282, round 3).
 const TRIGGERS = new Set(['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note'])
 const SURFACES = new Set(['card', 'panel', 'row'])
+/** How far an answer's own count of seconds may put its opening from the card's time and still be that opening:
+ *  the count is rounded to a second. */
+const SAME_OPENING_MS = 2_000
 
 /** The card after an event: the first card of the visit is the card; its answer only moves forward (an answer
  *  stays an answer, whatever is closed afterwards), and only its own answer counts: a note that opened later and
@@ -102,12 +105,18 @@ const SURFACES = new Set(['card', 'panel', 'row'])
 export function cardAfter(card: VisitCard | null, event: string, props: Record<string, unknown> | undefined,
   nowMs: number): VisitCard | null {
   const s = (k: string) => (typeof props?.[k] === 'string' ? (props[k] as string) : '')
+  const n = (k: string) => (typeof props?.[k] === 'number' && Number.isFinite(props[k]) ? (props[k] as number) : null)
   if (event === 'proactive_shown') {
     if (card || !TRIGGERS.has(s('trigger'))) return card
     return { trigger: s('trigger'), variant: WORD.test(s('variant').toLowerCase()) ? s('variant').toLowerCase() : '',
       surface: SURFACES.has(s('surface')) ? s('surface') : '', state: 'shown', at: nowMs }
   }
   if (!card || card.state === 'engaged' || s('trigger') !== card.trigger) return card
+  // The card's own opening, not a later one of the same moment (a note closed, then a second note answered): the
+  // seconds the answer counts since its opening showed put that opening at the card's time (CodeRabbit #282,
+  // round 3). An answer that counts none is the card's, as before.
+  const since = n(event === 'proactive_engaged' ? 'seconds_to_reply' : 'seconds_visible')
+  if (since !== null && Math.abs(nowMs - since * 1000 - card.at) > SAME_OPENING_MS) return card
   if (event === 'proactive_engaged') {
     return { ...card, state: 'engaged', answer: WORD.test(s('reply')) ? s('reply') : '', answeredAt: nowMs }
   }
@@ -133,20 +142,50 @@ export function readVisitCard(raw: string | null): VisitCard | null {
   return card
 }
 
-/** The card kept for this tab, with the browser's visit it belongs to (visitCount.ts): a card from an earlier visit
- *  is not this visit's, and the new visit's first card must be free to be the card (CodeRabbit #282, round 3). */
-export function keptCardFor(raw: string | null, visit: number): VisitCard | null {
-  let v: unknown = null
-  try { v = raw ? JSON.parse(raw) : null } catch { return null }
-  if (!v || typeof v !== 'object') return null
-  const k = v as { visit?: unknown; card?: unknown }
-  if (typeof k.visit !== 'number' || k.visit !== visit || !visit) return null
-  return readVisitCard(JSON.stringify(k.card ?? null))
+/** bbc-live closes a visit after this long with no snapshot. */
+export const REGISTRY_QUIET_MS = 30 * 60_000
+
+/** Whether a card still belongs to the registry's visit: no quiet half hour since the visit was last heard of, by
+ *  this browser's last snapshot (any tab) or the card itself, shown or answered (a snapshot follows it). Not the
+ *  browser's count of visits: the live list's beats keep that going after a page's snapshots ran out
+ *  (CodeRabbit #282, round 3). */
+export function cardStillOn(card: VisitCard, lastSentMs: number, nowMs: number): boolean {
+  return nowMs - Math.max(lastSentMs || 0, card.at, card.answeredAt ?? 0) < REGISTRY_QUIET_MS
+}
+
+/** The card kept for this tab, when the registry's visit it belongs to goes on; null otherwise. */
+export function keptCardFor(raw: string | null, lastSentMs: number, nowMs: number): VisitCard | null {
+  const card = readVisitCard(raw)
+  return card && cardStillOn(card, lastSentMs, nowMs) ? card : null
 }
 
 /** What keptCardFor reads back. */
-export function cardToKeep(card: VisitCard, visit: number): string {
-  return JSON.stringify({ visit, card })
+export function cardToKeep(card: VisitCard): string {
+  return JSON.stringify(card)
+}
+
+/** The page's one waiting snapshot (visits.ts): asked for again, it replaces the one waiting; sent now, the one
+ *  waiting goes with it; stopped, nothing waits (the teardown cancels what an event scheduled; CodeRabbit #282,
+ *  round 3). The timers come in for the tests. */
+export function snapshotTimer(run: () => void, set: (fn: () => void, ms: number) => unknown = setTimeout,
+  clear: (t: unknown) => void = (t) => clearTimeout(t as ReturnType<typeof setTimeout>)): {
+  soon: (ms: number) => void; now: () => void; cancel: () => void; waiting: () => boolean
+} {
+  let pending: unknown = null
+  const cancel = () => {
+    if (pending === null) return
+    clear(pending)
+    pending = null
+  }
+  return {
+    soon: (ms) => {
+      cancel()
+      pending = set(() => { pending = null; run() }, ms)
+    },
+    now: () => { cancel(); run() },
+    cancel,
+    waiting: () => pending !== null,
+  }
 }
 
 const COMPARISON = new Set(['kayak', 'skyscanner', 'momondo', 'kiwi', 'cheapflights', 'expedia'])
@@ -177,6 +216,9 @@ export function channelOf(utm: Record<string, string | undefined>, referrer: str
   return SEARCH.test(ref) ? 'search' : 'referral'
 }
 
+/** The highest snapshot number bbc-live takes (a page sends far fewer). */
+export const MAX_SEQ = 10_000
+
 /** A snapshot's body (POST /v1/visit). Only what bbc-live keeps; it checks all of it again. */
 export function visitBody(o: {
   pageId: string; path: string; pageType?: string | null; pageMs: number; seenMs: number
@@ -184,6 +226,9 @@ export function visitBody(o: {
   phone: boolean; site: string; lang?: string; tz?: string; country?: string; phSession?: string
   events: readonly string[]; steps: string; card: VisitCard | null; hasChat: boolean; conversationId?: string | null
   nowMs: number; pass?: string
+  /** The snapshot's number on its page, 1 and up: bbc-live keeps a page's newest by it (a fetch and the last beacon
+   *  can cross on the way, in the same second; CodeRabbit #282, round 3). */
+  seq?: number
 }): Record<string, unknown> {
   const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
   const t = o.trip
@@ -201,6 +246,7 @@ export function visitBody(o: {
     events: o.events.slice(0, MAX_EVENTS).join(';'), steps: o.steps,
   }
   if (o.pageType) b.page_type = o.pageType
+  if (o.seq && Number.isInteger(o.seq) && o.seq >= 1) b.seq = Math.min(o.seq, MAX_SEQ)
   for (const k of ['utm_source', 'utm_medium', 'utm_campaign'] as const) {
     const v = (o.utm[k] || '').trim()
     if (v && !v.includes('@') && v.length <= 80) b[k] = v
