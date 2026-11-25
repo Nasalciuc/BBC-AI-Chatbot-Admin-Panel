@@ -84,6 +84,8 @@ async def health_detail(full: bool = False) -> dict:
     from app.pipeline.generator import GENERATION_HEALTH
     # CRM push truth: ok = proven (2xx+id); failed/refused = flag stayed false.
     from app.services.crm import CRM_PUSH_HEALTH
+    # The agent's "Create lead in CRM" button: created/existing, every warning and error by code.
+    from app.services.crm_leads_api import CRM_LEADS_API_HEALTH
     # Executor saturation: the thing nothing measured while we blamed the network
     # for two weeks. peak_in_flight near `workers` is the cliff, not a symptom.
     from app.db.supabase import db_health_snapshot, DASHBOARD_CACHE_HEALTH, _DASH_RAW
@@ -250,6 +252,8 @@ async def health_detail(full: bool = False) -> dict:
             "needs_agent": dict(QUEUE_HEALTH),
             "generation_fallbacks": dict(GENERATION_HEALTH),
             "crm_pushes": dict(CRM_PUSH_HEALTH),
+        "crm_leads_api": dict(CRM_LEADS_API_HEALTH),
+            "crm_leads_api": dict(CRM_LEADS_API_HEALTH),
             "db": db_health_snapshot(),
             "dashboard_cache": {
                 **DASHBOARD_CACHE_HEALTH,
@@ -354,6 +358,7 @@ async def health_detail(full: bool = False) -> dict:
         "operator_load": _load,
         "generation_fallbacks": dict(GENERATION_HEALTH),
         "crm_pushes": dict(CRM_PUSH_HEALTH),
+        "crm_leads_api": dict(CRM_LEADS_API_HEALTH),
         "db": db_health_snapshot(),
         "dashboard_cache": {
             **DASHBOARD_CACHE_HEALTH,

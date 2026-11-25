@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-def _issue_jwt(user: dict) -> str:
-    """Build JWT with the same claims as login."""
+def _issue_jwt(user: dict, crm_sub: Optional[str] = None) -> str:
+    """Build JWT with the same claims as login. `crm_sub`: the CRM's own user id, kept from a CRM login so the
+    "Create lead in CRM" button can name the agent the way the CRM knows them (agent_id)."""
     if not settings.jwt_secret:
         raise HTTPException(500, "JWT not configured")
     payload = {
@@ -41,6 +42,8 @@ def _issue_jwt(user: dict) -> str:
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
     }
+    if crm_sub is not None and str(crm_sub).strip():
+        payload["crm_sub"] = str(crm_sub).strip()
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
@@ -400,7 +403,8 @@ async def crm_sso_exchange(req: CrmExchangeRequest, _rate: None = Depends(check_
         logger.warning(f"CRM SSO exchange: inactive account {_mask_email(email)}")
         raise HTTPException(403, "Account disabled — contact admin")
 
-    token = _issue_jwt(user)  # role/tunnel_scope from OUR db, not the CRM payload
+    # role/tunnel_scope from OUR db, not the CRM payload; the CRM's user id rides along for the CRM button.
+    token = _issue_jwt(user, crm_sub=payload.get("sub"))
     SSO_HEALTH["ok"] += 1
     logger.debug(f"CRM SSO exchange login | user={user.get('id')} role={user.get('role')}")
 

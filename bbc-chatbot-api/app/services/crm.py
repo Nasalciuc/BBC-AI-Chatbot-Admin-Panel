@@ -65,6 +65,16 @@ CRM_PUSH_HEALTH: dict = {
     # The "already in the CRM?" read failed, so the automatic push waited a
     # tick instead of guessing. Rising = duplicates were being risked.
     "crm_contact_lookup_failed": 0,
+    # Read again under the chat's CRM lock right before an automatic submit, the receipts could not be
+    # read: the submit waited a cycle rather than risk a second lead behind the agent's button.
+    "receipt_read_failed": 0,
+    # Another process held the chat's CRM-submit lock past the wait (or Redis could not confirm it, or it stopped
+    # being ours before the send): this submit waited a cycle.
+    "submit_busy": 0,
+    # The abandoned sweep's close of a chat whose lead is in the CRM failed (right after the submit, or in the
+    # close-only branch): the chat stays open and the next tick tries the close again (the lead is marked, nothing
+    # is sent twice).
+    "close_failed": 0,
 }
 
 

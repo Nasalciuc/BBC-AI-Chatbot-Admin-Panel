@@ -10,6 +10,7 @@ from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.api.conversations import router as conversations_router
 from app.api.leads import router as leads_router
+from app.api.crm_lead import router as crm_lead_router
 from app.api.kb import router as kb_router
 from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
@@ -98,6 +99,7 @@ from fastapi import Depends
 admin_deps = [Depends(get_current_user)]
 app.include_router(conversations_router, prefix="/api", tags=["conversations"], dependencies=admin_deps)
 app.include_router(leads_router,         prefix="/api", tags=["leads"],         dependencies=admin_deps)
+app.include_router(crm_lead_router,      prefix="/api", tags=["crm-lead"],      dependencies=admin_deps)
 app.include_router(kb_router,            prefix="/api", tags=["kb"],            dependencies=admin_deps)
 app.include_router(dashboard_router,     prefix="/api", tags=["dashboard"],     dependencies=admin_deps)
 app.include_router(users_router,         prefix="/api", tags=["users"],         dependencies=admin_deps)

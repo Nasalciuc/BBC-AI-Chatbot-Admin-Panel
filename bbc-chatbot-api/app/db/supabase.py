@@ -1759,6 +1759,124 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
         return None
 
 
+async def update_conversation_keeping_receipts(
+    conversation_id: str, payload: dict, receipt_keys: tuple[str, ...]
+) -> Optional[dict]:
+    """update_conversation for a payload carrying the whole metadata blob read a moment ago, without erasing a
+    receipt another request merged in since (patch_conv_presence: the CRM button's metadata.crm_lead).
+
+    The write lands only while the receipt keys its blob lacks are still absent on the row. If one appeared, it is
+    read and put into the blob and the write goes again; after two such rounds it goes plainly (a receipt is written
+    once per chat). Answers like update_conversation: the row, or None when the write failed (logged)."""
+    meta = payload.get("metadata")
+    if not isinstance(meta, dict):
+        return await update_conversation(conversation_id, payload)
+    try:
+        db = get_client()
+        for _attempt in (1, 2):
+            absent = tuple(k for k in receipt_keys if k not in meta)
+            if not absent:
+                break
+            body = {**payload, "metadata": meta}
+
+            def _guarded(b=body, keys=absent):
+                q = db.table("conversations").update(b).eq("id", conversation_id)
+                for k in keys:
+                    q = q.is_(f"metadata->>{k}", "null")
+                return q.execute()
+
+            # Idempotent: the same blob under the same guards lands the same way twice.
+            res = await _run_sync(_guarded)
+            if res.data:
+                return res.data[0]
+            cur = await _run_sync(
+                lambda: db.table("conversations").select("metadata").eq("id", conversation_id).limit(1).execute()
+            )
+            rows = cur.data or []
+            if not rows:
+                return None  # no such chat: nothing to write
+            now_meta = rows[0].get("metadata") if isinstance(rows[0].get("metadata"), dict) else {}
+            carried = {k: now_meta[k] for k in absent if now_meta.get(k) is not None}
+            if carried:
+                logger.info(
+                    f"[{conversation_id}] a receipt saved since the handoff's read is kept: {sorted(carried)}"
+                )
+            meta = {**meta, **carried}
+        res = await _run_sync(
+            lambda: db.table("conversations").update({**payload, "metadata": meta}).eq("id", conversation_id).execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"update_conversation_keeping_receipts error conv={conversation_id}: {type(e).__name__}: {e}")
+        return None
+
+
+async def update_conversation_if_clock_unchanged(
+    conversation_id: str,
+    payload: dict,
+    *,
+    clock: Optional[str],
+    last_agent_message_at: Optional[str] = None,
+    check_last_agent: bool = False,
+    absent_keys: tuple[str, ...] = (),
+    owner: Optional[str] = None,
+) -> tuple[str, str]:
+    """update_conversation, but only while the first-reply clock is what the caller read.
+
+    update_conversation replaces the whole metadata blob. A handoff to the agent
+    who already holds the chat writes back the copy it read, and two requests of
+    one Take run side by side (a double click, a second tab, the gate's answer
+    lost and found again): a copy read before the other request started the
+    clock erases it, and a clock started after the agent's reply makes an
+    answered chat look unanswered to the deadline sweep. A check on the copy
+    cannot close the window between that read and this write; the WHERE clause
+    can. The row is written only if metadata->>agent_assigned_at is still
+    `clock` (absent when None) and, with check_last_agent, last_agent_message_at
+    is still the value read.
+
+    absent_keys: metadata keys the copy read did not have and that must not be
+    lost if another request added them since (the CRM receipts, written by a
+    server-side merge): the row is written only while they are still absent,
+    so a stale copy never erases one. owner: only while assigned_agent_id is
+    still this agent.
+
+    Returns (outcome, code), never None:
+      ("written", "")  the row matched and the payload is on it;
+      ("changed", "")  the clock or the agent's last message moved since the
+                       read: nothing written;
+      ("failed", code) the write raised. Only the database's code is logged.
+    """
+    try:
+        db = get_client()
+
+        def _q():
+            q = db.table("conversations").update(payload).eq("id", conversation_id)
+            if clock is None:
+                q = q.is_("metadata->>agent_assigned_at", "null")
+            else:
+                q = q.eq("metadata->>agent_assigned_at", clock)
+            if check_last_agent:
+                if last_agent_message_at is None:
+                    q = q.is_("last_agent_message_at", "null")
+                else:
+                    q = q.eq("last_agent_message_at", last_agent_message_at)
+            for key in absent_keys:
+                q = q.is_(f"metadata->>{key}", "null")
+            if owner is not None:
+                q = q.eq("assigned_agent_id", owner)
+            return q.execute()
+
+        res = await _run_sync(_q, idempotent=False)
+        return ("written", "") if res.data else ("changed", "")
+    except Exception as e:
+        code = _loggable_code(_error_code(e)) or "none"
+        logger.error(
+            f"[{conversation_id}] conditional conversation write failed "
+            f"(code={code}, {type(e).__name__})"
+        )
+        return ("failed", code)
+
+
 async def mark_needs_agent(conversation_id: str) -> tuple[str, str]:
     """The client asked for a person: status needs_agent, on an open conversation only.
 
@@ -2272,11 +2390,14 @@ async def get_crm_orphan_leads(
     younger_than_iso: str = "",
     max_attempts: int = 3,
     limit: int = 20,
+    offset: int = 0,
 ) -> list[dict]:
     """Gold leads the CRM never received: score>=min, flag false/null,
     created inside (younger_than, older_than] — the backstop's auto
     window. Attempt-capped so a permanently failing lead stops burning
-    CRM calls and stays visible in the work-list instead."""
+    CRM calls and stays visible in the work-list instead. Newest first,
+    `limit` rows from `offset`: the backstop pages past the leads it may
+    not send (an agent's chat), so they never use up its page."""
     try:
         db_client = get_client()
 
@@ -2288,7 +2409,8 @@ async def get_crm_orphan_leads(
                 .or_("created_in_crm.is.null,created_in_crm.eq.false")
                 .lt("crm_push_attempts", max_attempts)
                 .order("created_at", desc=True)
-                .limit(limit)
+                .order("id")
+                .range(offset, offset + limit - 1)
             )
             if older_than_iso:
                 q = q.lt("created_at", older_than_iso)
@@ -4502,7 +4624,7 @@ _ABANDONED_SCAN_CAP = 200
 
 _ABANDONED_COLUMNS = (
     "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
-    "tunnel, message_count, mode, status, metadata, visitor_id, created_at"
+    "tunnel, message_count, mode, status, metadata, visitor_id, created_at, assigned_agent_id"
 )
 
 # What the sweep's scan cost, for /health. `embedded`: one read brought every
@@ -4796,6 +4918,129 @@ async def get_crm_contact_rows(days: int = 30) -> list[dict] | None:
         return None
 
 
+async def get_button_lead_contact_rows(days: int = 30) -> list[dict] | None:
+    """Contacts (phone, email) of every chat whose lead the agent's "Create lead in CRM" button made in the
+    last N days (metadata.crm_lead, its `at`): the same guard as get_crm_contact_rows, for the button.
+
+    The button marks the lead row too, and get_crm_contact_rows reads those marks. A mark that failed leaves
+    only the receipt on the chat, and a second chat from the same person must still not be pushed behind it
+    (CodeRabbit #280). Returns None when the read failed, [] when there is none; paged like the leads."""
+    try:
+        db = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        def _page(first: int, last: int, with_count: bool):
+            return (
+                db.table("conversations")
+                .select(
+                    "id, visitor_phone, visitor_email",
+                    count="exact" if with_count else None,  # type: ignore[arg-type]
+                )
+                .gte("metadata->crm_lead->>at", cutoff)
+                .order("id")
+                .range(first, last)
+                .execute()
+            )
+
+        rows: list[dict] = []
+        total: int | None = None
+        offset = 0
+        while offset < _CRM_CONTACT_SCAN_CAP:
+            last = min(offset + _CRM_CONTACT_PAGE, _CRM_CONTACT_SCAN_CAP) - 1
+            res = await _run_sync(
+                lambda f=offset, l=last, c=(total is None): _page(f, l, c),
+                label="cron",
+            )
+            if total is None:
+                total = res.count if isinstance(res.count, int) else None
+                if total is None:
+                    logger.error(
+                        "get_button_lead_contact_rows: no exact count returned — "
+                        "cannot prove the contact list is complete"
+                    )
+                    return None
+            page = res.data or []
+            rows.extend(
+                {"visitor_phone": r.get("visitor_phone"), "visitor_email": r.get("visitor_email")} for r in page
+            )
+            offset += len(page)
+            if not page or offset >= total:
+                break
+        if (total or 0) > _CRM_CONTACT_SCAN_CAP:
+            # A list that cannot hold every receipt is not a guard: the automatic pushes wait (CodeRabbit #280).
+            logger.error(
+                f"get_button_lead_contact_rows: {total} button leads in the {days}-day window, over the "
+                f"{_CRM_CONTACT_SCAN_CAP} that can be loaded: the contact list is not complete"
+            )
+            return None
+        return rows
+    except Exception as e:
+        logger.error(f"get_button_lead_contact_rows error: {type(e).__name__}: {e}")
+        return None
+
+
+async def close_conversation_if_unowned(conversation_id: str, payload: dict) -> tuple[str, str]:
+    """The abandoned sweep's close, written only while no agent holds the chat (assigned_agent_id empty, mode not
+    human): an agent who took it after the sweep's read keeps it (CodeRabbit #280).
+
+    ("closed", "") written; ("owned", "") an agent holds it now (or the chat is gone): nothing written;
+    ("failed", code) the write raised. Only the database's code is logged."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .update(payload)
+            .eq("id", conversation_id)
+            .is_("assigned_agent_id", "null")
+            .neq("mode", "human")
+            .execute(),
+            label="cron",
+        )
+        return ("closed", "") if res.data else ("owned", "")
+    except Exception as e:
+        code = _loggable_code(_error_code(e)) or "none"
+        logger.error(f"[{conversation_id}] the sweep's close failed (code={code}, {type(e).__name__})")
+        return ("failed", code)
+
+
+async def get_crm_receipts(conversation_id: str) -> Optional[dict]:
+    """What says this chat's lead is in the CRM already, read now: the button's receipt (metadata.crm_lead) and
+    the lead row's mark (created_in_crm, crm_lead_id) from every other path. One query.
+
+    The automatic paths (the sweep, the backstop) read their rows minutes before they send; this is read again
+    under the chat's CRM lock right before they do. Returns {"crm_lead": dict | None, "created_in_crm": bool,
+    "crm_lead_id": str | None}; None when the read failed, and the caller waits a cycle (rule 7: "nothing
+    sent" and "could not look" are different answers)."""
+    try:
+        db = get_client()
+        res = await _run_sync(
+            lambda: db.table("conversations")
+            .select("id, metadata, assigned_agent_id, status, mode, leads(created_in_crm, crm_lead_id)")
+            .eq("id", conversation_id)
+            .limit(1)
+            .execute(),
+            label="crm_receipts",
+        )
+        row = (res.data or [{}])[0] or {}
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        leads = row.get("leads")
+        leads = [leads] if isinstance(leads, dict) else [x for x in (leads or []) if isinstance(x, dict)]
+        marked = [x for x in leads if x.get("created_in_crm")]
+        crm_lead = meta.get("crm_lead")
+        return {
+            "crm_lead": crm_lead if isinstance(crm_lead, dict) else None,
+            "created_in_crm": bool(marked),
+            "crm_lead_id": next((str(x["crm_lead_id"]) for x in marked if x.get("crm_lead_id")), None),
+            # Who holds the chat now: an automatic submit read its rows minutes ago (CodeRabbit #280).
+            "assigned_agent_id": row.get("assigned_agent_id"),
+            "status": row.get("status"),
+            "mode": row.get("mode"),
+        }
+    except Exception as e:
+        logger.error(f"get_crm_receipts conv={conversation_id}: {type(e).__name__}: {e}")
+        return None
+
+
 async def get_last_system_message(conversation_id: str) -> dict | None:
     """Get the most recent system message in a conversation."""
     try:
@@ -4969,6 +5214,35 @@ async def insert_activity_log(
         )
     except Exception as e:
         logger.warning(f"insert_activity_log error: {e}")
+
+
+async def get_last_take(conversation_id: str, user_id: str) -> tuple[str, Optional[str]]:
+    """When this agent's current hold on this chat began with a Take: their latest claim_won in agent_activity_log,
+    written before the Take's handoff (and on the database's clock, like every message's created_at).
+
+    ("found", happened_at); ("none", None) when they never took it, or their latest assignment of it came another
+    way ("assigned": a new cycle writes its clock with the rest of its metadata); ("failed", None) when the read
+    failed (rule 7)."""
+    try:
+        db_client = get_client()
+        res = await _run_sync(
+            lambda: db_client.table("agent_activity_log")
+            .select("action, happened_at")
+            .eq("conversation_id", conversation_id)
+            .eq("user_id", user_id)
+            .in_("action", ["claim_won", "assigned"])
+            .order("happened_at", desc=True)
+            .limit(1)
+            .execute(),
+            label="sweep",
+        )
+        rows = res.data or []
+        if not rows or rows[0].get("action") != "claim_won" or not rows[0].get("happened_at"):
+            return ("none", None)
+        return ("found", str(rows[0]["happened_at"]))
+    except Exception as e:
+        logger.error(f"get_last_take conv={conversation_id}: {type(e).__name__}: {e}")
+        return ("failed", None)
 
 
 async def count_agent_messages_since(conversation_id: str, since_iso: str) -> int:

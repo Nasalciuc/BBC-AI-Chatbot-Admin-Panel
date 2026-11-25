@@ -26,8 +26,21 @@ logger = logging.getLogger(__name__)
 # increment is a client who asked for a human and never got one in time.
 # notice_held_status_unknown: FALLBACK_MSG_ONCE could not read the status, so
 # no "sorry for the wait" went out (the AI still answers).
+# same_cycle_write_raced: a handoff to the agent who already holds the chat
+# found the clock (or the agent's last message) moved under its write, so it
+# read the chat again (two requests of one Take side by side).
+# same_cycle_write_failed: that write, or its second read, broke: the change
+# it carried (the take's clock, a loop-guard reset) is not on the row.
 HANDOFF_HEALTH: dict = {"expired_since_boot": 0, "last_at": None, "fallback_races": 0,
-                        "notice_held_status_unknown": 0}
+                        "notice_held_status_unknown": 0,
+                        "same_cycle_write_raced": 0, "same_cycle_write_failed": 0,
+                        # The write raised and the chat could not be read back: landed or not is unknown.
+                        "same_cycle_write_unknown": 0}
+
+# Written by a server-side merge (patch_conv_presence), never by a handoff: a copy of the metadata read before one
+# of them appeared must not erase it. metadata.crm_lead is the "Create lead in CRM" receipt (without it the panel
+# offers the button again and the sweep may send a second lead); metadata.crm says how the lead reached the CRM.
+_RECEIPT_KEYS = ("crm_lead", "crm")
 
 
 # ── H1: Agent staleness detection + AI fallback ──────────────
@@ -417,6 +430,7 @@ async def fall_back_to_ai(conversation_id: str) -> None:
     _meta.pop("agent_cooldown_until", None)
     _meta.pop("announce_pending", None)
     _meta.pop("agent_assigned_at", None)
+    _meta.pop("clock_agent_id", None)
 
     from app.services.presence import log_activity
     from app.pipeline.orchestrator import _fire_and_forget
@@ -512,6 +526,218 @@ async def fall_back_to_ai(conversation_id: str) -> None:
 
 # ── H3: Unified handoff to agent ─────────────────────────────
 
+def _stored_time(raw) -> datetime | None:
+    """A stored timestamp as an aware datetime; None when absent or unreadable."""
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00") if isinstance(raw, str) else raw)
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.warning(f"[handoff] unreadable timestamp {raw!r} ({e}) — read as an earlier cycle's")
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _cycle_clock_running(conv: dict | None, since: datetime | None, agent_id: str) -> bool:
+    """Whether the Take's cycle already has its clock, or the agent has answered in it.
+
+    `since` is when the claim request read the chat with no owner. The cycle
+    its take belongs to began after that read, so a clock or an agent message
+    at or after `since` can be this cycle's: the other request of the same take
+    started the clock, or the agent has already replied. Starting it again
+    would put the clock after the reply, and the deadline sweep, which counts
+    only a reply at or after agent_assigned_at, would hand an answered chat
+    back to Alex. Anything older belongs to an earlier cycle and keeps nothing.
+
+    Newer is not enough: they must be this agent's. Between that read and this
+    take's gate another agent may have been given the chat, answered and let it
+    go (the reply stays on the row), and their clock or reply says nothing about
+    this take, which then had no clock at all (CodeRabbit #280). A clock is the
+    agent's when clock_agent_id names them (engaged_agent_id for a clock written
+    before clock_agent_id existed); a reply is, when engaged_agent_id does: the
+    agent who speaks is the engaged one (conversations.py, the send).
+    """
+    if since is None or not conv:
+        return False
+    meta = conv.get("metadata") or {}
+    clock = _stored_time(meta.get("agent_assigned_at"))
+    if clock is not None and clock >= since and (meta.get("clock_agent_id") or meta.get("engaged_agent_id")) == agent_id:
+        return True
+    reply = _stored_time(conv.get("last_agent_message_at"))
+    return reply is not None and reply >= since and meta.get("engaged_agent_id") == agent_id
+
+
+def _handoff_metadata(
+    conv: dict | None,
+    agent_id: str,
+    handoff_reason: str,
+    is_new_cycle: bool,
+    gate_won: bool,
+    seen_unassigned_at: datetime | None,
+    extra_meta: dict | None,
+    pop_meta_keys: list | None,
+) -> tuple[dict, dict, bool]:
+    """(the metadata read, the metadata to write, whether this call starts the clock)."""
+    meta = dict((conv or {}).get("metadata") or {})
+    # What was read: metadata is written back only if this call changed it.
+    meta_read = dict(meta)
+    # agent_assigned_at marks the START of an assignment CYCLE.
+    # Write it ONLY when the assigned agent CHANGES — never refresh on
+    # re-handoff to the same agent (F1: refreshing evicted engaged agents).
+    # A Take starts a cycle too, but the claim gate wrote assigned_agent_id
+    # BEFORE the read, so the comparison reads "same agent" and the clock
+    # never started: no countdown in the panel, and the sweep skipped the chat
+    # (DEADLINE_HEALTH.skipped_no_assigned_at), so an agent who took a chat and
+    # never wrote kept it with Alex silent. Only what the clock reads is
+    # written here: engaged_agent_id still waits for the agent's first message
+    # (the one who speaks owns the chat), announce_pending is left as it was,
+    # and claim_won is the take's row in agent_activity_log, so no second
+    # "assigned" row. A take whose cycle already runs (the other request of the
+    # same take started it, or the agent has answered) keeps it as it is.
+    starts_clock = gate_won and not is_new_cycle and not _cycle_clock_running(conv, seen_unassigned_at, agent_id)
+    if is_new_cycle:
+        meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
+        meta["clock_agent_id"] = agent_id
+        meta["handoff_reason"] = handoff_reason
+        meta["engaged_agent_id"] = agent_id
+        if handoff_reason in ("auto_assign", "first_message"):
+            meta["announce_pending"] = True
+            meta.pop("agent_cooldown_until", None)
+        else:
+            meta.pop("announce_pending", None)
+    elif starts_clock:
+        meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
+        # Whose clock it is: the take leaves engaged_agent_id to the first message.
+        meta["clock_agent_id"] = agent_id
+        # The deadline's accounting reads it: a take after an "affinity"
+        # fallback must not count as a sticky chat that fell back.
+        meta["handoff_reason"] = handoff_reason
+    # Neither (a re-handoff to the same agent without a gate won just now, or a
+    # take whose cycle already runs) → leave agent_assigned_at / handoff_reason
+    # / announce_pending exactly as they are.
+    if extra_meta:
+        meta.update(extra_meta)
+    if pop_meta_keys:
+        for _k in pop_meta_keys:
+            meta.pop(_k, None)
+    return meta_read, meta, starts_clock
+
+
+_ABSENT = object()
+
+
+def _change_landed(meta_read: dict, meta_meant: dict, meta_now: dict) -> bool:
+    """Whether every metadata key this write changed holds, on the row now, the value the write meant."""
+    changed = {
+        k for k in set(meta_read) | set(meta_meant)
+        if meta_read.get(k, _ABSENT) != meta_meant.get(k, _ABSENT)
+    }
+    return all(meta_now.get(k, _ABSENT) == meta_meant.get(k, _ABSENT) for k in changed)
+
+
+async def _write_same_cycle(
+    conversation_id: str,
+    agent_id: str,
+    update: dict,
+    conv_read: dict | None,
+    meta_read: dict,
+    starts_clock: bool,
+    rebuild,
+) -> None:
+    """Write a handoff to the agent who already holds the chat, without undoing another request.
+
+    update_conversation replaces the whole metadata blob, and two requests of
+    one Take run side by side (a double click, a second tab, the gate's answer
+    lost and found again). So the write lands only while the clock (and, when
+    this call starts it, the agent's last message) is still what was read. If
+    it moved, the chat is read again and this call's own changes go on top of
+    what is there now, once. A CRM receipt the copy read did not have must still
+    be absent too (_RECEIPT_KEYS): one saved since is read again the same way,
+    never erased (CodeRabbit #280). And the chat must still be this agent's.
+
+    A write that raised may still have landed (idempotent=False: never retried
+    blind), so the chat is read back before anything is said or counted: the
+    change is on the row (nothing to do), it is not (tried once more from the
+    row as it is, and counted as failed if that fails too), or the read fails
+    too (counted as unknown). A
+    take still left without its clock is not lost: the deadline sweep starts a
+    clock it finds missing on a chat whose agent has not spoken
+    (agent._start_missing_clock).
+    """
+    for _attempt in (1, 2):
+        outcome, code = await db.update_conversation_if_clock_unchanged(
+            conversation_id,
+            update,
+            clock=meta_read.get("agent_assigned_at"),
+            last_agent_message_at=(conv_read or {}).get("last_agent_message_at"),
+            # Legacy column set (no last_agent_message_at read): the clock alone.
+            check_last_agent=starts_clock and "last_agent_message_at" in (conv_read or {}),
+            absent_keys=tuple(k for k in _RECEIPT_KEYS if k not in meta_read),
+            # Still this agent's: a chat let go (or taken by someone else) since the read is never written back
+            # to them by a copy that predates it (CodeRabbit #280).
+            owner=agent_id,
+        )
+        if outcome == "written":
+            return
+        if outcome == "changed":
+            HANDOFF_HEALTH["same_cycle_write_raced"] += 1
+            if _attempt == 2:
+                logger.warning(
+                    f"[handoff] Conv {conversation_id}: the clock moved twice under the "
+                    "handoff write — left as the other request wrote it"
+                )
+                return
+        conv_now = await db.get_conversation_simple(conversation_id)
+        if outcome == "failed":
+            if conv_now is None:
+                HANDOFF_HEALTH["same_cycle_write_unknown"] += 1
+                logger.error(
+                    f"[handoff] Conv {conversation_id}: same-agent handoff write failed "
+                    f"(code={code}) and the chat could not be read back — whether its "
+                    "metadata is on the row is unknown"
+                )
+                return
+            if _change_landed(meta_read, update.get("metadata") or {}, conv_now.get("metadata") or {}):
+                logger.warning(
+                    f"[handoff] Conv {conversation_id}: same-agent handoff write reported an "
+                    f"error (code={code}), but its metadata is on the row"
+                )
+                return
+            if _attempt == 2:
+                HANDOFF_HEALTH["same_cycle_write_failed"] += 1
+                logger.error(
+                    f"[handoff] Conv {conversation_id}: same-agent handoff write failed "
+                    f"twice (code={code}) — its metadata is not on the row"
+                )
+                return
+            logger.warning(
+                f"[handoff] Conv {conversation_id}: same-agent handoff write failed "
+                f"(code={code}) and its metadata is not on the row — trying once more"
+            )
+        elif conv_now is None:
+            HANDOFF_HEALTH["same_cycle_write_failed"] += 1
+            logger.error(
+                f"[handoff] Conv {conversation_id}: could not read the chat again after "
+                "the clock moved — its metadata is not on the row"
+            )
+            return
+        if conv_now.get("assigned_agent_id") != agent_id:
+            logger.info(
+                f"[handoff] Conv {conversation_id}: the chat changed hands under the "
+                "handoff write — nothing written"
+            )
+            return
+        conv_read = conv_now
+        meta_read, meta, starts_clock = rebuild(conv_read)
+        if meta == meta_read:
+            # The other request already wrote everything this one meant to.
+            rest = {k: v for k, v in update.items() if k != "metadata"}
+            if rest:
+                await db.update_conversation(conversation_id, rest)
+            return
+        update = {**update, "metadata": meta}
+
+
 async def perform_handoff_to_agent(
     conversation_id: str,
     agent_id: str,
@@ -522,6 +748,7 @@ async def perform_handoff_to_agent(
     _extra_meta: dict | None = None,
     _pop_meta_keys: list | None = None,
     _gate_won: bool = False,
+    _seen_unassigned_at: datetime | None = None,
 ) -> dict:
     """Assign conversation to an agent and emit system messages.
 
@@ -533,32 +760,20 @@ async def perform_handoff_to_agent(
       'first_message'   — operator-first routing on visitor's first message.
       'manual'          — generic/admin action (default).
 
+    _seen_unassigned_at: for a Take, when the claim request read the chat with
+    no owner. A clock or an agent message from then on belongs to this take's
+    cycle, and the take keeps it instead of starting the clock again.
+
     Returns dict with the system message rows (or empty dict if
     emit_messages=False).
     """
     # Merge metadata: preserve guard fields, add tracking fields.
     _conv_cur = await db.get_conversation_simple(conversation_id)
-    _meta = dict((_conv_cur or {}).get("metadata") or {})
-    # agent_assigned_at marks the START of an assignment CYCLE.
-    # Write it ONLY when the assigned agent CHANGES — never refresh on
-    # re-handoff to the same agent (F1: refreshing evicted engaged agents).
     _is_new_cycle = (_conv_cur or {}).get("assigned_agent_id") != agent_id
-    if _is_new_cycle:
-        _meta["agent_assigned_at"] = datetime.now(timezone.utc).isoformat()
-        _meta["handoff_reason"] = handoff_reason
-        _meta["engaged_agent_id"] = agent_id
-        if handoff_reason in ("auto_assign", "first_message"):
-            _meta["announce_pending"] = True
-            _meta.pop("agent_cooldown_until", None)
-        else:
-            _meta.pop("announce_pending", None)
-    # _is_new_cycle False → leave agent_assigned_at / handoff_reason /
-    # announce_pending exactly as they are.
-    if _extra_meta:
-        _meta.update(_extra_meta)
-    if _pop_meta_keys:
-        for _k in _pop_meta_keys:
-            _meta.pop(_k, None)
+    _meta_read, _meta, _take_starts_clock = _handoff_metadata(
+        _conv_cur, agent_id, handoff_reason, _is_new_cycle, _gate_won,
+        _seen_unassigned_at, _extra_meta, _pop_meta_keys,
+    )
 
     # Phase 2 (frozen history): stamp the conversation with the assigned
     # operator's CURRENT team_id, so it stays with the team that handled it
@@ -581,11 +796,16 @@ async def perform_handoff_to_agent(
             return {}
         _gate_won = True
 
-    _update: dict = {"metadata": _meta}
+    # update_conversation replaces the whole metadata blob, so a call that
+    # changed nothing in it must not write back the copy it read: a second tab
+    # or a double click re-handing the chat to the same agent may have read it
+    # before the Take's write, and would erase the clock that write added.
+    _update: dict = {}
+    if _meta != _meta_read:
+        _update["metadata"] = _meta
     if not _gate_won:
         # Re-handoff to the SAME agent (not a new cycle): ownership is already
-        # correct, we only refresh metadata. Writing it again is harmless and
-        # keeps behaviour identical to today.
+        # correct; metadata goes out only if this call changed it (above).
         _update["mode"] = "human"
         _update["assigned_agent_id"] = agent_id
     _operator = await db.get_user_by_id(agent_id)
@@ -593,7 +813,23 @@ async def perform_handoff_to_agent(
     if _operator_team_id:
         _update["team_id"] = _operator_team_id
 
-    await db.update_conversation(conversation_id, _update)
+    if _update:
+        if "metadata" not in _update:
+            await db.update_conversation(conversation_id, _update)
+        elif _is_new_cycle:
+            # A new owner: the gate decided it, there is no clock of theirs to guard. The blob was read before the
+            # gate and the operator read; a CRM receipt merged in since is kept, not erased (CodeRabbit #280).
+            await db.update_conversation_keeping_receipts(conversation_id, _update, _RECEIPT_KEYS)
+        else:
+            # The same agent already holds the chat, and the other request of
+            # the same Take may write between the read above and this write.
+            await _write_same_cycle(
+                conversation_id, agent_id, _update, _conv_cur, _meta_read, _take_starts_clock,
+                lambda conv: _handoff_metadata(
+                    conv, agent_id, handoff_reason, False, _gate_won,
+                    _seen_unassigned_at, _extra_meta, _pop_meta_keys,
+                ),
+            )
     if _is_new_cycle:
         from app.services.presence import log_activity
         from app.pipeline.orchestrator import _fire_and_forget

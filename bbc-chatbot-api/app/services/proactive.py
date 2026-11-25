@@ -105,13 +105,13 @@ _REPLIES: dict[str, list[str]] = {
     "note": ["Get a fare quote", "I have a question"],
 }
 
-# Who speaks (ADR 12; owner, 16 Nov): Alex, the brand's AI Travel Agent. The
+# Who speaks (ADR 12; owner, 16 Nov; Skye since 24 Nov, Alex before): the brand's AI Travel Agent. The
 # widget's header shows the same name over "Travel Agent · <brand>", with an
 # "AI" badge on his photo: that is where the visitor sees it is an AI, so the
 # opening says the name and the brand only (bbc-widget/src/config, `persona`;
 # keep the name equal on both sides). The brands as the widget's header writes
 # them, by the validated `site` (bbc | bct).
-PERSONA = "Alex"
+PERSONA = "Skye"
 _BRANDS: dict[str, str] = {"bbc": "BuyBusinessClass", "bct": "Business Class Tickets"}
 
 # The cabins the leads table accepts (leads_cabin_class_check).

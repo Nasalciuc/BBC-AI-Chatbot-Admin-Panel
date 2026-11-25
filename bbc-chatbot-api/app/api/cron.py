@@ -19,6 +19,8 @@ from app.services.crm import (
     submit_abandoned_to_crm,
 )
 from app.services.lead_service import get_or_create_lead
+from app.services import crm_leads_api
+from app.services.conversation_lock import LockBusy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -160,10 +162,43 @@ async def _contacts_already_in_crm() -> set[str] | None:
     rows = await db.get_crm_contact_rows(days=30)
     if rows is None:
         return None
+    # The agent's button marks the lead row too; when that mark failed, its receipt on the chat
+    # (metadata.crm_lead) is the only trace, and it counts the same (CodeRabbit #280).
+    button_rows = await db.get_button_lead_contact_rows(days=30)
+    if button_rows is None:
+        return None
     ids: set[str] = set()
-    for row in rows:
+    for row in [*rows, *button_rows]:
         ids.update(_contact_ids(row))
     return ids
+
+
+async def _recheck_before_submit(cid: str) -> tuple[str, dict]:
+    """(why an automatic CRM submit must not go ahead after all, the chat as it is now); "" to go ahead.
+
+    Called under crm_leads_api.submit_lock(cid), right before the send. The agent's button holds that lock from
+    its read of the chat to its receipt, so a lead it made after this job read its rows is found here, and this
+    job's own receipt is written before the button can read. The chat's owner is read again too: an agent who
+    took it since the job's read now holds it (CodeRabbit #280). A failed read waits a cycle: it is not "nothing
+    sent"."""
+    now = await db.get_crm_receipts(cid)
+    if now is None:
+        CRM_PUSH_HEALTH["receipt_read_failed"] += 1
+        logger.warning(f"[cron][{cid}] the CRM receipts could not be read again before the submit — next cycle")
+        return "receipt_read_failed", {}
+    if crm_leads_api.is_receipt(now.get("crm_lead")):
+        return "made_by_button", now
+    if now.get("created_in_crm"):
+        return "already_in_crm", now
+    if crm_leads_api.everyone_on() and now.get("assigned_agent_id") and now.get("status") in db.OPEN_STATUSES:
+        return "agent_holds_chat", now
+    return "", now
+
+
+def _still_closable(now: dict) -> bool:
+    """The close decision on the chat as read under the lock: never closed, never an agent's (keys the read does
+    not carry leave the decision to the earlier read)."""
+    return now.get("mode") != "human" and now.get("status") != "closed" and not now.get("assigned_agent_id")
 
 
 def _hold_for_crm_lookup(cid: str, in_crm: set[str] | None, where: str) -> str | None:
@@ -379,19 +414,42 @@ async def run_abandoned_crm() -> dict:
                     claim_closing_sent,
                     compute_closing_text,
                 )
-                if not has_closing_been_sent(_conv_meta):
-                    _claimed = await claim_closing_sent(cid)
-                    if _claimed:
-                        _closing = compute_closing_text(_site)
-                        await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
-                await db.update_conversation(cid, {
+                # Closed first, and only while no agent holds the chat, as after a submit: an agent who took it
+                # since this run's read keeps it, with no goodbye in it. The goodbye follows a close that landed (a
+                # closed chat cannot be taken). A close that failed, after a submit or here, is tried again next
+                # tick with its goodbye, and the claim keeps that to one (CodeRabbit #280).
+                _zombie_close, _zombie_code = await db.close_conversation_if_unowned(cid, {
                     "status": "closed",
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                     "mode": "ai",
                     "assigned_agent_id": None,
                 })
-                logger.info(f"[cron][{cid}] Closed existing CRM lead")
-                results.append({"id": cid, "status": "closed_existing_crm"})
+                if _zombie_close == "closed":
+                    if not has_closing_been_sent(_conv_meta):
+                        _claimed = await claim_closing_sent(cid)
+                        if _claimed:
+                            _closing = compute_closing_text(_site)
+                            await db.add_message(cid, "ai", _closing, model_used="template", cost=0.0)
+                    logger.info(f"[cron][{cid}] Closed existing CRM lead")
+                    results.append({"id": cid, "status": "closed_existing_crm"})
+                elif _zombie_close == "owned":
+                    logger.info(f"[cron][{cid}] in the CRM already, an agent holds the chat: left open")
+                    results.append({"id": cid, "status": "skipped", "reason": "agent_holds_chat"})
+                else:
+                    CRM_PUSH_HEALTH["close_failed"] += 1
+                    logger.error(f"[cron][{cid}] in the CRM already, the close failed (code={_zombie_code}) — next tick")
+                    results.append({"id": cid, "status": "close_failed"})
+                continue
+
+            # The agent's "Create lead in CRM" button made this lead (metadata.crm_lead): the CRM has it under the
+            # agent's name, so the old path never sends a second one, even when the lead row's mark failed.
+            if crm_leads_api.stored_record(conv):
+                results.append({"id": cid, "status": "skipped", "reason": "made_by_button"})
+                continue
+            # With the button on for every agent (CRM_LEADS_API), a chat an agent still holds is theirs to send:
+            # the sweep no longer pushes it behind them as an unassigned lead.
+            if crm_leads_api.everyone_on() and conv.get("assigned_agent_id") and conv.get("status") in db.OPEN_STATUSES:
+                results.append({"id": cid, "status": "skipped", "reason": "agent_holds_chat"})
                 continue
 
             # The `if not lead:` recreate-and-push branch that used to live here
@@ -437,13 +495,36 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "skipped", "reason": "crm_refused_unchanged"})
                 continue
 
-            crm_result = await submit_abandoned_to_crm(conv, lead)
+            # The rows this loop judged were read at the start of the tick. Under the chat's CRM lock (the agent's
+            # button holds it around its own call) the receipts are read again, and the lock is kept until this
+            # submit's own mark is written: a button lead made since is found, and no button call starts before
+            # this one is marked (CodeRabbit #280).
+            marked: Optional[dict] = None
+            _now: dict = {}
+            try:
+                async with crm_leads_api.submit_lock(cid) as _lease:
+                    _why, _now = await _recheck_before_submit(cid)
+                    if not _why and _lease.lost:
+                        # The lock stopped being ours: another process may be sending this chat now.
+                        CRM_PUSH_HEALTH["submit_busy"] += 1
+                        _why = "submit_busy"
+                    if _why:
+                        results.append({"id": cid, "status": "skipped", "reason": _why})
+                        continue
+                    crm_result = await submit_abandoned_to_crm(conv, lead)
+                    if crm_result.success:
+                        # The returned id is the receipt — stored with the flag.
+                        marked = await db.mark_lead_created_in_crm(
+                            lead["id"], crm_lead_id=crm_result.request_id, source="cron"
+                        )
+            except LockBusy as e:
+                # Another process is sending this chat right now: nothing sent from here, next cycle.
+                CRM_PUSH_HEALTH["submit_busy"] += 1
+                logger.warning(f"[cron][{cid}] CRM submit skipped this cycle: {e}")
+                results.append({"id": cid, "status": "skipped", "reason": "submit_busy"})
+                continue
 
             if crm_result.success:
-                # The returned id is the receipt — stored with the flag.
-                marked = await db.mark_lead_created_in_crm(
-                    lead["id"], crm_lead_id=crm_result.request_id, source="cron"
-                )
                 if marked is None:
                     # The CRM row EXISTS but our flag write died. Closing now
                     # would hide it; leaving the flag false without closing
@@ -458,18 +539,32 @@ async def run_abandoned_crm() -> dict:
                         "crm_id": crm_result.request_id,
                     })
                     continue
-                if _may_close:
-                    await db.update_conversation(cid, {
+                # Closed only if it still may be: decided on the chat as read under the lock as well as at the
+                # start, and written only while no agent holds it, so a chat taken in between keeps its agent.
+                _closed = False
+                _outcome = ""
+                if _may_close and _still_closable(_now):
+                    _outcome, _code = await db.close_conversation_if_unowned(cid, {
                         "status": "closed",
                         "closed_at": datetime.now(timezone.utc).isoformat(),
                         "mode": "ai",
                         "assigned_agent_id": None,
                     })
+                    _closed = _outcome == "closed"
+                    if _outcome == "owned":
+                        logger.info(f"[cron][{cid}] an agent took the chat during the submit: left open")
+                    elif _outcome == "failed":
+                        CRM_PUSH_HEALTH["close_failed"] += 1
+                        logger.error(f"[cron][{cid}] CRM submitted but the close failed (code={_code})")
                 logger.info(
                     f"[cron][{cid}] Success: CRM submitted"
-                    f"{' + closed' if _may_close else ' (left open — human/closed)'}"
+                    f"{' + closed' if _closed else ' (left open — human/closed)'}"
                 )
-                _pushed_today.add(cid)
+                if _outcome != "failed":
+                    _pushed_today.add(cid)
+                # else: the day guard would stop the next tick before the close-only branch, and the chat would stay
+                # open all day. The lead is marked, and every submit reads that mark again under the lock first, so
+                # nothing is sent twice (CodeRabbit #280).
                 if _in_crm is not None:
                     _in_crm.update(_contact_ids(conv))
                 results.append({"id": cid, "status": "success"})
@@ -674,6 +769,11 @@ async def daily_learning(
     return await run_learning(bootstrap=bootstrap, force=force)
 
 
+_BACKSTOP_PAGE = 50
+_BACKSTOP_SENDS = 20
+_BACKSTOP_SCAN = 500
+
+
 async def run_crm_orphan_backstop() -> dict:
     """The 24-Paulettes fix, human-gated for history.
 
@@ -691,18 +791,30 @@ async def run_crm_orphan_backstop() -> dict:
     from app.services.crm import push_lead_to_crm
 
     now = datetime.now(timezone.utc)
-    orphans = await db.get_crm_orphan_leads(
-        min_score=70,
-        older_than_iso=(now - timedelta(hours=1)).isoformat(),
-        younger_than_iso=(now - timedelta(hours=48)).isoformat(),
-        max_attempts=3,
-        limit=20,
-    )
-    if orphans:
-        logger.info(f"[cron][crm-backstop] {len(orphans)} fresh gold orphan(s)")
+    window = {
+        "min_score": 70,
+        "older_than_iso": (now - timedelta(hours=1)).isoformat(),
+        "younger_than_iso": (now - timedelta(hours=48)).isoformat(),
+        "max_attempts": 3,
+    }
+    # Read first, send after: every candidate of this run is read before the first send. A lead this job may not
+    # send (an agent's chat, a button lead) stays in the query's answer, and with one page of 20 a run of them at
+    # the top kept older leads from ever being tried; a page read after a send, at an offset, skipped the leads
+    # that moved up into the sent ones' places (CodeRabbit #280). At most _BACKSTOP_SCAN rows, _BACKSTOP_SENDS sent.
+    candidates: list[dict] = []
+    while len(candidates) < _BACKSTOP_SCAN:
+        page = await db.get_crm_orphan_leads(**window, limit=_BACKSTOP_PAGE, offset=len(candidates))
+        candidates.extend(page)
+        if len(page) < _BACKSTOP_PAGE:
+            break
+    if candidates:
+        logger.info(f"[cron][crm-backstop] {len(candidates)} fresh gold orphan(s)")
 
     results = []
-    for lead in orphans:
+    sent = 0
+    for lead in candidates:
+        if sent >= _BACKSTOP_SENDS:
+            break
         lead_id = lead["id"]
         try:
             conv = None
@@ -718,14 +830,30 @@ async def run_crm_orphan_backstop() -> dict:
             from app.security.behavior import is_locked as _is_locked
             if holds_crm(conv.get("metadata")) or _is_locked(conv.get("metadata")):
                 continue  # PR-12: waits for a human push from the panel
-            result = await push_lead_to_crm(
-                lead,
-                visitor,
-                lead.get("conversation_id") or lead_id,
-                conv_metadata=conv.get("metadata"),
-                suid=conv.get("visitor_id"),
-                source="cron",
-            )
+            if crm_leads_api.stored_record(conv):
+                continue  # the agent's button made it: never a second lead through the old path
+            if crm_leads_api.everyone_on() and conv.get("assigned_agent_id") and conv.get("status") in db.OPEN_STATUSES:
+                continue  # the agent who holds the chat sends it with the button
+            cid = lead.get("conversation_id") or lead_id
+            # Same lock as the button and the sweep, held until push_lead_to_crm has written its mark.
+            async with crm_leads_api.submit_lock(cid) as lease:
+                why = (await _recheck_before_submit(cid))[0] if lead.get("conversation_id") else ""
+                if not why and lease.lost:
+                    # The lock stopped being ours: another process may be sending this chat now.
+                    CRM_PUSH_HEALTH["submit_busy"] += 1
+                    why = "submit_busy"
+                if why:
+                    results.append({"id": lead_id, "status": "skipped", "reason": why})
+                    continue
+                sent += 1
+                result = await push_lead_to_crm(
+                    lead,
+                    visitor,
+                    cid,
+                    conv_metadata=conv.get("metadata"),
+                    suid=conv.get("visitor_id"),
+                    source="cron",
+                )
             if result.success:
                 results.append({"id": lead_id, "status": "pushed", "crm_id": result.request_id})
             else:
@@ -736,11 +864,21 @@ async def run_crm_orphan_backstop() -> dict:
                     bump_attempts_from=int(lead.get("crm_push_attempts") or 0),
                 )
                 results.append({"id": lead_id, "status": "failed", "error": result.error})
+        except LockBusy as e:
+            # Another process is sending this chat right now: nothing sent from here, next run.
+            CRM_PUSH_HEALTH["submit_busy"] += 1
+            logger.warning(f"[cron][crm-backstop] lead={lead_id}: skipped this run, {e}")
+            results.append({"id": lead_id, "status": "skipped", "reason": "submit_busy"})
         except Exception as e:
             logger.error(f"[cron][crm-backstop] lead={lead_id}: {e}")
             results.append({"id": lead_id, "status": "error", "error": str(e)})
+    if sent < _BACKSTOP_SENDS and len(candidates) >= _BACKSTOP_SCAN:
+        logger.warning(
+            f"[cron][crm-backstop] read {len(candidates)} orphans without finding {_BACKSTOP_SENDS} to send: "
+            "the rest wait for the next run"
+        )
 
-    return {"scanned": len(orphans), "results": results}
+    return {"scanned": len(candidates), "results": results}
 
 
 _DB_ALERT: dict = {"last_sent_at": None, "over_streak": 0, "episode_open": False}
