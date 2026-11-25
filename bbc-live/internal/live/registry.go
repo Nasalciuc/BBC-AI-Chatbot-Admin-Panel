@@ -64,6 +64,9 @@ type VisitPage struct {
 	Events []string `json:"ev,omitempty"`
 	Steps  []string `json:"st,omitempty"`
 	At     int64    `json:"at"` // when bbc-live last heard of it (unix seconds)
+	// The snapshot's number on its page (1 and up; 0 when the widget sent none): the newest has the highest, even
+	// when two leave in the same second with as many events (CodeRabbit #282, round 3).
+	N int64 `json:"n,omitempty"`
 }
 
 // VisitCard is what a snapshot says of the card.
@@ -152,6 +155,7 @@ type visitIn struct {
 	PageType    string       `json:"page_type"`
 	PageS       float64      `json:"page_s"`
 	SeenS       float64      `json:"seen_s"`
+	Seq         float64      `json:"seq"`
 	From        string       `json:"from"`
 	To          string       `json:"to"`
 	Depart      string       `json:"depart"`
@@ -200,6 +204,17 @@ var (
 // wholeSeconds keeps a whole number of seconds within a day; 0 otherwise.
 func wholeSeconds(v float64) int64 {
 	if v < 0 || v > 86400 || v != math.Trunc(v) {
+		return 0
+	}
+	return int64(v)
+}
+
+// MaxSnapshotSeq is the highest snapshot number a page's snapshot may carry (the widget sends far fewer).
+const MaxSnapshotSeq = 10000
+
+// snapshotSeq is a snapshot's number on its page, or 0 when it carries none that is one.
+func snapshotSeq(v float64) int64 {
+	if v < 1 || v > MaxSnapshotSeq || v != math.Trunc(v) {
 		return 0
 	}
 	return int64(v)
@@ -291,7 +306,7 @@ func cleanVisit(vid string, in visitIn, ip, ua string, now time.Time) (VisitSnap
 		PageID: in.PageID,
 		Page: VisitPage{Path: b.Page, Type: b.PageType, S: wholeSeconds(in.PageS), Seen: wholeSeconds(in.SeenS),
 			Events: tokens(in.Events, eventTag, VisitEvents), Steps: tokens(in.Steps, activityStep, VisitSteps),
-			At: now.Unix()},
+			At: now.Unix(), N: snapshotSeq(in.Seq)},
 	}
 	pax := ""
 	if b.Trip.Pax > 0 {

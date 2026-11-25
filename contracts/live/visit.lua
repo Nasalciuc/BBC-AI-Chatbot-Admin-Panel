@@ -41,8 +41,9 @@ if not known then
   end
 end
 -- A page's snapshot replaces the one kept only when it is newer: a fetch and the page's last beacon can cross on
--- the way. s (seconds since the page loaded, by the browser's clock) orders them; the events and the steps, which
--- only grow on a page, settle a tie (CodeRabbit #282, round 3).
+-- the way. n (the snapshot's number on its page) orders them when both carry one; without it, s (seconds since the
+-- page loaded, by the browser's clock), and in the same second the events and the steps, which only grow on a page
+-- (CodeRabbit #282, round 3: a count of the same event grows as one item, chat_msg*2 to chat_msg*3).
 if known then
   local pkey = 'pg:' .. pid
   local old = redis.call('hget', key, pkey)
@@ -51,8 +52,11 @@ if known then
     local okOld, o = pcall(cjson.decode, old)
     local okNew, nw = pcall(cjson.decode, ARGV[8])
     if okOld and okNew and type(o) == 'table' and type(nw) == 'table' then
+      local oldn, newn = tonumber(o.n) or 0, tonumber(nw.n) or 0
       local olds, news = tonumber(o.s) or 0, tonumber(nw.s) or 0
-      if news < olds then
+      if oldn > 0 and newn > 0 then
+        newer = newn >= oldn
+      elseif news < olds then
         newer = false
       elseif news == olds then
         local function len(t) return type(t) == 'table' and #t or 0 end

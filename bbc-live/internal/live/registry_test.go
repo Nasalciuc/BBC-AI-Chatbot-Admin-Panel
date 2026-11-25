@@ -474,3 +474,43 @@ func TestAnOlderSnapshotOfAPageNeverReplacesANewerOne(t *testing.T) {
 		t.Errorf("a newer snapshot did not replace the page: %+v", p)
 	}
 }
+
+func TestASnapshotsNumberOrdersAPageWhenTheSecondsAndCountsAreEven(t *testing.T) {
+	// The same second, as many events: chat_msg*2 and chat_msg*3 are one item each. The snapshot's number says which
+	// left last (CodeRabbit #282, round 3).
+	s, c, rc := setup(t)
+	page := func() VisitPage {
+		var p VisitPage
+		if err := json.Unmarshal([]byte(hash(t, rc, regKey(vid1))["pg:pg-first-1"]), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	send := func(seq float64, events string) {
+		t.Helper()
+		body := map[string]any{"page_s": 65, "seen_s": 60, "events": events, "seq": seq}
+		if w := visitReq(t, s, c, vid1, snapshot(body), nil); w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+	}
+	send(5, "card:kayak:card;chat_msg*3")
+	c.add(1)
+	send(4, "card:kayak:card;chat_msg*2") // the earlier one, arriving last
+	if p := page(); p.N != 5 || len(p.Events) != 2 || p.Events[1] != "chat_msg*3" {
+		t.Errorf("the earlier snapshot replaced the page: %+v", p)
+	}
+	c.add(1)
+	send(6, "card:kayak:card;chat_msg*4") // the next one: it replaces
+	if p := page(); p.N != 6 || len(p.Events) != 2 || p.Events[1] != "chat_msg*4" {
+		t.Errorf("the next snapshot did not replace the page: %+v", p)
+	}
+}
+
+func TestASnapshotsNumberIsAWholeNumberInItsRange(t *testing.T) {
+	for v, want := range map[float64]int64{1: 1, 65: 65, MaxSnapshotSeq: MaxSnapshotSeq, 0: 0, -3: 0, 1.5: 0,
+		MaxSnapshotSeq + 1: 0} {
+		if got := snapshotSeq(v); got != want {
+			t.Errorf("snapshotSeq(%v) = %d, want %d", v, got, want)
+		}
+	}
+}

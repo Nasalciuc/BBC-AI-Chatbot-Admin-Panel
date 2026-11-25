@@ -208,7 +208,8 @@ before it is turned on.
 - **The snapshot.** `POST /v1/visit`, from the page's start: at once, 1.5 s after anything the widget does (the
   events it captures for PostHog, as short words), every minute while the page is in sight, and when it is hidden
   or left (`sendBeacon`). Plain text JSON, the pass inside (`"pass"`), so no preflight. Fields, all optional but
-  `page_id`: `page_id` (`[A-Za-z0-9_-]{6,32}`, one per page load), `page`, `page_type`, `page_s` and `seen_s`
+  `page_id`: `page_id` (`[A-Za-z0-9_-]{6,32}`, one per page load), `seq` (the snapshot's number on its page: whole,
+  1 to 10 000; anything else counts as none), `page`, `page_type`, `page_s` and `seen_s`
   (seconds since the page loaded, and in sight: whole, 0 to 86 400), the trip as in a beat, `source`, `channel`
   (kayak, google, meta, bing, ads, search, referral, direct, other), `utm_source`, `utm_medium`, `utm_campaign`
   (letters, digits, spaces and `_ . , : | + / ( ) -`, 80 at most; anything else drops the tag), `referrer` (a host),
@@ -225,9 +226,11 @@ before it is turned on.
   the last page and the trip; `has_chat` once `1` stays; the card's state only moves forward (shown, dismissed,
   engaged), and its answer and answer time go with the state that won: an engagement after "not now" takes its own,
   a "not now" that arrives after it changes nothing. Its times are bbc-live's clock. Each page is `pg:<page id>`
-  (JSON: path, kind, seconds, seen, events, steps, when last heard), in first-heard order in `pages`, replaced only
-  by a newer snapshot of it (more seconds since the page loaded; at the same second, no fewer events and steps: a
-  fetch and the page's last beacon can cross); past 40 pages they are counted (`pages_over`), not kept.
+  (JSON: path, kind, seconds, seen, events, steps, when last heard, `n` the snapshot's number), in first-heard
+  order in `pages`, replaced only by a newer snapshot of it (a fetch and the page's last beacon can cross): a higher
+  or equal `n` when both carry one; without it, more seconds since the page loaded, and at the same second no fewer
+  events and steps (a count grows as one item: `chat_msg*2` to `chat_msg*3`, which `n` orders); past 40 pages they
+  are counted (`pages_over`), not kept.
 - **The end.** A visit with no snapshot for 30 minutes has ended: `close.lua` (every 30 s) renames it to
   `live:ended:<vid>:<first_at>` and pushes that key on `live:ended`; a snapshot that finds its visitor's visit gone
   quiet ends it the same way first. Lost (`/health`): an open visit that ran out before it ended.
