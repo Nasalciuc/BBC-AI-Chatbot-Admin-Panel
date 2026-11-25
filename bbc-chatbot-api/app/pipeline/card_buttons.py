@@ -482,11 +482,12 @@ async def before_you_go(cid: str, why: Optional[str] = None) -> dict:
 
     `why` (LEAVING) is how the client left. After an agent wrote (lever 6, 25 Nov), the message goes out only as the
     client leaves the chat or the page (LEAVING_AN_AGENT) with the agent's newest message unanswered, in words that
-    say "your agent"; the agent with the chat open sees it (BEFORE_YOU_GO_AFTER_AGENT=false: never after an agent,
-    as before). Under a question for the contact asked less than two
-    minutes ago (Alex's or the agent's) it waits, but not when the client closes the chat: the email field left
-    empty and the chat closed (15 times in the owner's contact test, lever 5) is a client leaving, not one still
-    typing."""
+    say "your agent"; the agent with the chat open sees it. BEFORE_YOU_GO_AFTER_AGENT=false: never after an agent,
+    as before.
+
+    Under a question for the contact asked less than two minutes ago (Alex's or the agent's) it waits, but not when
+    the client closes the chat: the email field left empty and the chat closed (15 times in the owner's contact
+    test, lever 5) is a client leaving, not one still typing."""
     from app.db import supabase as db
     from app.flags import flag
     from app.services import card_words, lead_service, proactive
