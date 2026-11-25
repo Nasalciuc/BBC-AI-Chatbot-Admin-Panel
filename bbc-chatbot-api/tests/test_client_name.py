@@ -93,6 +93,19 @@ def test_beside_no_contact_or_beside_more_than_a_name_nobody(message):
     assert name_beside_contact(message) is None
 
 
+def test_a_sentence_after_the_name_question_is_no_name():
+    """CodeRabbit #282, round 3: after the name question the reply was taken whole, "My name is Ana looking to fly"
+    became "Ana Looking To Fly". A sentence is no name; "my name is …" still gives the name."""
+    assert name_in_reply("My name is Ana looking to fly", ASKED_NAME) == "Ana"
+    assert name_in_reply("my name is ana, looking for business class", ASKED_NAME) == "Ana"
+    for reply in ["I'm Ana looking to fly", "It's JFK to LHR", "Ana from Boston", "Ana looking to fly"]:
+        assert name_in_reply(reply, ASKED_NAME) is None, reply
+        assert name_from_answer(reply) is None, reply
+    # Rule 5: a name alone, and a full name with its joining word, are still names.
+    assert name_in_reply("Ana Popescu", ASKED_NAME) == "Ana Popescu"
+    assert name_from_answer("Ortega y Gasset") is not None
+
+
 def test_the_answer_after_a_rule_about_the_name_is_no_name():
     assert name_in_reply("Boston", "Please make sure your name matches your passport. Where are you flying from?") is None
 

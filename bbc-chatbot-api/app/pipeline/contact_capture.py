@@ -215,6 +215,10 @@ def name_from_answer(message: str) -> Optional[str]:
         return None
     if any(w.lower().strip(".'’") in _NOT_A_NAME and not _INITIAL_RE.match(w) for w in words):
         return None
+    # A sentence is no name, whatever introduced it: "My name is Ana looking to fly", "It's JFK to LHR", "Ana from
+    # Boston" (CodeRabbit #282, round 3). "my name is …" is read again by name_from_intro, which keeps "Ana".
+    if any(w.lower().strip(".'’") in _NOT_IN_A_NAME_REPLY for w in words):
+        return None
     if sum(ch.isalpha() for ch in text) < 2:
         return None
     # "maribel" → "Maribel"; a name the client capitalised stays as written.
@@ -243,6 +247,9 @@ different missing misspelled listed above below with from but y et mas mais pero
 looking searching seeking trying wanting planning hoping travelling traveling flying going coming calling writing
 texting contacting reaching asking inquiring enquiring booking interested about need needs want wants would
 """.split())
+# The same words in a reply meant to be the name alone: it is a sentence. The joining words a full name can hold
+# stay out ("Ortega y Gasset", the surname Mas).
+_NOT_IN_A_NAME_REPLY = _NEVER_IN_A_NAME - {"y", "et", "mas", "mais", "pero"}
 # A name's last word is never one of these: "María José García de" lost its last word to the four-word limit.
 _NAME_PARTICLES = frozenset("de da del della di do dos das du la le van von der den ter".split())
 
