@@ -38,49 +38,6 @@ test('a hello past its time, of another kind, too long, or without a tap is no h
   assert.equal(readHello(null, NOW), null)
 })
 
-// ── Skye's own hello (bbc-chatbot-api app/services/live_bot.py; the owner, 25 Nov 2026) ─────────────────────────
-
-const botContract = JSON.parse(readFileSync(join(here, '..', '..', 'contracts', 'live_inbox_message_bot.json'), 'utf8'))
-
-test('Skye\u2019s own hello is read as hers, an agent\u2019s never is', async () => {
-  const { botOf } = await import('../src/liveRead.ts')
-  const h = readHello({ messages: [botContract] }, Date.parse('2026-11-25T18:05:00+00:00'))
-  assert.deepEqual(h, {
-    id: botContract.id, agent: 'Skye', text: botContract.text, tap: botContract.tap,
-    expiresAt: Date.parse(botContract.expires_at), bot: true,
-  })
-  assert.deepEqual(botOf(h), { bot: true })
-  // Rule 5: an agent's hello, and a `bot` that is not plainly true, are no bot.
-  for (const m of [contract, { ...contract, bot: 'true' }, { ...contract, bot: 1 }]) {
-    const a = readHello({ messages: [m] }, NOW)
-    assert.equal(a.bot, undefined, JSON.stringify(m.bot))
-    assert.deepEqual(botOf(a), {})
-  }
-  assert.deepEqual(botOf(null), {})
-  // Kept for the visit's next pages, it stays hers.
-  const kept = readKeptHello(JSON.stringify(h), Date.parse('2026-11-25T18:05:00+00:00'))
-  assert.equal(kept.bot, true)
-  assert.equal(readKeptHello(JSON.stringify(readHello({ messages: [contract] }, NOW)), NOW).bot, undefined)
-})
-
-test('Skye\u2019s hello shows as hers: her bubble in the chat, her photo and name on the card', () => {
-  const chat = readFileSync(join(here, '..', 'src', 'ChatWindow.tsx'), 'utf8')
-  const msg = chat.slice(chat.indexOf('const liveMessage = '), chat.indexOf('export function ChatWindow('))
-  assert.match(msg, /h\.bot\s+\? \{ id: liveId\(h\), role: 'ai', content: h\.text,/)
-  assert.match(msg, /: \{ id: liveId\(h\), role: 'agent', content: h\.text, agent_name: h\.agent,/)
-  const src = readFileSync(join(here, '..', 'src', 'FloatingButtons.tsx'), 'utf8')
-  const card = src.slice(src.indexOf('bw-nudge--hello'), src.indexOf(') : card && count === 0'))
-  assert.match(card, /\{hello\.bot \? \(\s+<span class="bw-nudge__who">\{personaAvatar\}\{personaWho\}<\/span>/)
-  assert.match(card, /\{initials\(hello\.agent\)\}/)
-  // Every event of a hello says whose it was.
-  const w = readFileSync(join(here, '..', 'src', 'Widget.tsx'), 'utf8')
-  assert.equal(w.split("live_hello_dismissed', { site: brand.id, where: ").length - 1, 3)
-  assert.equal(w.split('...botOf(live.hello) })').length - 1, 4)
-  assert.match(w, /where: 'card', \.\.\.botOf\(h\) \}\)/)
-  const hook = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
-  assert.match(hook, /\.\.\.botOf\(h\),\s+\}\)/)
-})
-
 test('a hello\u2019s length is counted as the API counts it: 300 emoji are 300 characters', () => {
   const emoji = '\u{1F600}'
   assert.ok(readHello({ messages: [{ ...contract, text: emoji.repeat(300) }] }, NOW), 'at the limit')

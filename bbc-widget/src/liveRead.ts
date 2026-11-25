@@ -32,13 +32,6 @@ export interface LiveHello {
   tap: string
   /** ms since the epoch */
   expiresAt: number
-  /** Skye's own hello (bbc-chatbot-api app/services/live_bot.py): hers in the chat, as the server stores it. */
-  bot?: boolean
-}
-
-/** The hello's `bot` for its PostHog events: Skye's answers read apart from the agents'. */
-export function botOf(h: LiveHello | null | undefined): { bot?: true } {
-  return h?.bot ? { bot: true } : {}
 }
 
 export interface Beat {
@@ -139,8 +132,7 @@ export function readHello(raw: unknown, nowMs: number): LiveHello | null {
     // Characters as the API counts them (Python's len: code points), not UTF-16 units: 200 emoji are 200.
     if (r.kind !== 'hello' || !s('id') || !s('tap').startsWith('t1.') || !text || [...text].length > MAX_TEXT) continue
     if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) continue
-    return { id: s('id'), agent: s('agent').trim().slice(0, 40) || 'Your travel agent', text, tap: s('tap'), expiresAt,
-      ...(r.bot === true ? { bot: true } : {}) }
+    return { id: s('id'), agent: s('agent').trim().slice(0, 40) || 'Your travel agent', text, tap: s('tap'), expiresAt }
   }
   return null
 }
@@ -215,7 +207,7 @@ export function readKeptHello(raw: string | null, nowMs: number): LiveHello | nu
   const at = typeof h.expiresAt === 'number' ? new Date(h.expiresAt) : null
   if (!at || Number.isNaN(at.getTime())) return null
   return readHello({ messages: [{ kind: 'hello', id: h.id, agent: h.agent, text: h.text, tap: h.tap,
-    expires_at: at.toISOString(), bot: h.bot }] }, nowMs)
+    expires_at: at.toISOString() }] }, nowMs)
 }
 
 /** What a renewal of the pass came to: a new pass (`ok`), the feature or the pass refused for this visitor (`off`),

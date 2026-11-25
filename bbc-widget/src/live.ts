@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexAt, alexCard, alexShown, noteSide } from './agentTest'
 import { apiFetch, ensureVisitorId, getVisitorId } from './api'
 import {
-  afterRefusedPass, beatBody, botOf, configFor, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello,
+  afterRefusedPass, beatBody, configFor, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello,
   readKeptHello, renewalOf,
   type BeatAlexCard, type LiveConfig, type LiveHello, type Renewal,
 } from './liveRead'
@@ -27,7 +27,6 @@ import { getUtm } from './utm'
 import { isReturning, noteVisit, timeZone } from './visitCount'
 
 export type { LiveHello } from './liveRead'
-export { botOf } from './liveRead'
 
 const AFTER_S = 20
 const BEAT_S = 15
@@ -269,7 +268,7 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
             // button (a phone), or the chat it opens (a computer).
             posthog?.capture('live_hello_shown', {
               site, after_alex: alexShown(), where: chatOpenRef.current ? 'chat' : isPhone() ? 'card' : 'opens_chat',
-              ...(alexCard() ? { alex_card: alexCard()?.state } : {}), ...botOf(h),
+              ...(alexCard() ? { alex_card: alexCard()?.state } : {}),
             })
             return
           }
