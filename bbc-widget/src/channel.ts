@@ -96,9 +96,21 @@ export function readablePhone(countries: readonly Country[], e164: string): stri
   return `${dial}${owner ? ' ' : ''}${groups.join(' ')}`
 }
 
+/** An email the server keeps as it is typed (app/pipeline/card_buttons.py channel_email: the same pattern, and the same
+ *  cases in both suites): letters, digits and . _ % + - before the @, a letter, digit or _ first; a domain with a dot
+ *  and two letters or more after it; 120 characters at most. The field took anything around an @ before 25 Nov: an
+ *  email typed with stars went out, the server found none in it, and the model said it was captured. */
+const EMAIL = /^[A-Za-z0-9_][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+
 export function validEmail(value: string): string | null {
   const v = (value || '').trim()
-  return v.length <= 120 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v) ? v : null
+  return v.length <= 120 && EMAIL.test(v) ? v : null
+}
+
+/** A typed message carries an email the server keeps (validEmail), the sentence's own marks around it set aside
+ *  ("Sure: client@example.com."): a contact left in the chat (ChatWindow, proactive.ts markContactLeft). */
+export function typedEmail(text: string): boolean {
+  return (text || '').split(/\s+/).some(word => validEmail(word.replace(/^[("'<[]+|[)"'>\].,;:!?]+$/g, '')) !== null)
 }
 
 /** The field of the row beside the refused quote form (owner, 23 Nov 2026): the contact the visitor already typed

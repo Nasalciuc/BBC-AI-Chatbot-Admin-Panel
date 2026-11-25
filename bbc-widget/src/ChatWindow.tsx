@@ -6,7 +6,7 @@ import {
   apiFetch, askBeforeYouGo, ensureVisitorToken, getVisitorId, getVisitorToken, readButtons, saveVisitorToken,
   type OfferConfirm,
 } from './api'
-import { guessCountry, readablePhone, validEmail, validPhone, type ButtonKind, type ChannelKind } from './channel'
+import { guessCountry, readablePhone, typedEmail, validEmail, validPhone, type ButtonKind, type ChannelKind } from './channel'
 import { COUNTRIES, type Country } from './countries'
 import { ChannelIcon } from './FloatingButtons'
 import { browserLanguage, channelMessage, timeZone, widgetLang, words } from './i18n'
@@ -22,7 +22,7 @@ import { IconArrowDown, IconArrowUp } from './icons'
 import { richText } from './richText'
 import { useIsPhone } from './phoneSheet'
 import { posthog, posthogSessionId } from './posthog'
-import { contactTestProps, markProactiveConversation, type ProactiveOpening } from './proactive'
+import { contactTestProps, markContactLeft, markProactiveConversation, type ProactiveOpening } from './proactive'
 import type { LiveHello } from './liveRead'
 import { siteMetadata } from './siteSignals'
 import { isNotNow, keysOnSite } from './triggers'
@@ -236,8 +236,14 @@ export function ChatWindow({
   const channelInputRef = useRef<HTMLInputElement>(null)
   // The answer already on screen while its send is on its way (A2): no "is typing" under it.
   const [localPending, setLocalPending] = useState(false)
-  // B1: the client left a contact in this chat (the form's, or a channel's) — then no "before you go".
+  // B1: the client left a contact in this chat (the form's, or a channel's) — then no "before you go", and no second
+  // chance for the row beside a refused form in this visit (proactive.ts markContactLeft).
   const contactGivenRef = useRef(Boolean(visitor.email || visitor.phone))
+  const contactGiven = () => {
+    contactGivenRef.current = true
+    markContactLeft()
+  }
+  useEffect(() => { if (contactGivenRef.current) markContactLeft() }, [])
   useKeyboardInset(visible && !embedded)
   const [pendingGreeting, setPendingGreeting] = useState(false)
   const [convId, setConvId] = useState<string | null>(savedConvId)
@@ -566,6 +572,24 @@ export function ChatWindow({
     startConversation()
   // eslint-disable-next-line
   }, [])
+
+  // The row's second chance (proactive.ts, triggers.ts rowAgainOpen) stands beside the site's refused form while this
+  // visitor has a conversation: the card's chat they left without a contact. Its contact goes into that conversation,
+  // as the channel's field sends it (the server keeps it there too, card_buttons._channel). The opening is only for a
+  // visitor with none (openingRef), so without this the contact typed in the row was dropped. Once per opening, and
+  // never the one this chat opened with (the mount above sends that one, or its /chat/init does).
+  const rowContactSentRef = useRef<ProactiveOpening | null>(savedConvId ? null : proactive ?? null)
+  useEffect(() => {
+    const o = proactive
+    if (!o?.firstContact || !convId || rowContactSentRef.current === o) return
+    rowContactSentRef.current = o
+    const { kind, text } = o.firstContact
+    onProactiveEngaged?.(text)
+    // Only the kind goes to PostHog, never the contact.
+    posthog?.capture('chat_channel_given', { channel: kind, tunnel, where: 'row', again: true, ...contactTestProps(o) })
+    sendOrQueue(text, { button: kind })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proactive, convId])
 
   // Verify restored session is still active (runs once at mount)
   useEffect(() => {
@@ -1267,6 +1291,9 @@ export function ChatWindow({
       // `sent-*` so no poll can ever drop it. When a batch later carries
       // the real user row, reconcileBatch swaps it in (content match).
       setMessages(prev => promoteTemp(prev, optimisticMsg.id, Date.now()))
+      // An email typed into the chat is a contact left too (the model's turn keeps it): no second chance for the row
+      // beside a refused form. Only the visit's mark: "before you go" is still the server's to skip.
+      if (!opts?.button && typedEmail(text)) markContactLeft()
 
       if (data.conversation_id && !convId) {
         setConvId(data.conversation_id)
@@ -1336,7 +1363,10 @@ export function ChatWindow({
         const buttons = readButtons(data.buttons)
         if (buttons.length) setQuickReplies(buttons.map(b => ({ label: b.label, kind: b.kind })))
         else if (!localId && opts?.button) setQuickReplies(null)
-        if (opts?.button === 'sms' || opts?.button === 'email') contactGivenRef.current = true
+        // A channel's contact the server kept. One it could not read is asked for again, that channel's button first
+        // (card_buttons._unreadable): nothing was given, and "before you go" may still come.
+        const channel = opts?.button === 'sms' || opts?.button === 'email' ? opts.button : null
+        if (channel && !buttons.some(b => b.kind === channel)) contactGiven()
         if (storedAt) {
           if (!lastMsgTime.current || storedAt > lastMsgTime.current) lastMsgTime.current = storedAt
         } else {

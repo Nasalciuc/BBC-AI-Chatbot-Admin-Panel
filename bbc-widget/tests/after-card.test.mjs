@@ -15,13 +15,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { guessCountry, ownerOf, phoneFor, readRowContact, readablePhone, rowField, rowShowsCountry, validEmail, validPhone } from '../src/channel.ts'
+import {
+  guessCountry, ownerOf, phoneFor, readRowContact, readablePhone, rowField, rowShowsCountry, typedEmail, validEmail, validPhone,
+} from '../src/channel.ts'
 import { COUNTRIES } from '../src/countries.ts'
 import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, WATCHED_FIRST_S, WATCHED_FIRST_SIGNALS_S,
-  adKeyword, isNotNow, keywordNamesPlace, pickTrigger,
+  adKeyword, isNotNow, keywordNamesPlace, pickTrigger, rowAgainOpen, rowMoment,
 } from '../src/triggers.ts'
 import { LAYOUT_AFTER_MS, cardAsideWatch, coveredShare, watchPopups } from '../src/overlay.ts'
 import { keyboardInset } from '../src/keyboard.ts'
@@ -75,6 +77,26 @@ test('an email is one, or nothing', () => {
   for (const bad of ['client@example', 'client example.com', '@example.com', 'a@b.c', '']) {
     assert.equal(validEmail(bad), null, bad)
   }
+})
+
+test('an email is what the server reads: the field sends what it keeps, and nothing else (25 Nov)', () => {
+  // The same cases as the server's (bbc-chatbot-api tests/test_card_buttons.py, "read whole as the widget's field
+  // checks it"). An email typed with stars went out on 25 Nov, the server found none in it, and the model said it
+  // was captured; "john*doe@…" was kept as "doe@…".
+  const kept = [
+    'client@example.com', 'First.Last+tag@Sub.Example.co.uk', 'a_b%c-d@x-y.io',
+    'a'.repeat(108) + '@example.com',                                          // 120 characters
+  ]
+  for (const ok of kept) assert.equal(validEmail(ok), ok, ok)
+  const refused = [
+    'j***@gmail.com', 'john*doe@gmail.com', "o'brien@example.com", 'client@example', 'client example.com',
+    '@example.com', 'a@b.c', '-x@example.com', '.x@example.com', 'x@example.com.', 'x@@example.com',
+    'x@exa_mple.com', 'x@example.c0m', '',
+    'a'.repeat(109) + '@example.com',                                          // 121
+  ]
+  for (const bad of refused) assert.equal(validEmail(bad), null, bad)
+  // The row beside the refused form reads its email the same way.
+  assert.deepEqual(readRowContact('j***@gmail.com', COUNTRIES, COUNTRIES[0]), { error: 'email' })
 })
 
 test('what goes out as the client\'s message is what the agent reads, in the client\'s language', () => {
@@ -547,7 +569,7 @@ test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a pl
 test('ADR A5: a "no" about the ad\'s trip as it was is no "no" about the page now (CodeRabbit #272)', () => {
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // The stale answer gives the reservation back and asks again; only one about the trip of now switches ads off.
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedTrip\) \{[\s\S]*?if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedTrip\) \{[\s\S]*?giveBack\(\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
 })
 
 test('ADR A2: the moment says when the site asked for the script and how long it took to come', () => {
@@ -698,4 +720,79 @@ test('contact test: the other channel is named in every language the widget spea
     assert.notEqual(words(lang).otherSms, words('en').otherSms, lang)
   }
   assert.match(WIDGET_CSS, /\.bw-channel__other \{/)
+})
+
+// ── 25 Nov 2026, "De ce nu lasă contactul" (the owner: every proposal, for every visitor) ───────────────
+
+test('the row beside a refused form comes once more in a visit whose card brought no contact, and only the row', () => {
+  // A card shown this visit, answered or not, no contact left, the second chance unused: open.
+  assert.equal(rowAgainOpen('shown', null, false), true)
+  assert.equal(rowAgainOpen('shown', '', false), true)
+  // Rule 5, the visits it is not for: no card yet (the first moment is theirs as before), the chat opened by the
+  // visitor or the note, a moment only asked for, the site's stop; a contact left; the chance asked for, used, or
+  // closed by the site's stop.
+  for (const done of [null, '', 'chat', 'asked', 'sent', 'contact']) assert.equal(rowAgainOpen(done, null, false), false, String(done))
+  assert.equal(rowAgainOpen('shown', null, true), false)
+  for (const again of ['asked', 'used', 'sent', 'contact']) assert.equal(rowAgainOpen('shown', again, false), false, again)
+  // Only the quote moment on a refused send whose form is still on the page: where the row stands.
+  const refused = { sincePressS: 1, sinceFormActivityS: 0, invalid: true, busy: false, row: true }
+  assert.equal(rowMoment('quote', refused), true)
+  assert.equal(rowMoment('quote', { ...refused, invalid: false }), false)       // the quote card over the form
+  assert.equal(rowMoment('quote', { ...refused, row: false }), false)           // no form to stand beside
+  assert.equal(rowMoment('quote', null), false)
+  for (const t of ['kayak', 'ads', 'social', 'reader', null]) assert.equal(rowMoment(t, refused), false, String(t))
+})
+
+test('the second chance is wired: its own reservation, given back as the first is, measured apart, closed by the site', () => {
+  // The run decides at its start which it watches for; a visitor with a conversation (allowed false) gets the row too.
+  assert.match(hook, /const rowOnly = rowAgain && rowAgainNow\(\)/)
+  assert.match(hook, /function rowAgainNow\(\): boolean \{\s+return rowAgainOpen\(ssGet\(DONE_KEY\), ssGet\(ROW_AGAIN_KEY\), ssGet\(CONTACT_LEFT_KEY\) === '1'\)\s+\}/)
+  // Its reservation is its own: the visit's moment stays 'shown'. Every answer that gives a moment back gives this one.
+  assert.match(hook, /const held = rowOnly \? ROW_AGAIN_KEY : DONE_KEY\n\s+const giveBack = \(\) => \{ if \(ssGet\(held\) === 'asked'\) ssSet\(held, ''\) \}/)
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.equal(ask.split('giveBack()').length - 1, 5)
+  assert.doesNotMatch(ask, /ssSet\(DONE_KEY, ''\)/)
+  // Only the row may come of it: any other answer gives the chance back.
+  assert.match(ask, /if \(\(res\.variant === 'row' \|\| rowOnly\) && !row\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}/)
+  // The visit's moment stays 'shown'; any row shown uses the chance, the visit's own row too (the chance is after a card).
+  assert.match(ask, /if \(!rowOnly\) ssSet\(DONE_KEY, 'shown'\)\n\s+if \(row\) ssSet\(ROW_AGAIN_KEY, 'used'\)/)
+  // Its answer is measured as a new opening's, and its moments apart from the visit's first.
+  assert.match(ask, /engagedRef\.current = false\n\s+shownRef\.current = opening/)
+  assert.equal(ask.split('...(rowOnly ? { again: true } : {}),').length - 1, 2)
+  const evaluate = hook.slice(hook.indexOf('const evaluate = () => {'), hook.indexOf('const pointerEvents = ['))
+  assert.match(evaluate, /if \(rowOnly && !rowAgainNow\(\)\) return/)
+  assert.match(evaluate, /const trigger = pickTrigger\(state\)\n\s+if \(!trigger\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(rowOnly && !rowMoment\(trigger, quote\)\) return/)
+  assert.match(evaluate, /fired = true\n\s+ssSet\(held, 'asked'\)/)
+  // The site's stop closes it (they sent the request, or reached out).
+  const stopFor = hook.slice(hook.indexOf('const stopFor = (e: SiteEvent) => {'))
+  assert.match(stopFor, /if \(!stop\) return\n(?:\s*\/\/[^\n]*\n)*\s+const again = ssGet\(ROW_AGAIN_KEY\)\n\s+if \(!again \|\| again === 'asked'\) ssSet\(ROW_AGAIN_KEY, stop\)/)
+  assert.match(hook, /\}, \[allowed, rowAgain, step, apiUrl\]\)/)
+})
+
+test('a contact left in the chat closes the second chance; one the server asked for again is no contact', () => {
+  // The server kept it: its answer does not ask for that channel again (card_buttons._unreadable does, its button first).
+  assert.match(chat, /const channel = opts\?\.button === 'sms' \|\| opts\?\.button === 'email' \? opts\.button : null\n\s+if \(channel && !buttons\.some\(b => b\.kind === channel\)\) contactGiven\(\)/)
+  assert.doesNotMatch(chat, /if \(opts\?\.button === 'sms' \|\| opts\?\.button === 'email'\) contactGivenRef\.current = true/)
+  assert.match(chat, /const contactGiven = \(\) => \{\n\s+contactGivenRef\.current = true\n\s+markContactLeft\(\)\n\s+\}/)
+  // The form's contact, and an email typed into the chat (only the visit's mark: B1 stays the server's to skip).
+  assert.match(chat, /useEffect\(\(\) => \{ if \(contactGivenRef\.current\) markContactLeft\(\) \}, \[\]\)/)
+  assert.match(chat, /if \(!opts\?\.button && typedEmail\(text\)\) markContactLeft\(\)/)
+  assert.equal(typedEmail('Sure: client@example.com.'), true)
+  assert.equal(typedEmail('(client@example.com)'), true)
+  assert.equal(typedEmail('mine is CLIENT@Example.co.uk, thanks'), true)
+  for (const no of ['j***@gmail.com', 'write to me at client at example dot com', 'JFK to CDG on 12/15', '@example.com', '']) {
+    assert.equal(typedEmail(no), false, no)
+  }
+})
+
+test('the row\'s contact goes into the conversation the visitor already has, once', () => {
+  // The opening is only for a visitor with no conversation: without this the contact typed in the row was dropped.
+  assert.match(chat, /const rowContactSentRef = useRef<ProactiveOpening \| null>\(savedConvId \? null : proactive \?\? null\)/)
+  const effect = chat.slice(chat.indexOf('const rowContactSentRef'), chat.indexOf('// Verify restored session is still active'))
+  assert.match(effect, /if \(!o\?\.firstContact \|\| !convId \|\| rowContactSentRef\.current === o\) return\n\s+rowContactSentRef\.current = o/)
+  assert.match(effect, /sendOrQueue\(text, \{ button: kind \}\)/)
+  assert.match(effect, /posthog\?\.capture\('chat_channel_given', \{ channel: kind, tunnel, where: 'row', again: true, \.\.\.contactTestProps\(o\) \}\)/)
+  assert.match(effect, /\}, \[proactive, convId\]\)/)
+  // The chat's ✕ and Escape drop the opening, so a chat opened again later never sends it twice.
+  assert.equal(widget.split('setOpening(null)').length - 1, 2)
 })

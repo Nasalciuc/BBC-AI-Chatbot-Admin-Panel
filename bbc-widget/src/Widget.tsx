@@ -371,7 +371,11 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // At the visitor's moment the server may answer with words for their own search: a card above the
   // button on a phone, the panel with those words on a computer. No form, and nothing is written until
   // the visitor answers. The control group keeps the note above exactly as it is.
-  const proactive = useProactive({ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening })
+  // The row's second chance (rowAgain: in a visit whose card brought no contact, the row beside a refused form once
+  // more) comes over the conversation that card's chat left too; ChatWindow sends its contact into it.
+  const proactive = useProactive({
+    apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening,
+  })
   const openProactive = (o: ProactiveOpening) => {
     noteRunRef.current++
     proactive.opened()

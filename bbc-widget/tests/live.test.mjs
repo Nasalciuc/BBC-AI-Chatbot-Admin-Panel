@@ -386,7 +386,7 @@ test('while Alex waits no moment is asked, and the wait gives the moment back', 
   assert.ok(held.length > 0, 'the wait has its branch')
   const branch = held.slice(0, held.indexOf('return'))
   assert.match(branch, /holdAlex\(res\.retry_after_s, res\.alex_at\)/)
-  assert.match(branch, /if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)/)
+  assert.match(branch, /giveBack\(\)/)
   assert.match(branch, /fired = false/)
   // The wait sits before the moment is picked: nothing is asked again until it is over.
   const ev = src.slice(src.indexOf('const evaluate = () => {'))

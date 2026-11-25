@@ -337,7 +337,7 @@ test('a trip that changed under the answer gives the visit its moment back, a fe
   // Wired before the line that drops a passed answer: the reservation it owned goes back ('asked' only, a stop the
   // site said meanwhile stays), evaluate may fire again, and the page counts the asks.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
+  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
   // Measured first: the dropped answer keeps its moment_passed on proactive_eligible.
   assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (givesMomentBack(passed, tripAskedAgain))'))
   // Counted per page: the hook's moments start each page at nothing.
@@ -376,7 +376,7 @@ test('a moment the server switched off on its own leaves the visit\'s moment to 
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // The tab keeps the whole list this visit knows (CodeRabbit #269, round 3): a moment whose own write was refused
   // rides on the next write that goes through.
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+giveBack\(\)\s+fired = false\s+return\s+\}/)
   assert.doesNotMatch(ask, /ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\)/)
   assert.ok(ask.indexOf('TRIGGER_OFF_ARM') > ask.indexOf("posthog?.capture('proactive_eligible'"), 'measured first')
   // The list holds in the page's memory too: with the tab's storage refused, the switched-off moment is not asked
@@ -757,9 +757,10 @@ test('the connection to the API opens when the widget starts, once, as the anony
 })
 
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
-  assert.match(hook, /if \(ssGet\(DONE_KEY\) \|\| ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
-  assert.match(hook, /if \(!allowed \|\| step !== 'buttons'\) return/)
-  assert.match(widget, /useProactive\(\{ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening \}\)/)
+  // One moment per visit, and the row's second chance alone after a card that brought no contact (rowAgainOpen,
+  // after-card.test.mjs): the pause and the closed note hold both.
+  assert.match(hook, /if \(step !== 'buttons'\) return\n(?:\s*\/\/[^\n]*\n)*\s+const rowOnly = rowAgain && rowAgainNow\(\)\n\s+if \(!rowOnly && \(!allowed \|\| ssGet\(DONE_KEY\)\)\) return\n\s+if \(ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
+  assert.match(widget, /useProactive\(\{\s+apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening,\s+\}\)/)
   assert.match(buttons, /onClick=\{\(\) => \{ markNoteClosed\(\); onDismissAttention\?\.\(\) \}\}/)
   // The card replaces the note for the rest of the visit.
   assert.match(widget, /showAttention=\{showAttention && !sessionActive && !proactive\.quiet\}/)

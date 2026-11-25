@@ -211,8 +211,25 @@ export interface PageState {
   siteSignals?: boolean
 }
 
+/** The row beside a refused quote form may come once more in a visit whose card brought no contact (owner, 25 Nov
+ *  2026: "Rândul de lângă formular și după un card fără contact", on for every visitor). A visit has one moment, and a
+ *  card shown used it: on 24-25 Nov 5 of the 19 who left a card's chat without a contact were then refused by the
+ *  site's form, none of them sent it, and the row never came. `done`: the visit's moment (proactive.ts DONE_KEY),
+ *  'shown' once a card showed, answered or not (a "Not now" or ✕ pauses every moment for 24 h before this is read);
+ *  `rowAgain`: the second chance, '' until it is asked for, then 'asked', 'used' (also when the visit's moment was
+ *  the row itself) or the site's stop; `contactLeft`: the visitor left a contact in the chat this visit (ChatWindow). */
+export function rowAgainOpen(done: string | null, rowAgain: string | null, contactLeft: boolean): boolean {
+  return done === 'shown' && !rowAgain && !contactLeft
+}
+
+/** The one moment that second chance may be: the quote moment on a refused send whose form is still on the page,
+ *  where the row stands (QUOTE_ROW_IDLE_S). A quote card over the form, or any other moment, never comes again. */
+export function rowMoment(trigger: Trigger | null, quote: QuoteState | null): boolean {
+  return trigger === 'quote' && !!quote?.invalid && !!quote.row
+}
+
 /** No card on the thank-you page, the legal pages or the like (the paths the site uses, Nov 2026). */
-const BLOCKED = /^\/(?:thank-?you|thanks|legal|terms|privacy|cookie|refund|disclaimer|unsubscribe)(?:[/?#_-]|$)/i
+const BLOCKED =/^\/(?:thank-?you|thanks|legal|terms|privacy|cookie|refund|disclaimer|unsubscribe)(?:[/?#_-]|$)/i
 
 export function blockedPath(path: string): boolean {
   return BLOCKED.test(path || '/')
