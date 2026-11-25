@@ -95,6 +95,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.integration import PRESENCE_GATE_HEALTH
     # Claim races: exactly one wins; the losers are counted, not punished.
     from app.api.conversations import CLAIM_HEALTH
+    # Takes the contact hold turned away while Alex was getting the contact (25 Nov), and first-message times it
+    # could not read (those chats are taken at once, as before the hold).
+    from app.services.contact_hold import HOLD_HEALTH as CONTACT_HOLD_HEALTH
     # The claim gate's write failed or came back empty, and the owner read
     # said whose the chat is: won_after_check = a Take that used to read as
     # lost ("… took it a moment before you") although the agent had it.
@@ -238,6 +241,7 @@ async def health_detail(full: bool = False) -> dict:
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
+            "contact_hold": dict(CONTACT_HOLD_HEALTH),
             "claim_gate": dict(CLAIM_GATE_HEALTH),
             "sso": dict(SSO_HEALTH),
             "logs": log_health_snapshot(),
@@ -339,6 +343,7 @@ async def health_detail(full: bool = False) -> dict:
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),
+        "contact_hold": dict(CONTACT_HOLD_HEALTH),
         "claim_gate": dict(CLAIM_GATE_HEALTH),
         "sso": dict(SSO_HEALTH),
         "logs": log_health_snapshot(),

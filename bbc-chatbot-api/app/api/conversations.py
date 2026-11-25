@@ -292,6 +292,10 @@ async def list_conversations(
             # The rows below are masked for a supervisor: what they hide is then found only whole.
             masked_search=user.get("role") == "supervisor",
         )
+        # Until when Take waits for Alex to get the contact (contact_hold), read before any field is masked below.
+        from app.services import contact_hold
+        for c in rows:
+            c["contact_hold_until"] = contact_hold.until_iso(c, has_contact=bool(c.get("has_contact")))
         if handled_by == "human":
             rows = [c for c in rows if c.get("agent_state") == "active"]
         elif handled_by == "fallback":
@@ -708,7 +712,10 @@ async def get_conversation(
 
     # Whether the client left any contact, said before the row is masked or blinded: "Left 3 min ago ·
     # no contact" (ADR-6c) is a fact about the chat, never the contact itself. Same rule as the list's.
-    conv = {**conv, "has_contact": _has_contact(conv)}
+    # And until when Take waits for Alex to get it (contact_hold): the panel's countdown, the claim's own rule.
+    from app.services import contact_hold
+    _has = _has_contact(conv)
+    conv = {**conv, "has_contact": _has, "contact_hold_until": contact_hold.until_iso(conv, has_contact=_has)}
 
     # Phase 2: supervisor/PM see message content ONLY for their own team's
     # conversations; otherwise metadata-only (messages blanked). Fail closed.
@@ -1027,6 +1034,19 @@ async def claim_conversation(
             "winner": (_owner or {}).get("name") or "another agent",
             "conversation_id": conversation_id,
         })
+    # Alex is still getting the client's contact (app.services.contact_hold, 25 Nov): the take waits for it, for a
+    # client who asks for a person, or for the hold to run out. The panel counts down from the same `hold_until`.
+    from app.services import contact_hold
+    _has = _has_contact(conv)
+    _hold = contact_hold.hold_until(conv, has_contact=_has)
+    if _hold is not None:
+        contact_hold.count_refused()
+        raise HTTPException(status_code=409, detail={
+            "detail": "contact_hold",
+            "retry_after": contact_hold.seconds_left(_hold),
+            "hold_until": _hold.isoformat(),
+            "conversation_id": conversation_id,
+        })
     # The database decides. Exactly one UPDATE matches; the losers get nothing.
     _claim = await db.claim_conversation_if_unassigned(conversation_id, _me)
     if not _claim.get("won"):
@@ -1066,9 +1086,10 @@ async def claim_conversation(
     CLAIM_HEALTH["won"] += 1
     CLAIM_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
     _age = _claim.get("queued_age_seconds")
+    # The agent's wait starts when the take was allowed: a chat held for its contact is not theirs to answer sooner.
     await log_activity(
         db, _me, conversation_id, "claim_won",
-        response_seconds=int(_age) if _age is not None else None,
+        response_seconds=contact_hold.wait_after_hold(_age, conv, has_contact=_has),
     )
     # Reset loop guards — agent chose this conv actively.
     # Single metadata write via perform_handoff (reads + merges + writes).
