@@ -1255,6 +1255,18 @@ export interface LiveVisitor {
   returning?: boolean
 }
 
+/** The agent's own bot key (bbc-chatbot-api app/services/live_bot.py): whether one works now, and until when. */
+export interface LiveBotKey {
+  active: boolean
+  expires_at: string | null
+}
+
+/** A key just made: the only time it is shown. The one before stops working. */
+export interface LiveBotKeyMade {
+  key: string
+  expires_at: string
+}
+
 export interface LiveListResponse {
   ok: boolean
   data: LiveVisitor[]

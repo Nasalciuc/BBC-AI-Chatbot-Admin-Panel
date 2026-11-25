@@ -102,18 +102,26 @@ export function sourceLabel(source: string): string {
   return SOURCE_LABEL[source] ?? 'Site'
 }
 
-/** Who holds a visitor Skye said hello to herself (bbc-chatbot-api app/services/live_bot.py, BOT_ID): her hello holds
- *  them for its 15 minutes, as an agent's claim would. */
-export const SKYE_ID = 'skye'
+/** Who holds a visitor while an agent's own bot says hello to them (bbc-chatbot-api app/services/live_bot.py, HOLDER):
+ *  `bot:<agent id>`, for the hello's 15 minutes. The bot's hellos never count in the three an agent holds. */
+export const BOT_HOLDER = 'bot:'
 
-/** Who the visitor is to me: free to greet, mine, a colleague's, greeted by Skye herself, said not now, or in a chat
- *  already. */
-export type RowState = 'free' | 'mine' | 'taken' | 'skye' | 'declined' | 'in_chat'
+/** The day an agent's bot key works until ("Feb 23, 2027"); '' for none. */
+export function keyDay(iso: string | null | undefined): string {
+  const at = iso ? new Date(iso) : null
+  return at && !Number.isNaN(at.getTime())
+    ? at.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+    : ''
+}
+
+/** Who the visitor is to me: free to greet, mine, a colleague's, greeted by my bot or a colleague's, said not now, or in
+ *  a chat already. */
+export type RowState = 'free' | 'mine' | 'taken' | 'my_bot' | 'bot' | 'declined' | 'in_chat'
 
 export function rowState(v: LiveVisitor, me: string | undefined): RowState {
   if (v.has_chat) return 'in_chat'
   if (v.dismissed) return 'declined'
-  if (v.claimed_by === SKYE_ID) return 'skye'
+  if (v.claimed_by?.startsWith(BOT_HOLDER)) return me && v.claimed_by === `${BOT_HOLDER}${me}` ? 'my_bot' : 'bot'
   if (v.claimed_by) return v.claimed_by === me ? 'mine' : 'taken'
   return 'free'
 }
@@ -122,7 +130,8 @@ export const ROW_LABEL: Record<RowState, string> = {
   free: 'Nobody yet',
   mine: 'Yours: say hello',
   taken: 'A colleague is on it',
-  skye: 'Skye said hello',
+  my_bot: 'Your bot said hello',
+  bot: 'A colleague’s bot said hello',
   declined: 'Said not now',
   in_chat: 'In a chat',
 }
@@ -136,7 +145,7 @@ export function heldBy(rows: LiveVisitor[], me: string | undefined): number {
  *  comes to soonest first), then the one Alex's card showed to last (still on the page he left), then the longest
  *  on the site. */
 export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): LiveVisitor[] {
-  const rank: Record<RowState, number> = { mine: 0, free: 1, taken: 2, skye: 2, declined: 3, in_chat: 4 }
+  const rank: Record<RowState, number> = { mine: 0, my_bot: 1, free: 2, taken: 3, bot: 3, declined: 4, in_chat: 5 }
   const due = (v: LiveVisitor) => (alexWaiting(v, nowS) ? (v.alex_at as number) : Number.POSITIVE_INFINITY)
   const since = (v: LiveVisitor) => (typeof v.alex_card_s === 'number' ? v.alex_card_s : Number.POSITIVE_INFINITY)
   return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)]
@@ -162,7 +171,8 @@ export function alexCouldnt(v: Pick<LiveVisitor, 'alex_card' | 'alex_card_s' | '
 /** The page's list: who Alex's card didn't start a chat with; who Alex still waits on with no chat yet (the
  *  agent-first test, while it runs); and the ones I hold, whatever became of them since (in a chat now: let them go). */
 export function listed(rows: LiveVisitor[], me: string | undefined, nowS: number): LiveVisitor[] {
-  return rows.filter((v) => alexCouldnt(v) || (alexWaiting(v, nowS) && !v.has_chat) || (!!me && v.claimed_by === me))
+  return rows.filter((v) => alexCouldnt(v) || (alexWaiting(v, nowS) && !v.has_chat)
+    || (!!me && (v.claimed_by === me || v.claimed_by === `${BOT_HOLDER}${me}`)))
 }
 
 /** What came of Alex's card, in words: "Alex’s card 45 s ago, no answer", "Said not now to Alex’s card", "Opened the

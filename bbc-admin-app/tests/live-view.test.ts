@@ -8,7 +8,7 @@ import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
   helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
   tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, helloDraft, stuckInForm,
-  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock, ROW_LABEL,
+  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock, ROW_LABEL, keyDay,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -21,14 +21,20 @@ test('who a visitor is to me', () => {
   assert.equal(rowState(v(), ME), 'free')
   assert.equal(rowState(v({ claimed_by: ME }), ME), 'mine')
   assert.equal(rowState(v({ claimed_by: 'someone' }), ME), 'taken')
-  // Skye's own hello holds the visitor (bbc-chatbot-api live_bot.py): hers, never a colleague's, no button.
-  assert.equal(rowState(v({ claimed_by: 'skye' }), ME), 'skye')
-  assert.equal(ROW_LABEL.skye, 'Skye said hello')
-  assert.equal(rowState(v({ claimed_by: 'skye', dismissed: true }), ME), 'declined')
-  assert.equal(rowState(v({ claimed_by: 'skye', has_chat: true }), ME), 'in_chat')
+  // An agent's own bot holds the visitor while its hello is out (bbc-chatbot-api live_bot.py): mine or a colleague's,
+  // never a button, and never one of the three I hold.
+  assert.equal(rowState(v({ claimed_by: `bot:${ME}` }), ME), 'my_bot')
+  assert.equal(rowState(v({ claimed_by: 'bot:someone' }), ME), 'bot')
+  assert.equal(rowState(v({ claimed_by: `bot:${ME}` }), undefined), 'bot')
+  assert.equal(ROW_LABEL.my_bot, 'Your bot said hello')
+  assert.equal(rowState(v({ claimed_by: `bot:${ME}`, dismissed: true }), ME), 'declined')
+  assert.equal(rowState(v({ claimed_by: `bot:${ME}`, has_chat: true }), ME), 'in_chat')
+  assert.equal(heldBy([v({ claimed_by: `bot:${ME}` }), v({ claimed_by: ME })], ME), 1)
+  assert.deepEqual(listed([v({ visitor_id: 'mine-by-bot', claimed_by: `bot:${ME}` })], ME, 0).map((r) => r.visitor_id),
+    ['mine-by-bot'])
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
-  assert.match(page, /skye: 'bg-k-efeaff text-k-4a36c4',/)
-  assert.doesNotMatch(page, /state === 'skye'/, 'no say-hello button on a visitor Skye greeted')
+  assert.match(page, /my_bot: 'bg-k-e3f6ea text-k-0a6b35',/)
+  assert.doesNotMatch(page, /state === '(my_)?bot'/, 'no say-hello button on a visitor a bot greeted')
   assert.equal(rowState(v({ dismissed: true, claimed_by: ME }), ME), 'declined')
   assert.equal(rowState(v({ has_chat: true, claimed_by: ME }), ME), 'in_chat')
 })
@@ -416,4 +422,20 @@ test('the row holds the hello while they fill in the form, with the reason; the 
   assert.match(page, /title=\{filling \? FORM_HOLD : undefined\} disabled=\{filling\} onClick=\{\(\) => openEditor\(v\)\}>\s+Write/)
   // The editor's visitor as the list shows them now: one who started on the form since it opened waits too.
   assert.match(page, /const problem = writingNow \? \(fillingForm\(writingNow, seen, nowMs\) \? FORM_HOLD : helloProblem\(text\)\) : null/)
+})
+
+test('the bot card: the key shown once, a new one or Revoke, and what the bot calls (the owner, 25 Nov)', () => {
+  const card = readFileSync(new URL('../src/features/live/components/bot-key-card.tsx', import.meta.url), 'utf8')
+  assert.match(card, /The key, shown this once/)
+  assert.match(card, /New key \(stops the old one\)/)
+  assert.match(card, /revokeLiveBotKey/)
+  for (const call of ['/visitors', '/hello', '/chats', '/chats/&lt;id&gt;/messages']) assert.ok(card.includes(call), call)
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.match(page, /\{pass\?\.can_say_hello && <BotKeyCard \/>\}/)
+  const api = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf8')
+  assert.match(api, /'\/api\/live\/bot-key', \{ method: 'POST' \}/)
+  assert.match(api, /'\/api\/live\/bot-key', \{ method: 'DELETE' \}/)
+  assert.equal(keyDay('2027-02-23T18:00:00+00:00'), 'Feb 23, 2027')
+  assert.equal(keyDay(null), '')
+  assert.equal(keyDay('not a day'), '')
 })

@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useLiveStore } from '@/stores/live-store'
 import { HeaderActions } from '@/components/header-actions'
+import { BotKeyCard } from './components/bot-key-card'
 import { PageHeader } from '@/components/layout/page-header'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -22,7 +23,8 @@ const STATE_CLS: Record<string, string> = {
   free: 'bg-k-f2f2f2 text-k-555555',
   mine: 'bg-k-e3f6ea text-k-0a6b35',
   taken: 'bg-k-fff3e0 text-k-8a4b00',
-  skye: 'bg-k-efeaff text-k-4a36c4',
+  my_bot: 'bg-k-e3f6ea text-k-0a6b35',
+  bot: 'bg-k-fff3e0 text-k-8a4b00',
   declined: 'bg-k-f2f2f2 text-k-8a8a8a',
   in_chat: 'bg-k-efeaff text-k-4a36c4',
 }
@@ -141,6 +143,7 @@ export function LiveVisitors() {
         subtitle={`Visitors Skye’s card didn’t start a chat with: no answer ${ALEX_GAVE_UP_S} s after it showed, or “Not now”. Say hello: on a computer their chat opens with your words, on a phone they show beside the chat button. Their answer opens the chat, already yours.`}
         actions={<HeaderActions className='ms-0' />}
       />
+      {pass?.can_say_hello && <BotKeyCard />}
       {!pass ? (
         <p className='text-sm text-k-6b6b6b'>On the site now isn’t switched on for you. It appears here once it is.</p>
       ) : list.isLoading ? (
