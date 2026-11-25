@@ -7137,42 +7137,30 @@ async def store_site_visits(rows: list[dict]) -> str:
         return "failed"
 
 
-_CHATS_PAGE = 500
-# Past this many the lookup is no answer at all, never part of one: a guard against a page that never runs short.
-_CHATS_MOST = 50_000
+async def first_chat_of_visit(visitor_id: str, since_iso: str, until_iso: str) -> Optional[dict]:
+    """The first chat this visitor began within one visit's window, {"id", "created_at"}: {} when there is none, None
+    when the database could not say (the caller keeps the visit for its next run).
 
-
-async def chats_of_visitors(visitor_ids: list[str], since_iso: str, until_iso: Optional[str] = None) -> Optional[list[dict]]:
-    """The chats these visitors began since a moment (and until one, when given), id, visitor_id, created_at, oldest
-    first: every page of them, so a batch after a backlog loses none to one page's limit (CodeRabbit #282, round 7).
-    None when the database could not say, a page failed or the pages ran past _CHATS_MOST: never a part of the answer
-    as if it were all of it (the visit is then stored without its chat, counted by the caller)."""
-    if not visitor_ids:
-        return []
+    One visit's window, one row: the visit takes the first chat it began, so a single bounded read is the whole
+    answer, with no page that can run past a limit and no guard that turns the answer into none (CodeRabbit #282,
+    round 7, second look: the batch's lookup read every page up to a guard, and past the guard the visits went
+    without their chat)."""
     db_client = get_client()
-
-    def _page(start: int):
-        q = (db_client.table("conversations")
-             .select("id, visitor_id, created_at")
-             .in_("visitor_id", visitor_ids)
-             .gte("created_at", since_iso))
-        if until_iso:
-            q = q.lte("created_at", until_iso)
-        return q.order("created_at").order("id").range(start, start + _CHATS_PAGE - 1).execute()
-
-    out: list[dict] = []
-    start = 0
     try:
-        while start < _CHATS_MOST:
-            res = await _run_sync(lambda s=start: _page(s), label="visit_registry")
-            page = res.data or []
-            out += [r for r in page if isinstance(r, dict) and r.get("id") and r.get("visitor_id")]
-            if len(page) < _CHATS_PAGE:
-                return out
-            start += _CHATS_PAGE
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, created_at")
+            .eq("visitor_id", visitor_id)
+            .gte("created_at", since_iso)
+            .lte("created_at", until_iso)
+            .order("created_at")
+            .order("id")
+            .limit(1)
+            .execute(),
+            label="visit_registry",
+        )
     except Exception as e:
-        logger.warning(f"[visit-registry] chats of {len(visitor_ids)} visitors not read: {type(e).__name__} "
-                       f"{_error_code(e) or e}")
+        logger.warning(f"[visit-registry] a visit's chat not read: {type(e).__name__} {_error_code(e) or e}")
         return None
-    logger.error(f"[visit-registry] chats of {len(visitor_ids)} visitors: more than {_CHATS_MOST}, none taken as all")
-    return None
+    rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id") and r.get("created_at")]
+    return rows[0] if rows else {}

@@ -14,13 +14,15 @@ a switch turned off still reaches the table. A table not there yet (056 not appl
 
 One consumer at a time is not assumed: during a deploy two processes run the scheduler. A visit taken twice is
 one row (UNIQUE visitor_id, started_at; the second insert is ignored), and each process removes from the queue only
-the keys it stored (LREM), never a range, so neither drops a visit the other has not stored.
+the keys it stored (LREM), never a range, so neither drops a visit the other has not stored. A visit whose chat the
+lookup could not find out about stays queued for the next run, LINK_TRIES runs at most, then goes in without it.
 
 Nothing here logs an address, a name, an e-mail or a phone.
 """
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -44,6 +46,12 @@ _STATES = {"shown", "dismissed", "engaged"}
 _CHAT_BEFORE_VISIT_S = 120
 # And one begun up to this long after its last one (the visit's end is its last beat).
 _CHAT_AFTER_VISIT_S = 1800
+# A visit whose chat's lookup got no answer waits on the queue this many runs (a minute each) at most, counted in its
+# own hash (bbc-live's ended key, deleted with it).
+LINK_TRIES = 5
+_TRIES_FIELD = "link_tries"
+# Lookups at once (they share the database's thread pool with the chat).
+_LOOKUPS_AT_ONCE = 4
 # The visit's text fields as bbc-live writes them, and the table's names for them.
 _TEXT = {
     "landing": "landing_page", "landing_type": "landing_type", "source": "source", "channel": "channel",
@@ -63,7 +71,9 @@ VISIT_HEALTH: dict[str, Any] = {
     "store_failed": 0,    # runs the database refused or did not answer: the queue stays, the next run tries again
     "redis_failed": 0,    # runs that could not read or tidy the queue
     "linked": 0,          # chats found for a visit by the visitor's id (the widget didn't name the chat)
-    "link_failed": 0,     # chat lookups that failed (the visit is stored without its chat)
+    "unlinked": 0,        # visits with a chat for which none began within the visit (stored without it)
+    "link_failed": 0,     # chat lookups that got no answer (the visit waits on the queue for the next run)
+    "link_given_up": 0,   # visits stored without their chat after LINK_TRIES runs with no answer
     "passes": 0,          # passes POST /chat/live handed for the registry alone (no live list for this visitor)
     "queued": None,       # the queue's length at the last run
 }
@@ -158,34 +168,42 @@ def row_of(key: str, h: dict) -> Optional[dict]:
     return row
 
 
-async def _link_chats(rows: list[dict]) -> None:
-    """A visit with a chat the widget didn't name: the visitor's chat that began within the visit (its first one)."""
+def _needs_chat(row: dict) -> bool:
+    """A visit with a chat the widget didn't name."""
+    return bool(row["has_chat"] and not row["conversation_id"])
+
+
+async def _first_chat(row: dict, gate: asyncio.Semaphore) -> Optional[dict]:
     from app.db import supabase as db
 
-    want = [r for r in rows if r["has_chat"] and not r["conversation_id"]]
+    # The window reaches as far back as a visit takes a chat, one begun just before its first snapshot (CodeRabbit
+    # #282, round 3), and no further on than one begun within half an hour of its last.
+    since = datetime.fromisoformat(row["started_at"]) - timedelta(seconds=_CHAT_BEFORE_VISIT_S)
+    until = datetime.fromisoformat(row["ended_at"]) + timedelta(seconds=_CHAT_AFTER_VISIT_S)
+    async with gate:
+        return await db.first_chat_of_visit(row["visitor_id"], since.isoformat(), until.isoformat())
+
+
+async def _link_chats(rows: list[dict]) -> set[int]:
+    """A visit with a chat the widget didn't name: the visitor's first chat that began within the visit, looked up
+    visit by visit (one bounded read each, CodeRabbit #282, round 7, second look). The indexes of the visits whose
+    lookup got no answer: they wait on the queue for the next run instead of going in without their chat."""
+    want = [i for i, r in enumerate(rows) if _needs_chat(r)]
     if not want:
-        return
-    # The lookup reaches as far back as a visit takes a chat: one begun just before the visit's first snapshot
-    # (CodeRabbit #282, round 3).
-    since = datetime.fromisoformat(min(r["started_at"] for r in want)) - timedelta(seconds=_CHAT_BEFORE_VISIT_S)
-    # And no further on than a visit takes one: the chats after the batch's visits are none of theirs (CodeRabbit #282,
-    # round 7: the lookup reads every page, so it reads only what can be a visit's).
-    until = datetime.fromisoformat(max(r["ended_at"] for r in want)) + timedelta(seconds=_CHAT_AFTER_VISIT_S)
-    found = await db.chats_of_visitors(sorted({r["visitor_id"] for r in want}), since.isoformat(), until.isoformat())
-    if found is None:
-        VISIT_HEALTH["link_failed"] += 1
-        return
-    for r in want:
-        start = datetime.fromisoformat(r["started_at"]).timestamp() - _CHAT_BEFORE_VISIT_S
-        end = datetime.fromisoformat(r["ended_at"]).timestamp() + _CHAT_AFTER_VISIT_S
-        for c in found:
-            if c["visitor_id"] != r["visitor_id"]:
-                continue
-            at = datetime.fromisoformat(str(c["created_at"]).replace("Z", "+00:00")).timestamp()
-            if start <= at <= end:
-                r["conversation_id"] = c["id"]
-                VISIT_HEALTH["linked"] += 1
-                break
+        return set()
+    gate = asyncio.Semaphore(_LOOKUPS_AT_ONCE)
+    found = await asyncio.gather(*(_first_chat(rows[i], gate) for i in want))
+    waiting: set[int] = set()
+    for i, chat in zip(want, found):
+        if chat is None:
+            VISIT_HEALTH["link_failed"] += 1
+            waiting.add(i)
+        elif chat:
+            rows[i]["conversation_id"] = chat["id"]
+            VISIT_HEALTH["linked"] += 1
+        else:
+            VISIT_HEALTH["unlinked"] += 1
+    return waiting
 
 
 async def run_visit_registry() -> dict:
@@ -211,20 +229,34 @@ async def run_visit_registry() -> dict:
         logger.error(f"[visit-registry] the queue could not be read: {type(e).__name__}: {e}")
         return {"state": "redis_failed"}
     VISIT_HEALTH["runs"] += 1
-    rows: list[dict] = []
+    taken: list[tuple[str, dict, int]] = []   # (key, row, the runs its chat's lookup already failed)
     lost = 0
     for k, h in zip(keys, hashes):
         row = row_of(k, h or {})
         if row is None:
             lost += 1
         else:
-            rows.append(row)
+            taken.append((k, row, _int((h or {}).get(_TRIES_FIELD)) or 0))
+    rows = [row for _, row, _ in taken]
+    waiting: set[int] = set()
     try:
-        await _link_chats(rows)
+        waiting = await _link_chats(rows)
     except Exception as e:
-        VISIT_HEALTH["link_failed"] += 1
-        logger.error(f"[visit-registry] chats not linked: {type(e).__name__}: {e}")
-    state = await db.store_site_visits(rows) if rows else "stored"
+        logger.error(f"[visit-registry] chats not looked up: {type(e).__name__}: {e}")
+        waiting = {i for i, row in enumerate(rows) if _needs_chat(row)}
+        VISIT_HEALTH["link_failed"] += len(waiting)
+    # A visit whose chat got no answer waits on the queue for the next run, LINK_TRIES runs at most: past them it goes
+    # in without its chat, so a lookup that never answers doesn't hold the queue (CodeRabbit #282, round 7).
+    kept: set[str] = set()
+    for i in waiting:
+        k, _, tries = taken[i]
+        if tries + 1 < LINK_TRIES:
+            kept.add(k)
+        else:
+            VISIT_HEALTH["link_given_up"] += 1
+            logger.warning(f"[visit-registry] a visit's chat got no answer in {LINK_TRIES} runs: stored without it")
+    stored = [row for k, row, _ in taken if k not in kept]
+    state = await db.store_site_visits(stored) if stored else "stored"
     if state == "table_missing":
         VISIT_HEALTH["table_missing"] += 1
         return {"state": "table_missing", "queued": VISIT_HEALTH["queued"]}
@@ -234,6 +266,9 @@ async def run_visit_registry() -> dict:
     try:
         pipe = r.pipeline(transaction=False)
         for k in keys:
+            if k in kept:
+                pipe.hincrby(k, _TRIES_FIELD, 1)
+                continue
             pipe.lrem(ENDED_KEY, 1, k)
             pipe.delete(k)
         await pipe.execute()
@@ -242,6 +277,7 @@ async def run_visit_registry() -> dict:
         redis_failed("visit registry tidy", e)
         VISIT_HEALTH["redis_failed"] += 1
         logger.error(f"[visit-registry] stored but not taken off the queue: {type(e).__name__}: {e}")
-    VISIT_HEALTH["rows"] += len(rows)
+    VISIT_HEALTH["rows"] += len(stored)
     VISIT_HEALTH["lost"] += lost
-    return {"state": "stored", "rows": len(rows), "lost": lost, "queued": VISIT_HEALTH["queued"]}
+    return {"state": "stored", "rows": len(stored), "lost": lost, "waiting": len(kept),
+            "queued": VISIT_HEALTH["queued"]}

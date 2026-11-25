@@ -149,9 +149,9 @@ async def test_the_job_stores_the_queue_and_takes_off_only_what_it_stored(fake):
     _queue(fake, (KEY, visit()), (lost, None), (other, visit(has_chat=None, conversation_id=None)))
     store = AsyncMock(return_value="stored")
     with patch("app.db.supabase.store_site_visits", new=store), \
-            patch("app.db.supabase.chats_of_visitors", new=AsyncMock()) as chats:
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock()) as chats:
         out = await reg.run_visit_registry()
-    assert out == {"state": "stored", "rows": 2, "lost": 1, "queued": 3}
+    assert out == {"state": "stored", "rows": 2, "lost": 1, "waiting": 0, "queued": 3}
     rows = store.await_args.args[0]
     assert [r["visitor_id"] for r in rows] == [VID, OTHER_VID]
     chats.assert_not_awaited()  # every chat was named, or there was none: nothing to look up
@@ -208,45 +208,119 @@ async def test_no_redis_reads_nothing():
 
 
 @pytest.mark.asyncio
-async def test_a_chat_the_widget_did_not_name_is_the_visitors_chat_within_the_visit(fake):
-    _queue(fake, (KEY, visit(conversation_id=None)))
-    found = [
-        {"id": LATER_CHAT, "visitor_id": VID, "created_at": iso(T0 + 95 + 3600)},   # after the visit: another one
-        {"id": CHAT, "visitor_id": VID, "created_at": iso(T0 + 40).replace("+00:00", "Z")},
-    ]
-    store = AsyncMock(return_value="stored")
-    with patch("app.db.supabase.store_site_visits", new=store), \
-            patch("app.db.supabase.chats_of_visitors", new=AsyncMock(return_value=found)) as chats:
-        await reg.run_visit_registry()
-    # The lookup reaches as far back as a visit takes a chat (CodeRabbit #282, round 3), and no further on than one
-    # (round 7: it reads every page, so only what can be a visit's).
-    assert chats.await_args.args == ([VID], iso(T0 - 120), iso(T0 + 95 + 1800))
-    assert store.await_args.args[0][0]["conversation_id"] == CHAT and reg.VISIT_HEALTH["linked"] == 1
-
-
-@pytest.mark.asyncio
-async def test_a_chat_begun_just_before_the_first_snapshot_is_the_visits_and_one_before_that_is_not(fake):
-    _queue(fake, (KEY, visit(conversation_id=None)))
-    found = [
-        {"id": LATER_CHAT, "visitor_id": VID, "created_at": iso(T0 - 121)},   # Rule 5: before the window
-        {"id": CHAT, "visitor_id": VID, "created_at": iso(T0 - 60)},
-    ]
-    store = AsyncMock(return_value="stored")
-    with patch("app.db.supabase.store_site_visits", new=store), \
-            patch("app.db.supabase.chats_of_visitors", new=AsyncMock(return_value=found)):
-        await reg.run_visit_registry()
-    assert store.await_args.args[0][0]["conversation_id"] == CHAT
-
-
-@pytest.mark.asyncio
-async def test_a_lookup_that_fails_stores_the_visit_without_its_chat(fake):
+async def test_a_chat_the_widget_did_not_name_is_the_visitors_first_chat_within_the_visit(fake):
     _queue(fake, (KEY, visit(conversation_id=None)))
     store = AsyncMock(return_value="stored")
+    first = AsyncMock(return_value={"id": CHAT, "created_at": iso(T0 + 40)})
     with patch("app.db.supabase.store_site_visits", new=store), \
-            patch("app.db.supabase.chats_of_visitors", new=AsyncMock(return_value=None)):
+            patch("app.db.supabase.first_chat_of_visit", new=first):
         out = await reg.run_visit_registry()
-    assert out["rows"] == 1 and store.await_args.args[0][0]["conversation_id"] is None
-    assert reg.VISIT_HEALTH["link_failed"] == 1
+    # The window reaches as far back as a visit takes a chat (CodeRabbit #282, round 3), and no further on than one.
+    assert first.await_args.args == (VID, iso(T0 - 120), iso(T0 + 95 + 1800))
+    assert store.await_args.args[0][0]["conversation_id"] == CHAT and reg.VISIT_HEALTH["linked"] == 1
+    assert out["waiting"] == 0 and fake.kv[reg.ENDED_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_each_visit_is_looked_up_in_its_own_window(fake):
+    """CodeRabbit #282, round 7, second look: one bounded read a visit, not one read of the batch's whole span; a
+    visit whose chat is named asks nothing (rule 5), and one with no chat within it goes in without one."""
+    later = f"live:ended:{VID}:{T0 + 7200}"
+    named = f"live:ended:{OTHER_VID}:{T0}"
+    _queue(fake, (KEY, visit(conversation_id=None)),
+           (later, visit(conversation_id=None, first_at=str(T0 + 7200), last_at=str(T0 + 7300))),
+           (named, visit()))
+    store = AsyncMock(return_value="stored")
+    first = AsyncMock(side_effect=[{"id": CHAT, "created_at": iso(T0 + 40)}, {}])
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.first_chat_of_visit", new=first):
+        out = await reg.run_visit_registry()
+    assert [c.args for c in first.await_args_list] == [
+        (VID, iso(T0 - 120), iso(T0 + 95 + 1800)), (VID, iso(T0 + 7200 - 120), iso(T0 + 7300 + 1800))]
+    assert [r["conversation_id"] for r in store.await_args.args[0]] == [CHAT, None, CHAT]
+    assert reg.VISIT_HEALTH["linked"] == 1 and reg.VISIT_HEALTH["unlinked"] == 1
+    assert out["rows"] == 3 and out["waiting"] == 0 and fake.kv[reg.ENDED_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_with_no_answer_keeps_the_visit_queued_and_the_rest_goes_in(fake):
+    """CodeRabbit #282, round 7, second look: a visit whose chat the lookup could not find out about is not stored
+    without it and taken off the queue: it waits for the next run, which links it."""
+    other = f"live:ended:{OTHER_VID}:{T0 + 10}"
+    _queue(fake, (KEY, visit(conversation_id=None)), (other, visit(has_chat=None, conversation_id=None)))
+    store = AsyncMock(return_value="stored")
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock(return_value=None)):
+        out = await reg.run_visit_registry()
+    assert out["rows"] == 1 and out["waiting"] == 1
+    assert [r["visitor_id"] for r in store.await_args.args[0]] == [OTHER_VID]
+    assert fake.kv[reg.ENDED_KEY] == [KEY] and fake.kv[KEY]["link_tries"] == "1" and other not in fake.kv
+    assert reg.VISIT_HEALTH["link_failed"] == 1 and reg.VISIT_HEALTH["rows"] == 1
+    # The next run gets its answer: the visit goes in with its chat and leaves the queue.
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.first_chat_of_visit",
+                  new=AsyncMock(return_value={"id": CHAT, "created_at": iso(T0 + 40)})):
+        out = await reg.run_visit_registry()
+    assert out["rows"] == 1 and out["waiting"] == 0
+    assert store.await_args.args[0][0]["conversation_id"] == CHAT
+    assert fake.kv[reg.ENDED_KEY] == [] and KEY not in fake.kv
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_that_never_answers_lets_the_visit_go_after_link_tries_runs(fake):
+    """A lookup that never answers doesn't hold the queue: after LINK_TRIES runs the visit goes in without its chat,
+    counted."""
+    _queue(fake, (KEY, visit(conversation_id=None)))
+    store = AsyncMock(return_value="stored")
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock(return_value=None)):
+        for run in range(1, reg.LINK_TRIES):
+            out = await reg.run_visit_registry()
+            assert out["waiting"] == 1 and fake.kv[KEY]["link_tries"] == str(run)
+        store.assert_not_awaited()
+        out = await reg.run_visit_registry()
+    assert out["rows"] == 1 and out["waiting"] == 0
+    assert store.await_args.args[0][0]["conversation_id"] is None
+    assert reg.VISIT_HEALTH["link_given_up"] == 1 and reg.VISIT_HEALTH["link_failed"] == reg.LINK_TRIES
+    assert fake.kv[reg.ENDED_KEY] == [] and KEY not in fake.kv
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_that_breaks_keeps_the_visits_that_need_it(fake):
+    other = f"live:ended:{OTHER_VID}:{T0 + 10}"
+    _queue(fake, (KEY, visit(conversation_id=None)), (other, visit()))
+    store = AsyncMock(return_value="stored")
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock(side_effect=RuntimeError("bug"))):
+        out = await reg.run_visit_registry()
+    assert out["rows"] == 1 and out["waiting"] == 1 and reg.VISIT_HEALTH["link_failed"] == 1
+    assert [r["visitor_id"] for r in store.await_args.args[0]] == [OTHER_VID]
+    assert fake.kv[reg.ENDED_KEY] == [KEY]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_spends_no_try_of_the_waiting_visit(fake):
+    """The queue stays whole when the database refuses the write, and a waiting visit's tries are not spent on it."""
+    other = f"live:ended:{OTHER_VID}:{T0 + 10}"
+    _queue(fake, (KEY, visit(conversation_id=None)), (other, visit()))
+    with patch("app.db.supabase.store_site_visits", new=AsyncMock(return_value="failed")), \
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock(return_value=None)):
+        out = await reg.run_visit_registry()
+    assert out["state"] == "store_failed"
+    assert fake.kv[reg.ENDED_KEY] == [KEY, other] and "link_tries" not in fake.kv[KEY]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_of_waiting_visits_alone_writes_nothing_and_counts_its_try(fake):
+    """Rule 5: nothing else in the batch: no write is asked for, and the try is counted."""
+    _queue(fake, (KEY, visit(conversation_id=None)))
+    store = AsyncMock(return_value="stored")
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock(return_value=None)):
+        out = await reg.run_visit_registry()
+    assert out == {"state": "stored", "rows": 0, "lost": 0, "waiting": 1, "queued": 1}
+    store.assert_not_awaited()
+    assert fake.kv[KEY]["link_tries"] == "1" and fake.kv[reg.ENDED_KEY] == [KEY]
 
 
 # ── the switch ──────────────────────────────────────────────────────
@@ -334,12 +408,12 @@ async def test_nothing_to_store_asks_no_database():
 
     with patch.object(db, "get_client", side_effect=AssertionError("no call")):
         assert await db.store_site_visits([]) == "stored"
-        assert await db.chats_of_visitors([], iso(T0)) == []
 
 
 @pytest.mark.asyncio
-async def test_a_chat_lookup_that_fails_is_none_not_empty():
-    """Rule 7: "no chat" and "could not say" are two answers."""
+async def test_a_visits_chat_lookup_is_one_bounded_read():
+    """CodeRabbit #282, round 7, second look: the visitor's first chat within one visit's window, one row: no page,
+    no guard. Rule 7: "no chat" ({}) and "could not say" (None) are two answers."""
     from app.db import supabase as db
 
     def boom():
@@ -347,50 +421,15 @@ async def test_a_chat_lookup_that_fails_is_none_not_empty():
 
     client, _ = _client(boom)
     with patch.object(db, "get_client", return_value=client):
-        assert await db.chats_of_visitors([VID], iso(T0)) is None
-    found = [{"id": CHAT, "visitor_id": VID, "created_at": iso(T0)}, {"id": None, "visitor_id": VID}]
-    client, calls = _client(lambda: type("R", (), {"data": found})())
+        assert await db.first_chat_of_visit(VID, iso(T0), iso(T0 + 3600)) is None
+    client, calls = _client(lambda: type("R", (), {"data": []})())
     with patch.object(db, "get_client", return_value=client):
-        assert await db.chats_of_visitors([VID], iso(T0)) == found[:1]
-    assert ("in_", ("visitor_id", [VID]), {}) in calls and ("gte", ("created_at", iso(T0)), {}) in calls
-    assert not any(c[0] == "lte" for c in calls), "no end asked for, none set"
-
-
-@pytest.mark.asyncio
-async def test_a_chat_lookup_reads_every_page(monkeypatch):
-    """CodeRabbit #282, round 7: a batch after a backlog may have more chats than one page: every page is read, oldest
-    first, and no more than _CHATS_MOST."""
-    from app.db import supabase as db
-
-    pages = [[{"id": f"c{i}", "visitor_id": VID, "created_at": iso(T0 + i)} for i in range(n)] for n in (500, 500, 3)]
-    client, calls = _client(lambda: type("R", (), {"data": pages.pop(0)})())
+        assert await db.first_chat_of_visit(VID, iso(T0), iso(T0 + 3600)) == {}
+    assert ("table", ("conversations",), {}) in calls and ("eq", ("visitor_id", VID), {}) in calls
+    assert ("gte", ("created_at", iso(T0)), {}) in calls and ("lte", ("created_at", iso(T0 + 3600)), {}) in calls
+    assert [c[1] for c in calls if c[0] == "order"] == [("created_at",), ("id",)], "the first, in a stable order"
+    assert ("limit", (1,), {}) in calls and not any(c[0] == "range" for c in calls)
+    found = [{"id": None, "created_at": iso(T0)}, {"id": CHAT, "created_at": iso(T0 + 40)}]
+    client, _ = _client(lambda: type("R", (), {"data": found})())
     with patch.object(db, "get_client", return_value=client):
-        out = await db.chats_of_visitors([VID], iso(T0), iso(T0 + 3600))
-    assert len(out) == 1003 and not pages
-    assert [c[1] for c in calls if c[0] == "range"] == [(0, 499), (500, 999), (1000, 1499)]
-    assert ("lte", ("created_at", iso(T0 + 3600)), {}) in calls
-    assert [c[1] for c in calls if c[0] == "order"][:2] == [("created_at",), ("id",)], "a page's order is stable"
-    # Past the guard it is no answer, never a part of one taken as all (CodeRabbit #282, round 7, second look).
-    monkeypatch.setattr(db, "_CHATS_MOST", 1000)
-    full = [{"id": f"c{i}", "visitor_id": VID, "created_at": iso(T0 + i)} for i in range(500)]
-    client, calls = _client(lambda: type("R", (), {"data": full})())
-    with patch.object(db, "get_client", return_value=client):
-        assert await db.chats_of_visitors([VID], iso(T0)) is None
-    assert len([c for c in calls if c[0] == "range"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_a_visits_chat_past_the_five_thousandth_is_still_found(fake):
-    """CodeRabbit #282, round 7, second look: the lookup reads to the end; the visit's chat on the eleventh page is
-    linked (rule 5: the 5,499 others, from long before the visit, are not)."""
-    _queue(fake, (KEY, visit(conversation_id=None)))
-    rows = [{"id": f"other-{i}", "visitor_id": VID, "created_at": iso(T0 - 100_000 + i)} for i in range(5_499)]
-    rows.append({"id": CHAT, "visitor_id": VID, "created_at": iso(T0 + 40)})
-    from app.db import supabase as db
-
-    pages = [rows[i:i + 500] for i in range(0, len(rows), 500)]
-    client, _ = _client(lambda: type("R", (), {"data": pages.pop(0) if pages else []})())
-    store = AsyncMock(return_value="stored")
-    with patch.object(db, "get_client", return_value=client), patch("app.db.supabase.store_site_visits", new=store):
-        await reg.run_visit_registry()
-    assert store.await_args.args[0][0]["conversation_id"] == CHAT and reg.VISIT_HEALTH["linked"] == 1
+        assert await db.first_chat_of_visit(VID, iso(T0), iso(T0 + 3600)) == found[1]
