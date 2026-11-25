@@ -60,7 +60,7 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
 
   // The visit registry (visits.ts): this page's snapshots, from its start, when the API says the registry is on.
   // Never in the CRM's embedded chat: that is an agent's screen, not a visit.
-  if (!embedded) startVisits({ apiUrl, site: brand.id })
+  const stopVisits = embedded ? null : startVisits({ apiUrl, site: brand.id })
 
   // The widget's stylesheet (src/styles.ts): scoped to #bbc-widget-root, with its own reset.
   if (!document.getElementById('bbc-widget-css')) {
@@ -126,6 +126,8 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
       render(null, root)
       root.remove()
       stopSiteSignals()
+      // The registry's timers, listeners and capture tap go with the widget (CodeRabbit #282, round 3).
+      stopVisits?.()
       ;(window as any).__BBC_WIDGET_TEARDOWN__ = undefined
       ;(window as any).__BBC_WIDGET_LOADED__ = false
     }

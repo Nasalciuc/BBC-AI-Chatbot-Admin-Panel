@@ -8,9 +8,10 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  MAX_EVENTS, VISIT_EVENTS, addEvent, cardAfter, channelOf, eventToken, newPageId, readVisitCard, visitBody,
+  MAX_EVENTS, VISIT_EVENTS, addEvent, cardAfter, cardToKeep, channelOf, eventToken, keptCardFor, newPageId,
+  readVisitCard, visitBody,
 } from '../src/visitsRead.ts'
-import { readConfig } from '../src/liveRead.ts'
+import { configFor, readConfig } from '../src/liveRead.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const NOW = Date.parse('2026-11-25T12:00:00+00:00')
@@ -59,18 +60,43 @@ test('what came of the card only moves forward, and a second card is not the car
   assert.deepEqual(card, { trigger: 'kayak', variant: 'beat', surface: 'card', state: 'shown', at: NOW })
   const note = cardAfter(card, 'proactive_shown', { trigger: 'note', surface: 'panel' }, NOW + 1000)
   assert.equal(note, card, 'the first card of the visit stays the card')
-  card = cardAfter(card, 'proactive_dismissed', { how: 'not_now' }, NOW + 5000)
+  card = cardAfter(card, 'proactive_dismissed', { trigger: 'kayak', how: 'not_now' }, NOW + 5000)
   assert.equal(card.state, 'dismissed')
   assert.equal(card.answer, 'not_now')
-  card = cardAfter(card, 'proactive_engaged', { reply: 'channel' }, NOW + 9000)
+  card = cardAfter(card, 'proactive_engaged', { trigger: 'kayak', reply: 'channel' }, NOW + 9000)
   assert.equal(card.state, 'engaged', 'the pill after "Not now" answered it')
   assert.equal(card.answeredAt, NOW + 9000)
-  assert.equal(cardAfter(card, 'proactive_dismissed', { how: 'close' }, NOW + 20000), card, 'an answer stays an answer')
+  assert.equal(cardAfter(card, 'proactive_dismissed', { trigger: 'kayak', how: 'close' }, NOW + 20000), card,
+    'an answer stays an answer')
   assert.equal(cardAfter(null, 'proactive_shown', { trigger: 'popup', surface: 'card' }, NOW), null, 'an unknown moment')
   // Kept for the visit's next pages, read back in its shape only.
   assert.deepEqual(readVisitCard(JSON.stringify(card)), card)
   for (const bad of ['{', 'null', '{"state":"loved","trigger":"kayak","at":1}', '{"state":"shown","trigger":"kayak"}']) {
     assert.equal(readVisitCard(bad), null, bad)
+  }
+})
+
+test('only the card’s own answer is what came of it: a note opened later and closed or answered is not (CodeRabbit #282, round 3)', () => {
+  const kayak = cardAfter(null, 'proactive_shown', { trigger: 'kayak', surface: 'card', variant: 'beat' }, NOW)
+  assert.equal(cardAfter(kayak, 'proactive_dismissed', { trigger: 'note', how: 'close' }, NOW + 5000), kayak)
+  assert.equal(cardAfter(kayak, 'proactive_engaged', { trigger: 'note', reply: 'typed' }, NOW + 9000), kayak)
+  const said = cardAfter(kayak, 'proactive_dismissed', { trigger: 'kayak', how: 'not_now' }, NOW + 5000)
+  assert.equal(cardAfter(said, 'proactive_engaged', { trigger: 'note', reply: 'typed' }, NOW + 9000), said,
+    '"Not now" to the card, then a reply to the note: the card stays "not now"')
+  // The Meta ads' card is a card of the visit too, and its answer counts.
+  const social = cardAfter(null, 'proactive_shown', { trigger: 'social', surface: 'card' }, NOW)
+  assert.equal(social?.trigger, 'social')
+  assert.equal(cardAfter(social, 'proactive_engaged', { trigger: 'social', reply: 'yes' }, NOW + 4000).state, 'engaged')
+  assert.deepEqual(readVisitCard(JSON.stringify(social)), social)
+})
+
+test('a tab’s card is kept for its visit only: a new visit’s first card is the card (CodeRabbit #282, round 3)', () => {
+  const card = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW)
+  assert.deepEqual(keptCardFor(cardToKeep(card, 3), 3), card, 'the same visit: the next page keeps it')
+  assert.equal(keptCardFor(cardToKeep(card, 3), 4), null, 'a reload after 30 quiet minutes: the last visit’s card goes')
+  assert.equal(keptCardFor(cardToKeep(card, 3), 0), null, 'a browser that counts nothing keeps nothing')
+  for (const raw of [null, '', '{', JSON.stringify(card), JSON.stringify({ visit: 3, card: { state: 'loved' } })]) {
+    assert.equal(keptCardFor(raw, 3), null, String(raw))
   }
 })
 
@@ -147,7 +173,10 @@ test('the API turns the registry on with the same place and pass, with or withou
 
 test('the registry starts at the page, never in the CRM’s chat, and its events come from the PostHog wrapper', () => {
   const entry = readFileSync(join(here, '..', 'src', 'entry.tsx'), 'utf8')
-  assert.match(entry, /if \(!embedded\) startVisits\(\{ apiUrl, site: brand\.id \}\)/)
+  assert.match(entry, /const stopVisits = embedded \? null : startVisits\(\{ apiUrl, site: brand\.id \}\)/)
+  // It goes with the widget: the teardown stops its timers, listeners and tap (CodeRabbit #282, round 3).
+  const teardown = entry.slice(entry.indexOf('__BBC_WIDGET_TEARDOWN__ = () => {'))
+  assert.match(teardown, /stopSiteSignals\(\)\s+\/\/[^\n]*\n\s+stopVisits\?\.\(\)/)
   const ph = readFileSync(join(here, '..', 'src', 'posthog.ts'), 'utf8')
   assert.match(ph, /tapCapture\(event, properties\)/)
   const visits = readFileSync(join(here, '..', 'src', 'visits.ts'), 'utf8')
@@ -158,4 +187,33 @@ test('the registry starts at the page, never in the CRM’s chat, and its events
   // The live list takes the same answer the registry asked for at the page's start: one ask a page.
   const live = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
   assert.match(live, /const start = \(\) => \{\n\s+if \(stopped\) return\n\s+pageConfig\(apiUrl\)/)
+})
+
+test('the registry’s stop, the fresh pass after a refusal, and the visit kept going (CodeRabbit #282, round 3)', () => {
+  const visits = readFileSync(join(here, '..', 'src', 'visits.ts'), 'utf8')
+  // A refused pass: asked for again, not the page's first answer kept by pageConfig.
+  assert.match(visits, /res\.status === 401 && Date\.now\(\) - renewedAt > RENEW_MS\) \{\s+renewedAt = Date\.now\(\)\s+askConfig\(apiUrl\)/)
+  // Every snapshot keeps the browser's visit going, and a new visit drops the last one's card.
+  assert.match(visits, /const goingOn = \(\) => \{\s+noteVisit\(\)\s+const now = visitNumber\(\)\s+if \(now === visit\) return\s+visit = now\s+card = null/)
+  assert.equal((visits.match(/sends\+\+\n\s+goingOn\(\)/g) ?? []).length, 2, 'a snapshot by fetch and the page’s last one')
+  // The minute's loop stops once the page's snapshots run out, and the stop takes everything down.
+  assert.match(visits, /if \(sends < MAX_SENDS\) everyTimer = setTimeout\(every, EVERY_MS\)/)
+  const stop = visits.slice(visits.indexOf('const stop = () => {'), visits.indexOf('stopCurrent = stop'))
+  for (const part of [/clearTimeout\(timer\)/, /clearTimeout\(everyTimer\)/, /removeEventListener\('visibilitychange', onVisibility\)/,
+    /removeEventListener\('pagehide', onPageHide\)/, /offCapture\(tap\)/]) {
+    assert.match(stop, part)
+  }
+})
+
+test('the config and its pass go with the visitor they were asked for (CodeRabbit #282, round 3)', () => {
+  const cfg = readConfig({ enabled: false, url: 'https://live.example.test', pass: PASS, visits: true })
+  const kept = { cfg, visitorId: 'b1d6f0a2-3c4e-4f5a-8b9c-0d1e2f3a4b5c' }
+  assert.equal(configFor(kept, 'b1d6f0a2-3c4e-4f5a-8b9c-0d1e2f3a4b5c'), cfg)
+  // A form for someone else gave this browser a new visitor id: the last one's pass carries nothing of theirs.
+  assert.equal(configFor(kept, 'c2e7a1b3-4d5f-4a6b-9c0d-1e2f3a4b5c6d'), null)
+  assert.equal(configFor(kept, null), null)
+  assert.equal(configFor(null, 'b1d6f0a2-3c4e-4f5a-8b9c-0d1e2f3a4b5c'), null)
+  const live = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  assert.match(live, /export function currentConfig\(\): LiveConfig \| null \{ return configFor\(latest, getVisitorId\(\)\) \}/)
+  assert.match(live, /if \(!cfg\.later && ensureVisitorId\(\) === visitorId\) latest = \{ cfg, visitorId \}/)
 })

@@ -14,10 +14,10 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexAt, alexCard, alexShown, noteSide } from './agentTest'
-import { apiFetch, ensureVisitorId } from './api'
+import { apiFetch, ensureVisitorId, getVisitorId } from './api'
 import {
-  afterRefusedPass, beatBody, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello, readKeptHello,
-  renewalOf,
+  afterRefusedPass, beatBody, configFor, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello,
+  readKeptHello, renewalOf,
   type BeatAlexCard, type LiveConfig, type LiveHello, type Renewal,
 } from './liveRead'
 import { posthog } from './posthog'
@@ -99,9 +99,10 @@ function liveFetch(url: string, pass: string, init: RequestInit = {}): Promise<R
   return fetch(url, { ...init, headers, credentials: 'omit', mode: 'cors' })
 }
 
-/** The last config the API gave this page (the registry reads its place and pass at each snapshot: visits.ts). */
-let latest: LiveConfig | null = null
-export function currentConfig(): LiveConfig | null { return latest }
+/** The last config the API gave this page (the registry reads its place and pass at each snapshot: visits.ts), for
+ *  the visitor it was asked for only (configFor). */
+let latest: { cfg: LiveConfig; visitorId: string } | null = null
+export function currentConfig(): LiveConfig | null { return configFor(latest, getVisitorId()) }
 
 let pageAsk: Promise<LiveConfig> | null = null
 /** This page's config, asked once: at the page's start for the visit registry (visits.ts), the live list takes the
@@ -132,7 +133,7 @@ export async function askConfig(apiUrl: string): Promise<LiveConfig> {
   // off) is kept too: the next page renews it.
   if (cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
   if (cfg.url) keepUrl(cfg.url)
-  if (!cfg.later) latest = cfg
+  if (!cfg.later && ensureVisitorId() === visitorId) latest = { cfg, visitorId }
   return cfg
 }
 

@@ -246,3 +246,10 @@ export function nextPollDelay(status: number | 'error', failures: number): numbe
 export function lastBeatAgain(status: number | 'error'): boolean {
   return status === 'error' || status === 202 || status >= 500
 }
+
+/** The config a page keeps, for the visitor it was asked for only: after a form for someone else changed the
+ *  visitor id, the last one's pass must not carry the new visitor's snapshots to the old visit (CodeRabbit #282,
+ *  round 3). Null until it is asked for the new id. */
+export function configFor<T>(kept: { cfg: T; visitorId: string } | null, visitorId: string | null): T | null {
+  return kept && visitorId && kept.visitorId === visitorId ? kept.cfg : null
+}

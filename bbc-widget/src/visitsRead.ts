@@ -91,11 +91,14 @@ export interface VisitCard {
   answeredAt?: number
 }
 
-const TRIGGERS = new Set(['kayak', 'ads', 'quote', 'reader', 'exit', 'note'])
+// Every moment the widget shows a card for: `social` is the Meta ads' card (CodeRabbit #282, round 3).
+const TRIGGERS = new Set(['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note'])
 const SURFACES = new Set(['card', 'panel', 'row'])
 
 /** The card after an event: the first card of the visit is the card; its answer only moves forward (an answer
- *  stays an answer, whatever is closed afterwards). Null stays null until a card shows. */
+ *  stays an answer, whatever is closed afterwards), and only its own answer counts: a note that opened later and
+ *  was closed or answered is not what came of the card (CodeRabbit #282, round 3). Null stays null until a card
+ *  shows. */
 export function cardAfter(card: VisitCard | null, event: string, props: Record<string, unknown> | undefined,
   nowMs: number): VisitCard | null {
   const s = (k: string) => (typeof props?.[k] === 'string' ? (props[k] as string) : '')
@@ -104,7 +107,7 @@ export function cardAfter(card: VisitCard | null, event: string, props: Record<s
     return { trigger: s('trigger'), variant: WORD.test(s('variant').toLowerCase()) ? s('variant').toLowerCase() : '',
       surface: SURFACES.has(s('surface')) ? s('surface') : '', state: 'shown', at: nowMs }
   }
-  if (!card || card.state === 'engaged') return card
+  if (!card || card.state === 'engaged' || s('trigger') !== card.trigger) return card
   if (event === 'proactive_engaged') {
     return { ...card, state: 'engaged', answer: WORD.test(s('reply')) ? s('reply') : '', answeredAt: nowMs }
   }
@@ -128,6 +131,22 @@ export function readVisitCard(raw: string | null): VisitCard | null {
   if (typeof c.answer === 'string') card.answer = c.answer
   if (typeof c.answeredAt === 'number' && Number.isFinite(c.answeredAt)) card.answeredAt = c.answeredAt
   return card
+}
+
+/** The card kept for this tab, with the browser's visit it belongs to (visitCount.ts): a card from an earlier visit
+ *  is not this visit's, and the new visit's first card must be free to be the card (CodeRabbit #282, round 3). */
+export function keptCardFor(raw: string | null, visit: number): VisitCard | null {
+  let v: unknown = null
+  try { v = raw ? JSON.parse(raw) : null } catch { return null }
+  if (!v || typeof v !== 'object') return null
+  const k = v as { visit?: unknown; card?: unknown }
+  if (typeof k.visit !== 'number' || k.visit !== visit || !visit) return null
+  return readVisitCard(JSON.stringify(k.card ?? null))
+}
+
+/** What keptCardFor reads back. */
+export function cardToKeep(card: VisitCard, visit: number): string {
+  return JSON.stringify({ visit, card })
 }
 
 const COMPARISON = new Set(['kayak', 'skyscanner', 'momondo', 'kiwi', 'cheapflights', 'expedia'])
