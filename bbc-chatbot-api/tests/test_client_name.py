@@ -110,6 +110,12 @@ def test_the_answer_after_a_rule_about_the_name_is_no_name():
     assert name_in_reply("Boston", "Please make sure your name matches your passport. Where are you flying from?") is None
 
 
+def test_the_name_asked_spelled_out_is_kept():
+    """CodeRabbit #282, round 4: "spelled out" asks for the name; a check of its spelling asks for nothing."""
+    assert name_in_reply("Ana Popescu", "Could you please provide your name spelled out?") == "Ana Popescu"
+    assert name_in_reply("Ana Popescu", "Please check your name spelling.") is None
+
+
 def test_beside_the_contact_only_when_the_name_was_asked():
     assert name_in_reply("Ana Popescu, ana@example.com", ASKED_NAME) == "Ana Popescu"
     assert name_in_reply("Ana Popescu", ASKED_NAME) == "Ana Popescu"
@@ -147,6 +153,9 @@ def test_an_initial_is_no_article():
     "Please share your name",
     "please type your name exactly as in your passport",
     "What is your full name as it appears on the passport?",
+    # The name spelled out is the name (CodeRabbit #282, round 4).
+    "Could you please provide your name spelled out?",
+    "Please write your name spelled out, letter by letter",
 ])
 def test_the_name_question_in_the_shapes_it_was_asked(question):
     assert asks_for_name(question)
@@ -165,6 +174,8 @@ def test_the_name_question_in_the_shapes_it_was_asked(question):
     "Please make sure your name matches your passport. Where are you flying from?",
     "Kindly note your name must match the ID.",
     "Please check your name spelling.",
+    "Is your name spelling correct?",
+    "Is your name spelled correctly on the passport?",
     "Does your name match your passport, and where are you flying from?",
     "Please note that your name will appear on the ticket. Which dates?",
 ])

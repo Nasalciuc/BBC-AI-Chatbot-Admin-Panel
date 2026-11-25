@@ -74,9 +74,10 @@ def last_question(history: Optional[list]) -> str:
 # kept: #3361 was asked again). Not "the name of the airline you prefer?".
 _NAME_QUESTION_RE = re.compile(
     # "your good name" is how agents in India ask it. Not a rule about the name: "Does your name match your
-    # passport, and where are you flying from?" is answered "Boston" (CodeRabbit #282, round 3).
+    # passport, and where are you flying from?" is answered "Boston" (CodeRabbit #282, round 3). The name "spelled
+    # out" is still asked for; its spelling, checked, is not (round 4).
     r"\b(?:(?:your(?:\s+(?:good|full|first|last))?|full|first|last|best)\s+name(?!\s+(?:must|should|needs?\b"
-    r"|has\s+to|will\b|match|appears?\b|spell))"
+    r"|has\s+to|will\b|match|appears?\b|spell(?!ed\s+out\b)))"
     r"|what\s+name|name\s+should|who\s+to\s+address|address\s+you\s+(?:by|as)\b"
     # Skye, 18-21 Nov: "a name to put on the request?", "a name for the file, who should they ask for when they
     # reach out?" — both answered with a name, neither kept.
@@ -121,7 +122,7 @@ _NAME_REQUEST_RE = re.compile(
     r"\b(?:please|pls|kindly|advise|share|provide|give|send|tell|type|write|need|whats|what's|what\s+is"
     r"|help\s+me\s+with|may\s+i\s+(?:have|know|ask|get)|can\s+i\s+(?:have|get|know)|could\s+(?:you|i))\b"
     rf"(?:{_NAME_RULE_BEFORE}[^.!?\n]){{0,40}}?\byour\s+(?:good\s+|full\s+|first\s+)?name\b"
-    r"(?!\s+(?:is|was|has|on\s+file|must|should|needs?\b|will\b|match|appears?\b|spell))"
+    r"(?!\s+(?:is|was|has|on\s+file|must|should|needs?\b|will\b|match|appears?\b|spell(?!ed\s+out\b)))"
     r"|\byour\s+(?:good\s+|full\s+)?name\s*(?:,\s*)?(?:please|pls|plz)\b"
     r"|^[\s\-*•\d.)]*(?:your\s+)?(?:full\s+)?name\s*:?\s*$",
     re.IGNORECASE | re.MULTILINE,
