@@ -26,7 +26,9 @@ import { contactTestProps, markProactiveConversation, type ProactiveOpening } fr
 import type { LiveHello } from './liveRead'
 import { siteMetadata } from './siteSignals'
 import { isNotNow, keysOnSite } from './triggers'
-import { NOT_YET, NOT_YET_WAIT_MS, mayAsk, type FieldState, type Leaving } from './beforeYouGo'
+import {
+  NOT_YET, NOT_YET_WAIT_MS, markAfter, markAllowsAsk, mayAsk, pendingMark, type FieldState, type Leaving,
+} from './beforeYouGo'
 import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
 import { createReplyTurns } from './replyTurns'
 
@@ -902,21 +904,25 @@ export function ChatWindow({
   fieldRef.current = !channelForm ? 'none' : channelValue.trim() ? 'typed' : 'empty'
   // After the server's "not yet" (NOT_YET), a quiet page asks again no sooner than this (ms).
   const notYetUntilRef = useRef(0)
+  // This page's ask is out: no second one before its answer (the tab's mark covers the pages after it).
+  const askingRef = useRef(false)
   const beforeYouGoRef = useRef<(why: Leaving) => void>(() => {})
   beforeYouGoRef.current = (why: Leaving) => {
     const cid = convId
-    if (!cid || embedded || contactGivenRef.current) return
+    if (!cid || embedded || contactGivenRef.current || askingRef.current) return
     const key = `${BEFORE_YOU_GO_KEY}:${cid}`
-    if (ssGet(key) === '1') return
+    if (!markAllowsAsk(ssGet(key), Date.now())) return
     if (why === 'idle' && Date.now() < notYetUntilRef.current) return
     const rows = messagesRef.current
     if (!mayAsk(rows, why, { busy: busyRef.current, field: fieldRef.current })) return
     const afterAgent = rows.some(m => m.role === 'agent')
-    ssSet(key, '1')
+    askingRef.current = true
+    ssSet(key, pendingMark(Date.now()))
     void askBeforeYouGo(apiUrl, cid, why !== 'idle', why).then(out => {
+      askingRef.current = false
+      // Not now, maybe at the next leave: a "not yet" does not spend the tab's one ask (beforeYouGo.ts markAfter).
+      ssSet(key, markAfter(out))
       if (out && !out.show && out.why && NOT_YET.has(out.why)) {
-        // Not now, maybe at the next leave: the tab's one ask is not spent on it.
-        ssSet(key, null)
         notYetUntilRef.current = Date.now() + NOT_YET_WAIT_MS
         return
       }

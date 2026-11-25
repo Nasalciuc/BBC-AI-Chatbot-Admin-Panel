@@ -270,6 +270,15 @@ function adsTrip(): TripPayload | null {
   return { ...(dest ?? { source: 'route_page' as const }), keyword }
 }
 
+/** The trip a moment asks the server with: the ads card the trip that made it due (adsTrip), the others the page's. */
+function tripFor(trigger: Trigger): TripPayload | null {
+  return trigger === 'ads' ? adsTrip() : currentTrip()
+}
+
+/** The cards whose words name the trip they were asked with (the ads card, the Meta ad's card): an answer that comes
+ *  after the page named another is stale (momentPassed, 'trip_changed'). */
+const NAMES_ITS_TRIP: readonly Trigger[] = ['ads', 'social']
+
 /** When the site asked for this script (seconds after the page opened) and how long it took to arrive, from the
  *  browser's resource timing (ADR A2): whether the widget starts late because the site asks for it late or because
  *  it is slow to come. Nothing when the browser does not say. */
@@ -653,7 +662,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // The quote moment asks for the row beside the pressed form (D1) when the widget still sees that form.
       row: !!press?.form?.isConnected,
     })
-    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, askedAds: string | null): string | null => {
+    const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, askedTrip: string | null): string | null => {
       if (stopped) return stopped
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
@@ -670,9 +679,10 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // (triggers.ts); the quote moment keeps the press check above (CodeRabbit #267).
       if (trigger !== 'quote' && quoteFormAt !== before.quoteForm) return 'quote_form'
       if (lastSearch() !== before.search) return 'searched'
-      // The ads card names the destination it was asked with: another one on the page by now (its address, its
-      // title or the site's word changed) makes those words stale (CodeRabbit #269).
-      if (trigger === 'ads' && JSON.stringify(adsTrip()) !== askedAds) return 'trip_changed'
+      // The ads card and the Meta ad's card name the destination they were asked with: another one on the page by
+      // now (its address, its title or the site's word changed) makes those words stale (CodeRabbit #269, #282). Each
+      // against the trip its own request was built with (tripFor).
+      if (askedTrip !== null && JSON.stringify(tripFor(trigger)) !== askedTrip) return 'trip_changed'
       if (trigger === 'quote' && press?.form && (!press.form.isConnected || sending(press.form))) return 'sent'
       return null
     }
@@ -681,8 +691,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
     const ask = async (trigger: Trigger, phone: boolean, reading = false) => {
       const before = seen()
       // The ads card asks with the trip that made it due (adsTrip): the words name that destination.
-      const trip = trigger === 'ads' ? adsTrip() : currentTrip()
-      const askedAds = trigger === 'ads' ? JSON.stringify(trip) : null
+      const trip = tripFor(trigger)
+      const askedTrip = NAMES_ITS_TRIP.includes(trigger) ? JSON.stringify(trip) : null
       const device = phone ? 'phone' : 'computer'
       // `refused`: the kinds of the fields the quote form refused (never what was typed), for the quote card.
       const took: OfferTiming[] = []
@@ -703,14 +713,14 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
       // The owner's agent-first test: the side this answer names is the visit's, on every event from here on.
       if (res) noteSide(res.test)
-      let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, askedAds) : null
+      let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, askedTrip) : null
       // E1: a popup of the site opened while the answer was on its way — the card waits for it to close. The
       // quote card too, looking past the quote form's own modal as its moment did (CodeRabbit #270).
       const pressed = press?.form ?? null
       const ignore = trigger === 'quote' ? (el: Element) => !!pressed && el.contains(pressed) : undefined
       if (!passed && !disposed && res?.show && res.message && popups.open(ignore)) {
         await untilPopupCloses(ignore)
-        passed = disposed ? 'popup' : momentPassed(trigger, before, askedAds) ?? (popups.open(ignore) ? 'popup' : null)
+        passed = disposed ? 'popup' : momentPassed(trigger, before, askedTrip) ?? (popups.open(ignore) ? 'popup' : null)
       }
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
@@ -728,7 +738,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         // The ad's search asked with (never its words): the server reads a place from it or switches ads off.
         ...(trigger === 'ads' && trip?.keyword ? { ad_keyword: true } : {}),
       })
-      if (res && !res.show && res.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON.stringify(adsTrip()) !== askedAds) {
+      if (res && !res.show && res.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON.stringify(adsTrip()) !== askedTrip) {
         // A "no" about the ad's trip as it was: the page named another meanwhile, so it says nothing about this one.
         // The reservation goes back and the moment is asked again with the trip of now (CodeRabbit #272).
         if (ssGet(DONE_KEY) === 'asked') ssSet(DONE_KEY, '')

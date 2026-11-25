@@ -256,7 +256,8 @@ test('the ads card takes the newest of the page\'s trips that names a destinatio
   assert.equal(fromTitle?.destination_name, 'Paris')
   assert.deepEqual(pickTrip(...[fromAddress, fromTitle].filter(hasContext)), fromTitle)
   assert.match(hook, /function destinationTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\.filter\(hasContext\)\)\s+\}/)
-  assert.match(hook, /const trip = trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)/)
+  assert.match(hook, /const trip = tripFor\(trigger\)/)
+  assert.match(hook, /function tripFor\(trigger: Trigger\): TripPayload \| null \{\s+return trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)\s+\}/)
   // ADR A5: the ad's search rides beside the page's destination (or alone, on the home page).
   assert.match(hook, /function adsTrip\(\): TripPayload \| null \{\s+const dest = destinationTrip\(\)\s+const keyword = adKeywordNow\(\)\s+if \(!keyword\) return dest\s+return \{ \.\.\.\(dest \?\? \{ source: 'route_page' as const \}\), keyword \}\s+\}/)
 })
@@ -308,13 +309,16 @@ test('a place name the server would drop names no place here either, and the tit
   assert.deepEqual(pickTrip(...[oneLetter, title].filter(hasContext)), title)
 })
 
-test('an ads answer whose destination left the page meanwhile is dropped and measured', () => {
+test('an ads or Meta answer whose destination left the page meanwhile is dropped and measured', () => {
   // CodeRabbit #269, round 2: the address, the title or the site's word changed while the answer was on its way.
+  // CodeRabbit #282: the Meta ad's card names its trip too, each against the trip its own request was built with.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /const askedAds = trigger === 'ads' \? JSON\.stringify\(trip\) : null/)
-  assert.match(ask, /momentPassed\(trigger, before, askedAds\)/)
+  assert.match(ask, /const trip = tripFor\(trigger\)\n\s+const askedTrip = NAMES_ITS_TRIP\.includes\(trigger\) \? JSON\.stringify\(trip\) : null/)
+  assert.match(ask, /momentPassed\(trigger, before, askedTrip\)/)
   const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
-  assert.match(why, /if \(trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedAds\) return 'trip_changed'/)
+  assert.match(why, /if \(askedTrip !== null && JSON\.stringify\(tripFor\(trigger\)\) !== askedTrip\) return 'trip_changed'/)
+  assert.match(hook, /const NAMES_ITS_TRIP: readonly Trigger\[\] = \['ads', 'social'\]/)
+  assert.match(hook, /function tripFor\(trigger: Trigger\): TripPayload \| null \{\s+return trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)\s+\}/)
 })
 
 test('a destination code equal to the origin\'s names no place (the server drops it)', () => {

@@ -6,7 +6,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { NOT_YET, NOT_YET_WAIT_MS, answeredAgent, mayAsk } from '../src/beforeYouGo.ts'
+import {
+  ASKED, NOT_YET, NOT_YET_WAIT_MS, PENDING_STALE_MS, answeredAgent, markAfter, markAllowsAsk, mayAsk, pendingMark,
+} from '../src/beforeYouGo.ts'
 import { askBeforeYouGo } from '../src/api.ts'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
@@ -53,13 +55,48 @@ test('the channel field: empty and the chat closed or the tab gone is leaving; t
 })
 
 test('the server\'s "not yet" leaves the tab its ask; a final answer spends it', () => {
-  for (const why of ['just_asked', 'answered_agent', 'agent_wrote', 'never_wrote']) assert.ok(NOT_YET.has(why))
+  for (const why of ['just_asked', 'answered_agent', 'agent_wrote', 'never_wrote']) {
+    assert.ok(NOT_YET.has(why))
+    assert.equal(markAfter({ show: false, why }), null)
+  }
   for (const why of ['has_contact', 'closed', 'already_said', 'no_conversation', 'not_saved', 'unread']) {
     assert.ok(!NOT_YET.has(why))
+    assert.equal(markAfter({ show: false, why }), ASKED)
   }
+  assert.equal(markAfter({ show: true }), ASKED)
+  assert.equal(markAfter({ show: false }), ASKED)
+  assert.equal(markAfter(null), ASKED, 'a request that failed is not tried again, as before')
   assert.equal(NOT_YET_WAIT_MS, 30_000)
-  assert.match(chat, /if \(out && !out\.show && out\.why && NOT_YET\.has\(out\.why\)\) \{\s+\/\/ Not now, maybe at the next leave: the tab's one ask is not spent on it\.\s+ssSet\(key, null\)\s+notYetUntilRef\.current = Date\.now\(\) \+ NOT_YET_WAIT_MS/)
+  assert.match(chat, /askingRef\.current = false\s+\/\/ Not now, maybe at the next leave: a "not yet" does not spend the tab's one ask \(beforeYouGo\.ts markAfter\)\.\s+ssSet\(key, markAfter\(out\)\)\s+if \(out && !out\.show && out\.why && NOT_YET\.has\(out\.why\)\) \{\s+notYetUntilRef\.current = Date\.now\(\) \+ NOT_YET_WAIT_MS/)
   assert.match(chat, /if \(why === 'idle' && Date\.now\(\) < notYetUntilRef\.current\) return/)
+})
+
+test('an ask whose answer never came back (the page went) does not hold the tab for good', () => {
+  // CodeRabbit #282: a hidden tab that navigates keeps the request (keepalive), never the answer.
+  const now = 1_000_000
+  assert.equal(markAllowsAsk(null, now), true)
+  assert.equal(markAllowsAsk(ASKED, now), false)
+  assert.equal(markAllowsAsk(pendingMark(now - 2_000), now), false, 'still on its way, maybe from the page before')
+  assert.equal(markAllowsAsk(pendingMark(now - PENDING_STALE_MS), now), true, 'the page that asked is gone')
+  assert.equal(markAllowsAsk('something else', now), false)
+  // One ask at a time on the page; the mark says "pending" while it is out.
+  assert.match(chat, /if \(!cid \|\| embedded \|\| contactGivenRef\.current \|\| askingRef\.current\) return/)
+  assert.match(chat, /if \(!markAllowsAsk\(ssGet\(key\), Date\.now\(\)\)\) return/)
+  assert.match(chat, /askingRef\.current = true\s+ssSet\(key, pendingMark\(Date\.now\(\)\)\)/)
+})
+
+test('a reply to the agent that never left answers nothing', () => {
+  // CodeRabbit #282: a failed send stays as `temp-*` beside its error note; a confirmed one is `sent-*` or stored.
+  const failed = [...unanswered, { role: 'user', id: 'temp-1700000000000' }, { role: 'system', id: 'err-1' }]
+  assert.equal(answeredAgent(failed), false)
+  assert.equal(mayAsk(failed, 'closed', free), true)
+  const sent = [...unanswered, { role: 'user', id: 'sent-1700000000000' }]
+  assert.equal(answeredAgent(sent), true)
+  assert.equal(mayAsk(sent, 'closed', free), false)
+  const stored = [...unanswered, { role: 'user', id: '2b1f0c5e-0000-4000-8000-000000000000' }]
+  assert.equal(mayAsk(stored, 'closed', free), false)
+  // A first message that never left: the client has not written yet.
+  assert.equal(mayAsk([{ role: 'ai' }, { role: 'user', id: 'temp-1' }], 'closed', free), false)
 })
 
 test('the ask says how the client left, keeps the page alive for it when they leave, and is measured', async () => {

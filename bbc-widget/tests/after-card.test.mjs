@@ -462,7 +462,7 @@ test('B1: one message as a contactless client leaves, asked once per tab, never 
   assert.match(chat, /const onHidden = \(\) => \{ if \(document\.visibilityState === 'hidden'\) beforeYouGoRef\.current\('hidden'\) \}/)
   assert.match(chat, /if \(Date\.now\(\) - lastActivityRef\.current >= IDLE_LEAVING_MS\) beforeYouGoRef\.current\('idle'\)/)
   assert.match(chat, /\/\/ B1: closing the chat without a contact is leaving it; the corner button shows the message\.\s+beforeYouGoRef\.current\('closed'\)/)
-  assert.match(chat, /if \(!cid \|\| embedded \|\| contactGivenRef\.current\) return/)
+  assert.match(chat, /if \(!cid \|\| embedded \|\| contactGivenRef\.current \|\| askingRef\.current\) return/)
   assert.match(chat, /if \(!mayAsk\(rows, why, \{ busy: busyRef\.current, field: fieldRef\.current \}\)\) return/)
   assert.match(chat, /busyRef\.current = sending \|\| isStreaming \|\| !!input\.trim\(\) \|\| agentTyping\.is_typing/)
   assert.match(chat, /fieldRef\.current = !channelForm \? 'none' : channelValue\.trim\(\) \? 'typed' : 'empty'/)
@@ -547,7 +547,7 @@ test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a pl
 test('ADR A5: a "no" about the ad\'s trip as it was is no "no" about the page now (CodeRabbit #272)', () => {
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // The stale answer gives the reservation back and asks again; only one about the trip of now switches ads off.
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedAds\) \{[\s\S]*?if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedTrip\) \{[\s\S]*?if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
 })
 
 test('ADR A2: the moment says when the site asked for the script and how long it took to come', () => {

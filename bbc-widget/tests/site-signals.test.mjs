@@ -416,7 +416,8 @@ test('entry starts the signals before the widget draws, and stops them on teardo
 test('the card and the note start from the newest trip; a visitor who sent the form or reached out sees no moment', () => {
   const hook = read('proactive.ts')
   // ask (every moment but the ads card, which takes the newest trip that names a destination) and noteOpening.
-  assert.match(hook, /const trip = trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)/)
+  assert.match(hook, /const trip = tripFor\(trigger\)/)
+  assert.match(hook, /function tripFor\(trigger: Trigger\): TripPayload \| null \{\s+return trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)\s+\}/)
   assert.equal(hook.match(/const trip = currentTrip\(\)/g).length, 1, 'noteOpening')
   assert.match(hook, /return \[\s*tripFromFields\(lastSearch\(\), 'search'\),\s*tripFromUrl\(search, kayakVisit\(\)\),\s*tripFromFields\(page\?\.trip, pageSource\),\s*tripFromTitle\(pageTitle\(\)\),\s*\]/)
   assert.match(hook, /function currentTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\)\s+\}/)
