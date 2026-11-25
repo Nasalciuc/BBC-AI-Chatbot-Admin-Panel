@@ -36,6 +36,11 @@ AFTER_S = 20             # the widget beats from 20 s on the page
 BEAT_S = 15
 
 VISITOR_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
+# The group the panel named the visitor by, its hello ready-written (the owner, 25 Nov 2026; the panel's
+# features/live/view.ts groupOf): stuck in the quote form, Australia or New Zealand on a computer, flying in 15 to
+# 45 days on a computer, a client who comes back. Kept with the hello, and with the chat a tap on it starts, so
+# the answers can be counted per group.
+HELLO_GROUPS = frozenset({"form", "anz", "soon", "back"})
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 PASS_NEW_PER_ADDRESS = 20   # new visitor ids one address gets passes for in an hour (pass.lua ARGV[3])
@@ -176,8 +181,10 @@ def first_name(name: Optional[str]) -> str:
     return parts[0][:40] if parts else "Your travel agent"
 
 
-async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text: str) -> dict:
-    """The agent's hello to a visitor they hold in bbc-live. Raises SendRefused."""
+async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text: str,
+                     group: Optional[str] = None) -> dict:
+    """The agent's hello to a visitor they hold in bbc-live. Raises SendRefused. `group`: the group the panel
+    named the visitor by (HELLO_GROUPS), kept with the hello; anything else is left out, never refused."""
     from app.ai.output_guard import foreign_contact_kinds
     from app.services.agent_presence import _may_take_chats
 
@@ -209,6 +216,9 @@ async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text:
                "tap": tap}
     hello = {"id": hello_id, "visitor_id": visitor_id, "agent_id": agent_id, "text": words,
              "sent_at": now.isoformat()}
+    group = group if group in HELLO_GROUPS else None
+    if group:
+        hello["group"] = group
     keys = [f"live:claim:{visitor_id}", f"live:dismissed:{visitor_id}", f"live:inbox:{visitor_id}",
             f"live:hello:{hello_id}", f"live:said:{visitor_id}"]
     result = 0
@@ -235,7 +245,7 @@ async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text:
     await agent_first_test.note_hello(visitor_id)  # the owner's test: before Alex's card or after its wait
     from app.db import supabase as db
     await db.log_audit(agent_id, user.get("email"), "live_hello_sent", "live_visitors", visitor_id,
-                       {"hello_id": hello_id, "text": words, "length": len(words)})
+                       {"hello_id": hello_id, "text": words, "length": len(words), "group": group})
     return {"hello_id": hello_id, "sent_at": now.isoformat(), "expires_at": message["expires_at"]}
 
 
@@ -285,7 +295,8 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
         LIVE_HEALTH["taps_refused"] += 1
         return None
     return {"agent_id": payload["a"], "text": str(hello.get("text") or ""), "hello_id": payload["h"],
-            "sent_at": hello.get("sent_at")}
+            "sent_at": hello.get("sent_at"),
+            "group": hello.get("group") if hello.get("group") in HELLO_GROUPS else None}
 
 
 async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str) -> dict:
@@ -349,6 +360,6 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
     await db.patch_conversation_presence(conv_id, {
         "engaged_agent_id": agent_id, "agent_assigned_at": now, "clock_agent_id": agent_id,
         "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
-                       "tapped_at": now},
+                       "tapped_at": now, **({"group": hello["group"]} if hello.get("group") else {})},
     })
     return {"agent": first_name(agent.get("name")), "text": hello["text"], "at": (row or {}).get("created_at")}

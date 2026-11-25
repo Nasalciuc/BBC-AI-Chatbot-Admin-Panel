@@ -333,9 +333,9 @@ def _hold(fake, vid=VID, agent=AGENT):
 
 
 async def _send(text="Hi, I'm Ana from the travel team. Can I help with your trip?", *, user=SALES, user_db=SALES_DB,
-                vid=VID):
+                vid=VID, group=None):
     with patch("app.db.supabase.log_audit", new=AsyncMock()) as audit:
-        out = await live_visitors.send_hello(user, user_db, vid, text)
+        out = await live_visitors.send_hello(user, user_db, vid, text, group=group)
     return out, audit
 
 
@@ -458,7 +458,7 @@ async def test_a_tap_takes_its_hello_once_and_frees_the_agents_place(redis):
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
     got = await live_visitors.take_tap(VID, tap)
     assert got == {"agent_id": AGENT, "text": "Hi, can I help with your trip?", "hello_id": out["hello_id"],
-                   "sent_at": got["sent_at"]}
+                   "sent_at": got["sent_at"], "group": None}
     assert f"live:claim:{VID}" not in redis.kv, "the agent's place came back"
     assert await live_visitors.take_tap(VID, tap) is None, "one tap"
 
@@ -532,6 +532,50 @@ async def test_the_tapped_chat_starts_as_the_agents_with_the_hello_first(redis):
     assert patched["engaged_agent_id"] == AGENT and patched["live_hello"]["agent_id"] == AGENT
     conv_id, role, content = m["add"].await_args.args[:3]
     assert (conv_id, role, content) == ("c1", "agent", "Hi, can I help with your trip?")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group, kept", [
+    ("anz", "anz"), ("soon", "soon"), ("back", "back"), ("form", "form"),
+    # Rule 5: a group the panel doesn't name, and none, are left out; the hello goes all the same.
+    ("vip", None), ("", None), (None, None),
+])
+async def test_the_group_of_a_ready_hello_stays_with_it_to_the_chat(redis, group, kept):
+    """The owner, 25 Nov 2026: the panel names the visitor's group and has its hello ready; the answers are
+    counted per group, from the hello's audit and the chat its tap starts."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    out, audit = await _send("Hi, I'm Ana from the travel team. A long trip ahead?", group=group)
+    hello = json.loads(redis.kv[f"live:hello:{out['hello_id']}"])
+    assert hello.get("group") == kept and ("group" in hello) is bool(kept)
+    assert audit.await_args.args[5]["group"] == kept
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    # The visitor's widget never sees it: the inbox message keeps the contract's fields.
+    assert "group" not in json.loads(redis.kv[f"live:inbox:{VID}"][0])
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
+    assert res.live_agent == "Ana"
+    live_hello = m["meta"].await_args.args[1]["live_hello"]
+    assert live_hello.get("group") == kept and ("group" in live_hello) is bool(kept)
+
+
+def test_the_route_hands_the_group_on(redis):
+    from app.api import live as live_api
+    from app.api.live import SendBody
+    from app.security.auth import get_current_user
+
+    assert SendBody(visitor_id=VID, text="Hi").group is None
+    with pytest.raises(Exception):
+        SendBody(visitor_id=VID, text="Hi", group="x" * 17)
+    _hold(redis)
+    app = FastAPI()
+    app.include_router(live_api.router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: SALES
+    with patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=SALES_DB)), \
+            patch("app.db.supabase.log_audit", new=AsyncMock()):
+        ok = TestClient(app).post("/api/live/send", json={"visitor_id": VID, "text": "Hi there!", "group": "back"})
+    assert ok.status_code == 200
+    assert json.loads(redis.kv[f"live:hello:{ok.json()['data']['hello_id']}"])["group"] == "back"
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ contracts/live.md). The list, the claims and the delivery are bbc-live's; the wo
 """
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -19,6 +20,8 @@ router = APIRouter()
 class SendBody(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
     text: str = Field(..., min_length=1, max_length=1000)
+    # The group the panel named the visitor by, its hello ready-written (live_visitors.HELLO_GROUPS).
+    group: Optional[str] = Field(None, max_length=16)
 
 
 @router.post("/live/send")
@@ -27,7 +30,7 @@ async def send(body: SendBody, user: dict = Depends(get_current_user)):
     # The row decides the role and the line, not a token signed hours ago.
     who = {**user, **{k: user_db[k] for k in ("role", "tunnel_scope") if user_db and user_db.get(k)}}
     try:
-        out = await live_visitors.send_hello(who, user_db, body.visitor_id, body.text)
+        out = await live_visitors.send_hello(who, user_db, body.visitor_id, body.text, group=body.group)
     except live_visitors.SendRefused as e:
         # The admin envelope, with the refusal's status (rule 4); `code` lets the panel tell the reasons apart.
         logger.info(f"[live] hello refused: {e.code}")
