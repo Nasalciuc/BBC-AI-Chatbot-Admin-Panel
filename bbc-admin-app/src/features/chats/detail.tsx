@@ -53,6 +53,11 @@ import {
   dayMonth,
   deadlineLeft,
   firstName,
+  FIRST_MESSAGE,
+  firstMessageHint,
+  holdButton,
+  holdLeft,
+  holdLine,
   initials,
   confirmedOf,
   leadLine,
@@ -65,6 +70,7 @@ import {
   presenceFromMeta,
   presenceLine,
   presenceView,
+  takeRefusal,
   takenBlind,
 } from './view'
 
@@ -497,9 +503,15 @@ export default function ConversationDetail({
       queryClient.invalidateQueries({ queryKey: ['op-history', conversationId] })
       if (onTaken) onTaken(conversationId)
       else onConversationChange?.()
-    } catch (_err) {
-      // Most common cause: another agent grabbed it first (claim race).
-      toast.error("Couldn't take this chat — someone may have taken it a moment before you.")
+    } catch (err) {
+      // The AI is still getting the client's contact (the server's contact hold): not a failure, a wait.
+      const refusal = (err as ApiError)?.status === 409 ? takeRefusal((err as ApiError).message ?? '') : {}
+      if (refusal.holdSeconds) {
+        toast.info(holdLine(firstName(conv?.visitor_name), refusal.holdSeconds))
+      } else {
+        // Most common cause: another agent grabbed it first (claim race).
+        toast.error("Couldn't take this chat — someone may have taken it a moment before you.")
+      }
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
     } finally {
       setTaking(false)
@@ -662,6 +674,10 @@ export default function ConversationDetail({
   const viewingDeadline = viewingGraceSeconds
   const left = canWrite ? deadlineLeft(conv, nowMs, viewingDeadline) : null
   const waitingMin = owner === 'waiting' ? minutesSince(conv.queued_at ?? conv.updated_at, nowMs) : null
+  // Take waits while the AI gets the contact (the server's contact hold): the button counts down.
+  const heldS = owner === 'waiting' ? holdLeft(conv, nowMs) : 0
+  // The agent's first word in a chat with no contact: one question and a channel, never a bare hello.
+  const showFirstMessageHint = canWrite && firstMessageHint(allMessages, conv.has_contact)
   const noReply = noReplyMinutes(conv, nowMs)
   const leftMin = presence.state === 'left' && typeof presence.ageSeconds === 'number' ? Math.floor(presence.ageSeconds / 60) : null
   const level = levelOf(lead, confirmedOf(conv))
@@ -706,6 +722,7 @@ export default function ConversationDetail({
   if (blindView) {
     const waitedMin = minutesSince(conv.queued_at ?? conv.updated_at, nowMs) ?? 0
     const canTakeBlind = conv.status !== 'closed' && (!canBeReady || ready)
+    const heldS = holdLeft(conv, nowMs)
     return (
       <section
         aria-label='Chat'
@@ -723,12 +740,14 @@ export default function ConversationDetail({
           {presence.state === 'left' && <span className={cn('text-[13px]', presence.text)}>{presenceLine(presence, conv.has_contact)}</span>}
         </div>
         <p className='m-0 max-w-[340px] text-sm leading-[1.45] text-k-555555'>
-          {conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
-          chat and the trip once you take it.
+          {heldS > 0
+            ? holdLine(first, heldS)
+            : <>{conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
+              chat and the trip once you take it.</>}
         </p>
         {canTakeBlind ? (
-          <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
-            {taking ? 'Taking…' : 'Take'}
+          <button type='button' onClick={handleClaim} disabled={taking || heldS > 0} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+            {taking ? 'Taking…' : heldS > 0 ? holdButton(heldS) : 'Take'}
           </button>
         ) : (
           <p className='m-0 text-sm font-bold text-k-202020'>Set yourself ready to take this chat.</p>
@@ -1129,6 +1148,21 @@ export default function ConversationDetail({
                 </span>
               </div>
             )}
+            {showFirstMessageHint && (
+              <div className='flex flex-wrap items-center justify-between gap-2 px-1 text-[13px]'>
+                <span className='text-k-555555'>First message: ask for one way to reach {first}, and say why.</span>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setInput((prev) => prev.trim() ? prev : FIRST_MESSAGE)
+                    requestAnimationFrame(() => taRef.current?.focus())
+                  }}
+                  className='font-bold text-k-5b45e0 hover:underline'
+                >
+                  Insert “{FIRST_MESSAGE}”
+                </button>
+              </div>
+            )}
             {canWrite && chatTasks.lateMine?.client_wrote_at && (
               <div className='flex flex-wrap items-center justify-between gap-2 px-1 text-[13px]'>
                 <span className='text-k-b3261e'>{first} is waiting for what you promised.</span>
@@ -1196,6 +1230,9 @@ export default function ConversationDetail({
                   {leftMin !== null ? (
                     // B3 (ADR-6c): nobody is asked to answer a client who left.
                     leftNote(first, leftMin, conv.has_contact, conv.tunnel)
+                  ) : heldS > 0 ? (
+                    // The contact hold: the AI is getting the phone or email first.
+                    holdLine(first, heldS)
                   ) : (
                     <>
                       <strong className='text-k-202020'>
@@ -1205,8 +1242,8 @@ export default function ConversationDetail({
                     </>
                   )}
                 </span>
-                <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
-                  {taking ? 'Taking…' : 'Take'}
+                <button type='button' onClick={handleClaim} disabled={taking || heldS > 0} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
+                  {taking ? 'Taking…' : heldS > 0 ? holdButton(heldS) : 'Take'}
                 </button>
               </div>
             )}

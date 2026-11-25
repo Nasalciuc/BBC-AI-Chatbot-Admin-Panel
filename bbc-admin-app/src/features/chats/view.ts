@@ -437,6 +437,56 @@ export function queueLine(c: Pick<Conversation, 'status' | 'message_count'>): st
   return n === 1 ? '1 message' : `${n} messages`
 }
 
+// ── the contact hold (25 Nov 2026) ─────────────────────────────────────
+// The server holds Take for up to two minutes from the client's first message while the AI gets a phone or
+// an email (app/services/contact_hold.py): 17-24 Nov, an agent who came in before the contact got one in 22%
+// of chats, the AI alone in 59%. A client who asks for a person is never held. The row and the detail carry
+// `contact_hold_until`; the server refuses an early Take with 409 `contact_hold`, so a clock that runs early
+// here costs one toast, never a chat.
+
+/** Whole seconds until Take opens, 0 when it is open. */
+export function holdLeft(c: Pick<Conversation, 'contact_hold_until'>, nowMs: number): number {
+  if (!c.contact_hold_until) return 0
+  const t = Date.parse(c.contact_hold_until)
+  if (Number.isNaN(t)) return 0
+  return Math.max(0, Math.ceil((t - nowMs) / 1000))
+}
+
+/** What a held chat says to the agent, in place of "Take the chat to answer". */
+export function holdLine(first: string, left: number): string {
+  return `The AI is asking ${first} for a phone or email. You can take the chat in ${countdown(left)}.`
+}
+
+/** The Take button while the hold runs. */
+export function holdButton(left: number): string {
+  return `Take in ${countdown(left)}`
+}
+
+/** A 409 from Take, read: the colleague who won it, or the seconds the contact hold still runs. apiFetch keeps
+ *  the raw JSON body as the message when `detail` is an object. */
+export function takeRefusal(message: string): { winner?: string; holdSeconds?: number } {
+  try {
+    const body = JSON.parse(message) as { detail?: { detail?: string; winner?: string; retry_after?: number } }
+    const d = body?.detail
+    if (d?.detail === 'contact_hold' && typeof d.retry_after === 'number' && d.retry_after > 0) {
+      return { holdSeconds: Math.ceil(d.retry_after) }
+    }
+    if (typeof d?.winner === 'string' && d.winner) return { winner: d.winner }
+  } catch {
+    /* not JSON: the caller says the neutral thing */
+  }
+  return {}
+}
+
+/** The first message the doc's rule asks for (Tab 1, problem 4): one channel, a reason to answer. A bare
+ *  "Hi, I'm …" lost 19 of 28 clients on 17-24 Nov and brought 2 contacts. No long dash: it reads as a bot. */
+export const FIRST_MESSAGE = "What's your mobile number? I'll text you the fares."
+
+/** The agent writes their first word in a chat with no contact yet: the hint and its one-tap text show. */
+export function firstMessageHint(messages: Pick<Message, 'role'>[], hasContact: boolean | undefined): boolean {
+  return !hasContact && !messages.some((m) => m.role === 'agent')
+}
+
 // ── the thread ─────────────────────────────────────────────────────────
 
 export interface ThreadLine {

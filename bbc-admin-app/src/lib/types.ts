@@ -67,6 +67,9 @@ export interface Conversation {
   /** Whether the client left an e-mail, a phone or a number to check — said even where the contact
    *  itself is masked or blind ("Left 3 min ago · no contact", ADR-6c). List rows and the detail. */
   has_contact?: boolean
+  /** Until when Take waits while the AI gets the client's phone or email (the server's contact hold,
+   *  25 Nov 2026): ISO time, null when the chat may be taken now. List rows and the detail. */
+  contact_hold_until?: string | null
   /** Country of the client's phone number (detail payload). */
   visitor_phone_country?: string | null
 }
