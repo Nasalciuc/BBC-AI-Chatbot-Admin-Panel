@@ -953,6 +953,8 @@ const OPENED_BY: Record<string, string> = {
   kayak: 'came from Kayak',
   // A Google or Bing ad, on a page about one destination (the widget's `ads` moment, 18 Nov).
   ads: 'came from a Google or Bing ad',
+  // A Facebook or Instagram ad, read for a while (the widget's `social` moment, 25 Nov).
+  social: 'came from a Facebook or Instagram ad',
   quote: 'pressed “Get free quote” and stopped',
   reader: 'read the page for a while',
   exit: 'was about to leave',
