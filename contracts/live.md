@@ -12,11 +12,13 @@ Who does what:
 |---|---|---|---|
 | `bbc-live` | Go | the widget's beats, the live list, the claims, the waiting poll that delivers a hello | read or write the database; issue a token |
 | the API | Python | issues every token; checks and sends the hello; creates the chat at the tap | hold a widget's poll open |
-| the widget | TS | beats after 20 s on the page while there is no chat (the chat closed, or open on an opening nobody answered), with what came of Alex's card; waits for a hello; shows it as plain text; answers with its tap | send anything the visitor typed |
+| the widget | TS | beats after 20 s on the page while there is no chat (the chat closed, or open on an opening nobody answered), with what came of Alex's card; waits for a hello; shows it as plain text; answers with its tap; from the page's start, sends the visit registry its snapshots | send anything the visitor typed |
 | the panel | TS | lists who Alex's card didn't start, claims, writes the hello | talk to Redis |
 
 Redis holds coordination only. Everything here can disappear: the visitor is simply not listed for a
-minute, a hello not delivered expires. No key or value carries a name, an e-mail or a phone.
+minute, a hello not delivered expires. No key or value carries a name, an e-mail or a phone. The visit
+registry's visits (below) carry the visitor's address and browser line until the API stores them, three
+days at most.
 
 Switches (`app_settings.flags`, the API): `LIVE_VISITORS` (the list, the beats: off at merge) and
 `AGENT_FIRST_MESSAGE` (claims, hellos, taps: off at merge). Off, the API hands out no live token and
@@ -50,6 +52,7 @@ one kind from passing for another. `contracts/live_tokens.json` holds vectors th
 | `POST /v1/beat` | widget, `X-Live-Pass` | 200 counted; 202 a beat under 5 s after the last, not counted; 400 not JSON; 401; 503 not configured or Redis down. The widget's last beat, `has_chat`, goes once more after the gap when it didn't count (202, 5xx, or lost on the way) |
 | `GET /v1/inbox` | widget, `X-Live-Pass` | 200 `{"messages":[…]}` at once or the moment a hello lands; 204 after 25 s with nothing; 429 a fourth tab waiting |
 | `POST /v1/dismiss` | widget, `X-Live-Pass` | 200: "not now", nobody says hello for an hour, the claim and the inbox go |
+| `POST /v1/visit` | widget, `X-Live-Pass` or `"pass"` in the body | 200 kept; 400 not JSON or no `page_id`; 401; 429 over the visitor's pace (20 at once, then one per 3 s); 503 Redis down. The visit registry, below |
 | `GET /v1/live` | panel, `Bearer l1…`, roles sales, owner, admin, dev, supervisor | 200 `{"data":[visitor…],"max_claims":3,"claim_seconds":600}`; a reader who may hold a visitor is noted in `live:greeters` (the agent-first test) |
 | `POST /v1/claim` `{"visitor_id"}` | panel, role sales, line sales or all | 200 `claimed`/`mine`; 409 `taken`, `full`, `declined`, `in_a_chat`; 410 `gone` |
 | `POST /v1/release` `{"visitor_id"}` | panel | 200 `{"released": bool}` |
@@ -166,12 +169,59 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 | `live:hold:<vid>` | string | unix seconds when Alex's wait began (the agent-first test) | 900 s | the API |
 | `live:greeters` | sorted set | user id, score = unix seconds of the last read of the list by an agent who may hold a visitor (the agent-first test) | a day after the last read, trimmed at each read | bbc-live |
 | `rl:livepass:<address>:<hour>` | string | new ids that address got passes for this hour; `<address>` a keyed hash, never the address | 1 h | the API (`pass.lua`) |
+| `live:reg` | sorted set | visitor id of an open visit, score = unix seconds of its last snapshot | until the visit ends | bbc-live (`visit.lua`, `close.lua`) |
+| `live:reg:<vid>` | hash | the open visit (the registry, below) | 6 h after the last snapshot; ended at 30 min | bbc-live |
+| `live:ended` | list | keys of ended visits, oldest first | until the API stores them | bbc-live pushes, the API removes (`LREM`) |
+| `live:ended:<vid>:<first_at>` | hash | an ended visit, as it was | 3 days; the API deletes it once stored | bbc-live renames, the API deletes |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
 The scripts are in `contracts/live/` and copied next to the code that runs them (bbc-live
 `internal/live/lua/`, the API `app/services/live_lua/`); each suite fails when its copy differs.
 `list.lua`, `claim.lua` and `dismiss.lua` build keys from ids inside the script: one Redis, not a
 cluster.
+
+## The visit registry (25 Nov 2026)
+
+The owner: every visit (about 2,000 a day) kept, with the visitor's address and the contacts we catch, no time
+limit for now, to judge the card's words per group of visitors on everything that happened. Switch:
+`VISIT_REGISTRY` (`app_settings.flags`, off at merge). Migration 056 (`site_visits` and its two views) runs
+before it is turned on.
+
+- **The pass.** While the registry is on, `POST /chat/live` answers every visitor with the pass and bbc-live's
+  place and `"visits": true`, plus `"country"` (the two letters Cloudflare saw, when it saw one): also with the
+  live list off (`"enabled": false`) and on the agent-first test's Alex side (`"enabled": false, "test": "alex"`),
+  which stay unlisted and unbeating. The widget asks at the page's start; the live list takes the same answer 20 s
+  in (one ask a page).
+- **The snapshot.** `POST /v1/visit`, from the page's start: at once, 1.5 s after anything the widget does (the
+  events it captures for PostHog, as short words), every minute while the page is in sight, and when it is hidden
+  or left (`sendBeacon`). Plain text JSON, the pass inside (`"pass"`), so no preflight. Fields, all optional but
+  `page_id`: `page_id` (`[A-Za-z0-9_-]{6,32}`, one per page load), `page`, `page_type`, `page_s` and `seen_s`
+  (seconds since the page loaded, and in sight: whole, 0 to 86 400), the trip as in a beat, `source`, `channel`
+  (kayak, google, meta, bing, ads, search, referral, direct, other), `utm_source`, `utm_medium`, `utm_campaign`
+  (letters, digits, spaces and `_ . , : | + / ( ) -`, 80 at most; anything else drops the tag), `referrer` (a host),
+  `device`, `site`, `lang`, `tz`, `country` (`[A-Z]{2}`), `ph_session` (a UUID), `events` (the page's widget events,
+  `;`-joined: `word[:qualifier[:qualifier]][*count]`, words and qualifiers from fixed lists, 40 at most),
+  `steps` (the site's steps on the page, as in a beat, 30 at most), `card` (`trigger`, `variant`, `surface`,
+  `state` shown/dismissed/engaged, `s` seconds since it showed, `answer` and `answer_s` once answered), `has_chat`,
+  `conversation_id` (a UUID). bbc-live adds the address (the last `X-Forwarded-For` entry: Railway's edge adds it)
+  and the browser line (`User-Agent`, printable, 300 characters at most). Never a name, an e-mail, a phone or
+  anything typed.
+- **The visit** (`visit.lua`): one per visitor while snapshots keep coming. The first snapshot with a value sets
+  where they came from, the screen, the language, the time zone, the country, the address, the browser, the
+  PostHog session, the chat's id and the card's moment, words and place (`hsetnx`); the latest non-empty value sets
+  the last page, the trip and the card's answer; `has_chat` once `1` stays; the card's state only moves forward
+  (shown, dismissed, engaged); its times are bbc-live's clock. Each page is `pg:<page id>` (JSON: path, kind,
+  seconds, seen, events, steps, when last heard), in first-heard order in `pages`; past 40 pages they are counted
+  (`pages_over`), not kept.
+- **The end.** A visit with no snapshot for 30 minutes has ended: `close.lua` (every 30 s) renames it to
+  `live:ended:<vid>:<first_at>` and pushes that key on `live:ended`; a snapshot that finds its visitor's visit gone
+  quiet ends it the same way first. Lost (`/health`): an open visit that ran out before it ended.
+- **The API** (`app/services/visit_registry.py`, every minute) reads up to 200 queued keys, stores one row a visit
+  (`site_visits`, UNIQUE visitor id and start: a visit taken twice is one row), links the chat by the visitor's id
+  when the widget didn't name it, then removes from the queue exactly the keys it stored (`LREM`, never a range:
+  two schedulers run during a deploy). A table not there yet, or a failed write, leaves the queue for the next run.
+  Contacts are never copied: `site_visits_full` reads them from the chat and the lead; `site_visits_daily` counts
+  per New York day, group (source, channel, screen, came back) and card (moment, words).
 
 ## Numbers
 
