@@ -680,6 +680,13 @@ async def test_the_hellos_chat_fields_are_tried_twice(redis, marked, writes, cou
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
     res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), marked=marked)
     assert m["meta"].await_count == writes and live_visitors.LIVE_HEALTH["mark_failed"] == counted
+    # Each try is the same write, on the tapped chat (CodeRabbit #282, round 8: a mock answers any arguments).
+    tries = [c.args for c in m["meta"].await_args_list]
+    assert all(conv_id == "c1" for conv_id, _ in tries)
+    first = tries[0][1]
+    assert set(first) == {"engaged_agent_id", "agent_assigned_at", "clock_agent_id", "live_hello"}
+    assert first["engaged_agent_id"] == first["clock_agent_id"] == first["live_hello"]["agent_id"] == AGENT
+    assert all(fields == first for _, fields in tries), "a second try writes what the first meant to"
     assert res.live_agent == "Ana", "a hello from the panel: its agent is at the panel, the chat stays theirs"
     m["give_back"].assert_not_awaited()
 
