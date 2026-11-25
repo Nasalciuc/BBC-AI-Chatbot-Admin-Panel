@@ -3,6 +3,7 @@ invented."""
 
 import base64
 import json
+import pathlib
 import os
 import sys
 from datetime import date, timedelta
@@ -693,3 +694,49 @@ async def test_a_chat_that_cannot_be_read_is_a_503_not_an_empty_answer():
         with pytest.raises(HTTPException) as e:
             await route.crm_lead_status("c-1", user=ME)
     assert e.value.status_code == 503
+
+
+# ── the key, checked without a lead (check_key, the scheduler's crm_chat_api_check) ──────────────────────────
+
+
+@pytest.mark.parametrize("answer,state", [
+    (httpx.Response(422, json={"success": False, "error_code": "VALIDATION_FAILED", "errors": {}}), "ok"),
+    (httpx.Response(401, json={"success": False, "error_code": "AUTH_INVALID", "message": "Missing or wrong key."}),
+     "auth_invalid"),
+    (httpx.Response(403, json={"success": False, "error_code": "IP_NOT_ALLOWED"}), "ip_not_allowed"),
+    (httpx.Response(404, text="Not Found"), "http_404"),
+    (httpx.Response(500, json={"success": False, "error_code": "SERVER_ERROR"}), "http_500"),
+    (httpx.ConnectError("refused"), "no_answer"),
+])
+@pytest.mark.asyncio
+async def test_the_key_check_says_what_the_crm_thinks_of_our_key_and_makes_no_lead(crm, answer, state):
+    """25 Nov: a key set in Railway answered 401 on two real leads before anyone knew. The check asks with an empty
+    body: nothing the CRM could make a lead of, so a valid key is told by a 422 (the body refused, the key held)."""
+    answers, seen = crm
+    answers.append(answer)
+    assert await api.check_key() == {"state": state}
+    assert len(seen) == 1, "one request, never retried"
+    sent = seen[0]
+    assert json.loads(sent.content) == {}, "no conversation, no client, no agent: nothing to make a lead of"
+    assert sent.headers["authorization"] == "Bearer test-key-1"
+    assert api.CRM_LEADS_API_HEALTH["key_check"] == state and api.CRM_LEADS_API_HEALTH["key_check_at"]
+
+
+@pytest.mark.asyncio
+async def test_no_address_or_key_checks_nothing(monkeypatch):
+    monkeypatch.setattr(api.settings, "crm_chat_api_url", "")
+    monkeypatch.setattr(api.settings, "crm_chat_api_key", "test-key-1")
+    with patch.object(api, "_http", side_effect=AssertionError("no call")):
+        assert await api.check_key() == {"state": "not_configured"}
+        monkeypatch.setattr(api.settings, "crm_chat_api_url", "http://crm.example.test/chat-api/v1/leads")
+        assert await api.check_key() == {"state": "not_configured"}, "the key never travels in clear"
+
+
+def test_the_check_runs_at_each_start_and_is_quiet_while_the_key_holds():
+    from app.services import scheduler
+
+    rule = scheduler._QUIET_WHEN["crm_chat_api_check"]
+    assert rule({"state": "ok"}) and rule({"state": "not_configured"})
+    assert not rule({"state": "auth_invalid"}) and not rule({"state": "ip_not_allowed"})
+    src = (pathlib.Path(scheduler.__file__)).read_text(encoding="utf-8")
+    assert '("crm_chat_api_check", run_crm_chat_api_check, 21600)' in src
