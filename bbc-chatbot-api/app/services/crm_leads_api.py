@@ -86,6 +86,10 @@ CRM_LEADS_API_HEALTH: dict[str, Any] = {
     "warnings": {},
     "last_error_code": None,
     "last_error_at": None,
+    # The CRM's word on our key, asked without making anything (check_key): ok, auth_invalid, ip_not_allowed,
+    # no_answer, not_configured or http_<status>; and when.
+    "key_check": None,
+    "key_check_at": None,
 }
 
 _ROLE_TO_FROM = {"user": "client", "ai": "bot", "agent": "agent"}
@@ -377,6 +381,38 @@ def _body(resp: httpx.Response) -> dict:
 
 
 _LEASE_LOST_MESSAGE = "This chat is being sent to the CRM right now. Try again in a minute."
+
+
+async def check_key() -> dict:
+    """Does the CRM take our key? One POST with an empty body: no conversation, no client, no agent. The CRM refuses
+    the body and makes nothing (422: the key held), or refuses the key (401 AUTH_INVALID), or our address (403
+    IP_NOT_ALLOWED). The scheduler asks at each start and every 6 hours (crm_chat_api_check); the answer is in /health
+    (crm_leads_api.key_check). 25 Nov 2026: a key set in Railway answered 401 on two real leads before anyone knew;
+    this says so at the deploy, with no lead at stake. Not configured: nothing is sent."""
+    url = settings.crm_chat_api_url.strip()
+    key = settings.crm_chat_api_key.strip()
+    state = "not_configured"
+    if url and key and _https(url):
+        try:
+            resp = await _http().post(url, json={}, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+        except httpx.HTTPError as e:
+            logger.warning(f"[crm-leads-api] key check: no answer ({type(e).__name__}: {e})")
+            state = "no_answer"
+        else:
+            code = str(_body(resp).get("error_code") or "")
+            if resp.status_code == 401 or code == "AUTH_INVALID":
+                state = "auth_invalid"
+            elif code == "IP_NOT_ALLOWED":
+                state = "ip_not_allowed"
+            elif resp.status_code == 422:
+                state = "ok"
+            else:
+                state = f"http_{resp.status_code}"
+    CRM_LEADS_API_HEALTH["key_check"] = state
+    CRM_LEADS_API_HEALTH["key_check_at"] = datetime.now(timezone.utc).isoformat()
+    if state not in ("ok", "not_configured"):
+        logger.warning(f"[crm-leads-api] key check: {state}; the leads of agents' chats go the old way, without the agent")
+    return {"state": state}
 
 
 async def post_lead(payload: dict, still_held: Optional[Callable[[], bool]] = None) -> CrmLeadCall:
