@@ -14,8 +14,8 @@ import {
 } from '@/components/ui/dialog'
 import {
   ALEX_GAVE_UP_S, GROUP_LABEL, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine, alexWaiting,
-  claimProblem, clockS, groupHello, groupOf, heldBy, helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState,
-  sourceLabel, suggestedHello, testLine, tripLine, type HelloGroup,
+  claimProblem, clockS, groupHello, groupOf, heldBy, helloDraft, helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine,
+  rowState, sourceLabel, testLine, tripLine, type HelloGroup,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -39,6 +39,8 @@ export function LiveVisitors() {
   const qc = useQueryClient()
   const [writing, setWriting] = useState<LiveVisitor | null>(null)
   const [text, setText] = useState('')
+  // The group the editor's draft was written for, sent with it (helloDraft).
+  const [writingGroup, setWritingGroup] = useState<HelloGroup | null>(null)
   // The agent-first test: Alex's countdown on a row ticks each second while he waits for anyone listed.
   const [tickS, setTickS] = useState(() => Math.floor(Date.now() / 1000))
 
@@ -63,9 +65,11 @@ export function LiveVisitors() {
   const firstName = (me?.name || '').split(/\s+/)[0] || ''
   // The hello a row starts from: its group's, ready to send (the owner, 25 Nov 2026), or one built from the page.
   const nowMs = nowS * 1000
-  const firstWords = (v: LiveVisitor) => {
-    const group = groupOf(v, nowMs)
-    return group ? groupHello(group, v, firstName) : suggestedHello(v, firstName)
+  const openEditor = (v: LiveVisitor) => {
+    const draft = helloDraft(v, nowMs, firstName)
+    setText(draft.words)
+    setWritingGroup(draft.group)
+    setWriting(v)
   }
 
   const claim = useMutation({
@@ -77,8 +81,7 @@ export function LiveVisitors() {
         toast.error(problem)
         return
       }
-      setText(firstWords(v))
-      setWriting(v)
+      openEditor(v)
     },
     onError: (e: Error) => toast.error(`Couldn’t take this visitor: ${e.message}`),
   })
@@ -106,8 +109,9 @@ export function LiveVisitors() {
     onError: (e: Error) => toast.error(`Couldn’t let this visitor go: ${e.message}`),
   })
   const send = useMutation({
-    // With the visitor's group, as the editor opened on it: the answers are counted per group.
-    mutationFn: ({ v, words }: { v: LiveVisitor; words: string }) => sendHello(v.visitor_id, words, groupOf(v, nowMs)),
+    // With the group the editor's draft was written for: the answers are counted per group.
+    mutationFn: ({ v, words, group }: { v: LiveVisitor; words: string; group: HelloGroup | null }) =>
+      sendHello(v.visitor_id, words, group),
     onSuccess: (_res, { v }) => {
       toast.success(SENT)
       // Close the editor this hello came from, never another: the agent may have opened another visitor's
@@ -221,7 +225,7 @@ export function LiveVisitors() {
                           </button>
                         )}
                         <button type='button' className={cn(btn, group ? quiet : 'bg-kb-202020 text-on-btn')}
-                          onClick={() => { setText(firstWords(v)); setWriting(v) }}>
+                          onClick={() => openEditor(v)}>
                           Write
                         </button>
                         <button type='button' className={cn(btn, quiet)}
@@ -257,7 +261,7 @@ export function LiveVisitors() {
           <DialogFooter>
             <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
               disabled={!!problem || send.isPending || !writing}
-              onClick={() => writing && send.mutate({ v: writing, words: text.trim() })}>
+              onClick={() => writing && send.mutate({ v: writing, words: text.trim(), group: writingGroup })}>
               Send
             </button>
           </DialogFooter>

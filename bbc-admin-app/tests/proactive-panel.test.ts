@@ -168,9 +168,12 @@ test('the site is the brand: kept for the agent, in "This chat"', () => {
 
 test('the fold and the list filter are locked for them: shown, disabled, a lock and the reason', () => {
   // The fold: the button is disabled, with the reason as its title and in its name; nothing opens.
-  const locked = panel.slice(panel.indexOf('{where.length > 0 && (p.canSeeSources ? ('))
+  // Shown to them whatever their rows hold: the rows come without the sources, so the list of them is empty
+  // (CodeRabbit #282, round 3).
+  assert.match(panel, /\{p\.canSeeSources \? \(where\.length > 0 && \(/)
+  const locked = panel.slice(panel.indexOf('{p.canSeeSources ? (where.length > 0 && ('))
   assert.ok(locked.length > 0)
-  const lockedFold = locked.slice(locked.indexOf(') : ('), locked.indexOf('))}'))
+  const lockedFold = locked.slice(locked.indexOf(') : ('), locked.indexOf('</section>'))
   assert.match(lockedFold, /disabled\s+title=\{SOURCES_RESTRICTED\}/)
   assert.match(lockedFold, /aria-label=\{`Where \$\{named \? first : 'they'\} came from \(\$\{SOURCES_RESTRICTED\.toLowerCase\(\)\}\)`\}/)
   assert.match(lockedFold, /<Lock aria-hidden='true'/)

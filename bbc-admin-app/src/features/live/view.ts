@@ -366,3 +366,11 @@ export function groupHello(group: HelloGroup, v: LiveVisitor, agentFirstName: st
       return `${who} Welcome back! Want me to pick up your search${to ? ` for ${to}` : ''} and check business class options for you?`
   }
 }
+
+/** The hello the editor opens with and the group it was written for, taken together: the group goes out with
+ *  the draft, never one worked out again when it is sent (a refresh after midnight UTC can move a visitor from
+ *  "soon" to "back" while the words stay "soon"'s; CodeRabbit #282, round 3). */
+export function helloDraft(v: LiveVisitor, nowMs: number, agentFirstName: string): { words: string; group: HelloGroup | null } {
+  const group = groupOf(v, nowMs)
+  return { words: group ? groupHello(group, v, agentFirstName) : suggestedHello(v, agentFirstName), group }
+}

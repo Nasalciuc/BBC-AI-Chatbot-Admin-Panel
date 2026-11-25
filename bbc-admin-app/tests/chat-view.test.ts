@@ -38,6 +38,7 @@ import {
   tripRows,
   tripText,
   whereRows,
+  notInBase,
 } from '../src/features/chats/view.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -542,4 +543,20 @@ test('nobody types the client’s name in the panel: it fills in by itself, and 
   // …and without the stream, 2 s after the client's newest message.
   assert.match(detail, /if \(accumMsgs\[i\]\.role === 'user'\) return accumMsgs\[i\]\.id/)
   assert.match(detail, /setTimeout\(\(\) => \{ void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\) \}, 2_000\)/)
+})
+
+test('a reload of the chat keeps the client’s message that came after its snapshot (CodeRabbit #282, round 3)', () => {
+  const detail = read('src/features/chats/detail.tsx')
+  const u1 = { id: 'u1' }
+  const u2 = { id: 'u2' }
+  // U1 is in the reloaded chat, U2 landed while the reload was in flight: U2 stays.
+  assert.deepEqual(notInBase([u1, u2], [{ id: 'a0' }, u1]), [u2])
+  const kept = [u2]
+  assert.equal(notInBase(kept, [u1]), kept, 'nothing leaves: the same array, no new render')
+  assert.deepEqual(notInBase([u1], undefined), [u1])
+  assert.match(detail, /setAccumMsgs\(prev => notInBase\(prev, conv\?\.messages\)\)/)
+  assert.doesNotMatch(detail, /setAccumMsgs\(\[\]\)/)
+  // Each time the stream opens, the chat is read again with the trip card: a contact push lost while it was shut.
+  const onState = detail.slice(detail.indexOf('(state) => {'), detail.indexOf('() => setSseLive(false)'))
+  assert.match(onState, /if \(state === 'open'\) \{[\s\S]*void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/)
 })

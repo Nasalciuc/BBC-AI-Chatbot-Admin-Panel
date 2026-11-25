@@ -77,6 +77,7 @@ import {
   takeClass,
   takeRefusal,
   takenBlind,
+  notInBase,
 } from './view'
 
 export type ChatLayout = 'wide' | 'medium' | 'narrow'
@@ -220,13 +221,17 @@ export default function ConversationDetail({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv?.messages?.length])
 
-  // Reset accumulator when base conversation reloads (e.g. after agent sends message)
+  // When the base conversation reloads (after the agent sends, after a client's message), the messages it now
+  // holds leave the accumulator; one that came after its snapshot stays. Emptying it lost a client's message
+  // that arrived while the reload was in flight, with the stream open and nothing to add it back
+  // (CodeRabbit #282, round 3).
   useEffect(() => {
     const baseLen = conv?.messages?.length ?? 0
     if (baseLen !== prevBaseLen.current) {
       prevBaseLen.current = baseLen
-      setAccumMsgs([])
+      setAccumMsgs(prev => notInBase(prev, conv?.messages))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv?.messages?.length])
 
   // Typing indicator — polls every 1s to show client's live text to agent
@@ -362,9 +367,12 @@ export default function ConversationDetail({
         setSseLive(state === 'open')
         // The trip card is kept fresh by lead_details pushes, and a push
         // sent while this stream was shut (another chat open, a dropped
-        // connection) is lost. Each time the stream opens, read it again.
+        // connection) is lost. Each time the stream opens, read it again,
+        // and the chat with it: a `contact` push lost the same way leaves the
+        // Contact card behind (CodeRabbit #282, round 3).
         if (state === 'open') {
           void queryClient.invalidateQueries({ queryKey: ['conversation-details', conversationId] })
+          void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
         }
       },
       () => setSseLive(false)

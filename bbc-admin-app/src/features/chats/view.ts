@@ -1210,3 +1210,12 @@ export function focusKey(el: { dataset?: { chatId?: string; tab?: string } } | n
   if (d?.tab) return `tab:${d.tab}`
   return null
 }
+
+/** The accumulated messages a reloaded base doesn't hold: the ones it holds leave, one that came after its snapshot
+ *  stays (a client's message that landed while the reload was in flight; CodeRabbit #282, round 3). The same array
+ *  back when nothing leaves. */
+export function notInBase<T extends { id: string }>(accum: T[], base: readonly { id: string }[] | undefined): T[] {
+  const inBase = new Set((base ?? []).map((m) => m.id))
+  const kept = accum.filter((m) => !inBase.has(m.id))
+  return kept.length === accum.length ? accum : kept
+}

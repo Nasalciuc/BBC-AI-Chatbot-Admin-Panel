@@ -437,13 +437,14 @@ export function DetailsPanel(p: DetailsPanelProps) {
         </Fold>
       )}
 
-      {where.length > 0 && (p.canSeeSources ? (
+      {p.canSeeSources ? (where.length > 0 && (
         <Fold id='where' open={isOpen('where')} onToggle={toggle} title={`Where ${named ? first : 'they'} came from`}>
           {isOpen('where') && <Rows rows={where} wide={p.wide} />}
         </Fold>
-      ) : (
+      )) : (
         // The panel's rule for a restricted action: shown, disabled, a lock and the reason. An agent can't
-        // open it (the owner, 25 Nov 2026); their rows come without it anyway (app/api/conversations.py).
+        // open it (the owner, 25 Nov 2026); their rows come without it anyway (app/api/conversations.py), so
+        // the lock shows whatever the rows hold (CodeRabbit #282, round 3).
         <section className='flex flex-col rounded-2xl bg-k-ffffff px-4 py-3.5 shadow-[0_1px_2px_rgba(32,32,32,0.05)]'>
           <h3 className='m-0'>
             <button
@@ -458,7 +459,7 @@ export function DetailsPanel(p: DetailsPanelProps) {
             </button>
           </h3>
         </section>
-      ))}
+      )}
 
       <Fold
         id='chat'

@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
   helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
-  tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, stuckInForm,
+  tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, helloDraft, stuckInForm,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -339,9 +339,26 @@ test('the row: the label, the hello quoted, one tap to send it, Write to change 
   assert.match(page, /if \(rowState\(v, meId\) !== 'mine'\) \{\s*const problem = claimProblem\(\(await claimVisitor\(pass!, v\.visitor_id\)\)\.state\)\s*if \(problem\) throw new Error\(problem\)\s*\}\s*return sendHello\(v\.visitor_id, words, group\)/)
   assert.equal((page.match(/onClick=\{\(\) => quick\.mutate\(\{ v, words: ready, group \}\)\}>\s*Send this hello/g) ?? []).length, 2,
     'for a visitor nobody holds, and for one I hold')
-  // The editor starts from the group's hello too, and sends with the group.
-  assert.match(page, /return group \? groupHello\(group, v, firstName\) : suggestedHello\(v, firstName\)/)
-  assert.match(page, /sendHello\(v\.visitor_id, words, groupOf\(v, nowMs\)\)/)
+  // The editor starts from the group's hello too, and sends with the group its draft was written for.
+  assert.match(page, /const draft = helloDraft\(v, nowMs, firstName\)\s*setText\(draft\.words\)\s*setWritingGroup\(draft\.group\)/)
+  assert.match(page, /mutationFn: \(\{ v, words, group \}: \{ v: LiveVisitor; words: string; group: HelloGroup \| null \}\) =>\s*sendHello\(v\.visitor_id, words, group\)/)
+  assert.match(page, /send\.mutate\(\{ v: writing, words: text\.trim\(\), group: writingGroup \}\)/)
+  assert.doesNotMatch(page, /sendHello\([^)]*groupOf\(/, 'the group is never worked out again when the hello is sent')
   const api = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf-8')
   assert.match(api, /body: JSON\.stringify\(\{ visitor_id: visitorId, text, \.\.\.\(group \? \{ group \} : \{\}\) \}\)/)
+})
+
+test('the editor’s draft keeps the group it was written for across midnight UTC (CodeRabbit #282, round 3)', () => {
+  // A returning visitor on a computer, flying on 10 Dec: 15 days away until midnight, 14 after it.
+  const visitor = v({ device: 'computer', returning: true, trip: { to: 'IST', depart: '2026-12-10' } })
+  const before = Date.parse('2026-11-25T23:59:30Z')
+  const after = Date.parse('2026-11-26T00:00:30Z')
+  const draft = helloDraft(visitor, before, 'Ana')
+  assert.equal(draft.group, 'soon')
+  assert.equal(draft.words, groupHello('soon', visitor, 'Ana'))
+  assert.equal(groupOf(visitor, after), 'back', 'worked out again after midnight, the group would no longer be the draft’s')
+  // No group: the page's hello, and no group to send.
+  const plain = helloDraft(v({ device: 'phone', trip: { to: 'IST', depart: '2026-12-10' } }), before, 'Ana')
+  assert.equal(plain.group, null)
+  assert.equal(plain.words, suggestedHello(v({ device: 'phone', trip: { to: 'IST', depart: '2026-12-10' } }), 'Ana'))
 })
