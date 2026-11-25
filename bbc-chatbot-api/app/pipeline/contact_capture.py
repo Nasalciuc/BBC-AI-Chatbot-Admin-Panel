@@ -137,6 +137,8 @@ sí non não nao habla hablo parle parlez falo fala mensaje mensajes texto mensa
 """.split())
 _NAME_INTRO_RE = re.compile(r"^(?:it'?s|its|this\s+is|i'?m|im|i\s+am|my\s+name\s+is|name\s+is|name:)\s+", re.I)
 _NAME_WORD_RE = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’.-])*$")
+# "A." in "John A. Smith": an initial, never the word "a".
+_INITIAL_RE = re.compile(r"^[^\W\d_]\.$")
 
 
 def _straight(text: str) -> str:
@@ -173,12 +175,140 @@ def name_from_answer(message: str) -> Optional[str]:
             return None
     if any(not _NAME_WORD_RE.match(w) for w in words):
         return None
-    if any(w.lower().strip(".'’") in _NOT_A_NAME for w in words):
+    if any(w.lower().strip(".'’") in _NOT_A_NAME and not _INITIAL_RE.match(w) for w in words):
         return None
     if sum(ch.isalpha() for ch in text) < 2:
         return None
     # "maribel" → "Maribel"; a name the client capitalised stays as written.
     return " ".join(w[:1].upper() + w[1:] if w.islower() else w for w in words)
+
+
+# ── The name said another way (the owner, 25 Nov 2026) ──────────────────────────
+# In the week to 25 Nov, 155 of 188 chats an agent had carried no name, and 72 of them reached the CRM without
+# one: the agents seldom ask, and the answer above is the whole message or nothing. Two more ways a client
+# names themselves, read as strictly:
+#   - unasked, with a phrase that can mean nothing else: "Hi, my name is Ana Popescu, two of us to Rome".
+#     Not "I'm …" or "this is …": too many sentences start so ("I'm looking for…", the extractor's old mistake);
+#   - to the name question, beside the contact: "Ana Popescu, ana@example.com" to "your name and e-mail?".
+_SELF_INTRO_RE = re.compile(
+    r"\b(?:my\s+(?:full\s+|first\s+)?name\s+is|my\s+name's"
+    r"|mi\s+nombre\s+es|me\s+llamo|je\s+m'appelle|mon\s+nom\s+est|meu\s+nome\s+[ée]|me\s+chamo|chamo-me)\s+",
+    re.IGNORECASE,
+)
+# Words after "my name is" that no name holds: "my name is on the booking", "…is spelled with a K", "…as in the
+# passport". The name ends at one, and a phrase that starts with one names nobody.
+_NEVER_IN_A_NAME = frozenset("""
+on in at to for of as by under spelled written already still also there here this that same correct wrong
+different missing misspelled listed above below with from but y et mas mais pero
+""".split())
+# A name's last word is never one of these: "María José García de" lost its last word to the four-word limit.
+_NAME_PARTICLES = frozenset("de da del della di do dos das du la le van von der den ter".split())
+
+
+def name_from_intro(message: str) -> Optional[str]:
+    """The name a client gives unasked: "Hi, my name is Ana Popescu, two of us to Rome" → "Ana Popescu",
+    "me llamo maría josé" → "María José". None without such a phrase, or when what follows it has no name's
+    shape ("my name is on the booking")."""
+    text = _straight(message)
+    found = _SELF_INTRO_RE.search(text)
+    if not found:
+        return None
+    words: list[str] = []
+    for token in text[found.end():].split():
+        word = token.rstrip(",;:!?)\"")
+        ends = word != token
+        # "Popescu." ends the name; "A." is an initial inside it ("John A. Smith").
+        if word.endswith(".") and len(word.rstrip(".")) > 1:
+            word, ends = word.rstrip("."), True
+        bare = word.lower()
+        initial = _INITIAL_RE.match(word) is not None
+        if (not word or bare in _NEVER_IN_A_NAME or (not initial and bare.strip(".'") in _NOT_A_NAME)
+                or (bare == "e" and words)  # Portuguese "and"; "E." is an initial
+                or not _NAME_WORD_RE.match(word)):
+            break
+        words.append(word)
+        if ends or len(words) == 4:
+            break
+    while words and words[-1].lower() in _NAME_PARTICLES:
+        words.pop()
+    return name_from_answer(" ".join(words)) if words else None
+
+
+_EMAIL_IN_TEXT_RE = re.compile(r"[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+")
+_NUMBER_RUN_RE = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+_DATE_RUN_RE = re.compile(r"^\d{1,4}[./-]\d{1,2}[./-]\d{1,4}$")
+# What sits between a name and a contact and is neither: "Ana, email: ana@…, phone +…", "Ana and ana@…".
+_CONTACT_GLUE = frozenset("""
+and or & y et e email e-mail mail phone tel telephone mobile cell number whatsapp is my name full
+""".split())
+
+
+def _a_phone(run: str) -> bool:
+    """A run of digits that reads as a phone: 7 digits or more, and no date ("2026-12-20")."""
+    return sum(ch.isdigit() for ch in run) >= 7 and not _DATE_RUN_RE.match(run.strip())
+
+
+def name_beside_contact(message: str) -> Optional[str]:
+    """The name in a message that carries an e-mail or a phone and a name only: "Ana Popescu, ana@example.com",
+    "ana@example.com - Ana", "Ana, +40 721 000 000". None when the message has no contact, nothing else, more
+    than one piece of text beside it ("Ana, Boston, ana@…": a name and a city read alike), or words no name
+    holds ("ana@… to Rome")."""
+    text = _straight(message)
+    rest = _NUMBER_RUN_RE.sub(lambda m: "," if _a_phone(m.group()) else m.group(), _EMAIL_IN_TEXT_RE.sub(",", text))
+    if rest == text:
+        return None
+    pieces = []
+    for piece in re.split(r"[,;|/\n]+|\s[-–—]\s|^[-–—]\s|\s[-–—]$", rest):
+        words = piece.replace(":", " ").split()
+        if any(w.lower().strip(".") in _NEVER_IN_A_NAME for w in words):
+            return None
+        kept = [w for w in words if w.lower().strip(".") not in _CONTACT_GLUE]
+        if kept:
+            pieces.append(" ".join(kept))
+    return name_from_answer(pieces[0]) if len(pieces) == 1 else None
+
+
+def name_in_reply(message: str, asked: str) -> Optional[str]:
+    """The client's name in this message: the answer to the name question just asked (the whole message, or
+    the name beside the contact given with it), or a name given unasked with "my name is …". None otherwise:
+    free text never names the client."""
+    if asks_for_name(asked):
+        answer = name_from_answer(message) or name_beside_contact(message)
+        if answer:
+            return answer
+    return name_from_intro(message)
+
+
+def could_name(message: str) -> bool:
+    """Whether this message could hold a name at all, before anything is read to find out (the question asked,
+    the stored name): most messages to an operator are not even looked at twice."""
+    return bool(name_from_answer(message) or name_beside_contact(message) or name_from_intro(message))
+
+
+# ── The name an agent writes in the panel ───────────────────────────────────────
+# Letters, the marks names carry, and spaces: never an e-mail, a phone, a number or a link.
+_TYPED_LINK_RE = re.compile(r"://|\bwww\.|[^\W\d_]\.[^\W\d_]{2,}", re.IGNORECASE)
+
+
+def typed_name(raw: str) -> Optional[str]:
+    """The client's name as an agent typed it in the panel, tidied ("ana  popescu" → "Ana Popescu"), or None
+    when it is not one: under 2 or over 60 characters, over 6 words, or holding an e-mail, a digit or a link.
+    The agent knows the client: no word is refused for meaning something else ("Hope" is a name), and a name
+    typed with capitals stays as typed ("María José García de la Fuente")."""
+    text = " ".join(_straight(raw or "").split()).strip(" ,;:!?")
+    if not 2 <= len(text) <= 60 or "@" in text or any(ch.isdigit() for ch in text):
+        return None
+    if _TYPED_LINK_RE.search(text):
+        return None
+    words = text.split()
+    if len(words) > 6 or any(not _NAME_WORD_RE.match(w) for w in words):
+        return None
+    if sum(ch.isalpha() for ch in text) < 2:
+        return None
+    if not text.islower():
+        return text
+    # All in small letters: capitals for the words, the particles inside the name kept small.
+    return " ".join(w if i and w in _NAME_PARTICLES else w[:1].upper() + w[1:] for i, w in enumerate(words))
 
 
 def full_name(known: Optional[str], answer: str, last_name_asked: bool) -> str:

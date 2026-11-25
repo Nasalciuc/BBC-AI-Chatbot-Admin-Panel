@@ -577,6 +577,33 @@ class TestTheAnswerToAlexsQuestion:
         assert all(not e.get("name") for e in got["entities"])
 
     @pytest.mark.asyncio
+    async def test_my_name_is_said_unasked_names_the_client(self):
+        """25 Nov 2026: "my name is …" can mean nothing else, asked or not."""
+        msg = "Hi, my name is Paul Moreau, two of us to Rome in March"
+        run, got = _ordinary_turn(msg, _history(Q_DATES, msg))
+        await run()
+        assert got["entities"][0]["name"] == "Paul Moreau"
+        assert got["visitor"].name == "Paul Moreau"
+
+    @pytest.mark.asyncio
+    async def test_the_name_beside_the_email_answers_the_name_question(self):
+        msg = "Paul Moreau, paul@example.com"
+        run, got = _ordinary_turn(msg, _history(Q_NAME, msg))
+        await run()
+        assert got["entities"][0]["name"] == "Paul Moreau"
+        assert got["entities"][0]["email"] == "paul@example.com"
+
+    @pytest.mark.asyncio
+    async def test_the_same_message_unasked_names_nobody(self):
+        """Rule 5: beside the email, without the name question, a city and a name read alike."""
+        msg = "Paul Moreau, paul@example.com"
+        run, got = _ordinary_turn(msg, _history(Q_DATES, msg))
+        await run()
+        assert got["entities"][0]["email"] == "paul@example.com"
+        assert not got["entities"][0].get("name")
+        assert not got["visitor"].name
+
+    @pytest.mark.asyncio
     async def test_a_form_name_is_completed_not_overwritten(self):
         run, got = _ordinary_turn(
             "Next March", _history(Q_DATES, "Next March"),

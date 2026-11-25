@@ -121,6 +121,40 @@ async def test_a_known_name_is_never_replaced_by_another():
     write.assert_not_awaited()
 
 
+ASKED_DATES = [{"role": "agent", "content": "Which dates work for you?"}]
+
+
+@pytest.mark.asyncio
+async def test_my_name_is_said_to_the_operator_unasked_names_the_client(caplog):
+    """25 Nov 2026: 155 of 188 agent chats in a week had no name; agents seldom ask for it."""
+    with caplog.at_level(logging.INFO):
+        write, _, _ = await _run("Hi, my name is Paul Moreau, we are two to Rome", history=ASKED_DATES,
+                                 conv={"visitor_name": None})
+    write.assert_awaited_once_with("c1", {"name": "Paul Moreau"})
+    assert "Moreau" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_name_beside_the_email_answers_the_operators_name_question():
+    write, _, _ = await _run("Paul Moreau, paul.moreau@example.com", history=NAME_Q, conv={"visitor_name": None})
+    write.assert_awaited_once_with("c1", {"email": "paul.moreau@example.com", "name": "Paul Moreau"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message, saved", [
+    # Rule 5: beside a contact, unasked, a name and a city read alike: the e-mail alone is kept.
+    ("Paul Moreau, paul.moreau@example.com", {"email": "paul.moreau@example.com"}),
+    ("my name is on the booking", None),
+    ("I'm looking for two seats to Rome", None),
+])
+async def test_what_names_nobody(message, saved):
+    write, _, _ = await _run(message, history=ASKED_DATES, conv={"visitor_name": None})
+    if saved:
+        write.assert_awaited_once_with("c1", saved)
+    else:
+        write.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_a_trip_message_records_nothing():
     write, recent, _ = await _run("JFK to LHR on 12/20/2026, back 01/05/2027, 2 adults")

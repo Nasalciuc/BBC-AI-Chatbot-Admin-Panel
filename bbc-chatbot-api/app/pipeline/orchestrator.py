@@ -19,13 +19,12 @@ from app.ai.templates import get_template
 from app.pipeline.contact_capture import (
     asks_for_channel,
     asks_for_last_name,
-    asks_for_name,
     callback_channel,
     calls_refused,
     channel_after_call_request,
     channel_from_answer,
     last_question,
-    name_from_answer,
+    name_in_reply,
     name_to_store,
     with_stored_contact,
     with_turn_contact,
@@ -1281,15 +1280,15 @@ async def _pipeline(
     # The short answer to the question Alex (or an operator) just asked
     # (contact_capture): "Paul Moreau" to "your name?", "Text" to "a text
     # or a quick call?". Free text never names the client (see "name" below);
-    # an answer to that very question does. 17 Nov: all six names given in
-    # chat were lost, and three texters were promised a call.
+    # an answer to that very question does, the name beside the contact given
+    # with it too ("Paul Moreau, paul@…"), and "my name is …" said unasked
+    # (25 Nov 2026). 17 Nov: all six names given in chat were lost, and three
+    # texters were promised a call.
     _asked = last_question(history)
-    _answer_name = None
     _answer_channel = None
-    if asks_for_name(_asked):
-        _answer_name = name_to_store(visitor.name, name_from_answer(message), asks_for_last_name(_asked))
-        if _answer_name:
-            logger.info(f"[{cid}] Name taken from the answer to the name question")
+    _answer_name = name_to_store(visitor.name, name_in_reply(message, _asked), asks_for_last_name(_asked))
+    if _answer_name:
+        logger.info(f"[{cid}] Name taken from the client's message")
     if not extracted.contact_channel and asks_for_channel(_asked):
         _answer_channel = {"text": "text", "email": "email"}.get(channel_from_answer(message) or "")
 
@@ -1312,9 +1311,10 @@ async def _pipeline(
         ),
         # name: ALWAYS from visitor form data — never extract from message text
         # extracting name from message causes "looking for" or other text fragments
-        # to override the real visitor name submitted in the form. The one
-        # exception is the answer to Alex's own name question (above) — the
-        # only way a chat with no form ever learns the name.
+        # to override the real visitor name submitted in the form. The exceptions
+        # are read above (contact_capture.name_in_reply): the answer to Alex's own
+        # name question, and "my name is …" — the only ways a chat with no form
+        # ever learns the name.
         "name": _answer_name or (visitor.name if visitor.name else None),
         "email": extracted.email or (visitor.email if visitor.email else None),
         "phone": extracted.phone or (visitor.phone if visitor.phone else None),
