@@ -791,7 +791,12 @@ test('a contact left while the second chance\'s row was on its way drops the row
   assert.match(why, /if \(stopped\) return stopped\n(?:\s*\/\/[^\n]*\n)*\s+if \(rowOnly && ssGet\(CONTACT_LEFT_KEY\) === '1'\) return 'contact_left'/)
   // A passed moment is measured (moment_passed) and dropped before anything shows, and asks nothing again.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) return'))
+  // Both must be there before their order means anything: a missing one is -1 (CodeRabbit #282, round 8).
+  const measured = ask.indexOf('moment_passed: passed')
+  const dropped = ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) return')
+  assert.ok(measured >= 0, 'the passed moment is measured')
+  assert.ok(dropped >= 0, 'and dropped')
+  assert.ok(measured < dropped, 'measured before it is dropped')
   assert.equal(givesMomentBack('contact_left', 0), false)
   // Rule 5: the visit's first moment does not read it (with a chat a visitor has none: `allowed` is false).
   assert.doesNotMatch(why, /if \(ssGet\(CONTACT_LEFT_KEY\)/)
