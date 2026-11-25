@@ -232,7 +232,7 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 | `live:reg` | sorted set | visitor id of an open visit, score = unix seconds of its last snapshot | until the visit ends | bbc-live (`visit.lua`, `close.lua`) |
 | `live:reg:<vid>` | hash | the open visit (the registry, below) | 6 h after the last snapshot; ended at 30 min | bbc-live |
 | `live:ended` | list | keys of ended visits, oldest first | until the API stores them | bbc-live pushes, the API removes (`LREM`) |
-| `live:ended:<vid>:<first_at>` | hash | an ended visit, as it was; `link_tries`: the runs its chat lookup got no answer | 3 days; the API deletes it once stored | bbc-live renames, the API counts `link_tries` and deletes |
+| `live:ended:<vid>:<first_at>` | hash | an ended visit, as it was; `link_tries`: the runs its chat lookup got no answer | 3 days; the API deletes it once stored | bbc-live renames, the API counts `link_tries` (only while the hash is there: one script) and deletes |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
 The scripts are in `contracts/live/` and copied next to the code that runs them (bbc-live
