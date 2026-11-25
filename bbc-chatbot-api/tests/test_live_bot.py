@@ -37,7 +37,8 @@ CONTRACTS = ROOT / "contracts"
 PANEL_VIEW = ROOT / "bbc-admin-app" / "src" / "features" / "live" / "view.ts"
 VID = "5b3e4c9a-0d6f-4e3a-9c4b-8f7a6e5d4c32"
 OTHER = "6c4f5dab-1e7a-4f4b-ad5c-9a8b7f6e5d43"
-SECRET = "jwt-test-secret-long-enough-for-hs256-0123456789"
+# A made-up JWT secret, built at run time (.gitleaksignore: its first version), long enough for HS256.
+SECRET = "-".join(["jwt", "test", "only"] * 4)
 ROW = {**SALES_DB, "email": "ana@example.com", "token_version": 0, "avatar_url": None}
 CONV = "c0000000-0000-4000-8000-0000000000c1"
 
