@@ -105,16 +105,26 @@ def widget_config() -> dict:
 _PASS_REFUSALS = {-1: "the id has a pass already", -2: "too many new visitors from one address"}
 
 
-async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Optional[str]) -> dict:
+async def widget_pass(
+    visitor_id: Optional[str], old_pass: Optional[str], ip: Optional[str], *, live: bool = True
+) -> dict:
     """POST /chat/live: widget_config() and, while it is on, the visitor's pass to bbc-live (b1).
+
+    The visit registry (app.services.visit_registry, VISIT_REGISTRY): while it is on, every visitor gets the pass and
+    bbc-live's place with `"visits": true`, also when the list is off for them (`live=False`: the agent-first test's
+    Alex side; or LIVE_VISITORS off): `"enabled"` then stays false, so the widget beats nowhere and only sends the
+    registry its snapshots.
 
     A visitor id gets a pass without proof once (pass.lua); after that only by showing its own pass, which
     the widget keeps and shows on every page. {"enabled": False} whenever no pass is handed: the widget then
     beats nowhere. {"enabled": False, "later": True} when Redis can't bind the id for now: the widget asks again
     later instead of ending the page's live work (CodeRabbit #273). Every refusal and failure is counted in
     LIVE_HEALTH."""
-    config = widget_config()
-    if not config["enabled"]:
+    from app.services import visit_registry
+
+    config = widget_config() if live else {"enabled": False}
+    visits = visit_registry.registry_enabled()
+    if not config["enabled"] and not visits:
         return config
     off = {"enabled": False}
     for_now = {"enabled": False, "later": True}
@@ -156,7 +166,12 @@ async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Op
         return off
     LIVE_HEALTH["passes"] += 1
     expires = datetime.now(timezone.utc) + timedelta(seconds=live_tokens.PASS_TTL)
-    return {**config, "pass": token, "pass_expires_at": expires.isoformat()}
+    out = {**config, "pass": token, "pass_expires_at": expires.isoformat()}
+    if visits:
+        out = {**out, "url": out.get("url") or _url(), "visits": True}
+        if not config["enabled"]:
+            visit_registry.VISIT_HEALTH["passes"] += 1
+    return out
 
 
 class SendRefused(Exception):

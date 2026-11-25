@@ -41,6 +41,7 @@ _QUIET_WHEN: dict[str, Callable[[dict], bool]] = {
     "attention_emails": lambda r: not r.get("sent"),
     "departure_tasks": lambda r: not r.get("created"),
     "qa_sample": lambda r: r.get("state") in ("off", "not_yet", "done"),
+    "visit_registry": lambda r: r.get("state") == "empty",
 }
 _was_quiet: dict[str, Any] = {}
 
@@ -143,6 +144,7 @@ def start(app_state, settings) -> list[asyncio.Task]:
     from app.services.ip_selftest import run_ip_selftest
     from app.services.qa_sample import run_qa_sample
     from app.services.learning import run_learning_tick
+    from app.services.visit_registry import run_visit_registry
     from app.api.cron import (
         run_abandoned_crm,
         run_agent_sweep,
@@ -179,6 +181,8 @@ def start(app_state, settings) -> list[asyncio.Task]:
         ("departure_tasks", run_departure_tasks, 60),
         # Every 5 min: once it is 07:00 in New York, yesterday's chats QA checks (app/services/qa_sample.py).
         ("qa_sample", run_qa_sample, 300),
+        # Every 60s: the visits bbc-live ended go into site_visits (app/services/visit_registry.py).
+        ("visit_registry", run_visit_registry, 60),
         # Hourly: does the edge let a client forge its IP? (ip_selftest)
         ("ip_selftest", run_ip_selftest, 3600),
         # Hourly tick; runs the daily learning once per day at LEARNING_HOUR_UTC.

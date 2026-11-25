@@ -242,6 +242,16 @@ class FakeRedis:
             lst.insert(0, str(v))
         return len(lst)
 
+    async def rpush(self, key: str, *values: Any) -> int:
+        self._check("rpush")
+        lst = self._list(key)
+        lst.extend(str(v) for v in values)
+        return len(lst)
+
+    async def llen(self, key: str) -> int:
+        self._check("llen")
+        return len(self._list(key))
+
     async def lrem(self, key: str, count: int, value: Any) -> int:
         self._check("lrem")
         lst = self._list(key)
