@@ -116,7 +116,7 @@ visit). The hello goes out with its group (below), kept with the hello and with 
   it. A refused pass (the id has one and none was shown, too many new ids from the address) answers
   `{"enabled": false}`: the widget stops for the page. Redis failing or cooling down answers
   `{"enabled": false, "later": true}`, and so does a 5xx or 429 from the route: the widget asks again
-  after 5 minutes and keeps the config it holds. Both counted in `/health`. The pass is made before
+  after 5 minutes and keeps the config it holds. Both counted in `/health/detail`. The pass is made before
   `pass.lua` binds the id, so the binding outlasts the pass's last renewing instant.
 - `POST /api/live/send` `{"visitor_id", "text", "group"?}` (an agent holding that visitor): 1 to 300 characters,
   no e-mail, phone or link in it (`output_guard.foreign_contact_kinds`); runs `send.lua`. `group` (form, anz,
@@ -128,33 +128,45 @@ visit). The hello goes out with its group (below), kept with the hello and with 
   carries `live_agent`, `live_hello` and `live_at` (when the hello was stored: the widget that shows it
   already reads messages after it). A tap that doesn't hold (expired, taken, the switch off) is counted and
   the chat starts as any other, without them. Never with `proactive`: a chat that starts with Alex's
-  opening takes no tap (the widget sends one or the other). A tap on Skye's own hello (below) starts the chat as
-  hers instead: nobody assigned, AI mode, the hello stored as her message (`role: ai`, `model_used: live_bot`),
-  `metadata.live_hello.bot: true`; `live_agent` is `"Skye"`.
+  opening takes no tap (the widget sends one or the other). A tap on the hello of the agent's own bot (below) starts
+  the chat the same way, marked `metadata.live_hello.bot: true`.
 
-## Skye's own hello (25 Nov 2026)
+## An agent's own bot (25 Nov 2026)
 
-The owner: Skye herself says the hello an agent would, by herself, to make leads (`app/services/live_bot.py`).
+The owner: an agent connects their own bot, and it works as them through the API (`app/services/live_bot.py`,
+`app/api/live_bot.py`), without the three visitors an agent holds at a time.
 
-- Who: the visitors her card didn't start a chat with because they ignored it (`alex_card: shown`, no answer for
-  30 s; never a "Not now" to the card), no chat, no "not now" to a hello, nobody holding them, not on a thank-you or
-  legal page, no quote form sent or contact clicked, not moving through the quote form (a step seen less than
-  120 s ago, the panel's rule), never the agent-first test's Alex side.
-- What: the hello the panel has ready for an agent (`view.ts` groupOf, groupHello, suggestedHello), as Skye
-  ("Hi, I'm Skye from the travel team. …"), with its group.
-- When: the API's scheduler, every 5 s while `LIVE_BOT` is on (app.flags, off at merge), agents online or not;
-  at most 20 a run; one of her hellos a visitor a day (`live:bot:<vid>`).
-- How: `bot_send.lua` checks again and sends in one step, without a claim before it: the visitor left (-1), in a
-  chat (-2), said "not now" (-3), someone holds them (-4), a hello went already (-5), Skye greeted them today (-6).
-  Sent, it holds the visitor as `skye` (`live:claim:<vid>`) for the hello's 15 minutes: the panel shows "Skye said
-  hello" with no button, and no agent claims them meanwhile. The tap and "Not now" let the hold go as an agent's.
-  The inbox message is an agent's plus `"bot": true` (`live_inbox_message_bot.json`); the widget shows it under
-  Skye's photo and name, and in the chat as her message.
-- `GET /api/live/bot/candidates` (who she may greet now and her words) and `POST /api/live/bot/hello`
-  `{"visitor_id", "text"?, "group"?}` (her hello to one of them, the same rules; `text` held to 300 characters, no
-  contact, link or price, no long dash): public with `Authorization: Bearer <LIVE_BOT_KEY>`, 503 while the key is
-  not set, 401 for a wrong one; the admin envelope with the refusal's `code`. `/health` counts it all under
-  `live_bot`.
+- The key: the agent takes it in "On the site now" (`POST /api/live/bot-key`, their panel session; `GET` says whether
+  one works and until when, `DELETE` revokes it). A JWT signed with the panel's secret, scope `live_bot`, 90 days:
+  no panel route takes it as a session (any scope is refused there). It works while it is the agent's newest key
+  (`live:botkey:<agent>`), while the agent's `token_version` is the one it was made with (a role change or a
+  deactivation ends it), while no "sign out everywhere" came after it, and while the agent may say hello and take
+  chats (read again at every call). Shown once; a new key stops the one before.
+- The bot's calls, `Authorization: Bearer <key>`, the admin envelope with the refusal's `code`:
+  - `GET /api/live/bot/visitors`: the visitors the panel lists for the agent (Skye's card unanswered 30 s or "Not
+    now" to it, the agent-first test's wait, the ones the agent or their bot holds), each with `state` (free, mine,
+    taken, my_bot, bot, declined, in_chat), `may_greet` and `why_not`, and the hello the panel has ready in the
+    agent's name (`ready_hello`, `group`).
+  - `POST /api/live/bot/hello` `{"visitor_id", "text"?, "group"?}`: the hello in the agent's name, `text` or the
+    ready one. The API checks the visitor's beat just before (listed for the agent, nobody else holding them, no
+    hello lately, no bot's hello today, not in the middle of the quote form: the panel's two minutes); `text` is held
+    to 300 characters, no contact, link or price, no long dash. Then `bot_send.lua` checks again and sends in one
+    step, without a claim before it: the visitor left (-1), in a chat (-2), said "not now" (-3), someone else holds
+    them (-4; the agent themself may, from the panel), a hello went already (-5), a bot said hello to them today
+    (-6). The card's state and the form are the API's check alone. Sent, the hello holds the visitor as
+    `bot:<agent>` (`live:claim:<vid>`) for its 15 minutes, in no agent's `live:claims:`: the panel shows "Your bot
+    said hello" / "A colleague's bot said hello" with no button, and nobody claims them meanwhile. The widget's
+    message is an agent's (`live_inbox_message.json`): the visitor sees the agent's first name.
+  - The tap starts the chat as the agent's, as a hello from the panel (assigned, human mode: Skye stays quiet),
+    with `metadata.live_hello.bot: true`.
+  - `GET /api/live/bot/chats`: the open chats its hellos started that are still the agent's, in human mode, with
+    `waiting` (the visitor wrote last). `GET /api/live/bot/chats/<id>/messages?after=<ISO time>`: what was said,
+    oldest first, `role` visitor, agent, ai or system. `POST /api/live/bot/chats/<id>/messages` `{"text"}`: its
+    answer, through the panel's own send (the agent's name on it, the response clock, the follow-up task), held to
+    the same rules as the hello, up to 2,000 characters. Any other chat answers 403 `not_the_bots`. A message the
+    bot sends counts as the agent being here, as one from the panel does; ten minutes with nothing from either, the
+    agent's chats go back to Skye, as any agent's.
+- `/health/detail` counts it all under `live_bot`.
 
 ## Where the hello shows (the widget, 23 Nov 2026)
 
@@ -190,7 +202,7 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
   visit. Nobody said hello: the card as usual, with `"after_hold": true`. The tapped note is never held.
 - Every answer names the side (`"test"`) while the test runs; the widget puts it on its PostHog events
   (`agent_test`), the API on the chat's metadata (`agent_test`), and the heartbeat's live block carries
-  `"test": {"percent", "hold_s"}`. `/health` counts it under `agent_first_test`. Redis failing holds nobody.
+  `"test": {"percent", "hold_s"}`. `/health/detail` counts it under `agent_first_test`. Redis failing holds nobody.
 
 ## Redis keys
 
@@ -198,13 +210,14 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 |---|---|---|---|---|
 | `live:visitors` | sorted set | visitor id, score = unix seconds of the last beat | trimmed at each beat | bbc-live |
 | `live:v:<vid>` | hash | the beat's fields, `first_at`, `last_at` | 60 s after the last beat | bbc-live |
-| `live:claim:<vid>` | string | the agent id holding the visitor; `skye` while Skye's own hello is out | 600 s; Skye's 900 s | bbc-live (claim), the API (`bot_send.lua`), the API and bbc-live (release) |
+| `live:claim:<vid>` | string | the agent id holding the visitor; `bot:<agent>` while that agent's bot's hello is out | 600 s; a bot's 900 s | bbc-live (claim), the API (`bot_send.lua`), the API and bbc-live (release) |
 | `live:claims:<agent>` | set | the visitors the agent holds | 600 s | bbc-live |
 | `live:dismissed:<vid>` | string | `1` | 3600 s | bbc-live |
 | `live:inbox:<vid>` | list | messages for the widget (JSON, `live_inbox_message.json`) | 900 s | the API |
 | `live:hello:<hello id>` | string | the hello for `/chat/init` (JSON) | 900 s | the API |
-| `live:said:<vid>` | string | the agent who said hello (`skye` for Skye's own) | 900 s | the API |
-| `live:bot:<vid>` | string | `1`: Skye said her own hello to this visitor | 86400 s | the API (`bot_send.lua`) |
+| `live:said:<vid>` | string | the agent who said hello (`bot:<agent>` for an agent's bot) | 900 s | the API |
+| `live:bot:<vid>` | string | `1`: an agent's bot said hello to this visitor | 86400 s | the API (`bot_send.lua`) |
+| `live:botkey:<agent>` | string | the id of the agent's newest bot key | 90 days | the API |
 | `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 25 h after the last pass: its 24 h and the hour it still renews | the API (`pass.lua`) |
 | `live:hold:<vid>` | string | unix seconds when Alex's wait began (the agent-first test) | 900 s | the API |
 | `live:greeters` | sorted set | user id, score = unix seconds of the last read of the list by an agent who may hold a visitor (the agent-first test) | a day after the last read, trimmed at each read | bbc-live |
@@ -260,7 +273,7 @@ before it is turned on.
   are counted (`pages_over`), not kept.
 - **The end.** A visit with no snapshot for 30 minutes has ended: `close.lua` (every 30 s) renames it to
   `live:ended:<vid>:<first_at>` and pushes that key on `live:ended`; a snapshot that finds its visitor's visit gone
-  quiet ends it the same way first. Lost (`/health`): an open visit that ran out before it ended.
+  quiet ends it the same way first. Lost (`/health/detail`): an open visit that ran out before it ended.
 - **The API** (`app/services/visit_registry.py`, every minute) reads up to 200 queued keys, stores one row a visit
   (`site_visits`, UNIQUE visitor id and start: a visit taken twice is one row), links the chat by the visitor's id
   when the widget didn't name it, then removes from the queue exactly the keys it stored (`LREM`, never a range:
