@@ -677,15 +677,25 @@ export function tripText(route: string, rows: Row[]): string {
   return [route, ...rows.map((r) => `${r.label}: ${r.value}`)].filter(Boolean).join('\n')
 }
 
+/** An agent has the chat (or had it): the assistant no longer asks the client to confirm the trip there. */
+export function agentHasChat(c: Pick<Conversation, 'mode' | 'assigned_agent_id'> | null | undefined): boolean {
+  return !!c && (c.mode === 'human' || !!c.assigned_agent_id)
+}
+
 /** What a lead still lacks before the assistant can call it Ready.
- *  `confirmed`: the conversation's confirmed_at, when the caller has it. */
-export function missingForReady(lead: Lead | null | undefined, confirmed?: boolean): string[] {
+ *  `confirmed`: the conversation's confirmed_at, when the caller has it. `agentChat`: an agent has the chat, so the
+ *  client's yes to the assistant never comes and is not listed (25 Nov: agents read it as what blocked the CRM). */
+export function missingForReady(
+  lead: Lead | null | undefined,
+  confirmed?: boolean,
+  opts: { agentChat?: boolean } = {}
+): string[] {
   if (!lead) return []
   const out: string[] = []
   if (!lead.departure_date) out.push('a departure date')
   if (lead.trip_type !== 'one_way' && !lead.return_date) out.push('the return date')
   if (!lead.passengers) out.push('travelers')
-  if (!(confirmed ?? lead.tier === 'gold')) out.push('the client’s yes')
+  if (!opts.agentChat && !(confirmed ?? lead.tier === 'gold')) out.push('the client’s yes')
   return out
 }
 
@@ -712,7 +722,7 @@ export interface Level {
  *  confirmed (the server's leads_view.lead_level follows the same rule).
  *  `confirmed`: the conversation's confirmed_at; without it, the gold tier
  *  stands in for the YES (older payloads). */
-export function levelOf(lead: Lead | null | undefined, confirmed?: boolean): Level {
+export function levelOf(lead: Lead | null | undefined, confirmed?: boolean, opts: { agentChat?: boolean } = {}): Level {
   if (!lead || (!lead.origin_code && !lead.destination_code)) {
     return { name: 'Contact only', why: 'the form, no trip yet', steps: 1, ready: false, chip: 'Contact' }
   }
@@ -720,7 +730,9 @@ export function levelOf(lead: Lead | null | undefined, confirmed?: boolean): Lev
     return { name: 'Ready to quote', why: 'the client confirmed the trip to the assistant', steps: 4, ready: true, chip: 'Ready' }
   }
   if (lead.departure_date) {
-    return { name: 'Almost ready', why: 'from the assistant: route and dates, no yes yet', steps: 3, ready: false, chip: 'Almost' }
+    // With an agent on the chat the assistant asks for no yes: the agent confirms the trip with the client.
+    const why = opts.agentChat ? 'route and dates; the agent confirms the trip' : 'from the assistant: route and dates, no yes yet'
+    return { name: 'Almost ready', why, steps: 3, ready: false, chip: 'Almost' }
   }
   return { name: 'Early interest', why: 'from the assistant: route only', steps: 2, ready: false, chip: 'Early' }
 }
@@ -855,8 +867,9 @@ export function crmView(
   c: Conversation,
   lead: Lead | null | undefined,
   /** button: the "Create lead in CRM" button is on for this user. The CRM then takes one contact, and the lead
-   *  is made with that button, under the chat. */
-  opts: { canAct: boolean; ownerName: string | null; button?: boolean }
+   *  is made with that button, under the chat. oneContact: the server's "Send to CRM" takes a phone OR an e-mail
+   *  (CRM_SINGLE_CONTACT, said by GET …/crm-lead); without it, both. */
+  opts: { canAct: boolean; ownerName: string | null; button?: boolean; oneContact?: boolean }
 ): CrmView {
   const first = firstName(c.visitor_name)
   if (!lead) {
@@ -905,14 +918,22 @@ export function crmView(
       fg: 'text-k-202020',
     }
   }
-  const miss = [!phone && 'a phone number', !email && 'an e-mail'].filter(Boolean) as string[]
-  if (miss.length) {
-    return {
-      state: 'missing',
-      title: 'Not in the CRM yet',
-      text: `The CRM needs a phone and an e-mail. Still missing: ${joinAnd(miss)}.${opts.canAct && c.status !== 'closed' ? ` Ask ${first} in the chat.` : ''}`,
-      dot: 'bg-k-d97a00',
-      fg: 'text-k-8a4b00',
+  const ask = opts.canAct && c.status !== 'closed' ? ` Ask ${first} in the chat.` : ''
+  if (opts.oneContact) {
+    // 25 Nov, chat 492c524b: an e-mail alone, a server that takes one contact, and no "Send to CRM" here.
+    if (!phone && !email) {
+      return { state: 'missing', title: 'Not in the CRM yet', text: `The CRM needs a phone or an e-mail.${ask}`, dot: 'bg-k-d97a00', fg: 'text-k-8a4b00' }
+    }
+  } else {
+    const miss = [!phone && 'a phone number', !email && 'an e-mail'].filter(Boolean) as string[]
+    if (miss.length) {
+      return {
+        state: 'missing',
+        title: 'Not in the CRM yet',
+        text: `The CRM needs a phone and an e-mail. Still missing: ${joinAnd(miss)}.${ask}`,
+        dot: 'bg-k-d97a00',
+        fg: 'text-k-8a4b00',
+      }
     }
   }
   const gate = gateReasonText(lead.crm_push_gate_reason)

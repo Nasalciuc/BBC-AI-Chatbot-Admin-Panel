@@ -21,6 +21,7 @@ import {
   levelOf,
   minutesLabel,
   missingForReady,
+  agentHasChat,
   noSummaryText,
   notesOf,
   ownerOf,
@@ -169,6 +170,28 @@ test('the lead level in words', () => {
   assert.deepEqual(missingForReady(lead({ trip_type: 'one_way', return_date: null, tier: 'gold' })), [])
 })
 
+test('with an agent on the chat, the client’s yes is not something to wait for (25 Nov)', () => {
+  // The assistant asks for the yes only while it has the chat; an agent read the line as what kept the lead out of
+  // the CRM. The real gaps stay listed.
+  assert.equal(agentHasChat(conv({ mode: 'human' })), true)
+  assert.equal(agentHasChat(conv({ mode: 'ai', assigned_agent_id: 'u-1' })), true)
+  assert.equal(agentHasChat(conv({ mode: 'ai', assigned_agent_id: null })), false)
+  assert.equal(agentHasChat(conv({ mode: 'waiting_for_agent', assigned_agent_id: null })), false)
+  assert.equal(agentHasChat(null), false)
+  const almost = lead({ trip_type: 'one_way', return_date: null, tier: 'silver' })
+  assert.deepEqual(missingForReady(almost, false, { agentChat: true }), [])
+  assert.deepEqual(missingForReady(lead({ return_date: null, tier: 'silver' }), false, { agentChat: true }), ['the return date'])
+  // The assistant's chat still waits for it (the message that does not take the new branch).
+  assert.deepEqual(missingForReady(almost, false), ['the client’s yes'])
+  assert.deepEqual(missingForReady(almost, false, { agentChat: false }), ['the client’s yes'])
+  const level = levelOf(almost, false, { agentChat: true })
+  assert.equal(level.name, 'Almost ready')
+  assert.equal(level.why, 'route and dates; the agent confirms the trip')
+  assert.equal(levelOf(almost, false).why, 'from the assistant: route and dates, no yes yet')
+  // A yes the client did give still makes it Ready, an agent there or not.
+  assert.equal(levelOf(almost, true, { agentChat: true }).name, 'Ready to quote')
+})
+
 test('the CRM card never claims what the server does not know', () => {
   const c = conv({ visitor_phone: '+1 555', visitor_email: 'm@x.com' })
   assert.equal(crmView(c, lead({ created_in_crm: true, crm_lead_id: '208131' }), { canAct: true, ownerName: null }).title, 'In the CRM · lead 208131')
@@ -186,6 +209,28 @@ test('the CRM card never claims what the server does not know', () => {
   assert.match(ai.text, /^The assistant sends it when Michael confirms/)
   const refused = crmView(c, lead({ crm_push_gate_reason: 'email_typo_domain' }), { canAct: true, ownerName: null })
   assert.match(refused.text, /Last try was refused: the e-mail domain looks misspelled\./)
+})
+
+test('Send to CRM asks for the contacts the server asks for (one is enough with CRM_SINGLE_CONTACT, 25 Nov)', () => {
+  // Chat 492c524b: an e-mail only, a server that takes it, and no Send to CRM under the chat.
+  const emailOnly = conv({ visitor_phone: null, visitor_email: 'm@x.com' })
+  const onlyEmail = lead({ visitor_phone: null, visitor_email: 'm@x.com' })
+  const one = crmView(emailOnly, onlyEmail, { canAct: true, ownerName: null, oneContact: true })
+  assert.equal(one.state, 'ready')
+  assert.match(one.text, /Send it now/)
+  const phoneOnly = crmView(conv({ visitor_email: null, visitor_phone: '+1 555' }), lead({ visitor_email: null, visitor_phone: '+1 555' }), { canAct: true, ownerName: null, oneContact: true })
+  assert.equal(phoneOnly.state, 'ready')
+  const none = crmView(conv({ visitor_phone: null, visitor_email: null }), lead({ visitor_phone: null, visitor_email: null }), { canAct: true, ownerName: null, oneContact: true })
+  assert.equal(none.state, 'missing')
+  assert.equal(none.text, 'The CRM needs a phone or an e-mail. Ask Michael in the chat.')
+  // A server that still wants both (the answer without one_contact, or false): as before.
+  const both = crmView(emailOnly, onlyEmail, { canAct: true, ownerName: null })
+  assert.equal(both.state, 'missing')
+  assert.match(both.text, /The CRM needs a phone and an e-mail\. Still missing: a phone number\./)
+  assert.equal(crmView(emailOnly, onlyEmail, { canAct: true, ownerName: null, oneContact: false }).state, 'missing')
+  // Closed: nobody to ask.
+  const closed = crmView(conv({ status: 'closed', visitor_phone: null, visitor_email: null }), lead({ visitor_phone: null, visitor_email: null }), { canAct: true, ownerName: null, oneContact: true })
+  assert.equal(closed.text, 'The CRM needs a phone or an e-mail.')
 })
 
 test('the summary is written once, at the 4th client message — the empty state says so', () => {
