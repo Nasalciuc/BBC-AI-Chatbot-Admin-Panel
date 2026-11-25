@@ -68,7 +68,10 @@ it: a reply, a channel, a message); Alex's opening in a chat the visitor opened 
 (moment `note`). `alex_card_s`: the seconds since it showed, by the visitor's clock, a whole number from 0 to
 86 400; bbc-live keeps the time it showed by its own clock (the visitor's may be off). `alex_trigger`: the moment
 that showed it (kayak, ads, quote, reader, exit, note). A state it doesn't know or seconds out of range leave
-all three out; a moment it doesn't know leaves only the moment out. `has_chat` is true on the widget's last
+all three out; a moment it doesn't know leaves only the moment out. `tz`: the browser's time zone, an IANA name
+(`UTC`, `Australia/Sydney`, `America/Argentina/Buenos_Aires`; another shape is left out). `returning`: true when
+this browser was on the site before this visit (the widget's `visitCount.ts`: a visit is a run of pages and beats
+with no 30-minute gap, counted in localStorage from the first page the widget saw); left out otherwise. `has_chat` is true on the widget's last
 beat, the one it sends when the visitor's chat starts (once more after the 5 s gap if it didn't count: 202, 5xx,
 or lost on the way): the panel stops listing them at once. Once true, `has_chat` stays true for the visit
 (`beat.lua`): a beat sent before it that lands after it never takes it back.
@@ -86,12 +89,19 @@ A listed visitor: `visitor_id`, `first_at`, `last_at`, `seconds_on_site`, `page`
 `activity` (a list of steps, oldest first), `source`, `device`, `site`, `chat_open`, `has_chat`,
 `claimed_by` (an agent id), `dismissed`, `alex_at` (left out when there is none), `alex_card`, `alex_card_s`
 (seconds since it showed, by bbc-live's clock at the list), `alex_trigger` (the three left out when Alex's card
-didn't show). bbc-live lists everyone who beats; the panel shows the visitors Alex's card didn't start a chat
+didn't show), `tz` and `returning` (left out when the beat had none). bbc-live lists everyone who beats; the panel shows the visitors Alex's card didn't start a chat
 with: `alex_card` `dismissed`, or `shown` with `alex_card_s` 30 or more (70 % of the answers his card gets come
 within 30 s), and no `has_chat`; plus the ones the agent holds, whatever became of them, and while the
 agent-first test runs the ones Alex waits on. The freshest card first. The row says what came of the card in
 words, shows the last four steps in words and starts the hello from the last one: a quote form that stuck or
 failed is offered a hand, a sent one a thank-you. A visitor who wrote is in a chat already, not in this list.
+
+The groups (the owner, 25 Nov 2026; the panel's `features/live/view.ts` `groupOf`): where the group matters, the
+row names it and has its hello ready, sent in one tap (the claim, then the hello). The first that fits:
+`form` (stuck in the quote form: it flagged a field, didn't go through, or was opened and not sent),
+`anz` (Australia or New Zealand by the time zone, on a computer: 17.9 % answer Skye's card), `soon` (flying in 15
+to 45 days by the page's trip, on a computer: 16.5 %), `back` (`returning`: 8.8 %, against 4.8 % for a first
+visit). The hello goes out with its group (below), kept with the hello and with the chat its tap starts.
 
 ## The API's routes
 
@@ -105,8 +115,11 @@ failed is offered a hand, a sent one a thank-you. A visitor who wrote is in a ch
   `{"enabled": false, "later": true}`, and so does a 5xx or 429 from the route: the widget asks again
   after 5 minutes and keeps the config it holds. Both counted in `/health`. The pass is made before
   `pass.lua` binds the id, so the binding outlasts the pass's last renewing instant.
-- `POST /api/live/send` `{"visitor_id", "text"}` (an agent holding that visitor): 1 to 300 characters,
-  no e-mail, phone or link in it (`output_guard.foreign_contact_kinds`); runs `send.lua`.
+- `POST /api/live/send` `{"visitor_id", "text", "group"?}` (an agent holding that visitor): 1 to 300 characters,
+  no e-mail, phone or link in it (`output_guard.foreign_contact_kinds`); runs `send.lua`. `group` (form, anz,
+  soon, back: the group the panel named the visitor by) is kept with the hello (`live:hello:<id>`), in the
+  audit row and, after a tap, in the chat's `metadata.live_hello.group`; any other value is left out, never
+  refused. The visitor's inbox message never carries it.
 - `POST /chat/init` with `live_tap`: a valid tap for this visitor takes the hello (`take_hello.lua`),
   and the chat starts as the agent's (assigned, human mode, the hello as its first message); the answer
   carries `live_agent`, `live_hello` and `live_at` (when the hello was stored: the widget that shows it
