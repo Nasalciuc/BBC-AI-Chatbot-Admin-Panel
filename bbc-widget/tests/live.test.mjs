@@ -473,7 +473,7 @@ test('the beats end once a chat exists, with one last beat that says so; no hell
   const src = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
   const send = src.slice(src.indexOf('const sendBeat = (cfg: LiveConfig, chat: boolean'), src.indexOf('const lastBeat = () => {'))
   assert.match(send, /hasChat: chat,/)
-  assert.match(send, /alexCard: alexCardNow\(Date\.now\(\)\) \}\)/)
+  assert.match(send, /alexCard: alexCardNow\(Date\.now\(\)\),/)
   const last = src.slice(src.indexOf('const lastBeat = () => {'), src.indexOf('const beat = () => {'))
   assert.match(last, /stopped = true\s+abort\?\.abort\(\)\s+if \(cfg\?\.enabled\) sendBeat\(cfg, true\)/)
   const beat = src.slice(src.indexOf('const beat = () => {'), src.indexOf('let failures = 0'))
@@ -585,4 +585,44 @@ test('a hello kept from an earlier page is dismissed before this page\'s config,
   const dismiss = src.slice(src.indexOf('dismiss: () => {'), src.indexOf('taken: () => {', src.indexOf('dismiss: () => {')))
   assert.match(dismiss, /const url = cfg\?\.url \|\| keptUrl\(\)\s+const pass = cfg\?\.pass \|\| storedPass\(\)\s+if \(url && pass\)/)
   assert.match(src, /if \(cfg\.enabled && cfg\.url\) keepUrl\(cfg\.url\)/)
+})
+
+// ── The panel's groups (the owner, 25 Nov 2026): the time zone, and a browser that came before ──────────────
+
+test('a beat carries the browser’s time zone and whether it came before, nothing else of it', async () => {
+  const base = { path: '/', trip: null, utm: {}, phone: false, site: 'bbc', chatOpen: false, hasChat: false }
+  const b = beatBody({ ...base, tz: 'Australia/Sydney', returning: true })
+  assert.equal(b.tz, 'Australia/Sydney')
+  assert.equal(b.returning, true)
+  assert.equal(beatBody({ ...base, tz: 'America/Argentina/Buenos_Aires' }).tz, 'America/Argentina/Buenos_Aires')
+  assert.equal(beatBody({ ...base, tz: 'UTC' }).tz, 'UTC')
+  // Rule 5: no zone, a zone of another shape, and a browser that didn't come before leave both out.
+  for (const tz of [undefined, null, '', 'Australia/Sydney; DROP', '../etc', 'a/b/c/d', 'x'.repeat(65)]) {
+    assert.equal('tz' in beatBody({ ...base, tz }), false, String(tz))
+  }
+  assert.equal('returning' in beatBody({ ...base, returning: false }), false)
+  assert.equal('returning' in beatBody(base), false)
+  // The hook counts the visit on each beat and sends both.
+  const hook = readFileSync(join(here, '..', 'src', 'live.ts'), 'utf8')
+  assert.match(hook, /noteVisit\(\)\n\s*\/\/ What the visitor is doing right now/)
+  assert.match(hook, /tz: timeZone\(\), returning: isReturning\(\) \}\)/)
+  const entry = readFileSync(join(here, '..', 'src', 'entry.tsx'), 'utf8')
+  assert.match(entry, /if \(!embedded\) noteVisit\(\)/)
+})
+
+test('a visit is a run of pages with no 30-minute gap; the next one makes the browser a returning one', async () => {
+  const { countAfter, VISIT_GAP_MS } = await import('../src/visitCount.ts')
+  const T = Date.parse('2026-11-25T10:00:00Z')
+  assert.deepEqual(countAfter(null, T), { n: 1, last: T })
+  const first = JSON.stringify(countAfter(null, T))
+  // Pages and beats of the same visit keep it one.
+  assert.deepEqual(countAfter(first, T + VISIT_GAP_MS - 1), { n: 1, last: T + VISIT_GAP_MS - 1 })
+  // Thirty minutes without a page or a beat: the next page is a second visit.
+  assert.deepEqual(countAfter(first, T + VISIT_GAP_MS), { n: 2, last: T + VISIT_GAP_MS })
+  // A clock set back is this visit, never a new one, and never moves the last time back.
+  assert.deepEqual(countAfter(first, T - 3_600_000), { n: 1, last: T })
+  // What isn't ours starts again at 1.
+  for (const raw of ['{', '[]', '"x"', '{"n":0,"last":1}', '{"n":2.5,"last":1}', '{"n":3}', '{"n":3,"last":"x"}']) {
+    assert.deepEqual(countAfter(raw, T), { n: 1, last: T }, raw)
+  }
 })

@@ -24,6 +24,7 @@ import { posthog } from './posthog'
 import { activityLine, siteEvents, sitePage } from './siteSignals'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
+import { isReturning, noteVisit, timeZone } from './visitCount'
 
 export type { LiveHello } from './liveRead'
 
@@ -182,6 +183,8 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (!cfg.url || !cfg.pass) return
       let path = '/'
       try { path = location.pathname } catch { /* keep "/" */ }
+      // A beat keeps this visit going in the browser's count of visits (visitCount.ts).
+      noteVisit()
       // What the visitor is doing right now, for the agent who says hello first (the owner, 22 Nov 2026): the
       // kind of page and the steps on the site, as the site told the widget; never what they typed.
       const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
@@ -190,7 +193,10 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         // The agent-first test: when Alex's card may come, so the agent sees how long they have.
         alexAt: alexAt(),
         // What came of Alex's card: the panel lists the visitors it didn't start a chat with.
-        alexCard: alexCardNow(Date.now()) })
+        alexCard: alexCardNow(Date.now()),
+        // The panel's groups (the owner, 25 Nov 2026): Australia and New Zealand by the time zone, and a browser
+        // that was here before.
+        tz: timeZone(), returning: isReturning() })
       liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) })
         .then((res): number | 'error' => res.status, (): number | 'error' => 'error')

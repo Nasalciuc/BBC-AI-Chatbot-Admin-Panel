@@ -8,6 +8,7 @@ import { TRANSCRIPT_EXPORT_V0, preconnect } from './api'
 import { exposeRoutes } from './page-globals'
 import { startPostHog } from './posthog'
 import { startSiteSignals, stopSiteSignals } from './siteSignals'
+import { noteVisit } from './visitCount'
 
 // Guard: prevent double-init if script included twice
 if ((window as any).__BBC_WIDGET_LOADED__) {
@@ -52,6 +53,9 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
       try { return new URLSearchParams(location.search).get('embedded') === '1' }
       catch { return false }
     })()
+  // This page, in the browser's count of visits ("On the site now" names a client who comes back;
+  // visitCount.ts). Never in the CRM's chat, which is no visit to the site.
+  if (!embedded) noteVisit()
 
   // The widget's stylesheet (src/styles.ts): scoped to #bbc-widget-root, with its own reset.
   if (!document.getElementById('bbc-widget-css')) {

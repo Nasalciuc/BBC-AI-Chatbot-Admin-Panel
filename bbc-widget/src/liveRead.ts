@@ -53,7 +53,15 @@ export interface Beat {
   alex_card?: 'shown' | 'dismissed' | 'engaged'
   alex_card_s?: number
   alex_trigger?: string
+  /** The browser's time zone ("Australia/Sydney"): the panel names a group by it (Australia and New Zealand). */
+  tz?: string
+  /** This browser was on the site before this visit (visitCount.ts); left out when it wasn't. */
+  returning?: true
 }
+
+/** A time zone's shape (IANA: "Area/City", "Area/Region/City", "UTC"), as bbc-live checks it again (http.go
+ *  zoneShape). */
+const TIME_ZONE = /^[A-Za-z][A-Za-z_]{0,19}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/
 
 /** What a beat says of Alex's card (agentTest.ts alexCard, with the seconds since it showed). */
 export interface BeatAlexCard {
@@ -142,6 +150,9 @@ export function beatBody(o: {
   alexAt?: number | null
   /** What came of Alex's card on this visit; "On the site now" lists the visitors it didn't start a chat with. */
   alexCard?: BeatAlexCard | null
+  /** The browser's time zone, and whether it came before this visit (visitCount.ts): the panel's groups. */
+  tz?: string | null
+  returning?: boolean
 }): Beat {
   const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
   const t = o.trip
@@ -172,6 +183,8 @@ export function beatBody(o: {
     b.alex_card_s = Math.max(0, Math.floor(c.secondsAgo))
     if (ALEX_TRIGGERS.includes(c.trigger)) b.alex_trigger = c.trigger
   }
+  if (o.tz && o.tz.length <= 64 && TIME_ZONE.test(o.tz)) b.tz = o.tz
+  if (o.returning === true) b.returning = true
   return b
 }
 
