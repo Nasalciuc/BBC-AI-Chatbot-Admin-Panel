@@ -232,7 +232,7 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 | `live:reg` | sorted set | visitor id of an open visit, score = unix seconds of its last snapshot | until the visit ends | bbc-live (`visit.lua`, `close.lua`) |
 | `live:reg:<vid>` | hash | the open visit (the registry, below) | 6 h after the last snapshot; ended at 30 min | bbc-live |
 | `live:ended` | list | keys of ended visits, oldest first | until the API stores them | bbc-live pushes, the API removes (`LREM`) |
-| `live:ended:<vid>:<first_at>` | hash | an ended visit, as it was | 3 days; the API deletes it once stored | bbc-live renames, the API deletes |
+| `live:ended:<vid>:<first_at>` | hash | an ended visit, as it was; `link_tries`: the runs its chat lookup got no answer | 3 days; the API deletes it once stored | bbc-live renames, the API counts `link_tries` and deletes |
 | channel `live:inbox` | pub/sub | a visitor id: wake their poll | — | the API publishes, bbc-live listens |
 
 The scripts are in `contracts/live/` and copied next to the code that runs them (bbc-live
@@ -283,8 +283,11 @@ before it is turned on.
   quiet ends it the same way first. Lost (`/health/detail`): an open visit that ran out before it ended.
 - **The API** (`app/services/visit_registry.py`, every minute) reads up to 200 queued keys, stores one row a visit
   (`site_visits`, UNIQUE visitor id and start: a visit taken twice is one row), links the chat by the visitor's id
-  when the widget didn't name it, then removes from the queue exactly the keys it stored (`LREM`, never a range:
-  two schedulers run during a deploy). A table not there yet, or a failed write, leaves the queue for the next run.
+  when the widget didn't name it (the first chat the visitor began from 2 minutes before the visit's first snapshot
+  to 30 minutes after its last, one bounded read a visit), then removes from the queue exactly the keys it stored
+  (`LREM`, never a range: two schedulers run during a deploy). A table not there yet, or a failed write, leaves the
+  queue for the next run. A visit whose chat lookup got no answer stays queued for the next run, 5 runs at most
+  (`link_tries` in its hash), then goes in without its chat (`/health` `link_given_up`).
   Contacts are never copied: `site_visits_full` reads them from the chat and the lead; `site_visits_daily` counts
   per New York day, group (source, channel, screen, came back) and card (moment, words).
 
