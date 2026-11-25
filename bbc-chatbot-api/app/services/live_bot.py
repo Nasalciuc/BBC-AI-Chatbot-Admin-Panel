@@ -56,7 +56,10 @@ _ROLES = {"user": "visitor", "agent": "agent", "ai": "ai", "system": "system"}
 
 BOT_HEALTH: dict = {"keys_issued": 0, "keys_revoked": 0, "key_refused": 0, "agent_unreadable": 0, "sent": 0,
                     "refused": 0, "send_failed": 0, "list_failed": 0, "messages_sent": 0, "messages_refused": 0,
-                    "read_failed": 0}
+                    "read_failed": 0,
+                    # An answer stored in the one round trip between the send's last check and its write, in a chat
+                    # closed or moved meanwhile (conversations.send_as_agent: its engagement write then refused).
+                    "moved_while_sending": 0}
 
 _LUA_DIR = Path(__file__).with_name("live_lua")
 LIST_LUA = (_LUA_DIR / "list.lua").read_text(encoding="utf-8")

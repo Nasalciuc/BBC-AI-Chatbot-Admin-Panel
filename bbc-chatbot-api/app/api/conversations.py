@@ -832,10 +832,20 @@ async def send_agent_message(
     return await send_as_agent(conversation_id, body, user)
 
 
+async def _still_held(conversation_id: str, user_id: str) -> bool:
+    """The chat is still this agent's, in human mode and open, read now (a chat that can't be read is not)."""
+    now = await db.get_conversation_simple(conversation_id)
+    return bool(now) and now.get("mode") == "human" and now.get("assigned_agent_id") == user_id \
+        and now.get("status") in db.OPEN_STATUSES
+
+
 async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict, *, must_hold: bool = False):
     """The agent's send. `must_hold`: only in a chat that is the sender's now, in human mode and open (an agent's own
     bot, app.services.live_bot): any other is refused with 409 before anything is written, and never claimed, no
-    manual handoff (CodeRabbit #282, rounds 7 and 8). The panel's send claims a chat it doesn't hold, as before."""
+    manual handoff (CodeRabbit #282, rounds 7 and 8). Its writes after an await are checked again (round 9): the chat
+    is read again just before each message is stored, its status changes only by a write conditional on the chat
+    still being the agent's and open, and its metadata only by merging its own keys. The panel's send claims a chat
+    it doesn't hold, as before."""
     # SECURITY: role from DB, not JWT. Only hands-on roles may speak as agent.
     _sender_db = await db.get_user_by_id(user.get("id"))
     _role_db = (_sender_db or {}).get("role") or ""
@@ -881,6 +891,8 @@ async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict
         and conv.get("assigned_agent_id") == _user_id
     )
     if _was_announce_pending:
+        if must_hold and not await _still_held(conversation_id, _user_id):
+            raise HTTPException(status_code=409, detail="The chat is no longer yours.")
         from config.settings import settings as _s
         _agent_name = (_sender_db or {}).get("name") or user.get("name") or "A specialist"
         _announce_row = await add_message(
@@ -901,6 +913,9 @@ async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict
         "agent_name": (_sender_db or {}).get("name") or "Consultant",
         "agent_avatar_url": (_sender_db or {}).get("avatar_url"),
     }
+    # The bot's answer: the chat read again just before it is stored (a close or a move during the awaits above).
+    if must_hold and not await _still_held(conversation_id, _user_id):
+        raise HTTPException(status_code=409, detail="The chat is no longer yours.")
     msg = await add_message(
         conversation_id=conversation_id, role="agent", content=clean_content,
         live_extra=identity,
@@ -944,17 +959,20 @@ async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict
     #   - needs_agent → active: the human the client waited for is HERE
     _engage_update: dict = {}
     _meta_changed = False
-    if _conv_meta.get("engaged_agent_id") != _user_id:
-        _conv_meta["engaged_agent_id"] = _user_id
-        _meta_changed = True
-    if _conv_meta.pop("announce_pending", None) is not None:
-        _meta_changed = True
-    if _meta_changed:
-        _engage_update["metadata"] = _conv_meta
-    if conv.get("status") == "needs_agent":
-        _engage_update["status"] = "active"
-    if _engage_update:
-        await db.update_conversation(conversation_id, _engage_update)
+    if must_hold:
+        await _engage_held(conversation_id, _user_id, conv, _conv_meta)
+    else:
+        if _conv_meta.get("engaged_agent_id") != _user_id:
+            _conv_meta["engaged_agent_id"] = _user_id
+            _meta_changed = True
+        if _conv_meta.pop("announce_pending", None) is not None:
+            _meta_changed = True
+        if _meta_changed:
+            _engage_update["metadata"] = _conv_meta
+        if conv.get("status") == "needs_agent":
+            _engage_update["status"] = "active"
+        if _engage_update:
+            await db.update_conversation(conversation_id, _engage_update)
 
     if msg:
         # The panel's answer carries the same identity as the live copy.
@@ -975,6 +993,27 @@ async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict
             follow_up = {k: task.get(k) for k in ("id", "title", "kind", "due_at", "due_kind", "message_id")}
 
     return {"success": True, "data": msg, "follow_up": follow_up}
+
+
+async def _engage_held(conversation_id: str, user_id: str, conv: dict, meta: dict) -> None:
+    """The bot's engagement, after its answer is stored (CodeRabbit #282, round 9): needs_agent becomes active only
+    while the chat is still the agent's and open (a chat closed meanwhile is never reopened), and the engagement keys
+    are merged, never the metadata read before (which would undo what another request wrote meanwhile)."""
+    from app.services.live_bot import BOT_HEALTH
+
+    if conv.get("status") == "needs_agent":
+        outcome = await db.update_conversation_if_held(conversation_id, {"status": "active"}, user_id)
+        if outcome == "moved":
+            BOT_HEALTH["moved_while_sending"] += 1
+            logger.warning(f"[{conversation_id}] the bot's answer was stored as the chat closed or moved: not reopened")
+            return
+    keys: dict = {}
+    if meta.get("engaged_agent_id") != user_id:
+        keys["engaged_agent_id"] = user_id
+    if meta.get("announce_pending") is not None:
+        keys["announce_pending"] = None
+    if keys and await _still_held(conversation_id, user_id):
+        await db.patch_conversation_presence(conversation_id, keys)
 
 
 class AgentTypingBody(BaseModel):

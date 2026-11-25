@@ -1788,6 +1788,28 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
         return None
 
 
+async def update_conversation_if_held(conversation_id: str, payload: dict, agent_id: str) -> str:
+    """update_conversation for an agent's own bot's send (conversations.send_as_agent, must_hold): written only while
+    the chat is still this agent's, in human mode and open, so a chat closed or moved meanwhile is never reopened or
+    changed by it (CodeRabbit #282, round 9). "written"; "moved" when it no longer is (nothing written); "failed"
+    when the database did not answer (logged)."""
+    db = get_client()
+    try:
+        res = await _run_sync(
+            lambda: db.table("conversations").update(payload)
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", agent_id)
+            .eq("mode", "human")
+            .in_("status", list(OPEN_STATUSES))
+            .execute(),
+            label="conversation_update",
+        )
+    except Exception as e:
+        logger.error(f"[{conversation_id}] a held chat's update failed: {type(e).__name__} {_error_code(e) or e}")
+        return "failed"
+    return "written" if res.data else "moved"
+
+
 async def update_conversation_keeping_receipts(
     conversation_id: str, payload: dict, receipt_keys: tuple[str, ...]
 ) -> Optional[dict]:

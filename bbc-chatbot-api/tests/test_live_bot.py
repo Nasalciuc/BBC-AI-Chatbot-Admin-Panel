@@ -794,6 +794,10 @@ def _send_patches(conv):
         patch.object(mod.manager, "push", new=AsyncMock()),
         patch.object(mod.db, "update_user_last_seen", new=AsyncMock()),
         patch("app.services.handoff.perform_handoff_to_agent", new=AsyncMock()),
+        # The chat read again before the bot's answer is stored, and its conditional writes (round 9).
+        patch.object(mod.db, "get_conversation_simple", new=AsyncMock(return_value=conv)),
+        patch.object(mod.db, "update_conversation_if_held", new=AsyncMock(return_value="written")),
+        patch.object(mod.db, "patch_conversation_presence", new=AsyncMock(return_value=True)),
     ]
 
 
@@ -842,6 +846,82 @@ async def test_a_chat_closed_after_the_bots_check_gets_no_answer(redis):
     mocks[2].assert_not_awaited()
     mocks[4].assert_not_awaited()
     assert mod.db.OPEN_STATUSES == ("active", "needs_agent")
+
+
+@pytest.mark.asyncio
+async def test_the_bots_answer_is_not_stored_in_a_chat_closed_during_the_send():
+    """CodeRabbit #282, round 9: the chat is read again just before the answer is stored: one closed (or moved) during
+    the send's awaits gets nothing written."""
+    from fastapi import HTTPException
+
+    from app.api import conversations as mod
+
+    for now in (_conv(status="closed"), _conv(assigned_agent_id=COLLEAGUE), None):
+        ps = _send_patches(_conv())
+        mocks = [p.start() for p in ps]
+        mocks[8].return_value = now
+        try:
+            with pytest.raises(HTTPException) as e:
+                await mod.send_as_agent(CONV, mod.AgentMessageBody(content="Which dates?"), dict(SALES), must_hold=True)
+        finally:
+            for p in ps:
+                p.stop()
+        assert e.value.status_code == 409
+        mocks[2].assert_not_awaited()
+        mocks[4].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_bots_engagement_never_reopens_a_chat_or_writes_back_its_old_metadata():
+    """CodeRabbit #282, round 9: needs_agent becomes active only by a write conditional on the chat still being the
+    agent's and open; the engagement keys are merged, never the metadata read before the awaits."""
+    from app.api import conversations as mod
+
+    live_bot.BOT_HEALTH["moved_while_sending"] = 0
+    conv = _conv(status="needs_agent", metadata={"live_hello": {"id": "h1", "agent_id": AGENT, "bot": True}})
+    ps = _send_patches(conv)
+    mocks = [p.start() for p in ps]
+    try:
+        out = await mod.send_as_agent(CONV, mod.AgentMessageBody(content="Which dates?"), dict(SALES), must_hold=True)
+    finally:
+        for p in ps:
+            p.stop()
+    assert out["success"] is True
+    mocks[4].assert_not_awaited()
+    assert mocks[9].await_args.args == (CONV, {"status": "active"}, AGENT)
+    assert mocks[10].await_args.args == (CONV, {"engaged_agent_id": AGENT})
+    # Closed or moved between the answer and this write: nothing reopened, nothing merged, counted.
+    ps = _send_patches(conv)
+    mocks = [p.start() for p in ps]
+    mocks[9].return_value = "moved"
+    try:
+        await mod.send_as_agent(CONV, mod.AgentMessageBody(content="Which dates?"), dict(SALES), must_hold=True)
+    finally:
+        for p in ps:
+            p.stop()
+    mocks[10].assert_not_awaited()
+    assert live_bot.BOT_HEALTH["moved_while_sending"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_panels_send_engages_as_before():
+    """Rule 5: the panel's send keeps its one engagement write (status and metadata) and none of the bot's checks."""
+    from app.api import conversations as mod
+
+    conv = _conv(status="needs_agent", metadata={"announce_pending": True})
+    ps = _send_patches(conv)
+    mocks = [p.start() for p in ps]
+    try:
+        await mod.send_as_agent(CONV, mod.AgentMessageBody(content="Hello"), dict(SALES))
+    finally:
+        for p in ps:
+            p.stop()
+    written = mocks[4].await_args.args[1]
+    assert written["status"] == "active" and written["metadata"]["engaged_agent_id"] == AGENT
+    assert "announce_pending" not in written["metadata"]
+    mocks[8].assert_not_awaited()
+    mocks[9].assert_not_awaited()
+    mocks[10].assert_not_awaited()
 
 
 @pytest.mark.asyncio
