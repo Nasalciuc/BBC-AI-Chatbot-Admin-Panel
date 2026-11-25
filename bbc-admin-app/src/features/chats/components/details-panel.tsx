@@ -10,6 +10,7 @@ import {
   type CrmView,
   dayClock,
   firstName,
+  agentHasChat,
   confirmedOf,
   levelOf,
   missingForReady,
@@ -156,8 +157,10 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const signals = signalsOf(lead)
   const trip = tripRows(lead, signals)
   const about = aboutOf(signals, lead)
-  const level = levelOf(lead, confirmedOf(conv))
-  const missing = conv.tunnel === 'support' ? [] : missingForReady(lead, confirmedOf(conv))
+  // An agent on the chat: no "client’s yes" to wait for (the assistant doesn't ask it there).
+  const agentChat = agentHasChat(conv)
+  const level = levelOf(lead, confirmedOf(conv), { agentChat })
+  const missing = conv.tunnel === 'support' ? [] : missingForReady(lead, confirmedOf(conv), { agentChat })
   // The chat the proactive card opened (no form): why it opened, the search the page gave, and the
   // replay of the visit. The replay sits with "Where they came from", which supervisors don't get.
   const replay = p.isSupervisor ? '' : replayUrl(conv.metadata, REPLAY_BASE)

@@ -59,6 +59,7 @@ import {
   confirmedOf,
   leadLine,
   leftNote,
+  agentHasChat,
   levelOf,
   minutesLabel,
   minutesSince,
@@ -677,7 +678,10 @@ export default function ConversationDetail({
   const canTake = owner === 'waiting' && HANDS_ON.includes(role) && conv.status !== 'closed' && (!canBeReady || ready)
   const canManage = permissions.canReassignConversations && conv.status !== 'closed'
   const canActOnLead = isAdmin || (role === 'sales' && (owner === 'mine' || engagedMe))
-  const crm = crmView(conv, lead, { canAct: canActOnLead, ownerName: conv.assigned_agent_name ?? null, button: crmButtonOn })
+  const crm = crmView(conv, lead, {
+    canAct: canActOnLead, ownerName: conv.assigned_agent_name ?? null, button: crmButtonOn,
+    oneContact: crmLead?.one_contact === true,
+  })
   const leadNow = leadLine(lead, crm, markingLead)
   // With the new button on, it replaces Send to CRM here (and in the close dialog); a manager can still save a
   // lead number typed by hand.
@@ -688,7 +692,7 @@ export default function ConversationDetail({
   const waitingMin = owner === 'waiting' ? minutesSince(conv.queued_at ?? conv.updated_at, nowMs) : null
   const noReply = noReplyMinutes(conv, nowMs)
   const leftMin = presence.state === 'left' && typeof presence.ageSeconds === 'number' ? Math.floor(presence.ageSeconds / 60) : null
-  const level = levelOf(lead, confirmedOf(conv))
+  const level = levelOf(lead, confirmedOf(conv), { agentChat: agentHasChat(conv) })
   const narrow = layout === 'narrow'
   const detailsStatic = layout === 'wide'
 
