@@ -11,7 +11,7 @@
     "build:bct": "vite build --mode bct",
     "build:all": "npm run build:bbc && npm run build:bct",
     "dev": "vite",
-    "test": "node --test tests/first-contact.test.mjs tests/sse-user-frame.test.mjs tests/stream-events.test.mjs tests/typing-dots.test.mjs tests/continuity.test.mjs tests/teardown.test.mjs && node --experimental-strip-types --test tests/reconcile.test.mjs tests/attribution-off.test.mjs tests/utm-capture.test.mjs tests/realtime-policy.test.mjs tests/visitor-token.test.mjs tests/remount.test.mjs tests/presence.test.mjs tests/proactive.test.mjs tests/phone.test.mjs tests/form-look.test.mjs tests/large-view.test.mjs tests/site-signals.test.mjs tests/operator.test.mjs tests/reply-turns.test.mjs tests/page-context.test.mjs tests/after-card.test.mjs tests/live.test.mjs tests/reading-moment.test.mjs"
+    "test": "node --test tests/first-contact.test.mjs tests/sse-user-frame.test.mjs tests/stream-events.test.mjs tests/typing-dots.test.mjs tests/continuity.test.mjs tests/teardown.test.mjs && node --experimental-strip-types --test tests/reconcile.test.mjs tests/attribution-off.test.mjs tests/utm-capture.test.mjs tests/realtime-policy.test.mjs tests/visitor-token.test.mjs tests/remount.test.mjs tests/presence.test.mjs tests/proactive.test.mjs tests/phone.test.mjs tests/form-look.test.mjs tests/large-view.test.mjs tests/site-signals.test.mjs tests/operator.test.mjs tests/reply-turns.test.mjs tests/page-context.test.mjs tests/after-card.test.mjs tests/live.test.mjs tests/reading-moment.test.mjs tests/before-you-go.test.mjs"
   },
   "dependencies": {
     "posthog-js": "^1.448.0",

@@ -26,6 +26,7 @@ import { contactTestProps, markProactiveConversation, type ProactiveOpening } fr
 import type { LiveHello } from './liveRead'
 import { siteMetadata } from './siteSignals'
 import { isNotNow, keysOnSite } from './triggers'
+import { NOT_YET, NOT_YET_WAIT_MS, mayAsk, type FieldState, type Leaving } from './beforeYouGo'
 import { CONSULTANT_LABEL, agentInitials, currentOperator, withOperatorFrom } from './operator'
 import { createReplyTurns } from './replyTurns'
 
@@ -380,7 +381,7 @@ export function ChatWindow({
       notifySessionClose('minimized', true).finally(() => beatNowRef.current())
       if (convId) apiFetch(`${apiUrl}/api/chat/typing/${convId}`, { method: 'DELETE' }).catch(() => {})
       // B1: closing the chat without a contact is leaving it; the corner button shows the message.
-      beforeYouGoRef.current(true)
+      beforeYouGoRef.current('closed')
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
@@ -875,8 +876,10 @@ export function ChatWindow({
 
   // ── B1 (ADR-6d): one message as a client with no contact leaves ──────────────────────────────────
   // The tab goes out of view, the chat is closed, or the page goes quiet for IDLE_LEAVING_MS with the chat
-  // open — and nobody has the client's contact yet, no agent has written: the server adds one message with
-  // the channels (app/pipeline/card_buttons.py, before_you_go), once per conversation. Asked once per tab.
+  // open — and nobody has the client's contact yet: the server adds one message with the channels
+  // (app/pipeline/card_buttons.py, before_you_go), once per conversation. After an agent wrote, only as the
+  // client leaves the chat or the page with the agent's newest message unanswered (lever 6, beforeYouGo.ts).
+  // Asked once per tab, unless the server says "not yet".
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
@@ -893,17 +896,30 @@ export function ChatWindow({
     setQuickReplies(null)
   }, [live?.id, convId, starting])
   const busyRef = useRef(false)
-  busyRef.current = sending || isStreaming || !!channelForm || !!input.trim() || agentTyping.is_typing
-  const beforeYouGoRef = useRef<(keepalive?: boolean) => void>(() => {})
-  beforeYouGoRef.current = (keepalive = false) => {
+  busyRef.current = sending || isStreaming || !!input.trim() || agentTyping.is_typing
+  // The channel field apart (beforeYouGo.ts mayAsk): left empty, closing the chat or the tab is leaving.
+  const fieldRef = useRef<FieldState>('none')
+  fieldRef.current = !channelForm ? 'none' : channelValue.trim() ? 'typed' : 'empty'
+  // After the server's "not yet" (NOT_YET), a quiet page asks again no sooner than this (ms).
+  const notYetUntilRef = useRef(0)
+  const beforeYouGoRef = useRef<(why: Leaving) => void>(() => {})
+  beforeYouGoRef.current = (why: Leaving) => {
     const cid = convId
-    if (!cid || embedded || contactGivenRef.current || busyRef.current) return
+    if (!cid || embedded || contactGivenRef.current) return
     const key = `${BEFORE_YOU_GO_KEY}:${cid}`
     if (ssGet(key) === '1') return
+    if (why === 'idle' && Date.now() < notYetUntilRef.current) return
     const rows = messagesRef.current
-    if (!rows.some(m => m.role === 'user') || rows.some(m => m.role === 'agent')) return
+    if (!mayAsk(rows, why, { busy: busyRef.current, field: fieldRef.current })) return
+    const afterAgent = rows.some(m => m.role === 'agent')
     ssSet(key, '1')
-    void askBeforeYouGo(apiUrl, cid, keepalive).then(out => {
+    void askBeforeYouGo(apiUrl, cid, why !== 'idle', why).then(out => {
+      if (out && !out.show && out.why && NOT_YET.has(out.why)) {
+        // Not now, maybe at the next leave: the tab's one ask is not spent on it.
+        ssSet(key, null)
+        notYetUntilRef.current = Date.now() + NOT_YET_WAIT_MS
+        return
+      }
       if (!out?.show || !out.message || !out.id) return
       const msg: Message = {
         id: out.id, role: 'ai', content: out.message, created_at: out.created_at || new Date().toISOString(),
@@ -913,16 +929,17 @@ export function ChatWindow({
       if (out.created_at && (!lastMsgTime.current || out.created_at > lastMsgTime.current)) {
         lastMsgTime.current = out.created_at
       }
-      posthog?.capture('chat_before_you_go', { tunnel })
+      // How the client left, and whether an agent had written: before and after lever 6 compare on these.
+      posthog?.capture('chat_before_you_go', { tunnel, why, ...(afterAgent ? { after_agent: true } : {}) })
     })
   }
   useEffect(() => {
     if (!convId || embedded) return
-    const onHidden = () => { if (document.visibilityState === 'hidden') beforeYouGoRef.current(true) }
+    const onHidden = () => { if (document.visibilityState === 'hidden') beforeYouGoRef.current('hidden') }
     document.addEventListener('visibilitychange', onHidden)
     const idle = setInterval(() => {
       if (!visibleRef.current || document.visibilityState !== 'visible') return
-      if (Date.now() - lastActivityRef.current >= IDLE_LEAVING_MS) beforeYouGoRef.current()
+      if (Date.now() - lastActivityRef.current >= IDLE_LEAVING_MS) beforeYouGoRef.current('idle')
     }, 5_000)
     return () => {
       document.removeEventListener('visibilitychange', onHidden)

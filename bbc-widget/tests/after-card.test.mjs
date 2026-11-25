@@ -146,6 +146,8 @@ test('before you go: the server\'s message with its buttons, or nothing', async 
     assert.equal(out.show, true)
     assert.equal(out.buttons.length, 2)
     globalThis.fetch = async () => new Response(JSON.stringify({ show: false, why: 'has_contact' }), { status: 200 })
+    assert.deepEqual(await askBeforeYouGo('https://api.test', 'conv-1'), { show: false, why: 'has_contact' })
+    globalThis.fetch = async () => new Response(JSON.stringify({ show: false }), { status: 200 })
     assert.deepEqual(await askBeforeYouGo('https://api.test', 'conv-1'), { show: false })
     globalThis.fetch = async () => { throw new Error('offline') }
     assert.equal(await askBeforeYouGo('https://api.test', 'conv-1'), null)
@@ -455,13 +457,15 @@ test('C1/C2: the card\'s own channel, and the pill after "Not now" until ✕ or 
   assert.match(buttons, /kind === 'sms' \? <IconMessage size=\{18\} \/> : <IconMail size=\{18\} \/>/)
 })
 
-test('B1: one message as a contactless client leaves, asked once per tab, never over a send or a field', () => {
-  assert.match(chat, /const onHidden = \(\) => \{ if \(document\.visibilityState === 'hidden'\) beforeYouGoRef\.current\(true\) \}/)
-  assert.match(chat, /if \(Date\.now\(\) - lastActivityRef\.current >= IDLE_LEAVING_MS\) beforeYouGoRef\.current\(\)/)
-  assert.match(chat, /\/\/ B1: closing the chat without a contact is leaving it; the corner button shows the message\.\s+beforeYouGoRef\.current\(true\)/)
-  assert.match(chat, /if \(!cid \|\| embedded \|\| contactGivenRef\.current \|\| busyRef\.current\) return/)
-  assert.match(chat, /if \(!rows\.some\(m => m\.role === 'user'\) \|\| rows\.some\(m => m\.role === 'agent'\)\) return/)
-  assert.match(chat, /busyRef\.current = sending \|\| isStreaming \|\| !!channelForm \|\| !!input\.trim\(\) \|\| agentTyping\.is_typing/)
+test('B1: one message as a contactless client leaves, asked once per tab, never over a send or a typed field', () => {
+  // How the client left goes with the ask (lever 6: tests/before-you-go.test.mjs has the rule itself).
+  assert.match(chat, /const onHidden = \(\) => \{ if \(document\.visibilityState === 'hidden'\) beforeYouGoRef\.current\('hidden'\) \}/)
+  assert.match(chat, /if \(Date\.now\(\) - lastActivityRef\.current >= IDLE_LEAVING_MS\) beforeYouGoRef\.current\('idle'\)/)
+  assert.match(chat, /\/\/ B1: closing the chat without a contact is leaving it; the corner button shows the message\.\s+beforeYouGoRef\.current\('closed'\)/)
+  assert.match(chat, /if \(!cid \|\| embedded \|\| contactGivenRef\.current\) return/)
+  assert.match(chat, /if \(!mayAsk\(rows, why, \{ busy: busyRef\.current, field: fieldRef\.current \}\)\) return/)
+  assert.match(chat, /busyRef\.current = sending \|\| isStreaming \|\| !!input\.trim\(\) \|\| agentTyping\.is_typing/)
+  assert.match(chat, /fieldRef\.current = !channelForm \? 'none' : channelValue\.trim\(\) \? 'typed' : 'empty'/)
 })
 
 test('the conversation keeps the browser\'s language and time zone: a local number is placed by them', () => {
