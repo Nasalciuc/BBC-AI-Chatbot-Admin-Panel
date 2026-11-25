@@ -75,7 +75,7 @@ func run(log *slog.Logger) error {
 	}
 	srv := &gateway.Server{
 		Cfg:  cfg,
-		Meta: &meta.Client{HTTP: &http.Client{Timeout: 20 * time.Second}, Base: "https://graph.facebook.com", Version: version},
+		Meta: &meta.Client{HTTP: &http.Client{Timeout: 10 * time.Second}, Base: "https://graph.facebook.com", Version: version},
 		API:  &http.Client{},
 		Log:  log,
 	}
@@ -99,7 +99,7 @@ func run(log *slog.Logger) error {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      40 * time.Second, // an agent's message waits for Meta, with its retries
+		WriteTimeout:      75 * time.Second, // an agent's message waits for Meta: 4 calls of 10 s, 22 s between
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
