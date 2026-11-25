@@ -1,5 +1,6 @@
-"""Skye's own hello in "On the site now" (app.services.live_bot; the owner, 25 Nov 2026): who she greets, the words,
-the send in one step, her run, the endpoints and the tap that starts the chat as hers.
+"""An agent's own bot in "On the site now" (app.services.live_bot; the owner, 25 Nov 2026): the key the agent takes in
+the panel, the visitors the bot sees, its hello in the agent's name without the three-at-a-time limit, the chat its
+hello starts as the agent's, and its answers there.
 
 The scripts' real behaviour is tested in bbc-live's Go suite against a real Redis (TestTheBotSendScriptHoldsTheRules);
 here the fake Redis is taught them line by line, so the keys and arguments the API passes are held to their order.
@@ -19,15 +20,16 @@ os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
+import jwt  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.infra import redis_client  # noqa: E402
 from app.services import live_bot, live_tokens, live_visitors  # noqa: E402
-from app.services.live_visitors import SendRefused  # noqa: E402
+from app.services.live_bot import BotRefused  # noqa: E402
 from tests.fake_redis import FakeRedis  # noqa: E402
 from tests.test_live_visitors import (  # noqa: E402
-    AGENT, SALES, SALES_DB, STORED_AT, _init, _release_lua, _send_lua, _take_hello_lua,
+    AGENT, COLLEAGUE, SALES, SALES_DB, STORED_AT, _init, _release_lua, _send_lua, _take_hello_lua,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -35,7 +37,9 @@ CONTRACTS = ROOT / "contracts"
 PANEL_VIEW = ROOT / "bbc-admin-app" / "src" / "features" / "live" / "view.ts"
 VID = "5b3e4c9a-0d6f-4e3a-9c4b-8f7a6e5d4c32"
 OTHER = "6c4f5dab-1e7a-4f4b-ad5c-9a8b7f6e5d43"
-KEY = "bot-test-key"
+SECRET = "jwt-test-secret-long-enough-for-hs256-0123456789"
+ROW = {**SALES_DB, "email": "ana@example.com", "token_version": 0, "avatar_url": None}
+CONV = "c0000000-0000-4000-8000-0000000000c1"
 
 
 # ── the contract ────────────────────────────────────────────────────
@@ -45,10 +49,6 @@ def test_the_scripts_are_the_contracts():
     for name in ("bot_send.lua", "list.lua"):
         mine = (pathlib.Path(live_bot.__file__).with_name("live_lua") / name).read_bytes()
         assert mine == (CONTRACTS / "live" / name).read_bytes(), f"app/services/live_lua/{name}: copy the contract"
-
-
-def test_the_switch_is_off_at_merge():
-    assert live_bot.run_enabled() is False
 
 
 # ── the fake's scripts ──────────────────────────────────────────────
@@ -71,20 +71,20 @@ def _list_lua(fake, keys, args):
 def _bot_send_lua(fake, keys, args):
     """bot_send.lua, line by line."""
     visit, claim, dismissed, inbox, hello, said, bot = keys
-    skye, vid, message, hello_json, ttl, once = args
+    holder, vid, message, hello_json, ttl, once, agent = args
     if not fake._alive(visit):
         return -1
     if fake.kv[visit].get("has_chat") == "1":
         return -2
     if fake._alive(dismissed):
         return -3
-    if fake._alive(claim):
+    if fake._alive(claim) and fake.kv[claim] != agent:
         return -4
     if fake._alive(bot):
         return -6
     if fake._alive(said):
         return -5
-    for key, value, life in ((said, skye, ttl), (bot, "1", once), (claim, skye, ttl), (hello, hello_json, ttl)):
+    for key, value, life in ((said, holder, ttl), (bot, "1", once), (claim, holder, ttl), (hello, hello_json, ttl)):
         fake.kv[key] = value
         fake._set_expiry(key, ex=int(life))
     fake._list(inbox).append(message)
@@ -95,16 +95,18 @@ def _bot_send_lua(fake, keys, args):
 
 @pytest.fixture
 def redis(monkeypatch):
+    from app.security import ban_store
     from config.settings import settings
 
     monkeypatch.setattr(settings, "live_token_secret", "live-test-secret")
     monkeypatch.setattr(settings, "live_service_url", "https://live.example.test/")
-    monkeypatch.setattr(settings, "live_bot_key", KEY)
+    monkeypatch.setattr(settings, "jwt_secret", SECRET)
     monkeypatch.setenv("LIVE_VISITORS", "true")
     monkeypatch.setenv("AGENT_FIRST_MESSAGE", "true")
-    monkeypatch.setenv("LIVE_BOT", "true")
     monkeypatch.setenv("AGENT_FIRST_TEST_PERCENT", "0")
     monkeypatch.setattr(live_bot, "_steps", {})
+    monkeypatch.setattr(live_bot, "_agents", {})
+    monkeypatch.setattr(ban_store, "_MEM_REVOKED", {})
     for health in (live_bot.BOT_HEALTH, live_visitors.LIVE_HEALTH):
         for k in health:
             health[k] = 0
@@ -115,7 +117,10 @@ def redis(monkeypatch):
     fake.register(live_visitors.TAKE_HELLO_LUA, _take_hello_lua)
     fake.register(live_visitors.RELEASE_LUA, _release_lua)
     redis_client.set_client_for_tests(fake)
-    with patch("config.settings.settings.redis_url", "redis://fake"):
+    with patch("config.settings.settings.redis_url", "redis://fake"), \
+            patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=dict(ROW))) as user, \
+            patch("app.db.supabase.log_audit", new=AsyncMock()) as audit:
+        fake.user, fake.audit = user, audit
         yield fake
     redis_client.set_client_for_tests(None)
 
@@ -132,97 +137,477 @@ def _visit(fake, vid=VID, *, card="shown", card_s=45, **fields):
     fake._zset("live:visitors")[vid] = float(now)
 
 
-async def _rows(fake) -> list[dict]:
-    return await live_bot._listed(fake)
+async def _key(user=SALES) -> str:
+    return (await live_bot.issue_key(user))["key"]
 
 
-async def _greet(vid=VID, **kw):
-    with patch("app.db.supabase.log_audit", new=AsyncMock()) as audit:
-        out = await live_bot.greet(vid, **kw)
-    return out, audit
+async def _agent(fake) -> dict:
+    return await live_bot.agent_for(f"Bearer {await _key()}")
 
 
-# ── who Skye greets: only who ignored her card (the owner) ──────────
+# ── the key: the agent takes it in the panel, their bot works as them by it ─────────
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("card, card_s, fields, why", [
-    ("shown", 30, {}, None),
-    ("shown", 600, {"activity": "search:JFK-IST:2026-12-20"}, None),
-    # Rule 5, the visitors the run passes by: the card not yet unanswered long enough, answered, or "Not now"
-    # to it (the owner: only who ignored it), or no card at all.
-    ("shown", 29, {}, "card"),
-    ("dismissed", 120, {}, "card"),
-    ("engaged", 120, {}, "card"),
-    (None, 0, {}, "card"),
-    ("shown", 120, {"has_chat": "1"}, "in_a_chat"),
-    ("shown", 120, {"page_type": "thank_you"}, "page"),
-    ("shown", 120, {"page_type": "legal"}, "page"),
-    ("shown", 120, {"activity": "search:JFK-IST;quote_opened;quote_step:2;quote_submitted"}, "reached_out"),
-    ("shown", 120, {"activity": "contact:phone;search:JFK-IST"}, "reached_out"),
-    ("shown", 120, {"activity": "quote_opened;quote_step:2;quote_submitting"}, "filling_form"),
+async def test_a_key_works_as_its_agent(redis):
+    out = await live_bot.issue_key(SALES)
+    claims = jwt.decode(out["key"], SECRET, algorithms=["HS256"])
+    assert claims["sub"] == AGENT and claims["scope"] == "live_bot" and redis.kv[f"live:botkey:{AGENT}"] == claims["jti"]
+    assert claims["exp"] - claims["iat"] == live_bot.KEY_TTL_S
+    agent = await live_bot.agent_for(f"Bearer {out['key']}")
+    assert agent["id"] == AGENT and agent["first_name"] == "Ana" and agent["role"] == "sales"
+    assert redis.audit.await_args.args[2] == "live_bot_key_issued"
+    assert live_bot.BOT_HEALTH["keys_issued"] == 1
+    assert (await live_bot.key_status(SALES))["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_new_key_replaces_the_one_before_and_revoke_ends_it(redis):
+    first = await _key()
+    second = await _key()
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(f"Bearer {first}")
+    assert (e.value.status, e.value.code) == (401, "key_revoked")
+    assert (await live_bot.agent_for(f"Bearer {second}"))["id"] == AGENT
+    assert (await live_bot.revoke_key(SALES)) == {"revoked": True}
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(f"Bearer {second}")
+    assert e.value.code == "key_revoked"
+    assert (await live_bot.key_status(SALES)) == {"active": False, "expires_at": None}
+    assert (await live_bot.revoke_key(SALES)) == {"revoked": False}
+    assert live_bot.BOT_HEALTH["keys_revoked"] == 1
+
+
+@pytest.mark.asyncio
+async def test_what_is_no_key(redis):
+    """Rule 5: no header, junk, another secret's token, a panel session (no scope), a key run out."""
+    key = await _key()
+    session = jwt.encode({"sub": AGENT, "iat": int(time.time()), "exp": int(time.time()) + 60, "jti": "x"}, SECRET,
+                         algorithm="HS256")
+    expired = jwt.encode({"sub": AGENT, "scope": "live_bot", "jti": redis.kv[f"live:botkey:{AGENT}"],
+                          "iat": int(time.time()) - 100, "exp": int(time.time()) - 1}, SECRET, algorithm="HS256")
+    for header, code in ((None, "key"), ("", "key"), (key, "key"), ("Bearer junk", "key"),
+                         (f"Bearer {jwt.encode({'sub': AGENT}, 'other-secret-' * 4, algorithm='HS256')}", "key"),
+                         (f"Bearer {session}", "key"), (f"Bearer {expired}", "key_expired")):
+        with pytest.raises(BotRefused) as e:
+            await live_bot.agent_for(header)
+        assert (e.value.status, e.value.code) == (401, code), header
+
+
+def test_the_panel_never_takes_a_bot_key_as_a_session(redis):
+    """Any scope is refused by the panel's own check: the bot key reaches the bot's endpoints alone."""
+    from app.api import live as live_api
+
+    app = FastAPI()
+    app.include_router(live_api.router, prefix="/api")
+    bot_key = jwt.encode({"sub": AGENT, "scope": "live_bot", "jti": "k", "token_version": 0,
+                          "iat": int(time.time()), "exp": int(time.time()) + 60}, SECRET, algorithm="HS256")
+    res = TestClient(app).get("/api/live/bot-key", headers={"Authorization": f"Bearer {bot_key}"})
+    assert res.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_key_ends_with_the_agents_access(redis, monkeypatch):
+    """A role change or a deactivation (token_version), "sign out everywhere" after it, an agent who no longer may say
+    hello or take chats, an agent that can't be read."""
+    from app.security import ban_store
+
+    key = f"Bearer {await _key()}"
+    redis.user.return_value = {**ROW, "token_version": 1}
+    monkeypatch.setattr(live_bot, "_agents", {})
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(key)
+    assert (e.value.status, e.value.code) == (401, "key_revoked")
+    redis.user.return_value = dict(ROW)
+    monkeypatch.setattr(live_bot, "_agents", {})
+    ban_store._MEM_REVOKED[AGENT] = int(time.time()) + 1
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(key)
+    assert e.value.code == "key_revoked"
+    ban_store._MEM_REVOKED.clear()
+    redis.kv[f"revoked_before:{AGENT}"] = str(int(time.time()) + 1)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(key)
+    assert e.value.code == "key_revoked"
+    redis.kv.pop(f"revoked_before:{AGENT}")
+    for row in ({**ROW, "chat_enabled": False}, {**ROW, "is_active": False}, {**ROW, "role": "support"},
+                {**ROW, "tunnel_scope": "support"}):
+        redis.user.return_value = row
+        monkeypatch.setattr(live_bot, "_agents", {})
+        with pytest.raises(BotRefused) as e:
+            await live_bot.agent_for(key)
+        assert (e.value.status, e.value.code) == (403, "not_for_you"), row
+    redis.user.return_value = None
+    monkeypatch.setattr(live_bot, "_agents", {})
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(key)
+    assert (e.value.status, e.value.code) == (503, "agent_unreadable")
+    assert live_bot.BOT_HEALTH["agent_unreadable"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row, code, status", [
+    ({**ROW, "chat_enabled": False}, "not_for_you", 403),
+    ({**ROW, "role": "supervisor", "tunnel_scope": "all"}, "not_for_you", 403),
 ])
-async def test_who_skye_greets(redis, card, card_s, fields, why):
-    _visit(redis, card=card, card_s=card_s, **fields)
-    (v,) = await _rows(redis)
-    assert live_bot.why_not(v, time.time(), {}) == why
+async def test_only_who_may_say_hello_takes_a_key(redis, row, code, status):
+    redis.user.return_value = row
+    with pytest.raises(BotRefused) as e:
+        await live_bot.issue_key(SALES)
+    assert (e.value.code, e.value.status) == (code, status)
+    assert f"live:botkey:{AGENT}" not in redis.kv
 
 
 @pytest.mark.asyncio
-async def test_a_visitor_held_or_who_said_not_now_is_left_alone(redis):
+async def test_no_key_while_off_or_unconfigured(redis, monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setenv("AGENT_FIRST_MESSAGE", "false")
+    with pytest.raises(BotRefused) as e:
+        await live_bot.issue_key(SALES)
+    assert e.value.code == "off"
+    monkeypatch.setenv("AGENT_FIRST_MESSAGE", "true")
+    monkeypatch.setattr(settings, "jwt_secret", "")
+    with pytest.raises(BotRefused) as e:
+        await live_bot.issue_key(SALES)
+    assert e.value.code == "not_configured"
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for("Bearer anything")
+    assert e.value.code == "not_configured"
+
+
+# ── the visitors the bot sees: the panel's list for its agent ───────
+
+
+@pytest.mark.asyncio
+async def test_the_bot_sees_the_panels_list_with_the_hello_ready_in_the_agents_name(redis):
+    _visit(redis, to="IST")                                     # Skye's card unanswered 45 s: listed, may greet
+    _visit(redis, OTHER, card="dismissed")                      # "Not now" to the card: listed, may greet
+    _visit(redis, "visitor-card-new", card_s=10)                # the card too new: not listed (rule 5)
+    _visit(redis, "visitor-no-card", card=None)                 # no card: not listed (rule 5)
+    _visit(redis, "visitor-held-ok", card=None)
+    redis.kv["live:claim:visitor-held-ok"] = AGENT              # held by the agent from the panel: listed, may greet
+    agent = await _agent(redis)
+    rows = {r["visitor_id"]: r for r in await live_bot.visitors(agent)}
+    assert set(rows) == {VID, OTHER, "visitor-held-ok"}
+    assert rows[VID]["may_greet"] is True and rows[VID]["state"] == "free" and rows[VID]["why_not"] is None
+    assert rows[VID]["ready_hello"] == ("Hi, I'm Ana from the travel team. Looking at flights to IST? I can check "
+                                        "business class fares for your dates.")
+    assert rows["visitor-held-ok"]["state"] == "mine" and rows["visitor-held-ok"]["may_greet"] is True
+    assert rows[OTHER]["may_greet"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setup, why", [
+    (lambda r: r.kv.__setitem__(f"live:claim:{VID}", COLLEAGUE), "taken"),
+    (lambda r: r.kv.__setitem__(f"live:claim:{VID}", f"bot:{COLLEAGUE}"), "taken"),
+    (lambda r: r.kv.__setitem__(f"live:claim:{VID}", f"bot:{AGENT}"), "already"),
+    (lambda r: r.kv.__setitem__(f"live:dismissed:{VID}", "1"), "declined"),
+    (lambda r: r.kv[f"live:v:{VID}"].update(activity="search:JFK-IST;quote_opened"), "filling_form"),
+    # CodeRabbit #287: what the script would refuse, the list says first (an agent's hello whose claim ran out, a
+    # bot's hello today whose hold ran out).
+    (lambda r: r.kv.__setitem__(f"live:said:{VID}", COLLEAGUE), "already"),
+    (lambda r: r.kv.__setitem__(f"live:bot:{VID}", "1"), "bot_already"),
+])
+async def test_why_the_bot_may_not_greet_a_listed_visitor(redis, setup, why):
     _visit(redis)
-    _visit(redis, OTHER)
-    redis.kv[f"live:claim:{VID}"] = AGENT
-    redis.kv[f"live:dismissed:{OTHER}"] = "1"
-    rows = {v["visitor_id"]: v for v in await _rows(redis)}
-    assert live_bot.why_not(rows[VID], time.time(), {}) == "taken"
-    assert live_bot.why_not(rows[OTHER], time.time(), {}) == "declined"
+    setup(redis)
+    agent = await _agent(redis)
+    (row,) = await live_bot.visitors(agent)
+    assert (row["may_greet"], row["why_not"]) == (False, why)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID)
+    assert (e.value.status, e.value.code) == (409, why)
+    assert f"live:inbox:{VID}" not in redis.kv
 
 
 @pytest.mark.asyncio
-async def test_the_quote_form_holds_the_hello_while_it_moves(redis):
-    """The panel's rule since 25 Nov: a step in the form seen less than FORM_QUIET_S ago holds the hello; a form left
-    as it was longer is "stuck in the quote form", greeted with its words."""
+async def test_the_quote_form_holds_the_hello_until_they_stop_for_two_minutes(redis):
     _visit(redis, activity="search:JFK-IST;quote_opened;quote_step:2")
-    (v,) = await _rows(redis)
+    agent = await _agent(redis)
+    (v,) = await live_bot._listed(redis)
     now = time.time()
     live_bot.note_steps([v], now)
-    assert live_bot.why_not(v, now, live_bot._steps) == "filling_form", "a step just seen"
-    assert live_bot.why_not(v, now + live_bot.FORM_QUIET_S - 1, live_bot._steps) == "filling_form"
-    assert live_bot.why_not(v, now + live_bot.FORM_QUIET_S, live_bot._steps) is None, "the form left as it was"
+    assert live_bot.why_not(v, AGENT, now, live_bot._steps) == "filling_form"
+    assert live_bot.why_not(v, AGENT, now + live_bot.FORM_QUIET_S, live_bot._steps) is None
     moved = {**v, "activity": v["activity"] + ["quote_step:3"]}
     live_bot.note_steps([moved], now + live_bot.FORM_QUIET_S)
-    assert live_bot.why_not(moved, now + live_bot.FORM_QUIET_S + 1, live_bot._steps) == "filling_form", "it moved"
-    live_bot.note_steps([], now)
-    assert live_bot._steps == {}, "a visitor no longer listed is forgotten"
-
-
-def _sides():
-    from app.experiments import in_arm
-
-    ids = [f"visitor-{i:04d}-side" for i in range(200)]
-    agent = next(i for i in ids if in_arm("agent_first", i, 50))
-    alex = next(i for i in ids if not in_arm("agent_first", i, 50))
-    return agent, alex
+    assert live_bot.why_not(moved, AGENT, now + live_bot.FORM_QUIET_S + 1, live_bot._steps) == "filling_form"
+    assert agent["id"] == AGENT
 
 
 @pytest.mark.asyncio
 async def test_the_agent_first_tests_alex_side_stays_the_comparison(redis, monkeypatch):
-    """The owner's test: Alex's side is never listed, so nobody greets it; Skye neither, should a beat of it land in
-    the list. The agent's side is greeted as anyone (rule 5)."""
+    from app.experiments import in_arm
+
     monkeypatch.setenv("AGENT_FIRST_TEST_PERCENT", "50")
-    agent_side, alex_side = _sides()
+    ids = [f"visitor-{i:04d}-side" for i in range(200)]
+    agent_side = next(i for i in ids if in_arm("agent_first", i, 50))
+    alex_side = next(i for i in ids if not in_arm("agent_first", i, 50))
     _visit(redis, agent_side)
     _visit(redis, alex_side)
-    rows = {v["visitor_id"]: v for v in await _rows(redis)}
-    assert live_bot.why_not(rows[alex_side], time.time(), {}) == "test_alex"
-    assert live_bot.why_not(rows[agent_side], time.time(), {}) is None
+    agent = await _agent(redis)
+    assert [r["visitor_id"] for r in await live_bot.visitors(agent)] == [agent_side]
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, alex_side)
+    assert e.value.code == "test_alex"
 
 
-# ── the words: the panel's ready hello, said as Skye ────────────────
+# ── the hello, in the agent's name, without the three at a time ─────
+
+
+@pytest.mark.asyncio
+async def test_the_bots_hello_is_the_agents(redis):
+    _visit(redis, returning="1", to="IST", depart="2027-03-01")
+    agent = await _agent(redis)
+    out = await live_bot.greet(agent, VID)
+    (msg_raw,) = redis.kv[f"live:inbox:{VID}"]
+    msg = json.loads(msg_raw)
+    example = json.loads((CONTRACTS / "live_inbox_message.json").read_text())
+    assert set(msg) == set(example), "the visitor's widget gets an agent's hello, nothing more"
+    assert msg["agent"] == "Ana" and msg["text"] == out["text"] == (
+        "Hi, I'm Ana from the travel team. Welcome back! Want me to pick up your search for IST and check business "
+        "class options for you?")
+    tap, _ = live_tokens.read_tap(msg["tap"])
+    assert tap["v"] == VID and tap["a"] == AGENT and tap["h"] == out["hello_id"] == msg["id"]
+    hello = json.loads(redis.kv[f"live:hello:{out['hello_id']}"])
+    assert hello == {"id": out["hello_id"], "visitor_id": VID, "agent_id": AGENT, "text": msg["text"],
+                     "sent_at": msg["sent_at"], "bot": True, "group": "back"}
+    assert redis.kv[f"live:claim:{VID}"] == f"bot:{AGENT}", "the panel says the agent's bot holds them"
+    assert redis.expires[f"live:bot:{VID}"] - time.monotonic() == pytest.approx(live_bot.ONCE_S, abs=5)
+    assert redis.audit.await_args.args[:5] == (AGENT, "ana@example.com", "live_hello_sent", "live_visitors", VID)
+    assert redis.audit.await_args.args[5]["bot"] is True
+    assert live_bot.BOT_HEALTH["sent"] == 1
+
+
+@pytest.mark.asyncio
+async def test_no_limit_of_three_through_the_bot(redis):
+    """The owner: the panel holds three visitors at a time (bbc-live MaxClaims); the bot's hellos hold none of them."""
+    held = [f"visitor-held-{i}" for i in range(3)]
+    for vid in held:
+        _visit(redis, vid)
+        redis.kv[f"live:claim:{vid}"] = AGENT
+    redis.kv[f"live:claims:{AGENT}"] = set(held)
+    others = [f"visitor-more-{i}" for i in range(6)]
+    for vid in others:
+        _visit(redis, vid)
+    agent = await _agent(redis)
+    for vid in others:
+        await live_bot.greet(agent, vid, text="Hi, I'm Ana. Can I help you find a business class fare?")
+    assert all(len(redis.kv[f"live:inbox:{vid}"]) == 1 for vid in others)
+    assert redis.kv[f"live:claims:{AGENT}"] == set(held), "the panel's three stay the agent's to use"
+    assert live_bot.BOT_HEALTH["sent"] == 6
+
+
+@pytest.mark.asyncio
+async def test_a_visitor_the_agent_holds_from_the_panel_is_theirs_to_greet_by_their_bot(redis):
+    _visit(redis)
+    redis.kv[f"live:claim:{VID}"] = AGENT
+    agent = await _agent(redis)
+    await live_bot.greet(agent, VID)
+    assert redis.kv[f"live:claim:{VID}"] == f"bot:{AGENT}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, rc", [("already", -5), ("bot_already", -6), ("taken", -4), ("declined", -3),
+                                      ("in_a_chat", -2), ("gone", -1)])
+async def test_the_script_settles_what_changed_after_the_read(redis, code, rc):
+    """Between the visitor read and the send, the script checks again: whatever it refuses comes back with its code."""
+    _visit(redis)
+    redis.register(live_bot.BOT_SEND_LUA, lambda fake, keys, args: rc)
+    agent = await _agent(redis)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID)
+    assert e.value.code == code
+    assert f"live:inbox:{VID}" not in redis.kv and live_bot.BOT_HEALTH["refused"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_visitor_who_left_is_gone(redis):
+    agent = await _agent(redis)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, "not-on-the-site-at-all")
+    assert (e.value.code, e.value.status) == ("gone", 410)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text, code", [
+    ("Call me on +1 214 208 5185", "contact"), ("see https://scam.example.test/deal", "contact"),
+    ("Fares to IST from $1,200 this week", "price"), ("", "length"), ("x" * 301, "length"),
+])
+async def test_the_bots_own_words_are_held_to_the_clients_rules(redis, text, code):
+    _visit(redis)
+    agent = await _agent(redis)
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID, text=text)
+    assert e.value.code == code and e.value.status == 422
+    assert f"live:inbox:{VID}" not in redis.kv
+
+
+@pytest.mark.asyncio
+async def test_the_bots_own_words_go_without_a_long_dash_and_keep_their_group(redis):
+    _visit(redis)
+    agent = await _agent(redis)
+    out = await live_bot.greet(agent, VID, text="Hi — I'm Ana. Want me to check your dates?", group="back")
+    assert out["text"] == "Hi, I'm Ana. Want me to check your dates?" and out["group"] == "back"
+    _visit(redis, OTHER)
+    other = await live_bot.greet(agent, OTHER, text="Hi, I'm Ana.", group="vip")
+    assert other["group"] is None, "a group the panel doesn't name is left out, the hello goes"
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_sent_while_off(redis, monkeypatch):
+    _visit(redis)
+    agent = await _agent(redis)
+    monkeypatch.setenv("AGENT_FIRST_MESSAGE", "false")
+    with pytest.raises(BotRefused) as e:
+        await live_bot.greet(agent, VID)
+    assert e.value.code == "off" and "eval" not in redis.calls
+
+
+# ── the tap: the chat is the agent's, and the bot's to answer ───────
+
+
+@pytest.mark.asyncio
+async def test_the_tapped_chat_is_the_agents_and_marked_the_bots(redis):
+    from app.api.chat import ChatInitRequest
+
+    _visit(redis, returning="1")
+    agent = await _agent(redis)
+    out = await live_bot.greet(agent, VID)
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
+    assert res.live_agent == "Ana" and res.live_hello == out["text"] and res.live_at == STORED_AT
+    m["claim"].assert_awaited_once_with("c1", AGENT)
+    assert m["add"].await_args.args[1:3] == ("agent", out["text"])
+    live_hello = m["meta"].await_args.args[1]["live_hello"]
+    assert live_hello["bot"] is True and live_hello["agent_id"] == AGENT and live_hello["group"] == "back"
+
+
+@pytest.mark.asyncio
+async def test_a_hello_from_the_panel_is_never_marked_the_bots(redis):
+    """Rule 5: the mark comes with the bot's hello only."""
+    from app.api.chat import ChatInitRequest
+
+    redis.kv[f"live:claim:{VID}"] = AGENT
+    await live_visitors.send_hello(SALES, SALES_DB, VID, "Hi, I'm Ana. Can I help with your trip?")
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    _, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
+    assert "bot" not in m["meta"].await_args.args[1]["live_hello"]
+
+
+# ── the bot in its chats ────────────────────────────────────────────
+
+
+def _conv(**over):
+    return {"id": CONV, "assigned_agent_id": AGENT, "mode": "human", "status": "active", "tunnel": "sales",
+            "metadata": {"live_hello": {"id": "h1", "agent_id": AGENT, "bot": True}}, **over}
+
+
+@pytest.mark.asyncio
+async def test_the_bots_chats_say_who_wrote_last(redis):
+    agent = await _agent(redis)
+    rows = [{"id": CONV, "visitor_id": VID, "status": "active", "created_at": "2026-11-25T18:00:00+00:00",
+             "updated_at": "2026-11-25T18:03:00+00:00", "live_hello": {"id": "h1", "tapped_at": "2026-11-25T18:00:01+00:00"},
+             "last_user_message_at": "2026-11-25T18:03:00+00:00", "last_agent_message_at": "2026-11-25T18:02:00+00:00"},
+            {"id": "c2", "visitor_id": OTHER, "status": "active", "created_at": "x", "updated_at": "y", "live_hello": None,
+             "last_user_message_at": None, "last_agent_message_at": "2026-11-25T18:02:00+00:00"}]
+    with patch("app.db.supabase.list_live_bot_chats", new=AsyncMock(return_value=rows)) as q:
+        out = await live_bot.chats(agent)
+    q.assert_awaited_once_with(AGENT, live_bot.CHATS_LIMIT)
+    assert [(c["conversation_id"], c["waiting"]) for c in out] == [(CONV, True), ("c2", False)]
+    assert out[0]["started_at"] == "2026-11-25T18:00:01+00:00" and out[0]["hello_id"] == "h1"
+    with patch("app.db.supabase.list_live_bot_chats", new=AsyncMock(return_value=None)):
+        with pytest.raises(BotRefused) as e:
+            await live_bot.chats(agent)
+    assert (e.value.status, e.value.code) == (503, "db") and live_bot.BOT_HEALTH["read_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_bot_reads_its_chat(redis):
+    agent = await _agent(redis)
+    msgs = [{"id": "m1", "role": "agent", "content": "Hi, I'm Ana.", "created_at": "t1", "cost": 0.1},
+            {"id": "m2", "role": "user", "content": "Hi! Two seats to IST?", "created_at": "t2", "model_used": None}]
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch("app.db.supabase.get_messages_after", new=AsyncMock(return_value=msgs)) as read:
+        out = await live_bot.messages(agent, CONV, "2026-11-25T18:00:00Z")
+        with pytest.raises(BotRefused) as e:
+            await live_bot.messages(agent, CONV, "yesterday'),(1")
+    read.assert_awaited_once_with(CONV, "2026-11-25T18:00:00+00:00")
+    assert (e.value.status, e.value.code) == (422, "after")
+    assert out == [{"id": "m1", "role": "agent", "text": "Hi, I'm Ana.", "at": "t1"},
+                   {"id": "m2", "role": "visitor", "text": "Hi! Two seats to IST?", "at": "t2"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conv", [
+    _conv(metadata={"live_hello": {"id": "h1", "agent_id": AGENT}}),   # a hello from the panel
+    _conv(metadata={}),                                                 # no hello at all
+    _conv(assigned_agent_id=COLLEAGUE),                                 # a colleague's now
+    _conv(mode="ai"),                                                   # back with Skye
+    _conv(status="closed"),
+])
+async def test_a_chat_that_isnt_the_bots_is_never_read_or_answered(redis, conv):
+    """Rule 5: the bot reads and answers the chats its own hellos started, while they are the agent's."""
+    agent = await _agent(redis)
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)), \
+            patch("app.db.supabase.get_messages_after", new=AsyncMock(return_value=[])) as read, \
+            patch("app.api.conversations.send_agent_message", new=AsyncMock()) as send:
+        for call in (live_bot.messages(agent, CONV), live_bot.say(agent, CONV, "Hello")):
+            with pytest.raises(BotRefused) as e:
+                await call
+            assert (e.value.status, e.value.code) == (403, "not_the_bots")
+    read.assert_not_awaited()
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_bot_answers_as_the_agent_through_the_panels_own_send(redis):
+    agent = await _agent(redis)
+    stored = {"id": "m3", "content": "Two seats, got it. Which dates?", "created_at": "t3"}
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch("app.api.conversations.send_agent_message",
+                  new=AsyncMock(return_value={"success": True, "data": stored})) as send:
+        out = await live_bot.say(agent, CONV, "Two seats — got it. Which dates?")
+    assert out == {"id": "m3", "text": "Two seats, got it. Which dates?", "at": "t3"}
+    conv_id, body = send.await_args.args
+    assert conv_id == CONV and body.content == "Two seats, got it. Which dates?"
+    assert send.await_args.kwargs["user"] == {"id": AGENT, "email": "ana@example.com", "role": "sales",
+                                              "tunnel_scope": "sales", "name": "Ana Agent"}
+    assert live_bot.BOT_HEALTH["messages_sent"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text, code", [
+    ("Call me on +1 214 208 5185", "contact"), ("Business class to IST is $3,400 return", "price"),
+    ("x" * (live_bot.MAX_MESSAGE + 1), "length"),
+])
+async def test_the_bots_answers_are_held_to_the_clients_rules(redis, text, code):
+    agent = await _agent(redis)
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch("app.api.conversations.send_agent_message", new=AsyncMock()) as send:
+        with pytest.raises(BotRefused) as e:
+            await live_bot.say(agent, CONV, text)
+    assert (e.value.status, e.value.code) == (422, code)
+    send.assert_not_awaited()
+    assert live_bot.BOT_HEALTH["messages_refused"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_is_not_stored_is_said_so(redis):
+    agent = await _agent(redis)
+    with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=_conv())), \
+            patch("app.api.conversations.send_agent_message",
+                  new=AsyncMock(return_value={"success": True, "data": None})):
+        with pytest.raises(BotRefused) as e:
+            await live_bot.say(agent, CONV, "Which dates?")
+    assert (e.value.status, e.value.code) == (503, "not_stored") and live_bot.BOT_HEALTH["send_failed"] == 1
+
+
+# ── the words: the panel's ready hello ──────────────────────────────
 
 NOW_MS = int(datetime(2026, 11, 25, 18, tzinfo=timezone.utc).timestamp() * 1000)
-WHO = "Hi, I'm Skye from the travel team."
+WHO = "Hi, I'm Ana from the travel team."
 
 
 @pytest.mark.parametrize("v, words, group", [
@@ -233,259 +618,44 @@ WHO = "Hi, I'm Skye from the travel team."
     ({"device": "computer", "tz": "Australia/Sydney", "trip": {"to": "LHR"}},
      f"{WHO} Planning the long trip to LHR? I can find business class options for your dates and send them right here.",
      "anz"),
-    ({"device": "computer", "tz": "Pacific/Auckland"},
-     f"{WHO} Planning a long trip? I can find business class options for your dates and send them right here.", "anz"),
     ({"device": "computer", "trip": {"to": "IST", "depart": "2026-12-20"}},
      f"{WHO} Flying to IST on Dec 20? A good moment to book business class. Want me to check options for your dates?",
      "soon"),
     ({"returning": True, "trip": {"to": "IST"}},
      f"{WHO} Welcome back! Want me to pick up your search for IST and check business class options for you?", "back"),
-    # No group: the page's words (rule 5: a phone in Australia, a flight 60 days away).
     ({"device": "phone", "tz": "Australia/Sydney", "trip": {"to": "IST", "depart": "2027-01-24"}},
      f"{WHO} Looking at flights to IST? I can check business class fares for your dates.", None),
     ({"activity": ["quote_opened", "quote_submitted"]},
      f"{WHO} Thanks for your request. Anything you'd like me to know while I prepare your options?", None),
     ({}, f"{WHO} Can I help you find a business class fare?", None),
 ])
-def test_the_ready_hello_is_the_panels_said_as_skye(v, words, group):
+def test_the_ready_hello_is_the_panels(v, words, group):
     from app.ai.output_guard import foreign_contact_kinds, has_price
 
     row = {"visitor_id": VID, "activity": [], "device": "computer", **v}
-    assert live_bot.ready_hello(row, NOW_MS) == (words, group)
+    assert live_bot.ready_hello(row, NOW_MS, "Ana") == (words, group)
     assert "—" not in words and not has_price(words) and not foreign_contact_kinds(words)
-    assert len(words) <= live_visitors.MAX_TEXT
 
 
-def test_the_words_are_still_the_panels():
-    """The hello an agent has ready in the panel (view.ts) and Skye's are the same words: a change there shows here."""
+def test_the_words_and_the_rules_are_still_the_panels():
+    """The hello the panel has ready (view.ts) and the bot's are the same words, under the same rules."""
     view = PANEL_VIEW.read_text(encoding="utf-8")
     for piece in (
         "from the travel team.",
         "Need a hand with the quote form? I can take your trip details right here, it only takes a minute.",
-        "Need a hand with the quote form? I can take your trip details right here.",
         "Did the quote form give you trouble? I can take your request right here.",
         "Planning the long trip to ${to}? I can find business class options for your dates and send them right here.",
         "Planning a long trip? I can find business class options for your dates and send them right here.",
         "? A good moment to book business class. Want me to check options for your dates?",
         "Welcome back! Want me to pick up your search",
-        "and check business class options for you?",
         "Thanks for your request. Anything you'd like me to know while I prepare your options?",
         "Looking at flights to ${t.to}? I can check business class fares for your dates.",
         "Can I help you find a business class fare?",
         "export const FORM_QUIET_S = 120",
         "export const ALEX_GAVE_UP_S = 30",
+        "export const BOT_HOLDER = 'bot:'",
     ):
         assert piece in view, piece
-
-
-# ── the send ────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_skyes_hello_reaches_the_inbox_as_hers(redis):
-    _visit(redis, returning="1", to="IST", depart="2027-03-01")
-    (v,) = await _rows(redis)
-    out, audit = await _greet(visitor=v)
-    (msg_raw,) = redis.kv[f"live:inbox:{VID}"]
-    msg = json.loads(msg_raw)
-    example = json.loads((CONTRACTS / "live_inbox_message_bot.json").read_text())
-    assert set(msg) == set(example), "the widget reads the contract's fields"
-    assert msg["agent"] == "Skye" and msg["bot"] is True and msg["kind"] == "hello"
-    assert msg["text"] == out["text"] == f"{WHO} Welcome back! Want me to pick up your search for IST and check " \
-        "business class options for you?"
-    tap, _ = live_tokens.read_tap(msg["tap"])
-    assert tap["v"] == VID and tap["a"] == "skye" and tap["h"] == out["hello_id"] == msg["id"]
-    hello = json.loads(redis.kv[f"live:hello:{out['hello_id']}"])
-    assert hello == {"id": out["hello_id"], "visitor_id": VID, "agent_id": "skye", "text": msg["text"],
-                     "sent_at": msg["sent_at"], "bot": True, "group": "back"}
-    assert redis.kv[f"live:claim:{VID}"] == "skye", "the panel says Skye holds them"
-    assert redis.published == [("live:inbox", VID)]
-    assert audit.await_args.args[:5] == (None, None, "live_hello_sent", "live_visitors", VID)
-    assert audit.await_args.args[5]["bot"] is True and audit.await_args.args[5]["via"] == "run"
-    assert live_bot.BOT_HEALTH["sent"] == 1
-
-
-def test_the_bot_contract_differs_from_an_agents_by_bot_only():
-    agent = json.loads((CONTRACTS / "live_inbox_message.json").read_text())
-    bot = json.loads((CONTRACTS / "live_inbox_message_bot.json").read_text())
-    assert set(bot) - set(agent) == {"bot"} and set(agent) <= set(bot)
-    assert bot["bot"] is True and bot["agent"] == live_bot.BOT_NAME
-    assert live_tokens.decode(bot["tap"], "t1", b"x", now=0)[1] == "invalid", "a sample, never a working tap"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("setup, code, status", [
-    (lambda r: r.kv.pop(f"live:v:{VID}"), "gone", 410),
-    (lambda r: r.kv[f"live:v:{VID}"].update(has_chat="1"), "in_a_chat", 409),
-    (lambda r: r.kv.__setitem__(f"live:dismissed:{VID}", "1"), "declined", 409),
-    (lambda r: r.kv.__setitem__(f"live:claim:{VID}", AGENT), "taken", 409),
-    (lambda r: r.kv.__setitem__(f"live:said:{VID}", AGENT), "already", 409),
-    (lambda r: r.kv.__setitem__(f"live:bot:{VID}", "1"), "skye_already", 409),
-])
-async def test_the_script_settles_a_race_with_its_reason(redis, setup, code, status):
-    """The run read the visitor due; between the list and the send the script checks again, and an agent who claimed
-    them first keeps them."""
-    _visit(redis)
-    (v,) = await _rows(redis)
-    setup(redis)
-    with pytest.raises(SendRefused) as e:
-        await _greet(visitor=v)
-    assert (e.value.code, e.value.status) == (code, status)
-    assert f"live:inbox:{VID}" not in redis.kv
-    assert live_bot.BOT_HEALTH["refused"] == 1 and live_bot.BOT_HEALTH["sent"] == 0
-
-
-@pytest.mark.asyncio
-async def test_one_of_skyes_hellos_a_visitor_a_day(redis):
-    _visit(redis)
-    await _greet()
-    redis.kv.pop(f"live:said:{VID}")  # the hello ran out (15 min)
-    redis.kv.pop(f"live:claim:{VID}")
-    with pytest.raises(SendRefused) as e:
-        await _greet()
-    assert e.value.code == "skye_already"
-    assert redis.expires[f"live:bot:{VID}"] - time.monotonic() == pytest.approx(live_bot.ONCE_S, abs=5)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("text, code", [
-    ("Call me on +1 214 208 5185", "contact"), ("see https://scam.example.test/deal", "contact"),
-    ("Fares to IST from $1,200 this week", "price"), ("", "length"), ("x" * 301, "length"),
-])
-async def test_words_named_by_the_caller_are_held_to_the_clients_rules(redis, text, code):
-    _visit(redis)
-    with pytest.raises(SendRefused) as e:
-        await _greet(text=text)
-    assert e.value.code == code and e.value.status == 422
-    assert "eval" not in redis.calls
-
-
-@pytest.mark.asyncio
-async def test_words_named_by_the_caller_go_without_a_long_dash(redis):
-    _visit(redis)
-    out, _ = await _greet(text="Hi — I'm Skye. Want me to check your dates?", group="back")
-    assert out["text"] == "Hi, I'm Skye. Want me to check your dates?" and out["group"] == "back"
-    out2_group = json.loads(redis.kv[f"live:hello:{out['hello_id']}"])["group"]
-    assert out2_group == "back"
-
-
-@pytest.mark.asyncio
-async def test_a_visitor_named_by_the_caller_is_held_to_the_same_rules(redis):
-    """POST /api/live/bot/hello names the visitor: the run's rules hold for them too (rule 5: one due is greeted)."""
-    _visit(redis, card_s=10)
-    _visit(redis, OTHER)
-    with pytest.raises(SendRefused) as e:
-        await _greet()
-    assert (e.value.code, e.value.status) == ("card", 409) and "eval" not in redis.calls
-    out, audit = await _greet(OTHER, text="Hi, I'm Skye. Anything I can check for you?")
-    assert out["hello_id"] and audit.await_args.args[5]["via"] == "run"
-    with pytest.raises(SendRefused) as e:
-        await _greet("not-on-the-site-at-all")
-    assert (e.value.code, e.value.status) == ("gone", 410)
-
-
-@pytest.mark.asyncio
-async def test_nothing_is_sent_while_off(redis, monkeypatch):
-    monkeypatch.setenv("AGENT_FIRST_MESSAGE", "false")
-    _visit(redis)
-    with pytest.raises(SendRefused) as e:
-        await _greet()
-    assert e.value.code == "off" and "eval" not in redis.calls
-
-
-# ── the run ─────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_the_run_greets_who_is_due_and_no_one_else(redis):
-    _visit(redis)
-    _visit(redis, OTHER, card_s=5)
-    with patch("app.db.supabase.log_audit", new=AsyncMock()):
-        first = await live_bot.run_live_bot()
-        second = await live_bot.run_live_bot()
-    assert first == {"state": "ok", "listed": 2, "due": 1, "sent": 1, "refused": 0, "failed": 0}
-    assert len(redis.kv[f"live:inbox:{VID}"]) == 1 and f"live:inbox:{OTHER}" not in redis.kv
-    assert second["sent"] == 0 and second["due"] == 0, "held by Skye now: never twice"
-    assert live_bot.BOT_HEALTH["runs"] == 2 and live_bot.BOT_HEALTH["sent"] == 1
-
-
-@pytest.mark.asyncio
-async def test_the_run_is_off_without_its_switch(redis, monkeypatch):
-    """Rule 5: LIVE_BOT off, the run reads nothing and greets nobody; the hello itself still works for agents."""
-    monkeypatch.setenv("LIVE_BOT", "false")
-    _visit(redis)
-    assert await live_bot.run_live_bot() == {"state": "off"}
-    assert "eval" not in redis.calls and live_bot.BOT_HEALTH["runs"] == 0
-
-
-@pytest.mark.asyncio
-async def test_a_list_that_cannot_be_read_is_counted(redis):
-    redis.down = True
-    assert await live_bot.run_live_bot() == {"state": "list_failed"}
-    assert live_bot.BOT_HEALTH["run_failed"] == 1
-
-
-def test_the_scheduler_runs_it_every_few_seconds_and_quiet_when_idle():
-    from app.services import scheduler
-
-    rule = scheduler._QUIET_WHEN["live_bot"]
-    assert rule({"state": "off"}) and rule({"state": "ok", "sent": 0, "failed": 0})
-    assert not rule({"state": "ok", "sent": 1, "failed": 0}) and not rule({"state": "ok", "sent": 0, "failed": 1})
-    assert not rule({"state": "list_failed"}) and not rule({"state": "no_redis"})
-    source = pathlib.Path(scheduler.__file__).read_text(encoding="utf-8")
-    assert '("live_bot", run_live_bot, 5)' in source
-
-
-# ── the tap: the chat starts as Skye's ──────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_the_tapped_chat_is_skyes_with_the_hello_first(redis):
-    from app.api.chat import ChatInitRequest
-
-    _visit(redis, returning="1")
-    out, _ = await _greet()
-    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
-    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
-    assert res.live_agent == "Skye" and res.live_hello == out["text"] and res.live_at == STORED_AT
-    m["claim"].assert_not_awaited()  # nobody to claim it for: AI mode
-    m["user"].assert_not_awaited()
-    conv_id, role, content = m["add"].await_args.args[:3]
-    assert (conv_id, role, content) == ("c1", "ai", out["text"])
-    assert m["add"].await_args.args[3] == live_bot.MODEL_USED
-    patched = m["meta"].await_args.args[1]
-    assert set(patched) == {"live_hello"}, "no agent engaged, no clock"
-    assert patched["live_hello"]["bot"] is True and patched["live_hello"]["group"] == "back"
-    assert f"live:claim:{VID}" not in redis.kv, "the tap lets Skye's hold go"
-    assert live_bot.BOT_HEALTH["chats"] == 1
-
-
-@pytest.mark.asyncio
-async def test_an_agents_tap_still_starts_the_agents_chat(redis):
-    """Rule 5: the branch takes Skye's hellos only."""
-    from app.api.chat import ChatInitRequest
-
-    redis.kv[f"live:claim:{VID}"] = AGENT
-    with patch("app.db.supabase.log_audit", new=AsyncMock()):
-        await live_visitors.send_hello(SALES, SALES_DB, VID, "Hi, I'm Ana. Can I help with your trip?")
-    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
-    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
-    assert res.live_agent == "Ana"
-    m["claim"].assert_awaited_once_with("c1", AGENT)
-    assert m["add"].await_args.args[1] == "agent" and live_bot.BOT_HEALTH["taps"] == 0
-
-
-@pytest.mark.asyncio
-async def test_a_hello_that_cannot_be_stored_starts_an_ordinary_chat(redis):
-    from app.api.chat import ChatInitRequest
-
-    _visit(redis)
-    await _greet()
-    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
-    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), stored=False)
-    assert res.live_agent is None and res.live_at is None
-    m["meta"].assert_not_awaited()
-    assert live_bot.BOT_HEALTH["start_failed"] == 1 and live_bot.BOT_HEALTH["chats"] == 0
 
 
 # ── the endpoints ───────────────────────────────────────────────────
@@ -499,43 +669,36 @@ def _client():
     return TestClient(app)
 
 
-def test_the_endpoints_take_the_key_only(redis, monkeypatch):
-    from config.settings import settings
-
-    c = _client()
-    assert c.get("/api/live/bot/candidates").status_code == 401
-    wrong = c.post("/api/live/bot/hello", json={"visitor_id": VID}, headers={"Authorization": "Bearer nope"})
-    assert wrong.status_code == 401 and wrong.json()["code"] == "key"
-    assert live_bot.BOT_HEALTH["key_refused"] == 2
-    monkeypatch.setattr(settings, "live_bot_key", "")
-    off = c.get("/api/live/bot/candidates", headers={"Authorization": "Bearer "})
-    assert off.status_code == 503 and off.json()["code"] == "not_configured"
-    assert "eval" not in redis.calls
-
-
-def test_the_candidates_are_who_skye_would_greet_with_her_words(redis):
-    _visit(redis, to="IST")
-    _visit(redis, OTHER, card="dismissed")
-    res = _client().get("/api/live/bot/candidates", headers={"Authorization": f"Bearer {KEY}"})
-    assert res.status_code == 200
-    body = res.json()
-    assert body["success"] is True and body["count"] == 1
-    (row,) = body["data"]
-    assert row["visitor_id"] == VID and row["group"] is None
-    assert row["text"] == f"{WHO} Looking at flights to IST? I can check business class fares for your dates."
-    assert f"live:inbox:{VID}" not in redis.kv, "reading the candidates greets nobody"
-
-
-def test_the_hello_endpoint_greets_one_visitor_or_says_why_not(redis):
+@pytest.mark.asyncio
+async def test_the_bots_endpoints_work_by_its_key(redis):
     _visit(redis)
-    _visit(redis, OTHER, card_s=3)
+    key = await _key()
     c = _client()
-    auth = {"Authorization": f"Bearer {KEY}"}
-    with patch("app.db.supabase.log_audit", new=AsyncMock()) as audit:
-        ok = c.post("/api/live/bot/hello", json={"visitor_id": VID}, headers=auth)
-        no = c.post("/api/live/bot/hello", json={"visitor_id": OTHER}, headers=auth)
-    assert ok.status_code == 200 and ok.json()["success"] is True and ok.json()["count"] == 1
-    assert ok.json()["data"]["text"] == f"{WHO} Can I help you find a business class fare?"
-    assert audit.await_args.args[5]["via"] == "endpoint"
-    assert no.status_code == 409 and no.json() == {"success": False, "data": None, "count": 0, "code": "card",
-                                                   "error": live_bot._WHY_NOT["card"]}
+    auth = {"Authorization": f"Bearer {key}"}
+    listed = c.get("/api/live/bot/visitors", headers=auth)
+    assert listed.status_code == 200 and listed.json()["count"] == 1
+    hello = c.post("/api/live/bot/hello", json={"visitor_id": VID}, headers=auth)
+    assert hello.status_code == 200 and hello.json()["data"]["text"] == f"{WHO} Can I help you find a business class fare?"
+    again = c.post("/api/live/bot/hello", json={"visitor_id": VID}, headers=auth)
+    assert again.status_code == 409 and again.json() == {"success": False, "data": None, "count": 0,
+                                                         "code": "already", "error": live_bot._WHY_NOT["already"]}
+    for path in ("/api/live/bot/visitors", "/api/live/bot/chats", f"/api/live/bot/chats/{CONV}/messages"):
+        res = c.get(path)
+        assert res.status_code == 401 and res.json()["code"] == "key", path
+    assert c.post(f"/api/live/bot/chats/{CONV}/messages", json={"text": "Hi"}).status_code == 401
+
+
+def test_the_agent_takes_and_revokes_the_key_in_the_panel(redis):
+    from app.api import live as live_api
+    from app.security.auth import get_current_user
+
+    app = FastAPI()
+    app.include_router(live_api.router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: SALES
+    c = TestClient(app)
+    assert c.get("/api/live/bot-key").json()["data"] == {"active": False, "expires_at": None}
+    made = c.post("/api/live/bot-key").json()["data"]
+    assert made["key"] and made["expires_at"]
+    assert c.get("/api/live/bot-key").json()["data"]["active"] is True
+    assert c.delete("/api/live/bot-key").json()["data"] == {"revoked": True}
+    assert c.get("/api/live/bot-key").json()["data"]["active"] is False

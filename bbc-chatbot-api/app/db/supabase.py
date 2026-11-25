@@ -1732,6 +1732,33 @@ async def get_messages_after(
         return []
 
 
+async def list_live_bot_chats(agent_id: str, limit: int = 50) -> Optional[list]:
+    """The open chats an agent's bot started with its hellos (metadata.live_hello.bot, app/services/live_bot.py) that
+    are still the agent's, in human mode, the most recently updated first. None when they can't be read: the caller
+    says so, never "no chats"."""
+    db_client = get_client()
+    cols = "id, visitor_id, status, mode, created_at, updated_at, live_hello:metadata->live_hello"
+    if _supervisor_columns_available():
+        cols += ", last_user_message_at, last_agent_message_at"
+
+    def _q(columns: str):
+        return (
+            db_client.table("conversations").select(columns)
+            .eq("assigned_agent_id", agent_id).eq("mode", "human")
+            .in_("status", list(OPEN_STATUSES))
+            .eq("metadata->live_hello->>bot", "true")
+            .order("updated_at", desc=True).limit(limit)
+            .execute()
+        )
+
+    try:
+        res = await _run_sync(lambda: _q(cols), label="live_bot_chats")
+        return res.data or []
+    except Exception as e:
+        logger.error(f"list_live_bot_chats error: {type(e).__name__}: {e}")
+        return None
+
+
 async def get_conversation_mode(conversation_id: str) -> Optional[str]:
     """Get ONLY the mode of a conversation. Lightweight query for routing check."""
     try:

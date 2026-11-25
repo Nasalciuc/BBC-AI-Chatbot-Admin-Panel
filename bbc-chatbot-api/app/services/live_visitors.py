@@ -311,7 +311,9 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
         return None
     return {"agent_id": payload["a"], "text": str(hello.get("text") or ""), "hello_id": payload["h"],
             "sent_at": hello.get("sent_at"),
-            "group": hello.get("group") if hello.get("group") in HELLO_GROUPS else None}
+            "group": hello.get("group") if hello.get("group") in HELLO_GROUPS else None,
+            # Sent by the agent's own bot (app.services.live_bot): the chat it starts is the bot's to answer.
+            "bot": hello.get("bot") is True}
 
 
 async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str) -> dict:
@@ -331,10 +333,6 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
     hello = await take_tap(visitor_id, tap)
     if not hello:
         return {}
-    from app.services import live_bot
-    if hello["agent_id"] == live_bot.BOT_ID:
-        # Skye's own hello (app.services.live_bot): nobody to claim the chat for, it stays hers, in AI mode.
-        return await live_bot.start_with_skye(conv_id, hello)
     agent_id = hello["agent_id"]
     agent: dict = {}
     try:
@@ -379,6 +377,7 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
     await db.patch_conversation_presence(conv_id, {
         "engaged_agent_id": agent_id, "agent_assigned_at": now, "clock_agent_id": agent_id,
         "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
-                       "tapped_at": now, **({"group": hello["group"]} if hello.get("group") else {})},
+                       "tapped_at": now, **({"group": hello["group"]} if hello.get("group") else {}),
+                       **({"bot": True} if hello.get("bot") else {})},
     })
     return {"agent": first_name(agent.get("name")), "text": hello["text"], "at": (row or {}).get("created_at")}

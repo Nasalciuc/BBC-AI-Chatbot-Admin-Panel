@@ -87,8 +87,8 @@ app.include_router(chat_router, prefix="/api", tags=["chat"])
 # Cron: PUBLIC with CRON_SECRET header (not JWT)
 app.include_router(cron_router, prefix="/api", tags=["cron"])
 
-# Skye's own hello in "On the site now": PUBLIC with the LIVE_BOT_KEY bearer (a service calls it, not a panel
-# user). Before the admin routers: /api/live/bot/* is never an agent's route.
+# An agent's own bot in "On the site now": PUBLIC with the agent's bot key as a bearer (the bot calls it, not a
+# panel session). Before the admin routers: /api/live/bot/* is never a panel route.
 app.include_router(live_bot_router, prefix="/api", tags=["live-bot"])
 
 # Auth: PUBLIC login, protected invite (auth dependency inside the route)

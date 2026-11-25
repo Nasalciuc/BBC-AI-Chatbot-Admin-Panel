@@ -187,7 +187,7 @@ async def health_detail(full: bool = False) -> dict:
     from app.services.recent_chats import RECENT_HEALTH
     # "On the site now": tokens handed out, hellos sent or refused, taps honoured or not.
     from app.services.live_visitors import LIVE_HEALTH
-    # Skye's own hello there: runs, hellos sent, refused or lost, taps, chats, calls with a wrong key.
+    # Agents' own bots there: keys made, revoked or refused, hellos and answers sent, refused or lost.
     from app.services.live_bot import BOT_HEALTH
     # The owner's agent-first test: who waited for an agent, who was greeted first, what Redis missed.
     from app.services import agent_first_test

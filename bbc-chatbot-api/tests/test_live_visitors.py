@@ -458,7 +458,7 @@ async def test_a_tap_takes_its_hello_once_and_frees_the_agents_place(redis):
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
     got = await live_visitors.take_tap(VID, tap)
     assert got == {"agent_id": AGENT, "text": "Hi, can I help with your trip?", "hello_id": out["hello_id"],
-                   "sent_at": got["sent_at"], "group": None}
+                   "sent_at": got["sent_at"], "group": None, "bot": False}
     assert f"live:claim:{VID}" not in redis.kv, "the agent's place came back"
     assert await live_visitors.take_tap(VID, tap) is None, "one tap"
 
