@@ -370,10 +370,27 @@ async def test_a_chat_lookup_reads_every_page(monkeypatch):
     assert [c[1] for c in calls if c[0] == "range"] == [(0, 499), (500, 999), (1000, 1499)]
     assert ("lte", ("created_at", iso(T0 + 3600)), {}) in calls
     assert [c[1] for c in calls if c[0] == "order"][:2] == [("created_at",), ("id",)], "a page's order is stable"
-    # Rule 5: past the most it reads, it stops (and says so in the log).
+    # Past the guard it is no answer, never a part of one taken as all (CodeRabbit #282, round 7, second look).
     monkeypatch.setattr(db, "_CHATS_MOST", 1000)
     full = [{"id": f"c{i}", "visitor_id": VID, "created_at": iso(T0 + i)} for i in range(500)]
     client, calls = _client(lambda: type("R", (), {"data": full})())
     with patch.object(db, "get_client", return_value=client):
-        assert len(await db.chats_of_visitors([VID], iso(T0))) == 1000
+        assert await db.chats_of_visitors([VID], iso(T0)) is None
     assert len([c for c in calls if c[0] == "range"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_visits_chat_past_the_five_thousandth_is_still_found(fake):
+    """CodeRabbit #282, round 7, second look: the lookup reads to the end; the visit's chat on the eleventh page is
+    linked (rule 5: the 5,499 others, from long before the visit, are not)."""
+    _queue(fake, (KEY, visit(conversation_id=None)))
+    rows = [{"id": f"other-{i}", "visitor_id": VID, "created_at": iso(T0 - 100_000 + i)} for i in range(5_499)]
+    rows.append({"id": CHAT, "visitor_id": VID, "created_at": iso(T0 + 40)})
+    from app.db import supabase as db
+
+    pages = [rows[i:i + 500] for i in range(0, len(rows), 500)]
+    client, _ = _client(lambda: type("R", (), {"data": pages.pop(0) if pages else []})())
+    store = AsyncMock(return_value="stored")
+    with patch.object(db, "get_client", return_value=client), patch("app.db.supabase.store_site_visits", new=store):
+        await reg.run_visit_registry()
+    assert store.await_args.args[0][0]["conversation_id"] == CHAT and reg.VISIT_HEALTH["linked"] == 1

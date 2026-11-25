@@ -7138,14 +7138,15 @@ async def store_site_visits(rows: list[dict]) -> str:
 
 
 _CHATS_PAGE = 500
-_CHATS_MOST = 5000
+# Past this many the lookup is no answer at all, never part of one: a guard against a page that never runs short.
+_CHATS_MOST = 50_000
 
 
 async def chats_of_visitors(visitor_ids: list[str], since_iso: str, until_iso: Optional[str] = None) -> Optional[list[dict]]:
     """The chats these visitors began since a moment (and until one, when given), id, visitor_id, created_at, oldest
-    first: every page of them, so a batch after a backlog loses none to one page's limit (CodeRabbit #282, round 7),
-    up to _CHATS_MOST (past it the rest are not read, logged). None when the database could not say (the visit is then
-    stored without its chat, counted by the caller)."""
+    first: every page of them, so a batch after a backlog loses none to one page's limit (CodeRabbit #282, round 7).
+    None when the database could not say, a page failed or the pages ran past _CHATS_MOST: never a part of the answer
+    as if it were all of it (the visit is then stored without its chat, counted by the caller)."""
     if not visitor_ids:
         return []
     db_client = get_client()
@@ -7173,5 +7174,5 @@ async def chats_of_visitors(visitor_ids: list[str], since_iso: str, until_iso: O
         logger.warning(f"[visit-registry] chats of {len(visitor_ids)} visitors not read: {type(e).__name__} "
                        f"{_error_code(e) or e}")
         return None
-    logger.warning(f"[visit-registry] chats of {len(visitor_ids)} visitors: more than {_CHATS_MOST}, the rest not read")
-    return out
+    logger.error(f"[visit-registry] chats of {len(visitor_ids)} visitors: more than {_CHATS_MOST}, none taken as all")
+    return None
