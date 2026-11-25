@@ -98,8 +98,25 @@ function liveFetch(url: string, pass: string, init: RequestInit = {}): Promise<R
   return fetch(url, { ...init, headers, credentials: 'omit', mode: 'cors' })
 }
 
+/** The last config the API gave this page (the registry reads its place and pass at each snapshot: visits.ts). */
+let latest: LiveConfig | null = null
+export function currentConfig(): LiveConfig | null { return latest }
+
+let pageAsk: Promise<LiveConfig> | null = null
+/** This page's config, asked once: at the page's start for the visit registry (visits.ts), the live list takes the
+ *  same answer 20 s in. Asked again only after an answer "for now" or a failure (and by a pass renewal). */
+export function pageConfig(apiUrl: string): Promise<LiveConfig> {
+  if (!pageAsk) {
+    pageAsk = askConfig(apiUrl).then(
+      (cfg) => { if (cfg.later) pageAsk = null; return cfg },
+      (err: unknown) => { pageAsk = null; throw err },
+    )
+  }
+  return pageAsk
+}
+
 /** POST /chat/live: on or off, where, and a pass (kept for the next page). */
-async function askConfig(apiUrl: string): Promise<LiveConfig> {
+export async function askConfig(apiUrl: string): Promise<LiveConfig> {
   const visitorId = ensureVisitorId()
   const res = await apiFetch(`${apiUrl}/api/chat/live`, {
     method: 'POST',
@@ -110,9 +127,11 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
   // The owner's agent-first test: an answer names this visitor's side (Alex's side gets no pass, never listed).
   if (res.ok) noteSide(cfg.test)
   // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
-  // inherit the last one's pass, which would only be refused (CodeRabbit #273).
-  if (cfg.enabled && cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
-  if (cfg.enabled && cfg.url) keepUrl(cfg.url)
+  // inherit the last one's pass, which would only be refused (CodeRabbit #273). The registry's pass alone (the list
+  // off) is kept too: the next page renews it.
+  if (cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
+  if (cfg.url) keepUrl(cfg.url)
+  if (!cfg.later) latest = cfg
   return cfg
 }
 
@@ -265,10 +284,11 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (!stopped) later(poll, nextPollDelay(status, failures))
     }
 
-    // The first config, from AFTER_S on the page; asked again after RENEW_MS while the API can't say for now.
+    // The first config, from AFTER_S on the page (the answer the registry asked for at the page's start, when there
+    // is one); asked again after RENEW_MS while the API can't say for now.
     const start = () => {
       if (stopped) return
-      askConfig(apiUrl)
+      pageConfig(apiUrl)
         .then(cfg => {
           // An answer for an effect cleaned up meanwhile is not this page's config any more (CodeRabbit #273).
           if (stopped) return

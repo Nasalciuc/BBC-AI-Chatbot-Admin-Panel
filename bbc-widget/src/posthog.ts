@@ -1,6 +1,7 @@
 import posthogSdk from 'posthog-js'
 import { agentTestProps } from './agentTest'
 import { choosePostHog, sitePostHogOf, watchSitePostHog, type PostHogLike } from './posthogChoice'
+import { tapCapture } from './visitTap'
 
 // The public project token (phc_…): PostHog meant it for the browser, so its
 // name stays clear of KEY/TOKEN, which scan_bundle_secrets.py treats as secrets.
@@ -85,6 +86,8 @@ export const posthog = {
     // The side of the owner's agent-first test rides on every event while the visit has one (agentTest.ts):
     // the comparison reads per side, the card's moments, the hellos and the leads alike.
     try { active()?.capture(event, { ...agentTestProps(), ...properties }) } catch { /* tracking never breaks the chat */ }
+    // The visit registry keeps the same events, as short words (visits.ts), with or without a PostHog running.
+    tapCapture(event, properties)
   },
   identify(distinctId: string): void {
     try { active()?.identify?.(distinctId) } catch { /* tracking never breaks the chat */ }

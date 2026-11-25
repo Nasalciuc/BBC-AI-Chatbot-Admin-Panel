@@ -18,6 +18,11 @@ export interface LiveConfig {
   later?: boolean
   /** The owner's agent-first test (agentTest.ts): this visitor's side, on/off answers alike while it runs. */
   test?: 'agent' | 'alex'
+  /** The visit registry (visits.ts): bbc-live takes this page's snapshots, with `url` and `pass`, whether or not the
+   *  live list is on for this visitor (`enabled`). */
+  visits?: boolean
+  /** The country the API's edge saw (two letters), for the registry. */
+  country?: string
 }
 
 export interface LiveHello {
@@ -89,11 +94,15 @@ export function readConfig(raw: unknown): LiveConfig {
   const side: LiveConfig['test'] = r.test === 'agent' || r.test === 'alex' ? r.test : undefined
   const test = side ? { test: side } : {}
   if (r.later === true) return { enabled: false, later: true, ...test }
-  if (r.enabled !== true || typeof r.url !== 'string' || !/^https?:\/\/[^\s/]+/.test(r.url)) return { enabled: false, ...test }
-  if (typeof r.pass !== 'string' || !PASS.test(r.pass)) return { enabled: false, ...test }
+  const url = typeof r.url === 'string' && /^https?:\/\/[^\s/]+/.test(r.url) ? r.url.replace(/\/+$/, '') : null
+  const pass = typeof r.pass === 'string' && PASS.test(r.pass) ? r.pass : null
+  // The registry rides on the same place and pass; it can be on with the list off (`enabled: false`).
+  const country = typeof r.country === 'string' && /^[A-Z]{2}$/.test(r.country) ? { country: r.country } : {}
+  const visits = r.visits === true && url && pass ? { visits: true, ...country } : null
+  if (r.enabled !== true || !url || !pass) return visits ? { enabled: false, url: url!, pass: pass!, ...visits, ...test } : { enabled: false, ...test }
   const n = (v: unknown, d: number) => (typeof v === 'number' && v >= 1 && v <= 600 ? v : d)
-  return { enabled: true, url: r.url.replace(/\/+$/, ''), after_s: n(r.after_s, AFTER_S), beat_s: n(r.beat_s, BEAT_S),
-    hello: r.hello === true, pass: r.pass, ...test }
+  return { enabled: true, url, after_s: n(r.after_s, AFTER_S), beat_s: n(r.beat_s, BEAT_S),
+    hello: r.hello === true, pass, ...(visits ?? {}), ...test }
 }
 
 /** A kept pass worth showing the API again: the shape only (the API checks the rest). */
