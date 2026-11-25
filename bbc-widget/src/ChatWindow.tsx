@@ -166,10 +166,11 @@ function withSession(metadata?: Record<string, unknown>): Record<string, unknown
 
 const openingId = (o: ProactiveOpening) => `opening-${o.shownAt}`
 const liveId = (h: LiveHello) => `live-${h.id}`
-/** An agent's hello as the chat shows it before it is stored: their words, their first name. */
-const liveMessage = (h: LiveHello): Message => ({
-  id: liveId(h), role: 'agent', content: h.text, agent_name: h.agent, created_at: new Date().toISOString(),
-})
+/** A hello as the chat shows it before it is stored: an agent's words under their first name; Skye's own (`bot`) as
+ *  hers, as the server stores it (bbc-chatbot-api live_bot.start_with_skye: role 'ai'). */
+const liveMessage = (h: LiveHello): Message => (h.bot
+  ? { id: liveId(h), role: 'ai', content: h.text, created_at: new Date().toISOString() }
+  : { id: liveId(h), role: 'agent', content: h.text, agent_name: h.agent, created_at: new Date().toISOString() })
 
 export function ChatWindow({
   tunnel, visitor, metadata, formCheck, onClose, apiUrl, embedded = false, swapped = false,

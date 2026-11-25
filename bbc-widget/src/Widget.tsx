@@ -12,7 +12,7 @@ import {
   currentTrip, forgetProactiveConversation, isProactiveConversation, markProactiveConversation, proactiveChatStarted,
   proactiveMetadata, useProactive, watchQuoteForm, type ProactiveOpening,
 } from './proactive'
-import { isPhone, keptHello, useLive } from './live'
+import { botOf, isPhone, keptHello, useLive } from './live'
 import { noteAlexAnswer } from './agentTest'
 import { siteMetadata } from './siteSignals'
 import { getTurnstileToken } from './turnstile'
@@ -482,7 +482,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           } catch { /* storage off: the chat still opens */ }
           markProactiveConversation(cid)
         }
-        posthog?.capture('live_hello_replied', { held: typeof data.live_agent === 'string', site: brand.id, where: 'card' })
+        posthog?.capture('live_hello_replied', { held: typeof data.live_agent === 'string', site: brand.id, where: 'card', ...botOf(h) })
       }
     } catch { /* the chat opens as any other */ }
     liveBusyRef.current = false
@@ -577,7 +577,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
         // its ✕ and "Not now".
         // A first message carrying its tap (dismiss says false) is the visitor's answer, not a "not now".
         if (step === 'chat' && live.hello && !hasConversationNow()) {
-          if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
+          if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat', ...botOf(live.hello) })
         } else if (opening && !proactiveChatStarted()) proactive.dismiss('close')
         animateClose(() => {
           setFocusLauncher(true)
@@ -647,7 +647,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           hello={sessionActive || cachedConvId ? null : live.hello}
           onHelloReply={() => { void openLive() }}
           onHelloDismiss={() => {
-            if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'card' })
+            if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'card', ...botOf(live.hello) })
           }}
         />
       )}
@@ -678,12 +678,12 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           onProactiveEngaged={(reply) => proactive.engaged(reply)}
           live={cachedConvId ? null : live.hello}
           onLiveDismiss={() => {
-            if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat' })
+            if (live.dismiss()) posthog?.capture('live_hello_dismissed', { site: brand.id, where: 'chat', ...botOf(live.hello) })
           }}
           onLiveSending={live.sending}
           onLiveReplied={(held) => {
             live.taken()
-            posthog?.capture('live_hello_replied', { held, site: brand.id, where: 'chat' })
+            posthog?.capture('live_hello_replied', { held, site: brand.id, where: 'chat', ...botOf(live.hello) })
           }}
         />
       )}

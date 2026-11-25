@@ -143,13 +143,18 @@ export function FloatingButtons({
           </button>
         </div>
       ) : hello && count === 0 ? (
-        // An agent's hello (live.ts): their words as text, never markup; the name is theirs, not Alex's.
+        // A hello (live.ts): its words as text, never markup. An agent's under their name, not Skye's; Skye's own
+        // (`bot`) under hers, as her card.
         <div class="bw-nudge bw-nudge--card bw-nudge--hello" role="status" aria-live="polite">
           <button type="button" class="bw-nudge__open" onClick={() => onHelloReply?.()}>
-            <span class="bw-nudge__who">
-              <span class="bw-nudge__ava bw-nudge__ava--initials">{initials(hello.agent)}</span>
-              <span class="bw-nudge__id"><b>{hello.agent}</b><small>{brand.name}</small></span>
-            </span>
+            {hello.bot ? (
+              <span class="bw-nudge__who">{personaAvatar}{personaWho}</span>
+            ) : (
+              <span class="bw-nudge__who">
+                <span class="bw-nudge__ava bw-nudge__ava--initials">{initials(hello.agent)}</span>
+                <span class="bw-nudge__id"><b>{hello.agent}</b><small>{brand.name}</small></span>
+              </span>
+            )}
             <span class="bw-nudge__text">{hello.text}</span>
           </button>
           <div class="bw-card__actions">
