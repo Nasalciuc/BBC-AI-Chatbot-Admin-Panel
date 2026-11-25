@@ -173,18 +173,17 @@ async def key_status(user: dict) -> dict:
         raise BotRefused(503, "redis", "Couldn't read the key. Try again.") from e
     stored = _stored_key(raw)
     none = {"active": False, "expires_at": None}
-    if ttl < 0 or not stored.get("id"):
+    if ttl < 0 or not stored:
         return none
-    if "iat" in stored and _sessions_ended(agent_id, _int(stored["iat"]), revoked):
+    if _sessions_ended(agent_id, _int(stored["iat"]), revoked):
         return none
-    if "tv" in stored:
-        row = await db.get_user_by_id(agent_id)
-        if row is None:
-            BOT_HEALTH["agent_unreadable"] += 1
-            logger.error(f"[live-bot] the agent {agent_id} of a bot key not read")
-            raise BotRefused(503, "agent_unreadable", "Couldn't read the agent. Try again.")
-        if int(row.get("token_version") or 0) != _int(stored["tv"]):
-            return none
+    row = await db.get_user_by_id(agent_id)
+    if row is None:
+        BOT_HEALTH["agent_unreadable"] += 1
+        logger.error(f"[live-bot] the agent {agent_id} of a bot key not read")
+        raise BotRefused(503, "agent_unreadable", "Couldn't read the agent. Try again.")
+    if int(row.get("token_version") or 0) != _int(stored["tv"]):
+        return none
     return {"active": True, "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()}
 
 
@@ -215,14 +214,18 @@ def _refuse_key(code: str, detail: str) -> BotRefused:
 
 
 def _stored_key(raw: Any) -> dict:
-    """live:botkey:<agent> as {"id", "iat", "tv"}; {} for none."""
+    """live:botkey:<agent> as {"id", "iat", "tv"}; {} for none, and for a key kept in any other shape (its id alone was
+    never released): agent_for and key_status then both take it for no key, and the agent makes a new one
+    (CodeRabbit #282, round 7)."""
     if not raw:
         return {}
+    out = None
     try:
         out = json.loads(raw)
-    except ValueError:  # noqa: silent — a key kept as its id alone (made before it kept more) reads as that id
-        return {"id": str(raw)}
-    return out if isinstance(out, dict) else {"id": str(raw)}
+    except ValueError as e:
+        logger.warning(f"[live-bot] a key kept in another shape, taken for no key: {e}")
+        return {}
+    return out if isinstance(out, dict) and {"id", "iat", "tv"} <= set(out) else {}
 
 
 def _sessions_ended(agent_id: str, iat: int, revoked: Any) -> bool:

@@ -288,6 +288,24 @@ async def test_the_panel_says_a_key_stopped_when_the_bot_would_be_refused(redis)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kept", ["{id}", '{{"id": "{id}"}}', "not json at all"])
+async def test_a_key_kept_in_another_shape_is_no_key_anywhere(redis, kept):
+    """CodeRabbit #282, round 7, second look: a key kept as its id alone (never released) or in any other shape is no
+    key for the bot and none in the panel, so the two never disagree; the agent makes a new one."""
+    key = f"Bearer {await _key()}"
+    key_id = json.loads(redis.kv[f"live:botkey:{AGENT}"])["id"]
+    redis.kv[f"live:botkey:{AGENT}"] = kept.format(id=key_id)
+    assert await live_bot.key_status(SALES) == {"active": False, "expires_at": None}
+    with pytest.raises(BotRefused) as e:
+        await live_bot.agent_for(key)
+    assert (e.value.status, e.value.code) == (401, "key_revoked")
+    # Rule 5: a new key is kept whole, and works in both.
+    key = f"Bearer {await _key()}"
+    assert (await live_bot.key_status(SALES))["active"] is True
+    assert (await live_bot.agent_for(key))["id"] == AGENT
+
+
+@pytest.mark.asyncio
 async def test_the_agents_row_is_read_at_every_call(redis):
     """CodeRabbit #282, round 7: nothing of the agent is kept between calls: a switch-off reaches the bot's next one."""
     key = f"Bearer {await _key()}"
