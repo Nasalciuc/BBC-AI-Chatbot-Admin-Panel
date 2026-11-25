@@ -14,7 +14,9 @@ The widget sends each tap as the client's message with `button` beside it (ChatR
   the panel and the agent read it (the conversation row, through lead_service), with the channel on the
   lead — an SMS is the lead's "text" wish, the one a client who types "text me" already has — and the
   client is told when the agent writes (the Team line's promise). No second contact is asked for (ADR-5,
-  ADR-8). A message with no number or no email in it goes to the model as before.
+  ADR-8). A message with no number or no email the server can read is answered here too, never by the model
+  (25 Nov: the model told a client "Email's captured" for an email typed with stars, and nothing was kept): the
+  same channel is asked again (card_words.contact_unreadable), the client's words saved first, and counted.
 - ``whatsapp``: the same, from a widget cached from before SMS (a day at most): that client chose WhatsApp
   in a field that said so, and is answered and noted as WhatsApp.
 - ``wait``: "I'll wait here" (only offered while the team is at work, ADR-5b): the conversation joins the
@@ -55,9 +57,27 @@ CARD_BUTTONS_HEALTH: dict = {
     # the contact (the field left empty, lever 5's gap); not said because the newest words could not be read.
     "before_you_go_after_agent": 0, "before_you_go_after_ask": 0, "before_you_go_unread": 0,
     "goodbye_asked": 0, "goodbye_no_contact": 0, "channel_not_noted": 0,
+    # A channel's contact the server could not read: asked again, never confirmed (25 Nov).
+    "contact_unreadable": 0,
 }
 
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
+
+# The email of a channel's message, read the way the widget's field checks it (bbc-widget channel.ts validEmail, the
+# same pattern and the same cases in both suites): the one word with an @ in it, taken whole or not at all. EMAIL_RE
+# alone finds no email in "j***@gmail.com", which the field let through (25 Nov), and takes "doe@gmail.com" out of
+# "john*doe@gmail.com".
+_CHANNEL_EMAIL_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+CHANNEL_EMAIL_MAX = 120
+
+
+def channel_email(message: Optional[str]) -> Optional[str]:
+    """The email a channel's message carries ("Email: client@example.com · Price seen: 4,200"), lower-cased, or None
+    when its one word with an @ is not an email whole (or it has none, or two)."""
+    words = [w for w in (message or "").split() if "@" in w]
+    if len(words) != 1 or len(words[0]) > CHANNEL_EMAIL_MAX or not _CHANNEL_EMAIL_RE.fullmatch(words[0]):
+        return None
+    return words[0].lower()
 
 
 def price_from(raw: Optional[str]) -> Optional[str]:
@@ -189,23 +209,22 @@ async def _yes(cid: str, message: str, meta: dict) -> Optional[ChatResponse]:
 async def _channel(
     cid: str, kind: str, message: str, meta: dict, request_meta: dict, price_seen: Optional[str],
 ) -> Optional[ChatResponse]:
-    from app.pipeline.entity_extractor import EMAIL_RE
     from app.services import card_words, lead_service
     from app.services.phone_country import country_hint
 
     country = country_hint({**meta, **request_meta})
+    contact: Optional[str] = None
     if kind in _PHONE_CHANNEL:
         from app.pipeline.callback_intent import find_phone
 
         contact = find_phone(message, country)
         if not contact:
-            return None
+            return await _unreadable(cid, kind, message, meta)
         entities = {"phone": contact, "_phone_country": country}
     else:
-        m = EMAIL_RE.search(message or "")
-        if not m:
-            return None
-        contact = m.group(0).strip().lower()
+        contact = channel_email(message)
+        if not contact:
+            return await _unreadable(cid, kind, message, meta)
         entities = {"email": contact}
     # The contact lands on the conversation row (the CRM gate, the abandoned push and the panel read it),
     # before anything is said: "Done — an agent will email you" only once it is kept. A failed write goes
@@ -235,6 +254,21 @@ async def _channel(
     row = await _save(cid, "ai", text, MODEL_USED)
     CARD_BUTTONS_HEALTH[kind] += 1
     return _response(cid, row, text, [], MODEL_USED)
+
+
+async def _unreadable(cid: str, kind: str, message: str, meta: dict) -> Optional[ChatResponse]:
+    """A channel's contact the server cannot read: the same channel asked again, never confirmed. The client's words
+    are kept first; when they could not be, the model's turn saves them and answers instead (as _yes does)."""
+    from app.services import card_words
+
+    CARD_BUTTONS_HEALTH["contact_unreadable"] += 1
+    # The kind only: what was typed may be a contact.
+    logger.warning(f"[{cid}] card button: the {kind} contact could not be read, asked again")
+    if await _save(cid, "user", message) is None:
+        return None
+    text, buttons = card_words.contact_unreadable(kind, _lang(meta))
+    row = await _save(cid, "ai", text, MODEL_USED)
+    return _response(cid, row, text, buttons, MODEL_USED)
 
 
 _NOTE_TRIES = 2

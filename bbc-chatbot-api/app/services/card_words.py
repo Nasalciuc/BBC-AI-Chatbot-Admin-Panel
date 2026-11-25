@@ -321,6 +321,32 @@ def goodbye_without_contact(lang: Optional[str] = None) -> str:
     return _GOODBYE_NO_CONTACT[_lang(lang)]
 
 
+# A channel's contact the server cannot read (25 Nov: an email typed with stars, which the widget's field let through,
+# was answered "Email's captured" by the model while nothing was kept): asked again, the field one tap away.
+_UNREADABLE: dict[str, dict[str, str]] = {
+    "en": {
+        "email": "I couldn't read that email address. Could you check it and send it again?",
+        "sms": "I couldn't read that number. Could you check it, with the country code, and send it again?",
+    },
+    "es": {
+        "email": "No pude leer ese correo. ¿Puede revisarlo y enviarlo de nuevo?",
+        "sms": "No pude leer ese número. ¿Puede revisarlo, con el código de país, y enviarlo de nuevo?",
+    },
+    "fr": {
+        "email": "Je n'ai pas pu lire cette adresse e-mail. Pouvez-vous la vérifier et la renvoyer ?",
+        "sms": "Je n'ai pas pu lire ce numéro. Pouvez-vous le vérifier, avec l'indicatif du pays, et le renvoyer ?",
+    },
+}
+
+
+def contact_unreadable(kind: str, lang: Optional[str] = None) -> tuple[str, list[dict]]:
+    """The answer to a channel whose contact could not be read: that channel asked again (a number for SMS and the
+    WhatsApp of a cached widget), its button first, the other one after it."""
+    channel = "email" if kind == "email" else "sms"
+    other = "sms" if channel == "email" else "email"
+    return _UNREADABLE[_lang(lang)][channel], [button(channel, lang), button(other, lang)]
+
+
 def row_buttons(lang: Optional[str] = None) -> list[dict]:
     """D1: both channels beside the refused form."""
     return [card_channel("sms", lang), card_channel("email", lang)]
