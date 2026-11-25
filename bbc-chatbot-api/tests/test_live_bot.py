@@ -612,21 +612,29 @@ async def test_the_tapped_chat_is_the_agents_and_marked_the_bots(redis):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("given_back", [True, False])
-async def test_a_bots_chat_that_cannot_be_marked_goes_to_skye(redis, given_back):
+@pytest.mark.parametrize("given_back, reread, theirs", [
+    (True, None, False),
+    (False, None, True),                                          # can't be read: the agent's, as for a lost hello
+    (False, {"id": "c1", "assigned_agent_id": AGENT}, True),
+    (False, {"id": "c1", "assigned_agent_id": "someone-else"}, False),
+])
+async def test_a_bots_chat_that_cannot_be_marked_goes_to_skye(redis, given_back, reread, theirs):
     """CodeRabbit #282, round 7: without live_hello.bot the bot never sees the chat: twice not written, it is given back
-    (Skye answers the visitor who tapped); one that can't be given back stays the agent's, counted."""
+    (Skye answers the visitor who tapped); one that can't be given back stays the agent's, counted. Round 8: read
+    again first, so a chat someone else took meanwhile is never named the agent's."""
     from app.api.chat import ChatInitRequest
 
     _visit(redis)
     agent = await _agent(redis)
     await live_bot.greet(agent, VID)
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
-    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), marked=False, given_back=given_back)
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), marked=False, given_back=given_back,
+                         reread=reread)
     assert m["meta"].await_count == 2 and live_visitors.LIVE_HEALTH["mark_failed"] == 1
     m["give_back"].assert_awaited_once_with("c1", AGENT)
-    assert (res.live_agent is None) is given_back
+    assert res.live_agent == ("Ana" if theirs else None)
     assert live_visitors.LIVE_HEALTH["release_failed"] == (0 if given_back else 1)
+    assert m["reread"].await_count == (0 if given_back else 1)
 
 
 @pytest.mark.asyncio

@@ -316,6 +316,16 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
             "bot": hello.get("bot") is True}
 
 
+async def _still_theirs(conv_id: str, agent_id: str) -> bool:
+    """After a give-back that didn't happen: the write failed (the chat is still the agent's, in human mode) or the
+    chat is no longer theirs. A chat that can't be read counts as theirs, so the visitor and the panel agree on who
+    answers (CodeRabbit #273)."""
+    from app.db import supabase as db
+
+    now_conv = await db.get_conversation_simple(conv_id)
+    return now_conv is None or now_conv.get("assigned_agent_id") == agent_id
+
+
 async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str) -> dict:
     """/chat/init with live_tap: the visitor tapped an agent's hello, so the chat becomes the agent's, with the
     hello as its first message. {"agent": first name, "text": the hello, "at": when it was stored (None when it
@@ -325,7 +335,8 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
 
     Order: the agent may still take chats; the claim; the hello stored; then the presence fields. A hello that
     cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary; a
-    chat that cannot be given back stays the agent's, and the answer says so. The presence fields are tried twice;
+    chat that cannot be given back stays the agent's, and the answer says so, once read again (one someone else has
+    by then is answered as ordinary). The presence fields are tried twice;
     a bot's chat they can't be written on is given back the same way (its bot would never see it), a chat from the
     panel stays the agent's, counted (mark_failed)."""
     from app.db import supabase as db
@@ -369,8 +380,7 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
         # theirs. Only a chat that is not the agent's starts as an ordinary one; theirs, or one that can't be read,
         # stays theirs, so the visitor and the panel agree on who answers (CodeRabbit #273).
         LIVE_HEALTH["release_failed"] += 1
-        now_conv = await db.get_conversation_simple(conv_id)
-        if now_conv is not None and now_conv.get("assigned_agent_id") != agent_id:
+        if not await _still_theirs(conv_id, agent_id):
             logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat is no longer the agent's")
             return {}
         logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat could not be given back: "
@@ -395,6 +405,12 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
                 logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked; given back to Skye")
                 return {}
             LIVE_HEALTH["release_failed"] += 1
+            # Not given back: the write failed, or someone else has the chat now. Read again, as just above for an
+            # unstored hello: only a chat still the agent's (or one that can't be read) is named theirs (CodeRabbit
+            # #282, round 8).
+            if not await _still_theirs(conv_id, agent_id):
+                logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked and is no longer the agent's")
+                return {}
             logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked nor given back: it stays the agent's")
         else:
             logger.error(f"[live] conv {conv_id}: the hello's chat fields were not written; the chat stays the agent's")
