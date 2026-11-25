@@ -189,6 +189,10 @@ type beatIn struct {
 	AlexCard    string  `json:"alex_card"`
 	AlexCardS   float64 `json:"alex_card_s"`
 	AlexTrigger string  `json:"alex_trigger"`
+	// The panel's groups (the owner, 25 Nov 2026): the browser's time zone ("Australia/Sydney") and whether the
+	// browser was on the site before this visit (the widget's visitCount.ts).
+	TZ        string `json:"tz"`
+	Returning bool   `json:"returning"`
 }
 
 var (
@@ -198,7 +202,9 @@ var (
 	cabins  = map[string]bool{"economy": true, "premium": true, "business": true, "first": true}
 	sources = map[string]bool{"kayak": true, "ads": true, "site": true}
 	devices = map[string]bool{"phone": true, "computer": true}
-	sites   = map[string]bool{"bbc": true, "bct": true}
+	// An IANA time zone's shape: "UTC", "Australia/Sydney", "America/Argentina/Buenos_Aires".
+	zoneShape = regexp.MustCompile(`^[A-Za-z][A-Za-z_]{0,19}(/[A-Za-z0-9_+-]{1,30}){0,2}$`)
+	sites     = map[string]bool{"bbc": true, "bct": true}
 	// What came of Alex's card, and the moments that show it (the widget's triggers.ts OpeningTrigger).
 	alexCards    = map[string]bool{"shown": true, "dismissed": true, "engaged": true}
 	alexTriggers = map[string]bool{"kayak": true, "ads": true, "social": true, "quote": true, "reader": true, "exit": true, "note": true}
@@ -280,6 +286,7 @@ func cleanBeat(vid string, in beatIn) Visit {
 		Source: source, Device: pick(devices, in.Device), Site: pick(sites, in.Site),
 		ChatOpen: in.ChatOpen, HasChat: in.HasChat,
 		PageType: pick(pageTypes, in.PageType), Activity: cleanActivity(in.Activity),
+		TZ: match(zoneShape, in.TZ), Returning: in.Returning,
 	}
 }
 

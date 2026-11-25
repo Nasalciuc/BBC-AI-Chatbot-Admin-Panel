@@ -267,6 +267,50 @@ func TestABeatSaysWhatCameOfAlexsCard(t *testing.T) {
 	}
 }
 
+// The panel's groups (the owner, 25 Nov 2026): the browser's time zone (Australia and New Zealand) and a browser that
+// was on the site before. A zone of another shape is dropped; each beat says both again.
+func TestABeatSaysTheTimeZoneAndAReturn(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	listed := func() map[string]any {
+		t.Helper()
+		w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		return decode(t, w)["data"].([]any)[0].(map[string]any)
+	}
+	beat := func(b map[string]any) {
+		t.Helper()
+		if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, b); w.Code != http.StatusOK {
+			t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+		}
+	}
+	beat(map[string]any{"page": "/", "device": "computer", "tz": "Australia/Sydney", "returning": true})
+	if v := listed(); v["tz"] != "Australia/Sydney" || v["returning"] != true {
+		t.Errorf("listed %v", v)
+	}
+	for _, zone := range []string{"America/Argentina/Buenos_Aires", "UTC", "Pacific/Auckland"} {
+		c.add(10)
+		beat(map[string]any{"page": "/", "tz": zone})
+		if v := listed(); v["tz"] != zone {
+			t.Errorf("%s listed as %v", zone, v["tz"])
+		}
+	}
+	// Rule 5: a zone of another shape, and a beat without either, list without them (left out, never "" or false).
+	for _, zone := range []string{"Australia/Sydney; x", "../../etc", "a/b/c/d", "Sydney Australia"} {
+		c.add(10)
+		beat(map[string]any{"page": "/", "tz": zone})
+		v := listed()
+		if _, has := v["tz"]; has {
+			t.Errorf("%q listed as %v", zone, v["tz"])
+		}
+		if _, has := v["returning"]; has {
+			t.Errorf("returning listed for a beat without it: %v", v)
+		}
+	}
+}
+
 // The widget's last beat says the chat started, and no beat follows it: one sent before it that lands after it must
 // not take it back, or the visitor is listed and claimable again (CodeRabbit #278).
 func TestAChatOnceStartedStaysForTheVisit(t *testing.T) {
