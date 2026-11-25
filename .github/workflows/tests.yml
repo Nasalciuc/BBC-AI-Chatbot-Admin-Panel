@@ -194,6 +194,47 @@ jobs:
         working-directory: bbc-live
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  messenger:
+    name: messenger
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bbc-messenger/go.mod
+          cache: false
+
+      - name: Format
+        working-directory: bbc-messenger
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+
+      - name: Vet
+        working-directory: bbc-messenger
+        run: go vet ./...
+
+      - name: Tests (race detector on)
+        working-directory: bbc-messenger
+        # A fake Send API and a fake API (httptest): no network, no Meta account.
+        run: go test -race -count=1 ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1
+          working-directory: bbc-messenger
+
+      - name: Known vulnerabilities
+        working-directory: bbc-messenger
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   security:
     name: security
     runs-on: ubuntu-latest
