@@ -19,7 +19,7 @@ import { noteVisit } from './visitCount'
 import { offCapture, onCapture } from './visitTap'
 import {
   MAX_STEPS, addEvent, afterSent, cardAfter, cardStillOn, cardToKeep, eventToken, keptCardFor, newPageId,
-  readSentMark, snapshotTimer, visitBody, type SentMark, type VisitCard,
+  readSentMark, snapshotTimer, visitBody, whenRegistryOn, type SentMark, type VisitCard,
 } from './visitsRead'
 
 const CARD_KEY = 'bbc_visit_card'
@@ -198,9 +198,11 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     window.addEventListener('pagehide', onPageHide)
   } catch { /* no events: the minute's snapshots still go */ }
 
+  let config: { cancel: () => void } | null = null
   const stop = () => {
     if (stopped) return
     stopped = true
+    config?.cancel()
     snap.cancel()
     if (everyTimer !== null) clearTimeout(everyTimer)
     everyTimer = null
@@ -213,12 +215,14 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
   }
   stopCurrent = stop
 
-  // The page's config, now (the live list takes the same answer 20 s in): on with `visits`, the first snapshot.
-  pageConfig(apiUrl).then((cfg) => {
-    if (stopped || !cfg.visits) return
+  // The page's config, now (the live list takes the same answer 20 s in): on with `visits`, the first snapshot and
+  // the minute's loop. An answer "for now" or none at all is asked again, the live list on or off (whenRegistryOn;
+  // CodeRabbit #282, round 4).
+  config = whenRegistryOn(() => pageConfig(apiUrl), () => {
+    if (stopped) return
     snap.now()
     everyTimer = setTimeout(every, EVERY_MS)
-  }, () => { /* the API away: no registry on this page */ })
+  })
   return stop
 }
 

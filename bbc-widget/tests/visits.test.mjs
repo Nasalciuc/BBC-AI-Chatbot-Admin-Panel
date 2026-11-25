@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   MAX_EVENTS, MAX_SEQ, VISIT_EVENTS, addEvent, afterSent, cardAfter, cardStillOn, cardToKeep, channelOf, eventToken,
-  keptCardFor, newPageId, readSentMark, readVisitCard, snapshotTimer, visitBody,
+  keptCardFor, newPageId, readSentMark, readVisitCard, snapshotTimer, visitBody, configRetryMs, whenRegistryOn,
 } from '../src/visitsRead.ts'
 import { configFor, readConfig } from '../src/liveRead.ts'
 
@@ -200,6 +200,64 @@ test('one snapshot waits at a time, and the stop leaves none behind (CodeRabbit 
   assert.equal(waiting.size, 0, 'the teardown: nothing fires after the widget is gone')
   assert.ok(!snap.waiting())
   assert.equal(runs, 2)
+})
+
+test('the page’s config is asked again after "for now" or no answer, until on or off, and never after the stop (CodeRabbit #282, round 4)', async () => {
+  const settle = () => new Promise((r) => setImmediate(r))
+  const fakeTimers = () => {
+    const waiting = new Map()
+    let ids = 0
+    return {
+      waiting,
+      set: (fn, ms) => { ids++; waiting.set(ids, { fn, ms }); return ids },
+      clear: (id) => { waiting.delete(id) },
+      fire: () => { const [[id, t]] = [...waiting]; waiting.delete(id); t.fn() },
+    }
+  }
+  // "For now", then no answer, then on: the registry starts once, and nothing is asked after.
+  let t = fakeTimers()
+  const answers = [() => Promise.resolve({ later: true }), () => Promise.reject(new Error('down')),
+    () => Promise.resolve({ visits: true })]
+  let asked = 0
+  let started = 0
+  whenRegistryOn(() => answers[asked++](), () => { started++ }, t.set, t.clear)
+  await settle()
+  assert.equal(started, 0)
+  assert.deepEqual([...t.waiting.values()].map((w) => w.ms), [30_000], '"for now": asked again in 30 s')
+  t.fire()
+  await settle()
+  assert.deepEqual([...t.waiting.values()].map((w) => w.ms), [60_000], 'no answer: asked again, later')
+  t.fire()
+  await settle()
+  assert.equal(started, 1)
+  assert.equal(asked, 3)
+  assert.equal(t.waiting.size, 0, 'on: nothing more is asked')
+  // Off: nothing starts, nothing is asked again.
+  t = fakeTimers()
+  started = 0
+  whenRegistryOn(() => Promise.resolve({ visits: false }), () => { started++ }, t.set, t.clear)
+  await settle()
+  assert.equal(started, 0)
+  assert.equal(t.waiting.size, 0)
+  // Stopped while waiting, or while an answer is on its way: nothing fires, nothing starts.
+  t = fakeTimers()
+  let loop = whenRegistryOn(() => Promise.resolve({ later: true }), () => { started++ }, t.set, t.clear)
+  await settle()
+  loop.cancel()
+  assert.equal(t.waiting.size, 0)
+  let answer
+  t = fakeTimers()
+  loop = whenRegistryOn(() => new Promise((r) => { answer = r }), () => { started++ }, t.set, t.clear)
+  loop.cancel()
+  answer({ visits: true })
+  await settle()
+  assert.equal(started, 0)
+  assert.equal(t.waiting.size, 0)
+  assert.deepEqual([0, 1, 2, 3, 4, 9].map(configRetryMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000])
+  // The registry starts through it, and its stop cancels it.
+  const visits = readFileSync(join(here, '..', 'src', 'visits.ts'), 'utf8')
+  assert.match(visits, /config = whenRegistryOn\(\(\) => pageConfig\(apiUrl\), \(\) => \{\s+if \(stopped\) return\s+snap\.now\(\)\s+everyTimer = setTimeout\(every, EVERY_MS\)/)
+  assert.match(visits.slice(visits.indexOf('const stop = () => {')), /stopped = true\s+config\?\.cancel\(\)/)
 })
 
 test('a snapshot carries its number on the page, so bbc-live keeps the newest (CodeRabbit #282, round 3)', () => {

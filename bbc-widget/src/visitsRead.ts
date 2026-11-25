@@ -224,6 +224,45 @@ export function snapshotTimer(run: () => void, set: (fn: () => void, ms: number)
   }
 }
 
+/** How long the registry waits to ask for the page's config again after an answer "for now" or none at all: 30 s,
+ *  twice as long each time after, at most 5 minutes (the live list's wait). */
+export function configRetryMs(tries: number): number {
+  return Math.min(5 * 60_000, 30_000 * 2 ** Math.max(0, Math.floor(tries)))
+}
+
+/** The registry's start (visits.ts): the page's config, asked until it says on or off. On (`visits`): `on` runs,
+ *  once. An answer "for now" (`later`) or none at all: asked again (configRetryMs). Off: nothing more. Cancelled:
+ *  nothing more, not even for an answer on its way (CodeRabbit #282, round 4). The timers come in for the tests. */
+export function whenRegistryOn(ask: () => Promise<{ visits?: boolean; later?: boolean }>, on: () => void,
+  set: (fn: () => void, ms: number) => unknown = setTimeout,
+  clear: (t: unknown) => void = (t) => clearTimeout(t as ReturnType<typeof setTimeout>)): { cancel: () => void } {
+  let cancelled = false
+  let timer: unknown = null
+  let tries = 0
+  const again = () => {
+    if (cancelled) return
+    timer = set(() => { timer = null; go() }, configRetryMs(tries++))
+  }
+  const go = () => {
+    if (cancelled) return
+    let answer: Promise<{ visits?: boolean; later?: boolean }>
+    try { answer = ask() } catch { again(); return }
+    answer.then((cfg) => {
+      if (cancelled) return
+      if (cfg.later) again()
+      else if (cfg.visits) on()
+    }, again)
+  }
+  go()
+  return {
+    cancel: () => {
+      cancelled = true
+      if (timer !== null) clear(timer)
+      timer = null
+    },
+  }
+}
+
 const COMPARISON = new Set(['kayak', 'skyscanner', 'momondo', 'kiwi', 'cheapflights', 'expedia'])
 const PAID = new Set(['cpc', 'ppc', 'paid', 'paidsearch', 'paid_search', 'paidsocial', 'paid_social', 'cpm'])
 const SEARCH = /(^|\.)(google|bing|yahoo|duckduckgo|ecosia|yandex|baidu|brave)\.[a-z.]+$/
