@@ -48,3 +48,8 @@ f71f63a1df229c5d77d43830b07a0fa4995684b9:bbc-chatbot-api/tests/test_db_transport
 # and unsigned, written after the vectors' old key in the first version of the
 # test (#273); the key is "value" now, so the line matches that one commit only
 c0fdaf1606aaf78b41c54f2f53f3d5af42d9a12b:bbc-widget/tests/live.test.mjs:generic-api-key:59
+
+# bbc-chatbot-api/tests/test_contact_hold.py: a made-up, JWT-shaped SUPABASE_KEY
+# for the settings the claim tests import ({"alg":"HS256","typ":"JWT"}, payload
+# {"role":"x"}, signature the word "sig"), checked by hand (lever 2, 25 Nov)
+92c39a7ab0fcecf48dda6d296f9436ba8960e74b:bbc-chatbot-api/tests/test_contact_hold.py:generic-api-key:17
