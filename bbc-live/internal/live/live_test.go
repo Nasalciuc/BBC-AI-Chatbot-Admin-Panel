@@ -776,6 +776,101 @@ func TestTheSendScriptHoldsTheRules(t *testing.T) {
 	}
 }
 
+// botSend runs the API's bot_send.lua (Skye's own hello, bbc-chatbot-api app/services/live_bot.py) on this Redis.
+func botSend(t *testing.T, rc *resp.Client, vid, hello string) int64 {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "live", "bot_send.lua"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := resp.Int(rc.Do(context.Background(), "EVAL", string(src), "7", visitKey(vid), claimKey(vid),
+		dismissedKey(vid), inboxKey(vid), "live:hello:"+hello, "live:said:"+vid, "live:bot:"+vid,
+		"skye", vid, `{"kind":"hello","bot":true}`, `{"hello":"`+hello+`"}`, "900", "86400"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestTheBotSendScriptHoldsTheRules(t *testing.T) {
+	s, _, rc := setup(t)
+	ctx := context.Background()
+	if n := botSend(t, rc, vid1, "h1"); n != -1 {
+		t.Fatalf("not on the site: %d", n)
+	}
+	third := "e2e00000-0000-4000-8000-000000000003"
+	for _, v := range []Visit{{ID: vid1, Page: "/", Source: "site"}, {ID: vid2, Page: "/", Source: "site"},
+		{ID: third, Page: "/", Source: "site", HasChat: true}} {
+		if err := s.Store.Beat(ctx, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := botSend(t, rc, third, "h0"); n != -2 {
+		t.Fatalf("in a chat: %d", n)
+	}
+	if r, _ := s.Store.Claim(ctx, agentA, vid2); r != Claimed {
+		t.Fatal(r)
+	}
+	if n := botSend(t, rc, vid2, "h2"); n != -4 {
+		t.Fatalf("an agent's visitor: %d", n)
+	}
+	if n := botSend(t, rc, vid1, "h1"); n != 1 {
+		t.Fatalf("send: %d", n)
+	}
+	if msgs, err := rc.Do(ctx, "LRANGE", inboxKey(vid1), "0", "-1"); err != nil || len(msgs.Array) != 1 {
+		t.Fatalf("the inbox: %v %v", msgs, err)
+	}
+	if hello, err := resp.Str(rc.Do(ctx, "GET", "live:hello:h1")); err != nil || hello != `{"hello":"h1"}` {
+		t.Fatalf("the hello for /chat/init: %q %v", hello, err)
+	}
+	// Skye holds the visitor for the hello's life: the list says so, and no agent claims them meanwhile.
+	if r, _ := s.Store.Claim(ctx, agentA, vid1); r != Taken {
+		t.Fatalf("an agent after Skye: %s", r)
+	}
+	listed, err := s.Store.Live(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range listed {
+		if l.ID == vid1 && l.ClaimedBy != "skye" {
+			t.Fatalf("the list: %+v", l)
+		}
+	}
+	if n := botSend(t, rc, vid1, "h3"); n != -4 {
+		t.Fatalf("her own visitor again: %d", n)
+	}
+	// "Not now" lets Skye's hold go, as an agent's; then nobody greets them.
+	if holder, err := s.Store.Dismiss(ctx, vid1); err != nil || holder != "skye" {
+		t.Fatalf("dismiss: %q %v", holder, err)
+	}
+	if n := botSend(t, rc, vid1, "h3"); n != -3 {
+		t.Fatalf("said not now: %d", n)
+	}
+	// One of Skye's hellos a day, past the hello's own 15 minutes.
+	if _, err := rc.Do(ctx, "DEL", dismissedKey(vid1), "live:said:"+vid1); err != nil {
+		t.Fatal(err)
+	}
+	if n := botSend(t, rc, vid1, "h4"); n != -6 {
+		t.Fatalf("Skye's second hello: %d", n)
+	}
+	if ttl, _ := rc.Do(ctx, "TTL", "live:bot:"+vid1); ttl.Int < 86000 {
+		t.Fatalf("Skye's hello is remembered a day: %d", ttl.Int)
+	}
+	// An agent's hello went, and its claim is gone (the tap let it go): one hello a visitor while it runs.
+	if _, err := rc.Do(ctx, "SET", "live:said:"+vid2, agentA, "EX", "900"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Store.Release(ctx, agentA, vid2); err != nil || !ok {
+		t.Fatalf("release: %v %v", ok, err)
+	}
+	if n := botSend(t, rc, vid2, "h5"); n != -5 {
+		t.Fatalf("after an agent's hello: %d", n)
+	}
+	if ex, _ := rc.Do(ctx, "EXISTS", "live:bot:"+vid2, claimKey(vid2), "live:hello:h5"); ex.Int != 0 {
+		t.Fatal("a refused hello writes nothing")
+	}
+}
+
 func poll(t *testing.T, base string, tok string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequest("GET", base+"/v1/inbox", nil)
