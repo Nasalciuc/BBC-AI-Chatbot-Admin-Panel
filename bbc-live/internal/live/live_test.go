@@ -777,7 +777,8 @@ func TestTheSendScriptHoldsTheRules(t *testing.T) {
 }
 
 // botSend runs the API's bot_send.lua (an agent's own bot, bbc-chatbot-api app/services/live_bot.py) on this Redis.
-func botSend(t *testing.T, rc *resp.Client, agent, vid, hello string) int64 {
+// botSend runs bot_send.lua as the API does; `steps` is the visitor's activity the API judged them by (none: "").
+func botSend(t *testing.T, rc *resp.Client, agent, vid, hello string, steps ...string) int64 {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "live", "bot_send.lua"))
 	if err != nil {
@@ -785,7 +786,7 @@ func botSend(t *testing.T, rc *resp.Client, agent, vid, hello string) int64 {
 	}
 	n, err := resp.Int(rc.Do(context.Background(), "EVAL", string(src), "7", visitKey(vid), claimKey(vid),
 		dismissedKey(vid), inboxKey(vid), "live:hello:"+hello, "live:said:"+vid, "live:bot:"+vid,
-		"bot:"+agent, vid, `{"kind":"hello"}`, `{"hello":"`+hello+`"}`, "900", "86400", agent))
+		"bot:"+agent, vid, `{"kind":"hello"}`, `{"hello":"`+hello+`"}`, "900", "86400", agent, strings.Join(steps, ";")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,6 +884,21 @@ func TestTheBotSendScriptHoldsTheRules(t *testing.T) {
 	}
 	if ex, _ := rc.Do(ctx, "EXISTS", "live:bot:"+vid2, claimKey(vid2), "live:hello:h6"); ex.Int != 0 {
 		t.Fatal("a refused hello writes nothing")
+	}
+	// A step the visitor took after the API read them (the quote form opened) refuses the hello, so the API's "not in
+	// the middle of the quote form" still holds when it goes (CodeRabbit #282, round 7); the steps it read, it sends.
+	fifth := "e2e00000-0000-4000-8000-000000000005"
+	if err := s.Store.Beat(ctx, Visit{ID: fifth, Page: "/", Source: "site", Activity: "search:JFK-IST;quote_opened"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := botSend(t, rc, agentA, fifth, "h7", "search:JFK-IST"); n != -7 {
+		t.Fatalf("a step since the read: %d", n)
+	}
+	if ex, _ := rc.Do(ctx, "EXISTS", "live:said:"+fifth, "live:bot:"+fifth, claimKey(fifth), "live:hello:h7"); ex.Int != 0 {
+		t.Fatal("a refused hello writes nothing")
+	}
+	if n := botSend(t, rc, agentA, fifth, "h7", "search:JFK-IST", "quote_opened"); n != 1 {
+		t.Fatalf("the steps the API read: %d", n)
 	}
 }
 
