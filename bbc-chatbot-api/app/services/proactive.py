@@ -86,6 +86,8 @@ MODEL_USED = "proactive_template"
 # Alex checks them: only an agent can (owner, 17 Nov). "Check fares" promised
 # fares on the spot; of the 13 who tapped it with no trip known on 16-17 Nov,
 # 10 left at the first question. "Get a fare quote" is the note's own button.
+# Where the yes's answer opens the contact field, the offer names that field in
+# the yes ("Yes, email me the fares", card_words.yes_label, 25 Nov).
 _REPLIES: dict[str, list[str]] = {
     "kayak": ["Yes, send me fares", "Change details", "Not now"],
     "quote": ["Yes, send me fares", "I have a question", "Not now"],
@@ -757,12 +759,21 @@ def _with_after_words(
     if side:
         out["contact_test"] = side
         contact_field_test.count(side)
+
+    def yes_names_field() -> None:
+        # Its answer opens the field: the yes says where the fares go ("Yes, email me the fares", 25 Nov). Only the
+        # card's "Yes, send me fares"; "Get a fare quote" (the reader's, the note's) stays as it is.
+        replies = out.get("quick_replies") or []
+        if field and replies and replies[0] == card_words.yes_label(lang, None):
+            out["quick_replies"] = [card_words.yes_label(lang, field), *replies[1:]]
+
     if first and field:
         out["confirm"] = {
             "message": card_words.contact_first(lang, field),
             "buttons": card_words.contact_first_buttons(lang, team_online),
             "field": field,
         }
+        yes_names_field()
     if (trigger == "ads" and not full_trip(trip) and _names_a_destination(with_keyword(trip))) or (
         trigger == "social" and not full_trip(trip)
     ):
@@ -782,6 +793,7 @@ def _with_after_words(
         "buttons": card_words.confirm_buttons(lang, team_online),
         **({"field": field} if field else {}),
     }
+    yes_names_field()
     if trigger != NOTE:
         out["channel"] = card_words.card_channel(card_words.device_channel(device), lang)
     return out

@@ -57,7 +57,8 @@ class TestTheWords:
             f"Hi, I'm {proactive.PERSONA} from BuyBusinessClass. "
             "Want an agent to send you today's business class fares to Asia?"
         )
-        assert out["quick_replies"] == ["Yes, send me fares", "I have a question", "Not now"]
+        # Its yes opens the email field (the contact test's field side), so it says where the fares go (25 Nov).
+        assert out["quick_replies"] == ["Yes, email me the fares", "I have a question", "Not now"]
         # The phone card leads with the place, and asks only the question under it (ADR A3).
         assert out["headline"] == "Asia · Business class"
         assert out["card_text"] == "Want an agent to send you today's business class fares to Asia?"
