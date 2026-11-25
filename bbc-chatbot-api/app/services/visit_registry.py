@@ -25,7 +25,7 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.flags import flag
@@ -40,6 +40,8 @@ _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 _PAGE_ID = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STATES = {"shown", "dismissed", "engaged"}
+# A chat begun this long before a visit's first snapshot is still the visit's (the widget asks for the pass first).
+_CHAT_BEFORE_VISIT_S = 120
 # The visit's text fields as bbc-live writes them, and the table's names for them.
 _TEXT = {
     "landing": "landing_page", "landing_type": "landing_type", "source": "source", "channel": "channel",
@@ -161,13 +163,15 @@ async def _link_chats(rows: list[dict]) -> None:
     want = [r for r in rows if r["has_chat"] and not r["conversation_id"]]
     if not want:
         return
-    found = await db.chats_of_visitors(sorted({r["visitor_id"] for r in want}),
-                                       min(r["started_at"] for r in want))
+    # The lookup reaches as far back as a visit takes a chat: one begun just before the visit's first snapshot
+    # (CodeRabbit #282, round 3).
+    since = datetime.fromisoformat(min(r["started_at"] for r in want)) - timedelta(seconds=_CHAT_BEFORE_VISIT_S)
+    found = await db.chats_of_visitors(sorted({r["visitor_id"] for r in want}), since.isoformat())
     if found is None:
         VISIT_HEALTH["link_failed"] += 1
         return
     for r in want:
-        start = datetime.fromisoformat(r["started_at"]).timestamp() - 120
+        start = datetime.fromisoformat(r["started_at"]).timestamp() - _CHAT_BEFORE_VISIT_S
         end = datetime.fromisoformat(r["ended_at"]).timestamp() + 1800
         for c in found:
             if c["visitor_id"] != r["visitor_id"]:

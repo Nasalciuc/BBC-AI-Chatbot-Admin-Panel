@@ -218,8 +218,23 @@ async def test_a_chat_the_widget_did_not_name_is_the_visitors_chat_within_the_vi
     with patch("app.db.supabase.store_site_visits", new=store), \
             patch("app.db.supabase.chats_of_visitors", new=AsyncMock(return_value=found)) as chats:
         await reg.run_visit_registry()
-    assert chats.await_args.args == ([VID], iso(T0))
+    # The lookup reaches as far back as a visit takes a chat (CodeRabbit #282, round 3).
+    assert chats.await_args.args == ([VID], iso(T0 - 120))
     assert store.await_args.args[0][0]["conversation_id"] == CHAT and reg.VISIT_HEALTH["linked"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_chat_begun_just_before_the_first_snapshot_is_the_visits_and_one_before_that_is_not(fake):
+    _queue(fake, (KEY, visit(conversation_id=None)))
+    found = [
+        {"id": LATER_CHAT, "visitor_id": VID, "created_at": iso(T0 - 121)},   # Rule 5: before the window
+        {"id": CHAT, "visitor_id": VID, "created_at": iso(T0 - 60)},
+    ]
+    store = AsyncMock(return_value="stored")
+    with patch("app.db.supabase.store_site_visits", new=store), \
+            patch("app.db.supabase.chats_of_visitors", new=AsyncMock(return_value=found)):
+        await reg.run_visit_registry()
+    assert store.await_args.args[0][0]["conversation_id"] == CHAT
 
 
 @pytest.mark.asyncio

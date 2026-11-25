@@ -417,6 +417,10 @@ def _list_filters(user: dict, *, date_from: Optional[str], date_to: Optional[str
         except ValueError as e:
             raise HTTPException(status_code=400, detail="Unknown agent") from e
         f["agent"] = agent
+    # Where the chats came from is not an agent's (the owner, 25 Nov 2026): a list narrowed to Kayak would name the
+    # source of every chat in it (CodeRabbit #282, round 3). Their panel never sends it; an old link is ignored.
+    if user.get("role") in db._OPERATOR_ROLES:
+        source = None
     for key, value in (("source", source), ("route_from", route_from), ("route_to", route_to), ("crm", crm)):
         if value:
             f[key] = value

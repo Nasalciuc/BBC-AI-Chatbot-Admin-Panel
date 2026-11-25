@@ -104,6 +104,19 @@ async def test_everyone_else_keeps_it(role):
     assert (await _list(role))["metadata"] == {**SOURCES, **KEPT}
 
 
+@pytest.mark.parametrize("role, kept", [("sales", False), ("support", False), ("owner", True), ("admin", True),
+                                        ("supervisor", True), ("qa", True)])
+def test_an_agent_cannot_narrow_the_list_by_where_the_chats_came_from(role, kept):
+    """A list narrowed to Kayak would name the source of every chat in it (CodeRabbit #282, round 3). Ignored, not
+    refused: an old link with the filter still opens the agent's list."""
+    from app.api.conversations import _list_filters
+
+    f = _list_filters({"role": role}, date_from=None, date_to=None, has_contact=None, agent=None, source="kayak",
+                      route_from="JFK", route_to=None, crm=None)
+    assert ("source" in f) is kept
+    assert f["route_from"] == "JFK"  # the trip is the agent's to filter by
+
+
 def test_a_bing_ad_click_is_marketing_too():
     # A supervisor's rows (mask_visitor_row) lost Google's and Facebook's ad clicks but kept Bing's.
     assert "msclkid" not in strip_marketing_metadata({"msclkid": "m-1", "site": "bbc"})
