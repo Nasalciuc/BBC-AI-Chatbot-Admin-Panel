@@ -8,6 +8,7 @@ Every name here is invented.
 """
 
 import json
+import logging
 import os
 import pathlib
 import time
@@ -288,17 +289,21 @@ async def test_the_panel_says_a_key_stopped_when_the_bot_would_be_refused(redis)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kept", ["{id}", '{{"id": "{id}"}}', "not json at all"])
-async def test_a_key_kept_in_another_shape_is_no_key_anywhere(redis, kept):
+@pytest.mark.parametrize("kept", ["{id}", '{{"id": "{id}"}}', '"{id}"', "12345", "not json at all"])
+async def test_a_key_kept_in_another_shape_is_no_key_anywhere(redis, kept, caplog):
     """CodeRabbit #282, round 7, second look: a key kept as its id alone (never released) or in any other shape is no
-    key for the bot and none in the panel, so the two never disagree; the agent makes a new one."""
+    key for the bot and none in the panel, so the two never disagree; the agent makes a new one. Each is said in the
+    log, JSON or not, by its shape alone (third look)."""
     key = f"Bearer {await _key()}"
     key_id = json.loads(redis.kv[f"live:botkey:{AGENT}"])["id"]
     redis.kv[f"live:botkey:{AGENT}"] = kept.format(id=key_id)
-    assert await live_bot.key_status(SALES) == {"active": False, "expires_at": None}
-    with pytest.raises(BotRefused) as e:
-        await live_bot.agent_for(key)
+    with caplog.at_level(logging.WARNING, logger="app.services.live_bot"):
+        assert await live_bot.key_status(SALES) == {"active": False, "expires_at": None}
+        with pytest.raises(BotRefused) as e:
+            await live_bot.agent_for(key)
     assert (e.value.status, e.value.code) == (401, "key_revoked")
+    said = [r.getMessage() for r in caplog.records if "another shape" in r.getMessage()]
+    assert len(said) == 2 and not any(key_id in m for m in said)
     # Rule 5: a new key is kept whole, and works in both.
     key = f"Bearer {await _key()}"
     assert (await live_bot.key_status(SALES))["active"] is True

@@ -225,7 +225,13 @@ def _stored_key(raw: Any) -> dict:
     except ValueError as e:
         logger.warning(f"[live-bot] a key kept in another shape, taken for no key: {e}")
         return {}
-    return out if isinstance(out, dict) and {"id", "iat", "tv"} <= set(out) else {}
+    if isinstance(out, dict) and {"id", "iat", "tv"} <= set(out):
+        return out
+    # JSON in another shape is said too, by its shape only, never its content (CodeRabbit #282, round 7).
+    missing = sorted({"id", "iat", "tv"} - set(out)) if isinstance(out, dict) else []
+    logger.warning(f"[live-bot] a key kept in another shape, taken for no key: a JSON {type(out).__name__}"
+                   + (f" without {', '.join(missing)}" if missing else ""))
+    return {}
 
 
 def _sessions_ended(agent_id: str, iat: int, revoked: Any) -> bool:
