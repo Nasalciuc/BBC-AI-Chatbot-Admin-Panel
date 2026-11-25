@@ -13,9 +13,9 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  ALEX_GAVE_UP_S, GROUP_LABEL, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine, alexWaiting,
-  claimProblem, clockS, groupHello, groupOf, heldBy, helloDraft, helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine,
-  rowState, sourceLabel, testLine, tripLine, type HelloGroup,
+  ALEX_GAVE_UP_S, FORM_HOLD, GROUP_LABEL, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine,
+  alexWaiting, claimProblem, clockS, fillingForm, groupHello, groupOf, heldBy, helloDraft, helloProblem, listed, onSite,
+  onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepClock, testLine, tripLine, type HelloGroup, type StepClock,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -50,6 +50,14 @@ export function LiveVisitors() {
     enabled: !!pass,
     refetchInterval: 5_000,
   })
+  // When this panel saw each visitor's newest steps come (view.ts stepClock): a hello waits while one fills in the
+  // site's quote form (fillingForm). Moved on with each list that comes in, while rendering (React's way to keep
+  // something from the renders before).
+  const [clock, setClock] = useState<{ at: number; seen: StepClock }>(() => ({ at: 0, seen: new Map() }))
+  if (list.data && clock.at !== list.dataUpdatedAt) {
+    setClock({ at: list.dataUpdatedAt, seen: stepClock(clock.seen, list.data.data ?? [], list.dataUpdatedAt) })
+  }
+  const seen = clock.seen
   // Between ticks (none while nobody is waited on) the list's own answers keep the clock fresh.
   const nowS = clockS(tickS, list.dataUpdatedAt)
   const rows = ordered(listed(list.data?.data ?? [], meId, nowS), meId, nowS)
@@ -121,7 +129,9 @@ export function LiveVisitors() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
-  const problem = writing ? helloProblem(text) : null
+  // The editor's visitor as the list shows them now: one who started on the quote form since it opened waits too.
+  const writingNow = writing ? (rows.find((r) => r.visitor_id === writing.visitor_id) ?? writing) : null
+  const problem = writingNow ? (fillingForm(writingNow, seen, nowMs) ? FORM_HOLD : helloProblem(text)) : null
 
   return (
     <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
@@ -156,7 +166,9 @@ export function LiveVisitors() {
               const state = rowState(v, meId)
               const trip = tripLine(v)
               const Device = v.device === 'phone' ? Smartphone : Laptop
-              const group = groupOf(v, nowMs)
+              // Filling in the quote form now: no hello, and no group's hello ready, until they stop (fillingForm).
+              const filling = fillingForm(v, seen, nowMs)
+              const group = filling ? null : groupOf(v, nowMs)
               const ready = group ? groupHello(group, v, firstName) : ''
               const busy = claim.isPending || quick.isPending
               return (
@@ -169,6 +181,11 @@ export function LiveVisitors() {
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATE_CLS[state])}>{ROW_LABEL[state]}</span>
                       {group && (
                         <span className='rounded-full bg-k-efeaff px-2 py-0.5 text-xs font-medium text-k-4a36c4'>{GROUP_LABEL[group]}</span>
+                      )}
+                      {filling && (
+                        <span title={FORM_HOLD} className='rounded-full bg-k-fff3e0 px-2 py-0.5 text-xs font-medium text-k-8a4b00'>
+                          Filling in the quote form now
+                        </span>
                       )}
                       {alexCardLine(v) && (
                         <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{alexCardLine(v)}</span>
@@ -202,8 +219,8 @@ export function LiveVisitors() {
                           </button>
                         </>
                       ) : (
-                        <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
-                          disabled={busy || held >= maxClaims} onClick={() => claim.mutate(v)}>
+                        <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')} title={filling ? FORM_HOLD : undefined}
+                          disabled={busy || held >= maxClaims || filling} onClick={() => claim.mutate(v)}>
                           Say hello
                         </button>
                       )
@@ -225,7 +242,7 @@ export function LiveVisitors() {
                           </button>
                         )}
                         <button type='button' className={cn(btn, group ? quiet : 'bg-kb-202020 text-on-btn')}
-                          onClick={() => openEditor(v)}>
+                          title={filling ? FORM_HOLD : undefined} disabled={filling} onClick={() => openEditor(v)}>
                           Write
                         </button>
                         <button type='button' className={cn(btn, quiet)}

@@ -322,6 +322,44 @@ export function daysToFlight(depart: string | undefined, nowMs: number): number 
   return Math.round((day - today) / 86_400_000)
 }
 
+// ── The quote form being filled in (25 Nov 2026, "De ce nu lasă contactul") ─────────────────────────────────────────
+// On 24–25 Nov 4 hellos reached visitors who were filling in the site's quote form: 3 sent it 5–37 s later, and 2 then
+// got "Sorry for the wait" without having asked anything. While a visitor moves through the form, the hello waits.
+
+/** How long the visitor's newest step, the form opened or a step moved on, holds the hello. Steps carry no time
+ *  (contracts/live.md): the clock runs from when this panel saw the step come (stepClock). Past it, a form left open is
+ *  "Stuck in the quote form", as before. */
+export const FORM_QUIET_S = 120
+
+export const FORM_HOLD =
+  `Filling in the quote form: a hello now interrupts it. It is offered again after ${FORM_QUIET_S / 60} minutes without a new step.`
+
+/** Per visitor, their steps as this panel last saw them and when it first saw them so (ms). */
+export type StepClock = ReadonlyMap<string, { line: string; at: number }>
+
+/** The clock after a list came in at `atMs`: steps that changed start it again, the same steps keep their time, and a
+ *  visitor no longer in the list is forgotten. One seen for the first time counts as having just moved: how long ago
+ *  their newest step came, the list doesn't say. */
+export function stepClock(prev: StepClock, rows: Pick<LiveVisitor, 'visitor_id' | 'activity'>[], atMs: number): StepClock {
+  const next = new Map<string, { line: string; at: number }>()
+  for (const v of rows) {
+    const line = (v.activity ?? []).join(';')
+    const was = prev.get(v.visitor_id)
+    next.set(v.visitor_id, was && was.line === line ? was : { line, at: atMs })
+  }
+  return next
+}
+
+/** In the middle of the site's quote form now: their newest step opened it or moved on in it, and came less than
+ *  FORM_QUIET_S ago by `seen` (steps the clock hasn't seen yet just came). A visitor who left the form for another
+ *  step, sent it, or had it flagged or fail is not filling it in. */
+export function fillingForm(v: Pick<LiveVisitor, 'visitor_id' | 'activity'>, seen: StepClock, nowMs: number): boolean {
+  const last = (v.activity ?? []).map((s) => s.split(':')[0]).pop()
+  if (last !== 'quote_opened' && last !== 'quote_step') return false
+  const at = seen.get(v.visitor_id)
+  return !at || at.line !== (v.activity ?? []).join(';') || nowMs - at.at < FORM_QUIET_S * 1000
+}
+
 /** The quote form's last word on this visit: opened, moved on in, flagged a field or didn't go through, and not
  *  sent since. */
 export function stuckInForm(v: Pick<LiveVisitor, 'activity'>): boolean {

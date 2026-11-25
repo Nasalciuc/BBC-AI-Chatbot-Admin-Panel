@@ -8,6 +8,7 @@ import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
   helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
   tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, helloDraft, stuckInForm,
+  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -361,4 +362,50 @@ test('the editor’s draft keeps the group it was written for across midnight UT
   const plain = helloDraft(v({ device: 'phone', trip: { to: 'IST', depart: '2026-12-10' } }), before, 'Ana')
   assert.equal(plain.group, null)
   assert.equal(plain.words, suggestedHello(v({ device: 'phone', trip: { to: 'IST', depart: '2026-12-10' } }), 'Ana'))
+})
+
+test('a visitor filling in the quote form gets no hello until they stop for two minutes (25 Nov)', () => {
+  // On 24–25 Nov 4 hellos reached visitors filling in the form: 3 sent it 5–37 s later.
+  const T0 = Date.parse('2026-11-25T18:00:00Z')
+  const filling = v({ visitor_id: 'v-form', activity: ['search:JFK-LHR', 'quote_opened', 'quote_step:2'] })
+  let seen = stepClock(new Map(), [filling], T0)
+  assert.equal(FORM_QUIET_S, 120)
+  assert.equal(fillingForm(filling, seen, T0), true)
+  assert.equal(fillingForm(filling, seen, T0 + 119_000), true)
+  // Two minutes without a new step: stuck, as before, and the group's hello is back.
+  assert.equal(fillingForm(filling, seen, T0 + 120_000), false)
+  assert.equal(groupOf(filling, T0 + 120_000), 'form')
+  // A new step starts the clock again; the same steps in a later list keep their time.
+  const moved = { ...filling, activity: [...filling.activity, 'quote_step:3'] }
+  seen = stepClock(seen, [moved], T0 + 100_000)
+  assert.equal(fillingForm(moved, seen, T0 + 200_000), true)
+  assert.equal(stepClock(seen, [moved], T0 + 150_000).get('v-form')?.at, T0 + 100_000)
+  // Steps the clock hasn't seen yet just came, and a visitor first seen counts as just moved.
+  assert.equal(fillingForm(moved, new Map(), T0), true)
+  // A visitor no longer listed is forgotten.
+  assert.equal(stepClock(seen, [], T0).size, 0)
+  // Rule 5, the visitors it is not for: the newest step is not the form opened or moved on.
+  for (const activity of [
+    ['quote_opened', 'quote_invalid:phone'], ['quote_opened', 'quote_failed:server'], ['quote_opened', 'quote_submitting'],
+    ['quote_opened', 'quote_submitted'], ['quote_opened', 'search:JFK-LHR'], ['search:JFK-LHR'], [],
+  ]) {
+    const other = v({ activity })
+    assert.equal(fillingForm(other, stepClock(new Map(), [other], T0), T0), false, activity.join(' '))
+  }
+  assert.equal(fillingForm(v(), new Map(), T0), false)
+  assert.doesNotMatch(FORM_HOLD, /—/)
+})
+
+test('the row holds the hello while they fill in the form, with the reason; the editor too', () => {
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  // The clock moves on with each list, while rendering (no state set in an effect).
+  assert.match(page, /if \(list\.data && clock\.at !== list\.dataUpdatedAt\) \{\s+setClock\(\{ at: list\.dataUpdatedAt, seen: stepClock\(clock\.seen, list\.data\.data \?\? \[\], list\.dataUpdatedAt\) \}\)\s+\}/)
+  // No group's hello ready while filling, and the row says why.
+  assert.match(page, /const filling = fillingForm\(v, seen, nowMs\)\s+const group = filling \? null : groupOf\(v, nowMs\)/)
+  assert.match(page, /\{filling && \(\s+<span title=\{FORM_HOLD\}[^>]*>\s+Filling in the quote form now/)
+  // Say hello (nobody holds them) and Write (I hold them) wait, with the reason; Let go stays.
+  assert.match(page, /title=\{filling \? FORM_HOLD : undefined\}\s+disabled=\{busy \|\| held >= maxClaims \|\| filling\} onClick=\{\(\) => claim\.mutate\(v\)\}>\s+Say hello/)
+  assert.match(page, /title=\{filling \? FORM_HOLD : undefined\} disabled=\{filling\} onClick=\{\(\) => openEditor\(v\)\}>\s+Write/)
+  // The editor's visitor as the list shows them now: one who started on the form since it opened waits too.
+  assert.match(page, /const problem = writingNow \? \(fillingForm\(writingNow, seen, nowMs\) \? FORM_HOLD : helloProblem\(text\)\) : null/)
 })
