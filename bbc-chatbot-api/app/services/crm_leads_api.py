@@ -21,6 +21,15 @@ outcome is counted in /health → crm_leads_api (code rule 2).
 
 Switches (app.flags, both off): CRM_LEADS_API turns the button on for everyone; CRM_LEADS_API_PILOT, a
 comma-separated list of panel e-mails or user ids, for the agents who try it first.
+
+The automatic path (owner, 25 Nov 2026, chat #3700): an agent pressed the old "Send to CRM", the lead went to
+POST /requests/chatbot, which names no agent, and the CRM gave it by its own rules. Now every old sender (Send to
+CRM, the abandoned sweep, the backstop, the bot's own submit) first asks send_for_agent: a chat an agent has had
+goes through this API with that agent; a chat no agent had stays on the old endpoint. A refusal for good
+(an agent the CRM does not know, a wrong key) sends the old way, so no lead is lost; a call that may have reached
+the CRM (a timeout, a 5xx) is not sent the old way, so no lead is made twice: it is tried again here (the CRM keys
+the lead on the conversation). CRM_LEADS_API_AUTO=false turns it off; nothing changes until CRM_CHAT_API_URL and
+CRM_CHAT_API_KEY are set.
 """
 
 from __future__ import annotations
@@ -62,6 +71,17 @@ CRM_LEADS_API_HEALTH: dict[str, Any] = {
     "save_failed": 0,
     "mark_failed": 0,
     "status_read_failed": 0,
+    # The automatic path (send_for_agent): sent with the agent, already made, and why the old way was taken.
+    "auto_sent": 0,
+    "auto_already": 0,
+    "auto_retry": 0,
+    "auto_fallback": 0,
+    "auto_no_agent": 0,
+    "auto_no_contact": 0,
+    "auto_agent_unread": 0,
+    "auto_read_failed": 0,
+    "auto_off": 0,
+    "auto_not_configured": 0,
     "errors": {},
     "warnings": {},
     "last_error_code": None,
@@ -478,3 +498,115 @@ def stored_record(conv: Optional[dict]) -> Optional[dict]:
     meta = (conv or {}).get("metadata") if isinstance((conv or {}).get("metadata"), dict) else {}
     rec = meta.get("crm_lead") if isinstance(meta, dict) else None
     return rec if is_receipt(rec) else None
+
+
+# ── the automatic path ──────────────────────────────────────────
+
+AUTO_FLAG = "CRM_LEADS_API_AUTO"
+# A call that may have reached the CRM, or one to make again in a moment: never sent the old way (the old endpoint
+# would make a second lead). The next send of the chat asks this API again, which answers with the same lead.
+_TRY_AGAIN = {"TIMEOUT", "NETWORK", "NO_ANSWER", "BAD_ANSWER", "LEASE_LOST", "SERVER_ERROR", "RATE_LIMITED"}
+
+
+@dataclass
+class AgentSend:
+    """What send_for_agent did for one chat.
+
+    route "new": this API handled it. ok=True with the lead's number in request_id (made now or before); ok=False
+    with `error` is a failure to try again later, and the caller sends nothing the old way.
+    route "old": not this path; `reason` says why (off, not_configured, no_conversation, no_agent, no_contact,
+    agent_unread, refused) and the caller sends the old way, as before."""
+
+    route: str
+    ok: bool = False
+    request_id: str = ""
+    error: str = ""
+    reason: str = ""
+
+
+def auto_on() -> bool:
+    """The automatic path is on (CRM_LEADS_API_AUTO, on unless set false) and the CRM's address and key are set."""
+    from app.flags import flag
+
+    return bool(flag(AUTO_FLAG, True)) and is_configured()
+
+
+async def send_for_agent(
+    conversation_id: str,
+    *,
+    presser: Optional[dict] = None,
+    still_held: Optional[Callable[[], bool]] = None,
+) -> AgentSend:
+    """Send this chat's lead through this API, to the agent who has had the chat.
+
+    presser: the panel user who pressed Send to CRM, when one did. Their CRM id (crm_sub) is sent only when they
+    are that agent, as the button does; the agent's company e-mail always. still_held: the caller's submit lock,
+    asked before the request leaves (post_lead)."""
+    from app.flags import flag
+
+    if not bool(flag(AUTO_FLAG, True)):
+        CRM_LEADS_API_HEALTH["auto_off"] += 1
+        return AgentSend(route="old", reason="off")
+    if not is_configured():
+        CRM_LEADS_API_HEALTH["auto_not_configured"] += 1
+        return AgentSend(route="old", reason="not_configured")
+
+    from app.db import supabase as db
+    from app.services.lead_access import owner_of_conversation
+
+    cid = str(conversation_id or "").strip()
+    conv: Optional[dict] = None
+    agent: Optional[dict] = None
+    try:
+        conv = await db.get_conversation(cid, raise_on_error=True) if cid else None
+    except Exception as e:
+        # Who had the chat can't be known: nothing is sent now, either way. The next send of the chat asks again.
+        CRM_LEADS_API_HEALTH["auto_read_failed"] += 1
+        logger.error(f"[crm-leads-api] auto conv={cid}: the chat could not be read ({type(e).__name__}: {e})")
+        return AgentSend(route="new", error="crm_api:READ_FAILED", reason="read_failed")
+    if not conv:
+        # A lead with no chat (an old sender may pass a lead id): nobody to name.
+        CRM_LEADS_API_HEALTH["auto_no_agent"] += 1
+        return AgentSend(route="old", reason="no_conversation")
+    stored = stored_record(conv)
+    if stored:
+        CRM_LEADS_API_HEALTH["auto_already"] += 1
+        return AgentSend(route="new", ok=True, request_id=str(stored["flight_request_id"]), reason="already")
+    owner = owner_of_conversation(conv)
+    if not owner:
+        CRM_LEADS_API_HEALTH["auto_no_agent"] += 1
+        return AgentSend(route="old", reason="no_agent")
+    if not has_contact(conv):
+        # A local number only, say: the old way keeps its own rules for it (ADR-6f).
+        CRM_LEADS_API_HEALTH["auto_no_contact"] += 1
+        return AgentSend(route="old", reason="no_contact")
+
+    presser = presser or {}
+    # None for a missing account and for a failed read alike (db logs the failure): either way no e-mail to name.
+    agent = await db.get_user_by_id(owner)
+    agent_email = valid_email((agent or {}).get("email"))
+    agent_id = presser.get("crm_sub") if presser.get("id") and presser.get("id") == owner else None
+    if not agent_email and not agent_id:
+        CRM_LEADS_API_HEALTH["auto_agent_unread"] += 1
+        logger.error(f"[crm-leads-api] auto conv={cid}: agent {owner} has no readable e-mail; sent the old way")
+        return AgentSend(route="old", reason="agent_unread")
+
+    payload = build_payload(conv, agent_email=agent_email, agent_id=agent_id)
+    call = await post_lead(payload, still_held=still_held)
+    if call.ok:
+        record = record_of(call, agent_user_id=owner, by=presser.get("id") or "auto", site=payload["site"])
+        saved = await db.patch_conversation_presence(cid, {"crm_lead": record})
+        if not saved:
+            CRM_LEADS_API_HEALTH["save_failed"] += 1
+            logger.error(
+                f"[crm-leads-api] auto conv={cid}: lead {record.get('flight_request_id')} made but not kept on the chat"
+            )
+        CRM_LEADS_API_HEALTH["auto_sent"] += 1
+        return AgentSend(route="new", ok=True, request_id=str(record.get("flight_request_id")), reason="sent")
+    if call.error_code in _TRY_AGAIN or call.status == 429 or call.status >= 500:
+        CRM_LEADS_API_HEALTH["auto_retry"] += 1
+        logger.warning(f"[crm-leads-api] auto conv={cid}: {call.error_code}, to try again; nothing sent the old way")
+        return AgentSend(route="new", error=f"crm_api:{call.error_code}", reason="retry")
+    CRM_LEADS_API_HEALTH["auto_fallback"] += 1
+    logger.warning(f"[crm-leads-api] auto conv={cid}: refused ({call.error_code}); sent the old way, without the agent")
+    return AgentSend(route="old", error=call.error_code, reason="refused")
