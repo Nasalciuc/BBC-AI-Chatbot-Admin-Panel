@@ -798,6 +798,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       noteAlexShown(trigger)
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
+        // The opening's own time: the visit registry tells its answers from a later opening's (visitsRead.ts).
+        opening_at: opening.shownAt,
         ...(reading ? { moment: 'reading' } : {}),
         // The agent-first test: the card came because Alex's wait ran out with no hello.
         ...(res.after_hold ? { after_hold: true } : {}),
@@ -937,6 +939,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       if (o) {
         posthog?.capture('proactive_dismissed', {
           trigger: o.trigger, how, surface: o.surface, seconds_visible: Math.round((Date.now() - o.shownAt) / 1000),
+          opening_at: o.shownAt,
           site: brand.id, ...(o.variant ? { variant: o.variant } : {}),
         })
         // C2: after "Not now" the card's channel stays as a small pill, once per visit, until ✕ or a tap.
@@ -974,6 +977,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         surface: o.surface,
         reply: replyKind(reply, o.quickReplies),
         seconds_to_reply: Math.round((Date.now() - o.shownAt) / 1000),
+        opening_at: o.shownAt,
         site: brand.id,
         ...(o.variant ? { variant: o.variant } : {}),
         ...contactTestProps(o),
@@ -1024,6 +1028,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // chats that started (the server counts those).
       posthog?.capture('proactive_shown', {
         trigger: 'note', surface: 'panel', door, device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
+        opening_at: opening.shownAt,
         ...(res.variant ? { variant: res.variant } : {}), ...offerMeasures(took[0]), ...contactTestProps(opening),
       })
       return opening

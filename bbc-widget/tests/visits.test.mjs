@@ -8,8 +8,8 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  MAX_EVENTS, MAX_SEQ, VISIT_EVENTS, addEvent, cardAfter, cardStillOn, cardToKeep, channelOf, eventToken, keptCardFor,
-  newPageId, readVisitCard, snapshotTimer, visitBody,
+  MAX_EVENTS, MAX_SEQ, VISIT_EVENTS, addEvent, afterSent, cardAfter, cardStillOn, cardToKeep, channelOf, eventToken,
+  keptCardFor, newPageId, readSentMark, readVisitCard, snapshotTimer, visitBody,
 } from '../src/visitsRead.ts'
 import { configFor, readConfig } from '../src/liveRead.ts'
 
@@ -116,20 +116,64 @@ test('a second opening of the card’s own moment is not the card: its seconds p
     NOW + 40_300).state, 'engaged')
 })
 
+test('an opening named by its own time: a second note a second later is not the card, whatever its seconds say (CodeRabbit #282, round 3)', () => {
+  const first = cardAfter(null, 'proactive_shown', { trigger: 'note', surface: 'panel', opening_at: NOW - 3 }, NOW)
+  assert.equal(first.openingAt, NOW - 3)
+  assert.deepEqual(readVisitCard(cardToKeep(first)), first, 'kept with its opening for the visit’s next pages')
+  // The first note closed at once, a second showed a second later and was answered 0.8 s after it: its rounded
+  // second would put its opening within the card's two seconds, its own time does not.
+  const closed = cardAfter(first, 'proactive_dismissed', { trigger: 'note', how: 'close', seconds_visible: 0,
+    opening_at: NOW - 3 }, NOW + 200)
+  assert.equal(closed.state, 'dismissed')
+  assert.equal(cardAfter(closed, 'proactive_engaged', { trigger: 'note', reply: 'typed', seconds_to_reply: 1,
+    opening_at: NOW + 997 }, NOW + 1_800), closed)
+  assert.equal(cardAfter(first, 'proactive_engaged', { trigger: 'note', reply: 'typed', seconds_to_reply: 1,
+    opening_at: NOW + 997 }, NOW + 1_800), first)
+  // Its own answer names it, minutes later too: "Not now", the pill, then the reply.
+  const kayak = cardAfter(null, 'proactive_shown', { trigger: 'kayak', surface: 'card', opening_at: NOW }, NOW)
+  const notNow = cardAfter(kayak, 'proactive_dismissed', { trigger: 'kayak', how: 'not_now', seconds_visible: 5,
+    opening_at: NOW }, NOW + 5_000)
+  assert.equal(cardAfter(notNow, 'proactive_engaged', { trigger: 'kayak', reply: 'channel', seconds_to_reply: 300,
+    opening_at: NOW }, NOW + 300_000).state, 'engaged')
+  // The card's moment is the widget's own: every one of its events names its opening.
+  const hook = readFileSync(join(here, '..', 'src', 'proactive.ts'), 'utf8')
+  assert.equal((hook.match(/opening_at: opening\.shownAt,/g) ?? []).length, 2, 'the card’s and the note’s shown')
+  assert.equal((hook.match(/opening_at: o\.shownAt,/g) ?? []).length, 2, 'dismissed and engaged')
+})
+
 test('a tab’s card is kept while the registry’s visit goes on: a new visit’s first card is the card (CodeRabbit #282, round 3)', () => {
+  const MIN = 60_000
   const card = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW)
   const kept = cardToKeep(card)
-  assert.deepEqual(keptCardFor(kept, NOW + 60_000, NOW + 2 * 60_000), card, 'the next page, a minute on: kept')
-  // The live list's beats kept the browser's count of visits going; the registry heard nothing for 31 minutes.
-  assert.equal(keptCardFor(kept, NOW + 60_000, NOW + 32 * 60_000), null, 'a page after 30 quiet minutes: it goes')
-  assert.deepEqual(keptCardFor(kept, NOW + 25 * 60_000, NOW + 35 * 60_000), card, 'another tab’s snapshot kept it on')
+  // The card's snapshot, and the next page's a minute on, taken by bbc-live.
+  let mark = afterSent(afterSent(readSentMark(null), NOW + 1_500), NOW + MIN)
+  assert.deepEqual(mark, { last: NOW + MIN, before: 0 })
+  assert.deepEqual(keptCardFor(kept, mark, NOW + 2 * MIN), card, 'the next page, a minute on: kept')
+  // The live list's beats kept the browser's count of visits going; bbc-live took nothing for 31 minutes.
+  assert.equal(keptCardFor(kept, mark, NOW + 32 * MIN), null, 'a page after 30 quiet minutes: it goes')
+  // Another tab's snapshot 24 minutes on kept the same visit going.
+  assert.deepEqual(keptCardFor(kept, afterSent(mark, NOW + 25 * MIN), NOW + 35 * MIN), card)
+  // Another tab began the next visit after 31 quiet minutes: this tab's card, reloaded, is the last visit's.
+  const next = afterSent(mark, NOW + 32 * MIN)
+  assert.deepEqual(next, { last: NOW + 32 * MIN, before: NOW + MIN })
+  assert.equal(keptCardFor(kept, next, NOW + 33 * MIN), null, 'the last visit’s card, whichever tab began the next')
+  // A card shown in the quiet half hour rides the snapshot that begins the next visit: it is that visit's card.
+  const late = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW + 31 * MIN)
+  assert.ok(cardStillOn(late, next, NOW + 33 * MIN))
+  // A snapshot answered late, after a newer one was taken, changes nothing.
+  assert.equal(afterSent(next, NOW + 31 * MIN), next)
   // The card's own answer is heard of too: a snapshot follows it.
-  const answered = cardAfter(card, 'proactive_engaged', { trigger: 'ads', reply: 'yes' }, NOW + 20 * 60_000)
-  assert.ok(cardStillOn(answered, 0, NOW + 49 * 60_000))
-  assert.ok(!cardStillOn(answered, 0, NOW + 50 * 60_000))
+  mark = afterSent(readSentMark(null), NOW + 1_500)
+  const answered = cardAfter(card, 'proactive_engaged', { trigger: 'ads', reply: 'yes' }, NOW + 20 * MIN)
+  assert.ok(cardStillOn(answered, mark, NOW + 49 * MIN))
+  assert.ok(!cardStillOn(answered, mark, NOW + 50 * MIN))
   for (const raw of [null, '', '{', JSON.stringify({ visit: 3, card: { state: 'loved' } })]) {
-    assert.equal(keptCardFor(raw, NOW, NOW), null, String(raw))
+    assert.equal(keptCardFor(raw, mark, NOW), null, String(raw))
   }
+  for (const raw of [null, '', '{', '[]', '{"last":"x","before":-4}']) {
+    assert.deepEqual(readSentMark(raw), { last: 0, before: 0 }, String(raw))
+  }
+  assert.deepEqual(readSentMark(JSON.stringify(next)), next)
 })
 
 test('one snapshot waits at a time, and the stop leaves none behind (CodeRabbit #282, round 3)', () => {
@@ -259,12 +303,16 @@ test('the registry’s stop, the fresh pass after a refusal, and the visit kept 
   const visits = readFileSync(join(here, '..', 'src', 'visits.ts'), 'utf8')
   // A refused pass: asked for again, not the page's first answer kept by pageConfig.
   assert.match(visits, /res\.status === 401 && Date\.now\(\) - renewedAt > RENEW_MS\) \{\s+renewedAt = Date\.now\(\)\s+askConfig\(apiUrl\)/)
-  // Every snapshot keeps the browser's visit going; a card whose registry visit went quiet is dropped first, and the
-  // snapshot's time is kept for every tab of the browser.
-  assert.match(visits, /const goingOn = \(\) => \{\s+noteVisit\(\)\s+if \(!card \|\| cardStillOn\(card, lastSent\(\), Date\.now\(\)\)\) return\s+card = null/)
+  // Every snapshot keeps the browser's visit going; a card whose registry visit ended is dropped first.
+  assert.match(visits, /const goingOn = \(\) => \{\s+noteVisit\(\)\s+if \(!card \|\| cardStillOn\(card, sentMark\(\), Date\.now\(\)\)\) return\s+card = null/)
   assert.equal((visits.match(/sends\+\+\n\s+goingOn\(\)/g) ?? []).length, 2, 'a snapshot by fetch and the page’s last one')
-  assert.equal((visits.match(/lsSet\(SENT_KEY, String\(Date\.now\(\)\)\)/g) ?? []).length, 2)
-  assert.match(visits, /let card: VisitCard \| null = keptCardFor\(ssGet\(CARD_KEY\), lastSent\(\), Date\.now\(\)\)/)
+  assert.match(visits, /let card: VisitCard \| null = keptCardFor\(ssGet\(CARD_KEY\), sentMark\(\), Date\.now\(\)\)/)
+  // Only a snapshot bbc-live took marks the visit: a 2xx, or the page's last one queued by sendBeacon; never before
+  // the answer, so one lost offline or refused leaves the mark where it was.
+  assert.equal((visits.match(/markSent\(sentAt\)/g) ?? []).length, 3)
+  assert.equal((visits.match(/if \(res\.ok\) markSent\(sentAt\)/g) ?? []).length, 2)
+  assert.match(visits, /sendBeacon\?\.\([^\n]+\)\) \{\n\s+markSent\(sentAt\)\n\s+return/)
+  assert.ok(!/lsSet\(SENT_KEY/.test(visits.replace(/function markSent[\s\S]*?\n\}/, '')), 'the mark is written by markSent alone')
   assert.match(visits, /conversationId: conversationId\(\), nowMs: now, pass, seq: \+\+seq,/)
   // One snapshot waits at a time, through the page's one timer.
   assert.match(visits, /const snap = snapshotTimer\(send\)/)

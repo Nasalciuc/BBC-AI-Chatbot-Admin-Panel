@@ -89,13 +89,15 @@ export interface VisitCard {
   at: number
   answer?: string
   answeredAt?: number
+  /** The opening's own time (proactive.ts `shownAt`, the events' `opening_at`): only its answers are the card's. */
+  openingAt?: number
 }
 
 // Every moment the widget shows a card for: `social` is the Meta ads' card (CodeRabbit #282, round 3).
 const TRIGGERS = new Set(['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note'])
 const SURFACES = new Set(['card', 'panel', 'row'])
-/** How far an answer's own count of seconds may put its opening from the card's time and still be that opening:
- *  the count is rounded to a second. */
+/** How far an answer's own count of seconds may put its opening from the card's time and still be that opening,
+ *  for an answer that names no opening: the count is rounded to a second. */
 const SAME_OPENING_MS = 2_000
 
 /** The card after an event: the first card of the visit is the card; its answer only moves forward (an answer
@@ -108,15 +110,25 @@ export function cardAfter(card: VisitCard | null, event: string, props: Record<s
   const n = (k: string) => (typeof props?.[k] === 'number' && Number.isFinite(props[k]) ? (props[k] as number) : null)
   if (event === 'proactive_shown') {
     if (card || !TRIGGERS.has(s('trigger'))) return card
-    return { trigger: s('trigger'), variant: WORD.test(s('variant').toLowerCase()) ? s('variant').toLowerCase() : '',
+    const shown: VisitCard = { trigger: s('trigger'),
+      variant: WORD.test(s('variant').toLowerCase()) ? s('variant').toLowerCase() : '',
       surface: SURFACES.has(s('surface')) ? s('surface') : '', state: 'shown', at: nowMs }
+    const openingAt = n('opening_at')
+    if (openingAt !== null && openingAt > 0) shown.openingAt = openingAt
+    return shown
   }
   if (!card || card.state === 'engaged' || s('trigger') !== card.trigger) return card
-  // The card's own opening, not a later one of the same moment (a note closed, then a second note answered): the
-  // seconds the answer counts since its opening showed put that opening at the card's time (CodeRabbit #282,
-  // round 3). An answer that counts none is the card's, as before.
-  const since = n(event === 'proactive_engaged' ? 'seconds_to_reply' : 'seconds_visible')
-  if (since !== null && Math.abs(nowMs - since * 1000 - card.at) > SAME_OPENING_MS) return card
+  // The card's own opening, not a later one of the same moment (a note closed, then a second note answered, even a
+  // second later; CodeRabbit #282, round 3): the opening the answer names is the card's. An answer or a card that
+  // names none: the seconds the answer counts since its opening showed put that opening at the card's time. An
+  // answer that counts none either is the card's, as before.
+  const openingAt = n('opening_at')
+  if (card.openingAt !== undefined && openingAt !== null) {
+    if (openingAt !== card.openingAt) return card
+  } else {
+    const since = n(event === 'proactive_engaged' ? 'seconds_to_reply' : 'seconds_visible')
+    if (since !== null && Math.abs(nowMs - since * 1000 - card.at) > SAME_OPENING_MS) return card
+  }
   if (event === 'proactive_engaged') {
     return { ...card, state: 'engaged', answer: WORD.test(s('reply')) ? s('reply') : '', answeredAt: nowMs }
   }
@@ -139,24 +151,48 @@ export function readVisitCard(raw: string | null): VisitCard | null {
     surface: typeof c.surface === 'string' ? c.surface : '', state: c.state, at: c.at }
   if (typeof c.answer === 'string') card.answer = c.answer
   if (typeof c.answeredAt === 'number' && Number.isFinite(c.answeredAt)) card.answeredAt = c.answeredAt
+  if (typeof c.openingAt === 'number' && Number.isFinite(c.openingAt) && c.openingAt > 0) card.openingAt = c.openingAt
   return card
 }
 
 /** bbc-live closes a visit after this long with no snapshot. */
 export const REGISTRY_QUIET_MS = 30 * 60_000
 
-/** Whether a card still belongs to the registry's visit: no quiet half hour since the visit was last heard of, by
- *  this browser's last snapshot (any tab) or the card itself, shown or answered (a snapshot follows it). Not the
- *  browser's count of visits: the live list's beats keep that going after a page's snapshots ran out
- *  (CodeRabbit #282, round 3). */
-export function cardStillOn(card: VisitCard, lastSentMs: number, nowMs: number): boolean {
-  return nowMs - Math.max(lastSentMs || 0, card.at, card.answeredAt ?? 0) < REGISTRY_QUIET_MS
+/** What this browser knows of the registry's visit, from the snapshots bbc-live took (any tab; localStorage):
+ *  `last`, when the last one left; `before`, when the last one before the current visit left (0 for none): the
+ *  visit began after a quiet half hour that ended then. */
+export interface SentMark { last: number; before: number }
+
+/** A kept mark read back; nothing heard of yet when it isn't one. */
+export function readSentMark(raw: string | null): SentMark {
+  let v: unknown = null
+  try { v = raw ? JSON.parse(raw) : null } catch { /* none */ }
+  const m = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>
+  const ms = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : 0)
+  return { last: ms(m.last), before: ms(m.before) }
+}
+
+/** The mark once bbc-live took a snapshot that left at `sentAt`: one that left after a quiet half hour began a
+ *  new visit; one that left before the last one taken (answered late) changes nothing. */
+export function afterSent(mark: SentMark, sentAt: number): SentMark {
+  if (sentAt <= mark.last) return mark
+  if (mark.last && sentAt - mark.last >= REGISTRY_QUIET_MS) return { last: sentAt, before: mark.last }
+  return { last: sentAt, before: mark.before }
+}
+
+/** Whether a card still belongs to the registry's visit (CodeRabbit #282, round 3). Not the browser's count of
+ *  visits: the live list's beats keep that going after the snapshots stopped. A card shown before the current visit
+ *  began is an earlier visit's, whichever tab began it; otherwise the visit goes on while bbc-live heard of it, or
+ *  of the card shown or answered since (a snapshot follows it), less than a quiet half hour ago. */
+export function cardStillOn(card: VisitCard, mark: SentMark, nowMs: number): boolean {
+  if (card.at <= mark.before) return false
+  return nowMs - Math.max(mark.last, card.at, card.answeredAt ?? 0) < REGISTRY_QUIET_MS
 }
 
 /** The card kept for this tab, when the registry's visit it belongs to goes on; null otherwise. */
-export function keptCardFor(raw: string | null, lastSentMs: number, nowMs: number): VisitCard | null {
+export function keptCardFor(raw: string | null, mark: SentMark, nowMs: number): VisitCard | null {
   const card = readVisitCard(raw)
-  return card && cardStillOn(card, lastSentMs, nowMs) ? card : null
+  return card && cardStillOn(card, mark, nowMs) ? card : null
 }
 
 /** What keptCardFor reads back. */
