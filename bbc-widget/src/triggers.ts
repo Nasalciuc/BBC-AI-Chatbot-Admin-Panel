@@ -63,12 +63,25 @@
  * What follows the yes is the owner's contact test (bbc-chatbot-api app/services/contact_field_test.py), not this
  * moment.
  *
+ * The reading moment (owner, 25 Nov, "Mai multe chaturi și leaduri", levers 3 and 4): READING_VISIBLE_S in view with
+ * READING_SCROLL_SCREENS scrolled, for the visitors who read before they decide. On 17-25 Nov the ads card at 2.5 s got
+ * an answer from 0.9% of the phones it came to (8 of 894), on computers 3.5% (43 of 1,235); the reader's card, which
+ * comes after a read, 13.9% on phones (22 of 158). Meta's paid visits (Facebook, Instagram: 1,297 to the /lp/ pages)
+ * had a moment in 12 of them: the widget did not know them as a paid visit, and 40% open the site's quote form, which
+ * holds every card. Half of those who open it do so within 6 s, a quarter after 11 s: at 12 s a card comes to the
+ * visitors who are reading, not to the ones heading for the form. So:
+ *   social  a paid visit from Meta (socialVisit) gets its own card at the reading moment;
+ *   ads     on a phone waits for the reading moment; on a computer it stays at ADS_VISIBLE_S (the panel, 3.5%);
+ *   reader  comes at the reading moment for a visit the widget knows no source of (directVisit), a Meta visit and an
+ *           ad visit on a phone; at READER_VISIBLE_S with half a screen for every other visit, as before.
+ * Kayak stays at 2.5 s: those visitors decide in seconds (ADR A1).
+ *
  * Pure: proactive.ts measures the page and asks; this decides (node-testable).
  */
 
 /** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. */
-export type Trigger = 'kayak' | 'ads' | 'quote' | 'reader' | 'exit'
-const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'quote', 'reader', 'exit']
+export type Trigger = 'kayak' | 'ads' | 'social' | 'quote' | 'reader' | 'exit'
+const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit']
 
 /** The server's answer for a moment switched off on its own (PROACTIVE_TRIGGERS), with the feature on: the
  *  visit keeps its one moment for the others (proactive.ts), and this one is not asked again in it. Without
@@ -98,6 +111,9 @@ export const KAYAK_VISIBLE_S = 2.5
 export const ADS_VISIBLE_S = 2.5
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5
+/** The reading moment (above): in view this long, with this much of the page scrolled. */
+export const READING_VISIBLE_S = 12
+export const READING_SCROLL_SCREENS = 0.25
 export const QUOTE_IDLE_S = 8
 export const QUOTE_INVALID_IDLE_S = 5
 /** D1 (ADR-4a): a refused send whose form the widget can put a row beside — the row covers nothing, so it
@@ -152,6 +168,11 @@ export interface PageState {
   /** The page names a destination the card can say back (tripContext.hasContext). Read only on an ad visit:
    *  false on any other. */
   destination: boolean
+  /** The visit came from a paid Meta ad: Facebook or Instagram with a paid medium (socialVisit, first touch of the
+   *  tab). False on a Kayak or a Google/Bing visit. */
+  social?: boolean
+  /** The tab's record names no source at all: no campaign tag, no click id, no other site before it (directVisit). */
+  direct?: boolean
   /** Seconds the page has been in view since it first showed something (inViewBeforeStartMs, then counted). */
   visibleS: number
   /** Seconds this widget has watched the page (since it started on it). */
@@ -207,9 +228,40 @@ export function pickTrigger(s: PageState): Trigger | null {
   // The quote form being worked on, pressed or not: no card over it (only the quote moment above).
   if (s.sinceQuoteFormS !== null && s.sinceQuoteFormS <= QUOTE_WATCH_S) return null
   if (on('kayak') && s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
-  if (on('ads') && s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
-  if (on('reader') && s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
+  const reading = s.visibleS >= READING_VISIBLE_S && s.scrolledScreens >= READING_SCROLL_SCREENS
+  if (on('ads') && s.ad && s.destination && (s.phone ? reading : s.visibleS >= ADS_VISIBLE_S)) return 'ads'
+  if (on('social') && s.social && reading) return 'social'
+  const read = readsFirst(s) ? reading : s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS
+  if (on('reader') && read) return 'reader'
   return null
+}
+
+/** The visitors whose reader comes at the reading moment, not after 25 s (above). */
+function readsFirst(s: PageState): boolean {
+  return !s.kayak && (!!s.direct || !!s.social || (s.ad && s.phone))
+}
+
+/** The moment `t` came at the reading moment (READING_VISIBLE_S), not at its own time: what the measurements
+ *  compare (proactive_eligible and proactive_shown carry `moment: 'reading'`). */
+export function readingMoment(s: PageState, t: Trigger): boolean {
+  if (t === 'social') return true
+  if (t === 'ads') return s.phone
+  if (t === 'reader') return readsFirst(s)
+  return false
+}
+
+/** Meta's ads (Facebook, Instagram), as its campaigns tag them: utm_source facebook / fb / ig with a paid medium
+ *  (paid_social on the /lp/ pages, paid on the others). A fbclid alone is no ad: Facebook adds it to every link
+ *  people share, paid or not. */
+const SOCIAL_SOURCES = new Set(['facebook', 'fb', 'ig', 'instagram', 'meta'])
+const SOCIAL_MEDIUMS = new Set(['paid_social', 'paidsocial', 'paid-social', 'social_paid', 'paid', 'cpc', 'ppc'])
+
+/** The visit came from a paid Meta ad (above). A Kayak visit is Kayak's, a Google or Bing click the ads moment's. */
+export function socialVisit(kept: { gclid?: string; msclkid?: string; utm_source?: string; utm_medium?: string }): boolean {
+  if (adVisit(kept)) return false
+  const source = (kept.utm_source || '').trim().toLowerCase()
+  if (source === 'kayak' || !SOCIAL_SOURCES.has(source)) return false
+  return SOCIAL_MEDIUMS.has((kept.utm_medium || '').trim().toLowerCase())
 }
 
 /** The ads' own tags, for a click that came without its id: 7 of the 596 Google ad visits of 16-18 Nov

@@ -11,9 +11,9 @@ import type { ProactiveOpening } from './proactive'
 import type { OpeningTrigger } from './triggers'
 import type { TripPayload } from './tripContext'
 
-// Every OpeningTrigger (triggers.ts): the five moments and the tapped note. Kept here, not imported:
+// Every OpeningTrigger (triggers.ts): the six moments and the tapped note. Kept here, not imported:
 // this file has no runtime imports, so the node tests load it as it is.
-const OPENING_TRIGGERS: readonly OpeningTrigger[] = ['kayak', 'ads', 'quote', 'reader', 'exit', 'note']
+const OPENING_TRIGGERS: readonly OpeningTrigger[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note']
 
 /** The opening as it is kept. The reply tapped on the card is not kept: it went out already; nor the channel
  *  picked before the chat opened (its field was on that page), nor the contact left in the row (it went out, and a

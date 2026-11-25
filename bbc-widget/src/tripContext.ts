@@ -126,6 +126,10 @@ export function tripFromTitle(h1: string): TripPayload | null {
   if ((m = s.match(/^(business|first) class flights from (.+)$/i))) {
     return compact({ source: 'route_page', origin_name: city(m[2]), cabin: m[1].toLowerCase() })
   }
+  // The Meta ads' pages (/lp/asia: "Business class to Asia", 25 Nov): the region is the card's place.
+  if ((m = s.match(/^(business|first) class to (?:the )?(.+)$/i))) {
+    return compact({ source: 'route_page', destination_name: city(m[2]), cabin: m[1].toLowerCase() })
+  }
   return null
 }
 

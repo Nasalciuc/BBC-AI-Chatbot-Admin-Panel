@@ -65,7 +65,7 @@ export interface BeatAlexCard {
 /** bbc-live keeps a card shown at most a day ago (internal/live/http.go AlexCardOldest). */
 export const ALEX_CARD_OLDEST_S = 86_400
 // The moments that show Alex's card (triggers.ts OpeningTrigger; bbc-live's alexTriggers): repeated, no imports here.
-export const ALEX_TRIGGERS: readonly string[] = ['kayak', 'ads', 'quote', 'reader', 'exit', 'note']
+export const ALEX_TRIGGERS: readonly string[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note']
 
 /** siteSignals.ts PAGE_TYPES, here because this file imports nothing but types (tests/live.test.mjs pins them). */
 export const BEAT_PAGE_TYPES: readonly string[] = [

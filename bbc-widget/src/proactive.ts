@@ -38,9 +38,10 @@ import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type 
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
   adKeyword, adVisit, blockedPath, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning, pickTrigger, readOff,
-  quoteClick, replyKind, worksOnPressedForm, type OpeningTrigger, type PageState, type QuoteState, type Trigger,
+  quoteClick, readingMoment, replyKind, socialVisit, worksOnPressedForm, type OpeningTrigger, type PageState,
+  type QuoteState, type Trigger,
 } from './triggers'
-import { getUtm, sourceToAdd } from './utm'
+import { getUtm, namesWhereFrom, sourceToAdd } from './utm'
 
 /** Where the opening shows: a card above the button (phones), the panel (computers), or the row beside the
  *  site's refused quote form (D1, ADR-4a). */
@@ -180,6 +181,22 @@ function kayakVisit(): boolean {
 /** The visit came from a Google or Bing ad (triggers.ts adVisit, on the tab's first touch). */
 function adVisitNow(): boolean {
   return adVisit(getUtm())
+}
+
+/** The visit came from a paid Meta ad (triggers.ts socialVisit, on the tab's first touch). */
+function socialVisitNow(): boolean {
+  return socialVisit(getUtm())
+}
+
+/** The tab's record names no source: no campaign tag, no click id, no other site before it (utm.ts namesWhereFrom).
+ *  A visitor who did not accept marketing cookies is kept no source either (captureUtm `attribution`), and reads
+ *  as one too: the reading moment, never a moment sooner. */
+function directVisitNow(): boolean {
+  try {
+    return !namesWhereFrom(getUtm(), location.hostname)
+  } catch {
+    return false
+  }
 }
 
 /** When the page first showed something, in ms on the page's clock (first-contentful-paint; for a page the
@@ -660,7 +677,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       return null
     }
 
-    const ask = async (trigger: Trigger, phone: boolean) => {
+    // `reading`: the moment came at the reading moment (triggers.ts), measured as `moment: 'reading'`.
+    const ask = async (trigger: Trigger, phone: boolean, reading = false) => {
       const before = seen()
       // The ads card asks with the trip that made it due (adsTrip): the words name that destination.
       const trip = trigger === 'ads' ? adsTrip() : currentTrip()
@@ -697,6 +715,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
         trigger, arm: res ? res.arm : 'no_answer', device, has_context: hasContext(trip), site: brand.id,
+        ...(reading ? { moment: 'reading' } : {}),
         // The page carries bbc-signals: the moments with the site's word against those without it.
         site_signals: !!sitePage(),
         // How long the answer took and why none came (offer_ms, offer_fail), and how long after the page
@@ -769,6 +788,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       noteAlexShown(trigger)
       posthog?.capture('proactive_shown', {
         trigger, surface, device, site: brand.id, ...(res.variant ? { variant: res.variant } : {}),
+        ...(reading ? { moment: 'reading' } : {}),
         // The agent-first test: the card came because Alex's wait ran out with no hello.
         ...(res.after_hold ? { after_hold: true } : {}),
         ...(res.lang ? { lang: res.lang } : {}),
@@ -822,6 +842,8 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
         // The page's trip is read only for a visit from an ad: the ads card says its destination back — the
         // page's, or the one the ad's search names (ADR A5; the server reads it and may still say no).
         destination: ad && (destinationTrip() !== null || keywordNamesPlace(adKeywordNow())),
+        social: socialVisitNow(),
+        direct: directVisitNow(),
         visibleS: visibleS(),
         watchedS: (now - start) / 1000,
         sinceActivityS: (now - lastActivity) / 1000,
@@ -850,7 +872,7 @@ export function useProactive({ apiUrl, step, allowed, restored = null }: {
       }
       fired = true
       ssSet(DONE_KEY, 'asked')
-      void ask(trigger, state.phone)
+      void ask(trigger, state.phone, readingMoment(state, trigger))
     }
 
     const cap: AddEventListenerOptions = { capture: true, passive: true }
