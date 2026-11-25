@@ -429,6 +429,14 @@ test('the bot card: the key shown once, a new one or Revoke, and what the bot ca
   assert.match(card, /The key, shown this once/)
   assert.match(card, /New key \(stops the old one\)/)
   assert.match(card, /revokeLiveBotKey/)
+  // CodeRabbit #282, round 7: the key made is the mutation's answer (no copy in state), cleared by Revoke, and neither
+  // button runs while the other's call is out (a new key answering after a revoke would show a stopped key).
+  assert.doesNotMatch(card, /useState/)
+  assert.match(card, /const made = create\.data/)
+  assert.match(card, /onSuccess: \(\) => \{\s+create\.reset\(\)/)
+  assert.match(card, /const busy = create\.isPending \|\| revoke\.isPending/)
+  assert.match(card, /disabled=\{busy \|\| status\.isLoading\}\s+onClick=\{\(\) => create\.mutate\(\)\}/)
+  assert.match(card, /disabled=\{busy\} onClick=\{\(\) => revoke\.mutate\(\)\}/)
   for (const call of ['/visitors', '/hello', '/chats', '/chats/&lt;id&gt;/messages']) assert.ok(card.includes(call), call)
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
   assert.match(page, /\{pass\?\.can_say_hello && <BotKeyCard \/>\}/)

@@ -1,8 +1,6 @@
-import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { LIVE_BOT_BASE, createLiveBotKey, getLiveBotKey, revokeLiveBotKey } from '@/lib/api'
-import type { LiveBotKeyMade } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { keyDay } from '../view'
 
@@ -14,25 +12,26 @@ const quiet = 'bg-k-ffffff text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)
  *  it at once. */
 export function BotKeyCard() {
   const qc = useQueryClient()
-  const [made, setMade] = useState<LiveBotKeyMade | null>(null)
   const status = useQuery({ queryKey: ['live-bot-key'], queryFn: getLiveBotKey })
+  // The key made is the mutation's own answer, shown while it is the newest (CodeRabbit #282, round 7: no copy of it
+  // in state); Revoke clears it.
   const create = useMutation({
     mutationFn: createLiveBotKey,
-    onSuccess: (res) => {
-      setMade(res)
-      qc.invalidateQueries({ queryKey: ['live-bot-key'] })
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['live-bot-key'] }),
     onError: (e: Error) => toast.error(`Couldn’t make a key: ${e.message}`),
   })
   const revoke = useMutation({
     mutationFn: revokeLiveBotKey,
     onSuccess: () => {
-      setMade(null)
+      create.reset()
       toast.success('The key stopped working.')
       qc.invalidateQueries({ queryKey: ['live-bot-key'] })
     },
     onError: (e: Error) => toast.error(`Couldn’t revoke the key: ${e.message}`),
   })
+  const made = create.data
+  // One at a time: a new key that answered after a revoke would show a key the server had already stopped.
+  const busy = create.isPending || revoke.isPending
   const active = status.data?.active === true
   const copy = (value: string) => {
     navigator.clipboard?.writeText(value).then(
@@ -68,12 +67,12 @@ export function BotKeyCard() {
         </div>
       )}
       <div className='flex flex-wrap gap-2'>
-        <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')} disabled={create.isPending || status.isLoading}
+        <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')} disabled={busy || status.isLoading}
           onClick={() => create.mutate()}>
           {active ? 'New key (stops the old one)' : 'Make a key'}
         </button>
         {active && (
-          <button type='button' className={cn(btn, quiet)} disabled={revoke.isPending} onClick={() => revoke.mutate()}>
+          <button type='button' className={cn(btn, quiet)} disabled={busy} onClick={() => revoke.mutate()}>
             Revoke
           </button>
         )}
