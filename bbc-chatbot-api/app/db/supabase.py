@@ -7135,25 +7135,41 @@ async def store_site_visits(rows: list[dict]) -> str:
         return "failed"
 
 
-async def chats_of_visitors(visitor_ids: list[str], since_iso: str) -> Optional[list[dict]]:
-    """The chats these visitors began since a moment (id, visitor_id, created_at), oldest first; None when the
-    database could not say (the visit is then stored without its chat, counted by the caller)."""
+_CHATS_PAGE = 500
+_CHATS_MOST = 5000
+
+
+async def chats_of_visitors(visitor_ids: list[str], since_iso: str, until_iso: Optional[str] = None) -> Optional[list[dict]]:
+    """The chats these visitors began since a moment (and until one, when given), id, visitor_id, created_at, oldest
+    first: every page of them, so a batch after a backlog loses none to one page's limit (CodeRabbit #282, round 7),
+    up to _CHATS_MOST (past it the rest are not read, logged). None when the database could not say (the visit is then
+    stored without its chat, counted by the caller)."""
     if not visitor_ids:
         return []
     db_client = get_client()
+
+    def _page(start: int):
+        q = (db_client.table("conversations")
+             .select("id, visitor_id, created_at")
+             .in_("visitor_id", visitor_ids)
+             .gte("created_at", since_iso))
+        if until_iso:
+            q = q.lte("created_at", until_iso)
+        return q.order("created_at").order("id").range(start, start + _CHATS_PAGE - 1).execute()
+
+    out: list[dict] = []
+    start = 0
     try:
-        res = await _run_sync(
-            lambda: db_client.table("conversations")
-            .select("id, visitor_id, created_at")
-            .in_("visitor_id", visitor_ids)
-            .gte("created_at", since_iso)
-            .order("created_at")
-            .limit(500)
-            .execute(),
-            label="visit_registry",
-        )
-        return [r for r in (res.data or []) if isinstance(r, dict) and r.get("id") and r.get("visitor_id")]
+        while start < _CHATS_MOST:
+            res = await _run_sync(lambda s=start: _page(s), label="visit_registry")
+            page = res.data or []
+            out += [r for r in page if isinstance(r, dict) and r.get("id") and r.get("visitor_id")]
+            if len(page) < _CHATS_PAGE:
+                return out
+            start += _CHATS_PAGE
     except Exception as e:
         logger.warning(f"[visit-registry] chats of {len(visitor_ids)} visitors not read: {type(e).__name__} "
                        f"{_error_code(e) or e}")
         return None
+    logger.warning(f"[visit-registry] chats of {len(visitor_ids)} visitors: more than {_CHATS_MOST}, the rest not read")
+    return out

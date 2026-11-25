@@ -218,8 +218,9 @@ async def test_a_chat_the_widget_did_not_name_is_the_visitors_chat_within_the_vi
     with patch("app.db.supabase.store_site_visits", new=store), \
             patch("app.db.supabase.chats_of_visitors", new=AsyncMock(return_value=found)) as chats:
         await reg.run_visit_registry()
-    # The lookup reaches as far back as a visit takes a chat (CodeRabbit #282, round 3).
-    assert chats.await_args.args == ([VID], iso(T0 - 120))
+    # The lookup reaches as far back as a visit takes a chat (CodeRabbit #282, round 3), and no further on than one
+    # (round 7: it reads every page, so only what can be a visit's).
+    assert chats.await_args.args == ([VID], iso(T0 - 120), iso(T0 + 95 + 1800))
     assert store.await_args.args[0][0]["conversation_id"] == CHAT and reg.VISIT_HEALTH["linked"] == 1
 
 
@@ -352,3 +353,27 @@ async def test_a_chat_lookup_that_fails_is_none_not_empty():
     with patch.object(db, "get_client", return_value=client):
         assert await db.chats_of_visitors([VID], iso(T0)) == found[:1]
     assert ("in_", ("visitor_id", [VID]), {}) in calls and ("gte", ("created_at", iso(T0)), {}) in calls
+    assert not any(c[0] == "lte" for c in calls), "no end asked for, none set"
+
+
+@pytest.mark.asyncio
+async def test_a_chat_lookup_reads_every_page(monkeypatch):
+    """CodeRabbit #282, round 7: a batch after a backlog may have more chats than one page: every page is read, oldest
+    first, and no more than _CHATS_MOST."""
+    from app.db import supabase as db
+
+    pages = [[{"id": f"c{i}", "visitor_id": VID, "created_at": iso(T0 + i)} for i in range(n)] for n in (500, 500, 3)]
+    client, calls = _client(lambda: type("R", (), {"data": pages.pop(0)})())
+    with patch.object(db, "get_client", return_value=client):
+        out = await db.chats_of_visitors([VID], iso(T0), iso(T0 + 3600))
+    assert len(out) == 1003 and not pages
+    assert [c[1] for c in calls if c[0] == "range"] == [(0, 499), (500, 999), (1000, 1499)]
+    assert ("lte", ("created_at", iso(T0 + 3600)), {}) in calls
+    assert [c[1] for c in calls if c[0] == "order"][:2] == [("created_at",), ("id",)], "a page's order is stable"
+    # Rule 5: past the most it reads, it stops (and says so in the log).
+    monkeypatch.setattr(db, "_CHATS_MOST", 1000)
+    full = [{"id": f"c{i}", "visitor_id": VID, "created_at": iso(T0 + i)} for i in range(500)]
+    client, calls = _client(lambda: type("R", (), {"data": full})())
+    with patch.object(db, "get_client", return_value=client):
+        assert len(await db.chats_of_visitors([VID], iso(T0))) == 1000
+    assert len([c for c in calls if c[0] == "range"]) == 2

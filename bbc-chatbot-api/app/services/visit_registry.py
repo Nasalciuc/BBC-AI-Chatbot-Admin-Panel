@@ -42,6 +42,8 @@ _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STATES = {"shown", "dismissed", "engaged"}
 # A chat begun this long before a visit's first snapshot is still the visit's (the widget asks for the pass first).
 _CHAT_BEFORE_VISIT_S = 120
+# And one begun up to this long after its last one (the visit's end is its last beat).
+_CHAT_AFTER_VISIT_S = 1800
 # The visit's text fields as bbc-live writes them, and the table's names for them.
 _TEXT = {
     "landing": "landing_page", "landing_type": "landing_type", "source": "source", "channel": "channel",
@@ -166,13 +168,16 @@ async def _link_chats(rows: list[dict]) -> None:
     # The lookup reaches as far back as a visit takes a chat: one begun just before the visit's first snapshot
     # (CodeRabbit #282, round 3).
     since = datetime.fromisoformat(min(r["started_at"] for r in want)) - timedelta(seconds=_CHAT_BEFORE_VISIT_S)
-    found = await db.chats_of_visitors(sorted({r["visitor_id"] for r in want}), since.isoformat())
+    # And no further on than a visit takes one: the chats after the batch's visits are none of theirs (CodeRabbit #282,
+    # round 7: the lookup reads every page, so it reads only what can be a visit's).
+    until = datetime.fromisoformat(max(r["ended_at"] for r in want)) + timedelta(seconds=_CHAT_AFTER_VISIT_S)
+    found = await db.chats_of_visitors(sorted({r["visitor_id"] for r in want}), since.isoformat(), until.isoformat())
     if found is None:
         VISIT_HEALTH["link_failed"] += 1
         return
     for r in want:
         start = datetime.fromisoformat(r["started_at"]).timestamp() - _CHAT_BEFORE_VISIT_S
-        end = datetime.fromisoformat(r["ended_at"]).timestamp() + 1800
+        end = datetime.fromisoformat(r["ended_at"]).timestamp() + _CHAT_AFTER_VISIT_S
         for c in found:
             if c["visitor_id"] != r["visitor_id"]:
                 continue
