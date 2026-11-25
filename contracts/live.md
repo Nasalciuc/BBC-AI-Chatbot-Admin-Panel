@@ -141,7 +141,8 @@ The owner: an agent connects their own bot, and it works as them through the API
   no panel route takes it as a session (any scope is refused there). It works while it is the agent's newest key
   (`live:botkey:<agent>`), while the agent's `token_version` is the one it was made with (a role change or a
   deactivation ends it), while no "sign out everywhere" came after it, and while the agent may say hello and take
-  chats (read again at every call). Shown once; a new key stops the one before.
+  chats (the agent's row read again at every call, nothing of it kept between calls). Shown once; a new key stops
+  the one before. `GET` checks it the same way: a key a sign-out or a role change stopped is no longer active.
 - The bot's calls, `Authorization: Bearer <key>`, the admin envelope with the refusal's `code`:
   - `GET /api/live/bot/visitors`: the visitors the panel lists for the agent (Skye's card unanswered 30 s or "Not
     now" to it, the agent-first test's wait, the ones the agent or their bot holds), each with `state` (free, mine,
@@ -149,21 +150,27 @@ The owner: an agent connects their own bot, and it works as them through the API
     agent's name (`ready_hello`, `group`).
   - `POST /api/live/bot/hello` `{"visitor_id", "text"?, "group"?}`: the hello in the agent's name, `text` or the
     ready one. The API checks the visitor's beat just before (listed for the agent, nobody else holding them, no
-    hello lately, no bot's hello today, not in the middle of the quote form: the panel's two minutes); `text` is held
-    to 300 characters, no contact, link or price, no long dash. Then `bot_send.lua` checks again and sends in one
-    step, without a claim before it: the visitor left (-1), in a chat (-2), said "not now" (-3), someone else holds
-    them (-4; the agent themself may, from the panel), a hello went already (-5), a bot said hello to them today
-    (-6). The card's state and the form are the API's check alone. Sent, the hello holds the visitor as
+    hello lately, no bot's hello today, not in the middle of the quote form: the panel's two minutes); `text`, and
+    the ready hello too (it carries the page's destination), is held to 300 characters, no contact, link or price,
+    no long dash. Then `bot_send.lua` checks again and sends in one step, without a claim before it: the visitor left
+    (-1), in a chat (-2), said "not now" (-3), someone else holds them (-4; the agent themself may, from the panel),
+    a hello went already (-5), a bot said hello to them today (-6), a step taken since the API read them (-7,
+    `changed`: the quote form opened meanwhile; ARGV[8] is the activity the API judged). The card's state is the
+    API's check alone. A 503 may come after the hello went (its answer lost): the list says it, `state` my_bot,
+    before the bot tries again. Sent, the hello holds the visitor as
     `bot:<agent>` (`live:claim:<vid>`) for its 15 minutes, in no agent's `live:claims:`: the panel shows "Your bot
     said hello" / "A colleague's bot said hello" with no button, and nobody claims them meanwhile. The widget's
     message is an agent's (`live_inbox_message.json`): the visitor sees the agent's first name.
   - The tap starts the chat as the agent's, as a hello from the panel (assigned, human mode: Skye stays quiet),
-    with `metadata.live_hello.bot: true`.
-  - `GET /api/live/bot/chats`: the open chats its hellos started that are still the agent's, in human mode, with
-    `waiting` (the visitor wrote last). `GET /api/live/bot/chats/<id>/messages?after=<ISO time>`: what was said,
-    oldest first, `role` visitor, agent, ai or system. `POST /api/live/bot/chats/<id>/messages` `{"text"}`: its
-    answer, through the panel's own send (the agent's name on it, the response clock, the follow-up task), held to
-    the same rules as the hello, up to 2,000 characters. Any other chat answers 403 `not_the_bots`. A message the
+    with `metadata.live_hello.bot: true`. A mark that can't be written (tried twice) gives the chat back to Skye:
+    its bot would never see it (`/health/detail` `live.mark_failed`).
+  - `GET /api/live/bot/chats`: the open chats its own hellos started (`live_hello.agent_id`: not a colleague's bot's
+    chat a supervisor moved to the agent) that are still the agent's, in human mode, with `waiting` (the visitor
+    wrote last). `GET /api/live/bot/chats/<id>/messages?after=<ISO time>`: what was said, oldest first, `role`
+    visitor, agent, ai or system; the chat is checked again after the read. `POST /api/live/bot/chats/<id>/messages`
+    `{"text"}`: its answer, through the panel's own send (the agent's name on it, the response clock, the follow-up
+    task), held to the same rules as the hello, up to 2,000 characters; the send writes only in a chat still the
+    agent's, and never claims one. Any other chat answers 403 `not_the_bots`. A message the
     bot sends counts as the agent being here, as one from the panel does; ten minutes with nothing from either, the
     agent's chats go back to Skye, as any agent's.
 - `/health/detail` counts it all under `live_bot`.
@@ -217,7 +224,7 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 | `live:hello:<hello id>` | string | the hello for `/chat/init` (JSON) | 900 s | the API |
 | `live:said:<vid>` | string | the agent who said hello (`bot:<agent>` for an agent's bot) | 900 s | the API |
 | `live:bot:<vid>` | string | `1`: an agent's bot said hello to this visitor | 86400 s | the API (`bot_send.lua`) |
-| `live:botkey:<agent>` | string | the id of the agent's newest bot key | 90 days | the API |
+| `live:botkey:<agent>` | string | the agent's newest bot key: `{"id", "iat", "tv"}` (JSON; never the key itself) | 90 days | the API |
 | `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 25 h after the last pass: its 24 h and the hour it still renews | the API (`pass.lua`) |
 | `live:hold:<vid>` | string | unix seconds when Alex's wait began (the agent-first test) | 900 s | the API |
 | `live:greeters` | sorted set | user id, score = unix seconds of the last read of the list by an agent who may hold a visitor (the agent-first test) | a day after the last read, trimmed at each read | bbc-live |
