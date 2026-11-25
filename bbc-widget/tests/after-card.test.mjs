@@ -23,7 +23,7 @@ import { channelMessage, widgetLang, words } from '../src/i18n.ts'
 import { TITLE_MAX, askBeforeYouGo, fetchProactiveOffer, readButtons, readChannel } from '../src/api.ts'
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, QUOTE_INVALID_IDLE_S, QUOTE_ROW_IDLE_S, WATCHED_FIRST_S, WATCHED_FIRST_SIGNALS_S,
-  adKeyword, isNotNow, keywordNamesPlace, pickTrigger, rowAgainOpen, rowMoment,
+  adKeyword, givesMomentBack, isNotNow, keywordNamesPlace, pickTrigger, rowAgainOpen, rowMoment,
 } from '../src/triggers.ts'
 import { LAYOUT_AFTER_MS, cardAsideWatch, coveredShare, watchPopups } from '../src/overlay.ts'
 import { keyboardInset } from '../src/keyboard.ts'
@@ -783,6 +783,18 @@ test('a contact left in the chat closes the second chance; one the server asked 
   for (const no of ['j***@gmail.com', 'write to me at client at example dot com', 'JFK to CDG on 12/15', '@example.com', '']) {
     assert.equal(typedEmail(no), false, no)
   }
+})
+
+test('a contact left while the second chance\'s row was on its way drops the row, measured (CodeRabbit #282, round 7)', () => {
+  // A send finishing after the chat closed marks the contact (ChatWindow): the row asked before it never shows.
+  const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
+  assert.match(why, /if \(stopped\) return stopped\n(?:\s*\/\/[^\n]*\n)*\s+if \(rowOnly && ssGet\(CONTACT_LEFT_KEY\) === '1'\) return 'contact_left'/)
+  // A passed moment is measured (moment_passed) and dropped before anything shows, and asks nothing again.
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) return'))
+  assert.equal(givesMomentBack('contact_left', 0), false)
+  // Rule 5: the visit's first moment does not read it (with a chat a visitor has none: `allowed` is false).
+  assert.doesNotMatch(why, /if \(ssGet\(CONTACT_LEFT_KEY\)/)
 })
 
 test('the row\'s contact goes into the conversation the visitor already has, once', () => {

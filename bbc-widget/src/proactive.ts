@@ -699,6 +699,10 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     })
     const momentPassed = (trigger: Trigger, before: ReturnType<typeof seen>, askedTrip: string | null): string | null => {
       if (stopped) return stopped
+      // The row's second chance ends with a contact left in the chat, also one a send finishing after the chat closed
+      // marked while its answer was on the way (CodeRabbit #282, round 7): the row is dropped, measured. Its 'asked'
+      // needs no giving back: the contact keeps the chance closed (rowAgainOpen).
+      if (rowOnly && ssGet(CONTACT_LEFT_KEY) === '1') return 'contact_left'
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
       if (ssGet(NOTE_CLOSED_KEY)) return 'note_closed'
