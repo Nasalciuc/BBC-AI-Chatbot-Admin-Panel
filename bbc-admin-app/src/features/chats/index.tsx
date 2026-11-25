@@ -28,6 +28,7 @@ import { useReadState, useToRead } from './to-read-state'
 import { unreadCount } from './to-read-view'
 import {
   avatarClasses,
+  canSeeSources,
   CARD_NO_CONTACT_TITLE,
   cardNoContact,
   closedByLine,
@@ -45,6 +46,7 @@ import {
   signalClasses,
   signalOf,
   type Signal,
+  SOURCES_RESTRICTED,
 } from './view'
 
 // State (tab) and outcome (tag) are orthogonal axes — a tag chip layers on
@@ -666,14 +668,31 @@ export function Chats() {
                   ))}
                 </div>
               </div>
-              <div className='flex flex-col gap-1.5'>
-                <span className='text-xs text-k-555555'>Came from</span>
-                <div className='flex flex-wrap gap-1.5'>
-                  {([['any', 'Anywhere'], ['kayak', 'Kayak'], ['ads', 'Ads'], ['site', 'The site']] as const).map(([k, label]) => (
-                    <button key={k} type='button' onClick={() => setFilter('source', k)} className={chipCls(filters.source === k)}>{label}</button>
-                  ))}
+              {canSeeSources(role) ? (
+                <div className='flex flex-col gap-1.5'>
+                  <span className='text-xs text-k-555555'>Came from</span>
+                  <div className='flex flex-wrap gap-1.5'>
+                    {([['any', 'Anywhere'], ['kayak', 'Kayak'], ['ads', 'Ads'], ['site', 'The site']] as const).map(([k, label]) => (
+                      <button key={k} type='button' onClick={() => setFilter('source', k)} className={chipCls(filters.source === k)}>{label}</button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                // Where the client came from is not an agent's (the owner, 25 Nov 2026): the panel's rule for a
+                // restricted action, shown, disabled, a lock and the reason. The filter stays "Anywhere".
+                <div className='flex flex-col gap-1.5' title={SOURCES_RESTRICTED}>
+                  <span className='inline-flex items-center gap-1 text-xs text-k-555555'>
+                    <Lock aria-hidden='true' className='size-3' />
+                    Came from
+                  </span>
+                  <div className='flex flex-wrap gap-1.5'>
+                    {(['Anywhere', 'Kayak', 'Ads', 'The site'] as const).map((label) => (
+                      <button key={label} type='button' disabled aria-label={`${label} (${SOURCES_RESTRICTED.toLowerCase()})`}
+                        className={cn(chipCls(label === 'Anywhere'), 'cursor-not-allowed opacity-60')}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className='flex flex-col gap-1.5'>
                 <span className='text-xs text-k-555555'>Trip (airport codes)</span>
                 <div className='flex gap-1.5'>

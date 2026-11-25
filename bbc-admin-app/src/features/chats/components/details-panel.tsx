@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, Copy } from 'lucide-react'
+import { ChevronDown, Copy, Lock } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Conversation, Lead, Message } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -23,6 +23,8 @@ import {
   replayUrl,
   routeLine,
   signalsOf,
+  siteName,
+  SOURCES_RESTRICTED,
   summaryStamp,
   tripNote,
   tripRows,
@@ -122,6 +124,8 @@ export interface DetailsPanelProps {
   owner: Owner
   messages: Message[]
   isSupervisor: boolean
+  /** "Where they came from" opens (canSeeSources): not for agents or supervisors, who see it locked. */
+  canSeeSources: boolean
   showCost: boolean
   canViewHistory: boolean
   wide: boolean
@@ -162,14 +166,14 @@ export function DetailsPanel(p: DetailsPanelProps) {
   const level = levelOf(lead, confirmedOf(conv), { agentChat })
   const missing = conv.tunnel === 'support' ? [] : missingForReady(lead, confirmedOf(conv), { agentChat })
   // The chat the proactive card opened (no form): why it opened, the search the page gave, and the
-  // replay of the visit. The replay sits with "Where they came from", which supervisors don't get.
-  const replay = p.isSupervisor ? '' : replayUrl(conv.metadata, REPLAY_BASE)
-  const where = p.isSupervisor
-    ? []
-    : [
-        ...whereRows(conv.metadata, conv.visitor_phone_country),
-        ...(replay ? [{ label: 'Replay', value: 'Watch the visit in PostHog', href: replay }] : []),
-      ]
+  // replay of the visit. The replay sits with "Where they came from", which agents and supervisors see
+  // locked (the owner, 25 Nov 2026); the site stays theirs, in "This chat": it is the brand they answer for.
+  const replay = p.canSeeSources ? replayUrl(conv.metadata, REPLAY_BASE) : ''
+  const where = [
+    ...whereRows(conv.metadata, conv.visitor_phone_country),
+    ...(replay ? [{ label: 'Replay', value: 'Watch the visit in PostHog', href: replay }] : []),
+  ]
+  const site = p.canSeeSources ? '' : siteName(conv.metadata)
   const pageTrip = conv.tunnel === 'support' ? '' : pageTripText(conv.metadata)
   const clientMsgs = p.messages.filter((m) => m.role === 'user').length
   const note = tripNote(conv, owner)
@@ -188,9 +192,10 @@ export function DetailsPanel(p: DetailsPanelProps) {
   // from the thread's day separators.
   const now = new Date()
   const agent = agentOf(conv)
-  const opened = openedByText(conv.metadata, now)
+  const opened = openedByText(conv.metadata, now, { sources: p.canSeeSources })
   const chatRows: Row[] = [
     { label: 'Chat', value: `${conv.chat_number != null ? `#${conv.chat_number} · ` : ''}${conv.tunnel === 'support' ? 'Support' : 'Sales'}` },
+    ...(site ? [{ label: 'Site', value: site }] : []),
     { label: 'Started', value: dayClock(conv.created_at, now) || '—' },
     ...(opened ? [{ label: 'Opened', value: opened, strong: true }] : []),
     { label: 'Messages', value: String(p.messages.filter((m) => m.role !== 'system').length) },
@@ -425,11 +430,28 @@ export function DetailsPanel(p: DetailsPanelProps) {
         </Fold>
       )}
 
-      {where.length > 0 && (
+      {where.length > 0 && (p.canSeeSources ? (
         <Fold id='where' open={isOpen('where')} onToggle={toggle} title={`Where ${named ? first : 'they'} came from`}>
           {isOpen('where') && <Rows rows={where} wide={p.wide} />}
         </Fold>
-      )}
+      ) : (
+        // The panel's rule for a restricted action: shown, disabled, a lock and the reason. An agent can't
+        // open it (the owner, 25 Nov 2026); their rows come without it anyway (app/api/conversations.py).
+        <section className='flex flex-col rounded-2xl bg-k-ffffff px-4 py-3.5 shadow-[0_1px_2px_rgba(32,32,32,0.05)]'>
+          <h3 className='m-0'>
+            <button
+              type='button'
+              disabled
+              title={SOURCES_RESTRICTED}
+              aria-label={`Where ${named ? first : 'they'} came from (${SOURCES_RESTRICTED.toLowerCase()})`}
+              className='flex w-full cursor-not-allowed items-center gap-2 text-start text-[11px] font-bold tracking-[0.05em] text-k-6b6b6b uppercase opacity-60'
+            >
+              <span className='flex flex-1 items-center gap-1.5'>{`Where ${named ? first : 'they'} came from`}</span>
+              <Lock aria-hidden='true' className='size-3.5 flex-none' />
+            </button>
+          </h3>
+        </section>
+      ))}
 
       <Fold
         id='chat'

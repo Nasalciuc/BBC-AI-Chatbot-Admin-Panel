@@ -1037,6 +1037,25 @@ export function deviceOf(ua: unknown): string {
   return 'Computer'
 }
 
+/** The site the client wrote from, by its address: the brand the agent answers for (the server keeps `site` for
+ *  everyone for the same reason, app/security/pii.py). '' when the chat didn't say. */
+export function siteName(meta: Record<string, unknown> | undefined): string {
+  const raw = (meta ?? {}).site
+  const site = typeof raw === 'string' ? raw.trim() : ''
+  return site === 'bbc' ? 'buybusinessclass.com' : site === 'bct' ? 'businessclass-tickets.com' : site
+}
+
+/** Who opens "Where they came from" (the ad, the campaign, the Google search, the pages, the screen, the replay
+ *  of the visit): not the agents (the owner, 25 Nov 2026: an agent can't open it) and not the supervisors (they
+ *  never had it). Both see it locked. The server holds the same line: an agent's rows come without it
+ *  (app/api/conversations.py), a supervisor's masked (app/security/pii.py). */
+export function canSeeSources(role: string | undefined): boolean {
+  return !!role && role !== 'sales' && role !== 'support' && role !== 'supervisor'
+}
+
+/** Why "Where they came from" is locked, in the panel's words for a restricted action. */
+export const SOURCES_RESTRICTED = 'Not for your role: where the client came from is marketing data'
+
 // ── the chat that opened by itself (bbc-chatbot-api app/services/proactive.py) ──
 
 /** A word from one of the fixed tables below, for a key that came with the data: only the table's
@@ -1057,8 +1076,13 @@ const OPENED_BY: Record<string, string> = {
   exit: 'was about to leave',
 }
 
-/** "By itself: the client came from Kayak · 23:41" for a chat the card opened (no form); '' otherwise. */
-export function openedByText(meta: Record<string, unknown> | undefined, now: Date): string {
+/** The card's moments that name where the client came from. */
+const SOURCE_MOMENTS = new Set(['kayak', 'ads', 'social'])
+
+/** "By itself: the client came from Kayak · 23:41" for a chat the card opened (no form); '' otherwise. A reader
+ *  who doesn't see where clients came from (canSeeSources, `sources: false`) reads why the chat has no name for
+ *  those moments without the source: "By itself: Skye’s card, no form · 23:41". */
+export function openedByText(meta: Record<string, unknown> | undefined, now: Date, opts: { sources?: boolean } = {}): string {
   const m = (meta ?? {}) as Record<string, unknown>
   const trigger = typeof m.proactive_trigger === 'string' ? m.proactive_trigger : ''
   if (!trigger) return ''
@@ -1066,6 +1090,7 @@ export function openedByText(meta: Record<string, unknown> | undefined, now: Dat
   // The note beside the button did not open the chat by itself: the client tapped it, and got the chat
   // without the form (owner's decision, 16 Nov) — which is why no name, email or phone came first.
   if (trigger === 'note') return `No form: the client tapped the note beside the button${at ? ` · ${at}` : ''}`
+  if (opts.sources === false && SOURCE_MOMENTS.has(trigger)) return `By itself: Skye’s card, no form${at ? ` · ${at}` : ''}`
   return `By itself: the client ${wordFor(OPENED_BY, trigger) ?? 'hesitated'}${at ? ` · ${at}` : ''}`
 }
 
@@ -1137,8 +1162,8 @@ export function whereRows(meta: Record<string, unknown> | undefined, phoneCountr
   const m = (meta ?? {}) as Record<string, unknown>
   const s = (k: string) => (typeof m[k] === 'string' ? (m[k] as string).trim() : '')
   const rows: Row[] = []
-  const site = s('site')
-  if (site) rows.push({ label: 'Site', value: site === 'bbc' ? 'buybusinessclass.com' : site === 'bct' ? 'businessclass-tickets.com' : site })
+  const site = siteName(m)
+  if (site) rows.push({ label: 'Site', value: site })
   const ads = s('gclid') ? 'Google Ads' : s('msclkid') ? 'Microsoft Ads' : s('fbclid') ? 'Facebook ad' : ''
   const src = [s('utm_source'), s('utm_medium')].filter(Boolean).join(' · ')
   if (ads || src) rows.push({ label: 'Source', value: [ads, src].filter(Boolean).join(' · ') })

@@ -47,6 +47,7 @@ import { DetailsPanel } from './components/details-panel'
 import { OperatorBadge } from './operator-history'
 import {
   avatarClasses,
+  canSeeSources,
   clock,
   closedNote,
   closeSentence,
@@ -806,6 +807,7 @@ export default function ConversationDetail({
       owner={owner}
       messages={allMessages}
       isSupervisor={isSupervisor}
+      canSeeSources={canSeeSources(role)}
       showCost={isAdmin}
       canViewHistory={canViewHistory}
       wide={wide}
