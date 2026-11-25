@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
   helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
-  tripLine, clockS,
+  tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, stuckInForm,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -256,4 +256,92 @@ test('time on the site is never less than the time since Alex’s card (the firs
   assert.equal(onSiteSeconds(v({ seconds_on_site: 45 })), 45)
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
   assert.match(page, /\{onSite\(onSiteSeconds\(v\)\)\} on the site/)
+})
+
+// ── The groups (the owner, 25 Nov 2026): a label and a hello ready, sent in one tap ─────────────────────────
+
+const NOW_MS = Date.parse('2026-11-25T12:00:00Z')
+
+test('a group by the time zone, the days to the flight, the quote form and a return', () => {
+  assert.equal(anzZone('Australia/Sydney'), true)
+  assert.equal(anzZone('Australia/Perth'), true)
+  assert.equal(anzZone('Pacific/Auckland'), true)
+  assert.equal(anzZone('Pacific/Chatham'), true)
+  for (const tz of [undefined, '', 'Pacific/Fiji', 'Asia/Singapore', 'America/New_York', 'australia/sydney']) {
+    assert.equal(anzZone(tz), false, String(tz))
+  }
+  assert.equal(daysToFlight('2026-12-10', NOW_MS), 15)
+  assert.equal(daysToFlight('2027-01-09', NOW_MS), 45)
+  assert.equal(daysToFlight('2026-11-25', NOW_MS), 0)
+  assert.equal(daysToFlight('soon', NOW_MS), null)
+  assert.equal(daysToFlight(undefined, NOW_MS), null)
+  assert.equal(stuckInForm({ activity: ['search:JFK-LHR', 'quote_opened'] }), true)
+  assert.equal(stuckInForm({ activity: ['quote_opened', 'quote_step:2'] }), true)
+  assert.equal(stuckInForm({ activity: ['quote_opened', 'quote_invalid:phone'] }), true)
+  assert.equal(stuckInForm({ activity: ['quote_opened', 'quote_failed:server'] }), true)
+  // Rule 5: sent, being sent, never opened, or opened and sent since.
+  assert.equal(stuckInForm({ activity: ['quote_opened', 'quote_submitted'] }), false)
+  assert.equal(stuckInForm({ activity: ['quote_opened', 'quote_submitting'] }), false)
+  assert.equal(stuckInForm({ activity: ['search:JFK-LHR'] }), false)
+  assert.equal(stuckInForm({}), false)
+})
+
+test('the first group that fits; on a phone only the form and a return count', () => {
+  const computer = { device: 'computer' }
+  assert.equal(groupOf(v({ ...computer, activity: ['quote_opened'], tz: 'Australia/Sydney', returning: true }), NOW_MS), 'form')
+  assert.equal(groupOf(v({ ...computer, tz: 'Australia/Sydney', returning: true, trip: { depart: '2026-12-20' } }), NOW_MS), 'anz')
+  assert.equal(groupOf(v({ ...computer, trip: { to: 'IST', depart: '2026-12-20' }, returning: true }), NOW_MS), 'soon')
+  assert.equal(groupOf(v({ ...computer, returning: true }), NOW_MS), 'back')
+  // Rule 5: the same visitors on a phone, out of the window, or new.
+  assert.equal(groupOf(v({ device: 'phone', tz: 'Australia/Sydney' }), NOW_MS), null)
+  assert.equal(groupOf(v({ device: 'phone', trip: { depart: '2026-12-20' } }), NOW_MS), null)
+  assert.equal(groupOf(v({ device: 'phone', activity: ['quote_invalid:email'] }), NOW_MS), 'form')
+  assert.equal(groupOf(v({ device: 'phone', returning: true }), NOW_MS), 'back')
+  assert.equal(groupOf(v({ ...computer, trip: { depart: '2026-12-09' } }), NOW_MS), null, '14 days')
+  assert.equal(groupOf(v({ ...computer, trip: { depart: '2027-01-10' } }), NOW_MS), null, '46 days')
+  assert.equal(groupOf(v({ ...computer, tz: 'Europe/London' }), NOW_MS), null)
+  assert.equal(groupOf(v(), NOW_MS), null)
+  assert.deepEqual(Object.keys(GROUP_LABEL), ['form', 'anz', 'soon', 'back'])
+})
+
+test('each ready hello passes the hello’s rules and the client’s: no price, no contact, no long dash', () => {
+  const cases = [
+    ['form', v({ activity: ['quote_opened', 'quote_invalid:phone'] })],
+    ['form', v({ activity: ['quote_opened', 'quote_failed:server'] })],
+    ['anz', v({ device: 'computer', tz: 'Australia/Sydney', trip: { to: 'LHR' } })],
+    ['anz', v({ device: 'computer', tz: 'Pacific/Auckland' })],
+    ['soon', v({ device: 'computer', trip: { to: 'IST', depart: '2026-12-20' } })],
+    ['soon', v({ device: 'computer', trip: { depart: '2026-12-20' } })],
+    ['back', v({ returning: true, trip: { to: 'CDG' } })],
+    ['back', v({ returning: true })],
+  ]
+  for (const [group, visitor] of cases) {
+    for (const name of ['Ana', '']) {
+      const words = groupHello(group, visitor, name)
+      assert.equal(helloProblem(words), null, words)
+      assert.doesNotMatch(words, /—|\$|€|£|\bprice|\bcheap/i, words)
+      assert.ok(words.startsWith(name ? 'Hi, I’m Ana'.replace('’', "'") : 'Hi, I am from the travel team.'), words)
+    }
+  }
+  assert.equal(groupHello('form', v({ activity: ['quote_failed:server'] }), 'Ana'),
+    "Hi, I'm Ana from the travel team. Did the quote form give you trouble? I can take your request right here.")
+  assert.equal(groupHello('soon', v({ trip: { to: 'IST', depart: '2026-12-20' } }), 'Ana'),
+    "Hi, I'm Ana from the travel team. Flying to IST on Dec 20? A good moment to book business class. Want me to check options for your dates?")
+  assert.equal(groupHello('back', v({ returning: true }), 'Ana'),
+    "Hi, I'm Ana from the travel team. Welcome back! Want me to pick up your search and check business class options for you?")
+})
+
+test('the row: the label, the hello quoted, one tap to send it, Write to change it first', () => {
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf-8')
+  assert.match(page, /\{group && \(\s*<span className='rounded-full bg-k-efeaff px-2 py-0\.5 text-xs font-medium text-k-4a36c4'>\{GROUP_LABEL\[group\]\}<\/span>/)
+  assert.match(page, /Ready: “\{ready\}”/)
+  // One tap: taken when nobody holds them, then the hello as it is, with its group.
+  assert.match(page, /if \(rowState\(v, meId\) !== 'mine'\) \{\s*const problem = claimProblem\(\(await claimVisitor\(pass!, v\.visitor_id\)\)\.state\)\s*if \(problem\) throw new Error\(problem\)\s*\}\s*return sendHello\(v\.visitor_id, words, group\)/)
+  assert.equal((page.match(/onClick=\{\(\) => quick\.mutate\(\{ v, words: ready, group \}\)\}>\s*Send this hello/g) ?? []).length, 2,
+    'for a visitor nobody holds, and for one I hold')
+  // The editor starts from the group's hello too, and sends with the group.
+  assert.match(page, /return group \? groupHello\(group, v, firstName\) : suggestedHello\(v, firstName\)/)
+  assert.match(page, /sendHello\(v\.visitor_id, words, groupOf\(v, nowMs\)\)/)
+  const api = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf-8')
+  assert.match(api, /body: JSON\.stringify\(\{ visitor_id: visitorId, text, \.\.\.\(group \? \{ group \} : \{\}\) \}\)/)
 })

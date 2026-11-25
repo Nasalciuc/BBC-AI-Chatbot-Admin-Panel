@@ -292,3 +292,77 @@ export function suggestedHello(v: LiveVisitor, agentFirstName: string): string {
   if (t?.to) return `${who} Looking at flights to ${t.to}? I can check business class fares for your dates.`
   return `${who} Can I help you find a business class fare?`
 }
+
+// ── The groups (the owner, 25 Nov 2026; the "Cardul pe grupe de clienți" analysis, 11–24 Nov) ─────────────────
+// Where the group matters, the row names it and has its hello ready, sent in one tap: the claim, then the hello.
+// On a computer Skye's card gets from 1.2 % to 17.9 % answers depending on the group; agents greeted 102 visitors in
+// the week to 25 Nov and 7 answered. The hello goes out with its group (bbc-chatbot-api live_visitors.HELLO_GROUPS),
+// so the answers can be counted per group.
+
+export type HelloGroup = 'form' | 'anz' | 'soon' | 'back'
+
+export const GROUP_LABEL: Record<HelloGroup, string> = {
+  form: 'Stuck in the quote form',
+  anz: 'Australia or New Zealand, on a computer',
+  soon: 'Flying in 15–45 days, on a computer',
+  back: 'Came back',
+}
+
+/** Australia or New Zealand, by the browser's time zone. */
+export function anzZone(tz: string | undefined): boolean {
+  return !!tz && (tz.startsWith('Australia/') || ['Pacific/Auckland', 'Pacific/Chatham', 'NZ', 'NZ-CHAT'].includes(tz))
+}
+
+/** Whole days from today to the page's departure day, by the calendar (UTC days); null without a day. */
+export function daysToFlight(depart: string | undefined, nowMs: number): number | null {
+  if (!depart || !/^\d{4}-\d{2}-\d{2}$/.test(depart)) return null
+  const day = Date.parse(`${depart}T00:00:00Z`)
+  if (Number.isNaN(day)) return null
+  const today = Date.parse(`${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00Z`)
+  return Math.round((day - today) / 86_400_000)
+}
+
+/** The quote form's last word on this visit: opened, moved on in, flagged a field or didn't go through, and not
+ *  sent since. */
+export function stuckInForm(v: Pick<LiveVisitor, 'activity'>): boolean {
+  const quote = (v.activity ?? []).map((s) => s.split(':')[0]).filter((k) => k.startsWith('quote_'))
+  const last = quote[quote.length - 1]
+  return last === 'quote_opened' || last === 'quote_step' || last === 'quote_invalid' || last === 'quote_failed'
+}
+
+/** The visitor's group, the first that fits: stuck in the form, Australia or New Zealand on a computer, flying in
+ *  15–45 days on a computer, came back; null for the rest (their hello is suggestedHello's, written by the agent). */
+export function groupOf(v: LiveVisitor, nowMs: number): HelloGroup | null {
+  if (stuckInForm(v)) return 'form'
+  const computer = v.device === 'computer'
+  if (computer && anzZone(v.tz)) return 'anz'
+  const days = daysToFlight(v.trip?.depart, nowMs)
+  if (computer && days !== null && days >= 15 && days <= 45) return 'soon'
+  if (v.returning === true) return 'back'
+  return null
+}
+
+/** The group's hello, ready to send as it is (the agent may still edit it): never a price, a contact or a long
+ *  dash (the owner's rules for what a client reads). */
+export function groupHello(group: HelloGroup, v: LiveVisitor, agentFirstName: string): string {
+  const who = agentFirstName ? `Hi, I'm ${agentFirstName} from the travel team.` : 'Hi, I am from the travel team.'
+  const to = v.trip?.to
+  switch (group) {
+    case 'form': {
+      const last = (v.activity ?? []).map((s) => s.split(':')[0]).filter((k) => k.startsWith('quote_')).pop()
+      return last === 'quote_failed'
+        ? `${who} Did the quote form give you trouble? I can take your request right here.`
+        : `${who} Need a hand with the quote form? I can take your trip details right here, it only takes a minute.`
+    }
+    case 'anz':
+      return to
+        ? `${who} Planning the long trip to ${to}? I can find business class options for your dates and send them right here.`
+        : `${who} Planning a long trip? I can find business class options for your dates and send them right here.`
+    case 'soon': {
+      const when = day(v.trip?.depart)
+      return `${who} Flying${to ? ` to ${to}` : ''}${when ? ` on ${when}` : ''}? A good moment to book business class. Want me to check options for your dates?`
+    }
+    case 'back':
+      return `${who} Welcome back! Want me to pick up your search${to ? ` for ${to}` : ''} and check business class options for you?`
+  }
+}

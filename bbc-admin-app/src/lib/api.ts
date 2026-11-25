@@ -997,10 +997,13 @@ export function releaseVisitor(pass: LivePass, visitorId: string) {
   })
 }
 
-/** The hello itself goes through the API: it checks the words (no contact, no link) and the claim. */
-export async function sendHello(visitorId: string, text: string): Promise<LiveHelloSent> {
+/** The hello itself goes through the API: it checks the words (no contact, no link) and the claim. `group`: the
+ *  group the row named the visitor by (features/live/view.ts groupOf), kept with the hello so the answers can be
+ *  counted per group. */
+export async function sendHello(visitorId: string, text: string, group?: string | null): Promise<LiveHelloSent> {
   const res = await apiFetch<{ success: boolean; data: LiveHelloSent }>('/api/live/send', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, text }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, text, ...(group ? { group } : {}) }),
   })
   return res.data
 }

@@ -1242,6 +1242,10 @@ export interface LiveVisitor {
   alex_card_s?: number
   /** The moment that showed it (kayak, ads, quote, reader, exit; note: the visitor opened the chat themselves). */
   alex_trigger?: string
+  /** The browser's time zone ("Australia/Sydney"), when the widget said it. */
+  tz?: string
+  /** The browser was on the site before this visit (the widget's visitCount.ts); absent when it wasn't. */
+  returning?: boolean
 }
 
 export interface LiveListResponse {

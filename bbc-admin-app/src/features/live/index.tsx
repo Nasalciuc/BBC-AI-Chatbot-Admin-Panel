@@ -13,9 +13,9 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  ALEX_GAVE_UP_S, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine, alexWaiting, claimProblem,
-  clockS, heldBy, helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, suggestedHello, testLine,
-  tripLine,
+  ALEX_GAVE_UP_S, GROUP_LABEL, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine, alexWaiting,
+  claimProblem, clockS, groupHello, groupOf, heldBy, helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState,
+  sourceLabel, suggestedHello, testLine, tripLine, type HelloGroup,
 } from './view'
 
 const STATE_CLS: Record<string, string> = {
@@ -27,6 +27,9 @@ const STATE_CLS: Record<string, string> = {
 }
 
 const btn = 'h-9 rounded-xl px-3.5 text-sm font-semibold disabled:opacity-50'
+const quiet = 'bg-k-ffffff text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)]'
+
+const SENT = 'Sent. On a computer their chat opens with your words; on a phone they show beside the chat button. Their answer opens the chat in your list, already yours.'
 
 /** "On the site now": the visitors Alex's card didn't start a chat with, and a hello from a person (contracts/live.md). */
 export function LiveVisitors() {
@@ -58,6 +61,12 @@ export function LiveVisitors() {
   const held = heldBy(rows, meId)
   const maxClaims = list.data?.max_claims ?? 3
   const firstName = (me?.name || '').split(/\s+/)[0] || ''
+  // The hello a row starts from: its group's, ready to send (the owner, 25 Nov 2026), or one built from the page.
+  const nowMs = nowS * 1000
+  const firstWords = (v: LiveVisitor) => {
+    const group = groupOf(v, nowMs)
+    return group ? groupHello(group, v, firstName) : suggestedHello(v, firstName)
+  }
 
   const claim = useMutation({
     mutationFn: (v: LiveVisitor) => claimVisitor(pass!, v.visitor_id),
@@ -68,10 +77,28 @@ export function LiveVisitors() {
         toast.error(problem)
         return
       }
-      setText(suggestedHello(v, firstName))
+      setText(firstWords(v))
       setWriting(v)
     },
     onError: (e: Error) => toast.error(`Couldn’t take this visitor: ${e.message}`),
+  })
+  // One tap (the owner, 25 Nov 2026): a visitor nobody holds is taken, then gets the group's hello as it is.
+  const quick = useMutation({
+    mutationFn: async ({ v, words, group }: { v: LiveVisitor; words: string; group: HelloGroup }) => {
+      if (rowState(v, meId) !== 'mine') {
+        const problem = claimProblem((await claimVisitor(pass!, v.visitor_id)).state)
+        if (problem) throw new Error(problem)
+      }
+      return sendHello(v.visitor_id, words, group)
+    },
+    onSuccess: () => {
+      toast.success(SENT)
+      qc.invalidateQueries({ queryKey: ['live-visitors'] })
+    },
+    onError: (e: Error) => {
+      toast.error(e.message)
+      qc.invalidateQueries({ queryKey: ['live-visitors'] })
+    },
   })
   const release = useMutation({
     mutationFn: (v: LiveVisitor) => releaseVisitor(pass!, v.visitor_id),
@@ -79,9 +106,10 @@ export function LiveVisitors() {
     onError: (e: Error) => toast.error(`Couldn’t let this visitor go: ${e.message}`),
   })
   const send = useMutation({
-    mutationFn: ({ v, words }: { v: LiveVisitor; words: string }) => sendHello(v.visitor_id, words),
+    // With the visitor's group, as the editor opened on it: the answers are counted per group.
+    mutationFn: ({ v, words }: { v: LiveVisitor; words: string }) => sendHello(v.visitor_id, words, groupOf(v, nowMs)),
     onSuccess: (_res, { v }) => {
-      toast.success('Sent. On a computer their chat opens with your words; on a phone they show beside the chat button. Their answer opens the chat in your list, already yours.')
+      toast.success(SENT)
       // Close the editor this hello came from, never another: the agent may have opened another visitor's
       // while it went (CodeRabbit #273).
       setWriting((cur) => (cur?.visitor_id === v.visitor_id ? null : cur))
@@ -124,6 +152,9 @@ export function LiveVisitors() {
               const state = rowState(v, meId)
               const trip = tripLine(v)
               const Device = v.device === 'phone' ? Smartphone : Laptop
+              const group = groupOf(v, nowMs)
+              const ready = group ? groupHello(group, v, firstName) : ''
+              const busy = claim.isPending || quick.isPending
               return (
                 <li key={v.visitor_id} className='flex flex-col gap-2 rounded-[20px] bg-k-f7f7f7 p-4 md:flex-row md:items-center md:gap-4'>
                   <div className='flex min-w-0 flex-1 flex-col gap-1'>
@@ -132,6 +163,9 @@ export function LiveVisitors() {
                       <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{sourceLabel(v.source)}</span>
                       <Device aria-label={v.device === 'phone' ? 'On a phone' : 'On a computer'} className='size-4 text-k-6b6b6b' />
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATE_CLS[state])}>{ROW_LABEL[state]}</span>
+                      {group && (
+                        <span className='rounded-full bg-k-efeaff px-2 py-0.5 text-xs font-medium text-k-4a36c4'>{GROUP_LABEL[group]}</span>
+                      )}
                       {alexCardLine(v) && (
                         <span className='rounded-full bg-k-ffffff px-2 py-0.5 text-xs text-k-555555'>{alexCardLine(v)}</span>
                       )}
@@ -146,13 +180,29 @@ export function LiveVisitors() {
                       <span className='text-xs leading-[1.45] text-k-4a36c4'>{activityText(v)}</span>
                     )}
                     <span className='truncate text-xs text-k-6b6b6b'>{pageLine(v)}</span>
+                    {ready && (state === 'free' || state === 'mine') && (
+                      <span className='line-clamp-2 text-xs leading-[1.45] text-k-555555'>Ready: “{ready}”</span>
+                    )}
                   </div>
                   <div className='flex flex-none gap-2'>
                     {state === 'free' && (pass.can_say_hello ? (
-                      <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
-                        disabled={claim.isPending || held >= maxClaims} onClick={() => claim.mutate(v)}>
-                        Say hello
-                      </button>
+                      group ? (
+                        <>
+                          <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
+                            disabled={busy || held >= maxClaims} onClick={() => quick.mutate({ v, words: ready, group })}>
+                            Send this hello
+                          </button>
+                          <button type='button' className={cn(btn, quiet)}
+                            disabled={busy || held >= maxClaims} onClick={() => claim.mutate(v)}>
+                            Write
+                          </button>
+                        </>
+                      ) : (
+                        <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
+                          disabled={busy || held >= maxClaims} onClick={() => claim.mutate(v)}>
+                          Say hello
+                        </button>
+                      )
                     ) : (
                       // Restricted: shown, disabled, with a lock and the reason (CodeRabbit #273).
                       <button type='button' disabled title={HELLO_RESTRICTED}
@@ -164,11 +214,17 @@ export function LiveVisitors() {
                     ))}
                     {pass.can_say_hello && state === 'mine' && (
                       <>
-                        <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
-                          onClick={() => { setText(suggestedHello(v, firstName)); setWriting(v) }}>
+                        {group && (
+                          <button type='button' className={cn(btn, 'bg-kb-202020 text-on-btn')}
+                            disabled={quick.isPending} onClick={() => quick.mutate({ v, words: ready, group })}>
+                            Send this hello
+                          </button>
+                        )}
+                        <button type='button' className={cn(btn, group ? quiet : 'bg-kb-202020 text-on-btn')}
+                          onClick={() => { setText(firstWords(v)); setWriting(v) }}>
                           Write
                         </button>
-                        <button type='button' className={cn(btn, 'bg-k-ffffff text-k-202020 shadow-[inset_0_0_0_1px_var(--k-e3e2e2)]')}
+                        <button type='button' className={cn(btn, quiet)}
                           disabled={release.isPending} onClick={() => release.mutate(v)}>
                           Let go
                         </button>
