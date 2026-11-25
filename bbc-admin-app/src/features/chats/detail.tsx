@@ -156,6 +156,13 @@ export default function ConversationDetail({
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
   const [accumMsgs, setAccumMsgs] = useState<Message[]>([])
+  // The messages kept beside the chat's last load are that chat's: another chat on screen starts with none, as
+  // its draft does (CodeRabbit #282, round 4). A reload of the same chat keeps them (below).
+  const [accumOf, setAccumOf] = useState(conversationId)
+  if (accumOf !== conversationId) {
+    setAccumOf(conversationId)
+    setAccumMsgs([])
+  }
   const prevBaseLen           = useRef(0)
   // A panel nobody is looking at asks nothing — see stores/panel-mode-store.
   const dormant = usePanelModeStore((s) => s.dormant)

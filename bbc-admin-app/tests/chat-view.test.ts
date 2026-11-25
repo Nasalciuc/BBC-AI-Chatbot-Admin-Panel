@@ -555,7 +555,9 @@ test('a reload of the chat keeps the client’s message that came after its snap
   assert.equal(notInBase(kept, [u1]), kept, 'nothing leaves: the same array, no new render')
   assert.deepEqual(notInBase([u1], undefined), [u1])
   assert.match(detail, /setAccumMsgs\(prev => notInBase\(prev, conv\?\.messages\)\)/)
-  assert.doesNotMatch(detail, /setAccumMsgs\(\[\]\)/)
+  // Only another chat on screen empties them, never a reload of this one (CodeRabbit #282, round 4).
+  assert.equal(detail.split('setAccumMsgs([])').length, 2)
+  assert.match(detail, /if \(accumOf !== conversationId\) \{\s+setAccumOf\(conversationId\)\s+setAccumMsgs\(\[\]\)\s+\}/)
   // Each time the stream opens, the chat is read again with the trip card: a contact push lost while it was shut.
   const onState = detail.slice(detail.indexOf('(state) => {'), detail.indexOf('() => setSseLive(false)'))
   assert.match(onState, /if \(state === 'open'\) \{[\s\S]*void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/)
