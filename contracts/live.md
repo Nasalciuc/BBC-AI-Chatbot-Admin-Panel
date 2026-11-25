@@ -128,7 +128,33 @@ visit). The hello goes out with its group (below), kept with the hello and with 
   carries `live_agent`, `live_hello` and `live_at` (when the hello was stored: the widget that shows it
   already reads messages after it). A tap that doesn't hold (expired, taken, the switch off) is counted and
   the chat starts as any other, without them. Never with `proactive`: a chat that starts with Alex's
-  opening takes no tap (the widget sends one or the other).
+  opening takes no tap (the widget sends one or the other). A tap on Skye's own hello (below) starts the chat as
+  hers instead: nobody assigned, AI mode, the hello stored as her message (`role: ai`, `model_used: live_bot`),
+  `metadata.live_hello.bot: true`; `live_agent` is `"Skye"`.
+
+## Skye's own hello (25 Nov 2026)
+
+The owner: Skye herself says the hello an agent would, by herself, to make leads (`app/services/live_bot.py`).
+
+- Who: the visitors her card didn't start a chat with because they ignored it (`alex_card: shown`, no answer for
+  30 s; never a "Not now" to the card), no chat, no "not now" to a hello, nobody holding them, not on a thank-you or
+  legal page, no quote form sent or contact clicked, not moving through the quote form (a step seen less than
+  120 s ago, the panel's rule), never the agent-first test's Alex side.
+- What: the hello the panel has ready for an agent (`view.ts` groupOf, groupHello, suggestedHello), as Skye
+  ("Hi, I'm Skye from the travel team. …"), with its group.
+- When: the API's scheduler, every 5 s while `LIVE_BOT` is on (app.flags, off at merge), agents online or not;
+  at most 20 a run; one of her hellos a visitor a day (`live:bot:<vid>`).
+- How: `bot_send.lua` checks again and sends in one step, without a claim before it: the visitor left (-1), in a
+  chat (-2), said "not now" (-3), someone holds them (-4), a hello went already (-5), Skye greeted them today (-6).
+  Sent, it holds the visitor as `skye` (`live:claim:<vid>`) for the hello's 15 minutes: the panel shows "Skye said
+  hello" with no button, and no agent claims them meanwhile. The tap and "Not now" let the hold go as an agent's.
+  The inbox message is an agent's plus `"bot": true` (`live_inbox_message_bot.json`); the widget shows it under
+  Skye's photo and name, and in the chat as her message.
+- `GET /api/live/bot/candidates` (who she may greet now and her words) and `POST /api/live/bot/hello`
+  `{"visitor_id", "text"?, "group"?}` (her hello to one of them, the same rules; `text` held to 300 characters, no
+  contact, link or price, no long dash): public with `Authorization: Bearer <LIVE_BOT_KEY>`, 503 while the key is
+  not set, 401 for a wrong one; the admin envelope with the refusal's `code`. `/health` counts it all under
+  `live_bot`.
 
 ## Where the hello shows (the widget, 23 Nov 2026)
 
@@ -172,12 +198,13 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
 |---|---|---|---|---|
 | `live:visitors` | sorted set | visitor id, score = unix seconds of the last beat | trimmed at each beat | bbc-live |
 | `live:v:<vid>` | hash | the beat's fields, `first_at`, `last_at` | 60 s after the last beat | bbc-live |
-| `live:claim:<vid>` | string | the agent id holding the visitor | 600 s | bbc-live (claim), the API and bbc-live (release) |
+| `live:claim:<vid>` | string | the agent id holding the visitor; `skye` while Skye's own hello is out | 600 s; Skye's 900 s | bbc-live (claim), the API (`bot_send.lua`), the API and bbc-live (release) |
 | `live:claims:<agent>` | set | the visitors the agent holds | 600 s | bbc-live |
 | `live:dismissed:<vid>` | string | `1` | 3600 s | bbc-live |
 | `live:inbox:<vid>` | list | messages for the widget (JSON, `live_inbox_message.json`) | 900 s | the API |
 | `live:hello:<hello id>` | string | the hello for `/chat/init` (JSON) | 900 s | the API |
-| `live:said:<vid>` | string | the agent who said hello | 900 s | the API |
+| `live:said:<vid>` | string | the agent who said hello (`skye` for Skye's own) | 900 s | the API |
+| `live:bot:<vid>` | string | `1`: Skye said her own hello to this visitor | 86400 s | the API (`bot_send.lua`) |
 | `live:passed:<vid>` | string | `1`: this id has a pass; the next needs it | 25 h after the last pass: its 24 h and the hour it still renews | the API (`pass.lua`) |
 | `live:hold:<vid>` | string | unix seconds when Alex's wait began (the agent-first test) | 900 s | the API |
 | `live:greeters` | sorted set | user id, score = unix seconds of the last read of the list by an agent who may hold a visitor (the agent-first test) | a day after the last read, trimmed at each read | bbc-live |
