@@ -166,6 +166,26 @@ def _blind_view(conv: dict) -> dict:
     return out
 
 
+# The replay of the visit sits with where the client came from in the panel's "Where they came from" fold.
+_SOURCE_ONLY_KEYS = ("posthog_session_id",)
+
+
+def _without_sources(row: dict) -> dict:
+    """The row as an agent gets it, after Take as well: without where the client came from (the ad, the
+    campaign, the Google search, the pages, the replay of the visit). The owner, 25 Nov 2026: an agent can't
+    open "Where they came from"; the panel shows it locked, and the data doesn't come either. A supervisor's
+    rows come without it already (mask_visitor_row). `site` stays: it is the brand the agent answers for."""
+    meta = row.get("metadata")
+    if not isinstance(meta, dict):
+        return row
+    from app.security.pii import strip_marketing_metadata
+
+    clean = strip_marketing_metadata(meta)
+    for k in _SOURCE_ONLY_KEYS:
+        clean.pop(k, None)
+    return {**row, "metadata": clean}
+
+
 @router.get("/conversations")
 async def list_conversations(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
@@ -318,6 +338,7 @@ async def list_conversations(
             # none of the client's words, until the chat is theirs.
             blind = user.get("role") in db._OPERATOR_ROLES
             if blind:
+                rows = [_without_sources(c) for c in rows]
                 for c in rows:
                     if not _known_to(c, user.get("id")):
                         c.pop("route", None)
@@ -731,6 +752,10 @@ async def get_conversation(
     if user.get("role") == "supervisor":
         from app.security.pii import mask_visitor_row
         conv = mask_visitor_row(dict(conv))
+
+    # Nor does an agent get where the client came from, on any chat (the owner, 25 Nov 2026).
+    if user.get("role") in db._OPERATOR_ROLES:
+        conv = _without_sources(conv)
 
     # An agent on a chat waiting for a person: who and how long, nothing the
     # client said or where they fly, until they take it.

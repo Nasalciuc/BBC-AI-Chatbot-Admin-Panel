@@ -44,9 +44,10 @@ def mask_email(email: Optional[str]) -> Optional[str]:
 
 # Acquisition-tracking keys with zero QA value. NOTE: 'site' is intentionally
 # NOT included — it identifies the brand, not the marketing source.
+# msclkid is Bing's ad click, as gclid is Google's: the panel reads it as "Microsoft Ads".
 _MARKETING_KEYS = (
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "gclid", "fbclid", "referrer", "page_url", "landing_page", "landing",
+    "gclid", "msclkid", "fbclid", "referrer", "page_url", "landing_page", "landing",
 )
 
 
