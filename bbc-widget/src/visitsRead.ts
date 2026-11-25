@@ -91,6 +91,9 @@ export interface VisitCard {
   answeredAt?: number
   /** The opening's own time (proactive.ts `shownAt`, the events' `opening_at`): only its answers are the card's. */
   openingAt?: number
+  /** When a snapshot that carried the card left, once bbc-live answered it (2xx): the card is then the visit's
+   *  that snapshot joined. Never sent: bbc-live keeps its own times. */
+  confirmedAt?: number
 }
 
 // Every moment the widget shows a card for: `social` is the Meta ads' card (CodeRabbit #282, round 3).
@@ -152,15 +155,23 @@ export function readVisitCard(raw: string | null): VisitCard | null {
   if (typeof c.answer === 'string') card.answer = c.answer
   if (typeof c.answeredAt === 'number' && Number.isFinite(c.answeredAt)) card.answeredAt = c.answeredAt
   if (typeof c.openingAt === 'number' && Number.isFinite(c.openingAt) && c.openingAt > 0) card.openingAt = c.openingAt
+  if (typeof c.confirmedAt === 'number' && Number.isFinite(c.confirmedAt) && c.confirmedAt > 0) {
+    card.confirmedAt = c.confirmedAt
+  }
   return card
 }
 
 /** bbc-live closes a visit after this long with no snapshot. */
 export const REGISTRY_QUIET_MS = 30 * 60_000
+/** The browser measures the quiet half hour by when its snapshots left, bbc-live by when they arrived: a slow
+ *  request moves the two apart. The browser counts a visit as over 2 minutes early, so a card it keeps is never one
+ *  bbc-live already ended; one it drops early only stops being re-sent (CodeRabbit #282, round 3). */
+export const QUIET_MARGIN_MS = 2 * 60_000
+const QUIET_SAFE_MS = REGISTRY_QUIET_MS - QUIET_MARGIN_MS
 
-/** What this browser knows of the registry's visit, from the snapshots bbc-live took (any tab; localStorage):
+/** What this browser knows of the registry's visit, from the snapshots bbc-live answered (any tab; localStorage):
  *  `last`, when the last one left; `before`, when the last one before the current visit left (0 for none): the
- *  visit began after a quiet half hour that ended then. */
+ *  visit began after a quiet half hour that ended then. A beacon is never answered, so it never counts. */
 export interface SentMark { last: number; before: number }
 
 /** A kept mark read back; nothing heard of yet when it isn't one. */
@@ -176,17 +187,29 @@ export function readSentMark(raw: string | null): SentMark {
  *  new visit; one that left before the last one taken (answered late) changes nothing. */
 export function afterSent(mark: SentMark, sentAt: number): SentMark {
   if (sentAt <= mark.last) return mark
-  if (mark.last && sentAt - mark.last >= REGISTRY_QUIET_MS) return { last: sentAt, before: mark.last }
+  if (mark.last && sentAt - mark.last >= QUIET_SAFE_MS) return { last: sentAt, before: mark.last }
   return { last: sentAt, before: mark.before }
 }
 
 /** Whether a card still belongs to the registry's visit (CodeRabbit #282, round 3). Not the browser's count of
- *  visits: the live list's beats keep that going after the snapshots stopped. A card shown before the current visit
- *  began is an earlier visit's, whichever tab began it; otherwise the visit goes on while bbc-live heard of it, or
- *  of the card shown or answered since (a snapshot follows it), less than a quiet half hour ago. */
+ *  visits: the live list's beats keep that going after the snapshots stopped. Only what bbc-live answered counts:
+ *  - a card a snapshot carried and bbc-live answered is that visit's: kept while no answered snapshot began a new
+ *    visit after it, and the visit has not gone quiet since the last answered one;
+ *  - a card no answered snapshot carried yet (a beacon is never answered, and may never arrive) is kept only for
+ *    the quiet half hour after it showed, and never across a visit begun after it. If bbc-live did get it, any
+ *    snapshot of a later visit comes more than half an hour after it. */
 export function cardStillOn(card: VisitCard, mark: SentMark, nowMs: number): boolean {
-  if (card.at <= mark.before) return false
-  return nowMs - Math.max(mark.last, card.at, card.answeredAt ?? 0) < REGISTRY_QUIET_MS
+  if (card.confirmedAt !== undefined) return card.confirmedAt > mark.before && nowMs - mark.last < QUIET_SAFE_MS
+  return card.at > mark.before && nowMs - card.at < QUIET_SAFE_MS
+}
+
+/** The card once bbc-live answered a snapshot that left at `sentAt` carrying `carried`: the same card (shown at the
+ *  same time, the same moment) is confirmed from that snapshot on; any other card, or one already confirmed, stays
+ *  as it is. */
+export function cardConfirmed(card: VisitCard | null, carried: VisitCard | null, sentAt: number): VisitCard | null {
+  if (!card || !carried || card.confirmedAt !== undefined) return card
+  if (card.at !== carried.at || card.trigger !== carried.trigger) return card
+  return { ...card, confirmedAt: sentAt }
 }
 
 /** The card kept for this tab, when the registry's visit it belongs to goes on; null otherwise. */

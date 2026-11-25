@@ -18,8 +18,8 @@ import { getUtm } from './utm'
 import { noteVisit } from './visitCount'
 import { offCapture, onCapture } from './visitTap'
 import {
-  MAX_STEPS, addEvent, afterSent, cardAfter, cardStillOn, cardToKeep, eventToken, keptCardFor, newPageId,
-  readSentMark, snapshotTimer, visitBody, whenRegistryOn, type SentMark, type VisitCard,
+  MAX_STEPS, addEvent, afterSent, cardAfter, cardConfirmed, cardStillOn, cardToKeep, eventToken, keptCardFor,
+  newPageId, readSentMark, snapshotTimer, visitBody, whenRegistryOn, type SentMark, type VisitCard,
 } from './visitsRead'
 
 const CARD_KEY = 'bbc_visit_card'
@@ -39,7 +39,8 @@ function ssSet(k: string, v: string): void { try { sessionStorage.setItem(k, v) 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k) } catch { return null } }
 function lsSet(k: string, v: string): void { try { localStorage.setItem(k, v) } catch { /* this tab's card rules */ } }
 function sentMark(): SentMark { return readSentMark(lsGet(SENT_KEY)) }
-/** A snapshot bbc-live took (a 2xx, or a beacon the browser queued): only one it took keeps its visit going. */
+/** A snapshot bbc-live answered (a 2xx): only one it took keeps its visit going. A beacon is only queued by the
+ *  browser, never answered, and may never arrive: it marks nothing (CodeRabbit #282, round 3). */
 function markSent(sentAt: number): void {
   const mark = sentMark()
   const next = afterSent(mark, sentAt)
@@ -94,6 +95,17 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
 
   const seen = (now: number) => seenMs + (seenFrom === null ? 0 : now - seenFrom)
 
+  // bbc-live answered a snapshot that carried `carried`: the browser's mark moves, and the card it carried is that
+  // visit's from now on (cardStillOn).
+  const answered = (carried: VisitCard | null, sentAt: number) => {
+    markSent(sentAt)
+    if (stopped) return
+    const next = cardConfirmed(card, carried, sentAt)
+    if (next === card) return
+    card = next
+    ssSet(CARD_KEY, next ? cardToKeep(next) : '')
+  }
+
   const body = (pass: string | undefined) => {
     const now = Date.now()
     let path = '/'
@@ -116,17 +128,16 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     if (stopped || !cfg?.visits || !cfg.url || !cfg.pass || sends >= MAX_SENDS + 5) return
     sends++
     goingOn()
+    const carried = card
     const text = JSON.stringify(body(cfg.pass))
     const sentAt = Date.now()
+    // A beacon the browser queued is not one bbc-live took: it marks nothing.
     try {
-      if (navigator.sendBeacon?.(`${cfg.url}/v1/visit`, new Blob([text], { type: 'text/plain;charset=UTF-8' }))) {
-        markSent(sentAt)
-        return
-      }
+      if (navigator.sendBeacon?.(`${cfg.url}/v1/visit`, new Blob([text], { type: 'text/plain;charset=UTF-8' }))) return
     } catch { /* the fetch below */ }
     fetch(`${cfg.url}/v1/visit`, { method: 'POST', body: text, keepalive: true, credentials: 'omit', mode: 'cors',
       headers: { 'Content-Type': 'text/plain;charset=UTF-8' } }).then((res) => {
-      if (res.ok) markSent(sentAt)
+      if (res.ok) answered(carried, sentAt)
     }, () => { /* the visit keeps what it had */ })
   }
 
@@ -135,13 +146,14 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     if (stopped || !cfg?.visits || !cfg.url || !cfg.pass || sends >= MAX_SENDS) return
     sends++
     goingOn()
+    const carried = card
     const sentAt = Date.now()
     fetch(`${cfg.url}/v1/visit`, {
       method: 'POST', body: JSON.stringify(body(cfg.pass)), keepalive: true, credentials: 'omit', mode: 'cors',
       headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
     }).then((res) => {
       // Only a snapshot bbc-live took keeps its visit going here: offline or refused, it ends there all the same.
-      if (res.ok) markSent(sentAt)
+      if (res.ok) answered(carried, sentAt)
       // A pass bbc-live refuses (run out, the secret changed): a new one, asked for, at most every RENEW_MS. Not
       // pageConfig: it keeps the page's first answer, the refused pass with it (CodeRabbit #282, round 3).
       if (res.status === 401 && Date.now() - renewedAt > RENEW_MS) {

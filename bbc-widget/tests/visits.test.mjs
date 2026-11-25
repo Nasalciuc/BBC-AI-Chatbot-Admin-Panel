@@ -8,8 +8,9 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  MAX_EVENTS, MAX_SEQ, VISIT_EVENTS, addEvent, afterSent, cardAfter, cardStillOn, cardToKeep, channelOf, eventToken,
-  keptCardFor, newPageId, readSentMark, readVisitCard, snapshotTimer, visitBody, configRetryMs, whenRegistryOn,
+  MAX_EVENTS, MAX_SEQ, VISIT_EVENTS, addEvent, afterSent, cardAfter, cardConfirmed, cardStillOn, cardToKeep,
+  channelOf, eventToken, keptCardFor, newPageId, readSentMark, readVisitCard, snapshotTimer, visitBody,
+  configRetryMs, whenRegistryOn,
 } from '../src/visitsRead.ts'
 import { configFor, readConfig } from '../src/liveRead.ts'
 
@@ -143,13 +144,17 @@ test('an opening named by its own time: a second note a second later is not the 
 
 test('a tab’s card is kept while the registry’s visit goes on: a new visit’s first card is the card (CodeRabbit #282, round 3)', () => {
   const MIN = 60_000
-  const card = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW)
+  const shown = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW)
+  // The card's snapshot left 1.5 s later and bbc-live answered it: the card is that visit's.
+  const card = cardConfirmed(shown, shown, NOW + 1_500)
+  assert.equal(card.confirmedAt, NOW + 1_500)
   const kept = cardToKeep(card)
-  // The card's snapshot, and the next page's a minute on, taken by bbc-live.
+  assert.deepEqual(readVisitCard(kept), card, 'kept with its confirmation for the visit’s next pages')
+  // The next page's snapshot, a minute on, answered too.
   let mark = afterSent(afterSent(readSentMark(null), NOW + 1_500), NOW + MIN)
   assert.deepEqual(mark, { last: NOW + MIN, before: 0 })
   assert.deepEqual(keptCardFor(kept, mark, NOW + 2 * MIN), card, 'the next page, a minute on: kept')
-  // The live list's beats kept the browser's count of visits going; bbc-live took nothing for 31 minutes.
+  // The live list's beats kept the browser's count of visits going; bbc-live answered nothing for 31 minutes.
   assert.equal(keptCardFor(kept, mark, NOW + 32 * MIN), null, 'a page after 30 quiet minutes: it goes')
   // Another tab's snapshot 24 minutes on kept the same visit going.
   assert.deepEqual(keptCardFor(kept, afterSent(mark, NOW + 25 * MIN), NOW + 35 * MIN), card)
@@ -162,11 +167,10 @@ test('a tab’s card is kept while the registry’s visit goes on: a new visit�
   assert.ok(cardStillOn(late, next, NOW + 33 * MIN))
   // A snapshot answered late, after a newer one was taken, changes nothing.
   assert.equal(afterSent(next, NOW + 31 * MIN), next)
-  // The card's own answer is heard of too: a snapshot follows it.
-  mark = afterSent(readSentMark(null), NOW + 1_500)
-  const answered = cardAfter(card, 'proactive_engaged', { trigger: 'ads', reply: 'yes' }, NOW + 20 * MIN)
-  assert.ok(cardStillOn(answered, mark, NOW + 49 * MIN))
-  assert.ok(!cardStillOn(answered, mark, NOW + 50 * MIN))
+  // The browser counts the half hour 2 minutes early: a slow request never keeps a card bbc-live has ended.
+  assert.ok(cardStillOn(card, mark, NOW + MIN + 27 * MIN))
+  assert.ok(!cardStillOn(card, mark, NOW + MIN + 28 * MIN))
+  assert.deepEqual(afterSent(mark, NOW + MIN + 28 * MIN), { last: NOW + 29 * MIN, before: NOW + MIN })
   for (const raw of [null, '', '{', JSON.stringify({ visit: 3, card: { state: 'loved' } })]) {
     assert.equal(keptCardFor(raw, mark, NOW), null, String(raw))
   }
@@ -174,6 +178,38 @@ test('a tab’s card is kept while the registry’s visit goes on: a new visit�
     assert.deepEqual(readSentMark(raw), { last: 0, before: 0 }, String(raw))
   }
   assert.deepEqual(readSentMark(JSON.stringify(next)), next)
+})
+
+test('a beacon marks nothing: a card only a beacon carried lives the half hour after it showed (CodeRabbit #282, round 3)', () => {
+  const MIN = 60_000
+  // The last snapshot bbc-live answered left 5 minutes before the card.
+  const mark = afterSent(readSentMark(null), NOW - 5 * MIN)
+  // The card showed and the page hid at once: only the page's last snapshot, a beacon, carried it. Queued by the
+  // browser, it marks nothing and confirms nothing, delivered or not.
+  const card = cardAfter(null, 'proactive_shown', { trigger: 'kayak', surface: 'card' }, NOW)
+  assert.equal(card.confirmedAt, undefined)
+  assert.ok(cardStillOn(card, mark, NOW + 10 * MIN), 'the same visit, ten minutes on')
+  // Another tab began the next visit 31 minutes after the beacon: bbc-live's visit ended whether the beacon arrived
+  // or not, and the card goes in both cases.
+  const next = afterSent(mark, NOW + 31 * MIN)
+  assert.deepEqual(next, { last: NOW + 31 * MIN, before: NOW - 5 * MIN })
+  assert.ok(!cardStillOn(card, next, NOW + 32 * MIN))
+  // Without any other tab: the half hour after it showed.
+  assert.ok(!cardStillOn(card, mark, NOW + 28 * MIN))
+  // A confirmation names the card the snapshot carried: another card, or one already confirmed, stays as it is.
+  const other = cardAfter(null, 'proactive_shown', { trigger: 'note', surface: 'panel' }, NOW + 2_000)
+  assert.equal(cardConfirmed(other, card, NOW + 3_000), other)
+  const confirmed = cardConfirmed(card, card, NOW + 1_500)
+  assert.equal(cardConfirmed(confirmed, card, NOW + 61_500), confirmed)
+  assert.equal(cardConfirmed(null, card, NOW), null)
+  assert.equal(cardConfirmed(card, null, NOW), card)
+  // The answer of a confirmed card rides on and stays confirmed from its first snapshot.
+  const answeredCard = cardAfter(confirmed, 'proactive_engaged', { trigger: 'kayak', reply: 'yes' }, NOW + 9_000)
+  assert.equal(answeredCard.confirmedAt, NOW + 1_500)
+  // Never in a snapshot: bbc-live keeps its own times.
+  assert.ok(!('confirmedAt' in (visitBody({ pageId: 'pabc123def456g', path: '/', pageMs: 0, seenMs: 0, trip: null,
+    utm: {}, referrer: '', siteHost: '', phone: false, site: 'bbc', events: [], steps: '', card: confirmed,
+    hasChat: false, nowMs: NOW }).card)))
 })
 
 test('one snapshot waits at a time, and the stop leaves none behind (CodeRabbit #282, round 3)', () => {
@@ -365,11 +401,12 @@ test('the registry’s stop, the fresh pass after a refusal, and the visit kept 
   assert.match(visits, /const goingOn = \(\) => \{\s+noteVisit\(\)\s+if \(!card \|\| cardStillOn\(card, sentMark\(\), Date\.now\(\)\)\) return\s+card = null/)
   assert.equal((visits.match(/sends\+\+\n\s+goingOn\(\)/g) ?? []).length, 2, 'a snapshot by fetch and the page’s last one')
   assert.match(visits, /let card: VisitCard \| null = keptCardFor\(ssGet\(CARD_KEY\), sentMark\(\), Date\.now\(\)\)/)
-  // Only a snapshot bbc-live took marks the visit: a 2xx, or the page's last one queued by sendBeacon; never before
-  // the answer, so one lost offline or refused leaves the mark where it was.
-  assert.equal((visits.match(/markSent\(sentAt\)/g) ?? []).length, 3)
-  assert.equal((visits.match(/if \(res\.ok\) markSent\(sentAt\)/g) ?? []).length, 2)
-  assert.match(visits, /sendBeacon\?\.\([^\n]+\)\) \{\n\s+markSent\(sentAt\)\n\s+return/)
+  // Only a snapshot bbc-live answered (a 2xx) marks the visit and confirms the card it carried, never before the
+  // answer: one lost offline or refused leaves both where they were. A beacon is only queued: it marks nothing.
+  assert.equal((visits.match(/if \(res\.ok\) answered\(carried, sentAt\)/g) ?? []).length, 2)
+  assert.equal((visits.match(/markSent\(sentAt\)/g) ?? []).length, 1, 'inside answered only')
+  assert.match(visits, /sendBeacon\?\.\([^\n]+\)\)\) return\n/)
+  assert.equal((visits.match(/const carried = card\n/g) ?? []).length, 2, 'the card each snapshot carried')
   assert.ok(!/lsSet\(SENT_KEY/.test(visits.replace(/function markSent[\s\S]*?\n\}/, '')), 'the mark is written by markSent alone')
   assert.match(visits, /conversationId: conversationId\(\), nowMs: now, pass, seq: \+\+seq,/)
   // One snapshot waits at a time, through the page's one timer.
