@@ -21,8 +21,11 @@ The widget sends each tap as the client's message with `button` beside it (ChatR
   line for a person, and "about a minute" is promised only while an agent is online (B2, ADR-6e).
 
 before_you_go (B1, ADR-6d) is the one message for a client with no contact who is leaving, asked for by
-the widget (tab hidden, idle, chat closed) and checked here: no contact on the row, no agent's word yet,
-said once per conversation.
+the widget (tab hidden, idle, chat closed) and checked here: no contact on the row, said once per
+conversation. Since 25 Nov (lever 6 of "Mai multe chaturi și leaduri") also after an agent wrote, when the
+client leaves the chat or the page without answering the agent's newest message: on 17-24 Nov 54 clients
+wrote nothing after an agent's first message, and the before-you-go reached none of them. A client who
+answered the agent is the agent's to ask.
 
 The prompt never sees these turns' replies as its own words to change: they are templates, stored as
 such, and the output guard still reads them on the way in (db.add_message).
@@ -48,6 +51,9 @@ MODEL_USED = "template"
 CARD_BUTTONS_HEALTH: dict = {
     "yes": 0, "contact_first": 0, "sms": 0, "whatsapp": 0, "email": 0, "wait": 0, "fell_through": 0, "save_failures": 0,
     "contact_not_saved": 0, "before_you_go": 0, "before_you_go_skipped": 0, "before_you_go_too_long": 0,
+    # Lever 6 (25 Nov): said after an agent's unanswered message; said as the chat closed under a question for
+    # the contact (the field left empty, lever 5's gap); not said because the newest words could not be read.
+    "before_you_go_after_agent": 0, "before_you_go_after_ask": 0, "before_you_go_unread": 0,
     "goodbye_asked": 0, "goodbye_no_contact": 0, "channel_not_noted": 0,
 }
 
@@ -408,11 +414,11 @@ JUST_ASKED_S = 120
 
 
 def _just_asked_contact(recent: list) -> bool:
-    """The newest message is Alex's question for the contact, asked under two minutes ago: the client is
-    still reading it, or typing. 19 Nov (#3359): 30 s after "what's the best email for them to reach you?",
-    with the client still in the chat, the before-you-go asked the same thing again."""
+    """The newest message is Alex's or the agent's question for the contact, asked under two minutes ago: the
+    client is still reading it, or typing. 19 Nov (#3359): 30 s after "what's the best email for them to reach
+    you?", with the client still in the chat, the before-you-go asked the same thing again."""
     last = (recent or [None])[-1]
-    if not isinstance(last, dict) or last.get("role") != "ai":
+    if not isinstance(last, dict) or last.get("role") not in ("ai", "agent"):
         return False
     if not any(_CONTACT_ASK_RE.search(q) for q in _QUESTION_RE.findall(last.get("content") or "")):
         return False
@@ -424,15 +430,75 @@ def _just_asked_contact(recent: list) -> bool:
     return age < JUST_ASKED_S
 
 
-async def before_you_go(cid: str) -> dict:
-    """B1: {"show": False, "why"} or {"show": True, "message", "buttons", "id", "created_at"}."""
+# How the client leaves, as the widget says it (bbc-widget ChatWindow.tsx): the tab went out of view, the chat was
+# closed, the page went quiet with the chat open. A widget from before 25 Nov says nothing (None).
+LEAVING: tuple[str, ...] = ("hidden", "closed", "idle")
+# After an agent wrote, only these: a quiet page is a client waiting for the agent as often as one who left ("one
+# moment, I'm checking the fares").
+LEAVING_AN_AGENT: tuple[str, ...] = ("hidden", "closed")
+# app_settings.flags: false brings back the rule from before 25 Nov (never after an agent) within 30 s, no deploy.
+AFTER_AGENT_FLAG = "BEFORE_YOU_GO_AFTER_AGENT"
+
+
+async def _answered_agent(cid: str) -> Optional[bool]:
+    """Whose word is the newest between the client and the agents: True when the client wrote after the agent's
+    newest message, False when that message is the last word, unanswered. None when it could not be read (counted
+    in before_you_go_unread): a client talking to an agent is never interrupted on a guess."""
     from app.db import supabase as db
+
+    try:
+        client = db.get_client()
+        res = await db._run_sync(
+            lambda: client.table("messages").select("role").eq("conversation_id", cid)
+            .in_("role", ["user", "agent"]).order("created_at", desc=True).limit(1).execute()
+        )
+    except Exception as e:
+        CARD_BUTTONS_HEALTH["before_you_go_unread"] += 1
+        logger.warning(f"[{cid}] before-you-go: the newest words unread ({type(e).__name__}), not said")
+        return None
+    rows = res.data or []
+    if not rows or not isinstance(rows[0], dict):
+        # An agent wrote (counted just before): no row back is a read that failed, not an empty chat.
+        CARD_BUTTONS_HEALTH["before_you_go_unread"] += 1
+        logger.warning(f"[{cid}] before-you-go: no client or agent message read back, not said")
+        return None
+    return rows[0].get("role") == "user"
+
+
+async def _show_the_agent(cid: str, row: dict) -> None:
+    """The agent with the chat open sees the message as it is said. add_message pushes no AI row (a streamed reply
+    comes as stream_end), and the panel reads only the stream while it is open: without this, the agent would see
+    the client's answer to a question they never saw asked. The widget keeps the first copy of an id."""
+    try:
+        from app.realtime.manager import manager
+
+        await manager.push(cid, row)
+    except Exception as e:  # noqa: silent — logged; the message is saved and the panel reads it when it loads again
+        logger.warning(f"[{cid}] before-you-go: not pushed to the panel ({type(e).__name__})")
+
+
+async def before_you_go(cid: str, why: Optional[str] = None) -> dict:
+    """B1: {"show": False, "why"} or {"show": True, "message", "buttons", "id", "created_at"}.
+
+    `why` (LEAVING) is how the client left. After an agent wrote (lever 6, 25 Nov), the message goes out only as the
+    client leaves the chat or the page (LEAVING_AN_AGENT) with the agent's newest message unanswered, in words that
+    say "your agent"; the agent with the chat open sees it (BEFORE_YOU_GO_AFTER_AGENT=false: never after an agent,
+    as before). Under a question for the contact asked less than two
+    minutes ago (Alex's or the agent's) it waits, but not when the client closes the chat: the email field left
+    empty and the chat closed (15 times in the owner's contact test, lever 5) is a client leaving, not one still
+    typing."""
+    from app.db import supabase as db
+    from app.flags import flag
     from app.services import card_words, lead_service, proactive
 
-    def skip(why: str) -> dict:
+    def skip(reason: str) -> dict:
         CARD_BUTTONS_HEALTH["before_you_go_skipped"] += 1
-        return {"show": False, "why": why}
+        return {"show": False, "why": reason}
 
+    why = why if why in LEAVING else None
+    after_agent = False
+    answered: Optional[bool] = None
+    asked = False
     conv = await db.get_conversation_simple(cid)
     if not conv:
         return skip("no_conversation")
@@ -441,10 +507,18 @@ async def before_you_go(cid: str) -> dict:
     if conv.get("status") in ("closed", "completed"):
         return skip("closed")
     if await db.count_messages(cid, role="agent") > 0:
-        return skip("agent_wrote")
+        if why not in LEAVING_AN_AGENT or not flag(AFTER_AGENT_FLAG, True):
+            return skip("agent_wrote")
+        answered = await _answered_agent(cid)
+        if answered is None:
+            return skip("unread")
+        if answered:
+            return skip("answered_agent")
+        after_agent = True
     if await db.count_messages(cid, role="user") == 0:
         return skip("never_wrote")
-    if _just_asked_contact(await db.get_recent_messages(cid, limit=1)):
+    asked = _just_asked_contact(await db.get_recent_messages(cid, limit=1))
+    if asked and why != "closed":
         return skip("just_asked")
     meta = conv.get("metadata") or {}
     meta = meta if isinstance(meta, dict) else {}
@@ -459,11 +533,16 @@ async def before_you_go(cid: str) -> dict:
         trip = None
     if trip is None or not proactive.trip_line(trip, lang):
         trip = _trip(meta)
-    text, buttons = card_words.before_you_go(proactive.trip_line(trip, lang), lang)
+    text, buttons = card_words.before_you_go(proactive.trip_line(trip, lang), lang, agent=after_agent)
     row = await _save(cid, "ai", text, MODEL_USED)
     if row is None:
         return skip("not_saved")
     CARD_BUTTONS_HEALTH["before_you_go"] += 1
+    if asked:
+        CARD_BUTTONS_HEALTH["before_you_go_after_ask"] += 1
+    if after_agent:
+        CARD_BUTTONS_HEALTH["before_you_go_after_agent"] += 1
+        await _show_the_agent(cid, row)
     return {
         "show": True, "message": row.get("content") or text, "buttons": buttons,
         "id": row.get("id"), "created_at": row.get("created_at"),

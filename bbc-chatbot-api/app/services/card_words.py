@@ -179,6 +179,17 @@ _BEFORE_YOU_GO: dict[str, tuple[str, str]] = {
            "SMS ou e-mail ?",
            "Avant de partir : où un agent doit-il vous envoyer les tarifs : SMS ou e-mail ?"),
 }
+# The same ask in a chat an agent has written in and the client left unanswered (lever 6, 25 Nov): the agent is
+# already there, so "your agent", never "an agent".
+_BEFORE_YOU_GO_AGENT: dict[str, tuple[str, str]] = {
+    "en": ("Before you go, your agent can send you the fares for {line}. Where should they write: by text or by email?",
+           "Before you go, where should your agent send you the fares: by text or by email?"),
+    "es": ("Antes de irse: su agente puede enviarle las tarifas para {line}. ¿Dónde le escribe: SMS o correo?",
+           "Antes de irse: ¿dónde le envía su agente las tarifas: SMS o correo?"),
+    "fr": ("Avant de partir : votre agent peut vous envoyer les tarifs pour {line}. Où doit-il vous écrire : "
+           "SMS ou e-mail ?",
+           "Avant de partir : où votre agent doit-il vous envoyer les tarifs : SMS ou e-mail ?"),
+}
 
 
 def _lang(lang: Optional[str]) -> str:
@@ -269,9 +280,9 @@ def wait_answer(lang: Optional[str], agent_online: bool) -> tuple[str, list[dict
     return busy, [button("sms", lang), button("email", lang)]
 
 
-def before_you_go(line: Optional[str], lang: Optional[str] = None) -> tuple[str, list[dict]]:
-    """B1: the one message for a client with no contact who is leaving."""
-    with_line, without = _BEFORE_YOU_GO[_lang(lang)]
+def before_you_go(line: Optional[str], lang: Optional[str] = None, agent: bool = False) -> tuple[str, list[dict]]:
+    """B1: the one message for a client with no contact who is leaving; `agent`: in a chat an agent wrote in."""
+    with_line, without = (_BEFORE_YOU_GO_AGENT if agent else _BEFORE_YOU_GO)[_lang(lang)]
     text = with_line.format(line=line) if line else without
     return text, [button("sms", lang), button("email", lang)]
 

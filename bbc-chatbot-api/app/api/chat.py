@@ -1249,14 +1249,17 @@ async def mark_chat_session_open(
 @router.post("/chat/session/{conversation_id}/before-you-go")
 async def before_you_go(
     conversation_id: str,
+    why: Optional[str] = Query(None, max_length=16),
     _owner: None = Depends(require_visitor_ownership),
 ):
     """B1 (ADR-6d): a client with no contact is leaving (the tab went out of view, the page went
-    quiet, the chat was closed) and no agent has written yet: one message asks where the agent should
-    write, with the buttons. Once per conversation; {"show": false, "why"} otherwise."""
+    quiet, the chat was closed): one message asks where the agent should write, with the buttons.
+    After an agent wrote, only as the client leaves the agent's message unanswered (lever 6).
+    `why`: hidden | closed | idle, as the widget saw the client leave (anything else reads as
+    unsaid). Once per conversation; {"show": false, "why"} otherwise."""
     from app.pipeline.card_buttons import before_you_go as _before_you_go
 
-    return await _before_you_go(conversation_id)
+    return await _before_you_go(conversation_id, why=why)
 
 
 @router.post("/chat/session/{conversation_id}/ping")
