@@ -187,6 +187,8 @@ async def health_detail(full: bool = False) -> dict:
     from app.services.recent_chats import RECENT_HEALTH
     # "On the site now": tokens handed out, hellos sent or refused, taps honoured or not.
     from app.services.live_visitors import LIVE_HEALTH
+    # Skye's own hello there: runs, hellos sent, refused or lost, taps, chats, calls with a wrong key.
+    from app.services.live_bot import BOT_HEALTH
     # The owner's agent-first test: who waited for an agent, who was greeted first, what Redis missed.
     from app.services import agent_first_test
     # The owner's contact test: the card answers on each side (the field at once, or the choice first).
@@ -206,6 +208,7 @@ async def health_detail(full: bool = False) -> dict:
         "crm_lookup": dict(CRM_LOOKUP_HEALTH),
         "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
         "live": dict(LIVE_HEALTH),
+        "live_bot": dict(BOT_HEALTH),
         "agent_first_test": agent_first_test.health(),
         "contact_field_test": contact_field_test.health(),
         "visit_registry": dict(VISIT_HEALTH),

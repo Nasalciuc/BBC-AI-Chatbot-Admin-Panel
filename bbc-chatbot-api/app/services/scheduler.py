@@ -43,6 +43,8 @@ _QUIET_WHEN: dict[str, Callable[[dict], bool]] = {
     "qa_sample": lambda r: r.get("state") in ("off", "not_yet", "done"),
     "visit_registry": lambda r: r.get("state") == "empty",
     "crm_chat_api_check": lambda r: r.get("state") in ("ok", "not_configured"),
+    "live_bot": lambda r: r.get("state") == "off" or (r.get("state") == "ok" and not r.get("sent")
+                                                      and not r.get("failed")),
 }
 _was_quiet: dict[str, Any] = {}
 
@@ -146,6 +148,7 @@ def start(app_state, settings) -> list[asyncio.Task]:
     from app.services.qa_sample import run_qa_sample
     from app.services.learning import run_learning_tick
     from app.services.visit_registry import run_visit_registry
+    from app.services.live_bot import run_live_bot
     from app.services.crm_leads_api import check_key as run_crm_chat_api_check
     from app.api.cron import (
         run_abandoned_crm,
@@ -185,6 +188,9 @@ def start(app_state, settings) -> list[asyncio.Task]:
         ("qa_sample", run_qa_sample, 300),
         # Every 60s: the visits bbc-live ended go into site_visits (app/services/visit_registry.py).
         ("visit_registry", run_visit_registry, 60),
+        # Every 5 s: Skye's own hello to the visitors her card didn't start a chat with (app/services/live_bot.py;
+        # off until LIVE_BOT).
+        ("live_bot", run_live_bot, 5),
         # At each start, then every 6 h: does the CRM take our chat API key? (crm_leads_api.check_key: no lead made)
         ("crm_chat_api_check", run_crm_chat_api_check, 21600),
         # Hourly: does the edge let a client forge its IP? (ip_selftest)

@@ -331,6 +331,10 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
     hello = await take_tap(visitor_id, tap)
     if not hello:
         return {}
+    from app.services import live_bot
+    if hello["agent_id"] == live_bot.BOT_ID:
+        # Skye's own hello (app.services.live_bot): nobody to claim the chat for, it stays hers, in AI mode.
+        return await live_bot.start_with_skye(conv_id, hello)
     agent_id = hello["agent_id"]
     agent: dict = {}
     try:

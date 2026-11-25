@@ -28,6 +28,7 @@ from app.api.auth_routes import router as auth_router
 from app.api.cron import router as cron_router
 from app.api.canary import router as canary_router
 from app.api.security_bans import router as security_bans_router
+from app.api.live_bot import router as live_bot_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 from app.security.ban_guard import BanGuardMiddleware
@@ -85,6 +86,10 @@ app.include_router(chat_router, prefix="/api", tags=["chat"])
 
 # Cron: PUBLIC with CRON_SECRET header (not JWT)
 app.include_router(cron_router, prefix="/api", tags=["cron"])
+
+# Skye's own hello in "On the site now": PUBLIC with the LIVE_BOT_KEY bearer (a service calls it, not a panel
+# user). Before the admin routers: /api/live/bot/* is never an agent's route.
+app.include_router(live_bot_router, prefix="/api", tags=["live-bot"])
 
 # Auth: PUBLIC login, protected invite (auth dependency inside the route)
 app.include_router(auth_router)
