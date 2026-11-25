@@ -112,8 +112,6 @@ async def health_detail(full: bool = False) -> dict:
     # Blind take: checks that failed closed (an agent got a 503, not their
     # chat) and streams stopped because their chat started waiting.
     from app.api.conversations import BLIND_HEALTH
-    # The client's name written in the panel: saved, refused, failed.
-    from app.api.conversations import CLIENT_NAME_HEALTH
     # Sticky's only defence is the deadline — these two say if it is holding.
     from app.services.routing import STICKY_HEALTH
     # Clients who asked for a person: queued, or NOT in the line (write_failed,
@@ -241,7 +239,6 @@ async def health_detail(full: bool = False) -> dict:
             "post_sale": dict(POST_SALE_HEALTH),
             "note_bandit": dict(NOTE_BANDIT_HEALTH),
             "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
-            "client_name": dict(CLIENT_NAME_HEALTH),
             **six_problems,
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
@@ -347,7 +344,6 @@ async def health_detail(full: bool = False) -> dict:
         "post_sale": dict(POST_SALE_HEALTH),
         "note_bandit": dict(NOTE_BANDIT_HEALTH),
         "operator_contacts": dict(OPERATOR_CONTACT_HEALTH),
-        "client_name": dict(CLIENT_NAME_HEALTH),
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),

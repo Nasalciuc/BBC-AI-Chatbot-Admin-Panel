@@ -1,32 +1,24 @@
-"""The client's name (the owner, 25 Nov 2026): in the week before, 155 of 188 chats an agent had carried no name,
-and 72 of them reached the CRM without one. The agent who has the chat writes or corrects it in the panel
-(POST /api/conversations/{id}/name), and the chat reads it from two more shapes of the client's own words.
-Every name, address and number here is invented."""
+"""The client's name, only from the client's own words (the owner, 25 Nov 2026): in the week before, 155 of 188
+chats an agent had carried no name, and 72 of them reached the CRM without one. Nobody types a name in the panel
+(an agent writing one from his own head could be taken for manipulation); the chat reads more of the ways the
+client gives it, and the agent's open chat shows it at once. Every name, address and number here is invented."""
 
-import logging
+import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
-with patch("app.db.supabase.get_client"):
-    from app.main import app
-
-from app.api import conversations as conv_api
 from app.pipeline.contact_capture import (
-    name_beside_contact, name_from_answer, name_from_intro, name_in_reply, typed_name,
+    asks_for_name, name_beside_contact, name_from_answer, name_from_intro, name_in_reply,
 )
-from app.security.auth import get_current_user
 
-AGENT = "aaaaaaaa-0000-4000-8000-0000000000a1"
-OTHER = "aaaaaaaa-0000-4000-8000-0000000000a2"
 ASKED_NAME = "Happy to help. Could I have your name and e-mail?"
 ASKED_DATES = "Which dates work for you?"
 
@@ -109,156 +101,130 @@ def test_an_initial_is_no_article():
     assert name_from_answer("a smith") is None
 
 
-@pytest.mark.parametrize("typed, name", [
-    ("ana  popescu", "Ana Popescu"),
-    ("Hope", "Hope"),
-    ("Mary-Ann O’Neil", "Mary-Ann O'Neil"),
-    ("J. R. Smith", "J. R. Smith"),
-    ("María José García de la Fuente", "María José García de la Fuente"),
-    ("maría josé garcía de la fuente", "María José García de la Fuente"),
-    ("  Ana Popescu! ", "Ana Popescu"),
-    ("Smith Jr.", "Smith Jr."),
+# ── The question an agent or Skye asked (18-25 Nov: the shapes whose answer was a name and none kept) ─────
+
+
+@pytest.mark.parametrize("question", [
+    # Agents, without a question mark.
+    "Also your name please to address you better.",
+    "whats your name",
+    "Could you please advise your name, email and phone number to create a lead",
+    "please your name and contact details",
+    "Can you please help me with your name and email to share some options with you?",
+    "Name",
+    "Hi, I'm Ana, happy to assist you, before we move forward, may I ask:\n1. Your name\n2. Email",
+    "May I know your good name?",
+    "My name is Ana, what about yours?",
+    # Skye.
+    "Last thing, and a name to put on the request?",
+    "Still just need a name for the file, who should they ask for when they reach out?",
+    "Who should they ask for when they reach out, what name is this under?",
 ])
-def test_a_typed_name_is_tidied(typed, name):
-    assert typed_name(typed) == name
+def test_the_name_question_in_the_shapes_it_was_asked(question):
+    assert asks_for_name(question)
 
 
-@pytest.mark.parametrize("typed", [
-    "", "  ", "A", "ana@example.com", "Ana 2", "+40 721 000 000", "www.example.com", "ana.popescu",
-    "https://example.com", "a b c d e f g", "x" * 61,
+@pytest.mark.parametrize("question", [
+    "Thanks, your name is noted. Which dates work for you?",
+    "My name is Ana, and I'll be happy to assist you with your flight search.",
+    "Hi, my name is Ana from BuyBusinessClass.",
+    "I'll pass your name to the consultant.",
+    "Your name is on file, thanks!",
+    "What's the name of the airline you prefer?",
+    "Name of the hotel?",
+    "Please confirm the dates",
 ])
-def test_a_typed_non_name_is_refused(typed):
-    assert typed_name(typed) is None
+def test_a_statement_or_another_question_asks_no_name(question):
+    """Rule 5: the agent's own name, a name already noted, and another thing's name."""
+    assert not asks_for_name(question)
 
 
-# ── The panel's endpoint ────────────────────────────────────────
-
-
-def _as(role: str, user_id: str = AGENT):
-    app.dependency_overrides[get_current_user] = lambda: {
-        "id": user_id, "role": role, "email": f"{role}@example.test", "name": role,
-        "tunnel_scope": "sales" if role in ("sales", "support") else "all",
-    }
-
-
-@pytest.fixture(autouse=True)
-def _clear():
-    before = dict(conv_api.CLIENT_NAME_HEALTH)
-    yield
-    app.dependency_overrides.clear()
-    conv_api.CLIENT_NAME_HEALTH.update(before)
-
-
-def _row(**over) -> dict:
-    row = {"id": "c-1", "status": "active", "mode": "human", "assigned_agent_id": AGENT, "engaged_agent_id": None,
-           "tunnel": "sales", "team_id": None, "queued_at": None}
-    row.update(over)
-    return row
-
-
-async def _post(role: str, name: str, *, row=None, read_error=None, saved=True, user_id=AGENT):
-    read = AsyncMock(return_value=row if row is not None else _row(), side_effect=read_error)
-    write = AsyncMock(return_value=saved)
-    audit = AsyncMock()
-    with patch("app.db.supabase.get_blind_inputs", new=read), \
-         patch("app.services.lead_service.update_lead_from_entities", new=write), \
-         patch("app.db.supabase.log_audit", new=audit):
-        _as(role, user_id)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.post("/api/conversations/c-1/name", json={"name": name})
-    return r, read, write, audit
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("row", [
-    _row(),                                                                  # assigned to them
-    _row(assigned_agent_id=None, mode="ai", engaged_agent_id=AGENT),         # theirs, back with the assistant
-    _row(status="closed"),                                                   # closed, still theirs
+@pytest.mark.parametrize("answer, name", [
+    ("Ok John", "John"),
+    ("Sure, it's Ana", "Ana"),
+    ("Hi, Mike", "Mike"),
+    ("John, thanks", "John"),
+    ("Thank you, Maria Lopez", "Maria Lopez"),
+    ("Of course, Dr. Ana", "Dr. Ana"),
 ])
-async def test_the_agent_on_the_chat_saves_the_name(row, caplog):
-    before = conv_api.CLIENT_NAME_HEALTH["saved"]
-    with caplog.at_level(logging.INFO):
-        r, _, write, audit = await _post("sales", "ana popescu", row=row)
-    assert r.status_code == 200
-    assert r.json()["data"] == {"visitor_name": "Ana Popescu"}
-    # Through the lead's writer: the chat's visitor_name, under its lock, and the score counts it.
-    write.assert_awaited_once_with("c-1", {"name": "Ana Popescu"})
-    audit.assert_awaited_once()
-    assert audit.await_args.kwargs["details"] == {"fields": ["visitor_name"], "role": "sales"}
-    assert conv_api.CLIENT_NAME_HEALTH["saved"] == before + 1
-    # Backend rule 7: never a name in the logs.
-    assert "Popescu" not in caplog.text
+def test_the_courtesy_around_a_name_is_taken_off(answer, name):
+    assert name_from_answer(answer) == name
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("role", ["owner", "admin", "dev"])
-async def test_a_manager_saves_it_on_any_chat(role):
-    r, _, write, _ = await _post(role, "Ana Popescu", row=_row(assigned_agent_id=OTHER), user_id="m-1")
-    assert r.status_code == 200
-    write.assert_awaited_once_with("c-1", {"name": "Ana Popescu"})
+@pytest.mark.parametrize("answer", ["ok great", "sure, john", "Thanks!", "yes please", "hello", "Yes"])
+def test_after_the_courtesy_only_a_capitalised_name_counts(answer):
+    """"ok great" would otherwise name the client "Great"."""
+    assert name_from_answer(answer) is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("role, row", [
-    ("sales", _row(assigned_agent_id=OTHER)),                                # a colleague's chat
-    ("support", _row(assigned_agent_id=None, mode="waiting_for_agent", status="needs_agent")),  # waiting, blind
-    ("supervisor", _row()),
-    ("qa", _row()),
-    ("project_manager", _row()),
-])
-async def test_anyone_else_is_refused_and_nothing_is_written(role, row):
-    before = conv_api.CLIENT_NAME_HEALTH["not_allowed"]
-    r, _, write, audit = await _post(role, "Ana Popescu", row=row,
-                                     user_id=AGENT if role in ("sales", "support") else "x-1")
-    assert r.status_code == 403
-    assert r.json()["detail"] == conv_api._NAME_NOT_YOURS_DETAIL
-    write.assert_not_awaited()
-    audit.assert_not_awaited()
-    assert conv_api.CLIENT_NAME_HEALTH["not_allowed"] == before + 1
+def test_nobody_writes_a_name_in_the_panel():
+    """The owner, 25 Nov 2026: no route takes a name typed by an agent; the old PATCH stays management's only."""
+    from app.main import app
+
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert "/api/conversations/{conversation_id}/name" not in paths
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["ana@example.com", "+40 721 000 000", "A", "www.example.com", "  "])
-async def test_what_is_not_a_name_is_refused_before_anything_is_read(name):
-    before = conv_api.CLIENT_NAME_HEALTH["not_a_name"]
-    r, read, write, _ = await _post("sales", name)
-    assert r.status_code == 422
-    assert r.json()["detail"] == conv_api._NOT_A_NAME_DETAIL
-    read.assert_not_awaited()
-    write.assert_not_awaited()
-    assert conv_api.CLIENT_NAME_HEALTH["not_a_name"] == before + 1
+# ── The agent's open chat shows it at once ────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_a_chat_that_doesnt_exist_is_a_404():
-    read = AsyncMock(return_value=None)
-    write = AsyncMock()
-    with patch("app.db.supabase.get_blind_inputs", new=read), \
-         patch("app.services.lead_service.update_lead_from_entities", new=write):
-        _as("owner", "o-1")
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.post("/api/conversations/c-1/name", json={"name": "Ana Popescu"})
-    assert r.status_code == 404
-    write.assert_not_awaited()
+class _Recorder:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return self
+        return call
+
+    def execute(self):
+        res = MagicMock()
+        res.data = self.rows
+        return res
 
 
-@pytest.mark.asyncio
-async def test_a_chat_that_cant_be_read_or_a_write_that_fails_is_a_503_and_counted():
-    """Rule 7: "couldn't look" is never "no chat"; rule 2: a failure on the lead's path is counted."""
-    before = conv_api.CLIENT_NAME_HEALTH["failed"]
-    r, _, write, _ = await _post("sales", "Ana Popescu", read_error=RuntimeError("down"))
-    assert r.status_code == 503
-    write.assert_not_awaited()
-    r, _, write, audit = await _post("sales", "Ana Popescu", saved=False)
-    assert r.status_code == 503
-    write.assert_awaited_once()
-    audit.assert_not_awaited()
-    assert conv_api.CLIENT_NAME_HEALTH["failed"] == before + 2
+def _write(entities, *, lead_rows=None):
+    lead = _Recorder(lead_rows if lead_rows is not None else [{"id": "L-1", "score": 0}])
+    conv = _Recorder([{"visitor_name": None, "visitor_email": None, "visitor_phone": None}])
+    client = MagicMock()
+    client.table.side_effect = lambda name: conv if name == "conversations" else lead
+    pushed = AsyncMock()
+    from app.services import lead_service
+
+    with patch("app.db.supabase.get_client", return_value=client), \
+            patch("app.realtime.manager.manager.push", new=pushed):
+        ok = asyncio.run(lead_service.update_lead_from_entities("c-1", entities))
+    return ok, pushed
 
 
-def test_health_shows_the_client_name_counts():
-    import inspect
+def test_a_name_saved_on_the_chat_tells_the_agents_open_chat_at_once():
+    ok, pushed = _write({"name": "Ana Popescu"})
+    assert ok is True
+    pushed.assert_awaited_once_with("op:c-1", {"event": "contact", "fields": ["visitor_name"]})
+    # The event names the field, never the value.
+    assert "Popescu" not in repr(pushed.await_args)
 
-    from app.api import health
 
-    assert inspect.getsource(health.health_detail).count('"client_name": dict(CLIENT_NAME_HEALTH)') == 2
+def test_an_email_and_a_phone_too_and_a_trip_alone_tells_nothing():
+    ok, pushed = _write({"email": "ana@example.com", "phone": "+40 721 000 001"})
+    assert ok is True
+    assert pushed.await_args.args[1] == {"event": "contact", "fields": ["visitor_email", "visitor_phone"]}
+    # Rule 5: a route changes no contact on the chat.
+    ok, pushed = _write({"origin": "JFK", "destination": "LHR"})
+    assert ok is True
+    pushed.assert_not_awaited()
+
+
+def test_a_push_that_fails_never_fails_the_save(caplog):
+    lead = _Recorder([{"id": "L-1", "score": 0}])
+    conv = _Recorder([{"visitor_name": None, "visitor_email": None, "visitor_phone": None}])
+    client = MagicMock()
+    client.table.side_effect = lambda name: conv if name == "conversations" else lead
+    from app.services import lead_service
+
+    with patch("app.db.supabase.get_client", return_value=client), \
+            patch("app.realtime.manager.manager.push", new=AsyncMock(side_effect=RuntimeError("down"))):
+        assert asyncio.run(lead_service.update_lead_from_entities("c-1", {"name": "Ana Popescu"})) is True
+    assert "the panel not told (RuntimeError)" in caplog.text

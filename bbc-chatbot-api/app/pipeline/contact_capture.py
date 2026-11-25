@@ -73,8 +73,12 @@ def last_question(history: Optional[list]) -> str:
 # address you by?" (18-19 Nov: four chats asked it so, and the answer was not
 # kept: #3361 was asked again). Not "the name of the airline you prefer?".
 _NAME_QUESTION_RE = re.compile(
-    r"\b(?:(?:your|full|first|last|best)\s+name"
+    # "your good name" is how agents in India ask it.
+    r"\b(?:(?:your(?:\s+(?:good|full|first|last))?|full|first|last|best)\s+name"
     r"|what\s+name|name\s+should|who\s+to\s+address|address\s+you\s+(?:by|as)\b"
+    # Skye, 18-21 Nov: "a name to put on the request?", "a name for the file, who should they ask for when they
+    # reach out?" — both answered with a name, neither kept.
+    r"|\b(?:a|the)\s+name\s+(?:to\s+put|for\s+the|under)\b|who\s+should\s+(?:they|we|i)\s+ask\s+for\b"
     # "How should I address you?" — not "the address you want the tickets sent to?" (CodeRabbit #271)
     r"|how\s+(?:should|shall|may|can|do|would)\s+(?:i|we|they|your\s+consultant)\s+address\s+you\b"
     r"|name\s+(?:for|on)\s+the\s+(?:booking|reservation|ticket)"
@@ -104,8 +108,27 @@ def _asked(question: str, pattern: re.Pattern) -> bool:
     return any(pattern.search(s) for s in _QUESTION_SENTENCE_RE.findall(question or ""))
 
 
+# An agent asks without a question mark (18-25 Nov, 7 chats whose answer was a name and none kept): "Also your
+# name please to address you better.", "whats your name", "Could you please advise your name, email and phone
+# number", "please your name and contact details", a list with a "Name" line. A request, never a statement: "Thanks,
+# your name is noted." asks nothing.
+_NAME_REQUEST_RE = re.compile(
+    r"\b(?:please|pls|kindly|advise|share|provide|give|send|tell|type|write|need|whats|what's|what\s+is"
+    r"|help\s+me\s+with|may\s+i\s+(?:have|know|ask|get)|can\s+i\s+(?:have|get|know)|could\s+(?:you|i))\b"
+    r"[^.!?\n]{0,40}?\byour\s+(?:good\s+|full\s+|first\s+)?name\b(?!\s+(?:is|was|has|on\s+file))"
+    r"|\byour\s+(?:good\s+|full\s+)?name\s*(?:,\s*)?(?:please|pls|plz)\b"
+    r"|^[\s\-*•\d.)]*(?:your\s+)?(?:full\s+)?name\s*:?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+# The agent says their own name and asks for the client's: "My name is Ana, what about yours?".
+_OWN_NAME_RE = re.compile(r"\bmy\s+name\s+is\b", re.IGNORECASE)
+_AND_YOURS_RE = re.compile(r"\b(?:and|what\s+about|how\s+about)\s+yours\b", re.IGNORECASE)
+
+
 def asks_for_name(question: str) -> bool:
-    return _asked(question, _NAME_QUESTION_RE)
+    q = question or ""
+    return (_asked(q, _NAME_QUESTION_RE) or bool(_NAME_REQUEST_RE.search(q))
+            or bool(_OWN_NAME_RE.search(q) and _AND_YOURS_RE.search(q)))
 
 
 def asks_for_last_name(question: str) -> bool:
@@ -136,6 +159,11 @@ português portuguese por favor porfavor gracias merci plaît plait svp obrigado
 sí non não nao habla hablo parle parlez falo fala mensaje mensajes texto mensagem llamada correo courriel
 """.split())
 _NAME_INTRO_RE = re.compile(r"^(?:it'?s|its|this\s+is|i'?m|im|i\s+am|my\s+name\s+is|name\s+is|name:)\s+", re.I)
+# "Ok John", "Sure, it's Ana", "Hi, Mike", "John, thanks": the courtesy around the name, taken off. What is left must
+# be capitalised as typed, or "ok great" would name the client "Great".
+_COURTESY_BEFORE_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|sure|yes|yeah|yep|hi|hello|hey|thanks|thank\s+you|of\s+course|certainly)\b[\s,!.:-]*)+", re.I)
+_COURTESY_AFTER_RE = re.compile(r"[\s,!.-]+(?:thanks|thank\s+you|thx|please|pls)\W*$", re.I)
 _NAME_WORD_RE = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’.-])*$")
 # "A." in "John A. Smith": an initial, never the word "a".
 _INITIAL_RE = re.compile(r"^[^\W\d_]\.$")
@@ -160,10 +188,14 @@ def name_from_answer(message: str) -> Optional[str]:
     ("Paul Moreau", "maribel", "Mary-Ann O'Neil"), None for anything else
     (a channel, a price question, an email, a number, a sentence)."""
     text = _straight(message).strip().strip(".!,;")
-    text = _NAME_INTRO_RE.sub("", text).strip().strip(".!,;")
+    bare = _COURTESY_AFTER_RE.sub("", _COURTESY_BEFORE_RE.sub("", text)).strip().strip(".!,;")
+    courteous = bare != text
+    text = _NAME_INTRO_RE.sub("", bare).strip().strip(".!,;")
     if not text or len(text) > 60 or "@" in text or any(ch.isdigit() for ch in text):
         return None
     words = text.split()
+    if courteous and any(not w[:1].isupper() for w in words):
+        return None
     if not 1 <= len(words) <= 4:
         return None
     if len(words) == 1 and words[0].lower() in _A_BARE_YES:
@@ -283,32 +315,6 @@ def could_name(message: str) -> bool:
     """Whether this message could hold a name at all, before anything is read to find out (the question asked,
     the stored name): most messages to an operator are not even looked at twice."""
     return bool(name_from_answer(message) or name_beside_contact(message) or name_from_intro(message))
-
-
-# ── The name an agent writes in the panel ───────────────────────────────────────
-# Letters, the marks names carry, and spaces: never an e-mail, a phone, a number or a link.
-_TYPED_LINK_RE = re.compile(r"://|\bwww\.|[^\W\d_]\.[^\W\d_]{2,}", re.IGNORECASE)
-
-
-def typed_name(raw: str) -> Optional[str]:
-    """The client's name as an agent typed it in the panel, tidied ("ana  popescu" → "Ana Popescu"), or None
-    when it is not one: under 2 or over 60 characters, over 6 words, or holding an e-mail, a digit or a link.
-    The agent knows the client: no word is refused for meaning something else ("Hope" is a name), and a name
-    typed with capitals stays as typed ("María José García de la Fuente")."""
-    text = " ".join(_straight(raw or "").split()).strip(" ,;:!?")
-    if not 2 <= len(text) <= 60 or "@" in text or any(ch.isdigit() for ch in text):
-        return None
-    if _TYPED_LINK_RE.search(text):
-        return None
-    words = text.split()
-    if len(words) > 6 or any(not _NAME_WORD_RE.match(w) for w in words):
-        return None
-    if sum(ch.isalpha() for ch in text) < 2:
-        return None
-    if not text.islower():
-        return text
-    # All in small letters: capitals for the words, the particles inside the name kept small.
-    return " ".join(w if i and w in _NAME_PARTICLES else w[:1].upper() + w[1:] for i, w in enumerate(words))
 
 
 def full_name(known: Optional[str], answer: str, last_name_asked: bool) -> str:

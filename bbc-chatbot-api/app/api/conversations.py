@@ -814,64 +814,6 @@ async def update_conversation(
         return {"success": False, "data": None, "count": 0, "error": "Update failed"}
 
 
-class ClientNameBody(BaseModel):
-    name: str = Field(..., max_length=120)
-
-
-# The client's name written in the panel (the owner, 25 Nov 2026): in the week before, 155 of 188 chats an agent
-# had carried no name, and 72 of them reached the CRM without one. Saved, refused (not a name, or not this
-# person's chat) and failed (the chat or the write couldn't be reached), in /health → client_name.
-CLIENT_NAME_HEALTH: dict = {"saved": 0, "not_a_name": 0, "not_allowed": 0, "failed": 0}
-
-_NOT_A_NAME_DETAIL = "A name is letters only, 2 to 60 of them: no e-mail, phone, number or link."
-_NAME_NOT_YOURS_DETAIL = "Only the agent on the chat, or an owner, admin or dev, can change the client's name."
-
-
-@router.post("/conversations/{conversation_id}/name")
-async def set_client_name(
-    conversation_id: str,
-    body: ClientNameBody,
-    user: dict = Depends(get_current_user),
-):
-    """The client's name, written or corrected by the agent who has the chat (assigned to them, or theirs and
-    back with the assistant), or by an owner, admin or dev. It lands on the chat (visitor_name), where the lead,
-    the panel and the CRM read it, and the lead's score counts it (lead_service, under the chat's lead lock).
-    A lead already in the CRM keeps the name it was made with: the CRM's API makes one lead per chat and changes
-    nothing on a second call."""
-    from app.pipeline.contact_capture import typed_name
-    from app.security.gates import MANAGEMENT
-    from app.services import lead_service
-
-    name = typed_name(body.name)
-    if not name:
-        CLIENT_NAME_HEALTH["not_a_name"] += 1
-        raise HTTPException(status_code=422, detail=_NOT_A_NAME_DETAIL)
-    try:
-        row = await db.get_blind_inputs(conversation_id)
-    except Exception as e:
-        CLIENT_NAME_HEALTH["failed"] += 1
-        raise HTTPException(status_code=503, detail="Couldn't reach the chat. Try again.") from e
-    if not row:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    _enforce_tunnel(user, row.get("tunnel"))
-    role = user.get("role")
-    if role not in MANAGEMENT and not (role in db._OPERATOR_ROLES and _known_to(row, user.get("id"))):
-        CLIENT_NAME_HEALTH["not_allowed"] += 1
-        raise HTTPException(status_code=403, detail=_NAME_NOT_YOURS_DETAIL)
-    if not await lead_service.update_lead_from_entities(conversation_id, {"name": name}):
-        # Counted by the lead write too (lead_writes).
-        CLIENT_NAME_HEALTH["failed"] += 1
-        raise HTTPException(status_code=503, detail="The name wasn't saved. Try again.")
-    CLIENT_NAME_HEALTH["saved"] += 1
-    await db.log_audit(
-        user_id=user.get("id"), user_email=user.get("email"),
-        action="client_name", target_table="conversations",
-        target_id=conversation_id, details={"fields": ["visitor_name"], "role": role},
-    )
-    logger.info(f"[client-name] {conversation_id}: written in the panel by {role}")
-    return {"success": True, "data": {"visitor_name": name}, "count": 1}
-
-
 class AgentMessageBody(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
 

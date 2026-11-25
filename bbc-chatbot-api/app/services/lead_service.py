@@ -287,6 +287,22 @@ async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
     return {k: row.get(k) for k in _CONTACT_FIELDS}
 
 
+async def _tell_the_panel(conversation_id: str, conv_payload: dict) -> None:
+    """The client's name, e-mail or phone just landed on the chat: the agent's open chat reads it again now.
+    The panel read the chat once and refreshed it only when the agent did something, so a name the client
+    gave showed as "No name yet" until the agent's next message (the owner, 25 Nov 2026). The event names
+    the fields, never their values; nobody listening is no work (manager.push)."""
+    fields = sorted(k for k in conv_payload if k in _CONTACT_FIELDS)
+    if not fields:
+        return
+    try:
+        from app.realtime.manager import manager
+
+        await manager.push(f"op:{conversation_id}", {"event": "contact", "fields": fields})
+    except Exception as e:  # noqa: silent — the contact is saved; the panel reads it at its next refresh
+        logger.warning(f"[{conversation_id}] contact saved, the panel not told ({type(e).__name__})")
+
+
 def _is_local_number(raw: str) -> bool:
     """A number typed the local way: its trunk 0, no + or 00, 8+ digits."""
     digits = re.sub(r"\D", "", raw or "")
@@ -501,6 +517,8 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
             for outcome in await asyncio.gather(*tasks, return_exceptions=True):
                 if isinstance(outcome, BaseException):
                     raise outcome
+        if conv_payload:
+            await _tell_the_panel(conversation_id, conv_payload)
 
         # Score from merged local state (no re-select lead + conv): this
         # call's contacts first, then the ones the conversation already holds.
