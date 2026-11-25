@@ -351,8 +351,8 @@ class TestMergeDefaults:
             out = proactive.offer(visitor, "kayak", _kayak_trip())
             assert out["show"] is True and out["arm"] == "proactive"
         # Exit is off unless named (owner, 17 Nov: 35 panels, no answer, opened as the tab closed); the ads
-        # card is on with the rest (owner, 18 Nov).
-        assert proactive.active_triggers() == {"kayak", "ads", "quote", "reader"}
+        # card is on with the rest (owner, 18 Nov), and the Meta ad's card (owner, 25 Nov).
+        assert proactive.active_triggers() == {"kayak", "ads", "social", "quote", "reader"}
         # That moment alone is off ("trigger_off"): the widget keeps the visit's moment for the others.
         assert proactive.offer(_VISITOR, "exit", None) == {
             "show": False, "arm": "trigger_off", "trigger": "exit", "message": None, "quick_replies": [],

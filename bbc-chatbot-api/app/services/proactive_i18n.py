@@ -49,6 +49,8 @@ SENTENCES: dict[str, dict[str, str]] = {
                    "Tap one or type a city, and an agent will check business class fares for you."),
         "open": ("{hello} Planning a business class trip? "
                  "Tell me where and roughly when, and an agent will check fares for you."),
+        # The Meta ad's card on a page that names no place (25 Nov): one yes, as the ads card asks it.
+        "social_open": "{hello} Planning a business class trip? Want an agent to send you today's best fares?",
         # D1 (ADR-4a): the row beside a refused quote form. A shortcut, never "you made a mistake".
         # The phone card's own words (ADR A3, 20 Nov): under the trip as its title, only the question of the
         # sentence above it — the chat still opens with the whole sentence. Each one ends that sentence.
@@ -83,6 +85,7 @@ SENTENCES: dict[str, dict[str, str]] = {
                    "y un agente consultará tarifas en clase Business para usted."),
         "open": ("{hello} ¿Planea un viaje en clase Business? Dígame adónde y más o menos cuándo, "
                  "y un agente consultará las tarifas para usted."),
+        "social_open": "{hello} ¿Planea un viaje en clase Business? ¿Quiere que un agente le envíe las mejores tarifas de hoy?",
         "ask_full": "¿Quiere que un agente consulte tarifas privadas para exactamente este viaje?",
         "ask_full_beat": "¿Ya vio un precio? Un agente revisa si puede mejorarlo, con tarifas reales por SMS o correo.",
         "ask_dest_date": "¿Quiere que un agente consulte tarifas {cabin_fares} para esas fechas?",
@@ -116,6 +119,8 @@ SENTENCES: dict[str, dict[str, str]] = {
                    "et un agent vérifiera les tarifs en classe Affaires pour vous."),
         "open": ("{hello} Vous préparez un voyage en classe Affaires ? Dites-moi où et à peu près quand, "
                  "et un agent vérifiera les tarifs pour vous."),
+        "social_open": ("{hello} Vous préparez un voyage en classe Affaires ? "
+                        "Voulez-vous qu'un agent vous envoie les meilleurs tarifs du jour ?"),
         "ask_full": "Voulez-vous qu'un agent vérifie des tarifs privés pour exactement ce voyage ?",
         "ask_full_beat": ("Vous avez déjà vu un prix ? Un agent vérifie s'il peut faire mieux, "
                           "avec de vrais tarifs par SMS ou e-mail."),
@@ -136,6 +141,7 @@ REPLIES: dict[str, dict[str, list[str]]] = {
         "quote_contact": ["Envíenme las tarifas por correo", "Tengo una pregunta", "Ahora no"],
         "reader": ["Quiero una cotización", "Tengo una pregunta", "Ahora no"],
         "ads": ["Sí, envíenme tarifas", "Tengo una pregunta", "Ahora no"],
+        "social": ["Sí, envíenme tarifas", "Tengo una pregunta", "Ahora no"],
         "exit": ["Sí, envíenme tarifas", "Tengo una pregunta", "Ahora no"],
         "note": ["Quiero una cotización", "Tengo una pregunta"],
         "places": ["Europa", "Asia", "Otro lugar", "Tengo una pregunta"],
@@ -146,6 +152,7 @@ REPLIES: dict[str, dict[str, list[str]]] = {
         "quote_contact": ["Envoyez-moi les tarifs par e-mail", "J'ai une question", "Pas maintenant"],
         "reader": ["Obtenir un devis", "J'ai une question", "Pas maintenant"],
         "ads": ["Oui, envoyez-moi les tarifs", "J'ai une question", "Pas maintenant"],
+        "social": ["Oui, envoyez-moi les tarifs", "J'ai une question", "Pas maintenant"],
         "exit": ["Oui, envoyez-moi les tarifs", "J'ai une question", "Pas maintenant"],
         "note": ["Obtenir un devis", "J'ai une question"],
         "places": ["Europe", "Asie", "Ailleurs", "J'ai une question"],

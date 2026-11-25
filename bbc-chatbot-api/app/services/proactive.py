@@ -24,11 +24,14 @@ Switches (``app_settings.flags``, read every 30 s, no deploy):
   over an A/B half) — the share of visitors in the proactive arm, bucketed by
   visitor id, so a visitor stays in one arm across visits; a lower value
   brings the control arm back for a comparison;
-- ``PROACTIVE_TRIGGERS`` ("kayak,ads,quote,reader") — which moments may open it. ``exit`` is off by
+- ``PROACTIVE_TRIGGERS`` ("kayak,ads,social,quote,reader") — which moments may open it. ``exit`` is off by
   default (owner, 17 Nov: of the 35 panels it opened on 16-17 Nov none got an answer and 21 visitors
   were gone within 10 s — it opened as the tab closed); naming it here brings it back for a widget
   that still asks (the widget no longer picks it). ``ads`` (owner, 18 Nov) is on with the default:
-  ``kayak,quote,reader`` here turns it off in 30 s.
+  ``kayak,quote,reader`` here turns it off in 30 s. ``social`` (owner, 25 Nov): a paid visit from a
+  Meta ad (Facebook, Instagram), at the reading moment (bbc-widget triggers.ts); on 17-24 Nov 1,297
+  such visits to the /lp/ pages had a moment in 12 of them. Left out of the list, it is off in 30 s
+  and those visitors keep the reader.
 
 One more door is not a moment and the switches above do not hold it:
 ``note``, the visitor TAPPED the 10 s note beside the button ("Tell me where
@@ -54,19 +57,20 @@ from app.services import note_bandit, proactive_i18n
 
 logger = logging.getLogger(__name__)
 
-Trigger = Literal["kayak", "ads", "quote", "reader", "exit"]
+Trigger = Literal["kayak", "ads", "social", "quote", "reader", "exit"]
 # Every moment a widget may name; the ones that open the card unless PROACTIVE_TRIGGERS says otherwise.
 # "ads": the visit came from a Google or Bing ad and the page names a destination (bbc-widget triggers.ts):
 # on 17-18 Nov about 350 such visitors a day stayed at least 8 s and got no moment at all.
-TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader", "exit")
-DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "quote", "reader")
+# "social": the visit came from a paid Meta ad (Facebook, Instagram), at the reading moment (25 Nov).
+TRIGGERS: tuple[str, ...] = ("kayak", "ads", "social", "quote", "reader", "exit")
+DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "social", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
 # The cards whose yes comes with no whole trip known ("Yes, send me fares" on the ads card since 23 Nov, "Get a fare
 # quote" on the others): on the field side of the owner's contact test (contact_field_test, 22 Nov) that tap is
 # answered at once, contact first, instead of the model asking the trip.
 # The note only where its bandit asks nothing (a destination named): its own first question stays the bandit's.
-CONTACT_FIRST_TRIGGERS: tuple[str, ...] = ("ads", "reader", NOTE)
+CONTACT_FIRST_TRIGGERS: tuple[str, ...] = ("ads", "social", "reader", NOTE)
 # The answer for a moment switched off on its own (PROACTIVE_TRIGGERS) while the feature is on: the widget keeps
 # the visit's one moment for the others and does not ask with this one again (bbc-widget triggers.ts,
 # TRIGGER_OFF_ARM). "off" stays the answer for the feature switched off: that one ends the visit's moments.
@@ -93,6 +97,8 @@ _REPLIES: dict[str, list[str]] = {
     # asked for work: in the two days from 20 Nov 18:00 UTC, 8 of 875 ads cards brought a contact, against 38 of
     # 1,425 Kayak cards.
     "ads": ["Yes, send me fares", "I have a question", "Not now"],
+    # The Meta ad's card (25 Nov) asks the same one yes as the ads card, with or without a place.
+    "social": ["Yes, send me fares", "I have a question", "Not now"],
     # "Before you go: want an agent to check fares…?" — a yes answers it.
     "exit": ["Yes, send me fares", "I have a question", "Not now"],
     # The visitor asked for the chat: no "Not now" to offer them.
@@ -525,8 +531,12 @@ def compose(
         # never "Where are you flying from?" in the opening (ADR 11).
         text = say("dest_date", hello=hello, line=line, cabin_fares=fares)
     elif dest:
-        # The ads card asks one yes, as the Kayak card does; the reader and the note still ask when.
-        text = say("ads_dest" if trigger == "ads" else "dest", hello=hello, dest=dest, cabin_fares=fares)
+        # The ads card asks one yes, as the Kayak card does; the reader and the note still ask when. The Meta ad's
+        # card says the place its page names ("Business class to Asia") the same way.
+        text = say("ads_dest" if trigger in ("ads", "social") else "dest", hello=hello, dest=dest, cabin_fares=fares)
+    elif trigger == "social":
+        # A Meta ad's page that names no place: the same one yes, for the fares of a trip the chat asks after.
+        text = say("social_open", hello=hello)
     elif applied_variant(trigger, trip, variant) == "places":
         # Where to as buttons (note_bandit): a tap instead of typing; anything else is typed.
         text = say("places", hello=hello)
@@ -543,7 +553,7 @@ def card_face(
     the opening} for the Kayak and ads cards that name a destination; None otherwise (the card shows the
     whole message, as before). A visitor who stays 3 s reads one line: the trip, not a sentence with the trip
     inside it. The chat still opens with compose's whole sentence, whose question this is."""
-    if trigger not in ("kayak", "ads"):
+    if trigger not in ("kayak", "ads", "social"):
         return None
     lang = proactive_i18n.card_lang(lang)
     if trigger == "ads":
@@ -557,7 +567,7 @@ def card_face(
         ask = say("ask_full_beat" if applied_variant(trigger, trip, variant) == BEAT else "ask_full")
     elif trip.depart_date:
         ask = say("ask_dest_date", cabin_fares=fares)
-    elif trigger == "ads":
+    elif trigger in ("ads", "social"):
         ask = say("ask_ads_dest", cabin_fares=fares, dest=_place(trip.destination_name, trip.destination_code))
     else:
         ask = say("ask_dest", cabin_fares=fares)
@@ -753,10 +763,13 @@ def _with_after_words(
             "buttons": card_words.contact_first_buttons(lang, team_online),
             "field": field,
         }
-    if trigger == "ads" and not full_trip(trip) and _names_a_destination(with_keyword(trip)):
+    if (trigger == "ads" and not full_trip(trip) and _names_a_destination(with_keyword(trip))) or (
+        trigger == "social" and not full_trip(trip)
+    ):
         # ADR A7 (20 Nov): the ads card names a place but no dates, so no instant answer to its yes (but on the
         # contact test's field side, above); its own channel button still lets the visitor leave one contact in
-        # one tap (and stays as the pill).
+        # one tap (and stays as the pill). The Meta ad's card has it too, with or without a place (25 Nov): on the
+        # Kayak card, 28 of the 31 visitors who tapped it left their contact.
         out["channel"] = card_words.card_channel(card_words.device_channel(device), lang)
         return out
     if not whole:

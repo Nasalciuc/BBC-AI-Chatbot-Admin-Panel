@@ -88,12 +88,12 @@ class ChatInitRequest(BaseModel):
         return None
 
 
-_PROACTIVE_TRIGGERS = ("kayak", "ads", "quote", "reader", "exit", "note")
+_PROACTIVE_TRIGGERS = ("kayak", "ads", "social", "quote", "reader", "exit", "note")
 
 
 class ProactiveInit(BaseModel):
     # "note": the visitor tapped the note beside the button (app/services/proactive).
-    trigger: Literal["kayak", "ads", "quote", "reader", "exit", "note"]
+    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note"]
     # The words /offer used: how the note asked its first question (app/services/
     # note_bandit), the quote card that offered the chat instead of the form
     # (proactive.CONTACT), the row beside the refused form (ROW) or the Kayak
@@ -322,7 +322,7 @@ async def chat_live(payload: LivePassRequest, request: Request):
 
 class ProactiveOfferRequest(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
-    trigger: Literal["kayak", "ads", "quote", "reader", "exit", "note"]
+    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note"]
     trip: Optional[TripContext] = None
     # The brand the visitor is on (bbc | bct), so the card names it. Anything
     # else is dropped, never a 422: the card then speaks for BBC.
