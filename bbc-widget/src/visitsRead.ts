@@ -195,12 +195,19 @@ export function afterSent(mark: SentMark, sentAt: number): SentMark {
  *  visits: the live list's beats keep that going after the snapshots stopped. Only what bbc-live answered counts:
  *  - a card a snapshot carried and bbc-live answered is that visit's: kept while no answered snapshot began a new
  *    visit after it, and the visit has not gone quiet since the last answered one;
- *  - a card no answered snapshot carried yet (a beacon is never answered, and may never arrive) is kept only for
- *    the quiet half hour after it showed, and never across a visit begun after it. If bbc-live did get it, any
- *    snapshot of a later visit comes more than half an hour after it. */
+ *  - a card no answered snapshot carried yet (a beacon is never answered, and may never arrive) is the card of the
+ *    visit it showed in, by the answered snapshots alone (round 5). It goes with a visit a newer one began after (the
+ *    newer visit's first snapshot may come from another tab), and with the last answered visit once that one went
+ *    quiet. Shown after that visit went quiet, it belongs to the visit its next snapshot begins. Either way it lives
+ *    at most the quiet half hour after it showed. If bbc-live did get it, dropping it only stops it being re-sent:
+ *    bbc-live keeps a visit's card, and a snapshot without one changes nothing. */
 export function cardStillOn(card: VisitCard, mark: SentMark, nowMs: number): boolean {
   if (card.confirmedAt !== undefined) return card.confirmedAt > mark.before && nowMs - mark.last < QUIET_SAFE_MS
-  return card.at > mark.before && nowMs - card.at < QUIET_SAFE_MS
+  // Shown while the visit before the current one was on: that visit's.
+  if (mark.before && card.at - mark.before < QUIET_SAFE_MS) return false
+  // Shown while the last answered visit was on: gone with it once it went quiet.
+  if (mark.last && card.at - mark.last < QUIET_SAFE_MS && nowMs - mark.last >= QUIET_SAFE_MS) return false
+  return nowMs - card.at < QUIET_SAFE_MS
 }
 
 /** The card once bbc-live answered a snapshot that left at `sentAt` carrying `carried`: the same card (shown at the

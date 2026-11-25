@@ -180,7 +180,7 @@ test('a tab’s card is kept while the registry’s visit goes on: a new visit�
   assert.deepEqual(readSentMark(JSON.stringify(next)), next)
 })
 
-test('a beacon marks nothing: a card only a beacon carried lives the half hour after it showed (CodeRabbit #282, round 3)', () => {
+test('a beacon marks nothing: a card only a beacon carried lives at most the half hour after it showed (CodeRabbit #282, round 3)', () => {
   const MIN = 60_000
   // The last snapshot bbc-live answered left 5 minutes before the card.
   const mark = afterSent(readSentMark(null), NOW - 5 * MIN)
@@ -194,8 +194,10 @@ test('a beacon marks nothing: a card only a beacon carried lives the half hour a
   const next = afterSent(mark, NOW + 31 * MIN)
   assert.deepEqual(next, { last: NOW + 31 * MIN, before: NOW - 5 * MIN })
   assert.ok(!cardStillOn(card, next, NOW + 32 * MIN))
-  // Without any other tab: the half hour after it showed.
-  assert.ok(!cardStillOn(card, mark, NOW + 28 * MIN))
+  // Without any other tab: gone once the visit it showed in went quiet by what bbc-live answered (28 minutes after
+  // the last answered snapshot, 23 after the card), well inside the half hour after it showed.
+  assert.ok(cardStillOn(card, mark, NOW + 22 * MIN))
+  assert.ok(!cardStillOn(card, mark, NOW + 23 * MIN))
   // A confirmation names the card the snapshot carried: another card, or one already confirmed, stays as it is.
   const other = cardAfter(null, 'proactive_shown', { trigger: 'note', surface: 'panel' }, NOW + 2_000)
   assert.equal(cardConfirmed(other, card, NOW + 3_000), other)
@@ -210,6 +212,36 @@ test('a beacon marks nothing: a card only a beacon carried lives the half hour a
   assert.ok(!('confirmedAt' in (visitBody({ pageId: 'pabc123def456g', path: '/', pageMs: 0, seenMs: 0, trip: null,
     utm: {}, referrer: '', siteHost: '', phone: false, site: 'bbc', events: [], steps: '', card: confirmed,
     hasChat: false, nowMs: NOW }).card)))
+})
+
+test('a card only a beacon carried goes with the visit it showed in, whichever tab began the next (CodeRabbit #282, round 5)', () => {
+  const MIN = 60_000
+  // 12:00: the last snapshot bbc-live answered.
+  const mark = afterSent(readSentMark(null), NOW)
+  // 12:20: the card shows in tab A; only a beacon carried it, and the beacon was lost.
+  const card = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW + 20 * MIN)
+  const kept = cardToKeep(card)
+  // 12:31: tab B's answered snapshot begins the next visit.
+  const next = afterSent(mark, NOW + 31 * MIN)
+  assert.deepEqual(next, { last: NOW + 31 * MIN, before: NOW })
+  // 12:32: tab A reloads. The card is 12 minutes old, but it showed in the visit tab B's snapshot came after.
+  assert.equal(keptCardFor(kept, next, NOW + 32 * MIN), null)
+  // Shown once that visit went quiet (by the browser's 28 minutes), it rides the visit tab B began.
+  const quiet = cardAfter(null, 'proactive_shown', { trigger: 'ads', surface: 'card' }, NOW + 28 * MIN)
+  assert.deepEqual(keptCardFor(cardToKeep(quiet), next, NOW + 32 * MIN), quiet)
+  // Tab A alone, no snapshot answered since 12:00: the card goes when that visit went quiet by what bbc-live
+  // answered, though it is only 8 minutes old then; before that it stays.
+  assert.ok(cardStillOn(card, mark, NOW + 27 * MIN))
+  assert.ok(!cardStillOn(card, mark, NOW + 28 * MIN))
+  // Shown after that visit went quiet, with nothing answered since: the visit its next snapshot begins, for the
+  // half hour after it showed.
+  const later = cardAfter(null, 'proactive_shown', { trigger: 'kayak', surface: 'card' }, NOW + 40 * MIN)
+  assert.ok(cardStillOn(later, mark, NOW + 67 * MIN))
+  assert.ok(!cardStillOn(later, mark, NOW + 68 * MIN))
+  // Had an answered snapshot carried it at 12:20, tab B's at 12:31 would be the same visit, and the card stays.
+  const same = afterSent(afterSent(mark, NOW + 20 * MIN + 1_500), NOW + 31 * MIN)
+  assert.equal(same.before, 0)
+  assert.ok(cardStillOn(cardConfirmed(card, card, NOW + 20 * MIN + 1_500), same, NOW + 32 * MIN))
 })
 
 test('one snapshot waits at a time, and the stop leaves none behind (CodeRabbit #282, round 3)', () => {
