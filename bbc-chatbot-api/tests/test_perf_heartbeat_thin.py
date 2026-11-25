@@ -56,8 +56,10 @@ def _reset_counters():
     agent_api.HEARTBEAT_HEALTH["calls"] = 0
     agent_api.HEARTBEAT_HEALTH["latency_ms"].clear()
     agent_api.DEADLINE_HEALTH.update(
-        {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0}
+        {"skipped_no_assigned_at": 0, "skipped_bad_timestamp": 0,
+         "clock_started_late": 0, "clock_start_failed": 0}
     )
+    agent_api._NO_TAKE.clear()
     yield
 
 
@@ -647,10 +649,14 @@ async def test_db_slow_ignores_calls_under_one_second(caplog):
 
 @pytest.mark.asyncio
 async def test_a_row_we_cannot_judge_is_counted_not_swallowed():
-    """No agent_assigned_at: the stale pass only sees OFFLINE agents, so this
+    """No agent_assigned_at on a chat its agent has spoken in (an assignment
+    from before the clock): the stale pass only sees OFFLINE agents, so this
     row hangs on an online one. Skipping is safe; being silent is not."""
-    conv = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {}}
-    count, _p, fb = await _deadline([conv])
+    conv = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {"engaged_agent_id": _AGENT},
+            "last_agent_message_at": _iso(600)}
+    with patch.object(agent_api.db, "update_conversation_if_clock_unchanged", new=AsyncMock()) as write:
+        count, _p, fb = await _deadline([conv])
+    write.assert_not_awaited()
     assert count == 0
     fb.assert_not_awaited()
     assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 1
@@ -677,7 +683,123 @@ async def test_a_readable_row_never_touches_the_skip_counters():
     assert agent_api.DEADLINE_HEALTH == {
         "skipped_no_assigned_at": 0,
         "skipped_bad_timestamp": 0,
+        "clock_started_late": 0,
+        "clock_start_failed": 0,
     }
+
+
+# CodeRabbit #280: a Take whose clock write was lost kept the chat with no
+# deadline at all. The sweep writes the clock the Take should have written,
+# at the Take itself (the agent's latest claim_won), never at "now": a reply
+# since the Take then stands after the clock, and none means the deadline
+# runs from the Take. engaged_agent_id is not the proof: it keeps an earlier
+# hold's agent, and the send can store a reply without it.
+
+_TOOK = _iso(400)
+
+
+def _no_clock(**kw):
+    row = {"id": _CONV, "assigned_agent_id": _AGENT, "metadata": {"engaged_agent_id": "agent-before"},
+           "last_agent_message_at": None}
+    row.update(kw)
+    return row
+
+
+async def _deadline_restoring(convs, take=("found", _TOOK), outcome=("written", "")):
+    with patch.object(agent_api.db, "get_last_take", new=AsyncMock(return_value=take)) as took, \
+            patch.object(agent_api.db, "update_conversation_if_clock_unchanged",
+                         new=AsyncMock(return_value=outcome)) as write:
+        count, _p, fb = await _deadline(convs)
+    return count, fb, write, took
+
+
+@pytest.mark.asyncio
+async def test_a_lost_take_clock_is_written_at_the_take():
+    count, fb, write, took = await _deadline_restoring([_no_clock()])
+    took.assert_awaited_once_with(_CONV, _AGENT)
+    write.assert_awaited_once()
+    meta = write.await_args.args[1]["metadata"]
+    assert meta["agent_assigned_at"] == _TOOK, "at the Take, not at the sweep"
+    assert meta["clock_agent_id"] == _AGENT
+    assert meta["engaged_agent_id"] == "agent-before", "only the clock is added"
+    kw = write.await_args.kwargs
+    assert kw["clock"] is None, "written only while the clock is still missing"
+    assert kw["owner"] == _AGENT, "and the chat is still this agent's"
+    assert kw["check_last_agent"] is True and kw["last_agent_message_at"] is None, "and they still have not written"
+    assert set(kw["absent_keys"]) == {"crm_lead", "crm"}, "a CRM receipt saved since is never erased"
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 1
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 0
+    assert count == 0
+    fb.assert_not_awaited()  # this round writes the clock; the next one judges it
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_holds_engagement_does_not_hide_a_lost_take_clock():
+    """The agent answered an earlier hold of this chat (still engaged), it went back to Skye, they took it again
+    and both clock writes failed: still restored."""
+    row = _no_clock(metadata={"engaged_agent_id": _AGENT}, last_agent_message_at=_iso(3600))
+    count, fb, write, _ = await _deadline_restoring([row])
+    write.assert_awaited_once()
+    assert write.await_args.args[1]["metadata"]["agent_assigned_at"] == _TOOK
+
+
+@pytest.mark.asyncio
+async def test_a_reply_after_the_take_counts_even_without_its_engagement():
+    """The send stored the reply but not engaged_agent_id. The clock goes at the Take, before the reply, so the
+    next round reads the chat as answered and leaves it with the agent."""
+    reply = _iso(100)
+    row = _no_clock(last_agent_message_at=reply)
+    _, _, write, _ = await _deadline_restoring([row])
+    restored = {**row, "metadata": write.await_args.args[1]["metadata"]}
+    count, _p, fb = await _deadline([restored])
+    assert count == 0
+    fb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_take_nobody_answered_goes_back_after_the_restore():
+    row = _no_clock()
+    _, _, write, _ = await _deadline_restoring([row])
+    restored = {**row, "metadata": write.await_args.args[1]["metadata"]}
+    count, _p, fb = await _deadline([restored])
+    assert count == 1, "400 s since the Take, no reply: past the deadline"
+    fb.assert_awaited_once_with(_CONV)
+
+
+@pytest.mark.asyncio
+async def test_a_hold_that_did_not_start_with_a_take_is_skipped_counted_and_not_asked_every_round():
+    count, fb, write, took = await _deadline_restoring([_no_clock()], take=("none", None))
+    write.assert_not_awaited()
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 1
+    with patch.object(agent_api.db, "get_last_take", new=AsyncMock(return_value=("none", None))) as again:
+        await _deadline([_no_clock()])
+    again.assert_not_awaited()  # remembered for a while: one query per hung row every ten minutes
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_take_that_cannot_be_read_is_counted_and_asked_again():
+    count, fb, write, took = await _deadline_restoring([_no_clock()], take=("failed", None))
+    write.assert_not_awaited()
+    assert agent_api.DEADLINE_HEALTH["clock_start_failed"] == 1
+    assert agent_api.DEADLINE_HEALTH["skipped_no_assigned_at"] == 0
+    count, fb, write, took = await _deadline_restoring([_no_clock()])
+    write.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_clock_that_could_not_be_written_is_counted():
+    count, fb, write, _ = await _deadline_restoring([_no_clock()], outcome=("failed", "57014"))
+    assert agent_api.DEADLINE_HEALTH["clock_start_failed"] == 1
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 0
+    fb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_clock_written_meanwhile_is_left_to_the_next_round():
+    count, fb, write, _ = await _deadline_restoring([_no_clock()], outcome=("changed", ""))
+    assert agent_api.DEADLINE_HEALTH["clock_started_late"] == 0
+    assert agent_api.DEADLINE_HEALTH["clock_start_failed"] == 0
 
 
 # ══════════════════════════════════════════════════════════════

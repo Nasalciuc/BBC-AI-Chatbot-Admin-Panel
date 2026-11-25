@@ -70,13 +70,13 @@ class TestLanguages:
 
     def test_english_is_word_for_word_what_it_was(self):
         text, replies = proactive.compose("kayak", _trip(), "bbc")
-        assert text.startswith("Hi, I'm Alex from BuyBusinessClass. I see you're looking at New York → Paris")
+        assert text.startswith("Hi, I'm Skye from BuyBusinessClass. I see you're looking at New York → Paris")
         assert text.endswith("Want an agent to check private fares for exactly this trip?")
         assert replies == ["Yes, send me fares", "Change details", "Not now"]
 
     @pytest.mark.parametrize("lang, hello, yes, no, cabin", [
-        ("es", "Hola, soy Alex, de BuyBusinessClass.", "Sí, envíenme tarifas", "Ahora no", "2 adultos en clase Business"),
-        ("fr", "Bonjour, je suis Alex, de BuyBusinessClass.", "Oui, envoyez-moi les tarifs", "Pas maintenant",
+        ("es", "Hola, soy Skye, de BuyBusinessClass.", "Sí, envíenme tarifas", "Ahora no", "2 adultos en clase Business"),
+        ("fr", "Bonjour, je suis Skye, de BuyBusinessClass.", "Oui, envoyez-moi les tarifs", "Pas maintenant",
          "2 adultes en classe Affaires"),
     ])
     def test_the_kayak_card_in_the_browsers_language(self, lang, hello, yes, no, cabin):

@@ -165,8 +165,8 @@ test('the live pass is the session’s: cleared when it ends, never stored by a 
 
 test('the agent-first test: Alex’s countdown, the visitors he waits on first, the page’s line (the owner, 22 Nov)', () => {
   const now = 1_900_000_000
-  assert.equal(alexLine(v({ alex_at: now + 80 }), now), 'Alex in 1:20')
-  assert.equal(alexLine(v({ alex_at: now + 5 }), now), 'Alex in 0:05')
+  assert.equal(alexLine(v({ alex_at: now + 80 }), now), 'Skye in 1:20')
+  assert.equal(alexLine(v({ alex_at: now + 5 }), now), 'Skye in 0:05')
   assert.equal(alexLine(v({ alex_at: now }), now), '', 'his time came: no countdown')
   assert.equal(alexLine(v(), now), '')
   assert.equal(alexWaiting(v({ alex_at: now + 1 }), now), true)
@@ -182,9 +182,9 @@ test('the agent-first test: Alex’s countdown, the visitors he waits on first, 
   assert.deepEqual(ordered(rows.map((r) => ({ ...r, alex_at: undefined })), ME, now).map((r) => r.visitor_id),
     ['mine', 'long', 'past', 'later', 'soon'])
   assert.equal(testLine({ percent: 50, hold_s: 120 }),
-    'Test running: 50% of visitors are listed here, the rest are Alex’s and aren’t. Alex waits 2 minutes for each before his card, while someone who may say hello has this page open: say hello before he does.')
-  assert.match(testLine({ percent: 50, hold_s: 90 }), /Alex waits 1 minute 30 s for each/)
-  assert.match(testLine({ percent: 50, hold_s: 0 }), /Alex doesn’t wait for them\.$/)
+    'Test running: 50% of visitors are listed here, the rest are Skye’s and aren’t. Skye waits 2 minutes for each before his card, while someone who may say hello has this page open: say hello before he does.')
+  assert.match(testLine({ percent: 50, hold_s: 90 }), /Skye waits 1 minute 30 s for each/)
+  assert.match(testLine({ percent: 50, hold_s: 0 }), /Skye doesn’t wait for them\.$/)
   for (const off of [undefined, null, { percent: 0, hold_s: 120 }]) assert.equal(testLine(off), '')
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
   assert.match(page, /const nowS = clockS\(tickS, list\.dataUpdatedAt\)/)
@@ -198,7 +198,7 @@ test('the countdowns read the list’s last answer when the tick is older, the t
   const now = 1_900_000_000
   // An hour with nobody waited on (no tick), then a row that waits: its countdown counts from the answer's second.
   assert.equal(clockS(now - 3600, (now + 2) * 1000 + 999), now + 2)
-  assert.equal(alexLine(v({ alex_at: now + 80 }), clockS(now - 3600, now * 1000)), 'Alex in 1:20')
+  assert.equal(alexLine(v({ alex_at: now + 80 }), clockS(now - 3600, now * 1000)), 'Skye in 1:20')
   // Rule 5: a tick after the answer is the newer second; no answer yet, the tick.
   assert.equal(clockS(now + 4, (now + 2) * 1000), now + 4)
   assert.equal(clockS(now, 0), now)
@@ -240,11 +240,11 @@ test('within a state, the one Alex’s card showed to last comes first', () => {
 })
 
 test('what came of Alex’s card, in words on the row', () => {
-  assert.equal(alexCardLine(v({ alex_card: 'shown', alex_card_s: 45, alex_trigger: 'kayak' })), 'Alex’s card 45 s ago, no answer')
+  assert.equal(alexCardLine(v({ alex_card: 'shown', alex_card_s: 45, alex_trigger: 'kayak' })), 'Skye’s card 45 s ago, no answer')
   assert.equal(alexCardLine(v({ alex_card: 'shown', alex_card_s: 185, alex_trigger: 'note' })), 'Opened the chat 3 min ago, didn’t write')
-  assert.equal(alexCardLine(v({ alex_card: 'dismissed', alex_card_s: 60, alex_trigger: 'ads' })), 'Said not now to Alex’s card')
-  assert.equal(alexCardLine(v({ alex_card: 'dismissed', alex_trigger: 'note' })), 'Closed the chat with Alex')
-  assert.equal(alexCardLine(v({ alex_card: 'engaged', alex_card_s: 10 })), 'Answered Alex')
+  assert.equal(alexCardLine(v({ alex_card: 'dismissed', alex_card_s: 60, alex_trigger: 'ads' })), 'Said not now to Skye’s card')
+  assert.equal(alexCardLine(v({ alex_card: 'dismissed', alex_trigger: 'note' })), 'Closed the chat with Skye')
+  assert.equal(alexCardLine(v({ alex_card: 'engaged', alex_card_s: 10 })), 'Answered Skye')
   assert.equal(alexCardLine(v()), '')
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
   assert.match(page, /\{alexCardLine\(v\) && \(/)

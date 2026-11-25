@@ -107,7 +107,7 @@ def test_without_a_keyword_the_card_asks_for_the_pages_cabin_and_place():
     trip = TripContext(source="route_page", destination_name="Lakeside", cabin="business")
     text, _ = proactive.compose("ads", trip, "bbc")
     # One yes, as the Kayak card (owner, 23 Nov): no "Tell me roughly when" before the contact.
-    assert text == "Hi, I'm Alex from BuyBusinessClass. Want an agent to send you today's business class fares to Lakeside?"
+    assert text == "Hi, I'm Skye from BuyBusinessClass. Want an agent to send you today's business class fares to Lakeside?"
     dated = TripContext(source="route_page", destination_name="Lakeside", depart_date=_day(40))
     text, _ = proactive.compose("reader", dated, "bbc")
     assert text.endswith("Want an agent to check business class fares for these dates?")

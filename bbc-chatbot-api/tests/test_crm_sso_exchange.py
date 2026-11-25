@@ -139,6 +139,35 @@ def test_valid_exchange_role_comes_from_db(client):
     assert body["user"]["id"] == "op-1"
 
 
+def test_the_crms_user_id_rides_along_for_the_crm_button(client):
+    """The CRM's `sub` is kept as crm_sub (the button names the agent with it); our `sub` stays our id."""
+    from starlette.requests import Request
+
+    from app.security.auth import get_current_user
+
+    with (
+        patch.object(settings, "chat_sso_secret", _CHAT_SSO),
+        patch.object(settings, "jwt_secret", _JWT),
+        patch.object(auth_routes.db, "get_user_by_email", AsyncMock(return_value=_ACTIVE_USER)),
+    ):
+        resp = _post(client, _crm_token(email="operator@buybusinessclass.com", sub="57"))
+        token = resp.json()["token"]
+        claims = _jwt.decode(token, _JWT, algorithms=["HS256"])
+        assert claims["crm_sub"] == "57" and claims["sub"] == "op-1"
+        request = Request({"type": "http", "path": "/api/x", "headers": [(b"authorization", f"Bearer {token}".encode())]})
+        with (
+            patch("app.security.token_version.matches", return_value=True),
+            patch("app.security.ban_store.revoked_before_sync", return_value=None),
+        ):
+            assert get_current_user(request)["crm_sub"] == "57"
+
+
+def test_a_password_login_carries_no_crm_id():
+    with patch.object(settings, "jwt_secret", _JWT):
+        claims = _jwt.decode(auth_routes._issue_jwt(_ACTIVE_USER), _JWT, algorithms=["HS256"])
+    assert "crm_sub" not in claims
+
+
 def test_email_is_normalized(client):
     seen = {}
 

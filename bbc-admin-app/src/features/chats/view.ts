@@ -9,7 +9,7 @@
  * path aliases). Class names are written out whole so Tailwind sees them.
  */
 
-import type { Conversation, Lead, Message } from '../../lib/types.ts'
+import type { Conversation, CrmLeadStatus, Lead, Message } from '../../lib/types.ts'
 
 // ── names and time ─────────────────────────────────────────────────────
 
@@ -194,7 +194,7 @@ export const CARD_NO_CONTACT = 'Card · no contact'
 /** The same chat while "Left … · no contact" shows: the card named, "no contact" not said twice. */
 export const CARD_ONLY = 'Card'
 export const CARD_NO_CONTACT_TITLE =
-  'Opened from Alex’s card (or the note beside the button), and the client left no email or phone: a message here reaches them only while they’re on the site.'
+  'Opened from Skye’s card (or the note beside the button), and the client left no email or phone: a message here reaches them only while they’re on the site.'
 
 export function cardNoContact(c: Pick<Conversation, 'metadata' | 'has_contact'>, leftLineShown = false): string | null {
   const trigger = (c.metadata as Record<string, unknown> | undefined)?.proactive_trigger
@@ -796,7 +796,9 @@ export function gateReasonText(code: string | null | undefined): string {
 export function crmView(
   c: Conversation,
   lead: Lead | null | undefined,
-  opts: { canAct: boolean; ownerName: string | null }
+  /** button: the "Create lead in CRM" button is on for this user. The CRM then takes one contact, and the lead
+   *  is made with that button, under the chat. */
+  opts: { canAct: boolean; ownerName: string | null; button?: boolean }
 ): CrmView {
   const first = firstName(c.visitor_name)
   if (!lead) {
@@ -825,6 +827,26 @@ export function crmView(
   }
   const phone = (lead.visitor_phone ?? c.visitor_phone ?? '').trim()
   const email = (lead.visitor_email ?? c.visitor_email ?? '').trim()
+  if (opts.button) {
+    if (!phone && !email) {
+      return {
+        state: 'missing',
+        title: 'Not in the CRM yet',
+        text: `The CRM needs a phone or an e-mail.${opts.canAct && c.status !== 'closed' ? ` Ask ${first} in the chat.` : ''}`,
+        dot: 'bg-k-d97a00',
+        fg: 'text-k-8a4b00',
+      }
+    }
+    return {
+      state: 'ready',
+      title: 'Not in the CRM yet',
+      text: opts.canAct
+        ? 'Create it with “Create lead in CRM” under the chat: it goes to you, with the chat.'
+        : `${opts.ownerName ? firstName(opts.ownerName) : 'The agent who has the chat'} can create it from the chat.`,
+      dot: 'bg-kb-202020',
+      fg: 'text-k-202020',
+    }
+  }
   const miss = [!phone && 'a phone number', !email && 'an e-mail'].filter(Boolean) as string[]
   if (miss.length) {
     return {
@@ -865,6 +887,52 @@ export function leadLine(
   if (crm.state === 'in') return { head: crm.title, tail: '', done: true }
   const tail = sending ? 'sending to the CRM…' : crm.title.charAt(0).toLowerCase() + crm.title.slice(1)
   return { head: 'Lead created', tail, done: false }
+}
+
+// ── the "Create lead in CRM" button (bbc-chatbot-api app/api/crm_lead.py) ─────
+
+export interface CrmButtonView {
+  /** Anything to draw under the chat. */
+  show: boolean
+  /** The lead the button made: "Open lead in CRM · #98765". */
+  linkText: string | null
+  url: string | null
+  /** The CRM's warnings, in its own words (written for the agent). */
+  notes: string[]
+  canCreate: boolean
+  /** Why not yet (no phone or e-mail). */
+  reason: string | null
+}
+
+const NO_BUTTON: CrmButtonView = { show: false, linkText: null, url: null, notes: [], canCreate: false, reason: null }
+
+/** Only an https address becomes a link: the CRM's url is data, and a javascript: one must never be clickable. */
+export function safeCrmUrl(url: string | null | undefined): string | null {
+  if (typeof url !== 'string' || !url) return null
+  try {
+    const u = new URL(url)
+    return u.protocol === 'https:' ? u.toString() : null
+  } catch {
+    return null
+  }
+}
+
+export function crmButtonView(s: CrmLeadStatus | null | undefined): CrmButtonView {
+  if (!s || !s.enabled) return NO_BUTTON
+  if (s.lead && s.lead.flight_request_id !== null && s.lead.flight_request_id !== undefined && s.lead.flight_request_id !== '') {
+    const warnings = Array.isArray(s.lead.warnings) ? s.lead.warnings : []
+    return {
+      show: true,
+      linkText: `Open lead in CRM · #${s.lead.flight_request_id}`,
+      url: safeCrmUrl(s.lead.url),
+      notes: warnings.map((w) => (w?.message || w?.code || '').trim()).filter(Boolean),
+      canCreate: false,
+      reason: null,
+    }
+  }
+  if (s.can_create) return { ...NO_BUTTON, show: true, canCreate: true }
+  if (s.reason) return { ...NO_BUTTON, show: true, reason: s.reason }
+  return NO_BUTTON
 }
 
 /** The close dialog's sentence, by CRM state. */

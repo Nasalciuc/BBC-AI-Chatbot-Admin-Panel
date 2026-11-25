@@ -95,7 +95,7 @@ export function LiveVisitors() {
     <main id='content' className='flex flex-col gap-[18px] px-4 pt-6 pb-9 md:px-7 md:pt-7'>
       <PageHeader
         title='On the site now'
-        subtitle={`Visitors Alex’s card didn’t start a chat with: no answer ${ALEX_GAVE_UP_S} s after it showed, or “Not now”. Say hello: on a computer their chat opens with your words, on a phone they show beside the chat button. Their answer opens the chat, already yours.`}
+        subtitle={`Visitors Skye’s card didn’t start a chat with: no answer ${ALEX_GAVE_UP_S} s after it showed, or “Not now”. Say hello: on a computer their chat opens with your words, on a phone they show beside the chat button. Their answer opens the chat, already yours.`}
         actions={<HeaderActions className='ms-0' />}
       />
       {!pass ? (
@@ -108,7 +108,7 @@ export function LiveVisitors() {
         </p>
       ) : rows.length === 0 ? (
         <p className='text-sm text-k-6b6b6b'>
-          Nobody to greet right now. A visitor appears here {ALEX_GAVE_UP_S} s after Alex’s card goes unanswered, or when they say
+          Nobody to greet right now. A visitor appears here {ALEX_GAVE_UP_S} s after Skye’s card goes unanswered, or when they say
           “Not now” to it, while they are on the site and have no chat.
         </p>
       ) : (

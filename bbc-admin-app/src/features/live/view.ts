@@ -164,9 +164,9 @@ export function alexCardLine(v: Pick<LiveVisitor, 'alex_card' | 'alex_card_s' | 
   const ago = typeof v.alex_card_s === 'number' ? ` ${onSite(v.alex_card_s)} ago` : ''
   const opened = v.alex_trigger === 'note'
   switch (v.alex_card) {
-    case 'shown': return opened ? `Opened the chat${ago}, didn’t write` : `Alex’s card${ago}, no answer`
-    case 'dismissed': return opened ? 'Closed the chat with Alex' : 'Said not now to Alex’s card'
-    case 'engaged': return 'Answered Alex'
+    case 'shown': return opened ? `Opened the chat${ago}, didn’t write` : `Skye’s card${ago}, no answer`
+    case 'dismissed': return opened ? 'Closed the chat with Skye' : 'Said not now to Skye’s card'
+    case 'engaged': return 'Answered Skye'
     default: return ''
   }
 }
@@ -190,7 +190,7 @@ export function alexWaiting(v: Pick<LiveVisitor, 'alex_at'>, nowS: number): bool
 export function alexLine(v: Pick<LiveVisitor, 'alex_at'>, nowS: number): string {
   if (!alexWaiting(v, nowS)) return ''
   const left = Math.max(0, Math.ceil((v.alex_at as number) - nowS))
-  return `Alex in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+  return `Skye in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
 }
 
 function waitWords(seconds: number): string {
@@ -205,9 +205,9 @@ function waitWords(seconds: number): string {
 export function testLine(test: { percent: number; hold_s: number } | undefined | null): string {
   if (!test || !(test.percent > 0)) return ''
   const wait = test.hold_s > 0
-    ? `Alex waits ${waitWords(test.hold_s)} for each before his card, while someone who may say hello has this page open: say hello before he does.`
-    : 'Alex doesn’t wait for them.'
-  return `Test running: ${test.percent}% of visitors are listed here, the rest are Alex’s and aren’t. ${wait}`
+    ? `Skye waits ${waitWords(test.hold_s)} for each before his card, while someone who may say hello has this page open: say hello before he does.`
+    : 'Skye doesn’t wait for them.'
+  return `Test running: ${test.percent}% of visitors are listed here, the rest are Skye’s and aren’t. ${wait}`
 }
 
 /** The answer to a claim, in words; null when it worked. */

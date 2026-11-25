@@ -217,6 +217,10 @@ class Settings(BaseSettings):
     # CRM
     crm_api_url: str = "https://webapi.buybusinessclass.com"
     crm_api_token: str = ""
+    # The agent's "Create lead in CRM" button (app/services/crm_leads_api.py): the CRM's full leads address
+    # (…/chat-api/v1/leads) and its Bearer key. Server only; empty = the button answers "not set up".
+    crm_chat_api_url: str = ""
+    crm_chat_api_key: str = ""
 
     # Abuse blocklist — IP entries expire (shared IPs go stale); phone/email are
     # permanent by default. IP never blocks on its own (see services/blocklist.py).

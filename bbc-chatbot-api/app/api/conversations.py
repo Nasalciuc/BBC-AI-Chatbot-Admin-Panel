@@ -989,6 +989,11 @@ async def claim_conversation(
     user: dict = Depends(get_current_user),
 ):
     """Operator claims an unassigned conversation from the queue."""
+    from datetime import datetime, timezone
+    # Taken before the first read. When that read finds no owner, the cycle a
+    # take starts (this request's, or another request's of the same take) began
+    # after this moment: perform_handoff keeps a clock it finds from then on.
+    _seen_unassigned_at = datetime.now(timezone.utc)
     conv = await db.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1038,7 +1043,12 @@ async def claim_conversation(
             # and its owner check were lost. Before, the operator read their
             # OWN name in "… took this chat a moment before you", and the chat
             # never opened. Same as re-claiming my own chat above: no second
-            # win and no second point on the score.
+            # win and no second point on the score. But it IS a take of mine,
+            # won a moment ago: _gate_won=True starts the first-reply clock,
+            # which the call that won may have died before writing (the lost
+            # answer). If that call did write it, or the agent has already
+            # answered, the clock is this cycle's and is kept as it is: a clock
+            # restarted after the reply would send an answered chat to Alex.
             CLAIM_HEALTH["already_mine"] += 1
             await perform_handoff_to_agent(
                 conversation_id=conversation_id,
@@ -1047,6 +1057,8 @@ async def claim_conversation(
                 emit_messages=False,
                 handoff_reason="manual_claim",
                 _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
+                _gate_won=True,
+                _seen_unassigned_at=_seen_unassigned_at,
             )
             return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}
         _winner = await db.get_user_by_id(_winner_id) if _winner_id else None
@@ -1080,6 +1092,7 @@ async def claim_conversation(
         handoff_reason="manual_claim",
         _pop_meta_keys=["agent_assign_count", "agent_cooldown_until"],
         _gate_won=True,
+        _seen_unassigned_at=_seen_unassigned_at,
     )
 
     return {"success": True, "data": {"conversation_id": conversation_id, "assigned_to": _me}}

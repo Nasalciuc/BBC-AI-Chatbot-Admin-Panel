@@ -304,3 +304,12 @@ def compare_and_delete(fake: FakeRedis, keys: list[str], args: list[str]) -> int
         fake.expires.pop(key, None)
         return 1
     return 0
+
+
+def compare_and_pexpire(fake: FakeRedis, keys: list[str], args: list[str]) -> int:
+    """What conversation_lock.RENEW_LUA does: a new expiry, only while the key still holds the token."""
+    key, token, ms = keys[0], args[0], int(args[1])
+    if fake._alive(key) and fake.kv.get(key) == token:
+        fake._set_expiry(key, px=ms)
+        return 1
+    return 0

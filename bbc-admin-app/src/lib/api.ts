@@ -16,6 +16,7 @@ export class ApiError extends Error {
 
 import type {
   AccessEvent,
+  CrmLeadStatus,
   QaAgentStats,
   QaSample,
   QaVerdict,
@@ -371,6 +372,28 @@ export function pushLeadToCrm(leadId: string, confirmLocked = false): Promise<{ 
   // confirms (confirmLocked) — only ever their yes, never a click event.
   const qs = confirmLocked ? '?confirm_locked=true' : ''
   return apiFetch(`/api/leads/${encodeURIComponent(leadId)}/mark-crm-created${qs}`, { method: 'PATCH' }, 20_000)
+}
+
+/** The agent's "Create lead in CRM" button: what to show under this chat. */
+export async function getCrmLeadStatus(conversationId: string): Promise<CrmLeadStatus> {
+  const res = await apiFetch<{ success: boolean; data: CrmLeadStatus }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/crm-lead`
+  )
+  return res.data
+}
+
+/** Create the lead in the CRM for the agent who has the chat. 40 s: the server waits up to 15 s for the CRM
+ *  and tries once more after a timeout. A 409 is the abuse lock: sent again with confirmLocked once the
+ *  operator says yes. Safe to repeat: the CRM keys the lead on the conversation. */
+export async function createCrmLead(conversationId: string, note: string, confirmLocked = false): Promise<CrmLeadStatus> {
+  const qs = confirmLocked ? '?confirm_locked=true' : ''
+  const text = note.trim()
+  const res = await apiFetch<{ success: boolean; data: CrmLeadStatus }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/crm-lead${qs}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(text ? { note: text } : {}) },
+    40_000,
+  )
+  return res.data
 }
 
 /** The operator added the client in the CRM by hand: record the CRM's lead

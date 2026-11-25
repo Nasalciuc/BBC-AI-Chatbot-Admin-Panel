@@ -80,6 +80,38 @@ export interface ConversationsResponse {
   counts?: Partial<Record<'my_active' | 'my_closed' | 'all_active' | 'all_closed', number>> | null
 }
 
+// ── The agent's "Create lead in CRM" button (bbc-chatbot-api app/api/crm_lead.py) ──
+export interface CrmLeadWarning {
+  code: string
+  /** Written by the CRM for the agent. */
+  message: string
+}
+
+/** The lead the button made, as kept on the chat (metadata.crm_lead). */
+export interface CrmLeadRecord {
+  flight_request_id: number | string
+  url: string | null
+  client_id?: number | string | null
+  site?: string | null
+  assigned_agent_id?: number | string | null
+  assigned_to_requested_agent?: boolean | null
+  merge_approval_request_id?: number | string | null
+  warnings: CrmLeadWarning[]
+  created: boolean
+  agent_user_id?: string | null
+  by?: string | null
+  at?: string | null
+}
+
+/** GET/POST /api/conversations/{id}/crm-lead. enabled=false: the panel keeps "Send to CRM". */
+export interface CrmLeadStatus {
+  enabled: boolean
+  lead: CrmLeadRecord | null
+  can_create: boolean
+  /** Why not yet, in words for the agent (no phone or e-mail). */
+  reason: string | null
+}
+
 // ── Leads ─────────────────────────────────────────────────────
 export interface Lead {
   id: string
