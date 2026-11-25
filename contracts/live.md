@@ -222,10 +222,12 @@ before it is turned on.
 - **The visit** (`visit.lua`): one per visitor while snapshots keep coming. The first snapshot with a value sets
   where they came from, the screen, the language, the time zone, the country, the address, the browser, the
   PostHog session, the chat's id and the card's moment, words and place (`hsetnx`); the latest non-empty value sets
-  the last page, the trip and the card's answer; `has_chat` once `1` stays; the card's state only moves forward
-  (shown, dismissed, engaged); its times are bbc-live's clock. Each page is `pg:<page id>` (JSON: path, kind,
-  seconds, seen, events, steps, when last heard), in first-heard order in `pages`; past 40 pages they are counted
-  (`pages_over`), not kept.
+  the last page and the trip; `has_chat` once `1` stays; the card's state only moves forward (shown, dismissed,
+  engaged), and its answer and answer time go with the state that won: an engagement after "not now" takes its own,
+  a "not now" that arrives after it changes nothing. Its times are bbc-live's clock. Each page is `pg:<page id>`
+  (JSON: path, kind, seconds, seen, events, steps, when last heard), in first-heard order in `pages`, replaced only
+  by a newer snapshot of it (more seconds since the page loaded; at the same second, no fewer events and steps: a
+  fetch and the page's last beacon can cross); past 40 pages they are counted (`pages_over`), not kept.
 - **The end.** A visit with no snapshot for 30 minutes has ended: `close.lua` (every 30 s) renames it to
   `live:ended:<vid>:<first_at>` and pushes that key on `live:ended`; a snapshot that finds its visitor's visit gone
   quiet ends it the same way first. Lost (`/health`): an open visit that ran out before it ended.

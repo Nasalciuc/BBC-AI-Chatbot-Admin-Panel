@@ -176,6 +176,10 @@ func TestWhatCameOfTheCardOnlyMovesForward(t *testing.T) {
 	if v["card_trigger"] != "ads" || v["card_surface"] != "panel" || v["card_variant"] != "" {
 		t.Errorf("card %v", v)
 	}
+	// Its answer stays the engagement's: a close that comes after it writes nothing (CodeRabbit #282, round 3).
+	if v["card_answer"] != "yes" {
+		t.Errorf("card_answer %q after a later close (want yes)", v["card_answer"])
+	}
 	// A state it doesn't know, or seconds out of range, write nothing of the card (the message that takes no branch).
 	if w := visitReq(t, s, c, vid2, snapshot(map[string]any{"card": map[string]any{"trigger": "ads", "state": "loved", "s": 2}}), nil); w.Code != http.StatusOK {
 		t.Fatal(w.Body.String())
@@ -403,5 +407,70 @@ func TestHealthCountsTheRegistry(t *testing.T) {
 	reg := out["registry"].(map[string]any)
 	if reg["open"] != float64(1) || reg["queued"] != float64(0) {
 		t.Errorf("registry %v", reg)
+	}
+}
+
+func TestAnEngagementAfterNotNowTakesItsOwnTimeAndAnswer(t *testing.T) {
+	// CodeRabbit #282, round 3: the answer and its time go with the state that won.
+	s, c, rc := setup(t)
+	card := func(state string, sec, answerS float64, answer string) map[string]any {
+		return snapshot(map[string]any{"card": map[string]any{"trigger": "kayak", "surface": "card",
+			"state": state, "s": sec, "answer": answer, "answer_s": answerS}})
+	}
+	if w := visitReq(t, s, c, vid1, card("dismissed", 8, 1, "not_now"), nil); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	c.add(20)
+	if w := visitReq(t, s, c, vid1, card("engaged", 28, 2, "channel"), nil); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	engagedAt := c.now().Unix() - 2
+	v := hash(t, rc, regKey(vid1))
+	if v["card_state"] != "engaged" || v["card_answer"] != "channel" || v["card_answer_at"] != itoa(engagedAt) {
+		t.Errorf("card %q answer %q at %q (want engaged, channel, %d)", v["card_state"], v["card_answer"],
+			v["card_answer_at"], engagedAt)
+	}
+	// The "not now" sent again late, by a snapshot that crossed the engagement on the way: nothing changes.
+	c.add(5)
+	if w := visitReq(t, s, c, vid1, card("dismissed", 33, 26, "not_now"), nil); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	v = hash(t, rc, regKey(vid1))
+	if v["card_state"] != "engaged" || v["card_answer"] != "channel" || v["card_answer_at"] != itoa(engagedAt) {
+		t.Errorf("after a late not now: %q %q %q", v["card_state"], v["card_answer"], v["card_answer_at"])
+	}
+}
+
+func TestAnOlderSnapshotOfAPageNeverReplacesANewerOne(t *testing.T) {
+	// A fetch and the page's last beacon can cross on the way (CodeRabbit #282, round 3).
+	s, c, rc := setup(t)
+	page := func() VisitPage {
+		var p VisitPage
+		if err := json.Unmarshal([]byte(hash(t, rc, regKey(vid1))["pg:pg-first-1"]), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	send := func(pageS, seenS int, events string) {
+		t.Helper()
+		if w := visitReq(t, s, c, vid1, snapshot(map[string]any{"page_s": pageS, "seen_s": seenS, "events": events}), nil); w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+	}
+	send(65, 60, "card:kayak:card;chat_msg")
+	c.add(1)
+	send(60, 58, "card:kayak:card") // the earlier one, arriving last
+	if p := page(); p.S != 65 || p.Seen != 60 || len(p.Events) != 2 {
+		t.Errorf("the older snapshot replaced the page: %+v", p)
+	}
+	c.add(1)
+	send(65, 60, "card:kayak:card") // the same second, fewer events: older too
+	if p := page(); len(p.Events) != 2 {
+		t.Errorf("a snapshot with fewer events replaced the page: %+v", p)
+	}
+	c.add(1)
+	send(90, 80, "card:kayak:card;chat_msg*2") // newer: it replaces
+	if p := page(); p.S != 90 || p.Seen != 80 {
+		t.Errorf("a newer snapshot did not replace the page: %+v", p)
 	}
 }

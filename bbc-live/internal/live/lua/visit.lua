@@ -6,7 +6,8 @@
 -- ARGV[9] the card's state (shown, dismissed, engaged or '')   ARGV[10] when the card showed (unix seconds, or '')
 -- ARGV[11] when the card was answered (unix seconds, or '')
 -- ARGV[12] n, then n field, value pairs kept from the visit's first snapshot that has a value for them
--- then m, then m field, value pairs where the latest value wins; an empty value never writes
+-- then m, then m field, value pairs where the latest value wins; an empty value never writes, and card_answer
+-- only with the card's state that won
 -- Returns 1, or 2 when the visit had gone quiet: it went to the queue first and this snapshot starts a new one.
 -- live:ended:<vid>:<first_at> keys are built here: one Redis, not a cluster.
 local key, reg, ended = KEYS[1], KEYS[2], KEYS[3]
@@ -39,15 +40,44 @@ if not known then
     redis.call('hincrby', key, 'pages_over', 1)
   end
 end
-if known then redis.call('hset', key, 'pg:' .. pid, ARGV[8]) end
--- What came of the card only moves forward: shown, then dismissed, then engaged.
+-- A page's snapshot replaces the one kept only when it is newer: a fetch and the page's last beacon can cross on
+-- the way. s (seconds since the page loaded, by the browser's clock) orders them; the events and the steps, which
+-- only grow on a page, settle a tie (CodeRabbit #282, round 3).
+if known then
+  local pkey = 'pg:' .. pid
+  local old = redis.call('hget', key, pkey)
+  local newer = true
+  if old then
+    local okOld, o = pcall(cjson.decode, old)
+    local okNew, nw = pcall(cjson.decode, ARGV[8])
+    if okOld and okNew and type(o) == 'table' and type(nw) == 'table' then
+      local olds, news = tonumber(o.s) or 0, tonumber(nw.s) or 0
+      if news < olds then
+        newer = false
+      elseif news == olds then
+        local function len(t) return type(t) == 'table' and #t or 0 end
+        newer = len(nw.ev) >= len(o.ev) and len(nw.st) >= len(o.st)
+      end
+    end
+  end
+  if newer then redis.call('hset', key, pkey, ARGV[8]) end
+end
+-- What came of the card only moves forward: shown, then dismissed, then engaged. The answer and its time go with
+-- the state that won: an engagement after "not now" takes its own time, and a "not now" that arrives after the
+-- engagement changes nothing (CodeRabbit #282, round 3).
 local rank = {shown = 1, dismissed = 2, engaged = 3}
-local state = ARGV[9]
-if rank[state] and rank[state] > (rank[redis.call('hget', key, 'card_state') or ''] or 0) then
-  redis.call('hset', key, 'card_state', state)
+local had = rank[redis.call('hget', key, 'card_state') or ''] or 0
+local got = rank[ARGV[9]] or 0
+if got > had then
+  redis.call('hset', key, 'card_state', ARGV[9])
+  if got > 1 then
+    if ARGV[11] ~= '' then redis.call('hset', key, 'card_answer_at', ARGV[11]) else redis.call('hdel', key, 'card_answer_at') end
+    redis.call('hdel', key, 'card_answer') -- this state's answer, if it has one, is in the latest fields below
+  end
+elseif got == had and got > 1 and ARGV[11] ~= '' then
+  redis.call('hsetnx', key, 'card_answer_at', ARGV[11])
 end
 if ARGV[10] ~= '' then redis.call('hsetnx', key, 'card_at', ARGV[10]) end
-if ARGV[11] ~= '' then redis.call('hsetnx', key, 'card_answer_at', ARGV[11]) end
 local i = 12
 local n = tonumber(ARGV[i])
 for j = 1, n do
@@ -57,8 +87,8 @@ end
 i = i + 2 * n + 1
 local m = tonumber(ARGV[i])
 for j = 1, m do
-  local v = ARGV[i + 2 * j]
-  if v ~= '' then redis.call('hset', key, ARGV[i + 2 * j - 1], v) end
+  local f, v = ARGV[i + 2 * j - 1], ARGV[i + 2 * j]
+  if v ~= '' and (f ~= 'card_answer' or got >= had) then redis.call('hset', key, f, v) end
 end
 redis.call('expire', key, tonumber(ARGV[4]))
 redis.call('zadd', reg, now, vid)
