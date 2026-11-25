@@ -21,6 +21,7 @@ import (
 //	POST /v1/beat     the widget: a visitor is on the site        X-Live-Pass: <b1 pass>
 //	GET  /v1/inbox    the widget: wait for an agent's hello        X-Live-Pass: <b1 pass>
 //	POST /v1/dismiss  the widget: "not now"                        X-Live-Pass: <b1 pass>
+//	POST /v1/visit    the widget: a snapshot for the registry     X-Live-Pass, or "pass" in the body
 //	GET  /v1/live     the panel: who is on the site now            Authorization: Bearer <l1 token>
 //	POST /v1/claim    the panel: hold a visitor to say hello       Authorization: Bearer <l1 token>
 //	POST /v1/release  the panel: let them go                       Authorization: Bearer <l1 token>
@@ -42,6 +43,10 @@ type Server struct {
 
 	lastBeat sync.Map // vid → time.Time
 	Counters Counters
+
+	// The registry's snapshots per visitor (registry.go takeVisitTurn).
+	visitMu      sync.Mutex
+	visitBuckets map[string]visitBucket
 }
 
 // Counters are this process's, in /health.
@@ -53,6 +58,10 @@ type Counters struct {
 	Releases, AgentsRefused, RedisFails atomic.Int64
 	// The agent-first test: a read of the list by someone who may say hello, not noted (Alex doesn't wait for them).
 	GreetersFailed atomic.Int64
+	// The visit registry (registry.go): snapshots kept, refused, over the visitor's pace, not stored (Redis); visits
+	// ended into the queue, open ones that ran out first (lost), sweeps that failed.
+	Visits, VisitsRefused, VisitsTooMany, VisitsFailed atomic.Int64
+	VisitsEnded, VisitsLost, VisitsCloseFailed         atomic.Int64
 }
 
 // Roles that see the list, and the ones that may hold a visitor to say hello (the sales line).
@@ -78,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/beat", s.beat)
 	mux.HandleFunc("GET /v1/inbox", s.inbox)
 	mux.HandleFunc("POST /v1/dismiss", s.dismiss)
+	mux.HandleFunc("POST /v1/visit", s.visit)
 	mux.HandleFunc("GET /v1/live", s.list)
 	mux.HandleFunc("POST /v1/claim", s.claim)
 	mux.HandleFunc("POST /v1/release", s.release)
@@ -115,7 +125,12 @@ func fail(w http.ResponseWriter, status int, why string) {
 }
 
 func (s *Server) visitor(w http.ResponseWriter, r *http.Request) (string, bool) {
-	vid, err := token.ReadPass(r.Header.Get("X-Live-Pass"), s.Secret, s.now())
+	return s.visitorOf(w, r.Header.Get("X-Live-Pass"))
+}
+
+// visitorOf reads a visitor's pass (a header, or the body of a snapshot sent with sendBeacon, which sends none).
+func (s *Server) visitorOf(w http.ResponseWriter, pass string) (string, bool) {
+	vid, err := token.ReadPass(pass, s.Secret, s.now())
 	if err == nil && !visitorID.MatchString(vid) {
 		err = token.ErrInvalid // the API checks ids before it signs; keys are built from this one
 	}
@@ -360,8 +375,9 @@ func (s *Server) beat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "counted": true})
 }
 
-// ForgetOldBeats drops the beat gaps of visitors gone quiet (run it now and then).
+// ForgetOldBeats drops the beat gaps of visitors gone quiet, and their registry pace (run it now and then).
 func (s *Server) ForgetOldBeats() {
+	s.forgetVisitTurns(s.now())
 	cut := s.now().Add(-2 * VisitTTL * time.Second)
 	s.lastBeat.Range(func(k, v any) bool {
 		if v.(time.Time).Before(cut) {
@@ -555,6 +571,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	redisOK := s.Store.Ping(ctx) == nil
 	c := &s.Counters
+	registry := map[string]any{}
+	if redisOK {
+		if open, queued, err := s.Store.Registry(ctx); err == nil {
+			registry["open"], registry["queued"] = open, queued
+		}
+	}
 	status := http.StatusOK
 	if !redisOK {
 		status = http.StatusServiceUnavailable
@@ -571,6 +593,11 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 			"agents_refused": c.AgentsRefused.Load(), "redis_failures": c.RedisFails.Load(),
 			"subscription_restarts": s.Hub.Reconnects.Load(), "wakes": s.Hub.Wakes.Load(),
 			"greeters_failed": c.GreetersFailed.Load(),
+			"visits":          c.Visits.Load(), "visits_refused": c.VisitsRefused.Load(),
+			"visits_too_many": c.VisitsTooMany.Load(), "visits_failed": c.VisitsFailed.Load(),
+			"visits_ended": c.VisitsEnded.Load(), "visits_lost": c.VisitsLost.Load(),
+			"visits_close_failed": c.VisitsCloseFailed.Load(),
 		},
+		"registry": registry,
 	})
 }
