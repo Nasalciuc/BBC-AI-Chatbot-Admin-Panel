@@ -545,6 +545,20 @@ test('nobody types the client’s name in the panel: it fills in by itself, and 
   assert.match(detail, /setTimeout\(\(\) => \{ void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\) \}, 2_000\)/)
 })
 
+test('a dormant panel drops the waiting contact read and reads the chat once it wakes (CodeRabbit #282, round 5)', () => {
+  const detail = read('src/features/chats/detail.tsx')
+  const effect = detail.slice(
+    detail.indexOf('const lastClientMsgId = useMemo('),
+    detail.indexOf('const cameBackId = cameBackMessage('),
+  )
+  // Dormant: no timer is set, and the one waiting is cleared by the effect's cleanup (dormant is in its deps).
+  assert.match(effect, /if \(!lastClientMsgId \|\| dormant\) return\n\s+const t = setTimeout\(/)
+  assert.match(effect, /return \(\) => clearTimeout\(t\)\n\s+\}, \[lastClientMsgId, conversationId, dormant, queryClient\]\)/)
+  // Awake, with a client's message: the read is still set, 2 s on (the branch not taken).
+  assert.match(effect, /const t = setTimeout\(\(\) => \{ void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\) \}, 2_000\)/)
+  assert.equal(effect.split('setTimeout(').length, 2, 'one timer, the one the cleanup clears')
+})
+
 test('a reload of the chat keeps the client’s message that came after its snapshot (CodeRabbit #282, round 3)', () => {
   const detail = read('src/features/chats/detail.tsx')
   const u1 = { id: 'u1' }

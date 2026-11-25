@@ -423,16 +423,17 @@ export default function ConversationDetail({
   // A client's message can carry their name, e-mail or phone, recorded a moment after it lands
   // (operator_contact). The stream says so (the `contact` event); without the stream, or if that push is lost,
   // the chat is read again 2 s after the client's newest message, so the Contact card never waits for the
-  // agent's next message (the owner, 25 Nov 2026).
+  // agent's next message (the owner, 25 Nov 2026). A dormant panel asks nothing: a read still waiting when the
+  // panel goes dormant is dropped, and the panel reads the chat 2 s after it wakes (CodeRabbit #282, round 5).
   const lastClientMsgId = useMemo(() => {
     for (let i = accumMsgs.length - 1; i >= 0; i--) if (accumMsgs[i].role === 'user') return accumMsgs[i].id
     return null
   }, [accumMsgs])
   useEffect(() => {
-    if (!lastClientMsgId) return
+    if (!lastClientMsgId || dormant) return
     const t = setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] }) }, 2_000)
     return () => clearTimeout(t)
-  }, [lastClientMsgId, conversationId, queryClient])
+  }, [lastClientMsgId, conversationId, dormant, queryClient])
 
   // "{first} came back to the chat": over a promise of mine that's now late, the
   // client's first message after a pause (not the "thanks" right after it).
