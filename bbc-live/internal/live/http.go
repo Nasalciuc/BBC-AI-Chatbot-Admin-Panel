@@ -201,7 +201,7 @@ var (
 	sites   = map[string]bool{"bbc": true, "bct": true}
 	// What came of Alex's card, and the moments that show it (the widget's triggers.ts OpeningTrigger).
 	alexCards    = map[string]bool{"shown": true, "dismissed": true, "engaged": true}
-	alexTriggers = map[string]bool{"kayak": true, "ads": true, "quote": true, "reader": true, "exit": true, "note": true}
+	alexTriggers = map[string]bool{"kayak": true, "ads": true, "social": true, "quote": true, "reader": true, "exit": true, "note": true}
 	// What the site says the page is (the widget's siteSignals.ts PAGE_TYPES).
 	pageTypes = map[string]bool{"home": true, "route": true, "destination": true, "origin": true, "airline": true,
 		"deals": true, "search": true, "flight": true, "quote": true, "thank_you": true, "blog": true, "about": true,
