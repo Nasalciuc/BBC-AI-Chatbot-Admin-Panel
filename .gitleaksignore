@@ -59,3 +59,7 @@ c0fdaf1606aaf78b41c54f2f53f3d5af42d9a12b:bbc-widget/tests/live.test.mjs:generic-
 # both files now build it at run time, so each line matches that one commit only
 bb13c7621140bc5579832bd7d0ca88643b97c164:bbc-chatbot-api/tests/test_crm_leads_api.py:generic-api-key:15
 5cfb4474cac7c4a61518c5ccd9609d32dce6db45:bbc-chatbot-api/tests/test_crm_leads_api_sweep.py:generic-api-key:12
+
+# bbc-chatbot-api/tests/test_live_bot.py: a made-up jwt_secret for the bot keys' tests, in the first version of
+# the agent's-bot tests (#287); the file now builds it at run time, so the line below matches that one commit only
+5fd6a666ecabb3d36e776fbf3f30c1001c380c55:bbc-chatbot-api/tests/test_live_bot.py:generic-api-key:40
