@@ -101,9 +101,16 @@ test('the measurements name the moments that came at the reading moment', () => 
 
 test('a Meta page titled for a region names it as the card\'s place', () => {
   assert.deepEqual(tripFromTitle('Business class to Asia'), { source: 'route_page', destination_name: 'Asia', cabin: 'business' })
-  assert.deepEqual(tripFromTitle('First class to the Indian subcontinent'), {
-    source: 'route_page', destination_name: 'Indian subcontinent', cabin: 'first',
+  assert.deepEqual(tripFromTitle('First class to the Middle East'), {
+    source: 'route_page', destination_name: 'Middle East', cabin: 'first',
   })
+  assert.deepEqual(tripFromTitle('Business Class to South-East Asia'), {
+    source: 'route_page', destination_name: 'South-East Asia', cabin: 'business',
+  })
+  // A tagline names no place: the card asks without one.
+  assert.equal(tripFromTitle('Business class to Europe for less'), null)
+  assert.equal(tripFromTitle('First class to anywhere'), null)
+  assert.equal(tripFromTitle('Business class to Asia, Europe and the Americas at Private Fares'), null)
   // The titles it read before read the same.
   assert.deepEqual(tripFromTitle('Business class flights to Lakeside'), { source: 'route_page', destination_name: 'Lakeside', cabin: 'business' })
   assert.equal(tripFromTitle('Business class'), null)
