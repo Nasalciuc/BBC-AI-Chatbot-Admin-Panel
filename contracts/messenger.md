@@ -161,7 +161,11 @@ What the API does with an event:
   pass of the event that lost its claim mid-turn sends nothing beside it, a delivery that lost its claim gives the
   gateway none, and one whose send the API began first gets none either: its own answer is kept as the API's to send
   while that send is on its way (never one with none: should that send go nowhere, the next pass sends from it), one
-  with none once it is over. The right reads as on its way for 90
+  with none once it is over. One whose giving Redis did not answer (the right and the answer maybe written, maybe
+  not) gives the gateway none (409), the event kept, and its process holds the giving: made again, with the same
+  right, at its next minute or when the event is delivered again (a right found its own is a run whose answer was
+  lost: given), so a delivery made again gets the event's answer from Redis, this one's, or none when another
+  delivery's or the API's send stands; never from the process while Redis fails. The right reads as on its way for 90
   seconds (past the gateway's own 60), then as over: never sent by the API. An event given to the gateway while a
   later one of the person's waits in the inbox stays there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
@@ -175,8 +179,11 @@ What the API does with an event:
   when it next looks at the event, however long Redis took; a send that ended and whose end could not be written has
   its event let go of then (out of the inbox, never sent again). A process that stopped first leaves its marks to read
   as begun: never sent twice. A process cut off from Redis past its alive mark while it runs, whose event another
-  process let go of so meanwhile, sends the replies it knows never went out itself once Redis answers, under its own
-  mark, once (`sent_late`).
+  process let go of so meanwhile, sends the replies it knows never went out itself once Redis answers, once
+  (`sent_late`), in the person's order: it puts the event back in the inbox first, under a new mark of its own (on
+  its way for every process), so a later event of theirs waits behind it, then lets it go again; only while no later
+  event of theirs was taken since (each event taken keeps the person's latest, `msgr:inbox:last:<visitor id>`). One
+  taken since, its replies maybe out already: never sent after them (`late_dropped`), nothing waiting on it.
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
@@ -219,8 +226,9 @@ says how many there were. 401 a call not signed by the API, 404 a Page the gatew
 The API sends a chat's rows one after another, in the order they were stored (a chat's rows are stored one at a time
 in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
 the live push, even when the request that stored it was cancelled meanwhile (the cancel waits for the insert's
-answer, 12 seconds at most): an agent's "joined" line and their message never cross, however long an insert's answer
-takes); each
+answer, as a request not cancelled does; one that answers an error leaves the agent's message to the recovery minute
+as `unsure`, before the chat's next row may go: stored, its agent is told it was not sent): an agent's "joined" line
+and their message never cross, however long an insert's answer takes); each
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
@@ -279,8 +287,10 @@ that do not say: a server or a proxy failed once it may have had the call, RFC 9
 the server it passed the call to went away): `unknown` (`unconfirmed`). A refusal's body is believed only whole: a
 code read from a body cut short, longer than the 64 KiB read, or not Meta's shape whole (a field of the wrong type)
 says nothing, and only the status decides. A 200 is a message sent, whatever its body.
-A call starts only while 10 seconds (the Meta client's own limit) are left of the send's time. The rest is counted
-by kind.
+A call starts only while 10 seconds (the Meta client's own limit) are left of the send's time. An event's replies
+have the same 60 seconds as an agent's send, the wait for the person's other sends and the tries included, so they
+are over within the 90 seconds the API reads the gateway's right to send them as on its way (`timeout`, counted as
+`out_of_time`, once the time is up). The rest is counted by kind.
 
 ## Redis (the API's)
 
@@ -292,6 +302,7 @@ by kind.
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
 | `msgr:inbox:sending:<key>` | string | the API's send of its replies: `<when it began>:<process>`, then `done`; or the gateway's right to send them, `gateway:<when>` | 2 days |
 | `msgr:inbox:who:<visitor id>` | sorted set | one person's events in the inbox, by when they were taken | 2 days, renewed |
+| `msgr:inbox:last:<visitor id>` | string | the Meta time of the latest event of the person's taken, answered since or not | 2 days, renewed |
 | `msgr:recover:lock` | string | the pass's own token: one process recovers at a time | 5 min, renewed while the pass runs |
 | `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "row"?, "note"?}` a delivery (`state`: `waiting`, `sending`, `untold`, `unsure`) | until sent or told |
 | `msgr:outbox:cursor` | string | the part of the outbox the recovery is on (an HSCAN cursor) | 2 days |
@@ -318,7 +329,7 @@ the queues without time.
 The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`, `duplicates`, `still_answering`,
 `turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `no_dedupe`,
 `saved_once`, `not_kept`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
-`claim_lost`, `answer_unkept`, `sent_late`, `answer_dropped`, `bad_signature`,
+`claim_lost`, `answer_unkept`, `sent_late`, `late_dropped`, `answer_dropped`, `bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
 `target_unread`, `off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
