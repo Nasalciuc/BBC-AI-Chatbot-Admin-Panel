@@ -159,7 +159,9 @@ What the API does with an event:
   send's mark keeps any reply from going twice), and looks at 20 events at most, those that wait without a look behind
   an earlier one of their person's not counted (one person's events never keep another's out), and the agents'
   notes go first within 30 seconds and 20 of them at
-  most, each one cut at the 30 seconds (its note's id makes saving it again harmless), the outbox gone through in
+  most, each one cut at the 30 seconds (its note's id makes saving it again harmless; a delivery deleted without a
+  note, off or unreadable, counts among the 20 too, its deletion cut at the 30 seconds the same way and left for a
+  later pass), the outbox gone through in
   parts, the deliveries looked at in the part the passes are on kept by their ids until it is gone through (a part
   can be any size, and not always the same one for a cursor: HSCAN's COUNT is a hint), so a pass goes on from those
   not looked at yet whatever left the part meanwhile, the events always get their part, and a note that keeps
@@ -168,10 +170,14 @@ What the API does with an event:
   written, kept for the API to send, its turn over, or the gateway's, counts none and is never given up for them;
   its send goes on until the inbox lets it go; one a turn holds, its claim live (another process's, which may keep
   its answer to write and renews the claim meanwhile), counts none and waits; the give-up itself happens only while
-  nothing holds the event, in one step, so a claim taken since the pass looked leaves it to that turn; a try counted
-  as the pass looked is given back when no turn of it runs after all, so the last one is never spent waiting on
-  another's turn, and only while its count is still there: an event let go of meanwhile, answered by that turn, gets
-  no count written back, which would stay with no expiry)
+  nothing holds the event, in one step: no claim, no answer and no send of its replies written down, so a claim taken
+  since the pass looked leaves it to that turn, and a send a later event of its person's began meanwhile (its answer
+  gone from Redis) to that send; a try counted as the pass looked is given back when its own turn never starts after
+  all (another's turn holds it, or it fails before: its person's earlier events not looked up, or one of theirs
+  failing first), so the last one is never spent waiting on another's turn, and only while its count is still there:
+  an event let go of meanwhile, answered by that turn, gets no count written back, which would stay with no expiry; a
+  turn that ran keeps its try, its answer kept or not: one Redis did not take is held by its process, written at its
+  next minute and sent then without a try)
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
@@ -218,7 +224,12 @@ What the API does with an event:
   then): kept so, or not known (Redis failing), its person's later events wait behind it; one begun lately, or by a process still alive, is on its way, and the event waits: every old
   mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not.
   With the channel off no pass runs, and a process still holding such a mark keeps saying it is alive (through a
-  cooldown another of its calls began too), so none of them reads as a send begun once the channel is on again. Only
+  cooldown another of its calls began too), so none of them reads as a send begun once the channel is on again, as
+  long as that process reaches Redis. Cut off from it past its alive mark's 5 minutes, the limit is the one below: the
+  channel on again, another process's minute takes such a mark for a send a stopped process began and never sends its
+  replies again (an uncertain send is never made again automatically), and the cut-off process, Redis back, sends
+  those it knows never went out itself, late, in the person's order (dropped, counted, when a later event of theirs
+  was taken first). Only
   a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again, its
   event's answer written back first where it went meanwhile (its day over, or Redis let it go; never over another's
   claim or answer), so the same replies go, with no second turn; its mark
