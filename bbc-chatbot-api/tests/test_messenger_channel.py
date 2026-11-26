@@ -792,6 +792,27 @@ async def test_a_referral_before_the_first_message_reaches_the_chat(chat, redis)
 
 
 @pytest.mark.asyncio
+async def test_a_referral_not_saved_to_the_chat_that_goes_on_is_delivered_again(chat, redis):
+    """Review on #288: the next message goes on in the chat the person has and never reads the referral kept for a
+    chat made later, so a referral to that chat is saved to it, or the event fails and is delivered again, as the
+    inbox's quiet time is (the merge is the same each time). Rule 5: saved, the event is done, counted once."""
+    ref = {"ref": "promo", "source": "ADS", "ad_id": "ad7"}
+    chat.latest = {**chat.conv, "updated_at": now_iso(hours=-2)}
+    with patch("app.db.supabase.latest_conversation_of_visitor", new=AsyncMock(return_value=chat.latest)):
+        chat.patch_ok = False
+        with pytest.raises(mc.EventFailed):
+            await mc.handle(event(kind="referral", mid="", text="", referral=ref))
+        assert mc.MESSENGER_HEALTH["referrals"] == 0
+        chat.patch_ok = True
+        assert await mc.handle(event(kind="referral", mid="", text="", referral=ref)) == {"replies": []}
+    assert len(chat.patches) == 2 and chat.patches[0] == chat.patches[1]
+    assert chat.patches[-1]["utm_campaign"] == "promo" and chat.patches[-1]["utm_medium"] == "messenger_ads"
+    assert chat.patches[-1]["messenger_referral"]["ad_id"] == "ad7"
+    assert mc.MESSENGER_HEALTH["referrals"] == 1
+    chat.created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_thread_that_cannot_be_read_is_delivered_again(chat):
     with patch("app.db.supabase.latest_conversation_of_visitor", new=AsyncMock(return_value=None)):
         with pytest.raises(mc.EventFailed):

@@ -2216,12 +2216,14 @@ async def _answer(event: InboundEvent) -> list[dict]:
     vid = visitor_id_for(event.page_id, event.psid)
     with _collecting("") as turn:
         if event.kind == "referral":
-            # Opened the thread from a link or an ad without writing yet: kept for their chat.
-            MESSENGER_HEALTH["referrals"] += 1
+            # Opened the thread from a link or an ad without writing yet: kept for a chat made later. A chat that
+            # goes on never reads that (the next message finds the chat first), so the referral is saved to it, or
+            # the event fails and is delivered again, as the inbox's quiet time is: the merge is the same each time.
             await _keep_referral(vid, event.referral)
             conv = await _thread(vid, create=False)
-            if conv:
-                await db.patch_conversation_presence(conv["id"], _referral_meta(event.referral))
+            if conv and not await db.patch_conversation_presence(conv["id"], _referral_meta(event.referral)):
+                raise RuntimeError("the referral was not saved to the person's chat")
+            MESSENGER_HEALTH["referrals"] += 1
             return []
         conv = await _thread(vid, create=True, event=event)
         if not conv:
