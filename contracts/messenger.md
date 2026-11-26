@@ -143,7 +143,8 @@ What the API does with an event:
   inbox. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
   process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
-  (`recover_unsure`); one begun lately, or by a process still alive, is on its way, and the event waits. Only a send
+  (`recover_unsure`); one begun lately, or by a process still alive (5 minutes more at most: its minutes clear a mark
+  it knows sent nothing), is on its way, and the event waits. Only a send
   that never reached the gateway clears its mark (compare and delete: only its own) and goes again; its mark not
   cleared then (Redis failing), its process clears it at its next minute, whether it holds the lock or not, or when
   it next looks at the event, however long Redis took (one that stopped first leaves it to read as begun: never sent
