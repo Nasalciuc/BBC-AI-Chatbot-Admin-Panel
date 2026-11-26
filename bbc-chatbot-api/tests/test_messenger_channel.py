@@ -6092,6 +6092,38 @@ async def test_notes_that_keep_failing_never_keep_the_others_from_their_turn(cha
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["off", "unreadable"])
+async def test_a_delivery_whose_deletion_is_refused_never_keeps_the_notes_after_it(chat, redis, monkeypatch, first):
+    """CodeRabbit #288: the outbox's first delivery is one the minute deletes without a note (an agent's message the
+    channel went off for, or one that cannot be read), and Redis refuses its HDEL: the pass goes on and tells the note
+    after it, and the first stays for a later pass, never a note itself. Rule 5: the HDEL taken, it is deleted (an
+    unreadable one counted as given up once, when it is)."""
+    off = json.dumps({"cid": CONV, "boot": "gone-one", "state": "off", "at": time.time()})
+    redis.kv[mc.OUTBOX] = {
+        "e-first": off if first == "off" else "{not json",
+        "e-note": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold", "note": "A note", "at": time.time()}),
+    }
+    real_hdel = redis.hdel
+    once = {"on": True}
+
+    async def refused(key, *fields):
+        if once["on"] and key == mc.OUTBOX and "e-first" in fields:
+            once["on"] = False
+            raise ConnectionError("Connection reset by peer")
+        return await real_hdel(key, *fields)
+
+    monkeypatch.setattr(redis, "hdel", refused)
+    out = await mc.run_messenger_recover()
+    assert out["told"] == 1 and set(await redis.hgetall(mc.OUTBOX)) == {"e-first"}
+    assert mc.MESSENGER_HEALTH["outbox_given_up"] == 0, "nothing given up while it is still there"
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    out = await mc.run_messenger_recover()
+    assert out["told"] == 0 and not await redis.hgetall(mc.OUTBOX)
+    assert mc.MESSENGER_HEALTH["outbox_given_up"] == (1 if first == "unreadable" else 0)
+    assert [r["content"] for r in chat.rows if r["role"] == "system"] == ["A note"]
+
+
+@pytest.mark.asyncio
 async def test_the_notes_after_failing_ones_are_told_while_the_deliveries_between_them_end(chat, redis, monkeypatch):
     """CodeRabbit #288: the outbox in one part (HSCAN's COUNT a hint), its first notes failing pass after pass, and
     the deliveries after them (a live process's) done with and crossed out by it between passes, one each time: each

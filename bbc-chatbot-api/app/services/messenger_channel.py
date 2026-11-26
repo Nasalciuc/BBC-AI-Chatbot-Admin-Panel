@@ -2730,14 +2730,14 @@ async def _tell_left(r, until: float) -> int:
                 d = json.loads(raw)
                 cid, boot, state, at = str(d["cid"]), str(d["boot"]), d.get("state"), float(d.get("at") or 0)
             except (ValueError, KeyError, TypeError) as e:
-                MESSENGER_HEALTH["outbox_given_up"] += 1
-                logger.error(f"[messenger] a written-down delivery not readable ({type(e).__name__}): given up")
-                await r.hdel(OUTBOX, entry)
+                if await _strike(r, entry):
+                    MESSENGER_HEALTH["outbox_given_up"] += 1
+                    logger.error(f"[messenger] a written-down delivery not readable ({type(e).__name__}): given up")
                 continue
             if state == "off":
                 # An agent's message the channel went off for before its call, its cross-out refused then: nothing
-                # went out, so it is crossed out now, without a note.
-                await r.hdel(OUTBOX, entry)
+                # went out, so it is crossed out now, without a note (refused again: a later pass, never a note).
+                await _strike(r, entry)
                 continue
             if state not in ("untold", "unsure"):
                 if boot not in alive:
@@ -2766,6 +2766,20 @@ async def _tell_left(r, until: float) -> int:
         redis_failed("messenger outbox", e)
         logger.error(f"[messenger] the written-down deliveries not gone through: {type(e).__name__}: {e}")
     return told
+
+
+async def _strike(r, entry: str) -> bool:
+    """A written-down delivery the minute deletes without a note (an off one, an unreadable one): True once deleted;
+    False when Redis refuses it (logged), the delivery left for a later pass, and the pass going on with the others:
+    one that keeps failing never keeps the notes after it from their turn."""
+    try:
+        await r.hdel(OUTBOX, entry)
+        return True
+    except Exception as e:
+        redis_failed("messenger outbox", e)
+        logger.warning(f"[messenger] a written-down delivery not deleted (looked at again by a later pass): "
+                       f"{type(e).__name__}: {e}")
+        return False
 
 
 async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> int:
