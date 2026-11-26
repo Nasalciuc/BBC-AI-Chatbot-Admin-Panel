@@ -189,7 +189,8 @@ MESSENGER_HEALTH: dict[str, int] = {
     "gateway_down": 0,       # the gateway did not answer
     "no_target": 0,          # a Messenger chat whose Page and PSID could not be read: nothing sent
     "target_unread": 0,      # an agent's message whose chat could not be read: kept for the minute, never dropped
-    "off_skipped": 0,        # rows that waited for the chat's previous one while the channel was turned off: not sent
+    "off_skipped": 0,        # rows that waited for the chat's previous one while the channel was turned off: not sent;
+    #                          a kept event's replies met with the channel off since: kept, sent once it is on again
     "cut_at_shutdown": 0,    # rows a shutdown did not wait for: their agents are told
     "outbox_unsaved": 0,     # agents' messages not written down (Redis down): one a shutdown cuts may go untold
     "told_later": 0,         # agents told by the recovery minute: a stopped process's message, or a note not saved
@@ -1209,6 +1210,12 @@ async def _answer_these(r, found: list[str], unreadable: dict[str, str]) -> None
         # Another pass holding the event now: theirs to send.
         if await _remember(key, replies, "api", token, r) != "kept":
             raise StillAnswering()
+        if replies and not enabled():
+            # Turned off while its turn ran: nothing goes out (no send's mark written, which would read later as a
+            # send begun), its answer kept as the API's to send, sent by the recovery once the channel is on again,
+            # before this one.
+            MESSENGER_HEALTH["off_skipped"] += 1
+            raise StillAnswering()
         mark = await _begin_send(r, earlier, k, replies) if replies else None
         if replies and mark is None:
             raise StillAnswering()  # another send of them began: this one comes after it
@@ -1945,7 +1952,11 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
     reaching the gateway again: held, the event in the inbox, and its mark cleared at the next minute, so the recovery
     sends them. Redis failing raises (the caller logs): held, unless they went out already; the putting back's answer
     lost, the new mark is held beside the old one (_PUTTING_BACK), and its next minute sends them late from it if it
-    ran, through this same check."""
+    ran, through this same check. The channel turned off: nothing goes out, nothing is written, and they stay this
+    process's (_UNSENT), sent late at a minute the channel is on."""
+    if not enabled():
+        MESSENGER_HEALTH["off_skipped"] += 1
+        return
     try:
         event = InboundEvent.model_validate_json(kept_event)
     except ValidationError as e:
@@ -2503,7 +2514,8 @@ async def run_messenger_recover() -> dict:
     renewed while the pass runs and let go only while it is still its own) does the work, starting nothing new past
     RECOVER_BUDGET_S or once the lock is lost, the agents' notes first within TELL_BUDGET_S so the events always get
     their part. An event still failing after RECOVER_TRIES runs, or unreadable, is given up: counted, and logged
-    without its words."""
+    without its words. The channel turned off during the pass ("off"): no event's turn starts after that, and no
+    reply goes out; a turn that ran keeps its answer, sent once the channel is on again (off_skipped)."""
     out: dict[str, Any] = {"state": "empty", "answered": 0, "waiting": 0, "given_up": 0, "told": 0}
     if not enabled():
         return {**out, "state": "off"}
@@ -2537,6 +2549,9 @@ async def run_messenger_recover() -> dict:
         for k in keys:
             if looked >= RECOVER_BATCH or time.monotonic() - started >= RECOVER_BUDGET_S or held["lost"]:
                 break  # the rest next minute (or the pass that holds the lock now)
+            if not enabled():
+                out["state"] = "off"  # turned off during the pass: no turn started, the rest kept for when it is on
+                break
             done = await _recover_one(r, k, waiting)
             if done == "behind":
                 out["waiting"] += 1
@@ -2736,6 +2751,13 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         return "waiting"
     replies = out.get("replies") or []
     if replies:
+        if not enabled():
+            # Turned off while its turn ran: nothing goes out (no send's mark written, which would read later as a
+            # send begun), its answer kept as the API's to send, sent once the channel is on again, without a second
+            # turn; its person's later events wait behind it.
+            MESSENGER_HEALTH["off_skipped"] += 1
+            waiting.add(who)
+            return "waiting"
         mark = await _begin_send(r, event, k, replies)
         if mark is None or not await _send_kept(r, event, k, replies, mark):
             # Another send of them began since this one looked (another pass, or an earlier event's turn answering

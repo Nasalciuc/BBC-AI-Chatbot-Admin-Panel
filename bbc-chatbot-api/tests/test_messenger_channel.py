@@ -4838,6 +4838,89 @@ async def test_replies_a_stopped_process_was_sending_are_never_sent_again(chat, 
     assert len(chat.requests) == 1, "no second turn"
 
 
+def _turned_off_during(chat, monkeypatch, text: str) -> None:
+    """Turns that answer about the person's words; the channel turned off while the one on `text` runs."""
+    _turns(chat)
+    turn = chat.answer
+
+    async def off_meanwhile(req, add_message):
+        if req.message == text:
+            monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+        return await turn(req, add_message)
+
+    chat.answer = off_meanwhile
+
+
+@pytest.mark.asyncio
+async def test_a_pass_sends_nothing_and_starts_no_turn_once_the_channel_is_turned_off(chat, redis, monkeypatch):
+    """CodeRabbit #288: the channel turned off while the recovery's turn of a kept event runs. Its replies never go
+    out (no send's mark written: its answer kept as the API's to send, counted off_skipped), and the pass starts no
+    turn of the events after it. Rule 5: on again, the next pass sends that answer, without a second turn, and answers
+    the rest."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="q1", psid="PSID-8", text="Theirs", timestamp=200))
+    _turned_off_during(chat, monkeypatch, "First")
+    monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        assert out["state"] == "off" and (out["answered"], out["waiting"]) == (0, 1)
+        assert gw.sent == [] and set(redis.kv[mc.INBOX]) == {"m1", "q1"} and mc._sending_key("m1") not in redis.kv
+        assert json.loads(redis.kv["msgr:event:m1"]) == {"replies": [{"text": "About: First"}], "by": "api"}
+        assert [r.message for r, _ in chat.requests[2:]] == ["First"], "no turn of the event after it"
+        assert mc.MESSENGER_HEALTH["off_skipped"] == 1
+        assert (await mc.run_messenger_recover())["state"] == "off"
+        monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 2 and gw.sent == ["About: First", "About: Theirs"] and not redis.kv[mc.INBOX]
+    assert [r.message for r, _ in chat.requests[2:]] == ["First", "Theirs"], "the first's answer sent, no second turn"
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_event_answered_first_as_the_channel_is_turned_off_sends_nothing(chat, redis, monkeypatch):
+    """CodeRabbit #288: the person's first message failed (kept); their second, from the gateway, has the first
+    answered first, and the channel is turned off during that turn: nothing goes out, the first's answer kept as the
+    API's to send, and the second waits (409), its turn never run. Rule 5: on again, the recovery sends the first's
+    answer, without a second turn, and the second's comes after it."""
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    _turned_off_during(chat, monkeypatch, "First")
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert gw.sent == [] and mc._sending_key("m1") not in redis.kv and set(redis.kv[mc.INBOX]) == {"m1", "m2"}
+        assert json.loads(redis.kv["msgr:event:m1"]) == {"replies": [{"text": "About: First"}], "by": "api"}
+        assert [r.message for r, _ in chat.requests[1:]] == ["First"] and mc.MESSENGER_HEALTH["off_skipped"] == 1
+        monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+        monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 2 and gw.sent == ["About: First", "About: Second"] and not redis.kv[mc.INBOX]
+    assert [r.message for r, _ in chat.requests[1:]] == ["First", "Second"]
+
+
+@pytest.mark.asyncio
+async def test_a_late_send_met_with_the_channel_off_sends_nothing_and_stays_this_processs(redis, monkeypatch):
+    """CodeRabbit #288: replies this process knows never went out, to send late (their event let go of meanwhile),
+    met with the channel off: nothing is sent and nothing written (no putting back, no new mark), and they stay this
+    process's, sent late at a minute the channel is on. Rule 5: on, they go (the late-send tests above)."""
+    ev = event(mid="m1", text="First")
+    mark = f"{time.time() - 30}:{mc.BOOT}"
+    redis.kv[mc._sending_key("m1")] = mark
+    entry = (mark, ev.model_dump_json(), [{"text": "About: First"}])
+    mc._UNSENT["m1"] = entry
+    monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        await mc._send_late(redis, "m1", entry[1], entry[2], mark)
+    assert gw.sent == [] and mc._UNSENT["m1"] is entry and redis.kv[mc._sending_key("m1")] == mark
+    assert "m1" not in redis.kv.get(mc.INBOX, {}) and mc.MESSENGER_HEALTH["off_skipped"] == 1
+
+
 @pytest.mark.asyncio
 async def test_one_persons_waiting_events_never_fill_the_passs_batch(chat, redis, monkeypatch):
     """CodeRabbit #288: the oldest kept events are one person's, their first one's replies on their way through the
