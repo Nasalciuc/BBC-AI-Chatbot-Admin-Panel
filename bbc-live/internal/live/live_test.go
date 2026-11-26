@@ -163,6 +163,10 @@ func TestABeatListsTheVisitorWithOnlyWhatThePanelMayShow(t *testing.T) {
 
 func TestABeatCarriesThePageKindAndTheStepsTakenNeverWhatWasTyped(t *testing.T) {
 	s, c, _ := setup(t)
+	// A time whose digits hold "555", as the clock's often do (first_at and last_at go out with the list), near now:
+	// what was typed is looked for whole below, never as digits a timestamp carries.
+	n := time.Now().Unix()
+	c.t.Store(n - n%1000 + 555)
 	h := s.Handler()
 	beat := map[string]any{
 		"page": "/search", "source": "site", "page_type": "search",
@@ -174,7 +178,7 @@ func TestABeatCarriesThePageKindAndTheStepsTakenNeverWhatWasTyped(t *testing.T) 
 	}
 	w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
 	body := w.Body.String()
-	for _, leak := range []string{"dana@example.com", "call me", "555", "contact:sms"} {
+	for _, leak := range []string{"dana@example.com", "call me", "555 0100", "contact:sms"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("the list carries %q: %s", leak, body)
 		}
