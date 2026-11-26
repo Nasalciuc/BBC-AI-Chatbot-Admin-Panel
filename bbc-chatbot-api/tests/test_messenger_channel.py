@@ -7,6 +7,7 @@ the person's chat, the same turn a widget message takes, what goes back to the g
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -65,10 +66,12 @@ def give_to_gateway(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.GIVE_TO_GATEWAY_LUA does."""
     event_key, sending_key = keys
     token, answer, none_given, ex, right, right_ex = args[0], args[1], args[2], int(args[3]), args[4], int(args[5])
-    api_to_send = args[6]
+    api_to_send, its_id = args[6], args[7]
     sending = fake.kv.get(sending_key) if fake._alive(sending_key) else None
-    if sending == right:
-        return 1  # the same delivery's, made again: its right taken by a run whose answer was lost
+    if sending is not None and str(sending).startswith("gateway:") and str(sending).endswith(its_id):
+        fake.kv[sending_key] = right  # the same delivery's, made again (a run whose answer was lost): from now
+        fake._set_expiry(sending_key, ex=right_ex)
+        return 1
     held = fake.kv.get(event_key) if fake._alive(event_key) else None
     if held is not None and held != token:
         return 0
@@ -147,11 +150,13 @@ def give_again(fake: FakeRedis, keys: list, args: list) -> int:
     if s is None or not str(s).startswith("gateway"):
         return 1
     if k in fake._zset(inbox):
-        fake.kv[sending_key] = right
+        kept_id = re.match(r"^gateway:[^:]*(:.*)$", str(s))
+        fake.kv[sending_key] = f"gateway:{right}{kept_id.group(1) if kept_id else ''}"
         fake._set_expiry(sending_key, ex=ex)
         return 1
+    when = re.match(r"^gateway:([^:]+)", str(s))
     try:
-        at = float(str(s)[8:] or 0)
+        at = float(when.group(1)) if when else 0.0
     except ValueError:
         at = 0.0
     if float(fake.kv.get(last_key) or 0 if fake._alive(last_key) else 0) > at:
@@ -2220,7 +2225,8 @@ async def test_a_giving_redis_made_but_whose_answer_was_lost_goes_back_with_the_
     reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
     assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1
     again = redis.kv[f"{mc.INBOX}:sending:m1"]
-    assert again.startswith("gateway:") and float(again[8:]) >= float(right[8:]), "the gateway's, from now"
+    assert again.split(":")[2] == right.split(":")[2], "the same delivery's right"
+    assert float(again.split(":")[1]) >= float(right.split(":")[1]), "taken again from now"
     assert not mc._UNGIVEN and not mc._UNKEPT and mc.MESSENGER_HEALTH["claim_lost"] == 0
 
 
@@ -3131,6 +3137,55 @@ async def test_the_gateways_right_covers_its_call_to_the_api_and_its_send_after(
         return
     out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
     assert [r["text"] for r in out["replies"]] == ["About: Second"] and not redis.kv[mc.INBOX]
+
+
+class _Clock:
+    """messenger_channel's time, moved by `offset` seconds (the rest of the time module as it is)."""
+
+    def __init__(self):
+        self.offset = 0.0
+
+    def time(self) -> float:
+        return time.time() + self.offset
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.mark.asyncio
+async def test_a_giving_redis_did_not_answer_is_stamped_when_it_is_made_again_never_at_its_first_try(chat, redis,
+                                                                                                    monkeypatch):
+    """CodeRabbit #288: the person's first and second messages failed (both kept); the gateway delivers the first
+    again, and Redis refuses the giving of its replies before it runs, long ago now: none given (409), the giving held.
+    Its process makes it again at its next minute: the right is stamped then, never with its first try's time, so the
+    recovery reads it as on its way (the gateway gets the replies only when it delivers the event again) and the
+    second waits; the gateway's delivery made again gets the replies, the right taken again from then, and the second
+    goes once that send is over. Rule 5: a giving Redis answers at once is stamped then
+    (test_a_later_message_waits_while_the_gateway_is_sending_an_earlier_ones_replies)."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    clock = _Clock()
+    monkeypatch.setattr(mc, "time", clock)
+    clock.offset = -(getattr(mc, "GATEWAY_SENDING_S", mc.SENDING_S) + 60)  # its first try, long ago
+    refuse = _refuse_answers(redis, monkeypatch, "msgr:event:m1")
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event(mid="m1", text="First"))  # the gateway's, again: its giving refused before it ran
+    assert not refuse["on"] and mc._UNGIVEN, "held"
+    clock.offset = 0.0
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)  # both old enough for the recovery
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()  # its minute: the giving made again, then the pass
+        assert out["waiting"] == 2 and gw.sent == [], "the first's right on its way from now: the second waits"
+        again = await mc.handle(event(mid="m1", text="First"))  # the gateway's, again: it gets them now
+        assert [r["text"] for r in again["replies"]] == ["About: First"]
+        monkeypatch.setattr(mc, "GATEWAY_SENDING_S", -1.0)  # the gateway's send over
+        out = await mc.run_messenger_recover()
+    assert gw.sent == ["About: Second"] and not redis.kv[mc.INBOX] and len(chat.requests) == 4
 
 
 @pytest.mark.asyncio

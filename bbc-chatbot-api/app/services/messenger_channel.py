@@ -95,7 +95,7 @@ OUTBOX_SEEN = "msgr:outbox:seen"
 # over is taken for a process that stopped in it (a send waits for the gateway GATEWAY_TIMEOUT_S at most), unless
 # that process is still alive (it knows whether its send is over).
 SENDING_S = GATEWAY_TIMEOUT_S + 10
-# The gateway's right to send a kept event's replies (handle: "gateway:<when>") reads as on its way this long: the
+# The gateway's right to send a kept event's replies (handle: "gateway:<when>:<id>") reads as on its way this long: the
 # gateway gets a delivery's answer within its own call to the API (bbc-messenger APITimeout, 75 s, begun before the
 # right was taken) and sends the replies within SendBudget after it (60 s), so a send of them is over by then. Given
 # them again (a delivery made again: the first answer never reached it), from then on (_give_again).
@@ -935,11 +935,13 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
 # step, only while the delivery still holds the event's claim (its token, or nothing): 1; 2 when the API's own send of
 # them began first, and the gateway gets none: over ("done"), an answer with none is kept; still on its way, this
 # turn's answer is kept as the API's to send, should that send go nowhere (never an empty one, which would let the
-# event go unsent); 0 when another delivery or pass holds the event, or answered it (nothing written). Run again for
-# the same delivery (its right, ARGV[5], found there: a run whose answer was lost took it), 1 again.
+# event go unsent); 0 when another delivery or pass holds the event, or answered it (nothing written). The right is
+# "gateway:<when>:<its id>", when the gateway may get the replies from (ARGV[5]): run again for the same delivery (its
+# id, ARGV[8], found there: a run whose answer was lost took it), the right is taken again from now, 1 again.
 GIVE_TO_GATEWAY_LUA = """
 local s = redis.call('get', KEYS[2])
-if s == ARGV[5] then
+if s and string.sub(s, 1, 8) == 'gateway:' and string.sub(s, -string.len(ARGV[8])) == ARGV[8] then
+  redis.call('set', KEYS[2], ARGV[5], 'EX', ARGV[6])
   return 1
 end
 local v = redis.call('get', KEYS[1])
@@ -971,12 +973,12 @@ async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
     if r is None:
         return "no_redis"
     answer = json.dumps({"replies": replies, "by": "gateway"})
-    right = f"{SENT_BY_GATEWAY}:{time.time()}"
+    right_id = uuid.uuid4().hex[:16]
     try:
-        given = await _give(r, key, k, replies, token, answer, right)
+        given = await _give(r, key, k, replies, token, answer, right_id)
     except Exception as e:
         redis_failed("messenger inbox", e)
-        _hold(key, token, answer, (k, replies, right))
+        _hold(key, token, answer, (k, replies, right_id))
         MESSENGER_HEALTH["answer_unkept"] += 1
         logger.warning(f"[messenger] a kept event's replies not given to the gateway, Redis not saying whether their "
                        f"right is this delivery's (held, given when it does): {type(e).__name__}: {e}")
@@ -989,29 +991,33 @@ async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
     return "theirs" if int(given) == 2 else "kept"
 
 
-async def _give(r, key: str, k: str, replies: list, token: str, answer: str, right: str) -> int:
-    """GIVE_TO_GATEWAY_LUA for one delivery (its token, answer and right): 1, 2 or 0. Redis failing raises."""
+async def _give(r, key: str, k: str, replies: list, token: str, answer: str, right_id: str) -> int:
+    """GIVE_TO_GATEWAY_LUA for one delivery (its token, answer and right's id): 1, 2 or 0. The right is stamped with
+    now, so the gateway's send of the replies is read as on its way from when it may get them: a giving made again
+    (Redis did not answer the first) starts it from then, never from the first try. Redis failing raises."""
+    right = f"{SENT_BY_GATEWAY}:{time.time()}:{right_id}"
     return int(await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
                             json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S, right, INBOX_KEEP_S,
-                            json.dumps({"replies": replies, "by": "api"})))
+                            json.dumps({"replies": replies, "by": "api"}), f":{right_id}"))
 
 
 # Replies given to the gateway before, delivered again (the gateway never got that answer, or stopped before sending
-# them: it sends them now). Their right a gateway's (KEYS[1], "gateway:<when>"): with the event still in the inbox
-# (KEYS[2], member ARGV[1]: a later event of the person's may wait behind it), the right is taken again from now
-# (ARGV[2], for ARGV[3] seconds), so that one waits while the gateway sends them: 1. The event let go of since: -1
-# when an event of the person's was taken after the right was (KEYS[3]: its replies may be out already, and these
-# never go after them); 1 otherwise. No gateway's right there (the event never kept): 1.
+# them: it sends them now). Their right a gateway's (KEYS[1], "gateway:<when>:<id>"): with the event still in the
+# inbox (KEYS[2], member ARGV[1]: a later event of the person's may wait behind it), the right is taken again from
+# now (ARGV[2], its id kept, for ARGV[3] seconds), so that one waits while the gateway sends them: 1. The event let
+# go of since: -1 when an event of the person's was taken after the right was (KEYS[3]: its replies may be out
+# already, and these never go after them); 1 otherwise. No gateway's right there (the event never kept): 1.
 GIVE_AGAIN_LUA = """
 local s = redis.call('get', KEYS[1])
 if not s or string.sub(s, 1, 7) ~= 'gateway' then
   return 1
 end
 if redis.call('zscore', KEYS[2], ARGV[1]) then
-  redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3])
+  local id = string.match(s, '^gateway:[^:]*(:.*)$') or ''
+  redis.call('set', KEYS[1], 'gateway:' .. ARGV[2] .. id, 'EX', ARGV[3])
   return 1
 end
-local at = tonumber(string.sub(s, 9)) or 0
+local at = tonumber(string.match(s, '^gateway:([^:]+)') or '') or 0
 if tonumber(redis.call('get', KEYS[3]) or '0') > at then
   return -1
 end
@@ -1030,8 +1036,8 @@ async def _give_again(event: InboundEvent) -> Optional[bool]:
         return True  # no Redis: no inbox, and no right to take again
     k = event.key()
     try:
-        out = int(await r.eval(GIVE_AGAIN_LUA, 3, _sending_key(k), INBOX, _last_key(event), k,
-                               f"{SENT_BY_GATEWAY}:{time.time()}", INBOX_KEEP_S))
+        out = int(await r.eval(GIVE_AGAIN_LUA, 3, _sending_key(k), INBOX, _last_key(event), k, repr(time.time()),
+                               INBOX_KEEP_S))
     except Exception as e:
         redis_failed("messenger inbox", e)
         logger.warning(f"[messenger] replies given to the gateway, delivered again, not given again yet (Redis): "
@@ -1041,11 +1047,11 @@ async def _give_again(event: InboundEvent) -> Optional[bool]:
 
 
 # Kept events whose giving to the gateway Redis did not answer (the right and the answer maybe written, maybe not):
-# each with its key, replies and right, beside its answer in _UNKEPT. The gateway got none: one delivery's replies
-# beside another's, or beside the API's own send, could go twice. Made again (GIVE_TO_GATEWAY_LUA, the same right) at
-# the process's next minute, or when the event is delivered again: whatever came of the first, a delivery made again
-# then reads the event's answer from Redis (this one's, the API's, or another's). Never given from here meanwhile:
-# the delivery waits (409).
+# each with its key, its replies and its right's id, beside its answer in _UNKEPT. The gateway got none: one
+# delivery's replies beside another's, or beside the API's own send, could go twice. Made again (GIVE_TO_GATEWAY_LUA,
+# the same right's id, stamped with when it is made) at the process's next minute, or when the event is delivered
+# again: whatever came of the first, a delivery made again then reads the event's answer from Redis (this one's, the
+# API's, or another's). Never given from here meanwhile: the delivery waits (409).
 _UNGIVEN: dict[str, tuple[str, list, str]] = {}
 
 
@@ -1432,7 +1438,7 @@ _UNSENT: dict[str, tuple[str, str, list]] = {}
 # never sent again). With _UNSENT, every old mark of a live process is one it knows of and settles itself: another
 # process waits on it while that process is alive (_send_state).
 _ENDED: dict[str, tuple[str, Optional[str]]] = {}
-# The right to send a kept event's replies, taken by its delivery from the gateway (handle, "gateway:<when>"), only
+# The right to send a kept event's replies, taken by its delivery from the gateway (handle, "gateway:<when>:<id>"), only
 # while that delivery holds the event's claim: the gateway sends them, and the API never does.
 SENT_BY_GATEWAY = "gateway"
 
@@ -1463,14 +1469,14 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
         _drop_unsent(k, known)
         return ("none" if raw is None else "done"), mark
     if raw == SENT_BY_GATEWAY or mark.startswith(f"{SENT_BY_GATEWAY}:"):
-        # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>", taken
-        # again from when a delivery made again gets them): on its way while the gateway may still be sending them
-        # (GATEWAY_SENDING_S: its call to the API, then its own 60 seconds), then over, sent or not: never sent again
-        # by the API. A later event of the person's waits for it until then.
+        # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>:<id>",
+        # taken again from when a delivery made again gets them): on its way while the gateway may still be sending
+        # them (GATEWAY_SENDING_S: its call to the API, then its own 60 seconds), then over, sent or not: never sent
+        # again by the API. A later event of the person's waits for it until then.
         _drop_unsent(k, known)
         at = 0.0
         try:
-            at = float(mark.partition(":")[2] or 0)
+            at = float(mark.split(":")[1] or 0) if ":" in mark else 0.0
         except ValueError as e:
             logger.warning(f"[messenger] the gateway's right to send not readable, taken for one over: {e}")
         return ("on_its_way" if time.time() - at < GATEWAY_SENDING_S else "done"), mark
