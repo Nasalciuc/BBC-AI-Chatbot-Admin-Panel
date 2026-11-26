@@ -1498,6 +1498,8 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
             # it, in the person's order, at its next minute (_settle_own, _send_late).
             return "done", mark
         return "on_its_way", mark  # another's mark by now: looked at again later
+    if _PUTTING_BACK.get(k) == raw:
+        return "on_its_way", mark  # this process's late send, put back with its answer lost: sent at its next minute
     head, _, owner = mark.partition(":")
     since = 0.0  # unreadable: taken for one begun long ago
     try:
@@ -1622,6 +1624,16 @@ async def _settle_own(r) -> None:
     for k, entry in list(_UNSENT.items()):
         mark, kept_event, replies = entry
         try:
+            fresh = _PUTTING_BACK.get(k)
+            if fresh is not None:
+                if await r.get(_sending_key(k)) == fresh:
+                    # Its late send's putting back ran and its answer was lost: the event is in the inbox under the
+                    # new mark, and nothing was sent: they go now, once, never from a second turn.
+                    _PUTTING_BACK.pop(k, None)
+                    _drop_unsent(k, entry)
+                    await _send_put_back_kept(r, k, kept_event, replies, fresh)
+                    continue
+                _PUTTING_BACK.pop(k, None)  # it did not run: the old mark is looked at as before
             cleared = await _clear_unsent(r, k, mark, replies)
             if cleared > 0:
                 # Still kept: its answer written back where it went meanwhile and its mark cleared, in one step with
@@ -1736,9 +1748,9 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
     under it, once (sent_late), in the person's order: the event is put back in the inbox first, so a later event of
     theirs waits behind it, and then let go of again; one of theirs taken after its send began (its replies maybe out
     already, whatever Meta's time of it), they are never sent after it: dropped, counted (late_dropped). Never
-    reaching the gateway again: held, the event in
-    the inbox, and its mark cleared at the next minute, so the recovery sends them. Redis failing raises (the caller
-    logs): held, unless they went out already."""
+    reaching the gateway again: held, the event in the inbox, and its mark cleared at the next minute, so the recovery
+    sends them. Redis failing raises (the caller logs): held, unless they went out already; the putting back's answer
+    lost, the new mark is held beside the old one (_PUTTING_BACK), and its next minute sends them if it ran."""
     try:
         event = InboundEvent.model_validate_json(kept_event)
     except ValidationError as e:
@@ -1753,8 +1765,11 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
         began = float(mark.partition(":")[0])
     except ValueError as e:
         logger.warning(f"[messenger] a late send's mark not readable, taken for one begun long ago: {e}")
+    # The new mark held first, beside the old one: Redis may run the putting back and lose its answer.
+    _PUTTING_BACK[k] = fresh
     back = int(await r.eval(REKEEP_LUA, 5, _sending_key(k), _last_key(event), INBOX, who, f"{INBOX}:{k}", mark,
                             repr(began), k, place, kept_event, INBOX_KEEP_S, fresh))
+    _PUTTING_BACK.pop(k, None)
     _UNSENT.pop(k, None)  # its mark this one's no more, or on its way under the new one: never cleared as unsent
     if back == 0:
         return  # the mark ran out, or is another's: not this one's to send
@@ -1763,6 +1778,22 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
         logger.warning("[messenger] replies known never to have gone out, a later event of the person's taken since: "
                        "never sent after its replies (dropped)")
         return
+    await _send_put_back(r, k, event, kept_event, replies, fresh)
+
+
+# Late sends whose putting back (REKEEP_LUA) Redis did not answer, each with the new mark it would have written,
+# beside the old one in _UNSENT: at its next minute this process reads the mark. The new one there, it ran (the
+# event back in the inbox under it, nothing sent yet): the replies go now, once. Not there, it did not: the old one is
+# looked at as before. Another process meeting the new mark meanwhile reads it as on its way (_send_state_of).
+_PUTTING_BACK: dict[str, str] = {}
+
+
+async def _send_put_back(r, k: str, event: InboundEvent, kept_event: str, replies: list, mark: str) -> None:
+    """A late send's replies, its event back in the inbox under its new mark (REKEEP_LUA ran): sent now, once
+    (sent_late), then the event let go of. Never reaching the gateway: held, the event in the inbox, its mark cleared
+    at the next minute, and the recovery sends them. Redis failing raises (the caller logs)."""
+    who = _who(event)
+    fresh = mark
     result = await send(event.page_id, event.psid, replies)
     failed = result.get("failed") or {}
     kind = str(failed.get("kind") or "")
@@ -1788,6 +1819,17 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
                        f"{type(e).__name__}: {e}")
         return
     await _release_event(k, who)
+
+
+async def _send_put_back_kept(r, k: str, kept_event: str, replies: list, mark: str) -> None:
+    """_send_put_back for a late send's event as this process kept it (its JSON); unreadable: given up (logged)."""
+    try:
+        event = InboundEvent.model_validate_json(kept_event)
+    except ValidationError as e:
+        logger.error(f"[messenger] replies put back to send late, their event not readable ({e.error_count()} "
+                     f"errors): given up")
+        return
+    await _send_put_back(r, k, event, kept_event, replies, mark)
 
 
 @contextlib.asynccontextmanager

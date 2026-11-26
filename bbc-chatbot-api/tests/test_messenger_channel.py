@@ -54,6 +54,7 @@ def fresh(monkeypatch):
     mc._UNKEPT.clear()
     mc._UNGIVEN.clear()
     mc._HELD_BESIDE.clear()
+    mc._PUTTING_BACK.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
@@ -2821,6 +2822,74 @@ async def test_a_late_send_never_goes_after_a_later_events_replies(chat, redis, 
     assert sent == [reply, reply] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
     assert mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 3
     assert "m1" not in redis.kv[mc.INBOX] and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("putting_back", ["ran_its_answer_lost", "refused_before_it_ran"])
+async def test_a_late_sends_putting_back_whose_answer_was_lost_sends_its_replies_once_at_the_next_minute(
+        chat, redis, monkeypatch, putting_back):
+    """CodeRabbit #288: as above, process B let go of an event whose send A knows sent nothing, A cut off from Redis.
+    A, back, puts the event back in the inbox under a new mark (REKEEP_LUA), and Redis runs it and loses its answer:
+    A holds the new mark beside the old one, and its next minute finds the new one there and sends the replies then,
+    once, never from a second turn; meanwhile another process reads the new mark as on its way (A alive). Rule 5:
+    Redis refusing the putting back before it ran, A's next minute tries it again from the old mark: the same
+    replies, once."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    sending_s = mc.SENDING_S
+
+    def become(boot, knows, putting):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+        mc._PUTTING_BACK.clear()
+        mc._PUTTING_BACK.update(putting)
+
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {}, {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        a_knows = mc._UNSENT.copy()
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        blinks["on"] = False
+        become("process-b", {}, {})
+        assert (await mc.run_messenger_recover())["answered"] == 1 and not redis.kv[mc.INBOX], "B let it go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+        real_eval = redis.eval
+        once = {"on": True}
+
+        async def eval_(script, numkeys, *keys_and_args):
+            if script == mc.REKEEP_LUA and once["on"]:
+                once["on"] = False
+                if putting_back == "refused_before_it_ran":
+                    raise ResponseError("LOADING Redis is loading the dataset in memory")
+                await real_eval(script, numkeys, *keys_and_args)
+                raise RedisConnectionError("Connection closed by server.")  # it ran: only its answer lost
+            return await real_eval(script, numkeys, *keys_and_args)
+
+        monkeypatch.setattr(redis, "eval", eval_)
+        become("process-a", a_knows, {})  # A reaches Redis again
+        await mc.run_messenger_recover()  # its minute: the late send, its putting back's answer lost
+        assert gw.sent == [reply] and not once["on"], "nothing sent while the putting back's answer was lost"
+        a_putting = dict(getattr(mc, "_PUTTING_BACK", {}))
+        a_knows = mc._UNSENT.copy()
+        redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+        if putting_back == "ran_its_answer_lost":
+            assert "m1" in redis.kv[mc.INBOX], "back in the inbox under the new mark"
+            become("process-b", {}, {})
+            assert (await mc.run_messenger_recover())["waiting"] == 1, "the new mark on its way for another process"
+            assert gw.sent == [reply]
+        become("process-a", a_knows, a_putting)
+        await mc.run_messenger_recover()  # its next minute
+        await mc.run_messenger_recover()
+    assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 2
+    assert not mc._UNSENT and not mc._PUTTING_BACK and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
+    assert "m1" not in redis.kv[mc.INBOX]
 
 
 @pytest.mark.asyncio
