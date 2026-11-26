@@ -1506,6 +1506,22 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
         return None
 
 
+async def get_conversation_metadata(conv_id: str) -> Optional[dict]:
+    """A chat's id and metadata (where it answers to: Messenger's outbound); None when there is no such chat. A read
+    that fails is logged and RAISED, never None: the caller tells "no chat" from "couldn't look" (rule 7), because
+    it drops a delivery on the first and keeps it for later on the second."""
+    def _q():
+        return get_client().table("conversations").select("id, metadata").eq("id", conv_id).limit(1).execute()
+
+    try:
+        res = await _run_sync(_q, label="conv_metadata")
+    except Exception as e:
+        logger.error(f"get_conversation_metadata failed conv={conv_id}: {type(e).__name__}: {e}")
+        raise
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 async def get_blind_inputs(conv_id: str) -> Optional[dict]:
     """The five fields that decide whether an agent may read a chat yet
     (blind take): status, mode, who has it, who was talking in it, and

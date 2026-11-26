@@ -898,7 +898,7 @@ async def test_an_agents_message_finds_its_thread_when_redis_forgot_it(redis):
     c = Chat().start()
     try:
         with patch.object(mc, "send", new=gw), \
-                patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)):
+                patch("app.db.supabase.get_conversation_metadata", new=AsyncMock(return_value=conv)):
             from app.services.conversation_service import add_message
 
             await add_message(CONV, "agent", "Following up on your trip.")
@@ -910,13 +910,83 @@ async def test_an_agents_message_finds_its_thread_when_redis_forgot_it(redis):
 
 
 @pytest.mark.asyncio
+async def test_an_agents_message_to_a_chat_that_could_not_be_read_is_kept_for_the_minute(redis):
+    """CodeRabbit #288: Redis no longer knows where the chat answers to, and the chat's read fails: where the agent's
+    message goes is not known, so it is never crossed out. Kept (unsure) for the recovery minute, which looks the chat
+    up again while this process lives, and tells the agent it was not sent, once. Rule 5: a chat read and found not
+    on Messenger is crossed out at once, without a word (test_a_widget_chat_sends_nothing_anywhere)."""
+    conv = {"id": CONV, "metadata": {"chat_channel": "messenger", "messenger": {"page_id": PAGE, "psid": PSID}}}
+    reads = {"fail": True}
+
+    async def read(cid):
+        if reads["fail"]:
+            raise RuntimeError("the database did not answer")
+        return conv
+
+    gw = Gateway([])
+    c = Chat().start()
+    try:
+        with patch.object(mc, "send", new=gw), patch("app.db.supabase.get_conversation_metadata", new=read):
+            from app.services.conversation_service import add_message
+
+            await add_message(CONV, "agent", "Following up on your trip.")
+            await mc.drain(CONV)
+            (left,) = [json.loads(v) for v in (await redis.hgetall(mc.OUTBOX)).values()]
+            assert left["state"] == "unsure" and gw.sent == [] and mc.MESSENGER_HEALTH["target_unread"] == 1
+            assert (await mc.run_messenger_recover())["told"] == 0, "the chat still not read: looked at again"
+            reads["fail"] = False
+            out = await mc.run_messenger_recover()
+            again = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    notes = [r["content"] for r in c.rows if r["role"] == "system"]
+    assert out["told"] == 1 and again["told"] == 0 and notes == [mc.NOT_SENT_OTHER] and gw.sent == []
+    assert not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_leaves_a_message_whose_chat_could_not_be_read_to_the_next_process(redis, monkeypatch):
+    """The same at a shutdown: an agent's message saved once it began, its chat not read: nothing is said now and
+    nothing crossed out; the next process's minute looks the chat up and tells the agent, once."""
+    conv = {"id": CONV, "metadata": {"chat_channel": "messenger", "messenger": {"page_id": PAGE, "psid": PSID}}}
+    reads = {"fail": True}
+
+    async def read(cid):
+        if reads["fail"]:
+            raise RuntimeError("the database did not answer")
+        return conv
+
+    gw = Gateway([])
+    c = Chat().start()
+    try:
+        with patch.object(mc, "send", new=gw), patch("app.db.supabase.get_conversation_metadata", new=read):
+            assert (await mc.drain_all(0.05)) == {"left": 0}
+            from app.services.conversation_service import add_message
+
+            await add_message(CONV, "agent", "Saved while the process goes")
+            (left,) = [json.loads(v) for v in (await redis.hgetall(mc.OUTBOX)).values()]
+            assert left["state"] == "waiting" and not [r for r in c.rows if r["role"] == "system"]
+            reads["fail"] = False
+            stopped = mc.BOOT
+            monkeypatch.setattr(mc, "BOOT", "the-next-process")
+            monkeypatch.setattr(mc, "_CLOSING", False)
+            redis.kv.pop(f"msgr:alive:{stopped}")
+            out = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    notes = [r["content"] for r in c.rows if r["role"] == "system"]
+    assert out["told"] == 1 and notes == [mc.NOT_SENT_RESTART] and gw.sent == []
+    assert not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
 async def test_a_widget_chat_sends_nothing_anywhere(redis, monkeypatch):
     """Rule 5: a chat that is not on Messenger: nothing goes out; with the channel off, nothing is even looked up."""
     gw = Gateway([])
     c = Chat().start()
     try:
         with patch.object(mc, "send", new=gw), \
-                patch("app.db.supabase.get_conversation_simple",
+                patch("app.db.supabase.get_conversation_metadata",
                       new=AsyncMock(return_value={"id": CONV, "metadata": {"site": "bbc"}})) as read:
             from app.services.conversation_service import add_message
 
@@ -1005,7 +1075,7 @@ async def test_a_shutdown_waits_a_little_then_tells_each_agent_what_did_not_go_o
             # After the shutdown began nothing starts: the agent is told at once.
             await add_message(CONV, "agent", "Saved while the process goes")
             # Rule 5: an agent on a site chat is told nothing about Messenger.
-            with patch("app.db.supabase.get_conversation_simple",
+            with patch("app.db.supabase.get_conversation_metadata",
                        new=AsyncMock(return_value={"id": "site-chat", "metadata": {"site": "bbc"}})):
                 await add_message("site-chat", "agent", "On the site")
     finally:
@@ -1285,7 +1355,7 @@ async def test_an_outbox_write_whose_answer_was_lost_is_taken_as_written(redis, 
     gw = Gateway([])
     try:
         with patch.object(mc, "send", new=gw), \
-                patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)):
+                patch("app.db.supabase.get_conversation_metadata", new=AsyncMock(return_value=conv)):
             from app.services.conversation_service import add_message
 
             monkeypatch.setattr(redis, "hset", lands_then_times_out)
@@ -1417,14 +1487,22 @@ async def test_what_is_left_written_down_is_told_once_and_what_cannot_be_is_give
         "e-site": entry(boot="gone-one", cid="site-chat"),
         "e-unread": entry(boot="gone-one", cid="unread-chat"),
         "e-unread-old": entry(boot="gone-one", cid="unread-chat", at=time.time() - mc.OUTBOX_KEEP_S - 1),
+        # A chat that is no more: nothing goes there, crossed out without a word.
+        "e-no-chat": entry(boot="gone-one", cid="no-such-chat"),
     }
     chats = {"site-chat": {"id": "site-chat", "metadata": {"site": "bbc"}}}
+
+    async def read(cid):
+        if cid == "unread-chat":
+            raise RuntimeError("the database did not answer")
+        return chats.get(cid)
+
     c = Chat().start()
     c.rows.append({"id": mc._note_id("e-told"), "conversation_id": CONV, "role": "system",
                    "content": mc.NOT_SENT["unknown"], "created_at": now_iso()})
     c.saves["system"] = ["", "", "fail"]
     try:
-        with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(side_effect=lambda cid: chats.get(cid))):
+        with patch("app.db.supabase.get_conversation_metadata", new=read):
             out = await mc.run_messenger_recover()
     finally:
         c.stop()

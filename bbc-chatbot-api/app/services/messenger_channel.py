@@ -164,6 +164,7 @@ MESSENGER_HEALTH: dict[str, int] = {
     "partly_sent": 0,        # a long one cut short: its first pieces went out
     "gateway_down": 0,       # the gateway did not answer
     "no_target": 0,          # a Messenger chat whose Page and PSID could not be read: nothing sent
+    "target_unread": 0,      # an agent's message whose chat could not be read: kept for the minute, never dropped
     "off_skipped": 0,        # rows that waited for the chat's previous one while the channel was turned off: not sent
     "cut_at_shutdown": 0,    # rows a shutdown did not wait for: their agents are told
     "outbox_unsaved": 0,     # agents' messages not written down (Redis down): one a shutdown cuts may go untold
@@ -326,8 +327,15 @@ async def outbound(conversation_id: str, role: str, row: dict, entry: Optional[s
 
 async def _not_started(conversation_id: str, role: str, entry: Optional[str]) -> None:
     """A row the process going did not start (nothing starts once a shutdown began): on a Messenger chat the agent
-    is told to send it again; a site chat's written-down delivery is crossed out."""
-    if await _target(conversation_id, role):
+    is told to send it again; a site chat's written-down delivery is crossed out. A chat that could not be read
+    leaves it written down, for the next process's minute to look up and tell."""
+    try:
+        target = await _target(conversation_id, role)
+    except TargetUnread as e:
+        logger.warning(f"[messenger] conv {conversation_id}: a {role} message not started at shutdown, its chat not "
+                       f"read: left written down for the next process ({type(e).__name__})")
+        return
+    if target:
         MESSENGER_HEALTH["cut_at_shutdown"] += 1
         if role == "agent":
             await _tell(entry or await write_down(conversation_id), conversation_id, NOT_SENT_RESTART)
@@ -368,7 +376,17 @@ async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, rol
     # stop tells the agent depends on them.
     state: dict[str, Any] = {"sending": False, "known": False, "target": None, "entry": entry, "note": None}
     try:
-        state["target"] = await _target(conversation_id, role)
+        try:
+            state["target"] = await _target(conversation_id, role)
+        except TargetUnread as e:
+            # Where it goes is not known now: never crossed out on a guess. Kept for the recovery minute (unsure),
+            # which looks the chat up again, this process alive or not: on Messenger, its agent is told it was not
+            # sent; a site chat's is crossed out without a word.
+            MESSENGER_HEALTH["send_failed"] += 1
+            logger.warning(f"[messenger] conv {conversation_id}: a {role} message not sent, its chat not read: kept "
+                           f"for the recovery minute ({type(e).__name__})")
+            await _mark_entry(entry, conversation_id, "unsure", row=str(row.get("id") or "") or None)
+            return
         state["known"] = True
         if not state["target"]:
             await _cross_out(entry)
@@ -393,8 +411,17 @@ async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, rol
             elif not state["note"]:
                 await _cross_out(state["entry"])
             raise
+        unread = False
         if not state["known"]:
-            state["target"] = await _target(conversation_id, role)
+            try:
+                state["target"] = await _target(conversation_id, role)
+            except TargetUnread as e:
+                unread = True
+                logger.warning(f"[messenger] conv {conversation_id}: a {role} message stopped before where it goes "
+                               f"was read, and it could not be read now: left written down for the next process "
+                               f"({type(e).__name__})")
+        if unread:
+            raise
         if state["sending"] or state["target"]:
             MESSENGER_HEALTH["cut_at_shutdown"] += 1
             if role == "agent":
@@ -572,7 +599,9 @@ async def _cross_out(entry: Optional[str]) -> None:
 
 async def _target(conversation_id: str, role: str) -> Optional[dict]:
     """The Page and PSID a chat answers to: kept in Redis by each event; an agent's message to a chat Redis no
-    longer knows reads the chat's metadata (rows of the bot and the system stay quiet then: they come from a turn)."""
+    longer knows reads the chat's metadata (rows of the bot and the system stay quiet then: they come from a turn).
+    None: the chat is not on Messenger, or there is no such chat. The chat not read: TargetUnread (counted), never a
+    None (rule 7)."""
     r = get_redis()
     if r is not None:
         try:
@@ -588,7 +617,11 @@ async def _target(conversation_id: str, role: str) -> Optional[dict]:
         return None
     from app.db import supabase as db
 
-    conv = await db.get_conversation_simple(conversation_id)
+    try:
+        conv = await db.get_conversation_metadata(conversation_id)
+    except Exception as e:
+        MESSENGER_HEALTH["target_unread"] += 1
+        raise TargetUnread(conversation_id) from e
     meta = (conv or {}).get("metadata") or {}
     t = meta.get("messenger") if isinstance(meta, dict) and meta.get("chat_channel") == "messenger" else None
     if not (isinstance(t, dict) and t.get("page_id") and t.get("psid")):
@@ -601,7 +634,7 @@ async def _target(conversation_id: str, role: str) -> Optional[dict]:
 
 async def _on_messenger(conversation_id: str) -> Optional[bool]:
     """Whether a chat is on Messenger, as the recovery minute needs it for a delivery a stopped process left: None
-    when it can't be told now (Redis or the chat not read: rule 7), never a guess."""
+    when it can't be told now (Redis or the chat not read: rule 7), never a guess; False for no such chat."""
     r = get_redis()
     if r is not None:
         try:
@@ -613,9 +646,14 @@ async def _on_messenger(conversation_id: str) -> Optional[bool]:
             return None
     from app.db import supabase as db
 
-    conv = await db.get_conversation_simple(conversation_id)
-    if conv is None:
+    try:
+        conv = await db.get_conversation_metadata(conversation_id)
+    except Exception as e:
+        logger.warning(f"[messenger] conv {conversation_id}: the chat not read, looked at again later: "
+                       f"{type(e).__name__}: {e}")
         return None
+    if conv is None:
+        return False  # no such chat: nothing goes there
     meta = conv.get("metadata") or {}
     return isinstance(meta, dict) and meta.get("chat_channel") == "messenger"
 
@@ -689,6 +727,11 @@ async def send(page_id: str, psid: str, messages: list[dict], tag: Optional[str]
 
 
 # ── one event ─────────────────────────────────────────────────────
+
+
+class TargetUnread(Exception):
+    """Where a chat's rows go could not be told now (Redis did not know it, and the chat could not be read): its
+    agent's message is kept for later, never dropped as a site chat's would be."""
 
 
 class StillAnswering(Exception):
