@@ -2863,12 +2863,27 @@ async def _claim_of(r, k: str) -> str:
     return "turn" if str(raw).startswith("pending") else "answered"
 
 
+# A kept event given up (its tries over, or unreadable): out of the inbox and its person's there (KEYS[1], KEYS[2],
+# member ARGV[1]), its JSON and tries gone (KEYS[3], KEYS[4]), only while nothing holds it, in this one step: no
+# turn's claim and no answer (KEYS[5]), no send of its replies written down (KEYS[6]): 1; 0 when either is there.
+GIVE_UP_LUA = """
+if redis.call('exists', KEYS[5]) == 1 or redis.call('exists', KEYS[6]) == 1 then
+  return 0
+end
+redis.call('zrem', KEYS[1], ARGV[1])
+redis.call('zrem', KEYS[2], ARGV[1])
+redis.call('del', KEYS[3], KEYS[4])
+return 1
+"""
+
+
 async def _give_up(r, k: str, who: Optional[str]) -> bool:
     """A kept event let go of for its tries (or unreadable), only while nothing holds it: no turn's claim, no answer
-    written (the conditional release of RELEASE_UNSENT_LUA, guarded by the event's claim). False when one appeared
-    since the pass looked (a turn claimed it, or answered it): it stays, that turn's to finish. Redis failing raises."""
-    return bool(await r.eval(RELEASE_UNSENT_LUA, 5, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}",
-                             f"{INBOX}:tries:{k}", f"msgr:event:{k}", k))
+    written, no send of its replies written down (GIVE_UP_LUA, in one step). False when one appeared since the pass
+    looked (a turn claimed it or answered it, or a later event of its person's began sending its replies, its answer
+    gone from Redis): it stays, that turn's or that send's to finish. Redis failing raises."""
+    return bool(await r.eval(GIVE_UP_LUA, 6, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}", f"{INBOX}:tries:{k}",
+                             f"msgr:event:{k}", _sending_key(k), k))
 
 
 # A try counted for a kept event given back (KEYS[1], its tries) only while that count is still there and above

@@ -210,6 +210,19 @@ def release_unsent(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def give_up(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.GIVE_UP_LUA does."""
+    inbox, who, event_json, tries, claim, sending_key = keys
+    k = args[0]
+    if fake._alive(claim) or fake._alive(sending_key):
+        return 0
+    fake._zset(inbox).pop(k, None)
+    fake._zset(who).pop(k, None)
+    fake.kv.pop(event_json, None)
+    fake.kv.pop(tries, None)
+    return 1
+
+
 def give_back(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.GIVE_BACK_LUA does."""
     (tries,) = keys
@@ -266,6 +279,7 @@ def redis():
     r.register(mc.RELEASE_UNSENT_LUA, release_unsent)
     r.register(mc.GIVE_AGAIN_LUA, give_again)
     r.register(mc.GIVE_BACK_LUA, give_back)
+    r.register(mc.GIVE_UP_LUA, give_up)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -4317,6 +4331,32 @@ async def test_a_try_given_back_for_an_event_let_go_of_meanwhile_writes_no_count
     assert "m1" not in redis.kv[mc.INBOX] and f"{mc.INBOX}:m1" not in redis.kv
     assert tries_key not in redis.kv, "no count written back for an event let go of"
     assert gw.sent == [] and len(chat.requests) == 1, "no turn nor send of this pass's own"
+
+
+@pytest.mark.asyncio
+async def test_an_event_whose_send_begins_after_the_look_is_never_given_up(chat, redis):
+    """CodeRabbit #288: a kept event at its last try, its answer gone from Redis (run out, or let go of under memory
+    pressure), whose send another turn begins right after the pass looked (a later event of the person's answering it
+    first, _answer_these: its replies in hand, the send's mark written before they go). The give-up looks at the
+    claim and at that mark in the one step that removes the event (GIVE_UP_LUA), so it leaves it, its try given back:
+    that send's to finish, and if it never reaches the gateway, the event is still there to send them from. Rule 5:
+    an event nothing holds is still given up (test_an_event_that_keeps_failing_is_given_up_after_its_tries)."""
+    await _fail_once(chat, redis)
+    tries_key = f"{mc.INBOX}:tries:m1"
+    redis.kv[tries_key] = str(mc.RECOVER_TRIES)
+
+    async def its_send_begins(r, k):
+        # Right after the pass's look at its send (none): another turn writes its send's mark.
+        redis.kv[mc._sending_key(k)] = f"{mc.time.time()}:{mc.BOOT}"
+        return "none"
+
+    gw = Gateway([])
+    with patch.object(mc, "_claim_of", new=its_send_begins), patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+    assert (out["waiting"], out["given_up"]) == (1, 0) and mc.MESSENGER_HEALTH["recover_given_up"] == 0
+    assert "m1" in redis.kv[mc.INBOX] and f"{mc.INBOX}:m1" in redis.kv, "still there to send them from"
+    assert redis.kv[tries_key] == str(mc.RECOVER_TRIES), "its try given back"
+    assert gw.sent == [] and len(chat.requests) == 1
 
 
 @pytest.mark.asyncio
