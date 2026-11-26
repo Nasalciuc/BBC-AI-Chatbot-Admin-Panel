@@ -932,8 +932,10 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
             # first, now. Redis down (this one not kept, not_kept): there is no inbox to look in.
             if in_inbox:
                 await _answer_earlier(event)
-            if by == "api" and not enabled():
-                # Turned off since the recovery read the switch: its turn never starts, the event left kept.
+            if not enabled():
+                # Turned off since the switch was read (by the inbound route, or the recovery): its turn never starts,
+                # its claim is let go of, and a kept event is left for later (the gateway, told the channel is off,
+                # stops trying it; the recovery answers it once the channel is on).
                 MESSENGER_HEALTH["off_skipped"] += 1
                 raise StillAnswering()
             replies = await _answer(event)

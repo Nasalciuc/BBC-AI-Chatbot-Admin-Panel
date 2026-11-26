@@ -5100,6 +5100,37 @@ def _become(monkeypatch, boot: str, knows: dict) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("off_while", ["its_take", "its_look_at_earlier_ones"])
+async def test_no_gateway_turn_starts_once_the_channel_goes_off_while_its_event_is_taken(chat, redis, monkeypatch,
+                                                                                          off_while):
+    """CodeRabbit #288: the inbound route read the switch on, then the channel turned off while the event waits on
+    Redis (its take, or its look at the person's earlier events): its turn never starts (409, its claim let go of),
+    and kept, it is left to the recovery. Rule 5: on again, the recovery answers it, once, through the API."""
+    _turns(chat)
+    script = mc.LAST_TAKEN_LUA if off_while == "its_take" else mc.EARLIER_LUA
+    real_eval = redis.eval
+    once = {"on": True}
+
+    async def off_meanwhile(s, numkeys, *keys_and_args):
+        if once["on"] and s == script:
+            once["on"] = False
+            monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+        return await real_eval(s, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", off_meanwhile)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m1", text="First"))
+        assert not chat.requests and "m1" in redis.kv[mc.INBOX] and "msgr:event:m1" not in redis.kv
+        assert mc.MESSENGER_HEALTH["off_skipped"] == 1
+        monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+        monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and gw.sent == ["About: First"] and len(chat.requests) == 1 and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_a_late_send_put_back_as_the_channel_goes_off_is_sent_whichever_process_looks_first(chat, redis,
                                                                                                     monkeypatch):
     """CodeRabbit #288: replies process A knows never went out, sent late, the channel turned off while their event
