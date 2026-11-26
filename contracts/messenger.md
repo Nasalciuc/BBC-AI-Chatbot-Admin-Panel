@@ -165,8 +165,10 @@ What the API does with an event:
   not looked at yet whatever left the part meanwhile, the events always get their part, and a note that keeps
   failing, or hangs, never keeps the others from their turn. After 60
   tries, or unreadable, the event is given up (tries count only looks that may run a turn: an event whose answer is
-  kept for the API to send, its turn over, counts none and is never given up for them; its send goes on until the
-  inbox lets it go)
+  written, kept for the API to send, its turn over, or the gateway's, counts none and is never given up for them;
+  its send goes on until the inbox lets it go; one a turn holds, its claim live (another process's, which may keep
+  its answer to write and renews the claim meanwhile), counts none and waits; the give-up itself happens only while
+  nothing holds the event, in one step, so a claim taken since the pass looked leaves it to that turn)
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
@@ -212,14 +214,15 @@ What the API does with an event:
   have cleared it, and the event is sent from its answer; or the gateway, given its replies again, sends them from
   then): kept so, or not known (Redis failing), its person's later events wait behind it; one begun lately, or by a process still alive, is on its way, and the event waits: every old
   mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not.
-  With the channel off no pass runs, and a process still holding such a mark keeps saying it is alive, so none
-  of them reads as a send begun once the channel is on again. Only
+  With the channel off no pass runs, and a process still holding such a mark keeps saying it is alive (through a
+  cooldown another of its calls began too), so none of them reads as a send begun once the channel is on again. Only
   a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again, its
   event's answer written back first where it went meanwhile (its day over, or Redis let it go; never over another's
   claim or answer), so the same replies go, with no second turn; its mark
   not cleared then (Redis failing), or written with its answer lost, its process clears it at its next minute, or
   when it next looks at the event, however long Redis took, with the answer written back, in one step and only while
-  the event is still in the inbox (let go of meanwhile, it keeps the mark and sends them late, below); a send that ended and whose end could not be written has
+  the event is still in the inbox (the same answer there already is kept at least as long as the event: one put back
+  lives two days anew, and an older answer running out first would leave it to a second turn) (let go of meanwhile, it keeps the mark and sends them late, below); a send that ended and whose end could not be written has
   its event let go of then (out of the inbox, never sent again). A process that stopped first leaves its marks to read
   as begun: never sent twice. A process cut off from Redis past its alive mark while it runs, whose event another
   process let go of so meanwhile, sends the replies it knows never went out itself once Redis answers, once
@@ -320,10 +323,11 @@ row ends only after the chat's previous one, so one with nothing to send (its ch
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`), nor one the channel went off for while its going to the gateway was written down (crossed out, no
 note: nothing went out; written down as `off` first, so one whose cross-out Redis refuses is crossed out by
-the next minute, never told as maybe sent). The limit: when Redis refuses its write as `off` too, it still reads
-`sending`; no minute takes it up while its process lives, but once that process stopped before Redis took a write,
-the next one's minute tells its agent it may have gone out, as for any send a stopped process began: a note too many,
-never a message lost without one (`off_unsettled`, logged). Where a
+the next minute, never told as maybe sent). When Redis refuses its write as `off` too, it still reads `sending`
+(`off_unsettled`, logged): its process, which knows nothing went out, crosses it out at its next minutes, the
+channel on or off, and keeps saying it is alive meanwhile, so no other process's minute takes it up. The limit: once
+that process stopped before Redis took a write, the next one's minute cannot tell it from a send a stopped process
+began, and tells its agent it may have gone out: a note too many, never a message lost without one. Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
 chat's: it stays written down as `unsure` (`target_unread`), and the recovery minute looks the chat up again, its
@@ -356,7 +360,8 @@ recovery minute tells the agent (`told_later`), once (the note's id is the deliv
 and the row is found stored (one left before that was looked up is looked up then: a site chat's says nothing, nor
 one whose row never was stored; a chat or a row not read is looked at again the next minute). A note that could not
 be saved in a live process stays written down too (`untold`), and the minute saves it; after 2 days, or unreadable,
-given up (`outbox_given_up`). Redis down: not written down (`outbox_unsaved`), and the message still goes out; only
+given up (`outbox_given_up`). A delivery the minute deletes without a note (an `off` one, an unreadable one) whose
+deletion Redis refuses stays for a later pass, and the pass goes on with the notes after it. Redis down: not written down (`outbox_unsaved`), and the message still goes out; only
 the note a stop would leave its agent can be lost then.
 
 ## Sending (the gateway)
