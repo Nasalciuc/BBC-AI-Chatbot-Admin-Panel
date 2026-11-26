@@ -1960,6 +1960,43 @@ async def test_notes_that_keep_failing_never_keep_the_others_from_their_turn(cha
 
 
 @pytest.mark.asyncio
+async def test_the_notes_after_failing_ones_are_told_while_the_deliveries_between_them_end(chat, redis, monkeypatch):
+    """CodeRabbit #288: the outbox in one part (HSCAN's COUNT a hint), its first notes failing pass after pass, and
+    the deliveries after them (a live process's) done with and crossed out by it between passes, one each time: each
+    pass goes on from the deliveries not looked at yet, never from the start again, so the later notes are told. Rule
+    5: the part gone through, the failing ones get their turn again, and are told once the database takes them."""
+    redis.scan_whole = True
+    redis.kv["msgr:alive:alive-one"] = "1"
+
+    def note(i):
+        return json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold", "note": f"Note {i}", "at": time.time()})
+
+    def live():
+        return json.dumps({"cid": CONV, "boot": "alive-one", "state": "sending", "at": time.time()})
+
+    redis.kv[mc.OUTBOX] = {"e0": note(0), "e1": note(1), "d0": live(), "d1": live(), "d2": live(),
+                           "e2": note(2), "e3": note(3), "e4": note(4), "e5": note(5)}
+    monkeypatch.setattr(mc, "TELL_BATCH", 2)
+    real = mc._tell_agent
+    failing = {"Note 0", "Note 1"}
+
+    async def refuses_some(cid, note, note_id=None):
+        return False if note in failing else await real(cid, note, note_id)
+
+    monkeypatch.setattr(mc, "_tell_agent", refuses_some)
+    passes = []
+    for done in ("d0", "d1", "d2"):
+        passes.append((await mc.run_messenger_recover())["told"])
+        await redis.hdel(mc.OUTBOX, done)  # its process done with it, between passes
+    assert passes == [0, 2, 2] and set(await redis.hgetall(mc.OUTBOX)) == {"e0", "e1"}
+    assert sorted(r["content"] for r in chat.rows if r["role"] == "system") == [f"Note {i}" for i in range(2, 6)]
+    failing.clear()
+    later = [(await mc.run_messenger_recover())["told"] for _ in range(2)]
+    assert sum(later) == 2 and not await redis.hgetall(mc.OUTBOX)
+    assert sorted(r["content"] for r in chat.rows if r["role"] == "system") == [f"Note {i}" for i in range(6)]
+
+
+@pytest.mark.asyncio
 async def test_a_note_whose_save_hangs_is_cut_at_the_notes_time_and_the_events_still_get_theirs(chat, redis,
                                                                                                monkeypatch):
     """CodeRabbit #288: one note's save hangs (the database slow): it is cut at TELL_BUDGET_S, and the inbox's event

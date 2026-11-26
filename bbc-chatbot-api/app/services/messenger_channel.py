@@ -79,12 +79,14 @@ RECOVER_LOCK = "msgr:recover:lock"
 RECOVER_LOCK_S = 300
 # A pass starts nothing new past RECOVER_BUDGET_S, nor once its lock is found lost; the agents' notes get
 # TELL_BUDGET_S of it (each one cut there: its note's id makes saving it again harmless) and TELL_BATCH of them at
-# most, the outbox gone through in parts (OUTBOX_CURSOR: the part, and the last delivery looked at in it, kept between
-# passes), so the events always get their part and every delivery its turn.
+# most, the outbox gone through in parts (OUTBOX_CURSOR: the part the passes are on; OUTBOX_SEEN: the deliveries
+# looked at in it, by their ids, until the part is gone through), so the events always get their part and every
+# delivery its turn.
 RECOVER_BUDGET_S = 120.0
 TELL_BUDGET_S = 30.0
 TELL_BATCH = 20
 OUTBOX_CURSOR = "msgr:outbox:cursor"
+OUTBOX_SEEN = "msgr:outbox:seen"
 # A send of an event's replies by the API (the recovery's, or an earlier event's answered before a later one) is
 # written down before it starts (when) and once it is over ("done"): from then on they may be with the person, and
 # they are never sent again. One begun more than SENDING_S ago and not over is taken for a process that stopped in it
@@ -1361,29 +1363,28 @@ async def _tell_left(r, until: float) -> int:
 
     A part at a time: the outbox is gone through by a cursor (OUTBOX_CURSOR), TELL_BATCH of its deliveries looked up
     or told at most and none started past `until` (time.monotonic), each one's work cut there (its note may be saved
-    after all: its id makes saving it again harmless). Redis gives a part of any size (HSCAN's COUNT is a hint: a small
-    hash comes whole), so a part cut short is gone on with next pass from the first delivery not looked at in it (one
-    cut in its work counts as looked at), kept beside the cursor: the ones that keep failing, or hang, never keep the
-    others from their turn."""
+    after all: its id makes saving it again harmless). Redis gives a part of any size, and not always the same one
+    for a cursor (HSCAN's COUNT is a hint; a small hash comes whole), so the deliveries looked at in the part the
+    passes are on are kept by their ids (OUTBOX_SEEN): a part cut short is gone on with from those not looked at yet,
+    whatever left it meanwhile, and the cursor moves on once none is left. The ones that keep failing, or hang, never
+    keep the others from their turn."""
     told = 0
     try:
         raw_cursor = await r.get(OUTBOX_CURSOR)
-        head, _, resume = str(raw_cursor or "").partition(":")
+        head = str(raw_cursor or "").partition(":")[0]  # an older "<cursor>:<delivery>" reads as its cursor
         cursor = int(head) if head.isdigit() else 0
         after, entries = await r.hscan(OUTBOX, cursor=cursor, count=TELL_BATCH)
-        items = list(entries.items())
-        if resume:
-            # The first one the last pass did not look at; gone since (crossed out), the part from its start.
-            at_resume = next((i for i, (e, _) in enumerate(items) if e == resume), None)
-            if at_resume is not None:
-                items = items[at_resume:]
+        seen = set(await r.smembers(OUTBOX_SEEN))
         alive: dict[str, bool] = {}
-        worked = 0
-        nxt = ""  # where the next pass goes on in this part: the first delivery not looked at ("": the next part)
-        for i, (entry, raw) in enumerate(items):
+        worked, cut = 0, False
+        looked: list[str] = []
+        for entry, raw in entries.items():
+            if entry in seen:
+                continue
             if worked >= TELL_BATCH or time.monotonic() >= until:
-                nxt = entry
+                cut = True
                 break
+            looked.append(entry)  # looked at from here, whatever comes of it (one cut in its work too)
             try:
                 d = json.loads(raw)
                 cid, boot, state, at = str(d["cid"]), str(d["boot"]), d.get("state"), float(d.get("at") or 0)
@@ -1404,9 +1405,17 @@ async def _tell_left(r, until: float) -> int:
             except asyncio.TimeoutError as e:
                 logger.warning(f"[messenger] conv {cid}: a written-down delivery cut at the notes' time, looked at "
                                f"again when the outbox comes round ({type(e).__name__})")
-                nxt = items[i + 1][0] if i + 1 < len(items) else ""
+                cut = True
                 break
-        await r.set(OUTBOX_CURSOR, f"{cursor}:{nxt}" if nxt else str(after), ex=OUTBOX_KEEP_S)
+        if cut:
+            if looked:
+                await r.sadd(OUTBOX_SEEN, *looked)
+                await r.expire(OUTBOX_SEEN, OUTBOX_KEEP_S)
+            await r.set(OUTBOX_CURSOR, str(cursor), ex=OUTBOX_KEEP_S)
+        else:
+            # The part gone through: the next one (0: the outbox from its start), with nothing looked at in it yet.
+            await r.set(OUTBOX_CURSOR, str(after), ex=OUTBOX_KEEP_S)
+            await r.delete(OUTBOX_SEEN)
     except Exception as e:
         redis_failed("messenger outbox", e)
         logger.error(f"[messenger] the written-down deliveries not gone through: {type(e).__name__}: {e}")
