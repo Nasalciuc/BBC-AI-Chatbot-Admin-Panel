@@ -1503,17 +1503,23 @@ async def _keep_held_claim(r, key: str) -> None:
 
 async def write_held(budget_s: float = NOTES_S) -> dict:
     """A shutdown (app.main, after drain_all): the answers this process holds (Redis did not take them as their turn
-    ended, _UNKEPT) written now, within budget_s, so the next process never answers their events a second time. One
-    still not written goes with the process, counted (answer_dropped) and logged: its event may be answered again once
-    its claim runs out. {"written", "dropped"}."""
+    ended, _UNKEPT) written now, within budget_s, so the next process never answers their events a second time: each
+    one tried, whatever Redis said of the one before. One still not written goes with the process, counted
+    (answer_dropped) and logged: its event may be answered again once its claim runs out. {"written", "dropped"}."""
     written = 0
     r = get_redis(even_cooling_down=True) if _UNKEPT else None
 
     async def write_all() -> None:
         nonlocal written
         for key in list(_UNKEPT):
-            if await _write_held(r, key):
-                written += 1
+            try:
+                if await _write_held(r, key):
+                    written += 1
+            except Exception as e:
+                # This one stays held (dropped below if Redis never takes it); the others are still tried.
+                redis_failed("messenger dedupe", e)
+                logger.warning(f"[messenger] shutdown: an answer held by this process not written: "
+                               f"{type(e).__name__}: {e}")
 
     if r is not None:
         try:

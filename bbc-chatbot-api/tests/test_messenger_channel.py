@@ -2144,6 +2144,27 @@ async def test_a_shutdown_writes_the_answers_its_process_holds(chat, redis, monk
 
 
 @pytest.mark.asyncio
+async def test_a_shutdown_tries_each_held_answer_whatever_redis_said_of_the_one_before(redis, monkeypatch):
+    """CodeRabbit #288: the process holds two answers and Redis refuses the first one's write (a key of its own): the
+    second is written all the same, and only the first goes with the process (answer_dropped). Rule 5: every one
+    written (test_a_shutdown_writes_the_answers_its_process_holds)."""
+    first, second = "msgr:event:m1", "msgr:event:m2"
+    mc._UNKEPT[first] = ("pending:one", json.dumps({"replies": [{"text": "One"}], "by": "api"}))
+    mc._UNKEPT[second] = ("pending:two", json.dumps({"replies": [{"text": "Two"}], "by": "api"}))
+    real_eval = redis.eval
+
+    async def refuses_the_first(script, numkeys, *keys_and_args):
+        if script == mc.KEEP_ANSWER_LUA and keys_and_args[0] == first:
+            raise ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", refuses_the_first)
+    assert await mc.write_held(0.5) == {"written": 1, "dropped": 1}
+    assert json.loads(redis.kv[second])["replies"] == [{"text": "Two"}] and first not in redis.kv
+    assert mc.MESSENGER_HEALTH["answer_dropped"] == 1 and not mc._UNKEPT
+
+
+@pytest.mark.asyncio
 async def test_an_event_whose_answer_a_process_holds_is_never_taken_by_another_meanwhile(chat, redis, monkeypatch):
     """CodeRabbit #288: Redis keeps refusing the answer of process A's recovery turn, minute after minute. A keeps the
     event's claim meanwhile (a new expiry each minute), so process B's recovery never takes the event and answers it a
