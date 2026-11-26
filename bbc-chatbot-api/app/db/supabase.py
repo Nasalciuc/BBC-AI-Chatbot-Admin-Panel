@@ -4157,7 +4157,7 @@ async def increment_chats_served(agent: dict) -> None:
         logger.warning(f"increment_chats_served error (non-blocking): {e}")
 
 
-async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") -> list[dict]:
+async def _rows_with_last_message(build, base_columns: str, *, paged: str = "", label: str = "other") -> list[dict]:
     """build(columns) → rows, with last_user_message_at (migration 024) when
     the activity clocks exist: a message is presence too, and the presence
     rule reads it. A database without the column is a normal case, not a
@@ -4166,14 +4166,14 @@ async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") 
 
     paged="<label>": every matching row, page after page by id (_select_after),
     for a read that must not stop at PostgREST's 1000; the builder then orders
-    the rows by id."""
+    the rows by id. label: _run_sync's telemetry bucket for a read of one page."""
     with_clock = _supervisor_columns_available()
     columns = base_columns + (", last_user_message_at" if with_clock else "")
 
     async def read(cols: str) -> list[dict]:
         if paged:
             return await _select_after(lambda: build(cols), label=paged)
-        res = await _run_sync(lambda: build(cols).execute())
+        res = await _run_sync(lambda: build(cols).execute(), label=label)
         return res.data or []
 
     try:
@@ -7307,21 +7307,22 @@ async def first_chat_of_visit(visitor_id: str, since_iso: str, until_iso: str) -
 
 async def latest_conversation_of_visitor(visitor_id: str) -> Optional[dict]:
     """The newest conversation of a visitor, whatever its status (id, status, mode, assigned_agent_id, updated_at,
-    created_at, last_user_message_at, metadata): {} when there is none, None when the database could not say (rule 7). A Messenger thread
-    goes on in the chat it had, closed or not, as the widget's does with the chat it keeps."""
+    created_at, metadata, and last_user_message_at where migration 024's clocks exist: a database without them is
+    read without it, as the chats list is): {} when there is none, None when the database could not say (rule 7). A
+    Messenger thread goes on in the chat it had, closed or not, as the widget's does with the chat it keeps."""
     db_client = get_client()
     try:
-        res = await _run_sync(
-            lambda: db_client.table("conversations")
-            .select("id, status, mode, assigned_agent_id, updated_at, created_at, last_user_message_at, metadata")
+        rows = await _rows_with_last_message(
+            lambda columns: db_client.table("conversations")
+            .select(columns)
             .eq("visitor_id", visitor_id)
             .order("created_at", desc=True)
-            .limit(1)
-            .execute(),
+            .limit(1),
+            "id, status, mode, assigned_agent_id, updated_at, created_at, metadata",
             label="messenger",
         )
     except Exception as e:
         logger.warning(f"[messenger] a thread's chat not read: {type(e).__name__} {_error_code(e) or e}")
         return None
-    rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id")]
+    rows = [r for r in rows if isinstance(r, dict) and r.get("id")]
     return rows[0] if rows else {}

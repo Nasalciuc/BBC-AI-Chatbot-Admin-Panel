@@ -799,6 +799,100 @@ async def test_a_thread_that_cannot_be_read_is_delivered_again(chat):
     chat.created.assert_not_awaited()
 
 
+class _Conversations:
+    """The conversations table with the columns it has: a select naming one it lacks fails as PostgREST does
+    (42703), any other failure is the one given."""
+
+    def __init__(self, columns, rows, fails=None):
+        self.columns, self.rows, self.fails, self.selects = set(columns), rows, fails, []
+
+    def table(self, name):
+        assert name == "conversations"
+        return self
+
+    def select(self, cols):
+        self.selects.append([c.strip() for c in cols.split(",")])
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        if self.fails is not None:
+            raise self.fails
+        lacking = [c for c in self.selects[-1] if c not in self.columns]
+        if lacking:
+            raise Exception({"code": "42703", "message": f"column conversations.{lacking[0]} does not exist"})
+        return type("Res", (), {"data": [{c: r.get(c) for c in self.selects[-1]} for r in self.rows]})()
+
+
+_THREAD_COLUMNS = ("id", "status", "mode", "assigned_agent_id", "updated_at", "created_at", "metadata")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_clock", [True, False], ids=["clock_there", "clock_missing"])
+async def test_a_threads_chat_is_read_without_the_message_clock_a_database_lacks(with_clock):
+    """Review on #288: last_user_message_at comes with migration 024. Without it the thread's read is made again
+    without the column, and the flag is downgraded, as the chats list does: the person's chat is found, not taken
+    for one the database could not read. With it, it is read with the rest."""
+    from app.db import supabase as sb
+
+    row = {"id": CONV, "status": "active", "mode": "ai", "updated_at": now_iso(days=-1),
+           "created_at": now_iso(days=-2), "last_user_message_at": now_iso(hours=-1), "metadata": {}}
+    table = _Conversations(_THREAD_COLUMNS + (("last_user_message_at",) if with_clock else ()), [row])
+    with patch.object(sb, "get_client", return_value=table), \
+            patch.object(sb, "_supervisor_columns_available", return_value=True), \
+            patch.object(sb, "_downgrade_supervisor_columns") as down:
+        found = await sb.latest_conversation_of_visitor("msgr:bbc:PAGE1:PSID-7")
+    assert found["id"] == CONV and found["status"] == "active"
+    if with_clock:
+        assert len(table.selects) == 1 and "last_user_message_at" in table.selects[0]
+        assert found["last_user_message_at"] == row["last_user_message_at"]
+        down.assert_not_called()
+    else:
+        assert [("last_user_message_at" in s) for s in table.selects] == [True, False]
+        assert "last_user_message_at" not in found
+        assert down.call_count == 1
+    assert mc._recent(found)
+
+
+@pytest.mark.asyncio
+async def test_a_threads_chat_is_read_without_the_message_clock_while_it_is_known_missing():
+    from app.db import supabase as sb
+
+    table = _Conversations(_THREAD_COLUMNS, [{"id": CONV, "status": "active", "created_at": now_iso()}])
+    with patch.object(sb, "get_client", return_value=table), \
+            patch.object(sb, "_supervisor_columns_available", return_value=False), \
+            patch.object(sb, "_downgrade_supervisor_columns") as down:
+        assert (await sb.latest_conversation_of_visitor("msgr:bbc:PAGE1:PSID-7"))["id"] == CONV
+    assert len(table.selects) == 1 and "last_user_message_at" not in table.selects[0]
+    down.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_threads_chat_the_database_cannot_read_is_still_none():
+    """Any other failure is the read failing (rule 7): None, the column left as it was."""
+    from app.db import supabase as sb
+
+    table = _Conversations(_THREAD_COLUMNS + ("last_user_message_at",), [], fails=TimeoutError("read timed out"))
+    with patch.object(sb, "get_client", return_value=table), \
+            patch.object(sb, "_supervisor_columns_available", return_value=True), \
+            patch.object(sb, "_downgrade_supervisor_columns") as down:
+        assert await sb.latest_conversation_of_visitor("msgr:bbc:PAGE1:PSID-7") is None
+    assert len(table.selects) == 1
+    down.assert_not_called()
+    table.fails = None
+    with patch.object(sb, "get_client", return_value=table), \
+            patch.object(sb, "_supervisor_columns_available", return_value=True):
+        assert await sb.latest_conversation_of_visitor("msgr:bbc:PAGE1:PSID-7") == {}
+
+
 # ── out of a turn: an agent's message ─────────────────────────────
 
 
