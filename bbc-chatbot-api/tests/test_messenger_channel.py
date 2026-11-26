@@ -4345,6 +4345,61 @@ async def test_a_take_another_process_may_have_run_is_looked_up_through_a_cooldo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("redis_says", ["out_of_memory", "out_of_memory_kept_before", "connection_lost"])
+async def test_a_take_redis_refuses_before_writing_anything_is_answered_as_not_kept(chat, redis, monkeypatch,
+                                                                                   redis_says):
+    """CodeRabbit #288: Redis out of memory (noeviction) still answers TIME and reads, but refuses the take's first
+    write (LAST_TAKEN_LUA, an error reply): nothing of the take was written, so the event is answered at once as one
+    Redis never took (not_kept), never sent back as unsure (409) at each delivery until the gateway gives up. Kept by
+    an earlier delivery (its take ran, its answer lost), the read finds it in the inbox, and it is answered in the
+    person's order. Rule 5: the connection lost during that first write (it may have run), the event waits (409,
+    take_unsure), as before."""
+    from redis.exceptions import OutOfMemoryError
+
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    second = event(mid="m2", text="Second", timestamp=200)
+    real_eval = redis.eval
+
+    async def answer_lost(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.TAKE_LUA:
+            raise ConnectionError("Connection reset by peer")  # it ran: its answer lost
+        return out
+
+    async def refused(script, numkeys, *keys_and_args):
+        if script == mc.LAST_TAKEN_LUA:
+            if redis_says == "connection_lost":
+                raise ConnectionError("Connection reset by peer")
+            raise OutOfMemoryError("command not allowed when used memory > 'maxmemory'.")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        if redis_says == "out_of_memory_kept_before":
+            monkeypatch.setattr(redis, "eval", answer_lost)
+            with pytest.raises(mc.StillAnswering):
+                await mc.handle(second)
+            assert "m2" in redis.kv[mc.INBOX], "its take ran"
+            redis_client.set_client_for_tests(redis)
+        monkeypatch.setattr(redis, "eval", refused)
+        if redis_says == "connection_lost":
+            with pytest.raises(mc.StillAnswering):
+                await mc.handle(second)
+            assert mc.MESSENGER_HEALTH["take_unsure"] == 1 and "m2" in mc._TAKE_UNSURE and not gw.sent
+            return
+        out = await mc.handle(second)
+        if redis_says == "out_of_memory":
+            assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == [], "at once, not kept"
+            assert mc.MESSENGER_HEALTH["not_kept"] == 1 and mc.MESSENGER_HEALTH["take_unsure"] == 0
+            assert "m2" not in redis.kv[mc.INBOX] and not mc._TAKE_UNSURE
+            return
+    assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert mc.MESSENGER_HEALTH["not_kept"] == 0 and not mc._TAKE_UNSURE
+
+
+@pytest.mark.asyncio
 async def test_an_event_answered_in_a_cooldown_is_never_answered_again_by_the_recovery(chat, redis):
     """A cooldown begun during the turn (another call's failure, process wide, while Redis answers): the event's mark
     and its place in the inbox are written all the same, so the recovery finds nothing left and never sends the person

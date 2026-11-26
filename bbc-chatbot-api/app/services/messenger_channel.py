@@ -39,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Coroutine, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
+from redis.exceptions import ResponseError
 
 from app.flags import flag
 from app.infra.redis_client import get_redis, redis_failed
@@ -1507,8 +1508,11 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
     down (another call's failure, process wide, while Redis may answer): only Redis failing this take sends the event
     the way of one not kept. A take Redis may have run with its answer lost raises StillAnswering (take_unsure): the
     gateway delivers the event again in a moment, and that delivery, at this process or another, finds the take that
-    ran while Redis answers, so the event is never answered past an earlier one of its person's as one not kept. With
-    `client` given (the recovery's: the event is in the inbox already), Redis failing raises."""
+    ran while Redis answers, so the event is never answered past an earlier one of its person's as one not kept.
+    Redis refusing the take's first write (an error reply: out of memory, read only) wrote nothing of it: the event is
+    in the inbox only when an earlier delivery took it, read then (reads still answer), and otherwise it is answered
+    as one not kept, never sent back at each delivery while Redis refuses. With `client` given (the recovery's: the
+    event is in the inbox already), Redis failing raises."""
     k = event.key()
     r = client if client is not None else get_redis(even_cooling_down=True)
     if r is None:
@@ -1520,8 +1524,12 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
         # one's replies is told from a take after it, whatever the clocks of the processes that took them.
         now = await _redis_now(r)
         wrote = True  # from here on, a failure may follow a write Redis ran with its answer lost
-        # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
-        await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(now), INBOX_KEEP_S)
+        try:
+            # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
+            await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(now), INBOX_KEEP_S)
+        except ResponseError:
+            wrote = False  # an error reply: Redis refused the script, and nothing of this take was written
+            raise
         await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
         await r.eval(TAKE_LUA, 2, INBOX, _who(event), k, repr(now), INBOX_KEEP_S)
         _TAKE_UNSURE.pop(k, None)
@@ -1531,6 +1539,18 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
         if client is not None:
             logger.warning(f"[messenger] a kept event's place in the inbox not written: {type(e).__name__}: {e}")
             raise
+        if not wrote and isinstance(e, ResponseError):
+            there = await _in_inbox(r, k)
+            if there is not None:
+                _TAKE_UNSURE.pop(k, None)
+                if there:
+                    logger.warning(f"[messenger] an event's take refused by Redis ({type(e).__name__}), taken by an "
+                                   f"earlier delivery: answered in the person's order")
+                    return True
+                MESSENGER_HEALTH["not_kept"] += 1
+                logger.warning(f"[messenger] an event's take refused by Redis before anything was written, not in the "
+                               f"inbox (answered as not kept): {type(e).__name__}: {e}")
+                return False
         since = _TAKE_UNSURE.get(k)
         if wrote or (since is not None and time.monotonic() - since < TAKE_UNSURE_WAIT_S):
             if wrote:
@@ -1543,6 +1563,17 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
         MESSENGER_HEALTH["not_kept"] += 1
         logger.warning(f"[messenger] an event not kept in the inbox: {type(e).__name__}: {e}")
         return False
+
+
+async def _in_inbox(r, k: str) -> Optional[bool]:
+    """Whether the event is in the inbox (a read, which Redis still answers while it refuses writes); None when that
+    could not be told (Redis failing, logged: rule 7, never taken for "not there")."""
+    try:
+        return await r.zscore(INBOX, k) is not None
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] an event's place in the inbox not read: {type(e).__name__}: {e}")
+        return None
 
 
 async def _release_event(k: str, who: Optional[str] = None) -> None:
