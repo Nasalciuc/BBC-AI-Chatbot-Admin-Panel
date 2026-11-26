@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -141,8 +142,9 @@ func TestErrorKinds(t *testing.T) {
 		{Error{Status: 502}, "unknown", false},
 		{Error{Status: 504}, "unknown", false},
 		{Error{Status: 400, Code: 100}, "other", false},
-		// HTTP 429 with no Graph code (an empty body): a rate refusal all the same.
+		// HTTP 429 with no Graph code (an empty body): a rate refusal all the same; with a code, the code says.
 		{Error{Status: 429}, "rate", true},
+		{Error{Status: 429, Code: 100}, "other", false},
 		// Rule 5: a structured refusal keeps its own kind whatever the status.
 		{Error{Status: 429, Code: 10, Subcode: 2018278}, "window_closed", false},
 	}
@@ -230,6 +232,48 @@ func TestASendWhoseAnswerNeverCameIsNeverSentAgain(t *testing.T) {
 	_, err = short.Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
 	if !errors.As(err, &ue) || KindOf(err) != "unknown" || Retryable(err) {
 		t.Errorf("no answer in time: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+}
+
+// earlyTransport is a transport whose Do comes back before it tells the write's end (HTTP/1 and HTTP/2 both may,
+// on a deadline or a lost connection): a connection had or not, the write's end told or not, the error given back.
+type earlyTransport struct {
+	connected bool
+	writeErr  error // told as the write's end, when set
+	err       error
+}
+
+func (e *earlyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	trace := httptrace.ContextClientTrace(r.Context())
+	if e.connected && trace != nil && trace.GotConn != nil {
+		trace.GotConn(httptrace.GotConnInfo{})
+	}
+	if e.writeErr != nil && trace != nil && trace.WroteRequest != nil {
+		trace.WroteRequest(httptrace.WroteRequestInfo{Err: e.writeErr})
+	}
+	return nil, e.err
+}
+
+func TestACallWhoseWriteWasNeverToldIsUnconfirmed(t *testing.T) {
+	send := func(tr *earlyTransport) error {
+		c := &Client{HTTP: &http.Client{Transport: tr}, Base: "https://graph.example.test", Version: "v26.0"}
+		_, err := c.Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+		return err
+	}
+	var ue *Unconfirmed
+	// A connection, then the deadline, and no word of the write: it may be with Meta, never sent again.
+	if err := send(&earlyTransport{connected: true, err: context.DeadlineExceeded}); !errors.As(err, &ue) ||
+		KindOf(err) != "unknown" || Retryable(err) {
+		t.Errorf("deadline before the write's end was told: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+	// Rule 5: the transport told its write failed: not with Meta, tried again.
+	if err := send(&earlyTransport{connected: true, writeErr: io.ErrUnexpectedEOF, err: io.ErrUnexpectedEOF}); errors.As(err, &ue) ||
+		!Retryable(err) {
+		t.Errorf("a write that failed: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+	// Rule 5: never a connection: tried again.
+	if err := send(&earlyTransport{err: errors.New("dial tcp: connection refused")}); errors.As(err, &ue) || !Retryable(err) {
+		t.Errorf("no connection: %v %s %v", err, KindOf(err), Retryable(err))
 	}
 }
 

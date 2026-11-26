@@ -61,7 +61,7 @@ func (e *Error) Error() string {
 //	unavailable    the person can't be reached (blocked the Page, deleted their account, …)
 //	thread_owned   another app (the Page Inbox) owns the thread now (conversation routing)
 //	token          the Page's token is wrong or expired: nothing goes out until it is replaced
-//	rate           too many calls (a Graph code, or HTTP 429 alone): later
+//	rate           too many calls (a Graph code, or HTTP 429 with no code): later
 //	temporary      Meta says it did not send it, for now (code 2: the service is down a while; code 1200: a send
 //	               that failed for now; HTTP 503 with no code: it could not take the call): later
 //	unknown        any other 5xx (500 with code 1 or none, 502, 504, …): Meta, or a proxy before it, failed once it
@@ -77,7 +77,7 @@ func (e *Error) Kind() string {
 		return "thread_owned"
 	case e.Code == 190:
 		return "token"
-	case e.Code == 4 || e.Code == 613 || e.Subcode == 2534040 || e.Status == http.StatusTooManyRequests:
+	case e.Code == 4 || e.Code == 613 || e.Subcode == 2534040 || (e.Status == http.StatusTooManyRequests && e.Code == 0):
 		return "rate"
 	case e.Code == 2 || e.Code == 1200 || (e.Status == http.StatusServiceUnavailable && e.Code == 0):
 		return "temporary"
@@ -93,9 +93,9 @@ func (e *Error) Retry() bool {
 	return k == "rate" || k == "temporary"
 }
 
-// Unconfirmed is a call whose answer never came after Meta had the whole request (the connection dropped, the
-// wait ran out): the message may be with the person. It is never sent again (the Send API takes no key that would
-// make a second send the same message), and the sender is told it is not confirmed (kind "unknown").
+// Unconfirmed is a call whose answer never came once Meta may have had the whole request (the connection dropped,
+// the wait ran out): the message may be with the person. It is never sent again (the Send API takes no key that
+// would make a second send the same message), and the sender is told it is not confirmed (kind "unknown").
 type Unconfirmed struct{ Err error }
 
 func (e *Unconfirmed) Error() string {
@@ -159,11 +159,17 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	if err != nil {
 		return err
 	}
-	// Whether Meta has had the whole request: a failure after that may still be a message sent.
-	var wrote atomic.Bool
+	// Whether Meta may have the whole request. Only two things say it does not: no connection was ever had, or the
+	// transport said its write failed. The write goes on apart from Do, and Do can return (a deadline, a cancel, a
+	// connection lost) before the write's end is told (HTTP/1 and HTTP/2 both): a call with a connection and no
+	// word of its write may be with Meta.
+	var connected, wrote, writeFailed atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			if info.Err == nil {
+			if info.Err != nil {
+				writeFailed.Store(true)
+			} else {
 				wrote.Store(true)
 			}
 		},
@@ -178,7 +184,7 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		if wrote.Load() {
+		if wrote.Load() || (connected.Load() && !writeFailed.Load()) {
 			return &Unconfirmed{Err: err}
 		}
 		return err
