@@ -128,8 +128,18 @@ func TestErrorKinds(t *testing.T) {
 		{Error{Status: 400, Code: 190}, "token", false},
 		{Error{Status: 400, Code: 613}, "rate", true},
 		{Error{Status: 400, Code: 4}, "rate", true},
-		{Error{Status: 500}, "temporary", true},
+		// Meta says it did not send it, for now: tried again.
+		{Error{Status: 500, Code: 2}, "temporary", true},
 		{Error{Status: 400, Code: 2}, "temporary", true},
+		{Error{Status: 500, Code: 1200}, "temporary", true},
+		{Error{Status: 503}, "temporary", true},
+		// A 5xx that does not say (RFC 9110: a server or a proxy failed once it had the call): maybe sent, never
+		// sent again.
+		{Error{Status: 500}, "unknown", false},
+		{Error{Status: 500, Code: 1}, "unknown", false},
+		{Error{Status: 503, Code: 1}, "unknown", false},
+		{Error{Status: 502}, "unknown", false},
+		{Error{Status: 504}, "unknown", false},
 		{Error{Status: 400, Code: 100}, "other", false},
 		// HTTP 429 with no Graph code (an empty body): a rate refusal all the same.
 		{Error{Status: 429}, "rate", true},
@@ -194,6 +204,32 @@ func TestASendWhoseAnswerNeverCameIsNeverSentAgain(t *testing.T) {
 	_, err = client(busy.URL).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
 	if KindOf(err) != "rate" || !Retryable(err) {
 		t.Errorf("429: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+
+	// A proxy's 504: Meta may have sent it, so it is never sent again.
+	var proxied atomic.Int32
+	timeout := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied.Add(1)
+		http.Error(w, "upstream timed out", http.StatusGatewayTimeout)
+	}))
+	defer timeout.Close()
+	_, err = client(timeout.URL).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+	if KindOf(err) != "unknown" || Retryable(err) || proxied.Load() != 1 {
+		t.Errorf("504: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+
+	// Meta had the whole call and the wait for its answer ran out (the client's own timeout): unconfirmed.
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		<-release
+	}))
+	defer slow.Close()
+	defer close(release)
+	short := &Client{HTTP: &http.Client{Timeout: 50 * time.Millisecond}, Base: slow.URL, Version: "v26.0"}
+	_, err = short.Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+	if !errors.As(err, &ue) || KindOf(err) != "unknown" || Retryable(err) {
+		t.Errorf("no answer in time: %v %s %v", err, KindOf(err), Retryable(err))
 	}
 }
 

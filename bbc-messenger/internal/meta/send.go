@@ -62,7 +62,10 @@ func (e *Error) Error() string {
 //	thread_owned   another app (the Page Inbox) owns the thread now (conversation routing)
 //	token          the Page's token is wrong or expired: nothing goes out until it is replaced
 //	rate           too many calls (a Graph code, or HTTP 429 alone): later
-//	temporary      Meta's own trouble (5xx, code 1 or 2): later
+//	temporary      Meta says it did not send it, for now (code 2: the service is down a while; code 1200: a send
+//	               that failed for now; HTTP 503 with no code: it could not take the call): later
+//	unknown        any other 5xx (500 with code 1 or none, 502, 504, …): Meta, or a proxy before it, failed once it
+//	               had the call, and the message may be with the person (RFC 9110 15.6): never sent again
 //	other          anything else
 func (e *Error) Kind() string {
 	switch {
@@ -76,13 +79,15 @@ func (e *Error) Kind() string {
 		return "token"
 	case e.Code == 4 || e.Code == 613 || e.Subcode == 2534040 || e.Status == http.StatusTooManyRequests:
 		return "rate"
-	case e.Status >= 500 || e.Code == 1 || e.Code == 2:
+	case e.Code == 2 || e.Code == 1200 || (e.Status == http.StatusServiceUnavailable && e.Code == 0):
 		return "temporary"
+	case e.Status >= 500:
+		return "unknown"
 	}
 	return "other"
 }
 
-// Retry says whether the same call may succeed later.
+// Retry says whether the same call may succeed later without sending twice: Meta said it did not send it.
 func (e *Error) Retry() bool {
 	k := e.Kind()
 	return k == "rate" || k == "temporary"
@@ -98,8 +103,8 @@ func (e *Unconfirmed) Error() string {
 }
 func (e *Unconfirmed) Unwrap() error { return e.Err }
 
-// KindOf is the kind of any error a call returned: "unknown" for one Meta may have carried out, "temporary" for a
-// network failure before the request went out.
+// KindOf is the kind of any error a call returned: "unknown" for one Meta may have carried out (Unconfirmed, or a
+// 5xx that does not say), "temporary" for a network failure before the request went out.
 func KindOf(err error) string {
 	var ue *Unconfirmed
 	if errors.As(err, &ue) {
@@ -113,7 +118,7 @@ func KindOf(err error) string {
 }
 
 // Retryable is whether any error a call returned may pass on a later try without sending twice: a refusal Meta
-// may get over, or a failure before the request went out. Never an Unconfirmed one.
+// says it did not carry out, or a failure before the request went out. Never one whose kind is "unknown".
 func Retryable(err error) bool {
 	var ue *Unconfirmed
 	if errors.As(err, &ue) {
